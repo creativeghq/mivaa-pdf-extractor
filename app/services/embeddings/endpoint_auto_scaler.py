@@ -169,12 +169,25 @@ class EndpointAutoScaler:
                 .execute()
             pending_count = pending.count or 0
 
-            live_processing = supabase.client.table('background_jobs') \
+            # Two-query union — the installed supabase-py version (used by
+            # the SyncSelectRequestBuilder path) does not expose `.or_()`.
+            # Splitting avoids the AttributeError that wedged this poll
+            # every cycle and made queue_depth always return 0.
+            fresh_hb = supabase.client.table('background_jobs') \
                 .select('id') \
                 .eq('status', 'processing') \
-                .or_(f'last_heartbeat.gte.{stale_cutoff},and(last_heartbeat.is.null,created_at.gte.{recent_create_cutoff})') \
+                .gte('last_heartbeat', stale_cutoff) \
                 .execute()
-            live_processing_ids = [row['id'] for row in (live_processing.data or [])]
+            no_hb_yet = supabase.client.table('background_jobs') \
+                .select('id') \
+                .eq('status', 'processing') \
+                .is_('last_heartbeat', 'null') \
+                .gte('created_at', recent_create_cutoff) \
+                .execute()
+            live_processing_ids = list({
+                *[row['id'] for row in (fresh_hb.data or [])],
+                *[row['id'] for row in (no_hb_yet.data or [])],
+            })
             processing_count = len(live_processing_ids)
 
             # For each live processing job, count its in-flight products

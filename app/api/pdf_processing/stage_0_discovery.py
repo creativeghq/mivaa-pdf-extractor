@@ -263,9 +263,35 @@ async def process_stage_0_discovery(
                 .eq('id', job_id).single().execute()
             cached = ((cache_resp.data or {}).get('metadata') or {}).get('catalog_cache')
             if cached and cached.get('file_size') == len(file_content):
-                from app.schemas.product_discovery import ProductCatalog
+                # ProductCatalog lives next to the discovery service, not
+                # under app.schemas (the previous import path crashed silently
+                # via the outer except, so the cache was effectively dead).
+                from app.services.discovery.product_discovery_service import (
+                    ProductCatalog, ProductInfo, CertificateInfo, LogoInfo,
+                    SpecificationInfo,
+                )
                 try:
-                    catalog = ProductCatalog(**cached.get('catalog', {}))
+                    cdict = dict(cached.get('catalog') or {})
+                    # Rehydrate nested dataclasses — `ProductCatalog(**cdict)`
+                    # would otherwise leave `products` as a list[dict] and
+                    # downstream code (`product.name`) would AttributeError.
+                    cdict['products'] = [
+                        ProductInfo(**p) if isinstance(p, dict) else p
+                        for p in (cdict.get('products') or [])
+                    ]
+                    cdict['certificates'] = [
+                        CertificateInfo(**c) if isinstance(c, dict) else c
+                        for c in (cdict.get('certificates') or [])
+                    ]
+                    cdict['logos'] = [
+                        LogoInfo(**l) if isinstance(l, dict) else l
+                        for l in (cdict.get('logos') or [])
+                    ]
+                    cdict['specifications'] = [
+                        SpecificationInfo(**s) if isinstance(s, dict) else s
+                        for s in (cdict.get('specifications') or [])
+                    ]
+                    catalog = ProductCatalog(**cdict)
                     logger.info(
                         f"♻️  [STAGE 0] Resume optimization: reusing cached catalog "
                         f"({len(catalog.products)} products, ${cached.get('saved_cost_usd', '?')} saved)"
@@ -307,8 +333,18 @@ async def process_stage_0_discovery(
                 logger.info(f"✅ [STAGE 0] DISCOVERY COMPLETED SUCCESSFULLY")
 
                 # Persist catalog for resume reuse (best-effort).
+                # `ProductCatalog` is a @dataclass so it has neither
+                # `model_dump()` (Pydantic v2) nor `.dict()` (Pydantic v1).
+                # Use `dataclasses.asdict` first; fall back to the Pydantic
+                # methods only if a future refactor switches the type.
                 try:
-                    catalog_dict = catalog.model_dump() if hasattr(catalog, 'model_dump') else catalog.dict()
+                    import dataclasses as _dc
+                    if _dc.is_dataclass(catalog):
+                        catalog_dict = _dc.asdict(catalog)
+                    elif hasattr(catalog, 'model_dump'):
+                        catalog_dict = catalog.model_dump()
+                    else:
+                        catalog_dict = catalog.dict()
                     supabase.client.rpc(
                         'merge_background_job_metadata',
                         {

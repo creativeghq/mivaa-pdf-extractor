@@ -282,10 +282,29 @@ def get_physical_page_text(
     Returns:
         Tuple of (text_content, clip_rect or None)
     """
-    if physical_page not in layout.physical_to_pdf_map:
+    # Defensive lookup — catalog rehydrated from JSON has str keys / list
+    # tuples even after ProductCatalog.__post_init__ normalizes (e.g. when
+    # the dict comes from a non-catalog code path that bypasses the
+    # dataclass). Try int → str → log-and-bail.
+    mapping = layout.physical_to_pdf_map or {}
+    entry = mapping.get(physical_page)
+    if entry is None:
+        entry = mapping.get(str(physical_page))
+    if entry is None:
+        try:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"get_physical_page_text: physical page {physical_page} not in "
+                f"layout.physical_to_pdf_map (have {len(mapping)} entries: "
+                f"{list(mapping.keys())[:5]}...). Returning empty text."
+            )
+        except Exception:
+            pass
         return "", None
 
-    pdf_page_idx, position = layout.physical_to_pdf_map[physical_page]
+    if isinstance(entry, list):
+        entry = tuple(entry)
+    pdf_page_idx, position = entry
     page = doc[pdf_page_idx]
 
     if position == 'single':

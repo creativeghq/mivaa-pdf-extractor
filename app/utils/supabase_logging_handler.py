@@ -91,13 +91,18 @@ class SupabaseLoggingHandler(logging.Handler):
                 'traceback': traceback.format_exception(*record.exc_info)
             }
         
-        # Add extra fields from record
+        # Add extra fields from record. Skip the sentinel "-" produced by
+        # pipeline_observability for unbound context — it's noise on every
+        # log line outside a job scope.
+        _SENTINEL_KEYS = {'job_id', 'document_id', 'product_id', 'pdf_stage'}
         for key, value in record.__dict__.items():
             if key not in ['name', 'msg', 'args', 'created', 'filename', 'funcName',
                           'levelname', 'levelno', 'lineno', 'module', 'msecs',
                           'message', 'pathname', 'process', 'processName',
                           'relativeCreated', 'thread', 'threadName', 'exc_info',
                           'exc_text', 'stack_info']:
+                if key in _SENTINEL_KEYS and value == "-":
+                    continue
                 try:
                     # Only add JSON-serializable values
                     json.dumps(value)
@@ -108,6 +113,15 @@ class SupabaseLoggingHandler(logging.Handler):
         # Tag all backend logs with source='backend'
         context['source'] = 'backend'
 
+        # The pipeline_observability LogRecord patch stamps "-" as a
+        # sentinel when no context is bound. Supabase columns are uuid
+        # typed and reject "-" with `22P02 invalid input syntax for type
+        # uuid`, so translate the sentinel back to NULL before insert.
+        def _uuid_or_null(v: Any) -> Optional[str]:
+            if v is None or v == "-" or v == "":
+                return None
+            return v
+
         # Build log entry
         return {
             'timestamp': datetime.fromtimestamp(record.created).isoformat(),
@@ -115,9 +129,9 @@ class SupabaseLoggingHandler(logging.Handler):
             'logger_name': record.name,
             'message': self.format(record),
             'context': context if context else None,
-            'job_id': getattr(record, 'job_id', None),
-            'user_id': getattr(record, 'user_id', None),
-            'request_id': getattr(record, 'request_id', None)
+            'job_id': _uuid_or_null(getattr(record, 'job_id', None)),
+            'user_id': _uuid_or_null(getattr(record, 'user_id', None)),
+            'request_id': _uuid_or_null(getattr(record, 'request_id', None)),
         }
     
     def _process_queue(self) -> None:

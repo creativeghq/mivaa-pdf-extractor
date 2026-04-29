@@ -70,17 +70,19 @@ class Settings(BaseSettings):
     # PDF Pipeline Concurrency Settings
     # max_concurrent_products = simultaneous products processed inside one PDF job.
     # Each product holds a reference to the shared file_content bytes plus its own
-    # buffers (chunks, image PIL objects, vision_analysis JSON). 100MB PDF + 4
-    # concurrent products ≈ 1.6-2.0GB RAM peak; tune per server.
+    # buffers (chunks, image PIL objects, vision_analysis JSON).
     #
-    # Default = 2 on a 4 GB droplet. Even with the 4 GB upgrade, the kernel
-    # OOM killer fired during peak chunking on Apr 29 with 3 concurrent
-    # products (process RSS hit ~3.5 GB before MIVAA's own check could
-    # abort). 2 concurrent products keeps peak RSS around 2.0-2.5 GB,
-    # which fits under the systemd MemoryHigh=2.5G + MemoryMax=3.0G caps.
-    # Bump to 3 only when the droplet is upgraded to 8 GB+.
+    # Default = 1 on a 4 GB droplet — verified the only safe setting that
+    # stays under the systemd MemoryHigh=2.5 GB cgroup cap. At MAX=2 on
+    # 4 GB, peak RSS hit 2.83 GB and the orchestrator stalled in cgroup
+    # throttling (Apr 29 incident). At MAX=3, kernel OOM-killed the process.
+    #
+    # Override on bigger droplets via the MAX_CONCURRENT_PRODUCTS env var:
+    #   - 4 GB droplet  → 1 (this default)
+    #   - 8 GB droplet  → 2 or 3
+    #   - 16 GB droplet → 4 (matches HF maxReplica=4 for full saturation)
     max_concurrent_products: int = Field(
-        default=2, env="MAX_CONCURRENT_PRODUCTS",
+        default=1, env="MAX_CONCURRENT_PRODUCTS",
         description="Simultaneous products processed within one PDF job"
     )
     product_batch_size: int = Field(

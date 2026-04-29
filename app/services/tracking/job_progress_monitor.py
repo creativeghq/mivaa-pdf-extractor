@@ -166,9 +166,49 @@ class JobProgressMonitor:
                 sentry_sdk.capture_exception(e)
                 
     async def _report_status(self):
-        """Report detailed status to logs and Sentry"""
+        """Report detailed status to logs and Sentry.
+
+        Source of truth: `background_jobs.stage_history` JSONB. The
+        in-memory `self.stage_history` only sees top-level orchestrator
+        transitions (product_discovery → quality_enhancement etc.) and
+        misses the per-product stage events (pdf_extracted, chunks_created,
+        images_classified, product_created) that get appended directly
+        via `append_stage_history()` from the per-product loop. Query DB
+        every minute so the report matches reality instead of looking
+        permanently stuck on "1/9 stages".
+        """
         time_in_current_stage = (datetime.utcnow() - self.current_stage_start).total_seconds()
         total_time = sum(s["duration_seconds"] for s in self.stage_history) + time_in_current_stage
+
+        # Pull canonical state from DB
+        db_stage_count = None
+        db_last_stages: list = []
+        db_current_stage: Optional[str] = None
+        try:
+            from app.services.core.supabase_client import get_supabase_client
+            supabase = get_supabase_client()
+            if supabase._client is not None:
+                resp = supabase.client.table('background_jobs') \
+                    .select('stage_history') \
+                    .eq('id', self.job_id) \
+                    .limit(1) \
+                    .execute()
+                rows = resp.data or []
+                if rows:
+                    sh = rows[0].get('stage_history') or []
+                    if isinstance(sh, list):
+                        db_stage_count = len(sh)
+                        db_last_stages = sh[-5:]
+                        if sh:
+                            last = sh[-1]
+                            if isinstance(last, dict):
+                                db_current_stage = last.get('stage')
+        except Exception as e:
+            # Reporting must never crash the monitor loop
+            logger.debug(f"progress_monitor: DB stage_history fetch failed: {e}")
+
+        effective_current = db_current_stage or self.current_stage
+        effective_count = db_stage_count if db_stage_count is not None else len(self.stage_history)
 
         status_msg = (
             f"\n{'='*80}\n"
@@ -176,15 +216,25 @@ class JobProgressMonitor:
             f"{'='*80}\n"
             f"Job ID: {self.job_id}\n"
             f"Document ID: {self.document_id}\n"
-            f"Current Stage: {self.current_stage}\n"
+            f"Current Stage: {effective_current}\n"
             f"Time in Current Stage: {time_in_current_stage:.1f}s ({time_in_current_stage/60:.1f}min)\n"
             f"Total Processing Time: {total_time:.1f}s ({total_time/60:.1f}min)\n"
-            f"Stages Completed: {len(self.stage_history)}/{self.total_stages}\n"
-            f"\nStage History:\n"
+            f"Stages Completed: {effective_count} events recorded\n"
+            f"\nStage History (last 5):\n"
         )
 
-        for i, stage in enumerate(self.stage_history[-5:], 1):  # Last 5 stages
-            status_msg += f"  {i}. {stage['stage']}: {stage['duration_seconds']:.1f}s\n"
+        if db_last_stages:
+            for i, stage in enumerate(db_last_stages, 1):
+                if isinstance(stage, dict):
+                    name = stage.get('stage', '?')
+                    status = stage.get('status', '?')
+                    data = stage.get('data') or {}
+                    pname = data.get('product_name')
+                    suffix = f" [{pname}]" if pname else ""
+                    status_msg += f"  {i}. {name}{suffix} → {status}\n"
+        else:
+            for i, stage in enumerate(self.stage_history[-5:], 1):
+                status_msg += f"  {i}. {stage['stage']}: {stage['duration_seconds']:.1f}s\n"
 
         status_msg += f"{'='*80}\n"
 
@@ -195,26 +245,24 @@ class JobProgressMonitor:
         with sentry_sdk.push_scope() as scope:
             scope.set_tag("job_id", self.job_id)
             scope.set_tag("document_id", self.document_id)
-            scope.set_tag("current_stage", self.current_stage)
-            scope.set_tag("stages_completed", f"{len(self.stage_history)}/{self.total_stages}")
+            scope.set_tag("current_stage", effective_current)
+            scope.set_tag("stage_events_recorded", effective_count)
             scope.set_tag("total_time_minutes", round(total_time / 60, 2))
 
             scope.set_context("job_progress", {
-                "current_stage": self.current_stage,
+                "current_stage": effective_current,
                 "time_in_stage_seconds": time_in_current_stage,
                 "time_in_stage_minutes": round(time_in_current_stage / 60, 2),
                 "total_time_seconds": total_time,
                 "total_time_minutes": round(total_time / 60, 2),
-                "stages_completed": len(self.stage_history),
-                "total_stages": self.total_stages,
-                "progress_percentage": round((len(self.stage_history) / self.total_stages) * 100, 1),
-                "stage_history": self.stage_history[-5:],
+                "stage_events_recorded": effective_count,
+                "stage_history": db_last_stages or self.stage_history[-5:],
                 "timestamp": datetime.utcnow().isoformat()
             })
 
             # CRITICAL FIX: Use stage-specific timeouts instead of global 10-minute threshold
             # This reduces false "stuck job" alerts for legitimately slow stages
-            stage_timeout = STAGE_TIMEOUTS.get(self.current_stage, STAGE_TIMEOUTS["default"])
+            stage_timeout = STAGE_TIMEOUTS.get(effective_current, STAGE_TIMEOUTS["default"])
 
             if time_in_current_stage > stage_timeout:
                 timeout_minutes = stage_timeout / 60

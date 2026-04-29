@@ -258,7 +258,19 @@ class ProductCatalog:
     confidence_score: float = 0.0
 
     def __post_init__(self):
-        """Initialize empty lists if None"""
+        """Initialize empty lists if None + normalize JSON-roundtripped fields.
+
+        When this catalog is reloaded from `background_jobs.metadata.catalog_cache`
+        (Stage 0 resume optimization), it goes through JSON which:
+          1. Stringifies dict integer keys: `{1: ...}` → `{"1": ...}`
+          2. Converts tuples to lists: `(0, 'left')` → `[0, 'left']`
+
+        `get_physical_page_text` does `if physical_page not in layout.physical_to_pdf_map`
+        with int physical_page, so str-keyed maps yield empty text and the
+        chunker silently produces 0 chunks per product — the exact regression
+        seen on job f3467e48 / VALENOVA (8 pages extracted, 0 chunks).
+        Normalize on every construction so cache reloads behave like a fresh run.
+        """
         if self.certificates is None:
             self.certificates = []
         if self.logos is None:
@@ -269,6 +281,27 @@ class ProductCatalog:
             self.content_classification = {}
         if self.physical_to_pdf_map is None:
             self.physical_to_pdf_map = {}
+        else:
+            normalized: Dict[int, tuple] = {}
+            for k, v in self.physical_to_pdf_map.items():
+                try:
+                    key = int(k)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(v, list):
+                    v = tuple(v)
+                normalized[key] = v
+            self.physical_to_pdf_map = normalized
+        if self.pdf_page_widths is not None:
+            try:
+                self.pdf_page_widths = {int(k): v for k, v in self.pdf_page_widths.items()}
+            except (TypeError, ValueError):
+                pass
+        if self.content_classification:
+            try:
+                self.content_classification = {int(k): v for k, v in self.content_classification.items()}
+            except (TypeError, ValueError):
+                pass
         if self.supplementary_pages is None:
             self.supplementary_pages = []
 
