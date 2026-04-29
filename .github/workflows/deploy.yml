@@ -11,6 +11,13 @@ on:
         default: 'Manual deployment using standard pipeline'
         type: string
 
+# Fix D: serialize MIVAA deploys. A second push cancels itself in the queue
+# instead of running in parallel and double-restarting the systemd unit
+# (which is what created the deploy-restart loop that killed jobs in flight).
+concurrency:
+  group: deploy-mivaa-prod
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -792,9 +799,22 @@ jobs:
           Environment=VISUAL_EMBEDDING_MODE=${{ secrets.VISUAL_EMBEDDING_MODE }}
           Environment=VISUAL_EMBEDDING_PRIMARY_MODEL=${{ secrets.VISUAL_EMBEDDING_PRIMARY_MODEL }}
           Environment=VISUAL_EMBEDDING_DIMENSIONS=${{ secrets.VISUAL_EMBEDDING_DIMENSIONS }}
+          # Fix B: lifespan shutdown drain window (seconds). Caller-side
+          # drain runs first (pause-for-deploy default 300s), then systemd
+          # gives the lifespan hook this window before SIGKILL.
+          Environment=MIVAA_DRAIN_MAX_SECONDS=300
           ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
           Restart=always
           RestartSec=3
+          # Fix B: give the lifespan shutdown hook up to 10 min to drain
+          # in-flight BackgroundTasks before SIGKILL. The hook itself caps
+          # at MIVAA_DRAIN_MAX_SECONDS (default 300s) — 600s here leaves
+          # margin for the final heartbeat write + scale-to-zero cleanup.
+          TimeoutStopSec=600
+          KillMode=mixed
+          # Send SIGTERM first (gives uvicorn lifespan a chance to drain),
+          # only escalate to SIGKILL after TimeoutStopSec.
+          KillSignal=SIGTERM
           StandardOutput=journal
           StandardError=journal
 
@@ -812,56 +832,63 @@ jobs:
           ls -la /etc/systemd/system/mivaa-pdf-extractor.service
           "
 
-      # 4.5. Check for active jobs before restart (JOB PROTECTION)
-      - name: 🔒 Check for active jobs (Job Protection)
+      # 4.5+4.6 (Fix A + Fix C): atomic drain-then-restart in ONE SSH session.
+      # The previous design split "check active jobs" and "restart service"
+      # into two GitHub Action steps — between them a fresh upload could
+      # squeeze in and get killed by the restart (TOCTOU race). The new
+      # design calls /admin/pause-for-deploy, which:
+      #   1. Sets a global "draining" flag (returns 503 on new uploads)
+      #   2. Waits up to 5 min for in-flight jobs to finish
+      #   3. Returns ready=true once it's safe to restart
+      # Then immediately runs `systemctl restart` in the SAME ssh script,
+      # so no new job can land between "ready" and the kill.
+      - name: 🔄 Drain + Restart service (Atomic)
         run: |
-          echo "🔒 Checking for active jobs before restart..."
-          echo "================================================"
+          # Auth boundary is the SSH key — the drain endpoint listens on
+          # localhost only. No application-level token needed.
+          ssh -o StrictHostKeyChecking=no root@157.245.166.19 'bash -s' << 'REMOTE_DRAIN_RESTART'
+          set -euo pipefail
 
-          ACTIVE_JOBS=$(ssh -o StrictHostKeyChecking=no root@157.245.166.19 "
-          # Check if API is running
-          if curl -s http://localhost:8000/health > /dev/null 2>&1; then
-            # Get active job count from API
-            curl -s http://localhost:8000/api/jobs/health 2>/dev/null | jq -r '.active_jobs // 0' || echo '0'
+          # 1. Reload systemd config so the new unit file is picked up,
+          #    but DON'T restart yet.
+          sudo systemctl daemon-reload
+          sudo systemctl enable mivaa-pdf-extractor
+
+          # 2. Pause-for-deploy: tell MIVAA to stop accepting new uploads
+          #    and wait for the existing in-flight job (if any) to drain.
+          if curl -s -f -o /dev/null http://localhost:8000/health 2>/dev/null; then
+            echo "⏳ Calling /admin/pause-for-deploy (max 300s drain window)..."
+            DRAIN_RESP=$(curl -s -X POST \
+              -H "Content-Type: application/json" \
+              "http://localhost:8000/api/admin/pause-for-deploy?max_wait_seconds=300" || echo '{"ready":false,"error":"call_failed"}')
+            echo "Drain response: ${DRAIN_RESP}"
+            READY=$(echo "$DRAIN_RESP" | jq -r '.ready // false' 2>/dev/null || echo 'false')
+
+            if [ "$READY" != "true" ]; then
+              ACTIVE=$(echo "$DRAIN_RESP" | jq -r '.active_jobs // 0' 2>/dev/null || echo '0')
+              echo "⚠️ Drain did not complete cleanly (active_jobs=${ACTIVE})."
+              echo "   Continuing with restart — jobs will be auto-resumed by P1-2 hook."
+            else
+              echo "✅ Drain complete — safe to restart"
+            fi
           else
-            echo '0'
-          fi
-          " || echo "0")
-
-          echo "Active jobs found: $ACTIVE_JOBS"
-
-          if [ "$ACTIVE_JOBS" != "0" ] && [ -n "$ACTIVE_JOBS" ]; then
-            echo ""
-            echo "❌ DEPLOYMENT BLOCKED!"
-            echo "⚠️  Found $ACTIVE_JOBS active job(s) currently processing"
-            echo ""
-            echo "📋 Job details:"
-            ssh -o StrictHostKeyChecking=no root@157.245.166.19 "
-            curl -s http://localhost:8000/api/jobs/health 2>/dev/null | jq -r '.jobs[] | select(.status == \"processing\") | \"  - Job \(.id): \(.filename) (\(.progress)%)\"' || echo '  - Unable to fetch job details'
-            "
-            echo ""
-            echo "💡 Options:"
-            echo "  1. Wait for jobs to complete and try again"
-            echo "  2. Cancel jobs via admin panel first"
-            echo "  3. SSH to server and use: bash scripts/safe-restart.sh --force --reason \"deployment\""
-            echo ""
-            exit 1
+            echo "ℹ️ MIVAA not currently healthy, skipping drain"
           fi
 
-          echo "✅ No active jobs - safe to proceed with restart"
+          # 3. Restart in the SAME ssh session (no TOCTOU race possible).
+          cd /var/www/mivaa-pdf-extractor
+          echo 'Restarting service...'
+          sudo systemctl restart mivaa-pdf-extractor
+          REMOTE_DRAIN_RESTART
 
-      # 4.6. Restart service (PROTECTED)
-      - name: 🔄 Restart service (Protected)
-        run: |
-          echo "🔄 Reloading systemd and restarting service..."
+          # Poll for 'active' on a fresh ssh session.
           ssh -o StrictHostKeyChecking=no root@157.245.166.19 "
           sudo systemctl daemon-reload
           sudo systemctl enable mivaa-pdf-extractor
 
           cd /var/www/mivaa-pdf-extractor
 
-          echo 'Restarting service...'
-          sudo systemctl restart mivaa-pdf-extractor
+          echo 'Service restart triggered atomically; verifying health...'
 
           # Poll for 'active' (app can take up to ~60s to load ML models).
           # A blind 'sleep N; systemctl status' can sample the service mid

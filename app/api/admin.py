@@ -53,9 +53,116 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["Health & Monitoring"])
 
+# Fix B/C: global "draining" flag set by /admin/pause-for-deploy and the
+# lifespan shutdown hook. When True, /api/rag/documents/upload returns 503
+# so the deploy can drain in-flight jobs without new ones racing in.
+_DRAINING: Dict[str, Any] = {"draining": False, "since": None, "reason": None}
+
+
+def is_draining() -> bool:
+    return bool(_DRAINING.get("draining"))
+
+
+def _set_draining(value: bool, reason: Optional[str] = None) -> None:
+    _DRAINING["draining"] = bool(value)
+    _DRAINING["since"] = datetime.utcnow().isoformat() if value else None
+    _DRAINING["reason"] = reason
+
+
 # Global job tracking
 active_jobs: Dict[str, Dict[str, Any]] = {}
 job_history: List[Dict[str, Any]] = []
+
+
+@router.post("/admin/pause-for-deploy")
+async def pause_for_deploy(
+    max_wait_seconds: int = Query(300, ge=10, le=900),
+):
+    """Fix C: deploy-coordinated drain endpoint.
+
+    Sets the global 'draining' flag (so new uploads return 503), then waits
+    up to `max_wait_seconds` for in-flight PDF jobs to finish. Returns
+    `{ready: True}` when the queue is empty, or `{ready: False, active_jobs: N}`
+    on timeout.
+
+    Auth boundary is the network (the workflow calls this over SSH on
+    localhost), so no application-level token is required.
+    """
+    import asyncio as _asyncio_drain
+
+    _set_draining(True, reason="deploy_pause_request")
+    logger.warning(f"🛑 Drain mode activated by /admin/pause-for-deploy (max_wait={max_wait_seconds}s)")
+
+    try:
+        from ..services.core.supabase_client import get_supabase_client as _get_sb
+        sb = _get_sb()
+
+        deadline = datetime.utcnow() + timedelta(seconds=max_wait_seconds)
+        last_count = -1
+        while datetime.utcnow() < deadline:
+            try:
+                resp = (
+                    sb.client.table('background_jobs')
+                    .select('id', count='exact')
+                    .eq('status', 'processing')
+                    .in_('job_type', ['product_discovery_upload', 'pdf_processing'])
+                    .execute()
+                )
+                count = resp.count or 0
+            except Exception as e:
+                logger.warning(f"Drain check failed (continuing): {e}")
+                count = 0
+
+            if count == 0:
+                elapsed = max_wait_seconds - int((deadline - datetime.utcnow()).total_seconds())
+                logger.info(f"✅ Drain ready in ~{elapsed}s — 0 in-flight jobs")
+                return {"ready": True, "active_jobs": 0, "drain_state": _DRAINING}
+
+            if count != last_count:
+                logger.info(f"⏳ Drain waiting on {count} in-flight job(s)")
+                last_count = count
+
+            await _asyncio_drain.sleep(3)
+
+        # Timed out — return current count so caller can decide.
+        try:
+            resp = (
+                sb.client.table('background_jobs')
+                .select('id', count='exact')
+                .eq('status', 'processing')
+                .in_('job_type', ['product_discovery_upload', 'pdf_processing'])
+                .execute()
+            )
+            final_count = resp.count or 0
+        except Exception:
+            final_count = -1
+
+        logger.warning(f"⚠️ Drain timeout ({max_wait_seconds}s) — {final_count} job(s) still processing")
+        return {
+            "ready": False,
+            "active_jobs": final_count,
+            "drain_state": _DRAINING,
+            "message": "Drain window exceeded; deploy may interrupt jobs (P1-2 will auto-resume).",
+        }
+    except Exception as e:
+        logger.error(f"❌ pause-for-deploy failed: {e}", exc_info=True)
+        # Fall back to "not ready" so the deploy can decide what to do
+        return {"ready": False, "error": str(e), "drain_state": _DRAINING}
+
+
+@router.post("/admin/resume-from-deploy")
+async def resume_from_deploy():
+    """Clear the draining flag — uploads accepted again. Called automatically
+    by the lifespan startup hook on a fresh process boot, but exposed here so
+    a deploy that needs to abort can clear it manually."""
+    _set_draining(False)
+    return {"ok": True, "drain_state": _DRAINING}
+
+
+@router.get("/admin/drain-status")
+async def drain_status():
+    """Read-only view of the current drain flag (no auth, low-info)."""
+    return {"drain_state": _DRAINING}
 
 def migrate_job_data():
     """Migrate existing job data to match JobListItem schema"""

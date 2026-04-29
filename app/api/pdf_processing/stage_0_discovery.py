@@ -249,36 +249,87 @@ async def process_stage_0_discovery(
         discovery_service = ProductDiscoveryService(model=normalized_model)
         logger.info(f"✅ ProductDiscoveryService initialized")
 
-        logger.info(f"🚀 [STAGE 0] STARTING PRODUCT DISCOVERY (this may take several minutes)...")
-        logger.info(f"   📄 Pages: {page_count}")
-        logger.info(f"   📦 Categories: {', '.join(extract_categories)}")
-        logger.info(f"   🤖 Model: {normalized_model}")
-        logger.info(f"   ⏱️  Timeout: {discovery_timeout:.0f}s")
-
+        # ── RESUME OPTIMIZATION: skip Claude Vision call if catalog cached ──
+        # When a job is auto-resumed (P1-2 startup hook), Stage 0 was already
+        # done in the previous attempt. Re-running Claude Vision wastes ~$0.20
+        # per resume on the same 71-page catalog. Cache the catalog JSON in
+        # background_jobs.metadata.catalog_cache after first success and reuse
+        # it here. The cache key includes pdf file_size so a re-uploaded PDF
+        # doesn't trigger a stale hit.
+        catalog = None
         try:
-            catalog = await discovery_breaker.call(
-                lambda: with_timeout(
-                    discovery_service.discover_products(
-                        pdf_content=file_content,
-                        pdf_text=None,
-                        total_pages=page_count,
-                        categories=extract_categories,
-                        agent_prompt=agent_prompt,
-                        workspace_id=workspace_id,
-                        enable_prompt_enhancement=enable_prompt_enhancement,
-                        job_id=job_id,
-                        pdf_path=temp_pdf_path,
-                        tracker=tracker,
-                    ),
-                    timeout_seconds=discovery_timeout,
-                    operation_name="Product discovery (Stage 0A + 0B)",
+            cache_resp = supabase.client.table('background_jobs') \
+                .select('metadata') \
+                .eq('id', job_id).single().execute()
+            cached = ((cache_resp.data or {}).get('metadata') or {}).get('catalog_cache')
+            if cached and cached.get('file_size') == len(file_content):
+                from app.schemas.product_discovery import ProductCatalog
+                try:
+                    catalog = ProductCatalog(**cached.get('catalog', {}))
+                    logger.info(
+                        f"♻️  [STAGE 0] Resume optimization: reusing cached catalog "
+                        f"({len(catalog.products)} products, ${cached.get('saved_cost_usd', '?')} saved)"
+                    )
+                except Exception as cache_load_err:
+                    logger.warning(
+                        f"⚠️ Cached catalog load failed ({cache_load_err}) — falling back to full discovery"
+                    )
+                    catalog = None
+        except Exception as cache_lookup_err:
+            logger.debug(f"Catalog cache lookup failed (non-fatal): {cache_lookup_err}")
+
+        if catalog is None:
+            logger.info(f"🚀 [STAGE 0] STARTING PRODUCT DISCOVERY (this may take several minutes)...")
+            logger.info(f"   📄 Pages: {page_count}")
+            logger.info(f"   📦 Categories: {', '.join(extract_categories)}")
+            logger.info(f"   🤖 Model: {normalized_model}")
+            logger.info(f"   ⏱️  Timeout: {discovery_timeout:.0f}s")
+
+            try:
+                catalog = await discovery_breaker.call(
+                    lambda: with_timeout(
+                        discovery_service.discover_products(
+                            pdf_content=file_content,
+                            pdf_text=None,
+                            total_pages=page_count,
+                            categories=extract_categories,
+                            agent_prompt=agent_prompt,
+                            workspace_id=workspace_id,
+                            enable_prompt_enhancement=enable_prompt_enhancement,
+                            job_id=job_id,
+                            pdf_path=temp_pdf_path,
+                            tracker=tracker,
+                        ),
+                        timeout_seconds=discovery_timeout,
+                        operation_name="Product discovery (Stage 0A + 0B)",
+                    )
                 )
-            )
-            logger.info(f"✅ [STAGE 0] DISCOVERY COMPLETED SUCCESSFULLY")
-        except CircuitBreakerError as cb_error:
-            logger.error(f"❌ Product discovery failed (circuit breaker OPEN): {cb_error}")
-            sentry_sdk.capture_exception(cb_error)
-            raise Exception(f"Product discovery service unavailable: {cb_error}")
+                logger.info(f"✅ [STAGE 0] DISCOVERY COMPLETED SUCCESSFULLY")
+
+                # Persist catalog for resume reuse (best-effort).
+                try:
+                    catalog_dict = catalog.model_dump() if hasattr(catalog, 'model_dump') else catalog.dict()
+                    supabase.client.rpc(
+                        'merge_background_job_metadata',
+                        {
+                            'p_job_id': job_id,
+                            'p_metadata': {
+                                'catalog_cache': {
+                                    'cached_at': datetime.utcnow().isoformat(),
+                                    'file_size': len(file_content),
+                                    'catalog': catalog_dict,
+                                }
+                            },
+                        }
+                    ).execute()
+                    logger.info(f"   💾 Catalog cached for potential resume")
+                except Exception as cache_save_err:
+                    logger.debug(f"Catalog cache save failed (non-fatal): {cache_save_err}")
+
+            except CircuitBreakerError as cb_error:
+                logger.error(f"❌ Product discovery failed (circuit breaker OPEN): {cb_error}")
+                sentry_sdk.capture_exception(cb_error)
+                raise Exception(f"Product discovery service unavailable: {cb_error}")
 
         # Log memory after discovery
         mem_after = memory_monitor.get_memory_stats()
@@ -467,7 +518,34 @@ async def process_stage_0_discovery(
         product_tracker = ProductProgressTracker(job_id=job_id)
         logger.info(f"🏭 Creating {len(products_to_create)} products in database (discovered: {len(catalog.products)})...")
 
-        product_db_ids = []  # Store created product IDs
+        # ── IDEMPOTENCY: avoid duplicate products on resume ─────────────────
+        # When a job is auto-resumed (P1-2 startup hook), Stage 0 re-runs
+        # discovery and re-enters this loop. Without this check, every resume
+        # creates an additional N copies of the same N products (22 rows for
+        # 11 distinct products after one resume, 33 after two, etc).
+        # Look up existing products for this document and reuse their IDs
+        # instead of inserting duplicates.
+        existing_by_name: Dict[str, str] = {}
+        try:
+            existing_resp = supabase.client.table('products') \
+                .select('id, name') \
+                .eq('source_document_id', document_id) \
+                .execute()
+            for row in (existing_resp.data or []):
+                # If duplicates already exist for some name, prefer the first
+                # (lowest UUID by lexical sort) — deterministic.
+                nm = (row.get('name') or '').strip().lower()
+                if nm and nm not in existing_by_name:
+                    existing_by_name[nm] = row['id']
+            if existing_by_name:
+                logger.info(
+                    f"♻️  Stage 0 idempotency: found {len(existing_by_name)} "
+                    f"existing product(s) for document {document_id} — will reuse"
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ Could not query existing products for idempotency: {e}")
+
+        product_db_ids = []  # Store created/reused product IDs
 
         for i, product in enumerate(products_to_create, start=1):
             try:
@@ -486,20 +564,35 @@ async def process_stage_0_discovery(
                     }
                 )
 
-                # 2. Create product in database immediately
-                logger.info(f"   🏭 [{i}/{len(catalog.products)}] Creating product in DB: {product.name}")
-                product_creation_result = await create_single_product(
-                    product=product,
-                    document_id=document_id,
-                    workspace_id=workspace_id,
-                    job_id=job_id,
-                    catalog=catalog,
-                    supabase=supabase,
-                    logger=logger
-                )
+                # 2. Create product in database — OR reuse existing one from
+                #    a previous attempt if this is an auto-resume.
+                lookup_key = (product.name or '').strip().lower()
+                existing_id = existing_by_name.get(lookup_key)
+                if existing_id:
+                    product_db_id = existing_id
+                    product_db_ids.append(product_db_id)
+                    logger.info(
+                        f"   ♻️  [{i}/{len(catalog.products)}] Reusing existing product: "
+                        f"{product.name} (DB ID: {product_db_id})"
+                    )
+                else:
+                    logger.info(f"   🏭 [{i}/{len(catalog.products)}] Creating product in DB: {product.name}")
+                    product_creation_result = await create_single_product(
+                        product=product,
+                        document_id=document_id,
+                        workspace_id=workspace_id,
+                        job_id=job_id,
+                        catalog=catalog,
+                        supabase=supabase,
+                        logger=logger
+                    )
 
-                product_db_id = product_creation_result.get('product_id')
-                product_db_ids.append(product_db_id)
+                    product_db_id = product_creation_result.get('product_id')
+                    product_db_ids.append(product_db_id)
+                    # Cache so a duplicate name later in the same loop also
+                    # collapses (defensive — Stage 0 dedupes already).
+                    existing_by_name[lookup_key] = product_db_id
+                    logger.info(f"   ✅ [{i}/{len(catalog.products)}] Created product: {product.name} (DB ID: {product_db_id})")
 
                 # 3. Update product_progress with DB ID
                 await product_tracker.update_product_metadata(
@@ -507,14 +600,12 @@ async def process_stage_0_discovery(
                     metadata={"product_db_id": product_db_id}
                 )
 
-                logger.info(f"   ✅ [{i}/{len(catalog.products)}] Created product: {product.name} (DB ID: {product_db_id})")
-
             except Exception as e:
                 logger.error(f"   ❌ Failed to create product {product.name}: {e}")
                 sentry_sdk.capture_exception(e)
                 # Continue with other products even if one fails
 
-        logger.info(f"✅ Created {len(product_db_ids)} products in database")
+        logger.info(f"✅ {len(product_db_ids)} products ready (created or reused) in database")
 
         # Store product DB IDs in checkpoint for later stages
         checkpoint_data["product_db_ids"] = product_db_ids

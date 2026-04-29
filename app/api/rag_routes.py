@@ -750,6 +750,22 @@ async def upload_document(
     """
 
     try:
+        # Fix B/C: refuse new uploads while a deploy drain is in progress so
+        # we don't start a new job that's about to be killed by systemctl restart.
+        try:
+            from app.api.admin import is_draining
+            if is_draining():
+                raise HTTPException(
+                    status_code=503,
+                    detail="MIVAA is draining for a deploy — please retry in a few seconds.",
+                    headers={"Retry-After": "30"},
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # Don't block uploads if the draining check itself errors
+            pass
+
         # Validate input: either file or file_url must be provided
         if not file and not file_url:
             raise HTTPException(

@@ -94,6 +94,40 @@ async def process_single_product(
     # Track current stage for accurate error reporting
     current_stage = ProductStage.EXTRACTION
 
+    # Fix E: per-product resume skip. If a previous run already produced this
+    # product's chunks/images/relationships, don't re-do the expensive work.
+    # Read the prior product_processing_status row + stage_history events for
+    # this product and short-circuit if RELATIONSHIPS_CREATED already happened.
+    try:
+        prior_status = await product_tracker.get_product_status(product_id)
+        prior_db_id = (prior_status.metadata or {}).get('product_db_id') if prior_status else None
+        prior_stages = set((prior_status.stages_completed or []) if prior_status else [])
+        # Also peek at job stage_history for per-product checkpoint events
+        # tied to THIS product_index (catches resumes where product_tracker
+        # state was wiped on the previous restart).
+        try:
+            sb_resp = supabase.client.table('background_jobs') \
+                .select('stage_history') \
+                .eq('id', job_id).single().execute()
+            for entry in (sb_resp.data or {}).get('stage_history', []) or []:
+                ed = entry.get('data') or {}
+                if str(ed.get('product_index')) == str(product_index):
+                    prior_stages.add(entry.get('stage'))
+        except Exception:
+            pass
+
+        if 'relationships_created' in prior_stages or 'completed' in prior_stages:
+            logger_instance.info(
+                f"♻️  [RESUME] Product {product_index}/{total_products} '{product.name}' "
+                f"already completed in a previous run — skipping all stages"
+            )
+            result.success = True
+            result.product_db_id = prior_db_id
+            await product_tracker.mark_product_complete(product_id, result)
+            return result
+    except Exception as resume_check_err:
+        logger_instance.debug(f"Per-product resume check failed (continuing): {resume_check_err}")
+
     try:
         # ========================================================================
         # STAGE 1: Extract Product Pages + YOLO Layout Detection

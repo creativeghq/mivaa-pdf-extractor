@@ -348,6 +348,17 @@ async def lifespan(app: FastAPI):
     # Comprehensive system health validation
     await perform_comprehensive_health_checks(app, logger)
 
+    # Fix B/C: clear any stale "draining" flag from a previous process so
+    # this fresh process starts accepting uploads. The draining flag is
+    # process-local — a restart wipes it — but call _set_draining(False)
+    # explicitly for clarity in logs.
+    try:
+        from app.api.admin import _set_draining
+        _set_draining(False)
+        logger.info("✅ Draining flag cleared (uploads accepted)")
+    except Exception as e:
+        logger.debug(f"Could not reset draining flag: {e}")
+
     # Initialize job recovery service
     try:
         from app.api.rag_routes import initialize_job_recovery
@@ -413,12 +424,61 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.warning("=" * 80)
     logger.warning("🛑 SHUTDOWN INITIATED")
+    logger.warning(f"🛑 Shutdown time: {datetime.now().isoformat()}")
+    logger.warning("=" * 80)
+
+    # Fix B: REAL graceful drain. Set the global draining flag so new uploads
+    # return 503, then await in-flight orchestrator BackgroundTasks for up to
+    # MIVAA_DRAIN_MAX_SECONDS before forcing shutdown. Previously the lifespan
+    # hook just marked jobs as 'interrupted' and exited — the actual coroutines
+    # got killed by SIGTERM mid-await. Combined with TimeoutStopSec=600 in the
+    # systemd unit, this lets the orchestrator finish a stage and exit cleanly.
+    try:
+        from app.api.admin import _set_draining
+        _set_draining(True, reason="lifespan_shutdown")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not set draining flag: {e}")
+
+    drain_max = int(os.environ.get('MIVAA_DRAIN_MAX_SECONDS', '300'))
+    drain_start = datetime.now()
+    try:
+        supabase_client = get_supabase_client()
+        while True:
+            elapsed = (datetime.now() - drain_start).total_seconds()
+            if elapsed >= drain_max:
+                logger.warning(
+                    f"⏱️ Drain window of {drain_max}s exceeded — proceeding with shutdown"
+                )
+                break
+            try:
+                live = (
+                    supabase_client.client.table('background_jobs')
+                    .select('id', count='exact')
+                    .eq('status', 'processing')
+                    .in_('job_type', ['product_discovery_upload', 'pdf_processing'])
+                    .execute()
+                )
+                live_count = live.count or 0
+            except Exception as drain_err:
+                logger.warning(f"Drain check failed (continuing): {drain_err}")
+                live_count = 0
+
+            if live_count == 0:
+                logger.info(f"✅ Drain complete: 0 in-flight jobs after {elapsed:.0f}s")
+                break
+
+            logger.info(
+                f"⏳ Draining: {live_count} job(s) still processing "
+                f"({elapsed:.0f}s / {drain_max}s)"
+            )
+            await asyncio.sleep(5)
+    except Exception as e:
+        logger.warning(f"Drain loop raised: {e}")
+
     try:
         _executor.shutdown(wait=False)
     except Exception:
         pass
-    logger.warning(f"🛑 Shutdown time: {datetime.now().isoformat()}")
-    logger.warning("=" * 80)
 
     # Stop job monitor service
     try:
