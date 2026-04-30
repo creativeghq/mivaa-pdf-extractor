@@ -2602,8 +2602,15 @@ class PDFProcessor:
                 f"({len(images_skipped)} skipped: {len(opencv_skipped)} no text, {len(clip_skipped)} decorative)"
             )
             
-            # PHASE 3: Full EasyOCR Processing (30s per image) - only on images that passed both filters
-            self.logger.info(f"📝 Phase 3: Running EasyOCR on {len(images_to_process)} filtered images")
+            # PHASE 3: OCR processing — Chandra-first via ocr_service.extract_text_from_image
+            # (falls back to EasyOCR then Tesseract only if Chandra fails).
+            # Previously logged "Running EasyOCR" which was misleading: EasyOCR
+            # only runs as a fallback and only when the Chandra HF endpoint is
+            # unavailable.
+            self.logger.info(
+                f"📝 Phase 3: Running OCR (Chandra→EasyOCR→Tesseract chain) "
+                f"on {len(images_to_process)} filtered images"
+            )
             
             for idx, item in enumerate(images_to_process):
                 image_data = item['data']

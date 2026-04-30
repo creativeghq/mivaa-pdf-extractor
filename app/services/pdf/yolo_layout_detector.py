@@ -29,6 +29,16 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
+# Module-level lock guarding the warmup/resume sequence. There are 5
+# different code paths in the codebase that each construct their own
+# YoloLayoutDetector (product_processor, stage_1_focused_extraction,
+# product_discovery_service, pdf_processor, pdf_worker). A per-instance
+# lock would only serialize inside ONE detector — N detectors would
+# still race. This module-level lock guarantees one warmup at a time
+# across the whole process, which is what HF actually wants.
+_yolo_warmup_lock = asyncio.Lock()
+
+
 class YoloLayoutDetector:
     """
     YOLO DocParser layout detection service.
@@ -67,13 +77,10 @@ class YoloLayoutDetector:
             enabled=self.enabled
         )
 
-        # Serialize concurrent _ensure_endpoint_ready() calls so we don't
-        # fire 7 parallel warmups when N parallel YOLO requests arrive on
-        # a cold endpoint. Without this lock, every concurrent caller
-        # observes warmup_completed=False and races to call warmup() →
-        # 7 simultaneous resume + warmup attempts, observed at 16:20:13
-        # on job b7d70de1.
-        self._ready_lock = asyncio.Lock()
+        # Note: warmup race protection is via the module-level
+        # _yolo_warmup_lock above (see comment there). Per-instance
+        # locking is insufficient because 5 different code paths each
+        # construct their own YoloLayoutDetector.
 
         logger.info(f"✅ YOLO Layout Detector initialized (enabled: {self.enabled})")
 
@@ -88,12 +95,13 @@ class YoloLayoutDetector:
         Returns:
             True if endpoint is ready for inference, False otherwise
         """
-        # Serialize concurrent ensure-ready calls. Without this lock,
-        # parallel YOLO requests on a cold endpoint each see
-        # warmup_completed=False and fire concurrent warmups (Bug L,
-        # job b7d70de1). The lock is cheap when warmup is already done —
-        # the inner check returns True immediately.
-        async with self._ready_lock:
+        # Serialize concurrent ensure-ready calls process-wide. Module-
+        # level lock so the 5 different code paths that each construct
+        # their own YoloLayoutDetector cooperate (Bug L1 — round-15 fix
+        # used a per-instance lock which didn't help cross-instance).
+        # The lock is cheap when warmup is already done — the inner
+        # check returns True immediately and releases it.
+        async with _yolo_warmup_lock:
             try:
                 # Fast path: already warm, no work needed.
                 if self.endpoint_manager.warmup_completed:
