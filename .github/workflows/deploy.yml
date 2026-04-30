@@ -884,7 +884,15 @@ jobs:
         run: |
           # Auth boundary is the SSH key — the drain endpoint listens on
           # localhost only. No application-level token needed.
-          ssh -o StrictHostKeyChecking=no root@157.245.166.19 'bash -s' << 'REMOTE_DRAIN_RESTART'
+          # SSH keepalive: send no-op every 30s, give up after 20 missed
+          # responses (= ~10 min). The drain call below can block for up
+          # to 300s; without keepalive the GHA runner sees an idle TCP
+          # connection and drops it → "client_loop: send disconnect:
+          # Broken pipe" → exit 255 (incident 2026-04-30).
+          ssh -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=20 \
+              root@157.245.166.19 'bash -s' << 'REMOTE_DRAIN_RESTART'
           set -euo pipefail
 
           # 1. Reload systemd config so the new unit file is picked up,
@@ -894,11 +902,16 @@ jobs:
 
           # 2. Pause-for-deploy: tell MIVAA to stop accepting new uploads
           #    and wait for the existing in-flight job (if any) to drain.
-          if curl -s -f -o /dev/null http://localhost:8000/health 2>/dev/null; then
-            echo "⏳ Calling /admin/pause-for-deploy (max 300s drain window)..."
-            DRAIN_RESP=$(curl -s -X POST \
+          if curl -s -f -m 5 -o /dev/null http://localhost:8000/health 2>/dev/null; then
+            echo "⏳ Calling /admin/pause-for-deploy (max 120s drain window)..."
+            # Cap drain at 120s — if a job hasn't finished by then it's
+            # almost certainly stuck and the auto-resume hook will pick
+            # it back up post-restart. Curl --max-time 130 bounds the
+            # call slightly above the server-side window so we never
+            # block longer than the SSH keepalive can sustain.
+            DRAIN_RESP=$(curl -s -X POST -m 130 \
               -H "Content-Type: application/json" \
-              "http://localhost:8000/api/admin/pause-for-deploy?max_wait_seconds=300" || echo '{"ready":false,"error":"call_failed"}')
+              "http://localhost:8000/api/admin/pause-for-deploy?max_wait_seconds=120" || echo '{"ready":false,"error":"call_failed_or_timeout"}')
             echo "Drain response: ${DRAIN_RESP}"
             READY=$(echo "$DRAIN_RESP" | jq -r '.ready // false' 2>/dev/null || echo 'false')
 
