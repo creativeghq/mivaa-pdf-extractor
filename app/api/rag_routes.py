@@ -3892,60 +3892,17 @@ async def process_document_with_discovery(
         except Exception as cleanup_error:
             logger.warning(f"   ⚠️ Resource cleanup failed: {cleanup_error}")
 
-        # 4. Scale HuggingFace endpoints to zero (Stop billing) - SINGLE LOCATION for all endpoint scaling
-        # NOTE: Using scale_to_zero() instead of force_pause() allows auto-resume on next request
+        # 4. Scale HuggingFace endpoints to zero (stop billing).
+        # Single coordination point — manager-first, direct-HF fallback for
+        # endpoints whose manager wasn't registered (partial warmup, etc).
         logger.info("📉 [CLEANUP] Scaling AI endpoints to zero...")
-        endpoints_to_scale = ['qwen', 'slig', 'yolo', 'chandra']
-        scaled_count = 0
-
-        # Only process if endpoint_managers exists (may not if job failed early)
-        if 'endpoint_managers' not in locals():
-            endpoint_managers = {}
-
-        # P0-2 fix: scale every endpoint we attempted to wake, even if its
-        # manager wasn't fully registered. We hit HF directly via
-        # get_inference_endpoint(...).update(min_replica=0,...) so a partial
-        # warmup that resumed the endpoint (= billing started) but failed
-        # before manager registration still gets scaled down.
-        from app.config import get_settings as _get_settings_for_cleanup
-        _cleanup_settings = _get_settings_for_cleanup()
-        _config_getters = {
-            'qwen': _cleanup_settings.get_qwen_config,
-            'slig': _cleanup_settings.get_slig_config,
-            'yolo': _cleanup_settings.get_yolo_config,
-            'chandra': _cleanup_settings.get_chandra_config,
-        }
-        for name in endpoints_to_scale:
-            scaled = False
-            if name in endpoint_managers:
-                try:
-                    if endpoint_managers[name].scale_to_zero():
-                        scaled = True
-                        logger.info(f"   ✅ {name.upper()} endpoint scaled to zero (via manager)")
-                except Exception as scale_error:
-                    logger.warning(f"   ⚠️ Failed to scale {name} via manager: {scale_error}")
-
-            # Fallback: hit HF directly if the manager path didn't work
-            if not scaled:
-                try:
-                    cfg = _config_getters[name]() or {}
-                    ep_name = cfg.get('endpoint_name')
-                    ns = cfg.get('namespace', 'basiliskan')
-                    token = cfg.get('hf_token') or cfg.get('endpoint_token')
-                    if ep_name and token:
-                        from huggingface_hub import get_inference_endpoint
-                        ep = get_inference_endpoint(name=ep_name, namespace=ns, token=token)
-                        ep.fetch()
-                        raw = getattr(ep, 'raw', {}) or {}
-                        max_rep = (raw.get('compute', {}).get('scaling', {}) or {}).get('maxReplica', 2)
-                        ep.update(min_replica=0, max_replica=max_rep)
-                        scaled = True
-                        logger.info(f"   ✅ {name.upper()} endpoint scaled to zero (direct HF fallback)")
-                except Exception as fallback_error:
-                    logger.warning(f"   ⚠️ Direct HF fallback failed for {name}: {fallback_error}")
-
-            if scaled:
-                scaled_count += 1
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            outcome = await endpoint_controller.scale_all_to_zero(reason=f"pdf_job_{job_id}")
+            scaled_count = sum(1 for ok in outcome.values() if ok)
+        except Exception as scale_error:
+            logger.warning(f"   ⚠️ scale_all_to_zero raised: {scale_error}")
+            scaled_count = 0
 
         # 5. Clear endpoint registry (cleanup singleton state)
         try:

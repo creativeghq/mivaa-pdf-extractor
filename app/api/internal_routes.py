@@ -1209,6 +1209,12 @@ async def regenerate_image_embeddings(
                 }
             }).eq('id', request.job_id).execute()
 
+            try:
+                from app.services.core.endpoint_controller import endpoint_controller
+                await endpoint_controller.scale_all_to_zero(reason=f"img_embed_regen_completed_{request.job_id}")
+            except Exception as scale_err:
+                logger.warning(f"⚠️ scale_all_to_zero failed on regen completion: {scale_err}")
+
         return RegenerateImageEmbeddingsResponse(
             success=True,
             message=message,
@@ -1229,6 +1235,12 @@ async def regenerate_image_embeddings(
                 'failed_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
             }).eq('id', request.job_id).execute()
+
+            try:
+                from app.services.core.endpoint_controller import endpoint_controller
+                await endpoint_controller.scale_all_to_zero(reason=f"img_embed_regen_failed_{request.job_id}")
+            except Exception as scale_err:
+                logger.warning(f"⚠️ scale_all_to_zero failed on regen failure: {scale_err}")
 
         raise HTTPException(status_code=500, detail=f"Failed to regenerate image embeddings: {str(e)}")
 

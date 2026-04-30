@@ -290,6 +290,12 @@ class DataImportService:
 
                 logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
 
+                try:
+                    from app.services.core.endpoint_controller import endpoint_controller
+                    await endpoint_controller.scale_all_to_zero(reason=f"xml_import_completed_{job_id}")
+                except Exception as scale_err:
+                    logger.warning(f"⚠️ scale_all_to_zero failed on XML import completion: {scale_err}")
+
                 # ── Factory propagation + enrichment trigger ─────────────────
                 # Re-use the same helper from the PDF pipeline
                 try:
@@ -372,6 +378,12 @@ class DataImportService:
                     error_message=str(e),
                     completed_at=datetime.utcnow()
                 )
+
+                try:
+                    from app.services.core.endpoint_controller import endpoint_controller
+                    await endpoint_controller.scale_all_to_zero(reason=f"xml_import_failed_{job_id}")
+                except Exception as scale_err:
+                    logger.warning(f"⚠️ scale_all_to_zero failed on XML import failure: {scale_err}")
 
                 raise
 

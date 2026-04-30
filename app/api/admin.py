@@ -605,6 +605,13 @@ async def cancel_job(
             active_jobs[job_id]["status"] = "cancelled"
             active_jobs[job_id]["error"] = "Job cancelled by user"
 
+        # Force HF endpoints to scale to zero on terminal job state.
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            await endpoint_controller.scale_all_to_zero(reason=f"job_cancelled_{job_id}")
+        except Exception as scale_err:
+            logger.warning(f"⚠️ scale_all_to_zero failed on cancel: {scale_err}")
+
         cleanup_stats = None
 
         # Perform cleanup if requested
@@ -1618,6 +1625,12 @@ async def process_image_embedding_regeneration_job(
 
         logger.info(f"✅ Image embedding regeneration job {job_id} completed successfully")
 
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            await endpoint_controller.scale_all_to_zero(reason=f"image_regen_completed_{job_id}")
+        except Exception as scale_err:
+            logger.warning(f"⚠️ scale_all_to_zero failed on regen completion: {scale_err}")
+
         # 📢 Send job completed notification
         if user_id:
             # Calculate duration
@@ -1657,6 +1670,12 @@ async def process_image_embedding_regeneration_job(
             'failed_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat()
         }).eq('id', job_id).execute()
+
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            await endpoint_controller.scale_all_to_zero(reason=f"image_regen_failed_{job_id}")
+        except Exception as scale_err:
+            logger.warning(f"⚠️ scale_all_to_zero failed on regen failure: {scale_err}")
 
         # 📢 Send job failed notification
         if user_id:

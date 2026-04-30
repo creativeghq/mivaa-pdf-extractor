@@ -33,6 +33,21 @@ except ImportError:
     logger.warning("Sentry SDK not available - crash alerts disabled")
 
 
+async def _scale_endpoints_to_zero_safe(reason: str) -> None:
+    """Best-effort scale-to-zero on terminal job state.
+
+    Never raises — a scale-down failure must not propagate into the caller's
+    completion / failure path. Logs and returns. Matches user policy: every
+    terminal job state (completed / failed / cancelled / stuck) forces all 4
+    HF endpoints to min_replica=0 so they stop billing.
+    """
+    try:
+        from app.services.core.endpoint_controller import endpoint_controller
+        await endpoint_controller.scale_all_to_zero(reason=reason)
+    except Exception as e:
+        logger.warning(f"⚠️ scale_all_to_zero(reason={reason}) raised: {e}")
+
+
 @dataclass
 class ProgressTracker:
     """
@@ -628,6 +643,8 @@ class ProgressTracker:
         except Exception as e:
             logger.error(f"❌ Failed to mark job as complete: {e}")
 
+        await _scale_endpoints_to_zero_safe(reason=f"job_completed_{self.job_id}")
+
     async def fail_job(self, error: Exception):
         """
         Mark job as failed and sync final state to database.
@@ -716,6 +733,8 @@ class ProgressTracker:
 
         except Exception as e:
             logger.error(f"❌ Failed to mark job as failed: {e}")
+
+        await _scale_endpoints_to_zero_safe(reason=f"job_failed_{self.job_id}")
 
     async def start_heartbeat(self, interval_seconds: int = 30):
         """

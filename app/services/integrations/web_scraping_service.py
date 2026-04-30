@@ -439,6 +439,12 @@ class WebScrapingService:
             self.logger.info(f"✅ Session processing complete in {processing_time:.0f}ms:")
             self.logger.info(f"   Products created: {len(created_products)}")
 
+            try:
+                from app.services.core.endpoint_controller import endpoint_controller
+                await endpoint_controller.scale_all_to_zero(reason=f"scrape_completed_{session_id}")
+            except Exception as scale_err:
+                self.logger.warning(f"⚠️ scale_all_to_zero failed on scrape completion: {scale_err}")
+
             # ✅ Stage: COMPLETED
             if job_id:
                 await self._log_stage(job_id, WebScrapingStage.COMPLETED, "completed", items=len(created_products))
@@ -525,6 +531,12 @@ class WebScrapingService:
                 )
             except Exception as update_error:
                 self.logger.error(f"Failed to update session status: {update_error}")
+
+            try:
+                from app.services.core.endpoint_controller import endpoint_controller
+                await endpoint_controller.scale_all_to_zero(reason=f"scrape_failed_{session_id}")
+            except Exception as scale_err:
+                self.logger.warning(f"⚠️ scale_all_to_zero failed on scrape failure: {scale_err}")
 
             raise RuntimeError(f"Scraping session processing failed: {str(e)}") from e
 
