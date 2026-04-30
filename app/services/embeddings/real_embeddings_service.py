@@ -754,7 +754,7 @@ class RealEmbeddingsService:
                     "validation": 0.0,
                     "batch_size": len(texts)
                 },
-                action="fallback_to_rules",  # ✅ FIXED: Use valid DB constraint value
+                action="fallback_to_rules",
                 fallback_reason=f"Batch API error: {str(e)}",
                 error_message=str(e)
             )

@@ -427,12 +427,11 @@ async def lifespan(app: FastAPI):
     logger.warning(f"🛑 Shutdown time: {datetime.now().isoformat()}")
     logger.warning("=" * 80)
 
-    # Fix B: REAL graceful drain. Set the global draining flag so new uploads
-    # return 503, then await in-flight orchestrator BackgroundTasks for up to
-    # MIVAA_DRAIN_MAX_SECONDS before forcing shutdown. Previously the lifespan
-    # hook just marked jobs as 'interrupted' and exited — the actual coroutines
-    # got killed by SIGTERM mid-await. Combined with TimeoutStopSec=600 in the
-    # systemd unit, this lets the orchestrator finish a stage and exit cleanly.
+    # Graceful drain: set the global draining flag so new uploads return 503,
+    # then await in-flight orchestrator BackgroundTasks for up to
+    # MIVAA_DRAIN_MAX_SECONDS before forcing shutdown. Combined with
+    # TimeoutStopSec=600 in the systemd unit, this lets the orchestrator
+    # finish a stage and exit cleanly instead of being killed mid-await.
     try:
         from app.api.admin import _set_draining
         _set_draining(True, reason="lifespan_shutdown")

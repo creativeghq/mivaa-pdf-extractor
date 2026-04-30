@@ -32,20 +32,18 @@ class MemoryStats:
     
     @property
     def is_high_pressure(self) -> bool:
-        """Check if memory pressure is high (>65%)
+        """Check if memory pressure is high (>65%).
 
-        CRITICAL FIX: Lowered from 80% to 65% to prevent OOM crashes.
-        On 16GB systems, waiting until 80% (12.8GB) is too late - service already
-        consumed 8GB and crashed. Now triggers cleanup earlier.
+        Threshold sized for 16GB systems: waiting until 80% (~12.8GB) is too
+        late — by then we've usually already crashed. Trigger cleanup earlier.
         """
         return self.percent_used > 65
 
     @property
     def is_critical_pressure(self) -> bool:
-        """Check if memory pressure is critical (>75%)
+        """Check if memory pressure is critical (>75%).
 
-        CRITICAL FIX: Lowered from 90% to 75% to prevent OOM crashes.
-        At 75% (12GB on 16GB system), we need immediate action to prevent crash.
+        At 75% (~12GB on 16GB) we need immediate action to prevent OOM kill.
         """
         return self.percent_used > 75
 

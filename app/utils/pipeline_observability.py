@@ -64,9 +64,9 @@ def install_job_context_filter() -> None:
     thread → no filter runs → KeyError: 'job_id' → format error handler
     re-emits → infinite loop → kernel OOM kill.
 
-    Robust fix: monkey-patch logging.LogRecord.__init__ so the four
-    attrs are ALWAYS pre-set on every record, including ones created by
-    libraries we don't control. Filter still attached as belt-and-braces.
+    Approach: monkey-patch logging.LogRecord.__init__ so the four attrs are
+    ALWAYS pre-set on every record, including ones created by libraries we
+    don't control. Filter still attached as belt-and-braces.
     """
     root = logging.getLogger()
     if not any(isinstance(f, JobContextLogFilter) for f in root.filters):

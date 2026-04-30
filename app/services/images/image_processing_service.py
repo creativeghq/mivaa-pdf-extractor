@@ -310,12 +310,11 @@ class ImageProcessingService:
                     logger.error(f"❌ {error_msg}")
                     raise ValueError(error_msg)
 
-                # ✅ Use OpenAI client for HuggingFace endpoint (llamacpp provides OpenAI-compatible API)
+                # HuggingFace llamacpp endpoint exposes an OpenAI-compatible API.
                 from openai import AsyncOpenAI
 
-                # Guard: refuse to build a URL without a scheme. A missing scheme
-                # here is the root cause of MIVAA-507 "UnsupportedProtocol: Request
-                # URL is missing an 'http://' or 'https://' protocol" (296 events).
+                # Refuse a URL without a scheme — the OpenAI client raises
+                # "UnsupportedProtocol: Request URL is missing 'http://' or 'https://'" otherwise.
                 if not qwen_endpoint_url or not qwen_endpoint_url.startswith(("http://", "https://")):
                     raise RuntimeError(
                         f"Qwen endpoint URL not configured (got {qwen_endpoint_url!r}). "

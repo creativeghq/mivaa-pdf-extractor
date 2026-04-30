@@ -67,19 +67,12 @@ class AdaptiveConcurrency:
         self._consecutive_successes = 0
         # Lazy-init the Condition on first async use.
         #
-        # Why: in Python 3.9, `asyncio.Condition()` binds to the event loop
-        # returned by `events.get_event_loop()` at construction time. When the
-        # module-level `endpoint_controller` singleton is built at *import*
-        # time (before uvicorn has started any request loop), the Condition
-        # latches to either a throwaway loop or no loop at all. Once uvicorn
-        # creates its per-request loop and code calls `slot()`, the Condition's
-        # internal Futures belong to the wrong loop and raise:
-        #
-        #     RuntimeError: got Future <Future pending> attached to a different loop
-        #
-        # That's MIVAA-56Z — 42 events in 35 seconds during the Stage 3 batch.
-        # Deferring creation until the first coroutine actually enters `slot()`
-        # guarantees the Condition binds to the running request loop.
+        # In Python 3.9, `asyncio.Condition()` binds to the event loop at
+        # construction. The module-level `endpoint_controller` is built at
+        # import time before uvicorn's request loop exists, so eager
+        # construction binds the Condition to the wrong loop and later
+        # `slot()` calls raise "got Future attached to a different loop".
+        # Defer creation until the first coroutine enters `slot()`.
         self._cond: Optional[asyncio.Condition] = None
 
     def _get_cond(self) -> asyncio.Condition:

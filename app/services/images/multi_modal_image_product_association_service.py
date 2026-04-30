@@ -499,8 +499,7 @@ class MultiModalImageProductAssociationService:
             if not associations:
                 return 0
 
-            # Create product-image relationships
-            # ✅ UPDATED: Use image_product_associations schema
+            # Create product-image relationships.
             product_image_data = [
                 {
                     "product_id": assoc.product_id,

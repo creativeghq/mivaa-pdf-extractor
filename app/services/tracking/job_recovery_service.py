@@ -88,11 +88,9 @@ class JobRecoveryService:
                     logger.info(f"Persisted new job {job_id} to database: status={status}")
                     return True
                 except Exception as insert_err:
-                    # FK violation on document_id (Postgres 23503) means the
-                    # parent `documents` row is gone — typically because an
-                    # operator manually purged tables in Supabase Studio
-                    # while the job was mid-flight. Surface as a clear warning
-                    # instead of a generic error spam (MIVAA-5BB pattern).
+                    # Postgres 23503 (FK violation on document_id) means the parent
+                    # `documents` row was purged out from under us — surface a clear
+                    # warning instead of error spam.
                     err_str = str(insert_err)
                     if '23503' in err_str or 'background_jobs_document_id_fkey' in err_str:
                         logger.warning(

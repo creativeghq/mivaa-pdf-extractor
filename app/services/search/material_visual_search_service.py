@@ -498,7 +498,7 @@ class MaterialVisualSearchService:
 
     async def _perform_database_search(self, request: MaterialSearchRequest) -> MaterialSearchResponse:
         """
-        ✅ UPDATED: Perform VECS-based visual search with relationship enrichment.
+        Perform VECS-based visual search with relationship enrichment.
 
         Uses VECS HNSW indexing for fast similarity search and enriches results
         with related products and chunks from relationship tables.

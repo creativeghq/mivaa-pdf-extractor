@@ -451,8 +451,8 @@ class RealImageAnalysisService:
                                 self.logger.error(f"Vision API {response.status_code} after {max_retries} attempts: {error_text}")
                                 raise RuntimeError(f"Vision API error {response.status_code} after {max_retries} attempts")
 
-                        # CRITICAL FIX (MIVAA-8B): Handle 400 Input validation errors
-                        # This happens when image is too large, corrupted, or unsupported format
+                        # 400 = oversized / corrupted / unsupported image. Don't retry;
+                        # fall back to rule-based analysis below.
                         if response.status_code == 400:
                             self.logger.warning(f"Vision API 400 Input validation error: {error_text[:200]}")
                             self.logger.warning(f"Image size: {len(image_base64)} bytes (base64)")
@@ -605,7 +605,7 @@ class RealImageAnalysisService:
                             "success": True
                         }
                     except json.JSONDecodeError as e:
-                        # CRITICAL FIX (MIVAA-7Y, MIVAA-87): Enhanced JSON parsing with multiple fallback strategies
+                        # Vision models occasionally emit non-JSON; try multiple parse strategies before failing.
                         error_msg = f"Failed to parse vision model response as JSON (attempt {attempt}/{max_retries}): {e}"
                         self.logger.warning(error_msg)
                         self.logger.warning(f"Extracted JSON text (first 300 chars): {json_text[:300]}")
@@ -773,8 +773,7 @@ class RealImageAnalysisService:
             content = response.content[0].text.strip()
 
             try:
-                # CRITICAL FIX (MIVAA-87): Enhanced JSON extraction with multiple strategies
-                # Strategy 1: Find JSON between first { and last }
+                # Strategy 1: Find JSON between the first { and last }
                 first_brace = content.find('{')
                 last_brace = content.rfind('}')
 

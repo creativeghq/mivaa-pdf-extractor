@@ -2,7 +2,7 @@
 Search Enrichment Service
 
 Enriches VECS search results with relationship data from:
-- image_product_associations (✅ UPDATED: was product_image_relationships)
+- image_product_associations
 - chunk_image_relationships
 - chunk_product_relationships
 
@@ -93,13 +93,13 @@ class SearchEnrichmentService:
                     products = await self.get_related_products(image_id, min_relevance, image_caption)
                     enriched['related_products'] = products
 
-                    # ✅ UPDATED: Multi-vector combined score with all 6 embedding types
+                    # Multi-vector combined score across all 6 embedding types.
                     if rerank and products:
                         # Use highest product relevance score for re-ranking
                         max_product_relevance = max(p.get('relevance_score', 0.0) for p in products)
 
                         # Get all similarity scores from result
-                        # ✅ UPDATED: Check both 'scores' (from multi-collection search) and metadata.embedding_scores
+                        # Check both `scores` (multi-collection search) and metadata.embedding_scores.
                         scores = image_result.get('scores', {})
                         metadata = image_result.get('metadata', {})
                         embedding_scores = metadata.get('embedding_scores', {})
@@ -168,7 +168,6 @@ class SearchEnrichmentService:
 
                 enriched_results.append(enriched)
 
-            # ✅ UPDATED: Re-rank by multi-vector combined score if enabled
             if rerank:
                 enriched_results.sort(key=lambda x: x.get('combined_score', 0.0), reverse=True)
                 self.logger.info(
@@ -192,8 +191,7 @@ class SearchEnrichmentService:
     ) -> List[Dict[str, Any]]:
         """
         Get products related to an image via image_product_associations.
-        ✅ UPDATED: Now uses image_product_associations table
-        ✅ UPDATED: Falls back to image_caption when products.description is empty
+        Falls back to image_caption when products.description is empty.
 
         Args:
             image_id: Image UUID
@@ -204,7 +202,6 @@ class SearchEnrichmentService:
             List of related products with relevance scores
         """
         try:
-            # ✅ UPDATED: Query image_product_associations with product details
             response = self.supabase.client.table('image_product_associations')\
                 .select('product_id, overall_score, reasoning, products(id, name, description, metadata)')\
                 .eq('image_id', image_id)\
@@ -227,8 +224,8 @@ class SearchEnrichmentService:
                             'name': product_data.get('name'),
                             'description': product_description,
                             'metadata': product_data.get('metadata', {}),
-                            'relevance_score': rel['overall_score'],  # ✅ UPDATED: Use overall_score
-                            'relationship_type': rel['reasoning'],  # ✅ UPDATED: Use reasoning
+                            'relevance_score': rel['overall_score'],
+                            'relationship_type': rel['reasoning'],
                             'description_source': 'product' if product_data.get('description', '').strip() else 'image_caption'
                         })
 

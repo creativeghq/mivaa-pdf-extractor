@@ -822,7 +822,6 @@ class RAGService:
 
                 for i in range(0, len(image_ids), batch_size):
                     batch_ids = image_ids[i:i + batch_size]
-                    # ✅ UPDATED: Use image_product_associations table
                     rel_response = self.supabase_client.client.table('image_product_associations')\
                         .select('product_id, image_id, overall_score')\
                         .in_('image_id', batch_ids)\
@@ -835,7 +834,7 @@ class RAGService:
                 for rel in all_image_rels:
                     product_id = rel.get('product_id')
                     image_id = rel.get('image_id')
-                    relevance = rel.get('overall_score', 1.0)  # ✅ UPDATED: Use overall_score
+                    relevance = rel.get('overall_score', 1.0)
 
                     if image_id in image_scores:
                         if product_id not in product_scores:

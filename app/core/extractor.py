@@ -127,7 +127,7 @@ def extract_pdf_to_markdown(file_name, page_number):
         finally:
             doc.close()
 
-        # ✅ FIX GLYPH NAMES
+        # Normalize glyph names
         markdown_text = _fix_glyph_names(markdown_text)
 
         return markdown_text
@@ -182,7 +182,7 @@ def extract_pdf_to_markdown_with_doc(doc, page_number):
         hdr_info = False if page_number is not None else None
         markdown_text = pymupdf4llm.to_markdown(doc, pages=page_number_list, hdr_info=hdr_info)
 
-        # ✅ FIX GLYPH NAMES
+        # Normalize glyph names
         markdown_text = _fix_glyph_names(markdown_text)
 
         return markdown_text
@@ -250,7 +250,7 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
             else:
                 raise
 
-        # ✅ FIX GLYPH NAMES
+        # Normalize glyph names
         md_text_images = _fix_glyph_names(str(md_text_images))
 
         output_file = os.path.join(output_dir, "output.json")
@@ -292,7 +292,7 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
         # Combine all batches
         combined_markdown = "\n\n".join(str(m) for m in all_markdown)
 
-        # ✅ FIX GLYPH NAMES
+        # Normalize glyph names
         combined_markdown = _fix_glyph_names(combined_markdown)
 
         output_file = os.path.join(output_dir, "output.json")
@@ -335,7 +335,7 @@ def extract_json_and_images(file_path, output_dir, page_number, batch_size=5, pa
         # Combine all batches
         combined_markdown = "\n\n".join(str(m) for m in all_markdown)
 
-        # ✅ FIX GLYPH NAMES
+        # Normalize glyph names
         combined_markdown = _fix_glyph_names(combined_markdown)
 
         output_file = os.path.join(output_dir, "output.json")
@@ -398,7 +398,7 @@ def extract_json_and_images_streaming(file_path, output_dir, batch_size=5):
             image_files = os.listdir(image_path) if os.path.exists(image_path) else []
             image_count = len([f for f in image_files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'))])
 
-            # ✅ FIX GLYPH NAMES
+            # Normalize glyph names
             batch_markdown_fixed = _fix_glyph_names(str(batch_markdown))
 
             yield batch_num, batch_markdown_fixed, image_count

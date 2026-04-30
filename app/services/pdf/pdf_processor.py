@@ -134,8 +134,7 @@ async def download_image_to_base64(image_url: str) -> str:
         raise Exception(f"Error downloading image to base64: {str(e)}")
 
 
-# Import existing extraction functions from centralized module
-# ✅ REMOVED extract_pdf_tables - now using TableExtractor class from table_extraction.py
+# Extraction functions live in extractor_imports; tables go through TableExtractor.
 from app.services.pdf.extractor_imports import (
     extract_pdf_to_markdown,
     extract_pdf_to_markdown_with_doc,
@@ -2588,8 +2587,8 @@ class PDFProcessor:
             )
             
             # PHASE 3: OCR — Chandra first via ocr_service.extract_text_from_image,
-            # Tesseract on fallback. EasyOCR was removed 2026-04-30 because its
-            # 600 MB PyTorch CPU load caused the b7d70de1 memory stall.
+            # Tesseract on fallback. (No EasyOCR — its 600 MB PyTorch CPU load
+            # induced memory stalls.)
             self.logger.info(
                 f"📝 Phase 3: Running OCR (Chandra→Tesseract chain) "
                 f"on {len(images_to_process)} filtered images"

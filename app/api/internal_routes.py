@@ -175,7 +175,7 @@ class CreateRelationshipsResponse(BaseModel):
     """Response model for creating relationships."""
     success: bool
     chunk_image_relationships: int
-    product_image_associations: int  # ✅ UPDATED: Renamed from product_image_relationships
+    product_image_associations: int
 
 
 # ============================================================================

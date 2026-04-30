@@ -32,7 +32,6 @@ class RelevancyService:
     ) -> int:
         """
         Create product-to-image associations based on page numbers and metadata.
-        ✅ UPDATED: Now uses image_product_associations table instead of product_image_relationships
 
         Args:
             document_id: Document ID
@@ -84,7 +83,6 @@ class RelevancyService:
 
                     for image in images:
                         try:
-                            # ✅ UPDATED: Use image_product_associations schema
                             relationship = {
                                 'product_id': product_id,
                                 'image_id': image['id'],
@@ -132,7 +130,6 @@ class RelevancyService:
                     # Create relationships
                     for image in images:
                         try:
-                            # ✅ UPDATED: Use image_product_associations schema
                             relationship = {
                                 'product_id': product_id,
                                 'image_id': image['id'],

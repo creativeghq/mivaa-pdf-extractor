@@ -216,8 +216,7 @@ class ProductMergeService:
     ) -> None:
         """Transfer all relationships from source products to target product."""
         try:
-            # Transfer product-image relationships
-            # ✅ UPDATED: Use image_product_associations table
+            # Transfer product-image relationships.
             for source_id in source_product_ids:
                 # Get existing relationships
                 rel_response = self.supabase.client.table('image_product_associations').select(
@@ -234,8 +233,6 @@ class ProductMergeService:
                         ).execute()
 
                         if not existing.data:
-                            # Create new relationship for target
-                            # ✅ UPDATED: Use new schema
                             new_rel = {
                                 'product_id': target_product_id,
                                 'image_id': rel['image_id'],
