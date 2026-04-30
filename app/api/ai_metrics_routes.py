@@ -396,7 +396,6 @@ async def get_ai_metrics_summary(
 
 @router.get(
     "/external-service-usage",
-    response_model=DataResponse,
     summary="Get external service usage and credit consumption",
     description="Returns usage, cost, and credit data for external services (Twilio, Apollo, Hunter, ZeroBounce, Firecrawl) from ai_usage_logs.",
 )
