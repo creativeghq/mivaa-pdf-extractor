@@ -37,10 +37,51 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
+
+
+# Single canonical stage name surfaced to the UI through
+# background_jobs.stage_history. Keep stable so the frontend can match.
+STAGE_NAME = "stage_1_5_layout_precompute"
+
+
+def _emit_stage_event(
+    supabase: Any,
+    job_id: Optional[str],
+    status: str,
+    data: Dict[str, Any],
+    logger: logging.Logger,
+) -> None:
+    """Append a Stage 1.5 event to background_jobs.stage_history.
+
+    No-op when job_id is missing (lets us call this from contexts where
+    the orchestrator didn't pass one — e.g. ad-hoc backfills). Failures
+    are logged at WARNING but never propagate; observability must never
+    break the pipeline.
+    """
+    if not job_id:
+        return
+    try:
+        supabase.client.rpc(
+            "append_stage_history",
+            {
+                "p_job_id": job_id,
+                "p_event": {
+                    "stage": STAGE_NAME,
+                    "status": status,
+                    "completed_at": datetime.utcnow().isoformat(),
+                    "data": data,
+                    "source": "stage_1_5_layout_precompute",
+                },
+            },
+        ).execute()
+    except Exception as hist_err:
+        logger.warning(f"   ⚠️ [STAGE 1.5] stage_history append failed: {hist_err}")
 
 
 # Render DPI for YOLO input. 250 keeps small typography legible while
@@ -144,6 +185,7 @@ async def precompute_document_layout(
     supabase: Any,
     logger: logging.Logger,
     total_physical_pages_hint: Optional[int] = None,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run YOLO + bbox-text merge for every uncached physical page; persist.
 
@@ -154,11 +196,16 @@ async def precompute_document_layout(
         logger: scoped logger
         total_physical_pages_hint: optional override; otherwise derived
             from `analyze_pdf_layout(pdf_path).total_physical_pages`.
+        job_id: when provided, emits `stage_1_5_layout_precompute` events
+            (started / completed / failed) to `background_jobs.stage_history`
+            so the async-job UI can render Stage 1.5 progress directly from
+            the job row. No-op without job_id (e.g. ad-hoc backfills).
 
     Returns:
         Dict with keys: pages_total, pages_cached_already, pages_processed,
         pages_persisted, extraction_paths (counter dict).
     """
+    started_at = time.time()
     summary: Dict[str, Any] = {
         "pages_total": 0,
         "pages_cached_already": 0,
@@ -175,6 +222,12 @@ async def precompute_document_layout(
         layout = await asyncio.to_thread(analyze_pdf_layout, pdf_path)
     except Exception as e:
         logger.warning(f"   ⚠️ [STAGE 1.5] analyze_pdf_layout failed: {e}")
+        _emit_stage_event(
+            supabase, job_id, "failed",
+            {**summary, "error": f"analyze_pdf_layout failed: {e}",
+             "duration_ms": int((time.time() - started_at) * 1000)},
+            logger,
+        )
         return summary
 
     physical_to_pdf = dict(layout.physical_to_pdf_map or {})
@@ -186,6 +239,12 @@ async def precompute_document_layout(
     summary["pages_total"] = total_physical
     if total_physical <= 0 or not physical_to_pdf:
         logger.info("⏭️  [STAGE 1.5] No physical pages to process")
+        _emit_stage_event(
+            supabase, job_id, "completed",
+            {**summary, "skipped_reason": "no_physical_pages",
+             "duration_ms": int((time.time() - started_at) * 1000)},
+            logger,
+        )
         return summary
 
     # 2. Resume-safe: skip pages already in cache
@@ -207,9 +266,25 @@ async def precompute_document_layout(
         if p not in existing_pages and p in physical_to_pdf
     )
 
+    # Emit `started` once we know the workload (pages_total + already-cached
+    # split). This is the single moment between Stage 0 and Stage 2 the UI
+    # needs to surface — earlier than this we don't know the work, later
+    # the user can't tell that Stage 1.5 is the active stage.
+    _emit_stage_event(
+        supabase, job_id, "in_progress",
+        {**summary, "pages_to_process": len(pages_to_process)},
+        logger,
+    )
+
     if not pages_to_process:
         logger.info(
             f"♻️ [STAGE 1.5] All {total_physical} physical pages already cached — skipping"
+        )
+        _emit_stage_event(
+            supabase, job_id, "completed",
+            {**summary, "skipped_reason": "all_cached",
+             "duration_ms": int((time.time() - started_at) * 1000)},
+            logger,
         )
         return summary
 
@@ -387,6 +462,11 @@ async def precompute_document_layout(
     logger.info(
         f"✅ [STAGE 1.5] Cached {persisted}/{len(pages_to_process)} pages — "
         f"extraction paths: {extraction_paths}"
+    )
+    _emit_stage_event(
+        supabase, job_id, "completed",
+        {**summary, "duration_ms": int((time.time() - started_at) * 1000)},
+        logger,
     )
     return summary
 

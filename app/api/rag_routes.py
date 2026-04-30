@@ -3325,6 +3325,7 @@ async def process_document_with_discovery(
                         supabase=supabase_pre,
                         logger=logger,
                         total_physical_pages_hint=_physical_pages_hint,
+                        job_id=job_id,
                     )
                     job_storage[job_id]["metadata"] = {
                         **job_storage[job_id].get("metadata", {}),
@@ -4148,7 +4149,6 @@ async def _enhance_search_results(
 
             # Fetch related images
             try:
-                # ✅ UPDATED: Use image_product_associations instead of product_image_relationships
                 images_response = supabase_client.client.table('image_product_associations').select(
                     'id, image_id, reasoning, overall_score, document_images(id, image_url, caption)'
                 ).eq('product_id', product_id).order('overall_score', desc=True).limit(10).execute()
