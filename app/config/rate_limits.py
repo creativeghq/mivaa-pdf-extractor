@@ -108,7 +108,7 @@ def get_vision_concurrency_limit() -> int:
     - Other concurrent API usage
     - Retry attempts
     - Burst traffic
-    - Model-specific capacity constraints (especially for large models like Qwen3-VL-32B)
+    - Model-specific capacity constraints (especially for large vision models on a single GPU replica)
 
     Returns:
         int: Safe number of concurrent vision requests

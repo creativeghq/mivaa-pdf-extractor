@@ -297,7 +297,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"⚠️ Error cleaning up RAG service: {e}")
 
         component_manager.register("rag_service", load_rag_service, cleanup_rag_service)
-        logger.info("✅ RAG service registered for lazy loading (Qwen3-VL-32B primary, Claude Opus 4.7 fallback)")
+        logger.info(f"✅ RAG service registered for lazy loading ({settings.qwen_model} primary, Claude Opus 4.7 fallback)")
 
         # Set placeholder
         app.state.rag_service = None
@@ -852,7 +852,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 ### AI Models
 1. **Voyage AI**: voyage-4 (1024D text embeddings), GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus 4.7 (deep enrichment)
-3. **HuggingFace Endpoint**: Qwen3-VL-32B-Instruct (vision analysis)
+3. **HuggingFace Endpoint**: Qwen vision (model id from `QWEN_MODEL` env, currently `Qwen/Qwen3.6-35B-A3B-FP8`)
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
 5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
 
@@ -2118,12 +2118,12 @@ async def root() -> Dict[str, Any]:
             "PDF to Markdown conversion",
             "Table extraction",
             "Image extraction",
-            "RAG integration with Qwen3-VL vision models",
+            "RAG integration with Qwen vision models",
             "Document upload and processing",
             "Semantic search and retrieval",
             "Conversational Q&A",
             "Supabase vector storage",
-            "Qwen3-VL-8B (primary) + Qwen3-VL-32B (validation)"
+            f"Qwen vision: {get_settings().qwen_model}"
         ]
     }
 
@@ -2318,8 +2318,8 @@ def custom_openapi():
         "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
         "vector_search": "7 specialized embedding types (text, visual, understanding, color, texture, style, material)",
         "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
-        "ai_models": "13 models: Claude Opus 4.7, Haiku 4.5, GPT-4o-mini, Qwen3-VL-32B, SLIG, Voyage AI",
-        "material_recognition": "Qwen3-VL-8B-Instruct (configurable vision model)",
+        "ai_models": f"Claude Opus 4.7, Haiku 4.5, GPT-4o-mini, {get_settings().qwen_model}, SLIG, Voyage AI",
+        "material_recognition": f"{get_settings().qwen_model} (configurable via QWEN_MODEL env)",
         "embedding_models": "Voyage AI voyage-4 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
         "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",
         "scalability": "5,000+ users, 99.5%+ uptime",

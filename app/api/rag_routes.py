@@ -4735,7 +4735,7 @@ async def get_rag_statistics(
             "ai_models": {
                 "embeddings": "SLIG SigLIP2 768D / Voyage AI 1024D",
                 "rag_synthesis": "Claude Opus 4.7",
-                "vision": "Qwen3-VL-32B-Instruct"
+                "vision": get_settings().qwen_model
             }
         }
 

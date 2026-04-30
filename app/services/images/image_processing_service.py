@@ -450,8 +450,11 @@ class ImageProcessingService:
                 input_tokens = usage.prompt_tokens if usage else 0
                 output_tokens = usage.completion_tokens if usage else 0
 
-                # Qwen pricing (HuggingFace Endpoint)
-                # Qwen3-VL-32B: $0.40/1M input, $0.40/1M output
+                # Qwen pricing (HuggingFace Endpoint, time-based on A100).
+                # The hourly_rate_usd ($4.50/h on A100) lives in
+                # app/config/ai_pricing.py; this token-based estimate is a
+                # rough fallback for places that don't query the pricing
+                # registry. Update if endpoint hardware changes.
                 cost = (input_tokens / 1_000_000) * 0.40 + (output_tokens / 1_000_000) * 0.40
 
                 # Convert OpenAI response to dict for logging

@@ -1,19 +1,22 @@
 """
 Qwen Vision Model - HuggingFace Inference Endpoint Manager
 
-Manages HuggingFace Inference Endpoint lifecycle for Qwen3-VL-32B-Instruct vision model.
-Provides automatic pause/resume functionality to control billing costs.
+Manages HuggingFace Inference Endpoint lifecycle for the configured Qwen
+vision model (id resolved from `Settings.qwen_model`, default
+`Qwen/Qwen3.6-35B-A3B-FP8`). Provides automatic pause/resume functionality
+to control billing costs.
 
-CRITICAL: Endpoint is paused by default (no billing). Only resumes when vision analysis is needed,
-then auto-pauses after idle timeout to prevent unnecessary billing.
+CRITICAL: Endpoint is paused by default (no billing). Only resumes when
+vision analysis is needed, then auto-pauses after idle timeout to prevent
+unnecessary billing.
 
 Cost Control Strategy:
 - Endpoint paused: $0/hour
-- Endpoint running: ~$1.20/hour (GPU)
+- Endpoint running: ~$4.50/hour on A100 (changes when hardware/model swap)
 - Auto-pause after 60s idle (configurable)
 - Force-pause after batch processing
-- Warmup required: 60 seconds before first inference
-- Typical cost: ~$0.02 per 100 images
+- Warmup required: ~60 seconds before first inference
+- Update `app/config/ai_pricing.py:qwen3-vl-32b` if hardware changes
 """
 
 import os
@@ -36,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 class QwenEndpointManager:
     """
-    Manages HuggingFace Inference Endpoint lifecycle for Qwen3-VL-32B-Instruct.
+    Manages HuggingFace Inference Endpoint lifecycle for the configured Qwen vision model.
     
     Features:
     - Automatic resume before inference (start billing)

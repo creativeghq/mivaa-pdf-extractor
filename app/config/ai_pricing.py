@@ -117,18 +117,23 @@ class AIPricingConfig:
 
     # Qwen Vision Model (A10G GPU)
     QWEN_PRICING = {
+        # Stable internal identifier — kept as `qwen3-vl-32b` so existing
+        # callers in ai_call_logger / real_image_analysis_service don't
+        # need updating. Metadata reflects the actual deployed endpoint
+        # (renamed 2026-04-29: A10G→A100, repo Qwen3-VL-32B-Instruct→
+        # Qwen3.6-35B-A3B-FP8, service mh-qwen332binstruct→qwen3-6-35b-fp8).
         "qwen3-vl-32b": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("1.30"),  # A10G GPU
-            "gpu_type": "nvidia-a10g",
-            "last_verified": "2026-01-23",
+            "hourly_rate_usd": Decimal("4.50"),  # A100 80GB on HF Inference Endpoints
+            "gpu_type": "nvidia-a100",
+            "last_verified": "2026-04-29",
             "source": "HuggingFace Inference Endpoint",
-            "full_name": "Qwen/Qwen3-VL-32B-Instruct",
+            "full_name": "Qwen/Qwen3.6-35B-A3B-FP8",
             "namespace": "basiliskan",
-            "service": "mh-qwen332binstruct",
-            "note": "Primary vision model for material analysis"
+            "service": "qwen3-6-35b-fp8",
+            "note": "Primary vision model for material analysis (FP8-quantized 35B-A3B MoE on A100)"
         }
     }
 

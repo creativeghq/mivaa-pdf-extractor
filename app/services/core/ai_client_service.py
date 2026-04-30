@@ -129,15 +129,16 @@ class AIClientService:
     def httpx(self) -> httpx.AsyncClient:
         """Get shared httpx async client for HuggingFace and other HTTP APIs.
 
-        ✅ FIX: Increased timeout to 200s for Qwen3-VL-32B model (large vision model needs more time)
-
-        Previous: 35s timeout was too short for 32B model, causing ReadTimeout errors
-        New: 200s timeout allows 32B model to complete inference (typically 60-120s)
+        Timeout is 200s — sized for the slowest Qwen vision call we make.
+        Previous default of 35s caused ReadTimeout on first inference of a
+        cold-started endpoint; large multimodal requests (image + spec
+        prompt) routinely take 60-120s end-to-end on the current Qwen
+        endpoint, so 200s leaves headroom without masking real hangs.
         """
         if self._httpx_client is None:
             self._httpx_client = httpx.AsyncClient(
-                # ✅ FIX: Increased from 35s to 200s for Qwen3-VL-32B model
-                # 32B model needs 60-120s for inference, 200s provides buffer
+                # 200s sized for the slowest Qwen vision call. See class
+                # docstring for the latency profile that drove this.
                 timeout=httpx.Timeout(200.0),  # Generous timeout for large vision models
                 limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
             )
