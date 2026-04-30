@@ -824,6 +824,13 @@ jobs:
           # MemoryHigh and OOM-killed on Apr 29). Override via GH secret
           # if the droplet is upgraded. Empty secret → code default.
           Environment=MAX_CONCURRENT_PRODUCTS=${{ secrets.MAX_CONCURRENT_PRODUCTS }}
+          # Tesseract OCR last-resort fallback (Chandra → EasyOCR → Tesseract).
+          # The Tesseract 5.x apt package installs eng.traineddata at
+          # /usr/share/tesseract-ocr/5/tessdata but the binary defaults to
+          # /usr/share/tessdata, so without TESSDATA_PREFIX set, the
+          # fallback fails with "Failed loading language 'en'" whenever
+          # the chain reaches Tesseract (MIVAA-5BM, 2026-04-30).
+          Environment=TESSDATA_PREFIX=/usr/share/tesseract-ocr/5/tessdata
           # Fix B: lifespan shutdown drain window (seconds). Caller-side
           # drain runs first (pause-for-deploy default 300s), then systemd
           # gives the lifespan hook this window before SIGKILL.
