@@ -430,17 +430,10 @@ class YoloEndpointManager:
             return False
 
     def scale_to_zero(self) -> bool:
-        """
-        Scale endpoint to zero replicas at JOB COMPLETION.
+        """Force-drain endpoint to 0 replicas IMMEDIATELY at job terminal.
 
-        Unlike force_pause(), this sets min_replica=0 which allows HuggingFace
-        to auto-scale based on demand. The endpoint will auto-resume when
-        the next request arrives.
-
-        This is the PREFERRED method for job completion cleanup.
-
-        Returns:
-            True if scaled successfully, False if failed
+        Uses `endpoint.pause()` — replica killed in seconds, $0/h
+        immediately. Next job's prepare_for_processing resumes it.
         """
         if not self._can_pause_resume:
             logger.warning("Endpoint management not available - cannot scale to zero")
@@ -454,22 +447,19 @@ class YoloEndpointManager:
             endpoint.fetch()
             current_status = endpoint.status
 
-            # Get current max_replica to preserve it
-            raw = getattr(endpoint, 'raw', {})
-            if 'compute' in raw and 'scaling' in raw['compute']:
-                max_rep = raw['compute']['scaling'].get('maxReplica', 2)
-            else:
-                max_rep = 2
+            if current_status == "paused":
+                logger.info("YOLO endpoint already paused — no-op")
+                return True
 
-            logger.info(f"📉 Scaling YOLO endpoint to 0 replicas (JOB COMPLETED - will auto-resume on demand)")
-            endpoint.update(min_replica=0, max_replica=max_rep)
+            logger.info(f"📉 Pausing YOLO endpoint NOW (was: {current_status}) — instant $0/h")
+            endpoint.pause()
 
             if self.last_resume_time:
                 uptime = time.time() - self.last_resume_time
                 self.total_uptime += uptime
 
             self.warmup_completed = False
-            logger.info(f"✅ YOLO endpoint scaled to 0 (was: {current_status}, max: {max_rep})")
+            logger.info(f"✅ YOLO endpoint paused — billing stopped immediately")
             return True
 
         except Exception as e:

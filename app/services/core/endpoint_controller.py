@@ -404,6 +404,18 @@ class EndpointController:
                         name=name, namespace=namespace, token=tok,
                     )
                     ep.fetch()
+                    # Paused endpoints (we pause() at job terminal for
+                    # instant drain) need resume() before update() — HF
+                    # rejects scaling changes on paused endpoints.
+                    if ep.status == "paused":
+                        try:
+                            ep.resume().wait(timeout=120)
+                            ep.fetch()
+                        except Exception as resume_err:
+                            logger.warning(
+                                f"   ⚠️ resume() before prepare failed for {name}: "
+                                f"{resume_err} — proceeding to update anyway"
+                            )
                     raw = getattr(ep, "raw", {}) or {}
                     current_scaling = (raw.get("compute", {}) or {}).get("scaling", {}) or {}
                     cur_min = current_scaling.get("minReplica")
@@ -510,12 +522,19 @@ class EndpointController:
                     token = cfg.get("hf_token") or cfg.get("endpoint_token")
                     if ep_name and token:
                         def _do_direct_scale(name=ep_name, namespace=ns, tok=token) -> bool:
+                            # Force-drain via pause() — kills the replica in
+                            # seconds. Setting min_replica=0 alone left the
+                            # replica running for up to 30 min idle (per
+                            # scaleToZeroTimeout), wasting GPU billing on
+                            # every job tail. pause() is the only HF API
+                            # primitive that drains immediately. Next job's
+                            # prepare_for_processing(min=1) resumes it.
                             from huggingface_hub import get_inference_endpoint
                             ep = get_inference_endpoint(name=name, namespace=namespace, token=tok)
                             ep.fetch()
-                            raw = getattr(ep, "raw", {}) or {}
-                            max_rep = (raw.get("compute", {}).get("scaling", {}) or {}).get("maxReplica", 2)
-                            ep.update(min_replica=0, max_replica=max_rep)
+                            if ep.status == "paused":
+                                return True
+                            ep.pause()
                             return True
 
                         ok = await asyncio.to_thread(_do_direct_scale)
