@@ -282,7 +282,7 @@ class ImageProcessingService:
             import time
             from app.services.core.ai_call_logger import AICallLogger
 
-            # ✅ FIX: If Qwen endpoint is not available, return error to trigger Claude fallback
+            # Return early so the caller can fall back to Claude.
             if not qwen_endpoint_available:
                 return {
                     'is_material': False,
@@ -400,8 +400,7 @@ class ImageProcessingService:
                 # ✅ Parse response from OpenAI format
                 result_text = response.choices[0].message.content
 
-                # ✅ FIX: Handle empty/invalid responses
-                # Qwen sometimes returns whitespace or single characters instead of JSON
+                # Qwen sometimes returns whitespace or a single character instead of JSON.
                 result_text_stripped = result_text.strip() if result_text else ""
 
                 if not result_text_stripped or len(result_text_stripped) < 10:
@@ -535,7 +534,6 @@ class ImageProcessingService:
                     'error': str(e)
                 }
             finally:
-                # ✅ NEW: Explicit cleanup to free memory
                 if not base64_data and image_base64 is not None:
                     del image_base64
 
@@ -638,7 +636,6 @@ class ImageProcessingService:
                     'model': 'claude_failed'
                 }
             finally:
-                # ✅ NEW: Explicit cleanup to free memory
                 if not base64_data and image_base64 is not None:
                     del image_base64
 
@@ -664,7 +661,6 @@ class ImageProcessingService:
             filename = img_data.get('filename', 'unknown')
             image_base64 = None
 
-            # ✅ FIX 3: Detailed path validation with Supabase fallback
             if not image_path:
                 logger.error(f"❌ Image path is None for {filename}")
                 return None
@@ -731,7 +727,6 @@ class ImageProcessingService:
                     )
                     await asyncio.sleep(wait_time)
 
-            # ✅ NEW: Check if primary model failed (invalid response or exception)
             primary_failed = (
                 '_invalid_response' in primary_result.get('model', '') or
                 '_not_json' in primary_result.get('model', '') or
@@ -770,7 +765,7 @@ class ImageProcessingService:
                         logger.warning(f"   🔄 Retrying validation for {filename} (attempt {attempt + 2}/{max_retries}) after {wait_time:.1f}s...")
                         await asyncio.sleep(wait_time)
 
-                    # ✅ NEW: If validation also failed, use Claude as final fallback
+                    # If validation also failed, fall back to Claude.
                     validation_failed = (
                         '_invalid_response' in validation_result.get('model', '') or
                         '_not_json' in validation_result.get('model', '') or
@@ -786,13 +781,12 @@ class ImageProcessingService:
             else:
                 img_data['ai_classification'] = primary_result
 
-            # ✅ NEW: Explicitly clear the base64 string to free memory
             if image_base64:
                 del image_base64
 
             return img_data
 
-        # ✅ NEW: Process images in batches to prevent OOM
+        # Batch images to keep memory bounded.
         material_images = []
         non_material_images = []
         total_images = len(extracted_images)
@@ -811,8 +805,8 @@ class ImageProcessingService:
             classified_batch = await asyncio.gather(*classification_tasks, return_exceptions=True)
             batch_duration = time.time() - batch_start_time
 
-            # ✅ FIX 4: Detect suspiciously fast classification
-            expected_min_time = len(batch_images) * 0.5  # At least 0.5 seconds per image
+            # Sanity check: classification noticeably under 0.5s/image usually means a silent failure.
+            expected_min_time = len(batch_images) * 0.5
             if batch_duration < expected_min_time:
                 logger.warning(f"⚠️ SUSPICIOUS: Batch {batch_num} completed in {batch_duration:.2f}s for {len(batch_images)} images")
                 logger.warning(f"   Expected minimum: {expected_min_time:.2f}s ({len(batch_images)} images × 0.5s)")
@@ -833,15 +827,13 @@ class ImageProcessingService:
 
                 classification = img_data.get('ai_classification', {})
 
-                # ✅ FIX 5: Log classification details for debugging
                 if not classification:
                     logger.warning(f"   ⚠️ No classification data for {img_data.get('filename')}")
                     failed_count += 1
                     continue
 
-                # ✅ FIX: Handle classification failures more gracefully
-                # If classification failed or returned empty, assume it's material (safer approach)
-                # This ensures we don't miss material images due to API issues
+                # On classification failure, default to "material" so we don't lose images
+                # to transient API errors.
                 if 'error' in classification or '_failed' in classification.get('model', '') or '_empty_response' in classification.get('model', ''):
                     logger.warning(f"   ⚠️ Classification uncertain for {img_data.get('filename')}: {classification.get('reason')}")
                     logger.warning(f"   → Treating as MATERIAL (safe default) to ensure CLIP embeddings are generated")
@@ -864,7 +856,6 @@ class ImageProcessingService:
                     non_material_images.append(img_data)
                     logger.debug(f"   🚫 Filtered out: {img_data.get('filename')} - {classification.get('reason')} (confidence: {classification.get('confidence', 0):.2f})")
 
-            # ✅ NEW: Explicit garbage collection after each batch
             del classification_tasks
             del classified_batch
             gc.collect()
@@ -884,7 +875,7 @@ class ImageProcessingService:
         if total_classified > 0:
             logger.info(f"   Classification accuracy: {len(material_images) / total_classified * 100:.1f}% kept")
 
-        # ✅ FIX 6: Critical validation - detect complete classification failure
+        # Detect complete classification failure (every image rejected).
         if total_classified == 0 and total_input > 0:
             logger.error("❌ CRITICAL FAILURE: ALL images failed classification!")
             logger.error(f"   Input images: {total_input}")
@@ -907,7 +898,6 @@ class ImageProcessingService:
                 f"Check HuggingFace Endpoint token and service availability."
             )
 
-        # ✅ FIX 7: Warning if classification rate is suspiciously low
         if total_classified < total_input * 0.5:
             logger.warning(f"⚠️ WARNING: Low classification success rate")
             logger.warning(f"   Successfully classified: {total_classified}/{total_input} ({total_classified/total_input*100:.1f}%)")
@@ -967,7 +957,7 @@ class ImageProcessingService:
                     # Set storage metadata
                     img_data['storage_url'] = public_url
                     img_data['storage_path'] = storage_path
-                    img_data['storage_uploaded'] = True  # ✅ FIX: Set storage_uploaded flag
+                    img_data['storage_uploaded'] = True
                     img_data['storage_bucket'] = upload_result.get('bucket', 'pdf-tiles')
 
                     # Debug logging
@@ -1371,9 +1361,8 @@ class ImageProcessingService:
                 timeout=120.0,
             )
 
-            # 2026-04-11: fix MIVAA-NG for Qwen path — sniff real media type
-            # from decoded base64 so PNG icons don't get sent as image/jpeg.
-            # Qwen's OpenAI-compat endpoint is more forgiving than Claude but
+            # Sniff the real media type from the decoded base64 so PNG icons aren't
+            # sent as image/jpeg — Qwen's OpenAI-compat endpoint is more forgiving than Claude but
             # has still returned 400s on mismatched data URLs in the past.
             qwen_detected_media_type = "image/jpeg"
             try:
@@ -1498,13 +1487,9 @@ class ImageProcessingService:
                 )
                 return None
 
-            # 2026-04-11: fix MIVAA-NG — detect the real media type from the
-            # decoded base64 magic bytes instead of hardcoding "image/jpeg".
-            # Claude's API rejects with
-            # "image was specified using image/jpeg but appears to be image/png"
-            # when the mime type lies, and ~60% of our icon + YOLO-region
-            # crops are PNG. Sniff first 16 decoded bytes — cheap, no new
-            # deps. Falls back to image/jpeg on decode error.
+            # Sniff the real media type from the first 16 decoded bytes — Claude rejects
+            # mismatched mime types ("specified as image/jpeg but appears to be image/png")
+            # and ~60% of our icon + YOLO crops are PNG. Falls back to image/jpeg on decode error.
             detected_media_type = "image/jpeg"
             try:
                 import base64 as _b64
@@ -2241,16 +2226,11 @@ class ImageProcessingService:
             except Exception as tracker_init_err:
                 logger.debug(f"   ⚠️ Tracker init update failed (non-critical): {tracker_init_err}")
 
-        # 2026-04-10: parallelized this loop with a per-image semaphore.
-        # The previous sequential per-image pattern caused Qwen3-VL endpoint
-        # auto-pause: each image's Qwen material-analysis call was followed
-        # by ~15s of save+update+embed orchestration before the next call,
-        # so Qwen sat idle for 15s gaps and the 60s auto-pause eventually
-        # fired mid-job (Stage 3.5 Material analysis fallback to Claude).
-        # Per-image work is fully isolated (no cross-image state), so we
-        # run QWEN_CONCURRENCY in flight via a semaphore. With 4 replicas
-        # × 8 base cap, default is 32 — comfortably saturates the cluster.
-        # The outer batching loop is preserved for memory bounds.
+        # Run per-image work concurrently behind a semaphore. Sequential per-image
+        # processing left ~15s gaps between Qwen calls (save + update + embed in
+        # between), tripping the 60s endpoint auto-pause mid-job. Per-image work
+        # has no cross-image state, so QWEN_CONCURRENCY in flight saturates the
+        # cluster (4 replicas × 8 = 32 default). The outer batching loop bounds memory.
         from app.config import get_settings as _get_settings_for_qwen_sem
         POST_PROCESSING_CONCURRENCY = _get_settings_for_qwen_sem().qwen_concurrency
         post_processing_sem = asyncio.Semaphore(POST_PROCESSING_CONCURRENCY)

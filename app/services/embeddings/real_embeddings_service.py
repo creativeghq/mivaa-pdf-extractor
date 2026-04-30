@@ -94,12 +94,12 @@ class RealEmbeddingsService:
 
         # Model loading state (for local mode only)
         self._models_loaded = False
-        self._model_load_failed = False  # ✅ Track if model loading has permanently failed
-        self._model_load_attempts = 0  # ✅ Track number of load attempts
-        self._max_load_attempts = 3  # ✅ Maximum attempts before giving up
+        self._model_load_failed = False
+        self._model_load_attempts = 0
+        self._max_load_attempts = 3
         self._siglip_model = None
         self._siglip_processor = None
-        self._device = None  # Will be set when models are loaded
+        self._device = None
 
         # ============================================================================
         # SLIG (SigLIP2) Cloud Endpoint Configuration
@@ -553,7 +553,7 @@ class RealEmbeddingsService:
 
         start_time = time.time()
 
-        # ✅ FIX: Replace empty/whitespace strings with placeholder to prevent API errors
+        # Replace empty/whitespace strings with a placeholder; Voyage rejects empty inputs.
         processed_texts = []
         for text in texts:
             if not text or not text.strip():
@@ -561,14 +561,11 @@ class RealEmbeddingsService:
             else:
                 processed_texts.append(text)
 
-        # Try Voyage AI first if enabled and API key available
-        # ✅ CRITICAL FIX: Default to True if config is None (don't skip Voyage AI!)
+        # Default voyage_enabled to True when config is missing — Voyage is the primary provider.
         voyage_enabled = getattr(self.config, 'voyage_enabled', True) if self.config else True
         if self.voyage_api_key and voyage_enabled:
             try:
-                # ✅ CRITICAL FIX: Map 1536D (OpenAI default) to 1024D (Voyage AI max)
-                # Voyage AI supports: 256, 512, 1024, 2048
-                # OpenAI supports: 512, 1536
+                # Voyage supports {256, 512, 1024, 2048}; map the OpenAI-style 1536 down to 1024.
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
 
                 # Reuse httpx client for connection keepalive across batches
@@ -627,7 +624,7 @@ class RealEmbeddingsService:
                             "completeness": 1.0,
                             "consistency": 0.95,
                             "validation": 0.90,
-                            "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
+                            "batch_size": len(texts)
                         },
                         action="use_ai_result"
                     )
@@ -660,9 +657,9 @@ class RealEmbeddingsService:
                         "completeness": 0.0,
                         "consistency": 0.0,
                         "validation": 0.0,
-                        "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
+                        "batch_size": len(texts)
                     },
-                    action="fallback_to_rules",  # ✅ FIXED: Use valid DB constraint value
+                    action="fallback_to_rules",
                     fallback_reason=f"Voyage AI batch error: {str(e)}",
                     error_message=str(e)
                 )
@@ -691,7 +688,7 @@ class RealEmbeddingsService:
                         "model": "text-embedding-3-small",
                         "input": [text[:8191] for text in texts],  # OpenAI limit per text
                         "encoding_format": "float",
-                        "dimensions": 1024  # ✅ CRITICAL FIX: Always use 1024D to match Voyage AI and DB schema
+                        "dimensions": 1024  # Pinned to 1024D so the OpenAI fallback matches Voyage + DB schema.
                     }
                 )
 
@@ -722,7 +719,7 @@ class RealEmbeddingsService:
                             "completeness": 1.0,
                             "consistency": 0.95,
                             "validation": 0.90,
-                            "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
+                            "batch_size": len(texts)
                         },
                         action="use_ai_result"
                     )
@@ -755,7 +752,7 @@ class RealEmbeddingsService:
                     "completeness": 0.0,
                     "consistency": 0.0,
                     "validation": 0.0,
-                    "batch_size": len(texts)  # ✅ FIXED: Move batch_size to confidence_breakdown
+                    "batch_size": len(texts)
                 },
                 action="fallback_to_rules",  # ✅ FIXED: Use valid DB constraint value
                 fallback_reason=f"Batch API error: {str(e)}",
@@ -788,19 +785,17 @@ class RealEmbeddingsService:
         """
         start_time = time.time()
 
-        # ✅ VALIDATION: Use placeholder for empty or whitespace-only text
-        # This prevents Voyage AI API errors with empty strings
+        # Placeholder for empty/whitespace text; Voyage rejects empty inputs.
         if not text or not text.strip():
             self.logger.debug("⏭️  Using placeholder text for empty/whitespace input")
-            text = "no text content"  # Use placeholder instead of returning None
+            text = "no text content"
 
-        # Try Voyage AI first if enabled and API key available
-        # ✅ CRITICAL FIX: Default to True if config is None (don't skip Voyage AI!)
+        # Default voyage_enabled to True when config is missing — Voyage is the primary provider.
         voyage_enabled = getattr(self.config, 'voyage_enabled', True) if self.config else True
         self.logger.info(f"🔍 Voyage AI check: api_key={'SET' if self.voyage_api_key else 'NOT SET'}, config={'SET' if self.config else 'NOT SET'}, voyage_enabled={voyage_enabled}")
         if self.voyage_api_key and voyage_enabled:
             try:
-                # ✅ CRITICAL FIX: Map 1536D (OpenAI default) to 1024D (Voyage AI max)
+                # Voyage caps at 2048D; map OpenAI-style 1536 down to 1024.
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
 
                 # Throttle outbound Voyage calls — without the semaphore, gather()
@@ -892,7 +887,7 @@ class RealEmbeddingsService:
                         "consistency": 0.0,
                         "validation": 0.0
                     },
-                    action="fallback_to_rules",  # ✅ FIXED: Use valid DB constraint value
+                    action="fallback_to_rules",
                     job_id=job_id,
                     fallback_reason=f"Voyage AI error: {str(e)}",
                     error_message=str(e)
@@ -908,10 +903,8 @@ class RealEmbeddingsService:
                 self.logger.warning("OpenAI API key not available")
                 return None
 
-            # ✅ CRITICAL FIX: Keep same dimensions for OpenAI to match DB schema
-            # Database expects vector(1024), so OpenAI must also generate 1024D
-            # OpenAI text-embedding-3-small supports custom dimensions via 'dimensions' parameter
-            openai_dimensions = dimensions  # Use requested dimensions (1024D for chunks)
+            # DB schema is vector(1024); ask OpenAI for the same dimension count.
+            openai_dimensions = dimensions
 
             # Call OpenAI API
             async with httpx.AsyncClient() as client:
@@ -1053,7 +1046,7 @@ class RealEmbeddingsService:
             import numpy as np
             import asyncio
 
-            # ✅ Use SLIG Cloud Endpoint (always remote, no local models)
+            # SLIG Cloud Endpoint — visual embeddings are always remote.
             if self.slig_enabled:
                 self.logger.debug("☁️ Using SLIG cloud endpoint for visual embeddings")
 

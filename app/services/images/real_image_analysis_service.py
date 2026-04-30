@@ -397,7 +397,7 @@ class RealImageAnalysisService:
                 self.logger.error("❌ Failed to resume Qwen endpoint - falling back to Claude")
                 return await self._analyze_with_claude(image_base64, context, job_id)
 
-            # ✅ FIX: Add retry logic for vision model empty responses
+            # Vision model occasionally returns empty content; retry up to 3 times.
             max_retries = 3
             last_error = None
 
@@ -439,8 +439,7 @@ class RealImageAnalysisService:
                     if response.status_code != 200:
                         error_text = response.text
 
-                        # CRITICAL FIX: Handle 5xx errors with retry logic
-                        # HuggingFace Endpoint API occasionally returns 503/500 during high load or internal issues
+                        # HF Endpoint API returns 5xx under load; retry transparently.
                         if response.status_code in [500, 503]:
                             if attempt < max_retries:
                                 error_name = "Internal Server Error" if response.status_code == 500 else "Service Unavailable"
@@ -546,9 +545,9 @@ class RealImageAnalysisService:
                             else:
                                 raise RuntimeError(f"Vision model returned empty response after {max_retries} attempts")
 
-                        # Step 3.5: Sanitize common vision model JSON mistakes
-                        # Fix: ["item1", "item2", or "item3"] -> ["item1", "item2", "item3"]
-                        # This handles cases where model puts unquoted words like "or" or "and" in arrays
+                        # Step 3.5: rewrite ["item1", "item2", or "item3"] →
+                        # ["item1", "item2", "item3"] (vision models occasionally
+                        # leak unquoted "or" / "and" into arrays).
                         import re
 
                         # Pattern 1: Remove unquoted "or" or "and" between array items

@@ -184,13 +184,10 @@ class RAGService:
                 try:
                     import pymupdf4llm
                     import tempfile
-                    # NOTE: do NOT re-import os here. `os` is imported at module
-                    # level (line 19). Re-importing inside this branch makes
-                    # Python treat `os` as a function-local for the WHOLE
-                    # `index_pdf_content` method, so when this branch is
-                    # skipped (page_chunks provided by caller) the later use
-                    # of `os.getenv` on line ~253 crashes with
-                    # UnboundLocalError. Bug observed: MIVAA-59J (2026-04-29).
+                    # Do NOT re-import `os` here — it's imported at module level (line 19).
+                    # A local `import os` rebinds it function-scoped and makes the
+                    # `os.getenv` calls below crash with UnboundLocalError when this
+                    # branch is skipped (caller-provided page_chunks path).
 
                     # Save PDF bytes to temporary file (pymupdf4llm needs a file path)
                     with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
@@ -234,8 +231,7 @@ class RAGService:
 
                 self.logger.info(f"   ✅ Created {len(chunks)} chunks from {len(pages)} pages")
 
-                # 🔥 CRITICAL MEMORY FIX: Delete pages immediately after chunking
-                # Pages can be 100K+ characters and are no longer needed
+                # Drop pages now — they can be 100K+ chars and are no longer needed.
                 del pages
                 gc.collect()
                 self.logger.info(f"   🧹 Released pages from memory")
@@ -249,8 +245,7 @@ class RAGService:
                     "chunk_ids": []
                 }
 
-            # Step 3: Store chunks and generate embeddings with BATCH PROCESSING
-            # ✅ MEMORY OPTIMIZATION: Process chunks in batches to avoid OOM
+            # Step 3: store chunks and generate embeddings in batches to avoid OOM.
             from app.utils.memory_monitor import MemoryPressureMonitor
 
             memory_monitor = MemoryPressureMonitor()
@@ -264,12 +259,10 @@ class RAGService:
             chunks_created = 0
             total_embeddings_stored = 0  # Track total embeddings across all batches
 
-            # FIX #4: Log initial memory state before starting indexing
             try:
                 initial_mem = memory_monitor.get_memory_stats()
                 self.logger.info(f"🧠 Initial memory: {initial_mem.percent_used:.1f}% ({initial_mem.used_mb:.0f}MB / {initial_mem.total_mb:.0f}MB)")
 
-                # Check if we have enough memory to proceed
                 if initial_mem.percent_used > MEMORY_THRESHOLD_PERCENT:
                     self.logger.warning(f"⚠️ High memory usage detected ({initial_mem.percent_used:.1f}%) - proceeding with caution")
             except Exception as mem_error:
@@ -299,7 +292,6 @@ class RAGService:
                     mem_stats = memory_monitor.get_memory_stats()
                     self.logger.info(f"🧠 Memory before batch {batch_num}/{total_batches}: {mem_stats.percent_used:.1f}% ({mem_stats.used_mb:.0f}MB / {mem_stats.total_mb:.0f}MB)")
 
-                    # FIX #4: Check memory threshold and pause if needed
                     if mem_stats.percent_used > MEMORY_THRESHOLD_PERCENT:
                         self.logger.warning(f"⚠️ Memory usage high ({mem_stats.percent_used:.1f}%) - forcing garbage collection")
                         gc.collect()
@@ -328,7 +320,6 @@ class RAGService:
                 self.logger.info(f"   📝 Storing {len(batch_chunks)} chunks in database for batch {batch_num}/{total_batches}...")
                 for chunk in batch_chunks:
                     try:
-                        # ✅ CRITICAL FIX: Skip chunks with null/empty content
                         if not chunk.content or not chunk.content.strip():
                             self.logger.warning(f"   ⚠️ Skipping chunk {chunk.chunk_index} - empty content")
                             continue
@@ -337,7 +328,7 @@ class RAGService:
                         chunk_record = {
                             'document_id': document_id,
                             'workspace_id': workspace_id,
-                            'content': chunk.content.strip(),  # ✅ FIXED: Use 'content' column, not 'chunk_text', and strip whitespace
+                            'content': chunk.content.strip(),
                             'chunk_index': chunk.chunk_index,
                             'metadata': {
                                 **chunk.metadata,
@@ -346,7 +337,7 @@ class RAGService:
                                 'quality_score': chunk.quality_score,
                                 'total_chunks': chunk.total_chunks
                             },
-                            'quality_score': chunk.quality_score  # ✅ NEW: Add quality_score as top-level column for dashboard metrics
+                            'quality_score': chunk.quality_score  # top-level column drives dashboard metrics
                         }
 
                         # Add product_id as top-level field if available in metadata
@@ -387,12 +378,10 @@ class RAGService:
                         # Use batch embedding generation (Voyage AI or OpenAI)
                         embedding_vectors = await self.embeddings_service.generate_batch_embeddings(
                             texts=batch_texts,
-                            dimensions=1024,  # ✅ FIXED: Chunks use 1024D embeddings (matches DB schema: vector(1024))
+                            dimensions=1024,  # matches DB schema vector(1024)
                             input_type="document"
                         )
 
-                        # FIX #2: Batch database updates instead of individual UPDATE queries
-                        # This prevents memory accumulation from 100+ individual Supabase responses
                         if embedding_vectors:
                             # Prepare batch update records
                             updates = []
@@ -408,9 +397,8 @@ class RAGService:
                                 else:
                                     self.logger.warning(f"   ⚠️ No embedding generated for chunk {chunk_id}")
 
-                            # ✅ CRITICAL FIX: Use individual UPDATE instead of UPSERT to avoid null content errors
-                            # UPSERT tries to INSERT if ID doesn't exist, which fails on NOT NULL content constraint
-                            # UPDATE only modifies existing rows, which is what we want here
+                            # Use UPDATE per row, not UPSERT — UPSERT falls back to INSERT on
+                            # missing IDs and trips the NOT NULL `content` constraint.
                             if updates:
                                 embeddings_stored = 0
                                 for update in updates:
@@ -448,7 +436,7 @@ class RAGService:
                             total_embeddings_stored += embeddings_stored
                             self.logger.info(f"   ✅ Stored {embeddings_stored} embeddings via individual fallback")
 
-                # Step 3c: Cleanup after batch (FIX #1: embedding_vectors now always defined)
+                # Step 3c: cleanup after batch.
                 del batch_chunk_ids, batch_texts, batch_chunk_records, embedding_vectors
                 gc.collect()
 
@@ -459,8 +447,7 @@ class RAGService:
                 except Exception as mem_error:
                     self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
 
-            # 🔥 CRITICAL MEMORY FIX: Delete chunks list after all batches complete
-            # Chunks can be 100+ objects with large text content
+            # Drop the chunks list now that all batches are persisted.
             del chunks
             gc.collect()
             self.logger.info(f"   🧹 Released chunks list from memory")
@@ -1656,7 +1643,7 @@ class RAGService:
             # Step 2: Build context from retrieved chunks
             context_parts = []
             for i, chunk in enumerate(chunks, 1):
-                chunk_text = chunk.get('content', chunk.get('text', ''))  # ✅ FIXED: Use 'content' column
+                chunk_text = chunk.get('content', chunk.get('text', ''))
                 score = chunk.get('score', 0.0)
                 context_parts.append(f"[Chunk {i}, Relevance: {score:.2f}]\n{chunk_text}\n")
 
@@ -1706,7 +1693,7 @@ class RAGService:
                 sources.append({
                     "chunk_id": chunk.get('id'),
                     "score": chunk.get('score', 0.0),
-                    "text_snippet": chunk.get('content', '')[:200] + "...",  # ✅ FIXED: Use 'content' column
+                    "text_snippet": chunk.get('content', '')[:200] + "...",
                     "metadata": chunk.get('metadata', {})
                 })
 
@@ -1802,7 +1789,7 @@ class RAGService:
             # Step 4: Build context from chunks
             context_parts = []
             for i, chunk in enumerate(filtered_chunks, 1):
-                chunk_text = chunk.get('content', chunk.get('text', ''))  # ✅ FIXED: Use 'content' column
+                chunk_text = chunk.get('content', chunk.get('text', ''))
                 score = chunk.get('score', 0.0)
                 metadata = chunk.get('metadata', {})
                 doc_id = metadata.get('document_id', 'unknown')
@@ -1884,7 +1871,7 @@ class RAGService:
                     "chunk_id": chunk.get('id'),
                     "document_id": chunk.get('metadata', {}).get('document_id'),
                     "score": chunk.get('score', 0.0),
-                    "text_snippet": chunk.get('content', '')[:200] + "...",  # ✅ FIXED: Use 'content' column
+                    "text_snippet": chunk.get('content', '')[:200] + "...",
                     "metadata": chunk.get('metadata', {})
                 })
 
@@ -2100,7 +2087,7 @@ Respond with JSON:
 
                 result_text = response.json()['choices'][0]['message']['content']
 
-                # ✅ COMPREHENSIVE LOGGING: Log FULL raw response for debugging
+                # Log full raw response for debugging.
                 self.logger.info(f"📝 Qwen RAW Response (length: {len(result_text)} chars):")
                 self.logger.info(f"   First 500 chars: {result_text[:500]}")
                 if len(result_text) > 500:

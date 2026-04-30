@@ -32,12 +32,7 @@ from dataclasses import dataclass, field
 
 @dataclass
 class PDFProcessingConstants:
-    """
-    Configuration constants for PDF processing.
-
-    These values were previously scattered as magic numbers throughout the code.
-    Centralizing them here makes them easier to tune and understand.
-    """
+    """Configuration constants for PDF processing — tunable thresholds in one place."""
 
     # Text detection thresholds (used in _opencv_fast_text_detection)
     TEXT_CONTOUR_MIN_COUNT: int = 10  # Minimum text-like contours to consider text present
@@ -190,7 +185,7 @@ class PDFProcessingResult:
     character_count: int
     multimodal_enabled: bool = False
     temp_dir: Optional[str] = None  # Temp directory to cleanup when job completes
-    page_chunks: Optional[List[Dict[str, Any]]] = None  # ✅ NEW: Page-aware text data from PyMuPDF4LLM
+    page_chunks: Optional[List[Dict[str, Any]]] = None  # page-aware text from PyMuPDF4LLM
 
 
 class PDFProcessor:
@@ -443,8 +438,7 @@ class PDFProcessor:
         loop = asyncio.get_event_loop()
 
         try:
-            # ✅ FIX: Make markdown extraction conditional
-            # If extract_text is False, skip markdown extraction (for image-only processing)
+            # extract_text=False is used for image-only processing.
             extract_text = processing_options.get('extract_text', True)
 
             markdown_content = ""
@@ -528,7 +522,6 @@ class PDFProcessor:
             extraction_stats = {'pymupdf_count': 0, 'failed_count': 0, 'total_pages': 0}
 
             if processing_options.get('extract_images', True):
-                # ✅ NEW: Pass job_id and checkpoint_recovery_service if available in processing_options
                 job_id = processing_options.get('job_id')
                 checkpoint_recovery_service = processing_options.get('checkpoint_recovery_service')
                 progress_tracker = processing_options.get('progress_tracker')
@@ -599,7 +592,6 @@ class PDFProcessor:
                     'ocr_enabled': multimodal_enabled and bool(extracted_images),
                     'ocr_languages': ocr_languages if multimodal_enabled else [],
                     'ocr_text_length': len(ocr_text) if ocr_text else 0,
-                    # ✅ NEW: Include extraction stats for job tracking
                     'extraction_stats': extraction_stats
                 },
                 processing_time=0.0,  # Will be set by caller
@@ -607,7 +599,7 @@ class PDFProcessor:
                 word_count=content_metrics['word_count'],
                 character_count=content_metrics['character_count'],
                 multimodal_enabled=multimodal_enabled,
-                page_chunks=page_chunks  # ✅ NEW: Include page-aware data
+                page_chunks=page_chunks
             )
             
         except Exception as e:
@@ -649,14 +641,12 @@ class PDFProcessor:
             if not has_images:
                 return False  # No images → no multimodal needed
 
-            # ✅ NEW: Enable for image-heavy documents (product catalogs)
-            # Catalogs have many images with technical specs/labels that need OCR
+            # Image-heavy documents (e.g. product catalogs) — many images carry spec text.
             if very_many_images:
                 self.logger.info(f"   📚 Catalog detected: {image_count} images → enabling OCR")
                 return True
 
-            # ✅ NEW: Enable if high image-to-text ratio (visual-heavy documents)
-            # Example: 100 images + 10,000 chars = 10 images per 1000 chars → likely catalog
+            # High image-to-text ratio (e.g. 100 images / 10k chars) — likely a catalog.
             if images_per_1000_chars > 5 and image_count >= 10:
                 self.logger.info(f"   📊 High image density: {images_per_1000_chars:.1f} images/1000 chars → enabling OCR")
                 return True
@@ -860,7 +850,7 @@ class PDFProcessor:
         - Advanced metadata extraction (EXIF, dimensions, quality metrics)
         - Upload to Supabase Storage instead of local storage
         - Quality assessment and duplicate detection
-        - ✅ NEW: Full checkpoint and progress tracking integration
+        - Full checkpoint and progress tracking integration
 
         Returns:
             Tuple of (images_list, extraction_stats)
@@ -1396,8 +1386,7 @@ class PDFProcessor:
                             img_width = base_image.get('width', 0)
                             img_height = base_image.get('height', 0)
 
-                            # ✅ FIX: Get bounding box for image placement on page
-                            # This is critical for spread layout detection (left vs right page)
+                            # Bounding box drives spread layout detection (left vs right page).
                             bbox = None
                             rect = None
                             try:
@@ -1713,9 +1702,8 @@ class PDFProcessor:
                 continue
 
             try:
-                # ✅ FIX: Skip upload during extraction - keep files for classification
-                # Images will be uploaded AFTER classification in stage_3_images.py
-                # This prevents files from being deleted before classification can use them
+                # Defer upload until after classification (stage_3_images.py) — uploading
+                # here would race classification's read of the local files.
 
                 # Just process metadata without uploading
                 processed_info = await self._process_extracted_image(
@@ -1733,8 +1721,7 @@ class PDFProcessor:
                     merged_info = {**processed_info, **img_info}
                     batch_images.append(merged_info)
 
-                # ✅ FIX: DO NOT delete local files - they're needed for classification
-                # Files will be cleaned up by admin cron job after classification completes
+                # Local files are kept for classification; admin cron sweeps them later.
 
                 # Free memory after each image
                 gc.collect()
@@ -1893,7 +1880,6 @@ class PDFProcessor:
                         target_format
                     )
 
-                # ✅ FIX: Conditionally upload based on skip_upload parameter
                 if skip_upload:
                     # Skip upload - keep local files for classification
                     self.logger.debug(f"⏭️  Skipping upload for {basic_info['filename']} (will upload after classification)")
@@ -1928,9 +1914,8 @@ class PDFProcessor:
                         # Continue processing even if upload fails, but mark it
                         upload_result = {'success': False, 'error': 'Upload failed', 'public_url': None}
 
-                # ✅ CRITICAL FIX: Skip AI analysis during extraction to prevent blocking
-                # AI analysis will be performed AFTER chunks/images are saved to database
-                # This ensures data persistence even if AI processing fails or hangs
+                # Skip AI analysis during extraction — it runs after chunks/images are
+                # persisted so that a hang or failure can't lose extraction state.
                 real_analysis_data = {
                     'quality_score': quality_metrics['overall_score'],
                     'confidence_score': 0.5,
@@ -2602,11 +2587,8 @@ class PDFProcessor:
                 f"({len(images_skipped)} skipped: {len(opencv_skipped)} no text, {len(clip_skipped)} decorative)"
             )
             
-            # PHASE 3: OCR processing — Chandra-first via ocr_service.extract_text_from_image
-            # (falls back to EasyOCR then Tesseract only if Chandra fails).
-            # Previously logged "Running EasyOCR" which was misleading: EasyOCR
-            # only runs as a fallback and only when the Chandra HF endpoint is
-            # unavailable.
+            # PHASE 3: OCR — Chandra first (via ocr_service.extract_text_from_image),
+            # then EasyOCR, then Tesseract on fallback.
             self.logger.info(
                 f"📝 Phase 3: Running OCR (Chandra→EasyOCR→Tesseract chain) "
                 f"on {len(images_to_process)} filtered images"

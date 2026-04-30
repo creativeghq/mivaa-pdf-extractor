@@ -1307,9 +1307,9 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
         # Mark job for restart
         supabase_client.client.table('background_jobs').update({
-            "status": "processing",  # ✅ Set to processing immediately
-            "error": None,  # Clear previous error
-            "interrupted_at": None,  # Clear interrupted timestamp
+            "status": "processing",
+            "error": None,
+            "interrupted_at": None,
             "started_at": datetime.utcnow().isoformat(),
             "metadata": {
                 **job_data.get('metadata', {}),
@@ -1321,9 +1321,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
         logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
 
-        # ✅ CRITICAL FIX: Restart the job by re-triggering the processing pipeline
-        # The process_document_with_discovery function supports checkpoint recovery
-        # Documents are processed directly into the vector database
+        # Re-trigger the processing pipeline; process_document_with_discovery resumes from the checkpoint.
 
         # Get the file content from storage
         try:
@@ -1340,7 +1338,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             filename = doc_data.get('filename', 'document.pdf')
             metadata = doc_data.get('metadata', {})
 
-            # CRITICAL FIX: If file_path is a local temp file, use file_url from metadata instead
+            # If file_path points at a local temp file (gone after pod restart), fall back to metadata.file_url.
             if file_path and file_path.startswith('/tmp/'):
                 file_url = metadata.get('file_url')
                 if file_url:
@@ -1777,7 +1775,7 @@ async def delete_job(job_id: str):
             job_id=job_id,
             supabase_client=supabase_client,
             vecs_service=vecs_service,
-            delete_storage_files=True  # ✅ Manual deletion includes storage files
+            delete_storage_files=True
         )
 
         # Check if job was actually deleted
@@ -2199,7 +2197,7 @@ async def create_products_background(
     Creates a sub-job for tracking.
     """
     supabase_client = get_supabase_client()
-    sub_job_id = str(uuid4())  # ✅ FIX: Generate proper UUID instead of appending "_products"
+    sub_job_id = str(uuid4())
 
     try:
         logger.info(f"🏭 Starting background product creation for document {document_id}")
@@ -2296,12 +2294,11 @@ async def create_products_background(
                 job_storage[job_id]["result"]["products_created"] = products_created
                 job_storage[job_id]["result"]["message"] = f"Document processed successfully: {products_created} products created"
 
-        # ✅ FIX: Persist products_created to database background_jobs table
+        # Persist products_created onto the background_jobs row so the API response reflects it.
         try:
             job_recovery_service = JobRecoveryService(supabase_client)
 
-            # Get current job from database
-            current_job = await job_recovery_service.get_job_status(job_id)  # ✅ FIX: Use correct method name get_job_status
+            current_job = await job_recovery_service.get_job_status(job_id)
             if current_job:
                 # Update metadata with products_created
                 updated_metadata = current_job.get('metadata', {})
@@ -2599,9 +2596,8 @@ async def process_document_with_discovery(
 
     # Get AI model configuration
     settings = get_settings()
-    image_analysis_model = settings.image_analysis_model  # ✅ FIXED: Direct property access
+    image_analysis_model = settings.image_analysis_model
 
-    # ✅ FIX: Define missing model variables from AI config
     from app.models.ai_config import DEFAULT_AI_CONFIG
     product_creation_model = DEFAULT_AI_CONFIG.discovery_model
     quality_validation_model = DEFAULT_AI_CONFIG.classification_validation_model
@@ -2691,7 +2687,7 @@ async def process_document_with_discovery(
                         endpoint_token=qwen_config.get("endpoint_token", qwen_config.get("hf_token", "")),
                         endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
                         namespace=qwen_config.get("namespace", "basiliskan"),
-                        warmup_timeout=qwen_config.get("warmup_timeout", 360),  # FIXED: Use config value, default 360s
+                        warmup_timeout=qwen_config.get("warmup_timeout", 360),
                         enabled=True
                     )
                     endpoint_managers['qwen'] = manager
@@ -2708,14 +2704,8 @@ async def process_document_with_discovery(
                     if status == "running":
                         logger.info("   ✅ Qwen endpoint already running, skipping warmup")
                         manager.warmup_completed = True
-                        # CRITICAL: even when skipping warmup, we MUST refresh the
-                        # endpoint URL from the live HF endpoint, otherwise
-                        # downstream code (health checker, OpenAI client) reads
-                        # an empty/protocolless URL and crashes with
-                        # "Request URL is missing http://" / APIConnectionError.
-                        # (2026-04-10 fix — discovered after Phase E run #4 was
-                        # still hitting the bug despite the source-level
-                        # `_refresh_url_from_endpoint` patch.)
+                        # Even on skip, refresh endpoint_url from the live HF endpoint —
+                        # downstream OpenAI/health-check clients require an absolute URL.
                         await asyncio.to_thread(manager._refresh_url_from_endpoint)
                         logger.info(f"   🔗 Qwen endpoint URL after refresh: {manager.endpoint_url}")
                         warmup_results["skipped"].append("qwen")
@@ -3086,14 +3076,9 @@ async def process_document_with_discovery(
             health_check_timeout_seconds=30
         )
 
-        # Build config for health checks based on what was warmed up.
-        # ⚠️ Read URL from each endpoint MANAGER (live, post-resume), not from
-        # settings.get_*_config()['endpoint_url'] — those settings fields are
-        # documented as "fallback only" and are populated empty by default;
-        # the manager dynamically resolves the real URL during warmup
-        # (qwen_endpoint_manager.py:131-132 etc.). Reading from settings
-        # produced "Request URL is missing http://" health check failures
-        # and 30×6s wasted retries on every job. (2026-04-10 fix)
+        # Read URL from each endpoint MANAGER (live, post-resume), not from
+        # settings.get_*_config()['endpoint_url'] — settings fields are fallback-only
+        # and usually empty; the manager resolves the real URL during warmup.
         def _live_url_from_manager(manager, fallback_url):
             url = getattr(manager, 'endpoint_url', None) or fallback_url or ''
             return url
@@ -3223,7 +3208,7 @@ async def process_document_with_discovery(
                 "document_id": document_id,
                 "filename": filename,
                 "file_size": len(file_content),
-                "pdf_path": file_path  # ✅ FIX: Add pdf_path for vision-guided extraction
+                "pdf_path": file_path  # vision-guided extraction needs the on-disk path
             },
             metadata={
                 "title": title or filename,
@@ -3716,16 +3701,12 @@ async def process_document_with_discovery(
                 .execute()
             ).data or []]
             if all_product_ids:
-                # NOTE: do NOT re-import asyncio here. asyncio is imported at
-                # module level (line 20). A local `import asyncio` inside this
-                # function makes Python treat `asyncio` as a function-scoped
-                # local for the WHOLE function, which causes the earlier
-                # `await asyncio.to_thread(...)` calls in the warm-up section
-                # (~line 2215+) to UnboundLocalError before this line is ever
-                # reached. Removed 2026-04-10 after Phase E crash.
-                # P2-10: hard cap on factory enrichment so a hung downstream
-                # call can't keep HF endpoints pinned (endpoint_registry
-                # treats this fire-and-forget task as part of the job).
+                # Do NOT re-import asyncio in this function — asyncio is module-scoped (line 20).
+                # A local `import asyncio` rebinds it function-scoped and breaks the warm-up
+                # `await asyncio.to_thread(...)` calls earlier in the body with UnboundLocalError.
+                #
+                # Hard cap factory enrichment so a hung downstream call can't keep HF endpoints
+                # pinned — endpoint_registry treats this fire-and-forget task as part of the job.
                 async def _factory_enrichment_with_timeout():
                     try:
                         await asyncio.wait_for(
@@ -4865,10 +4846,9 @@ async def get_workspace_statistics(
             logger.warning(f"⚠️ Text embeddings count failed: {text_emb_error}")
             text_embeddings_count = 0
 
-        # Get VECS image embeddings count using SQL function (bypasses VECS connection issues)
-        # FIX: Cast workspace_id to UUID to avoid function overloading ambiguity
+        # Image embedding count via SQL function (bypasses VECS connection issues).
+        # Cast workspace_id to UUID — count_vecs_embeddings is overloaded and the str cast picks the right variant.
         try:
-            # Use the UUID version of the function by casting the parameter
             vecs_count_result = supabase.client.rpc('count_vecs_embeddings', {'p_workspace_id': str(workspace_id)}).execute()
             image_embeddings_count = vecs_count_result.data if isinstance(vecs_count_result.data, int) else 0
         except Exception as vecs_error:
