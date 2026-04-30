@@ -298,8 +298,20 @@ class UnifiedChunkingService:
         Returns:
             List of chunks with page_number in metadata
         """
-        # Use layout-aware chunking if regions are provided
-        if layout_regions and len(layout_regions) > 0:
+        # Use layout-aware chunking if regions are provided AND any of them
+        # actually carry `text_content`. YOLO regions ship with bounding
+        # boxes but not text — `text_content` only gets populated when an
+        # upstream OCR / PDF-text-by-bbox stage runs first. If we hand the
+        # layout-aware path regions with all-empty text_content, every
+        # region gets skipped (line ~819) and the page produces zero
+        # chunks despite having valid text. Bug-D recurrence on every
+        # fresh job — see VALENOVA / job b7d70de1.
+        regions_have_text = bool(layout_regions) and any(
+            (r.get('text_content') or '').strip()
+            for r in layout_regions
+        )
+
+        if regions_have_text:
             chunks = self._chunk_with_layout_regions(
                 text=text,
                 document_id=document_id,
@@ -308,7 +320,25 @@ class UnifiedChunkingService:
                 metadata=metadata
             )
         else:
-            # Select and execute chunking strategy
+            if layout_regions:
+                self.logger.debug(
+                    f"   Page {page_number}: {len(layout_regions)} layout "
+                    f"region(s) provided but none carry text_content — "
+                    f"falling back to text-based chunking"
+                )
+            # Select and execute chunking strategy on the full page text
+            chunks = self._select_chunking_strategy(text, document_id, metadata, page_number)
+
+        # Defensive fallback: if layout-aware path produced 0 chunks but
+        # we have a valid page-text payload, retry with text-based
+        # chunking. Layout regions can't reliably outproduce a known-good
+        # text input.
+        if not chunks and text and text.strip():
+            self.logger.warning(
+                f"   Page {page_number}: layout-aware chunking returned 0 "
+                f"chunks despite {len(text)} chars of input text — falling "
+                f"back to text-based chunking"
+            )
             chunks = self._select_chunking_strategy(text, document_id, metadata, page_number)
 
         # Update chunk indices to be global
