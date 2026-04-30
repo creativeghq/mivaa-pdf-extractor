@@ -8,10 +8,10 @@ distinguish "still working" from "process died." This helper writes a
 heartbeat every `JOB_HEARTBEAT_INTERVAL_SECONDS` while the orchestrator is
 running, regardless of stage progress.
 
-P1-3 fix: heartbeat runs on a real OS thread (not asyncio.create_task) so
-even if the orchestrator's event loop is blocked by a long synchronous call
+Heartbeat runs on a real OS thread (not asyncio.create_task) so even if
+the orchestrator's event loop is blocked by a long synchronous call
 (PyMuPDF page processing, sync HF SDK, big GC pause) the heartbeat keeps
-firing. Without this, a CPU-bound stage looks "stuck" to the auto-recovery
+firing. Otherwise a CPU-bound stage looks "stuck" to the auto-recovery
 cron and triggers unnecessary recovery attempts.
 """
 

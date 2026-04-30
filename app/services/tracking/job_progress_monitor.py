@@ -14,24 +14,24 @@ import sentry_sdk
 logger = logging.getLogger(__name__)
 
 
-# Stage-specific timeout thresholds (in seconds)
-# These are realistic timeouts based on actual processing times for different stages
-# Updated 2025-12-26: Increased thresholds to reduce false "stuck job" alerts (MIVAA-7W, MIVAA-7X)
+# Stage-specific timeout thresholds (in seconds).
+# Sized to actual processing times so legitimately slow stages don't trip
+# false "stuck job" alerts.
 STAGE_TIMEOUTS = {
     "downloading": 120,              # 2 minutes - file download should be quick
     "extracting_text": 300,          # 5 minutes - text extraction is fast
-    "extracting_images": 1800,       # 30 minutes - image extraction can be slow for large PDFs (was 20min)
-    "generating_embeddings": 2400,   # 40 minutes - CLIP embeddings take time (4 specialized embeddings per image) (was 25min)
-    "product_discovery": 1200,       # 20 minutes - Claude API calls for product analysis (was 15min)
-    "focused_extraction": 900,       # 15 minutes - focused text extraction for products (NEW - fixes MIVAA-7W)
-    "chunking": 900,                 # 15 minutes - text chunking and processing (was 10min)
-    "storing_chunks": 900,           # 15 minutes - database operations (was 10min)
-    "image_processing": 1800,        # 30 minutes - same as extracting_images (was 20min - fixes MIVAA-7X)
-    "metadata_extraction": 1200,     # 20 minutes - metadata processing (was 15min)
+    "extracting_images": 1800,       # 30 minutes - image extraction can be slow for large PDFs
+    "generating_embeddings": 2400,   # 40 minutes - CLIP embeddings (4 specialized embeddings per image)
+    "product_discovery": 1200,       # 20 minutes - Claude API calls for product analysis
+    "focused_extraction": 900,       # 15 minutes - focused text extraction for products
+    "chunking": 900,                 # 15 minutes - text chunking and processing
+    "storing_chunks": 900,           # 15 minutes - database operations
+    "image_processing": 1800,        # 30 minutes - same as extracting_images
+    "metadata_extraction": 1200,     # 20 minutes - metadata processing
     "field_propagation": 120,        # 2 minutes  - sibling field propagation (DB reads/writes only)
     "dimension_extraction": 120,     # 2 minutes  - regex scan of text chunks for sizes/thickness
     "quality_enhancement": 1800,     # 30 minutes - Stage 5 quality validation
-    "default": 900                   # 15 minutes - fallback for unknown stages (was 10min)
+    "default": 900                   # 15 minutes - fallback for unknown stages
 }
 
 # Slow stage warning threshold (in seconds)
@@ -60,13 +60,9 @@ class JobProgressMonitor:
         self.last_report_time = datetime.utcnow()
         self.monitoring_task = None
         self.is_running = False
-        # 2026-04-11: Sentry rate-limiting for POTENTIAL STUCK JOB alerts.
-        # Previously fired every 60s for the entire time a job was stuck,
-        # generating ~20 Sentry events per stuck job per 20 minutes and
-        # 418 events total across this session. Now: fire once per stage
-        # when the threshold is first crossed, and re-fire at most every
-        # 10 minutes afterwards as a "still stuck" reminder. Resets when
-        # the stage transitions (see update_stage).
+        # Rate-limit POTENTIAL STUCK JOB alerts: fire once per stage on
+        # first threshold crossing, then at most every 10 minutes as a
+        # "still stuck" reminder. Reset on stage transition (see update_stage).
         self._stuck_alert_stage: Optional[str] = None          # which stage we last alerted for
         self._stuck_alert_last_fired: Optional[datetime] = None  # when we last fired for this stage
         self._stuck_alert_refire_interval_seconds = 600        # 10 min re-fire gap
@@ -99,7 +95,7 @@ class JobProgressMonitor:
             except asyncio.CancelledError:
                 pass
 
-        # CRITICAL FIX: Log only, don't send to Sentry (reduces noise)
+        # Log only — don't send to Sentry (reduces noise).
         logger.info(f"📊 Stopped progress monitoring for job {self.job_id}")
 
     def update_stage(self, stage: str, details: Optional[Dict[str, Any]] = None):
@@ -118,15 +114,14 @@ class JobProgressMonitor:
         self.current_stage = stage
         self.current_stage_start = datetime.utcnow()
 
-        # 2026-04-11: Reset stuck-job alert rate limiter on every stage
-        # transition so a new "stuck" incident on a different stage fires
-        # immediately instead of being suppressed by the re-fire window.
+        # Reset stuck-job alert rate limiter on every stage transition so a
+        # new "stuck" incident on a different stage fires immediately instead
+        # of being suppressed by the re-fire window.
         self._stuck_alert_stage = None
         self._stuck_alert_last_fired = None
 
-        # CRITICAL FIX: Only send to Sentry if stage took unusually long
-        # Use stage-specific threshold or SLOW_STAGE_THRESHOLD (5 minutes)
-        # This reduces false alerts for legitimately slow stages (MIVAA-7W)
+        # Only send to Sentry if the stage took unusually long. Use
+        # stage-specific threshold or SLOW_STAGE_THRESHOLD (5 minutes).
         previous_stage_name = self.stage_history[-1]["stage"] if self.stage_history else "start"
         stage_threshold = STAGE_TIMEOUTS.get(previous_stage_name, SLOW_STAGE_THRESHOLD)
 
@@ -260,8 +255,8 @@ class JobProgressMonitor:
                 "timestamp": datetime.utcnow().isoformat()
             })
 
-            # CRITICAL FIX: Use stage-specific timeouts instead of global 10-minute threshold
-            # This reduces false "stuck job" alerts for legitimately slow stages
+            # Use stage-specific timeouts so legitimately slow stages don't
+            # trip false "stuck job" alerts under a global threshold.
             stage_timeout = STAGE_TIMEOUTS.get(effective_current, STAGE_TIMEOUTS["default"])
 
             if time_in_current_stage > stage_timeout:
@@ -279,12 +274,9 @@ class JobProgressMonitor:
                     f"   🔄 Last heartbeat: {datetime.utcnow().isoformat()}"
                 )
 
-                # 2026-04-11: rate-limit Sentry alerts to fire-once per stage
-                # + re-fire every 10 minutes as a "still stuck" reminder.
-                # Previously fired on every 60s poll → ~20 events per stuck
-                # job → 418 events in this session. We still get the signal
-                # we need (first crossing + periodic reminder) without the
-                # 20× duplication per incident.
+                # Rate-limit Sentry alerts: fire once per stage on first
+                # threshold crossing, then re-fire every 10 minutes as a
+                # "still stuck" reminder.
                 now = datetime.utcnow()
                 should_fire = False
                 if self._stuck_alert_stage != self.current_stage:

@@ -308,17 +308,16 @@ async def create_single_product(
         logger=logger
     )
 
-    # ✨ NEW (2026-04): Fetch the canonical spec field taxonomy ONCE per
-    # product creation. Used for both icon metadata rollup AND the embedding
-    # text builder so they agree on what counts as a "spec field".
+    # Fetch the canonical spec field taxonomy ONCE per product creation.
+    # Used for both icon metadata rollup AND the embedding text builder
+    # so they agree on what counts as a "spec field".
     known_spec_fields = await _fetch_known_spec_fields(supabase, logger)
 
-    # ✨ NEW (2026-04): Roll up per-image icon_metadata into flat top-level
-    # spec keys (e.g. metadata['slip_resistance'] = 'R10'). The icon
-    # extraction pipeline writes per-image audit data to
-    # document_images.metadata['icon_metadata']; here we promote the highest
-    # -confidence value for each field onto the product itself, normalized
-    # against material_metadata_fields.
+    # Roll up per-image icon_metadata into flat top-level spec keys
+    # (e.g. metadata['slip_resistance'] = 'R10'). The icon extraction pipeline
+    # writes per-image audit data to document_images.metadata['icon_metadata'];
+    # here we promote the highest-confidence value for each field onto the
+    # product itself, normalized against material_metadata_fields.
     icon_rollup = await _merge_icon_metadata_into_product(
         document_id=document_id,
         image_indices=product.image_indices,
@@ -327,7 +326,7 @@ async def create_single_product(
         logger=logger,
     )
 
-    # ✨ NEW: Consolidate metadata from all sources
+    # Consolidate metadata from all sources
     try:
         from app.services.metadata.metadata_consolidation_service import MetadataConsolidationService
 
@@ -345,11 +344,10 @@ async def create_single_product(
         logger.warning(f"   ⚠️ Metadata consolidation failed, using AI metadata only: {e}")
         metadata = ai_metadata
 
-    # ✨ NEW (2026-04): Merge icon rollup into top-level metadata.
-    # Icon-extracted spec values are typically the most authoritative source
-    # for technical specs (R-rating, PEI, fire rating, frost resistance, etc)
-    # because they come from canonical icons in the catalog. We give them
-    # priority over AI text extraction guesses by writing them last.
+    # Merge icon rollup into top-level metadata. Icon-extracted spec values
+    # are the most authoritative source for technical specs (R-rating, PEI,
+    # fire rating, frost resistance) because they come from canonical icons
+    # in the catalog — write them last to override AI text guesses.
     if icon_rollup:
         for spec_field, spec_value in icon_rollup.items():
             metadata[spec_field] = spec_value
@@ -408,7 +406,7 @@ async def create_single_product(
         except Exception as cls_err:
             logger.warning(f"   ⚠️ Auto-classification skipped: {cls_err}")
 
-    # ✅ FIX: Extract description from multiple sources if product.description is empty
+    # Extract description from multiple sources if product.description is empty
     description = product.description or ''
     if not description.strip():
         # Try metadata.design.philosophy.value first (most common source)
@@ -470,16 +468,12 @@ async def create_single_product(
             if isinstance(colors, list):
                 embedding_text_parts.extend(colors)
 
-            # ✨ NEW (2026-04): Walk every known spec field from material_metadata_fields
-            # and append non-null values to the embedding text. This means a search
-            # like "porcelain tile R10 PEI IV frost resistant" matches a product whose
-            # spec icons have been extracted, even though those values were never
-            # written manually — they were rolled up from icon_metadata into top-level
-            # keys by `_merge_icon_metadata_into_product` above.
-            #
-            # This loop runs over the canonical taxonomy (single source of truth),
-            # not a hardcoded list, so adding a new spec to material_metadata_fields
-            # automatically flows it into Voyage embeddings without code changes.
+            # Walk every known spec field from material_metadata_fields and append
+            # non-null values to the embedding text. A search like
+            # "porcelain tile R10 PEI IV frost resistant" matches a product whose
+            # spec icons have been extracted (rolled up from icon_metadata above).
+            # The loop runs over the canonical taxonomy so adding a new spec to
+            # material_metadata_fields automatically flows it into embeddings.
             _embedded_spec_fields_so_far = {
                 'factory_name', 'factory_group_name', 'designer',
                 'material_category', 'zone_intent',

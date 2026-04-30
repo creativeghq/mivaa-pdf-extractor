@@ -85,7 +85,7 @@ class AIPricingConfig:
             "last_verified": "2026-04-19",
             "source": "https://docs.voyageai.com/docs/pricing",
             "dimensions": 1024,
-            "note": "LEGACY — kept for historical usage logs; replaced by voyage-4 on 2026-04-19"
+            "note": "LEGACY — kept for historical usage logs; replaced by voyage-4"
         }
     }
     
@@ -118,10 +118,8 @@ class AIPricingConfig:
     # Qwen Vision Model (A10G GPU)
     QWEN_PRICING = {
         # Stable internal identifier — kept as `qwen3-vl-32b` so existing
-        # callers in ai_call_logger / real_image_analysis_service don't
-        # need updating. Metadata reflects the actual deployed endpoint
-        # (renamed 2026-04-29: A10G→A100, repo Qwen3-VL-32B-Instruct→
-        # Qwen3.6-35B-A3B-FP8, service mh-qwen332binstruct→qwen3-6-35b-fp8).
+        # callers don't need updating. Metadata reflects the actual deployed
+        # endpoint (see `full_name` / `service` below).
         "qwen3-vl-32b": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),

@@ -74,12 +74,12 @@ async def process_product_images(
     workspace_id: str,
     job_id: str,
     product: Any,
-    physical_pages: List[int],  # ✅ NOW USING PHYSICAL PAGES (1-based)
+    physical_pages: List[int],  # 1-based physical pages
     catalog: Any,
     config: Dict[str, Any],
     logger: logging.Logger,
-    layout_regions: Optional[List[Any]] = None,  # ✅ NEW: YOLO layout regions with bbox data
-    tracker: Optional[Any] = None,  # ✅ NEW: ProgressTracker for per-image progress events
+    layout_regions: Optional[List[Any]] = None,  # YOLO layout regions with bbox data
+    tracker: Optional[Any] = None,  # ProgressTracker for per-image progress events
 ) -> Dict[str, Any]:
     """
     Process images for a single product (product-centric pipeline).
@@ -118,7 +118,7 @@ async def process_product_images(
     if has_spread_layout:
         logger.info(f"   📐 Spread layout detected")
 
-    # ✅ NEW: Build YOLO region lookup by physical page for better bbox data
+    # Build YOLO region lookup by physical page for better bbox data
     yolo_regions_by_page: Dict[int, List[Any]] = {}
     if layout_regions:
         logger.info(f"   🎯 YOLO layout regions available: {len(layout_regions)} regions")
@@ -212,7 +212,7 @@ async def process_product_images(
             for img_idx, img in enumerate(page_result.extracted_images):
                 bbox = img.get('bbox')
 
-                # ✅ FIX: Properly handle None or invalid bbox
+                # Properly handle None or invalid bbox
                 has_valid_bbox = (
                     bbox is not None and
                     isinstance(bbox, (list, tuple)) and
@@ -241,18 +241,17 @@ async def process_product_images(
                         img['physical_side'] = 'left' if is_left else 'right'
                         logger.debug(f"      📍 Image {img_idx} assigned to {'left' if is_left else 'right'} page (center_x={center_x:.1f}, mid_x={mid_x:.1f})")
                 else:
-                    # ✅ FIX: Track images without bbox for fallback assignment
+                    # Track images without bbox for fallback assignment
                     images_without_bbox.append((img_idx, img))
                     continue  # Will assign after loop
 
                 extracted_images_list.append(img)
 
-            # ✅ FIX: Fallback for images without valid bbox
-            # Try YOLO regions first, then distribute evenly
+            # Fallback for images without valid bbox: try YOLO regions first, then distribute evenly.
             if images_without_bbox:
                 logger.warning(f"      ⚠️ {len(images_without_bbox)} images without valid PyMuPDF bbox")
 
-                # ✅ NEW: Try to match images with YOLO regions by filename pattern
+                # Try to match images with YOLO regions by filename pattern
                 yolo_left_regions = yolo_regions_by_page.get(left_phys, [])
                 yolo_right_regions = yolo_regions_by_page.get(right_phys, [])
 

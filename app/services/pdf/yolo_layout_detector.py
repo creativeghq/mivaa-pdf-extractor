@@ -247,6 +247,56 @@ class YoloLayoutDetector:
             logger.error(f"Layout detection failed for page {page_num}: {e}")
             return LayoutDetectionResult(page_number=page_num, regions=[])
 
+    async def detect_from_image(
+        self,
+        image: Image.Image,
+        page_num: int,
+    ) -> LayoutDetectionResult:
+        """
+        Run YOLO layout detection on a pre-rendered PIL image.
+
+        Use this when the caller needs to render a non-trivial page region
+        (e.g. the left or right half of a spread layout) and pass the
+        result to YOLO without going through `convert_pdf_page_to_image`.
+
+        `page_num` is metadata only — it gets stamped onto each region's
+        bbox.page so callers can key regions by physical page number even
+        though YOLO sees one image at a time.
+
+        Args:
+            image: PIL Image (already rendered at desired DPI / clip)
+            page_num: page number to stamp on each detected region
+
+        Returns:
+            LayoutDetectionResult with regions sorted in reading order.
+            On disabled/unready endpoint, returns an empty result; never
+            raises so callers can degrade to text-only output.
+        """
+        if not self.enabled:
+            return LayoutDetectionResult(page_number=page_num, regions=[])
+
+        start_time = time.time()
+        try:
+            if not await self._ensure_endpoint_ready():
+                logger.warning(
+                    f"⚠️ YOLO endpoint not ready, skipping detection for page {page_num}"
+                )
+                return LayoutDetectionResult(page_number=page_num, regions=[])
+
+            regions = await self._call_yolo_endpoint(image, page_num)
+            regions = self._sort_by_reading_order(regions)
+            self.endpoint_manager.mark_used()
+
+            return LayoutDetectionResult(
+                page_number=page_num,
+                regions=regions,
+                detection_time_ms=int((time.time() - start_time) * 1000),
+                model_version="yolo-docparser",
+            )
+        except Exception as e:
+            logger.error(f"Layout detection (image-input) failed for page {page_num}: {e}")
+            return LayoutDetectionResult(page_number=page_num, regions=[])
+
     async def _call_yolo_endpoint(
         self,
         image: Image.Image,

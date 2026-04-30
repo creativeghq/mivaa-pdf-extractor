@@ -424,8 +424,8 @@ Respond with ONLY this JSON: {{"chunk_type": "<type>", "confidence": <0.0-1.0>, 
         """Check if content represents index/navigation content"""
         content_lower = content.lower()
 
-        # ✅ NEW: Detect multiple product names listed together (index pattern)
-        # Pattern: UPPERCASE words (product names) with minimal text between them
+        # Detect multiple product names listed together (index pattern):
+        # UPPERCASE words (product names) with minimal text between them.
         uppercase_words = re.findall(r'\b[A-Z]{2,}\b', content)
         if len(uppercase_words) >= 3:  # 3+ product names = likely index
             # Check if they're close together (index pattern)
@@ -435,18 +435,18 @@ Respond with ONLY this JSON: {{"chunk_type": "<type>", "confidence": <0.0-1.0>, 
                 # This looks like an index page with product listings
                 return True
 
-        # ✅ NEW: Detect "by DESIGNER" pattern repeated (index)
-        # Pattern: "by UPPERCASE" appearing multiple times indicates product listing
+        # Detect "by DESIGNER" pattern repeated — multiple "by UPPERCASE"
+        # occurrences indicate a product listing.
         by_pattern_count = len(re.findall(r'by\s+[A-Z]+', content))
         if by_pattern_count >= 3:
             return True
 
-        # ✅ NEW: Detect "COLLECTIONS INDEX" or similar text
+        # Detect "COLLECTIONS INDEX" or similar text
         if 'collections index' in content_lower or 'product index' in content_lower:
             return True
 
-        # ✅ NEW: Detect multiple size patterns (e.g., "20×20 cm") without descriptions
-        # This indicates a spec list rather than actual content
+        # Detect multiple size patterns (e.g., "20×20 cm") without descriptions —
+        # this indicates a spec list rather than actual content.
         size_patterns = re.findall(r'\d+[×x]\d+\s*cm', content)
         if len(size_patterns) >= 3:
             # Check if there's minimal descriptive text

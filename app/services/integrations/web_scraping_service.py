@@ -851,7 +851,7 @@ class WebScrapingService:
 
             chunk_ids = []
 
-            # ✅ NEW: Use smart chunking for long descriptions (>1500 chars)
+            # Use smart chunking for long descriptions (>1500 chars)
             if len(description) > 1500:
                 self.logger.info(f"   📚 Long description ({len(description)} chars) - using smart chunking for {product_name}")
 

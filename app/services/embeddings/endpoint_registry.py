@@ -110,9 +110,9 @@ class EndpointRegistry:
                     logger.warning("⚠️ SLIG endpoint not configured")
                     return None
 
-                # ✅ FIX: Pass the pre-warmed manager from registry to the client
-                # This allows the client to check endpoint status before inference
-                # and prevents 400 errors when endpoint is not ready
+                # Pass the pre-warmed manager from registry to the client so the
+                # client can check endpoint status before inference and avoid
+                # 400 errors on a not-ready endpoint.
                 self._slig_client = SLIGClient(
                     endpoint_url=settings.slig_endpoint_url,
                     token=settings.slig_endpoint_token,

@@ -38,7 +38,7 @@ class ProductProgressTracker:
         self.supabase = supabase if supabase is not None else get_supabase_client()
         self.table = "product_processing_status"
 
-        # ✅ FIX: Validate job exists in background_jobs table
+        # Validate job exists to fail fast instead of hitting an FK violation later.
         self._validate_job_exists()
 
         logger.info(f"ProductProgressTracker initialized for job {job_id}")
@@ -144,7 +144,7 @@ class ProductProgressTracker:
                 "status": ProductStatus.PENDING.value,
                 "stages_completed": [],
                 "metrics": {},
-                "metadata": metadata or {},  # ✅ FIX: Include metadata in initial insert
+                "metadata": metadata or {},
                 "created_at": datetime.utcnow().isoformat()
             }
 
@@ -393,7 +393,7 @@ class ProductProgressTracker:
                 error_stage=ProductStage(data["error_stage"]) if data.get("error_stage") else None,
                 error_timestamp=data.get("error_timestamp"),
                 metrics=ProductMetrics(**data.get("metrics", {})),
-                metadata=data.get("metadata", {}),  # ✅ FIX: Include metadata field
+                metadata=data.get("metadata", {}),
                 started_at=data.get("started_at"),
                 completed_at=data.get("completed_at")
             )

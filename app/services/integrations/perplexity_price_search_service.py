@@ -216,14 +216,14 @@ class PriceHit(BaseModel):
             "multiple rows from the same retailer (different variants)."
         ),
     )
-    # ── Product-identity verification (2026-04-25) ──
+    # ── Product-identity verification ──
     # Populated by product_identity_service after Firecrawl runs. Tells the
     # caller whether the page we scraped is the asked product, a variant
     # (different color/finish but same model), a family sibling (same brand,
-    # different model — dropped before reaching here), or couldn't be judged.
+    # different model), or couldn't be judged.
     match_kind: Optional[str] = Field(
         default=None,
-        description="'exact' | 'variant' | 'family' | 'mismatch' | 'unverifiable'. None means identity wasn't checked (pre-2026-04-25 row or identity service disabled).",
+        description="'exact' | 'variant' | 'family' | 'mismatch' | 'unverifiable'. None means identity wasn't checked.",
     )
     match_score: Optional[int] = Field(
         default=None,
@@ -582,9 +582,9 @@ class PerplexityPriceSearchService:
         mismatch/unverifiable, stamp match_kind/score/note onto each hit,
         and drop only `mismatch` rows.
 
-        Policy update 2026-04-27: family rows are KEPT (with `match_kind='family'`)
-        so the UI can render them under a "Similar Products" section. Stats /
-        sanity / alerts / chart treat `family` as inert downstream.
+        Family rows are KEPT (with `match_kind='family'`) so the UI can
+        render them under a "Similar Products" section. Stats / sanity /
+        alerts / chart treat `family` as inert downstream.
 
         `promoted_urls` is an optional dict of `{product_url: override_kind}` —
         when an admin has manually promoted a family row to tracked via the

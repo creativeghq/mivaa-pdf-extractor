@@ -38,9 +38,7 @@ class AIModelConfig(BaseModel):
     )
     
     # Image Classification Models — must match what the configured Qwen
-    # endpoint actually serves (vLLM 404s on a name mismatch). Updated
-    # 2026-04-29 from `Qwen/Qwen3-VL-32B-Instruct` to the new endpoint's
-    # repository id.
+    # endpoint actually serves (vLLM 404s on a name mismatch).
     classification_primary_model: str = Field(
         default="Qwen/Qwen3.6-35B-A3B-FP8",
         description="Primary image classification model (Qwen vision via HF Endpoint)"

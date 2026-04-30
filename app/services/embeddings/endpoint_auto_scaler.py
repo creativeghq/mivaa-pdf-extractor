@@ -62,9 +62,7 @@ class EndpointAutoScaler:
 
         # All HuggingFace endpoints to manage. Resolved from Settings (or env
         # var overrides) so the user can rename endpoints on HF without
-        # editing code. The previous hardcoded list 404'd every poll after
-        # the 2026-04-29 rename of mh-qwen332binstruct → qwen3-6-35b-fp8
-        # and mh-chandra → chandra-ocr-2.
+        # editing code.
         try:
             from app.config import get_settings
             _s = get_settings()
@@ -251,21 +249,12 @@ class EndpointAutoScaler:
         hardware-usage autoscaler handle actually spinning replicas up
         and down between 0 and that cap.
 
-        2026-04-30 fix: previously this called
-            endpoint.update(min_replica=target, max_replica=max_allowed)
-        which moved the FLOOR every time we wanted to scale up. With
-        target=4, that pinned `min_replica=4` and the endpoint stayed
-        at 4 replicas 24/7 (i.e. "Never scale to zero" in the HF UI),
-        until force_minimum() ran on idle. Costs are per-replica-hour,
-        so a single PDF with 11 products could leave 4 A100 replicas
-        burning $4.50/h × 4 = $18/h until idle cleanup. The whole point
-        of HF's `scaleToZeroTimeout=30` config is defeated.
-
-        New behavior: set `min_replica=0` always so scale-to-zero is
-        preserved, set `max_replica` to the desired cap so HF's
-        built-in `metric=hardwareUsage, threshold=80%` autoscaler
-        provisions only what's actually needed. The desired_replicas
-        argument therefore acts as a CEILING, not a floor.
+        Always set `min_replica=0` so scale-to-zero is preserved, and set
+        `max_replica` to the desired cap so HF's built-in
+        `metric=hardwareUsage, threshold=80%` autoscaler provisions only
+        what's actually needed. The desired_replicas argument therefore
+        acts as a CEILING, not a floor — moving the floor would pin
+        replicas at that count 24/7 and defeat scale-to-zero.
         """
         endpoint = self.get_endpoint(endpoint_name)
         if not endpoint:

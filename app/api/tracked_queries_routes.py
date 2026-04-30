@@ -137,13 +137,12 @@ class TrackedQueryResultRow(BaseModel):
     verified: bool = False  # True when Firecrawl confirmed the price from the live page
     notes: Optional[str] = None
     scraped_at: Optional[str] = None
-    # Product-identity verification (2026-04-25). null on rows created before
-    # identity classification shipped.
+    # Product-identity verification. Nullable on legacy rows.
     match_kind: Optional[str] = None       # 'exact' | 'variant' | 'unverifiable'
     match_score: Optional[int] = None      # 0-100
     match_note: Optional[str] = None       # e.g. 'Color differs: asked BLACK MATT, page shows WHITE'
     product_title: Optional[str] = None    # Exact name shown on retailer page. Disambiguates multiple rows from the same retailer (different variants).
-    # Sanity-band fields (2026-04-26). null on rows created before sanity bands shipped.
+    # Sanity-band fields. Nullable on legacy rows.
     is_anomaly: Optional[bool] = None
     anomaly_reason: Optional[str] = None
     rolling_median_at_check: Optional[float] = None
@@ -163,7 +162,7 @@ class TrackedQueryResponse(BaseModel):
     is_active: bool = True
     total_credits_used: int = 0
     created_at: str
-    # Alert opt-ins (2026-04-26)
+    # Alert opt-ins
     alert_channels: Optional[List[str]] = None
     alert_on_price_drop: bool = False
     alert_on_new_retailer: bool = False
@@ -399,7 +398,7 @@ async def delete_tracked_query(
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# Per-query result exclusions (2026-04-28)
+# Per-query result exclusions
 # ────────────────────────────────────────────────────────────────────────────
 
 
@@ -512,7 +511,7 @@ async def list_exclusions(
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# On-demand re-verification (2026-04-28)
+# On-demand re-verification
 # ────────────────────────────────────────────────────────────────────────────
 
 

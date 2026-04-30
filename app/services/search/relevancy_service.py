@@ -22,11 +22,8 @@ class RelevancyService:
         self.supabase_client = get_supabase_client()
 
 
-    # NOTE: create_chunk_image_relationships() was removed in 2026-04 cleanup.
-    # The function compared 1024D text embeddings against 768D visual embeddings via
-    # cosine similarity, which is mathematically invalid (different dimensions).
-    # The real producer of chunk_image_relationships is
-    # `entity_linking_service.link_images_to_chunks` which uses page_proximity.
+    # chunk_image_relationships are produced by
+    # `entity_linking_service.link_images_to_chunks` (page proximity), not here.
 
     async def create_product_image_relationships(
         self,
@@ -113,8 +110,8 @@ class RelevancyService:
                     products_processed += 1
                     continue
 
-                # ✅ FIX: page_range is a simple list of page numbers [12, 13, 14], not a list of dicts
-                # Get the min and max page numbers from the list
+                # page_range is a flat list of page numbers, e.g. [12, 13, 14].
+                # Take the min/max as the inclusive page span.
                 if isinstance(page_range, list) and len(page_range) > 0:
                     start_page = min(page_range)
                     end_page = max(page_range)
@@ -190,12 +187,10 @@ class RelevancyService:
         """
         logger.info(f"🔗 Creating product-image relationships for document {document_id}...")
 
-        # Note: chunk-image relationships are created by entity_linking_service
-        # using page_proximity, NOT by this service. The legacy cosine-similarity
-        # implementation was removed in 2026-04 (was mathematically broken — comparing
-        # 1024D text against 768D visual). The similarity_threshold parameter is
-        # retained for API compatibility but unused.
-        _ = similarity_threshold  # legacy parameter, kept for caller compatibility
+        # chunk-image relationships are created by entity_linking_service using
+        # page_proximity, not by this service. similarity_threshold is retained
+        # for API compatibility but unused here.
+        _ = similarity_threshold  # kept for caller compatibility
 
         product_image_count = await self.create_product_image_relationships(
             document_id=document_id,

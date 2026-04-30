@@ -303,7 +303,7 @@ class UnifiedSearchService:
             return await self._search_material(query, filters, workspace_id)
         elif strategy == SearchStrategy.KEYWORD:
             return await self._search_keyword(query, filters, workspace_id)
-        # ✅ NEW: Specialized CLIP embedding strategies
+        # Specialized embedding strategies
         elif strategy == SearchStrategy.COLOR:
             return await self._search_color(query, filters, workspace_id)
         elif strategy == SearchStrategy.TEXTURE:
@@ -432,8 +432,8 @@ class UnifiedSearchService:
                 return []
             
             query_embedding = embedding_result.get("embedding", [])
-            
-            # ✅ FIX: Use direct pgvector query instead of non-existent RPC
+
+            # Use direct pgvector query (no RPC indirection)
             if not self.supabase:
                 return []
 
@@ -508,7 +508,7 @@ class UnifiedSearchService:
             if not self.supabase:
                 return []
             
-            # ✅ FIX: Use VECS instead of non-existent RPC function
+            # Use VECS for image similarity search
             from app.services.embeddings.vecs_service import get_vecs_service
 
             vecs_service = get_vecs_service()
@@ -677,7 +677,7 @@ class UnifiedSearchService:
         Searches products and images by material properties.
         """
         try:
-            # ✅ FIX: Use direct query on products table instead of non-existent RPC
+            # Direct query on products table (no RPC indirection)
             if not self.supabase:
                 return []
 
@@ -772,7 +772,7 @@ class UnifiedSearchService:
                 pass
             return []
 
-    # ✅ NEW: Specialized CLIP embedding search methods
+    # Specialized embedding search methods
 
     async def _search_understanding(
         self,

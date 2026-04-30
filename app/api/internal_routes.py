@@ -1267,17 +1267,12 @@ async def reset_job(
     Reset a stuck / failed / stale job back to `pending` so the scheduler
     can pick it up again.
 
-    Historical note (2026-04-11): the previous revision wrote
-    `status='initialized'` which violated the
-    `background_jobs_status_check` CHECK constraint (the DB only accepts
-    pending / processing / completed / failed / cancelled / interrupted).
-    Every single reset call has been failing with a 500 ever since that
-    constraint was added. Sentry MIVAA-4ZW, MIVAA-4ZV.
+    Status must be one of pending / processing / completed / failed /
+    cancelled / interrupted (enforced by `background_jobs_status_check`).
 
-    Also: by default this endpoint refuses to reset a job that's already
-    in a terminal success state (`completed`). Overwriting a completed
-    job means discarding the successful result — almost always a
-    mistake. Pass `?force=true` to override when you actually want that.
+    By default this endpoint refuses to reset a job that's already in a
+    terminal success state (`completed`) — overwriting a completed job
+    discards the successful result. Pass `?force=true` to override.
 
     Args:
         job_id: Job ID to reset
@@ -1578,10 +1573,8 @@ async def regenerate_text_embeddings(
         raise HTTPException(status_code=500, detail=f"Failed to regenerate text embeddings: {str(e)}")
 
 
-# NOTE: The /backfill-product-embeddings endpoint was removed in 2026-04 cleanup
-# after running successfully against production (56/56 products backfilled).
-# Going forward, text_embedding_1024 is generated inline by stage_4_products
-# during the extraction pipeline — no backfill needed.
+# text_embedding_1024 is generated inline by stage_4_products during the
+# extraction pipeline — no backfill endpoint needed.
 
 
 # ============================================================================

@@ -792,10 +792,10 @@ async def discover_sources(
             latency_ms=result.latency_ms,
         )
 
-    # ── Per-product exclusions (2026-04-28): drop hits whose URL/domain has
-    #    been explicitly excluded by an admin. Filtering BEFORE persist means
-    #    excluded URLs never feed competitor_sources or price_history, so
-    #    they never appear in the chart/median/alerts.
+    # ── Per-product exclusions: drop hits whose URL/domain has been explicitly
+    #    excluded by an admin. Filtering BEFORE persist means excluded URLs
+    #    never feed competitor_sources or price_history, so they never appear
+    #    in the chart/median/alerts.
     try:
         ex = (
             sb.table("product_excluded_urls")
@@ -1011,14 +1011,13 @@ class MarketCheckResponse(BaseModel):
 
 def _compute_market_stats(hits: List[PriceHit]) -> MarketStats:
     """
-    Build min/max/median + verified count. Per 2026-04-25 product decision,
-    ONLY `exact` identity matches count toward statistics — variants are a
-    different SKU (different color/finish) and would inflate the range;
-    unverifiable rows lack identity confirmation so we can't trust them
-    either. `count` still returns the total number of priced rows because
-    the UI shows "3 of 8 priced and matched" style breakdowns.
+    Build min/max/median + verified count. Only `exact` identity matches count
+    toward statistics — variants are a different SKU (different color/finish)
+    and would inflate the range; unverifiable rows lack identity confirmation.
+    `count` still returns the total number of priced rows because the UI shows
+    "3 of 8 priced and matched" style breakdowns.
 
-    Additional exclusions (2026-04-25 round 2):
+    Additional exclusions:
       * out_of_stock rows — stale prices, not actionable as competitor data
       * extreme outliers (>3× or <1/3 of the median) — almost certainly a
         different product (shower-system vs spout, set vs single piece).
@@ -1873,7 +1872,7 @@ async def get_monitoring_jobs(
 
 
 # ============================================================================
-# Per-product result exclusions (catalog flow, 2026-04-28)
+# Per-product result exclusions (catalog flow)
 # ============================================================================
 # Mirrors the external /api/v1/prices/track/{id}/exclude endpoints. Admin-only
 # via RLS on `product_excluded_urls`. Excluded URLs/domains are filtered
@@ -2035,7 +2034,7 @@ async def list_product_exclusions(
 
 
 # ============================================================================
-# On-demand re-verification for catalog products (2026-04-28)
+# On-demand re-verification for catalog products
 # ============================================================================
 # Mirrors POST /api/v1/prices/track/{id}/verify on the external API. Re-runs
 # Firecrawl on selected (or all active) competitor_sources URLs and refreshes

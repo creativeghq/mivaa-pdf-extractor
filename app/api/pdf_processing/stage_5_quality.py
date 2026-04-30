@@ -21,7 +21,7 @@ async def process_stage_5_quality(
     job_id: str,
     workspace_id: str,
     catalog: Any,
-    physical_pages: List[int],  # ✅ FIXED: Now using physical pages (1-based)
+    physical_pages: List[int],  # 1-based physical pages
     products_created: int,
     images_processed: int,
     focused_extraction: bool,

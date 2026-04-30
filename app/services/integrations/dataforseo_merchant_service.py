@@ -33,8 +33,7 @@ logger = logging.getLogger(__name__)
 
 DATAFORSEO_BASE_URL = "https://api.dataforseo.com/v3"
 # DataForSEO Merchant products is async-only: task_post → poll task_get.
-# No /live/advanced endpoint for this data set (verified 2026-04-24: /live/advanced
-# under /merchant/ returns HTTP 404 from their API).
+# No /live/advanced endpoint for this data set (returns HTTP 404).
 TASK_POST_ENDPOINT = "/merchant/google/products/task_post"
 TASK_GET_ENDPOINT = "/merchant/google/products/task_get/advanced/{task_id}"
 # Priority 2 = "up to 60s turnaround", $0.002 per request. Priority 1 is cheaper
@@ -245,7 +244,7 @@ class DataForSeoMerchantService:
 
     def _parse_response(self, data: Dict[str, Any], limit: int) -> tuple[List[MerchantHit], int]:
         """
-        DataForSEO Merchant /products/task_get/advanced response shape (verified 2026-04-24):
+        DataForSEO Merchant /products/task_get/advanced response shape:
         {
           tasks: [{
             result: [{

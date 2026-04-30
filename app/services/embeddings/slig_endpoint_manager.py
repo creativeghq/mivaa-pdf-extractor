@@ -205,7 +205,7 @@ class SLIGEndpointManager:
         poll_interval = 5  # Check every 5 seconds
         max_wait = self.warmup_timeout
 
-        # 2026-04-11: HF "no GPU capacity" detector — see qwen_endpoint_manager
+        # HF "no GPU capacity" detector — see qwen_endpoint_manager
         # for the full rationale. Same pattern in all 4 managers.
         last_ready_replica = 0
         last_progress_time = time.time()

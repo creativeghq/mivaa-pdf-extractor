@@ -482,8 +482,7 @@ class UnifiedChunkingService:
                 chunks.append(chunk)
                 chunk_index += 1
 
-            # Move to next chunk with overlap
-            # FIX: Ensure we always move forward to prevent infinite loop
+            # Move to next chunk with overlap; always advance to avoid infinite loop
             advance = len(chunk_content) - self.config.overlap_size
             if advance <= 0:
                 # If overlap is too large, just move forward by at least 1 char

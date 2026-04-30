@@ -148,7 +148,7 @@ class Settings(BaseSettings):
         description="Maximum auto-restart attempts before a stuck job is hard-failed"
     )
 
-    # ✅ NEW: Chunking Enhancement Feature Flags (NOW ENABLED BY DEFAULT)
+    # Chunking Enhancement Feature Flags (enabled by default)
     enable_boundary_detection: bool = Field(default=True, env="ENABLE_BOUNDARY_DETECTION")
     enable_semantic_chunking: bool = Field(default=True, env="ENABLE_SEMANTIC_CHUNKING")
     enable_context_enrichment: bool = Field(default=True, env="ENABLE_CONTEXT_ENRICHMENT")
@@ -401,7 +401,7 @@ class Settings(BaseSettings):
     qwen_endpoint_name: str = Field(
         default="qwen3-6-35b-fp8",
         env="QWEN_ENDPOINT_NAME",
-        description="Qwen endpoint service name (renamed 2026-04-29 from mh-qwen332binstruct after the 4×T4 cluster was replaced with a single A100)"
+        description="Qwen endpoint service name"
     )
     qwen_namespace: str = Field(
         default="basiliskan",
@@ -858,25 +858,18 @@ class Settings(BaseSettings):
         crashing pydantic int/bool/float parsing at startup.
 
         Background: GitHub Actions expands ${{ secrets.FOO }} to '' when the
-        secret is unset. With `Environment=SLIG_RETRY_DELAY=` written to the
-        systemd unit, pydantic-settings tried to coerce '' to int and raised
-        ValidationError → crashloop (2026-04-24 incident). We substitute the
-        field's own declared default in that case, which is the behavior we
-        want whenever a secret just isn't set.
+        secret is unset. Without this, pydantic-settings tries to coerce ''
+        to int/float/bool and raises ValidationError at startup. We substitute
+        the field's own declared default in that case.
 
         Returning None would not work here: pydantic treats an explicitly
         supplied None as a *value*, not "use default," so None → int fails
         the same way '' → int did.
 
-        For str fields: previously we let '' through unchanged because some
-        fields (e.g. `openai_model = ""`) genuinely default to empty. That
-        meant `Environment=YOLO_ENDPOINT_URL=` from deploy.yml ALSO came
-        through as '' even when the field's default was a real URL — which
-        is what wedged the YOLO/Chandra warmup probe on 2026-04-30.
-
-        Refined rule: for str fields, fall back to the declared default
-        ONLY when that default is itself non-empty. So `'' → "https://..."`
-        is restored, but `'' → ""` stays as the explicit user choice.
+        Rule for str fields: fall back to the declared default only when that
+        default is itself non-empty. So `'' → "https://..."` is restored, but
+        `'' → ""` stays as the explicit user choice (some fields like
+        `openai_model = ""` genuinely default to empty).
         """
         if v != "":
             return v
@@ -1273,10 +1266,8 @@ class Settings(BaseSettings):
     def validate_qwen_model(cls, v):
         """Sanity-check qwen_model — only block obviously broken values.
 
-        Previously this hard-locked the value to `Qwen/Qwen3-VL-32B-Instruct`,
-        which actively prevented configuring the field for the 2026-04-29
-        endpoint swap to `Qwen/Qwen3.6-35B-A3B-FP8`. We don't try to maintain
-        an allow-list of valid Qwen IDs in code — just reject empty / non-Qwen
+        We don't maintain an allow-list of valid Qwen IDs in code (so endpoint
+        swaps don't require a code change) — just reject empty / non-Qwen
         values that are clearly wrong.
         """
         if not v or not isinstance(v, str):
@@ -1324,13 +1315,12 @@ class Settings(BaseSettings):
         }
     
     model_config = SettingsConfigDict(
-        # ✅ FIX: Enable environment variable loading from system environment
-        # This is critical for systemd services where env vars are set via Environment= directive
+        # Enable env-var loading from system environment (required for systemd
+        # services where env vars are set via Environment= directive).
         case_sensitive=False,
         # Allow loading from .env file if present (optional)
         env_file=".env",
         env_file_encoding="utf-8",
-        # ✅ CRITICAL: Read from system environment variables (systemd, docker, etc.)
         extra="ignore",  # Ignore extra fields in environment
     )
 

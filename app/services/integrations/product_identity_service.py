@@ -1,39 +1,24 @@
 """
 Product identity verification for price discovery.
 
-Problem this solves
--------------------
-The old pipeline verified that the retailer page had a readable price, but
-not that the page had the *right* product. Real-world validation (ORABELLA
-PRECIOSA basin faucet, 2026-04-25) surfaced rows like Casasolutionsgekas
-pointing to an Orabella shower column — same brand, totally different SKU,
-yet flagged "verified" because Firecrawl read a price off the page.
+Verifies that a scraped retailer page is the asked product, not a
+same-brand sibling. Pipeline:
 
-The fix, end-to-end:
+  1. Decompose query into facets ONCE (brand, model, type, variants).
+     Cached on tracked_queries.query_facets to skip repeat Haiku calls.
+  2. Pre-filter URLs that can't be product pages (homepages, search,
+     catalog, aggregator-wrapped) before paying Firecrawl credits.
+  3. Firecrawl extracts product_name + breadcrumb + visible_attributes
+     alongside the price (expanded PriceExtraction).
+  4. Haiku 4.5 batch-classifies each page vs the facets — returns
+     match_kind + match_score + match_note per hit.
+  5. Drop only `mismatch`. Keep `variant` rows with an annotation so the
+     UI can show a "Color differs" badge and stats can exclude them.
 
-  1. Decompose the query into facets ONCE per query (brand, model, type,
-     variants). Cached on tracked_queries.query_facets so repeated refreshes
-     don't re-pay for the Haiku call.
-  2. Pre-filter URLs that can't possibly be product pages — homepages,
-     `/search?q=`, `/catalog`, aggregator-wrapped links. Saves Firecrawl
-     credits on hits we'd drop later anyway.
-  3. Firecrawl scrapes the remaining URLs and now extracts product_name +
-     breadcrumb + visible_attributes alongside the price (expanded
-     PriceExtraction).
-  4. Haiku 4.5 classifies each scraped page against the query facets in a
-     SINGLE batched call. Returns match_kind + match_score + match_note
-     per hit.
-  5. Rows whose match_kind is 'mismatch' get dropped. 'variant' rows stay
-     but are labeled so the admin UI can render a "Color differs" badge
-     and exclude them from price statistics.
-
-Variant policy (per user decision 2026-04-25)
----------------------------------------------
-Same model, different color/finish/size → KEEP with variant annotation.
-Different model under the same brand → DROP (family matches are not useful
-for pricing). The classifier is soft on finish descriptors (MATT ≈ BLACK
-MATT ≈ MATTE BLACK) because retailers don't use consistent language —
-hard on brand and model identity.
+Variant policy: same model + different color/finish/size → KEEP with
+variant annotation. Different model under same brand → drop. Classifier
+is soft on finish descriptors (MATT ≈ BLACK MATT ≈ MATTE BLACK) and hard
+on brand + model identity.
 """
 
 from __future__ import annotations
@@ -643,13 +628,9 @@ class ProductIdentityService:
         # UI, the classifier sees that example on the next refresh.
         few_shot_block = self._build_few_shot_block()
 
-        # 2026-04-27: chunk large batches to avoid Haiku JSON truncation. We
-        # observed misshapen responses for ≥25 candidates because the JSON
-        # output sometimes exceeded max_tokens or the model trailed a stray
-        # token past the closing brace. 12 per batch is a comfortable ceiling
-        # — produces ≤ ~1.2K output tokens per call, leaves headroom on
-        # max_tokens=3000, and runs the chunks in parallel so end-to-end
-        # latency is unchanged.
+        # Chunk large batches to avoid Haiku JSON truncation — ≥25 candidates
+        # can exceed max_tokens or trail stray output past the closing brace.
+        # 12 per batch keeps output ≤ ~1.2K tokens; chunks run in parallel.
         BATCH_SIZE = 12
         if len(candidates) > BATCH_SIZE:
             chunks = [candidates[i:i + BATCH_SIZE] for i in range(0, len(candidates), BATCH_SIZE)]

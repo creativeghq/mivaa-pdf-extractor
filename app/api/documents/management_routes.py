@@ -279,9 +279,9 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
         logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
 
-        # ✅ CRITICAL FIX: Restart the job by re-triggering the processing pipeline
-        # The process_document_with_discovery function supports checkpoint recovery
-        # Documents are processed directly into the vector database
+        # Restart the job by re-triggering the processing pipeline.
+        # process_document_with_discovery supports checkpoint recovery.
+        # Documents are processed directly into the vector database.
 
         # Get the file content from storage
         try:
@@ -298,7 +298,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             filename = doc_data.get('filename', 'document.pdf')
             metadata = doc_data.get('metadata', {})
 
-            # CRITICAL FIX: If file_path is a local temp file, use file_url from metadata instead
+            # If file_path is a local temp file, use file_url from metadata instead
             if file_path and file_path.startswith('/tmp/'):
                 file_url = metadata.get('file_url')
                 if file_url:

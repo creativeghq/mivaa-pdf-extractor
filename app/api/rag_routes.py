@@ -3306,29 +3306,25 @@ async def process_document_with_discovery(
                     precompute_document_layout,
                 )
                 supabase_pre = get_supabase_client()
-                # Use PDF sheet count, NOT physical page count. Stage 1.5's
-                # YOLO pass iterates `range(page_count)` and opens each page
-                # via PyMuPDF, which only knows about PDF sheets. For a
-                # spread-layout catalog, total_pages=140 (physical halves)
-                # but total_pdf_pages=71 (actual sheets); passing 140 made
-                # YOLO try to open pages 71..139 → 60+ "page X not in
-                # document" errors on job 6a48637e (MIVAA-5C1, 5C2).
+                # Stage 1.5 iterates PHYSICAL pages internally (1..N) via
+                # `analyze_pdf_layout(pdf_path).physical_to_pdf_map` so it
+                # respects spread layouts (one PDF sheet → 2 physical
+                # pages, rendered as left/right clips). The chunker reads
+                # results keyed by physical page, so the cache shape has
+                # to match. We pass an optional hint from `catalog.total_pages`
+                # but Stage 1.5 derives the authoritative count itself.
                 _precompute_pdf_path = temp_pdf_path if 'temp_pdf_path' in locals() else file_path
-                _total_pages = (
-                    getattr(catalog, "total_pdf_pages", 0)
-                    or getattr(catalog, "total_pages", 0)
-                    or 0
-                )
-                if _total_pages > 0 and _precompute_pdf_path:
+                _physical_pages_hint = getattr(catalog, "total_pages", None)
+                if _precompute_pdf_path:
                     logger.info("=" * 80)
                     logger.info("📐 STAGE 1.5: DOCUMENT-LEVEL LAYOUT PRECOMPUTE")
                     logger.info("=" * 80)
                     precompute_summary = await precompute_document_layout(
                         document_id=document_id,
                         pdf_path=_precompute_pdf_path,
-                        total_pages=_total_pages,
                         supabase=supabase_pre,
                         logger=logger,
+                        total_physical_pages_hint=_physical_pages_hint,
                     )
                     job_storage[job_id]["metadata"] = {
                         **job_storage[job_id].get("metadata", {}),
@@ -3336,7 +3332,7 @@ async def process_document_with_discovery(
                     }
                 else:
                     logger.warning(
-                        "⚠️ [STAGE 1.5] Skipping precompute — no temp_pdf_path or total_pages"
+                        "⚠️ [STAGE 1.5] Skipping precompute — no temp_pdf_path"
                     )
             else:
                 logger.info("⏭️  [STAGE 1.5] Skipped (LAYOUT_PRECOMPUTE_ENABLED=False)")

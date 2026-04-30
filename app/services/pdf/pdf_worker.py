@@ -355,9 +355,9 @@ def execute_pdf_extraction_job(
         logger.info(f"Worker PDF Analysis: {total_pages} pages. Image-based: {is_image_based}")
 
         markdown_content = ""
-        page_chunks = None  # ✅ NEW: Will store page-aware data if page_list is provided
+        page_chunks = None  # Stores page-aware data when page_list is provided
 
-        # ✅ NEW: Check if page_list is provided for focused extraction
+        # Check if page_list is provided for focused extraction
         page_list = processing_options.get('page_list')
         if page_list:
             # Use page_chunks=True to preserve page metadata

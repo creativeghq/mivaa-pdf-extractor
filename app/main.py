@@ -1518,15 +1518,12 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     settings = get_settings()
                     qwen_config = settings.get_qwen_config()
 
-                    # ⚠️ Pull the LIVE endpoint URL from the registry manager,
-                    # NOT from settings. QWEN_ENDPOINT_URL is not set as an env
-                    # var in production — the real URL lives on
-                    # `qwen_manager.endpoint_url` after warmup/resume.
-                    # Reading from settings produces an empty base URL and the
-                    # health check fails with "Request URL is missing
-                    # 'http://' or 'https://' protocol" on every call. (Same
-                    # bug class as the _try_qwen_material_analysis fix landed
-                    # in 2026-04-11 commit 71b7d3d.)
+                    # Pull the LIVE endpoint URL from the registry manager, not
+                    # from settings: QWEN_ENDPOINT_URL is not set as an env var
+                    # in production — the real URL lives on
+                    # `qwen_manager.endpoint_url` after warmup/resume. Reading
+                    # from settings produces an empty base URL and the health
+                    # check fails with a missing-protocol error.
                     qwen_endpoint_url = qwen_config.get('endpoint_url') or ''
                     try:
                         from app.services.embeddings.endpoint_registry import endpoint_registry
@@ -2362,7 +2359,7 @@ def custom_openapi():
         "uptime": "99.5%+",
         "version": "2.4.0",
         "last_updated": "2025-01-20",
-        "latest_enhancement": "System Health Monitoring - Database connection pool health, job monitor status, query performance metrics (95-98% faster with indexes), circuit breaker pattern, retry logic with exponential backoff. Fixes Sentry issues MIVAA-4Z, MIVAA-51, MIVAA-50."
+        "latest_enhancement": "System Health Monitoring - Database connection pool health, job monitor status, query performance metrics (95-98% faster with indexes), circuit breaker pattern, retry logic with exponential backoff."
     }
 
     app.openapi_schema = openapi_schema

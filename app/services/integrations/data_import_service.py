@@ -35,7 +35,7 @@ from app.services.images.image_processing_service import ImageProcessingService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
-import sentry_sdk  # ✅ NEW: Sentry integration
+import sentry_sdk
 
 # Category → default unit mapping (mirrors material_categories.default_unit)
 _CATEGORY_DEFAULT_UNITS = {
@@ -70,7 +70,7 @@ class DataImportService:
             overlap_size=100
         ))
 
-        # ✅ NEW: Image processor for classification and CLIP embeddings (lazy init)
+        # Image processor for classification and CLIP embeddings (lazy init)
         self.image_processor = None
 
         # Embedding service for inline text-embedding generation
@@ -136,7 +136,7 @@ class DataImportService:
         Returns:
             Processing result with statistics
         """
-        # ✅ NEW: Start Sentry transaction for performance monitoring
+        # Sentry transaction for performance monitoring
         with sentry_sdk.start_transaction(op="xml_import", name="process_import_job") as transaction:
             transaction.set_tag("job_id", job_id)
             transaction.set_tag("workspace_id", workspace_id)
@@ -147,7 +147,6 @@ class DataImportService:
                 # ✅ Stage: INITIALIZED
                 await self._log_stage(job_id, XmlImportStage.INITIALIZED, "started")
 
-                # ✅ NEW: Add breadcrumb
                 sentry_sdk.add_breadcrumb(
                     category="xml_import",
                     message=f"Starting XML import job {job_id}",
@@ -178,7 +177,6 @@ class DataImportService:
 
                 logger.info(f"📦 Processing {total_products} products in batches of {self.batch_size}")
 
-                # ✅ NEW: Set transaction data
                 transaction.set_data("total_products", total_products)
                 transaction.set_data("batch_size", self.batch_size)
 
@@ -205,7 +203,6 @@ class DataImportService:
 
                     logger.info(f"🔄 Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}")
 
-                    # ✅ NEW: Add breadcrumb for batch processing
                     sentry_sdk.add_breadcrumb(
                         category="xml_import",
                         message=f"Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}",
@@ -329,7 +326,6 @@ class DataImportService:
                 # ✅ Stage: COMPLETED
                 await self._log_stage(job_id, XmlImportStage.COMPLETED, "completed", items=processed_count)
 
-                # ✅ NEW: Add completion breadcrumb
                 sentry_sdk.add_breadcrumb(
                     category="xml_import",
                     message=f"XML import job {job_id} completed successfully",
@@ -342,7 +338,6 @@ class DataImportService:
                     }
                 )
 
-                # ✅ NEW: Set transaction status
                 transaction.set_status("ok")
 
                 return {
@@ -357,10 +352,7 @@ class DataImportService:
             except Exception as e:
                 logger.error(f"❌ Import job {job_id} failed: {e}", exc_info=True)
 
-                # ✅ NEW: Capture exception in Sentry
                 sentry_sdk.capture_exception(e)
-
-                # ✅ NEW: Set transaction status
                 transaction.set_status("internal_error")
 
                 # Mark job as failed
@@ -743,7 +735,7 @@ class DataImportService:
 
             logger.info(f"📷 Processing {len(successful_images)} images for product {product_id}")
 
-            # ✅ NEW: Prepare images for classification and CLIP generation
+            # Prepare images for classification and CLIP generation
             images_for_processing = []
             for img in successful_images:
                 images_for_processing.append({
@@ -760,7 +752,6 @@ class DataImportService:
                     'product_id': product_id
                 })
 
-            # ✅ NEW: Get image processor and classify images
             image_processor = self._get_image_processor(workspace_id)
 
             logger.info(f"   🤖 Classifying {len(images_for_processing)} images")
@@ -774,7 +765,7 @@ class DataImportService:
 
             logger.info(f"   ✅ Classification: {len(material_images)} material, {len(non_material_images)} non-material")
 
-            # ✅ NEW: Generate CLIP embeddings for ALL images (as requested)
+            # Generate CLIP embeddings for ALL images
             all_images = material_images + non_material_images
 
             if all_images:
@@ -858,7 +849,7 @@ class DataImportService:
 
             chunk_ids = []
 
-            # ✅ NEW: Use smart chunking for long descriptions (>1500 chars)
+            # Use smart chunking for long descriptions (>1500 chars)
             if len(description) > 1500:
                 logger.info(f"📚 Long description ({len(description)} chars) - using smart chunking for {product_name}")
 

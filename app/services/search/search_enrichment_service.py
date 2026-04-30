@@ -79,11 +79,11 @@ class SearchEnrichmentService:
                     'image_details': {}
                 }
 
-                # ✅ NEW: Get image details including caption (actual description)
+                # Get image details including caption (actual description)
                 image_details = await self.get_image_details(image_id)
                 enriched['image_details'] = image_details
 
-                # ✅ NEW: Use caption as description if available
+                # Use caption as description if available
                 if image_details.get('caption'):
                     enriched['image_description'] = image_details['caption']
 
@@ -217,7 +217,7 @@ class SearchEnrichmentService:
                 for rel in response.data:
                     product_data = rel.get('products')
                     if product_data:
-                        # ✅ NEW: Use image_caption as fallback if description is empty
+                        # Use image_caption as fallback if description is empty
                         product_description = product_data.get('description') or ''
                         if not product_description.strip() and image_caption:
                             product_description = image_caption
@@ -285,8 +285,8 @@ class SearchEnrichmentService:
         """
         Get image details including caption from document_images.
 
-        ✅ NEW: Retrieves image caption and product_name which contain
-        the actual descriptions (since products.description is often empty).
+        Retrieves image caption and product_name which contain the actual
+        descriptions (since products.description is often empty).
 
         Args:
             image_id: Image UUID

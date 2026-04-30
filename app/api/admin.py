@@ -1217,7 +1217,7 @@ async def test_product_creation(
     workspace_id: str = None
 ):
     """
-    ✅ NEW: Test endpoint for enhanced product creation.
+    Test endpoint for enhanced product creation.
     Tests the improved product detection with no limits and better filtering.
     """
     try:

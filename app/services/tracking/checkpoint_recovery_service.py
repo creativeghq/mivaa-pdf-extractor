@@ -445,7 +445,7 @@ class CheckpointRecoveryService:
                     logger.info(f"✅ Checkpoint valid: no chunks created (focused extraction)")
                     return True
 
-                # FIXED: If no chunk_ids but we have document_id, verify by document_id instead
+                # If no chunk_ids but we have document_id, verify by document_id instead
                 if not chunk_ids and document_id:
                     result = self.supabase_client.client.table("document_chunks")\
                         .select("id", count="exact")\
@@ -483,7 +483,7 @@ class CheckpointRecoveryService:
                 document_id = data.get("document_id")
                 chunks_created = data.get("chunks_created", 0)
 
-                # FIXED: If no chunk_ids but we have document_id, verify by document_id instead
+                # If no chunk_ids but we have document_id, verify by document_id instead
                 if not chunk_ids and document_id:
                     # Query document_chunks where text_embedding is not null for this document
                     result = self.supabase_client.client.table("document_chunks")\

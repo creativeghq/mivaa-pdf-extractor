@@ -195,7 +195,7 @@ async def process_single_product(
 
         from app.api.pdf_processing.stage_1_focused_extraction import extract_product_pages
 
-        # ✅ NEW: extract_product_pages now returns a dict with layout detection results
+        # extract_product_pages returns a dict with layout detection results.
         # Pass catalog for spread layout info (physical page -> PDF page mapping)
         extraction_result = await extract_product_pages(
             file_content=file_content,
@@ -424,7 +424,7 @@ async def process_single_product(
         )
         result.chunks_created = chunks_created
 
-        # ✅ FIX: Update tracker with text embeddings count
+        # Update tracker with text embeddings count
         if tracker:
             await tracker.update_database_stats(
                 chunks_created=chunks_created,
@@ -529,12 +529,12 @@ async def process_single_product(
                 workspace_id=workspace_id,
                 job_id=job_id,
                 product=product,
-                physical_pages=physical_pages,  # ✅ FIXED: Now using physical pages (1-based)
+                physical_pages=physical_pages,  # 1-based physical pages
                 catalog=catalog,
                 config=config,
                 logger=logger_instance,
-                layout_regions=layout_regions,  # ✅ NEW: Pass YOLO layout regions for bbox data
-                tracker=tracker,  # ✅ NEW: Per-image progress events visible in admin UI
+                layout_regions=layout_regions,  # YOLO layout regions for bbox data
+                tracker=tracker,  # Per-image progress events visible in admin UI
             )
 
             images_processed = image_result.get('images_processed', 0)
@@ -579,14 +579,8 @@ async def process_single_product(
         logger_instance.info(f"✅ Processed {images_processed} images for {product.name}")
         logger_instance.info(f"✅ Generated {clip_embeddings} CLIP embeddings for {product.name}")
 
-        # ✅ FIX: Update tracker with CLIP embeddings count
-        # 2026-04-10: kwarg renamed images_stored → images_extracted to match
-        # ProgressTracker.update_database_stats() signature (the tracker uses
-        # `images_extracted` everywhere; `images_stored` was a stale name from
-        # an older schema). Was producing
-        # `update_database_stats() got an unexpected keyword argument 'images_stored'`
-        # → Stage 4 product persistence crash → checkpoint validation reports
-        # 0 products / 0 chunks / 0 images.
+        # Update tracker with CLIP embeddings count.
+        # ProgressTracker.update_database_stats() expects `images_extracted`, not `images_stored`.
         if tracker:
             await tracker.update_database_stats(
                 images_extracted=images_processed,
@@ -653,8 +647,8 @@ async def process_single_product(
         if not product_db_id:
             raise Exception(f"Product DB ID not found for {product.name} - product should have been created in Stage 0")
 
-        # Update product with extracted metadata from Stage 1
-        # FIXED: MERGE with existing metadata instead of REPLACING
+        # Update product with extracted metadata from Stage 1.
+        # MERGE with existing metadata to preserve discovery metadata.
         extracted_metadata = extraction_result.get('metadata', {})
         if extracted_metadata:
             try:
@@ -863,7 +857,7 @@ async def process_single_product(
             product_id=product_db_id,
             product_name=product.name,
             document_id=document_id,
-            physical_pages=set(physical_pages),  # ✅ FIXED: Using physical_pages (1-based)
+            physical_pages=set(physical_pages),  # 1-based physical pages
             logger=logger_instance
         )
 
@@ -876,7 +870,7 @@ async def process_single_product(
         result.relationships_created = relationships_created
         logger_instance.info(f"✅ Created {relationships_created} relationships")
 
-        # ✅ FIX: Update tracker with relationships count
+        # Update tracker with relationships count
         if tracker:
             await tracker.update_database_stats(
                 relations_created=relationships_created,

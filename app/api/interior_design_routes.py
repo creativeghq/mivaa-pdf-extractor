@@ -97,13 +97,13 @@ IMAGE_TO_IMAGE_MODELS = [
     {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
      "input_schema": "flux_lora_interior"},
     {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.018},
-    # Restored: was returning 404 because no version hash — versioned endpoint now used (confirmed live 2026-03-22)
+    # Versioned endpoint required — no-version requests return 404.
     {"id": "interior-v2", "name": "Interior V2", "provider": "replicate",
      "model": "jschoormans/interior-v2",
      "version": "8372bd24c6011ea957a0861f0146671eed615e375f038c13259c1882e3c8bac7",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
      "input_schema": "interior_v2"},
-    # Restored: was returning 404 because no version hash — versioned endpoint now used (confirmed live 2026-03-22)
+    # Versioned endpoint required — no-version requests return 404.
     {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate",
      "model": "adirik/interior-design",
      "version": "76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38",

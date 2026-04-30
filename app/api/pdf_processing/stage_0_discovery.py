@@ -39,7 +39,7 @@ async def process_stage_0_discovery(
     tracker: Any,
     checkpoint_recovery_service: Any,
     logger: Any,
-    temp_pdf_path: Optional[str] = None,  # ✅ NEW: Optional existing temp path
+    temp_pdf_path: Optional[str] = None,  # Optional existing temp path
     test_single_product: bool = False  # 🧪 TEST MODE: Process only first product
 ) -> Dict[str, Any]:
     """
@@ -417,7 +417,7 @@ async def process_stage_0_discovery(
 
     logger.info(f"📊 Progress updated: 10% (Stage 0 complete - {products_discovered} products discovered)")
 
-    # ✅ NEW: Save discovered entities to document_entities table
+    # Save discovered entities to document_entities table
     entity_ids = []
     if any(cat in extract_categories for cat in ["certificates", "logos", "specifications"]):
         try:

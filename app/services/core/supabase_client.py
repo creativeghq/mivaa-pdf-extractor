@@ -386,8 +386,8 @@ class SupabaseClient:
             image_type = ai_classification.get('classification') or 'material_sample'
             # Valid types: material_closeup, material_in_situ, non_material
 
-            # ✅ FIX: Validate bbox before saving to prevent constraint violations
-            # bbox must be None OR [x, y, width, height] with values 0-1
+            # Validate bbox before saving to prevent constraint violations.
+            # bbox must be None OR [x, y, width, height] with values 0-1.
             validated_bbox = None
             if bbox is not None:
                 if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
@@ -416,9 +416,9 @@ class SupabaseClient:
                 'page_number': page_num,
                 'confidence': 0.95,
                 'processing_status': 'completed',
-                'category': final_category,  # ✅ FIXED: Use AI classification to set category
-                'source_type': 'pdf_processing',  # ✅ NEW: Track source type
-                'source_job_id': job_id,  # ✅ NEW: Track source job
+                'category': final_category,  # AI-derived category
+                'source_type': 'pdf_processing',
+                'source_job_id': job_id,
                 # Extraction metadata
                 'extraction_method': extraction_method,
                 'bbox': bbox,
@@ -445,7 +445,7 @@ class SupabaseClient:
                     'quality_score': image_info.get('quality_score'),
                     'file_size': image_info.get('size_bytes'),
                     'extracted_at': datetime.utcnow().isoformat(),
-                    # ✅ NEW: Store AI classification results
+                    # Store AI classification results
                     'ai_classification': {
                         'is_material': is_material,
                         'confidence': ai_classification.get('confidence'),
@@ -453,7 +453,7 @@ class SupabaseClient:
                         'model': ai_classification.get('model'),
                         'classification': ai_classification.get('classification')
                     } if ai_classification else None,
-                    # ✅ NEW: Store vision-guided metadata
+                    # Store vision-guided metadata
                     'vision_guided': {
                         'bbox': bbox,
                         'confidence': detection_confidence,
@@ -461,7 +461,7 @@ class SupabaseClient:
                         'model': vision_model or image_info.get('vision_model'),
                         'product_name': product_name
                     } if extraction_method == 'vision_guided' else None,
-                    # ✅ NEW: 4-Layer extraction metadata
+                    # 4-Layer extraction metadata
                     'layer_info': {
                         'layer': layer or image_info.get('layer'),
                         'captures_vector_graphics': captures_vector_graphics if captures_vector_graphics is not None else image_info.get('captures_vector_graphics'),

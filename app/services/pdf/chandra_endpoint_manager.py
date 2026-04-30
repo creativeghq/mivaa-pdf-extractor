@@ -229,7 +229,7 @@ class ChandraEndpointManager:
         poll_interval = 5  # Check every 5 seconds
         max_wait = self.warmup_timeout
 
-        # 2026-04-11: HF "no GPU capacity" detector — see qwen_endpoint_manager
+        # HF "no GPU capacity" detector — see qwen_endpoint_manager
         # for the full rationale. Same pattern in all 4 managers.
         last_ready_replica = 0
         last_progress_time = time.time()
@@ -376,13 +376,10 @@ class ChandraEndpointManager:
         """
         Test if Chandra endpoint is alive via its /health route.
 
-        2026-04-11: Switched from POST /v1/chat/completions to GET /health.
-        Chandra's chat route returns HTTP 400 "paused, ask a maintainer to
-        restart it" when the LLM is scaled to zero, even though the
-        container itself is up and the /health route responds with
-        {"status":"ok"}. The old behavior never recognized a paused endpoint
-        as "alive" and the warmup loop timed out after 300s on every job
-        that hit a cold Chandra.
+        Use GET /health, not POST /v1/chat/completions: the chat route returns
+        HTTP 400 "paused, ask a maintainer to restart it" when the LLM is
+        scaled to zero even though the container is up, so probing it would
+        miss paused-but-alive endpoints and stall warmup.
 
         Returns:
             True if endpoint responds with 200, False otherwise.
@@ -536,17 +533,13 @@ class ChandraEndpointManager:
             "Content-Type": "application/json",
         }
         api_url = self.endpoint_url.rstrip('/') + '/v1/chat/completions'
-        # Bug O fix (2026-04-30): Chandra was returning prose ("The image
-        # is a spread from a catalog...") instead of structured bbox-JSON
-        # for stylized catalog images. Three changes that together force
-        # the model into strict OCR mode:
-        #   1. system message that locks the role to OCR-engine and
-        #      forbids prose explicitly
+        # Three settings together force the model into strict OCR mode
+        # (otherwise it returns prose like "The image is a spread from a
+        # catalog..." for stylized inputs):
+        #   1. system message locks the role to OCR-engine and forbids prose
         #   2. text-before-image in the user message (some llama.cpp VLMs
-        #      follow whichever instruction comes first; image-first was
-        #      letting the model "describe what you see" by default)
-        #   3. temperature=0 (was unset → llama.cpp default ~0.8 →
-        #      creative output)
+        #      follow whichever instruction comes first)
+        #   3. temperature=0 — llama.cpp default ~0.8 produces creative output
         payload = {
             "model": CHANDRA_V2_MODEL_ID,
             "messages": [

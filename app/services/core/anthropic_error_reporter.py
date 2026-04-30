@@ -10,12 +10,11 @@ when the call fails, then return an empty / default result so the pipeline keeps
 moving.
 
 That swallows infrastructure problems. When the MIVAA ANTHROPIC_API_KEY hits
-zero balance (real incident 2026-04-11), every one of these services starts
-emitting `credit balance is too low` warnings to the journal — but nothing
-reaches Sentry because warnings aren't captured by default. The job reports
-`completed=100%` and the admin UI shows green, while products land in the DB
-with empty descriptions and zero spec rollup because Claude never actually
-produced the enrichment content.
+zero balance, every one of these services starts emitting `credit balance is
+too low` warnings to the journal — but nothing reaches Sentry because warnings
+aren't captured by default. The job reports `completed=100%` and the admin UI
+shows green, while products land in the DB with empty descriptions and zero
+spec rollup because Claude never actually produced the enrichment content.
 
 This module gives those services a single, uniform way to surface Anthropic
 failures to Sentry with structured tags so on-call sees them immediately.

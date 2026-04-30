@@ -50,9 +50,7 @@ logger = logging.getLogger(__name__)
 
 # Mapping between our short names and the HuggingFace endpoint names used
 # by the auto-scaler. Resolved from `Settings.*_endpoint_name` so the user
-# can rename endpoints on HF without editing code (e.g. the 2026-04-29
-# rename of `mh-qwen332binstruct` → `qwen3-6-35b-fp8` and
-# `mh-chandra` → `chandra-ocr-2`).
+# can rename endpoints on HF without editing code.
 def _resolve_hf_endpoint_names() -> Dict[str, str]:
     try:
         from app.config import get_settings

@@ -153,7 +153,7 @@ class VecsService:
                 dimension=dimension
             )
 
-            # ✅ FIX: Create HNSW index for fast similarity search (if not exists)
+            # Create HNSW index for fast similarity search (if not exists)
             if create_index:
                 try:
                     # HNSW parameters for optimal performance:

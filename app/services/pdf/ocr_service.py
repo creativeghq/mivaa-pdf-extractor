@@ -1,9 +1,10 @@
 """
 OCR Service for multi-modal text extraction from images.
 
-This module provides OCR capabilities using Chandra (HuggingFace cloud endpoint)
-as primary OCR, with EasyOCR as local fallback when Chandra is unavailable.
-Integrates with the Material Kai Vision Platform for enhanced multi-modal processing.
+Two-tier chain:
+
+    1. Chandra v2 cloud endpoint (HuggingFace, GPU, structured bbox-JSON)
+    2. Tesseract CLI (local, deterministic, last-resort fallback)
 """
 
 import asyncio
@@ -27,19 +28,6 @@ try:
 except ImportError:
     REGISTRY_AVAILABLE = False
 
-# Lazy import for EasyOCR (fallback only — avoids loading torch at startup)
-_easyocr_module = None
-
-def _get_easyocr():
-    global _easyocr_module
-    if _easyocr_module is None:
-        import easyocr as _eo
-        _easyocr_module = _eo
-        # Fix for Pillow 10.0+ compatibility with EasyOCR
-        if not hasattr(Image, 'ANTIALIAS'):
-            Image.ANTIALIAS = Image.LANCZOS
-    return _easyocr_module
-
 logger = logging.getLogger(__name__)
 
 
@@ -60,7 +48,7 @@ class OCRResult:
     confidence: float
     bbox: Optional[List[int]] = None  # [x1, y1, x2, y2]
     language: Optional[str] = None
-    method: Optional[str] = None  # 'chandra', 'easyocr', or 'tesseract'
+    method: Optional[str] = None  # 'chandra' or 'tesseract'
 
 
 @dataclass
@@ -174,10 +162,9 @@ class OCRService:
     """
     OCR Service providing text extraction from images.
 
-    Strategy (Chandra-first):
-    1. Try Chandra cloud endpoint first (high quality, GPU-accelerated)
-    2. Fall back to EasyOCR if Chandra unavailable/fails (local, CPU)
-    3. Pytesseract as last resort
+    Two-tier chain:
+    1. Chandra v2 cloud endpoint (high quality, GPU, structured bbox-JSON)
+    2. Pytesseract (local, deterministic, last-resort fallback)
     """
 
     def __init__(self, config: Optional[OCRConfig] = None):
@@ -189,7 +176,6 @@ class OCRService:
         """
         self.config = config or OCRConfig()
         self.preprocessor = ImagePreprocessor()
-        self._easyocr_reader = None
         self._initialized = False
 
         # Initialize Chandra Endpoint Manager - prefer warmed-up manager from registry
@@ -226,66 +212,10 @@ class OCRService:
         logger.info(f"OCR Service initialized with languages: {self.config.languages}")
         self._initialized = True
 
-    def _ensure_easyocr(self) -> None:
-        """Lazy-load EasyOCR reader on first use (avoids loading torch at startup)."""
-        if self._easyocr_reader is None:
-            try:
-                easyocr = _get_easyocr()
-                self._easyocr_reader = easyocr.Reader(
-                    self.config.languages,
-                    gpu=self.config.use_gpu
-                )
-                logger.info("EasyOCR reader initialized (fallback)")
-            except Exception as e:
-                logger.warning(f"EasyOCR initialization failed: {e}")
-                self._easyocr_reader = None
-
     def initialize(self) -> None:
-        """Initialize OCR service. Chandra is ready from __init__; EasyOCR is lazy."""
+        """Initialize OCR service. Chandra is ready from __init__; Tesseract is built-in."""
         self._initialized = True
-        logger.info("OCR Service initialized (Chandra primary, EasyOCR lazy fallback)")
-    
-    def extract_text_easyocr(self, image: np.ndarray) -> List[OCRResult]:
-        """
-        Extract text using EasyOCR (local fallback).
-
-        Args:
-            image: Input image as numpy array
-
-        Returns:
-            List of OCR results with text, confidence, and bounding boxes
-        """
-        self._ensure_easyocr()
-        if self._easyocr_reader is None:
-            raise RuntimeError("EasyOCR not available")
-
-        try:
-            results = self._easyocr_reader.readtext(image)
-            ocr_results = []
-            
-            for bbox, text, confidence in results:
-                if confidence >= self.config.confidence_threshold:
-                    # Convert bbox to [x1, y1, x2, y2] format
-                    bbox_coords = [
-                        int(min(point[0] for point in bbox)),  # x1
-                        int(min(point[1] for point in bbox)),  # y1
-                        int(max(point[0] for point in bbox)),  # x2
-                        int(max(point[1] for point in bbox))   # y2
-                    ]
-                    
-                    ocr_results.append(OCRResult(
-                        text=text.strip(),
-                        confidence=confidence,
-                        bbox=bbox_coords,
-                        method='easyocr'
-                    ))
-            
-            logger.debug(f"EasyOCR extracted {len(ocr_results)} text regions")
-            return ocr_results
-            
-        except Exception as e:
-            logger.error(f"EasyOCR extraction failed: {str(e)}")
-            raise
+        logger.info("OCR Service initialized (Chandra primary, Tesseract fallback)")
     
 
     def _call_chandra(self, image: np.ndarray) -> Optional[List[OCRResult]]:
@@ -361,16 +291,12 @@ class OCRService:
         """
         Extract text from image using Chandra-first strategy.
 
-        Strategy (2-tier — EasyOCR removed 2026-04-30):
+        Strategy (2-tier):
         1. Try Chandra cloud endpoint FIRST (high quality, GPU, structured bbox-JSON)
         2. Pytesseract as last resort (local, CPU-light, deterministic)
 
-        EasyOCR was removed because:
-        - Loaded a 600 MB PyTorch model on CPU on first miss → caused the
-          memory thrash + asyncio stall on job b7d70de1
-        - Quality advantage over Tesseract was small; both are inferior to
-          Chandra and only matter when Chandra is unavailable
-        - Tesseract is light, deterministic, and "valid text or nothing"
+        Tesseract is light, deterministic, and "valid text or nothing" — preferred
+        over heavier CPU OCR models that would thrash memory on cold paths.
 
         Args:
             image_input: Image file path, numpy array, or PIL Image
@@ -538,10 +464,9 @@ class OCRService:
         status = {
             'initialized': self._initialized,
             'chandra_available': self.chandra_manager is not None,
-            'easyocr_available': self._easyocr_reader is not None,
             'tesseract_available': False,
             'languages': self.config.languages,
-            'gpu_enabled': self.config.use_gpu
+            'gpu_enabled': self.config.use_gpu,
         }
 
         # Check Tesseract
@@ -551,7 +476,7 @@ class OCRService:
         except Exception:
             pass
 
-        status['healthy'] = status['chandra_available'] or status['easyocr_available'] or status['tesseract_available']
+        status['healthy'] = status['chandra_available'] or status['tesseract_available']
 
         return status
 
@@ -598,13 +523,10 @@ class OCRService:
             # Preprocess image for better icon detection
             preprocessed = self.preprocessor.preprocess_for_ocr(img)
 
-            # Extract all text with bounding boxes.
-            # 2026-04-11: fix MIVAA-54T — was calling self.extract_text() which
-            # doesn't exist on OCRService. The real synchronous method is
-            # extract_text_from_image() which returns List[OCRResult] where
-            # each result already carries .text / .confidence / .bbox.
-            # Run it in a thread so we don't block the event loop on the
-            # CPU-bound EasyOCR call.
+            # Extract all text with bounding boxes. Use the synchronous
+            # extract_text_from_image() (returns List[OCRResult] with
+            # .text / .confidence / .bbox) and run it in a thread so the
+            # CPU-bound OCR call doesn't block the event loop.
             ocr_results = await asyncio.to_thread(
                 self.extract_text_from_image,
                 preprocessed,
@@ -645,11 +567,8 @@ class OCRService:
                 prompt_template = prompt_result.data[0]['prompt_text']
 
                 # Imports at top of the branch so `json` is bound before
-                # any use below. A previous revision had `import json` AFTER
-                # the f-string at line 675, which made `json` a local variable
-                # for the whole function and raised UnboundLocalError at run
-                # time ("local variable 'json' referenced before assignment"
-                # — Sentry MIVAA-55R, 28 events during last E2E run).
+                # any use below — placing them after the f-string would make
+                # `json` a function-local and raise UnboundLocalError.
                 import json
                 import re
                 import anthropic

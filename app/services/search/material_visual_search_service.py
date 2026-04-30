@@ -551,8 +551,8 @@ class MaterialVisualSearchService:
                     query_embedding = await slig_client.get_text_embedding(request.query_text)
                     logger.info(f"✅ Generated text CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
 
-                    # ✅ NEW: Generate specialized embeddings for multi-vector search
-                    # These help find images by color, texture, style, and material attributes
+                    # Generate specialized embeddings for multi-vector search —
+                    # find images by color, texture, style, and material attributes.
                     try:
                         import asyncio
                         color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
@@ -628,10 +628,9 @@ class MaterialVisualSearchService:
             collection_stats = multi_vector_results.get('collection_stats', {})
             logger.info(f"✅ Multi-vector search: {len(vecs_results)} results, stats: {collection_stats}")
 
-            # ✅ FALLBACK: If VECS returned no results, retry the visual primary search
-            # alone with relaxed parameters. After the 2026-04 cleanup, vecs.image_slig_embeddings
-            # is the single source of truth for visual embeddings — there is no
-            # secondary store to fall back to.
+            # Fallback: if VECS returned no results, retry the visual primary
+            # search alone with relaxed parameters. vecs.image_slig_embeddings
+            # is the single source of truth — no secondary store to fall back to.
             if not vecs_results:
                 logger.info("🔄 Multi-vector returned no results, falling back to primary visual search")
                 try:
@@ -946,8 +945,8 @@ class MaterialVisualSearchService:
         """
         Search for products and images by text description matching.
 
-        ✅ NEW: This searches products.description, document_images.caption,
-        and document_chunks.content for text matches.
+        Searches products.description, document_images.caption, and
+        document_chunks.content for text matches.
 
         Args:
             query_text: Text query to search for

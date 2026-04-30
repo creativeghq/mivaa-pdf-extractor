@@ -364,8 +364,8 @@ class RealQualityScoringService:
     def _calculate_product_embedding_coverage(self, product_data: Dict[str, Any]) -> float:
         """Calculate embedding coverage for products.
 
-        Post-2026-04 cleanup, the only canonical product-level embedding is
-        text_embedding_1024 (Voyage AI 1024D). Image-level embeddings live in
+        The only canonical product-level embedding is text_embedding_1024
+        (Voyage AI 1024D). Image-level embeddings live in
         vecs.image_*_embeddings collections, accessed via image_product_associations.
         """
         return 1.0 if product_data.get('text_embedding_1024') else 0.0

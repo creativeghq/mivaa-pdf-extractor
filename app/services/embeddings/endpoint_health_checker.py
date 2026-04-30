@@ -289,14 +289,10 @@ class EndpointHealthChecker:
         import httpx
 
         # Chandra is a llama.cpp server behind a HuggingFace Inference
-        # Endpoint. It exposes a real `/health` route that returns
-        # `{"status":"ok"}` when the model is loaded and the endpoint is
-        # serving. The previous revision POSTed to `/` (root path) with a
-        # Hugging Face Inference API payload (`{"inputs": "00"}`), which
-        # llama.cpp doesn't route — so every probe returned 404 and
-        # Chandra was reported unhealthy even though the endpoint was up
-        # fine for the last 11+ weeks. (Verified 2026-04-11: GET /health
-        # with a bearer token returns 200 OK with {"status":"ok"}.)
+        # Endpoint. Probe its `/health` route (returns `{"status":"ok"}`
+        # with a 200 when the model is loaded). Don't POST a HF Inference
+        # payload to `/` — llama.cpp doesn't route that and every probe
+        # would 404 even on a healthy endpoint.
         base = endpoint_url.rstrip('/')
         if base.endswith('/health'):
             health_url = base

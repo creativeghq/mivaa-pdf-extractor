@@ -327,8 +327,8 @@ class SLIGClient:
             else:
                 processed_images.append(img)
 
-        # Build payload - FIXED: Always use plural keys for consistency
-        # The SLIG endpoint handler accepts arrays for both images and texts
+        # Build payload — always use plural keys; the SLIG endpoint handler
+        # accepts arrays for both images and texts.
         payload = {
             "inputs": {
                 "images": processed_images,  # Always array

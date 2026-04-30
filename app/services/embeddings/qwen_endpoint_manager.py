@@ -144,7 +144,7 @@ class QwenEndpointManager:
         without an `https://` scheme. We MUST normalize it here, otherwise
         every consumer (httpx health check, OpenAI client, etc.) raises
         "Request URL is missing an 'http://' or 'https://' protocol" or
-        APIConnectionError. (2026-04-10 fix)
+        APIConnectionError.
         """
         endpoint = self._get_endpoint()
         if not endpoint:
@@ -225,7 +225,7 @@ class QwenEndpointManager:
             if endpoint.status in ["paused", "scaledToZero"]:
                 logger.info(f"🔄 Resuming Qwen endpoint (status: {endpoint.status})...")
 
-                # Resume with retries - FIXED: Added .wait() to block until running
+                # Resume with retries — .wait() blocks until running
                 from app.services.embeddings.hf_errors import is_hf_billing_error, HFBillingError
                 for attempt in range(self.max_resume_retries):
                     try:
@@ -276,13 +276,12 @@ class QwenEndpointManager:
         poll_interval = 5  # Check every 5 seconds
         max_wait = self.warmup_timeout
 
-        # 2026-04-11: HF "no GPU capacity" detector. If readyReplica hasn't
-        # advanced for NO_PROGRESS_TIMEOUT seconds, HuggingFace can't allocate
-        # GPUs for us right now (cold-start stall, region capacity exhaustion,
-        # etc.). Fail loud immediately instead of burning the full max_wait
-        # window. The caller (resume_if_needed → rag_routes warmup orchestrator)
-        # propagates this False as a job failure with a clear, actionable
-        # error message.
+        # HF "no GPU capacity" detector. If readyReplica hasn't advanced for
+        # NO_PROGRESS_TIMEOUT seconds, HuggingFace can't allocate GPUs for us
+        # right now (cold-start stall, region capacity exhaustion, etc.). Fail
+        # loud immediately instead of burning the full max_wait window. The
+        # caller (resume_if_needed → rag_routes warmup orchestrator) propagates
+        # this False as a job failure with a clear, actionable error message.
         last_ready_replica = 0
         last_progress_time = time.time()
         NO_PROGRESS_TIMEOUT = 90  # seconds with no allocation progress = HF capacity issue
@@ -345,9 +344,9 @@ class QwenEndpointManager:
     def warmup(self) -> bool:
         """Smart polling-based warmup - stops as soon as endpoint responds.
 
-        2026-04-11 rework: pre-fetch the live URL from HF SDK AND inline
-        the resume logic (fetch + resume().wait()) directly. We can NOT
-        call `self.resume_if_needed()` here because that method calls
+        Pre-fetches the live URL from the HF SDK and inlines the resume logic
+        (fetch + resume().wait()) directly. We can NOT call
+        `self.resume_if_needed()` here because that method calls
         `self.warmup()` at the end — mutual recursion = infinite loop.
         """
         if self.warmup_completed:

@@ -372,9 +372,8 @@ async def _claude_mode(
     body: PriceLookupRequest, ctx: ApiKeyContext
 ) -> tuple[PriceLookupResponse, Dict[str, Any]]:
     """
-    Runs the search-query path. Named `_claude_mode` for historical reasons
-    — engine under the hood is now Perplexity Sonar (claude web_search was
-    replaced 2026-04-24 because its snippets missed prices the page showed).
+    Runs the search-query path. Named `_claude_mode` for historical reasons —
+    engine under the hood is Perplexity Sonar.
     """
     service = get_perplexity_price_search_service()
     result = await service.search_prices(

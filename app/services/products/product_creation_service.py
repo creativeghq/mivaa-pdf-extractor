@@ -39,9 +39,9 @@ class ProductCreationService:
         min_quality_score: float = 0.5
     ) -> Dict[str, Any]:
         """
-        ✅ NEW: Create products from layout-based product candidates.
-        This method uses the enhanced htmlDOMAnalyzer to detect product candidates
-        before chunking, filtering out index pages, sustainability content, etc.
+        Create products from layout-based product candidates.
+        Uses the enhanced htmlDOMAnalyzer to detect product candidates before
+        chunking, filtering out index pages, sustainability content, etc.
 
         Args:
             document_id: UUID of the processed document
@@ -206,7 +206,7 @@ class ProductCreationService:
 
             self.logger.info(f"📋 {len(eligible_chunks)} chunks meet minimum length requirement ({min_chunk_length} chars)")
 
-            # ✅ NEW: Stage 1 - Fast Classification with Claude Haiku
+            # Stage 1 - Fast Classification with Claude Haiku
             self.logger.info(f"🚀 Stage 1: Fast classification with Claude Haiku...")
             stage1_start = time.time()
 
@@ -215,12 +215,12 @@ class ProductCreationService:
             stage1_time = time.time() - stage1_start
             self.logger.info(f"⚡ Stage 1 completed in {stage1_time:.2f}s: {len(product_candidates)} candidates from {len(eligible_chunks)} chunks")
 
-            # ✅ NEW: Deduplicate products by name BEFORE Stage 2
+            # Deduplicate products by name BEFORE Stage 2
             if product_candidates:
                 product_candidates = self._deduplicate_product_chunks(product_candidates)
                 self.logger.info(f"🔄 After deduplication: {len(product_candidates)} unique products")
 
-            # ✅ NEW: Stage 2 - Deep Enrichment with Claude Opus
+            # Stage 2 - Deep Enrichment with Claude Opus
             self.logger.info(f"🎯 Stage 2: Deep enrichment with Claude Opus...")
             stage2_start = time.time()
 
@@ -313,7 +313,7 @@ class ProductCreationService:
 
     def _is_valid_product_chunk(self, chunk: Dict[str, Any]) -> bool:
         """
-        ✅ NEW: Validate if a chunk contains actual product content.
+        Validate if a chunk contains actual product content.
         Filters out index pages, sustainability info, certifications, technical tables, etc.
         """
         content = chunk.get('content', '').lower()
@@ -370,7 +370,7 @@ class ProductCreationService:
             self.logger.debug("Skipping: Moodboard content")
             return False
 
-        # ✅ NEW: Skip cleaning/maintenance content
+        # Skip cleaning/maintenance content
         cleaning_keywords = [
             'cleaning', 'cleaner', 'maintenance', 'fila', 'faber', 'remover',
             'degreaser', 'floor cleaner', 'tile cleaner', 'epoxy pro',
@@ -384,7 +384,7 @@ class ProductCreationService:
                 self.logger.debug("Skipping: Cleaning/maintenance content")
                 return False
 
-        # ✅ NEW: Skip generic descriptive content
+        # Skip generic descriptive content
         generic_keywords = [
             'artisan clay', 'mediterranean sand', 'deep contrast',
             'not specified', 'not applicable'
@@ -394,7 +394,7 @@ class ProductCreationService:
             self.logger.debug("Skipping: Generic descriptive content")
             return False
 
-        # ✅ NEW: Skip designer biographies - CRITICAL FIX
+        # Skip designer biographies
         designer_bio_keywords = [
             'biography', 'born in', 'graduated from', 'studied at',
             'career began', 'founded in', 'established in',
@@ -407,7 +407,7 @@ class ProductCreationService:
             self.logger.debug("Skipping: Designer biography content")
             return False
 
-        # ✅ NEW: Skip factory/manufacturing details - CRITICAL FIX
+        # Skip factory/manufacturing details
         factory_keywords = [
             'factory location', 'manufacturing facility', 'production capacity',
             'plant location', 'headquarters', 'production site',
@@ -427,7 +427,7 @@ class ProductCreationService:
             'estudi{h}ac', 'dsignio', 'alt design', 'mut', 'yonoh', 'stacy garcia'
         ])
 
-        # ✅ NEW: Skip technical specs without product name - CRITICAL FIX
+        # Skip technical specs without product name
         has_technical_specs = any(keyword in content.lower() for keyword in [
             'water absorption', 'breaking strength', 'slip resistance',
             'frost resistance', 'chemical resistance', 'thermal shock',
@@ -449,7 +449,7 @@ class ProductCreationService:
 
     def _extract_product_name(self, content: str) -> Optional[str]:
         """
-        ✅ NEW: Extract actual product name from content.
+        Extract actual product name from content.
         Looks for UPPERCASE product names like VALENOVA, PIQUÉ, ONA, etc.
         """
         import re
@@ -504,7 +504,7 @@ class ProductCreationService:
 
     def _extract_product_metadata(self, content: str) -> Dict[str, Any]:
         """
-        ✅ NEW: Extract product metadata like dimensions, designer, colors, etc.
+        Extract product metadata like dimensions, designer, colors, etc.
         """
         import re
         metadata = {}
@@ -594,13 +594,13 @@ class ProductCreationService:
         chunk_index = chunk.get('chunk_index', index)
         page_number = chunk.get('page_number')
         
-        # ✅ NEW: Extract actual product name from content
+        # Extract actual product name from content
         product_name = self._extract_product_name(content)
         if not product_name:
             # Fallback to generic name
             product_name = f"Product from Chunk {chunk_index}"
 
-        # ✅ NEW: Extract product metadata (dimensions, designer, etc.)
+        # Extract product metadata (dimensions, designer, etc.)
         product_metadata = self._extract_product_metadata(content)
 
         # Use first 200 characters as description
@@ -635,7 +635,7 @@ class ProductCreationService:
                 "extraction_date": datetime.utcnow().isoformat(),
                 "auto_created": True,
                 "workspace_id": workspace_id,
-                **product_metadata  # ✅ NEW: Include extracted product metadata
+                **product_metadata
             },
             "status": "draft",
             "created_from_type": "pdf_processing",
@@ -685,7 +685,7 @@ class ProductCreationService:
 
     async def _get_layout_analysis_results(self, document_id: str) -> Optional[Dict[str, Any]]:
         """
-        ✅ NEW: Get markdown-based product candidates analysis.
+        Get markdown-based product candidates analysis.
         Instead of HTML conversion, analyze markdown content directly for product patterns.
         """
         try:
@@ -707,8 +707,8 @@ class ProductCreationService:
 
     async def _analyze_markdown_for_products(self, document_id: str) -> Optional[Dict[str, Any]]:
         """
-        ✅ NEW: Analyze markdown content directly for product candidates.
-        This is more effective than HTML conversion since PyMuPDF4LLM markdown
+        Analyze markdown content directly for product candidates.
+        More effective than HTML conversion since PyMuPDF4LLM markdown
         preserves the structure we need for product detection.
         """
         try:
@@ -748,7 +748,7 @@ class ProductCreationService:
 
     async def _find_chunks_for_candidate(self, document_id: str, candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        ✅ NEW: Find document chunks associated with a product candidate.
+        Find document chunks associated with a product candidate.
         Uses page number and bounding box information to find relevant chunks.
 
         Note: page_number is stored in metadata JSONB, not as a direct column.
@@ -815,7 +815,7 @@ class ProductCreationService:
         index: int
     ) -> Dict[str, Any]:
         """
-        ✅ NEW: Create a product record from a layout-detected candidate and associated chunks.
+        Create a product record from a layout-detected candidate and associated chunks.
         """
         extracted_data = candidate.get('extractedData', {})
         patterns = candidate.get('patterns', {})
@@ -892,8 +892,8 @@ class ProductCreationService:
 
     def _detect_products_in_markdown(self, markdown_content: str) -> List[Dict[str, Any]]:
         """
-        ✅ NEW: Detect product candidates directly from markdown content.
-        This analyzes the PyMuPDF4LLM markdown output for product patterns.
+        Detect product candidates directly from markdown content.
+        Analyzes the PyMuPDF4LLM markdown output for product patterns.
         """
         candidates = []
 
@@ -922,7 +922,7 @@ class ProductCreationService:
 
     def _analyze_markdown_section(self, section: str, page_number: int) -> Optional[Dict[str, Any]]:
         """
-        ✅ NEW: Analyze a markdown section for product patterns.
+        Analyze a markdown section for product patterns.
         """
         # Classify content type first
         content_type = self._classify_markdown_content(section)
@@ -959,7 +959,7 @@ class ProductCreationService:
 
     def _classify_markdown_content(self, text: str) -> str:
         """
-        ✅ NEW: Classify markdown content type based on patterns.
+        Classify markdown content type based on patterns.
         """
         lower_text = text.lower()
 
@@ -1018,7 +1018,7 @@ class ProductCreationService:
 
     def _detect_markdown_patterns(self, text: str) -> Dict[str, bool]:
         """
-        ✅ NEW: Detect product-specific patterns in markdown text.
+        Detect product-specific patterns in markdown text.
         """
         import re
 
@@ -1038,7 +1038,7 @@ class ProductCreationService:
 
     def _extract_markdown_data(self, text: str) -> Dict[str, Any]:
         """
-        ✅ NEW: Extract structured product data from markdown text.
+        Extract structured product data from markdown text.
         """
         import re
 
@@ -1077,7 +1077,7 @@ class ProductCreationService:
 
     def _calculate_markdown_quality_score(self, text: str, patterns: Dict[str, bool], extracted_data: Dict[str, Any]) -> float:
         """
-        ✅ NEW: Calculate quality score for markdown-based product candidate.
+        Calculate quality score for markdown-based product candidate.
         """
         score = 0
 
@@ -1104,7 +1104,7 @@ class ProductCreationService:
 
     async def _store_markdown_analysis(self, document_id: str, analysis_metadata: Dict[str, Any]) -> None:
         """
-        ✅ NEW: Store markdown analysis results in database.
+        Store markdown analysis results in database.
         """
         try:
             # Store in document_layout_analysis table
@@ -1130,7 +1130,7 @@ class ProductCreationService:
 
     async def _stage1_fast_classification(self, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        ✅ NEW: Stage 1 - Fast text-only classification using Claude Haiku.
+        Stage 1 - Fast text-only classification using Claude Haiku.
 
         Quickly filters chunks to identify potential product candidates.
         Uses Claude 4.5 Haiku for speed and cost efficiency.
@@ -1193,7 +1193,7 @@ class ProductCreationService:
         index: int
     ) -> Optional[Dict[str, Any]]:
         """
-        ✅ NEW: Stage 2 - Deep enrichment using Claude Opus.
+        Stage 2 - Deep enrichment using Claude Opus.
 
         Performs detailed analysis and enrichment of confirmed product candidates.
         Uses Claude Opus 4.7 for high-quality results.
@@ -1613,7 +1613,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
         try:
             data = self._extract_json_from_response(response)
 
-            # ✅ NEW: Check if Stage 2 rejected this as non-product
+            # Check if Stage 2 rejected this as non-product
             is_valid_product = data.get('is_valid_product', True)
 
             # Ensure required fields exist
@@ -1650,7 +1650,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
     def _validate_enrichment_quality(self, enrichment_data: Dict[str, Any]) -> bool:
         """Validate the quality of Stage 2 enrichment results."""
         try:
-            # ✅ NEW: Check if Stage 2 rejected this as non-product
+            # Check if Stage 2 rejected this as non-product
             is_valid_product = enrichment_data.get('is_valid_product', True)
             if not is_valid_product:
                 rejection_reason = enrichment_data.get('rejection_reason', 'Unknown')
@@ -1669,7 +1669,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 self.logger.debug("Rejected: Missing or unknown product name")
                 return False
 
-            # ✅ NEW: Check product name is not a designer/studio name
+            # Check product name is not a designer/studio name
             designer_indicators = ['studio', 'design', 'architects', 'founded', 'established', 'atelier']
             if any(indicator in product_name.lower() for indicator in designer_indicators):
                 self.logger.warning(f"Rejected: Product name looks like designer/studio: {product_name}")
@@ -1687,7 +1687,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 self.logger.debug("Rejected: Description too short")
                 return False
 
-            # ✅ NEW: Check description is not a biography
+            # Check description is not a biography
             bio_indicators = [
                 'born in', 'graduated', 'founded in', 'career began', 'based in',
                 'studied at', 'education', 'professional background', 'years of experience'
@@ -1696,7 +1696,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 self.logger.warning("Rejected: Description contains biography content")
                 return False
 
-            # ✅ NEW: Check for factory details in description
+            # Check for factory details in description
             factory_indicators = [
                 'factory location', 'production capacity', 'manufacturing facility',
                 'plant location', 'headquarters', 'production site', 'industrial complex'
@@ -1705,7 +1705,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 self.logger.warning("Rejected: Description contains factory details")
                 return False
 
-            # ✅ NEW: Check for sustainability content in description
+            # Check for sustainability content in description
             sustainability_indicators = [
                 'our commitment to', 'environmental responsibility', 'carbon footprint',
                 'sustainability mission', 'green building', 'leed certification'
@@ -1879,13 +1879,13 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             if enrichment_data.get('colors'):
                 metadata['colors'] = enrichment_data['colors']
 
-            # ✅ NEW: Aggregate all available sizes from related chunks
+            # Aggregate all available sizes from related chunks
             available_sizes = self._aggregate_dimensions_from_chunks(document_id, product_name)
             if available_sizes:
                 metadata['available_sizes'] = available_sizes
                 self.logger.info(f"📏 Aggregated {len(available_sizes)} dimensions for {product_name}")
 
-            # ✅ NEW: Aggregate all meta fields from related chunks
+            # Aggregate all meta fields from related chunks
             meta_fields = self._aggregate_meta_fields_from_chunks(document_id, product_name)
             if meta_fields:
                 # Merge with existing metadata (deduplication logic)
@@ -1931,7 +1931,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 "updated_at": datetime.utcnow().isoformat()
             }
 
-            # ✅ NEW: Validate and normalize category to prevent duplicates
+            # Validate and normalize category to prevent duplicates
             try:
                 from app.services.metadata.metadata_normalizer import validate_and_normalize_product_category
                 product_data = validate_and_normalize_product_category(product_data)
@@ -1953,7 +1953,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
 
     def _deduplicate_product_chunks(self, product_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        ✅ NEW: Deduplicate product chunks by product name.
+        Deduplicate product chunks by product name.
         Merges chunks that represent the same product (e.g., multiple PIQUÉ chunks → 1 PIQUÉ product).
 
         Args:

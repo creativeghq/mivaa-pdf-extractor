@@ -1,59 +1,194 @@
 """
-Stage 1.5: Document-level layout precompute.
+Stage 1.5: Document-level layout precompute (physical-page-aware).
 
-Runs YOLO layout detection + bbox-text merge (PyMuPDF spans → Chandra
-v2 OCR fallback) ONCE per page, persisting merged regions to
-`document_layout_analysis` keyed on (document_id, page_number).
+Iterates **physical pages** 1..total_physical_pages — the same numbering
+products and chunks use throughout the rest of the pipeline. For each
+physical page:
 
-Stage 2 (chunking) reads these cached regions instead of running
-per-product YOLO+OCR. This is what unblocks layout-aware chunking
-end-to-end (every per-product chunker call now sees regions with
-text_content populated).
+1. Look up `(pdf_idx, position)` from `PDFLayoutAnalysis.physical_to_pdf_map`.
+   `position` is one of `single` / `full` / `left` / `right`. For spread
+   layouts a single PDF sheet maps to 2 physical pages; we render only
+   the relevant half before sending to YOLO.
+2. Render the half-page (or full sheet) to a PIL image at LAYOUT_RENDER_DPI.
+3. Run YOLO on that image.
+4. Get text fragments aligned to the same clip:
+   - PyMuPDF spans clipped to the half-rect (born-digital path, ~free).
+   - Falls back to Chandra v2 OCR on scanned pages (no spans inside the
+     clip area).
+5. `merge_layout(yolo_regions, text_fragments)` produces MergedRegion[]
+   with `text_content` populated.
+6. Persist to `document_layout_analysis` keyed on
+   `(document_id, physical_page_number)` — same key Stage 2 chunking
+   reads later via `get_layout_from_document_cache`.
 
-Resume-safe: pages with cache rows are skipped, so an interrupted
-job resumes only the uncached pages.
+Why this matters: the chunker keys regions by physical page. If we
+persisted regions keyed by PDF sheet index (the round-17 P2 patch did
+this implicitly), every cache read would miss and the chunker would
+fall back to text-based chunking — silently nullifying Stage 1.5's
+work. Iterating physical pages with `physical_to_pdf_map`-aware
+rendering keeps the cache compatible with downstream consumers.
 
-Toggle: `LAYOUT_PRECOMPUTE_ENABLED` env var (defaults True). When
-False, the orchestrator skips this stage and the chunker falls back
-to its text-based path (round-14 fix in unified_chunking_service).
+Resume-safe: pages already in the cache are skipped.
+Toggle: `LAYOUT_PRECOMPUTE_ENABLED` env var (defaults True).
 """
 
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import fitz  # PyMuPDF
+from PIL import Image
+
+
+# Render DPI for YOLO input. 250 keeps small typography legible while
+# capping per-page memory at ~3-5 MB for letter-sized sheets. Matches
+# the default `dpi` arg in YoloLayoutDetector.convert_pdf_page_to_image.
+LAYOUT_RENDER_DPI = 250
+
+# pdf-points → pixel scale for the render DPI above. fitz uses 72 dpi
+# baseline. PDF_POINTS_TO_PIXEL_ZOOM = LAYOUT_RENDER_DPI / 72.
+PDF_POINTS_TO_PIXEL_ZOOM = LAYOUT_RENDER_DPI / 72.0
+
+
+def _clip_rect_for_position(page: "fitz.Page", position: str) -> Optional["fitz.Rect"]:
+    """Return the fitz.Rect to clip to for a physical page's `position`.
+
+    `position` values come from `PDFLayoutAnalysis.physical_to_pdf_map`:
+        single / full → full page (no clip)
+        left          → left half of a spread
+        right         → right half of a spread
+
+    Anything else returns None (caller falls back to full page).
+    """
+    if position in ("left", "right"):
+        rect = page.rect
+        mid_x = rect.width / 2.0
+        if position == "left":
+            return fitz.Rect(0, 0, mid_x, rect.height)
+        return fitz.Rect(mid_x, 0, rect.width, rect.height)
+    # single / full / unknown → full page; caller passes None to skip clip.
+    return None
+
+
+def _render_physical_page(
+    doc: "fitz.Document",
+    pdf_idx: int,
+    position: str,
+) -> Tuple[Image.Image, "fitz.Rect"]:
+    """Render the half-page (or full sheet) for one physical page.
+
+    Returns the PIL image AND the fitz.Rect that bounded the render
+    in pdf-point space. The rect is needed by `_pymupdf_spans_in_clip`
+    to scope text-extraction to the same area.
+    """
+    page = doc[pdf_idx]
+    clip = _clip_rect_for_position(page, position)
+    matrix = fitz.Matrix(PDF_POINTS_TO_PIXEL_ZOOM, PDF_POINTS_TO_PIXEL_ZOOM)
+    if clip is not None:
+        pix = page.get_pixmap(matrix=matrix, clip=clip, alpha=False)
+        bound_rect = clip
+    else:
+        pix = page.get_pixmap(matrix=matrix, alpha=False)
+        bound_rect = page.rect
+
+    img = Image.open(io.BytesIO(pix.tobytes("png")))
+    pix = None  # free C-side buffer immediately
+    return img, bound_rect
+
+
+def _pymupdf_spans_in_clip(
+    page: "fitz.Page",
+    clip: Optional["fitz.Rect"],
+) -> List[Dict[str, Any]]:
+    """Extract PyMuPDF spans intersecting `clip`, in pixel-space bboxes.
+
+    Spans go through the same coordinate scaling as the rendered image
+    (PDF_POINTS_TO_PIXEL_ZOOM) so they line up with YOLO regions, which
+    are reported in pixel coordinates. For spread layouts we also
+    translate x by -clip.x0 so each half-page span is in the half's own
+    coordinate frame (matching the rendered image's origin).
+    """
+    spans: List[Dict[str, Any]] = []
+    text_dict = page.get_text("dict")  # blocks → lines → spans
+    x_offset = clip.x0 if clip is not None else 0.0
+    y_offset = clip.y0 if clip is not None else 0.0
+
+    for block in text_dict.get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                bbox = span.get("bbox")
+                text = (span.get("text") or "").strip()
+                if not text or not bbox or len(bbox) < 4:
+                    continue
+                sx0, sy0, sx1, sy1 = bbox
+                # Skip spans entirely outside the clip
+                if clip is not None:
+                    if sx1 < clip.x0 or sx0 > clip.x1 or sy1 < clip.y0 or sy0 > clip.y1:
+                        continue
+                spans.append({
+                    "text": text,
+                    "x": int((sx0 - x_offset) * PDF_POINTS_TO_PIXEL_ZOOM),
+                    "y": int((sy0 - y_offset) * PDF_POINTS_TO_PIXEL_ZOOM),
+                    "w": int(max(1, sx1 - sx0) * PDF_POINTS_TO_PIXEL_ZOOM),
+                    "h": int(max(1, sy1 - sy0) * PDF_POINTS_TO_PIXEL_ZOOM),
+                })
+    return spans
 
 
 async def precompute_document_layout(
     document_id: str,
     pdf_path: str,
-    total_pages: int,
     supabase: Any,
     logger: logging.Logger,
+    total_physical_pages_hint: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Run YOLO + merge_layout for every uncached page; persist results.
+    """Run YOLO + bbox-text merge for every uncached physical page; persist.
 
     Args:
-        document_id: documents.id (FK to document_layout_analysis.document_id)
-        pdf_path: local path to the PDF on disk
-        total_pages: physical page count (1-based range)
+        document_id: documents.id (FK target of document_layout_analysis)
+        pdf_path: local path to the page-numbered PDF (Stage 0 output)
         supabase: supabase client (writer)
         logger: scoped logger
+        total_physical_pages_hint: optional override; otherwise derived
+            from `analyze_pdf_layout(pdf_path).total_physical_pages`.
 
     Returns:
         Dict with keys: pages_total, pages_cached_already, pages_processed,
         pages_persisted, extraction_paths (counter dict).
     """
     summary: Dict[str, Any] = {
-        "pages_total": total_pages,
+        "pages_total": 0,
         "pages_cached_already": 0,
         "pages_processed": 0,
         "pages_persisted": 0,
         "extraction_paths": {},
     }
 
-    # 1. Look up existing cache entries (resume-safe)
+    # 1. Layout analysis tells us the physical→PDF mapping. This is the
+    #    ONLY way Stage 1.5 stays compatible with downstream consumers
+    #    that key everything by physical page number.
+    try:
+        from app.utils.pdf_to_images import analyze_pdf_layout
+        layout = await asyncio.to_thread(analyze_pdf_layout, pdf_path)
+    except Exception as e:
+        logger.warning(f"   ⚠️ [STAGE 1.5] analyze_pdf_layout failed: {e}")
+        return summary
+
+    physical_to_pdf = dict(layout.physical_to_pdf_map or {})
+    total_physical = (
+        total_physical_pages_hint
+        or getattr(layout, "total_physical_pages", 0)
+        or len(physical_to_pdf)
+    )
+    summary["pages_total"] = total_physical
+    if total_physical <= 0 or not physical_to_pdf:
+        logger.info("⏭️  [STAGE 1.5] No physical pages to process")
+        return summary
+
+    # 2. Resume-safe: skip pages already in cache
     existing_pages: Set[int] = set()
     try:
         resp = (
@@ -64,89 +199,191 @@ async def precompute_document_layout(
         )
         existing_pages = {row["page_number"] for row in (resp.data or [])}
     except Exception as e:
-        logger.warning(f"   ⚠️ document_layout_analysis cache lookup failed (continuing): {e}")
+        logger.warning(f"   ⚠️ [STAGE 1.5] cache-existence query failed: {e}")
 
     summary["pages_cached_already"] = len(existing_pages)
-    pages_to_process = [p for p in range(1, total_pages + 1) if p not in existing_pages]
+    pages_to_process = sorted(
+        p for p in range(1, total_physical + 1)
+        if p not in existing_pages and p in physical_to_pdf
+    )
 
     if not pages_to_process:
         logger.info(
-            f"♻️ [STAGE 1.5] All {total_pages} pages already cached in "
-            f"document_layout_analysis — skipping precompute"
+            f"♻️ [STAGE 1.5] All {total_physical} physical pages already cached — skipping"
         )
         return summary
 
     logger.info(
-        f"📐 [STAGE 1.5] Precomputing layout for {len(pages_to_process)} page(s); "
-        f"{len(existing_pages)} already cached"
+        f"📐 [STAGE 1.5] Precomputing layout for {len(pages_to_process)} physical page(s); "
+        f"{len(existing_pages)} already cached, {total_physical} total"
     )
 
-    # 2. Run YOLO + merge in worker threads (sync code)
-    from app.services.pdf.pdf_worker import (
-        _yolo_all_pages_sync,
-        _build_layout_regions_by_page,
-    )
+    # 3. Resolve the YOLO detector + Chandra OCR fallback once, then
+    #    iterate physical pages serially. Serial iteration keeps memory
+    #    flat (one rendered image at a time) and aligns naturally with
+    #    the module-level YOLO warmup lock — no parallel hot-storm.
+    from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
+    from app.services.pdf.layout_merge_service import merge_layout
+    from app.services.pdf.chandra_endpoint_manager import ChandraResponseError
 
+    detector: Optional[YoloLayoutDetector] = None
     try:
-        yolo_regions_by_page = await asyncio.to_thread(
-            _yolo_all_pages_sync, pdf_path, total_pages
-        )
+        detector = YoloLayoutDetector()
+        if not getattr(detector, "enabled", False):
+            detector = None
     except Exception as e:
-        logger.warning(
-            f"   ⚠️ [STAGE 1.5] YOLO batch failed ({e}) — chunker will fall back to text-only"
-        )
-        return summary
+        logger.warning(f"   ⚠️ [STAGE 1.5] YOLO detector init failed: {e}")
+        detector = None
 
-    # Filter to only the pages we still need
-    yolo_for_uncached = {
-        p: yolo_regions_by_page.get(p, []) for p in pages_to_process if p in yolo_regions_by_page
+    ocr_service = None
+    chandra_manager = None
+    try:
+        from app.services.pdf.ocr_service import get_ocr_service
+        ocr_service = get_ocr_service()
+        chandra_manager = getattr(ocr_service, "chandra_manager", None)
+    except Exception as e:
+        logger.debug(f"   Chandra fallback not available: {e}")
+
+    extraction_paths: Dict[str, int] = {
+        "pymupdf_spans": 0,
+        "chandra_v2": 0,
+        "yolo_only": 0,
+        "none": 0,
     }
-
-    if not yolo_for_uncached:
-        logger.info(
-            "   ℹ️ [STAGE 1.5] No YOLO regions detected on uncached pages — "
-            "writing empty cache entries to short-circuit future jobs"
-        )
-
-    try:
-        layout_regions_by_page, extraction_paths = await asyncio.to_thread(
-            _build_layout_regions_by_page, pdf_path, yolo_for_uncached
-        )
-    except Exception as e:
-        logger.warning(
-            f"   ⚠️ [STAGE 1.5] merge_layout pass failed ({e}) — chunker will fall back to text-only"
-        )
-        return summary
-
-    summary["extraction_paths"] = extraction_paths
-    summary["pages_processed"] = len(pages_to_process)
-
-    # 3. Persist per-page merged regions. Upsert on (document_id, page_number)
-    #    is safe against the unique index already declared on the table.
     persisted = 0
-    for page_num in pages_to_process:
-        regions = layout_regions_by_page.get(page_num, [])
-        try:
-            payload = {
-                "document_id": document_id,
-                "page_number": page_num,
-                "layout_elements": [r.to_dict() for r in regions] if regions else [],
-                "analysis_metadata": {
-                    "stage_1_5": True,
-                    "region_count": len(regions),
-                    "has_text_content": any(getattr(r, "text_content", "").strip() for r in regions),
-                },
-            }
-            (
-                supabase.client.table("document_layout_analysis")
-                .upsert(payload, on_conflict="document_id,page_number")
-                .execute()
-            )
-            persisted += 1
-        except Exception as e:
-            logger.warning(f"   ⚠️ [STAGE 1.5] cache write failed for page {page_num}: {e}")
 
+    doc = await asyncio.to_thread(fitz.open, pdf_path)
+    try:
+        for physical_page in pages_to_process:
+            pdf_idx, position = physical_to_pdf[physical_page]
+            extraction_path = "none"
+            merged_regions: List[Any] = []
+
+            try:
+                # 3a. Render the relevant half (or full sheet) to a PIL image.
+                image, bound_rect = await asyncio.to_thread(
+                    _render_physical_page, doc, pdf_idx, position
+                )
+
+                # 3b. Run YOLO on the rendered image.
+                yolo_regions: List[Any] = []
+                if detector is not None:
+                    yolo_result = await detector.detect_from_image(
+                        image=image, page_num=physical_page
+                    )
+                    yolo_regions = list(yolo_result.regions)
+
+                # 3c. Get text fragments inside the same clip — PyMuPDF
+                #     spans first (free, born-digital), Chandra v2 OCR if
+                #     no spans landed in the clip (scanned page).
+                clip_rect = _clip_rect_for_position(doc[pdf_idx], position)
+                pdf_spans = await asyncio.to_thread(
+                    _pymupdf_spans_in_clip, doc[pdf_idx], clip_rect
+                )
+
+                fragments: List[Dict[str, Any]] = []
+                if pdf_spans:
+                    fragments = pdf_spans
+                    extraction_path = "pymupdf_spans"
+                elif chandra_manager is not None:
+                    try:
+                        chandra_result = await asyncio.to_thread(
+                            chandra_manager.run_inference, image
+                        )
+                        chandra_blocks = chandra_result.get("blocks") or []
+                        if chandra_blocks:
+                            fragments = chandra_blocks
+                            extraction_path = chandra_result.get(
+                                "extraction_path", "chandra_v2"
+                            )
+                            # Normalize reasoning-content path into the
+                            # chandra_v2 bucket for telemetry.
+                            if extraction_path != "pymupdf_spans":
+                                extraction_path = "chandra_v2"
+                    except ChandraResponseError as cre:
+                        logger.warning(
+                            f"   ⚠️ [STAGE 1.5] Chandra unparseable on physical "
+                            f"page {physical_page}: {cre}"
+                        )
+                    except Exception as ce:
+                        logger.warning(
+                            f"   ⚠️ [STAGE 1.5] Chandra failed on physical "
+                            f"page {physical_page}: {ce}"
+                        )
+
+                # 3d. Page-size hint for merge_layout to scale
+                #     0..1-normalized YOLO regions into pixel space.
+                page_size_px = (
+                    float(bound_rect.width) * PDF_POINTS_TO_PIXEL_ZOOM,
+                    float(bound_rect.height) * PDF_POINTS_TO_PIXEL_ZOOM,
+                )
+
+                # 3e. Merge YOLO regions + text fragments.
+                merged_regions = merge_layout(
+                    yolo_regions, fragments, page_size=page_size_px
+                )
+                if not merged_regions and yolo_regions:
+                    extraction_path = "yolo_only"
+
+                # Free the render before persisting (cap RSS).
+                try:
+                    image.close()
+                except Exception:
+                    pass
+
+            except Exception as e:
+                logger.warning(
+                    f"   ⚠️ [STAGE 1.5] page {physical_page} failed: {e}"
+                )
+
+            extraction_paths[extraction_path] = (
+                extraction_paths.get(extraction_path, 0) + 1
+            )
+
+            # 3f. Persist for this physical page (always — empty rows are
+            #     valid: they short-circuit a future re-run from doing the
+            #     same useless work).
+            try:
+                payload = {
+                    "document_id": document_id,
+                    "page_number": physical_page,
+                    "layout_elements": (
+                        [r.to_dict() for r in merged_regions]
+                        if merged_regions else []
+                    ),
+                    "analysis_metadata": {
+                        "stage_1_5": True,
+                        "extraction_path": extraction_path,
+                        "pdf_idx": pdf_idx,
+                        "position": position,
+                        "region_count": len(merged_regions),
+                        "has_text_content": any(
+                            getattr(r, "text_content", "").strip()
+                            for r in merged_regions
+                        ),
+                    },
+                }
+                (
+                    supabase.client.table("document_layout_analysis")
+                    .upsert(payload, on_conflict="document_id,page_number")
+                    .execute()
+                )
+                persisted += 1
+            except Exception as e:
+                logger.warning(
+                    f"   ⚠️ [STAGE 1.5] cache write failed for physical "
+                    f"page {physical_page}: {e}"
+                )
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+    summary["pages_processed"] = len(pages_to_process)
     summary["pages_persisted"] = persisted
+    summary["extraction_paths"] = extraction_paths
+
     logger.info(
         f"✅ [STAGE 1.5] Cached {persisted}/{len(pages_to_process)} pages — "
         f"extraction paths: {extraction_paths}"
@@ -160,12 +397,12 @@ async def get_layout_from_document_cache(
     supabase: Any,
     logger: logging.Logger,
 ) -> Dict[int, List[Dict[str, Any]]]:
-    """Read cached merged regions for a subset of pages.
+    """Read cached merged regions for a subset of physical pages.
 
     Used by Stage 2 chunking to look up Stage 1.5 results. Returns
-    `{page_number: [region_dict, ...]}` where each region_dict has the
-    same shape `unified_chunking_service` already accepts (`region_type`,
-    `text_content`, `bbox`, `reading_order`).
+    `{physical_page_number: [region_dict, ...]}` where each region_dict
+    has the same shape `unified_chunking_service` already accepts
+    (`region_type`, `text_content`, `bbox`, `reading_order`).
 
     Empty dict on cache miss; the caller falls back to in-memory or
     product-level regions.
@@ -195,6 +432,7 @@ async def get_layout_from_document_cache(
     if out:
         logger.info(
             f"   ♻️ Loaded {sum(len(v) for v in out.values())} merged regions "
-            f"from document_layout_analysis cache ({len(out)}/{len(physical_pages)} pages)"
+            f"from document_layout_analysis cache "
+            f"({len(out)}/{len(physical_pages)} physical pages)"
         )
     return out
