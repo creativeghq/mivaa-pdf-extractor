@@ -256,6 +256,33 @@ async def process_single_product(
         logger_instance.info(f"🎯 [STAGE 1.5/{product_index}] Running YOLO layout detection...")
         layout_regions = []
 
+        # Skip per-product YOLO when doc-level Stage 1.5 already cached these
+        # pages — Stage 2 chunker reads from document_layout_analysis directly,
+        # so the in-memory regions are unused. Re-running YOLO here is pure
+        # waste (and historically deadlocked after the doc-level pass).
+        skip_per_product_yolo = False
+        try:
+            from app.api.pdf_processing.stage_1_layout_precompute import (
+                get_layout_from_document_cache,
+            )
+            cached = await get_layout_from_document_cache(
+                document_id=document_id,
+                physical_pages=physical_pages,
+                supabase=supabase,
+                logger=logger_instance,
+            )
+            if cached and all(p in cached for p in physical_pages):
+                logger_instance.info(
+                    f"   ⏭️  Doc-level Stage 1.5 cache covers all {len(physical_pages)} "
+                    f"pages — skipping per-product YOLO"
+                )
+                skip_per_product_yolo = True
+        except Exception as cache_check_err:
+            logger_instance.debug(
+                f"   doc-level cache check failed ({cache_check_err}); "
+                f"falling through to per-product YOLO"
+            )
+
         try:
             from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
             from app.config import get_settings
@@ -264,7 +291,7 @@ async def process_single_product(
 
             settings = get_settings()
 
-            if settings.yolo_enabled and physical_pages:
+            if not skip_per_product_yolo and settings.yolo_enabled and physical_pages:
                 # Initialize YOLO detector
                 yolo_config = settings.get_yolo_config()
                 detector = YoloLayoutDetector(config=yolo_config)
