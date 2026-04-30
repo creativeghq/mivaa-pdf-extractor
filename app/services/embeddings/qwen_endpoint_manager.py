@@ -51,13 +51,14 @@ class QwenEndpointManager:
         self,
         endpoint_url: str,
         endpoint_token: str,
-        endpoint_name: str = "mh-qwen332binstruct",
+        endpoint_name: str = "qwen3-6-35b-fp8",
         namespace: str = "basiliskan",
         auto_pause_timeout: int = 60,
         inference_timeout: int = 180,
         warmup_timeout: int = 60,
         max_resume_retries: int = 3,
-        enabled: bool = True
+        enabled: bool = True,
+        model: Optional[str] = None,
     ):
         """
         Initialize Qwen endpoint manager.
@@ -77,6 +78,18 @@ class QwenEndpointManager:
         self.endpoint_token = endpoint_token
         self.endpoint_name = endpoint_name
         self.namespace = namespace
+        # Resolved model id served by the endpoint. Required for the
+        # OpenAI-compat chat-completions warmup test — vLLM 404s when the
+        # `model` field doesn't match what `/v1/models` reports. Falls back
+        # to settings.qwen_model when caller doesn't pass one.
+        if model:
+            self.model = model
+        else:
+            try:
+                from app.config import get_settings
+                self.model = get_settings().qwen_model
+            except Exception:
+                self.model = "Qwen/Qwen3.6-35B-A3B-FP8"
         self.auto_pause_timeout = auto_pause_timeout
         self.inference_timeout = inference_timeout
         self.warmup_timeout = warmup_timeout
@@ -423,7 +436,7 @@ class QwenEndpointManager:
             response = requests.post(
                 url,
                 headers={"Authorization": f"Bearer {self.endpoint_token}", "Content-Type": "application/json"},
-                json={"model": "Qwen/Qwen3-VL-32B-Instruct", "messages": [{"role": "user", "content": "OK"}], "max_tokens": 2},
+                json={"model": self.model, "messages": [{"role": "user", "content": "OK"}], "max_tokens": 2},
                 timeout=15
             )
             if response.status_code != 200:
