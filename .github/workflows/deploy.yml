@@ -464,7 +464,10 @@ jobs:
 
           # Test modular stage imports (CRITICAL for new architecture)
           echo 'Testing modular PDF processing stages...'
-          python -c 'from app.api.pdf_processing import process_stage_0_discovery, process_stage_1_focused_extraction, process_stage_2_chunking, process_stage_3_images, process_stage_4_products, process_stage_5_quality; print(\"✅ All modular stages import successfully\")' 2>/dev/null || echo '❌ Modular stages import: FAILED'
+          # Verify the product-centric pipeline functions are importable.
+          # Names reflect what each stage *does* (refactored away from generic
+          # process_stage_N names) — see app/api/pdf_processing/__init__.py.
+          python -c 'from app.api.pdf_processing import process_stage_0_discovery, extract_product_pages, process_product_chunking, process_product_images, create_single_product, process_stage_5_quality; print(\"✅ All modular stages import successfully\")' 2>/dev/null || echo '❌ Modular stages import: FAILED'
 
           # Debug: Check system libraries
           echo 'Checking system MuPDF libraries...'
@@ -518,25 +521,25 @@ jobs:
             echo '| **Stage 0: Discovery** | PDF Processing | Product discovery stage | 🔴 Failed | N/A |' >> package_status_report.txt
             echo 'Stage 0 import: FAILED'
           fi
-          if python -c 'from app.api.pdf_processing import process_stage_1_focused_extraction; print(f\"| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+          if python -c 'from app.api.pdf_processing import extract_product_pages; print(f\"| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
             echo 'Stage 1 import: OK'
           else
             echo '| **Stage 1: Extraction** | PDF Processing | Focused extraction stage | 🔴 Failed | N/A |' >> package_status_report.txt
             echo 'Stage 1 import: FAILED'
           fi
-          if python -c 'from app.api.pdf_processing import process_stage_2_chunking; print(f\"| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+          if python -c 'from app.api.pdf_processing import process_product_chunking; print(f\"| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
             echo 'Stage 2 import: OK'
           else
             echo '| **Stage 2: Chunking** | PDF Processing | Text chunking stage | 🔴 Failed | N/A |' >> package_status_report.txt
             echo 'Stage 2 import: FAILED'
           fi
-          if python -c 'from app.api.pdf_processing import process_stage_3_images; print(f\"| **Stage 3: Images** | PDF Processing | Image processing stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+          if python -c 'from app.api.pdf_processing import process_product_images; print(f\"| **Stage 3: Images** | PDF Processing | Image processing stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
             echo 'Stage 3 import: OK'
           else
             echo '| **Stage 3: Images** | PDF Processing | Image processing stage | 🔴 Failed | N/A |' >> package_status_report.txt
             echo 'Stage 3 import: FAILED'
           fi
-          if python -c 'from app.api.pdf_processing import process_stage_4_products; print(f\"| **Stage 4: Products** | PDF Processing | Product creation stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
+          if python -c 'from app.api.pdf_processing import create_single_product; print(f\"| **Stage 4: Products** | PDF Processing | Product creation stage | 🟢 Ready | N/A |\")' >> package_status_report.txt 2>/dev/null; then
             echo 'Stage 4 import: OK'
           else
             echo '| **Stage 4: Products** | PDF Processing | Product creation stage | 🔴 Failed | N/A |' >> package_status_report.txt
