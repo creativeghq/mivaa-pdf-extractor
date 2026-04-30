@@ -361,17 +361,23 @@ class OCRService:
         """
         Extract text from image using Chandra-first strategy.
 
-        Strategy:
-        1. Try Chandra cloud endpoint FIRST (high quality, GPU)
-        2. Fall back to EasyOCR if Chandra unavailable/fails (local, CPU)
-        3. Pytesseract as last resort
+        Strategy (2-tier — EasyOCR removed 2026-04-30):
+        1. Try Chandra cloud endpoint FIRST (high quality, GPU, structured bbox-JSON)
+        2. Pytesseract as last resort (local, CPU-light, deterministic)
+
+        EasyOCR was removed because:
+        - Loaded a 600 MB PyTorch model on CPU on first miss → caused the
+          memory thrash + asyncio stall on job b7d70de1
+        - Quality advantage over Tesseract was small; both are inferior to
+          Chandra and only matter when Chandra is unavailable
+        - Tesseract is light, deterministic, and "valid text or nothing"
 
         Args:
             image_input: Image file path, numpy array, or PIL Image
             use_preprocessing: Whether to apply image preprocessing
 
         Returns:
-            List of OCR results from best engine
+            List of OCR results from best available engine; empty if all failed
 
         Raises:
             ValueError: If image input is invalid
@@ -389,22 +395,8 @@ class OCRService:
         if chandra_results:
             return chandra_results
 
-        # Step 2: Fall back to EasyOCR (local)
-        logger.info("Chandra unavailable, falling back to EasyOCR")
-        try:
-            easyocr_results = self.extract_text_easyocr(image)
-            if easyocr_results:
-                avg_confidence = sum(r.confidence for r in easyocr_results) / len(easyocr_results)
-                logger.info(
-                    f"✅ EasyOCR fallback succeeded: {len(easyocr_results)} regions, "
-                    f"avg confidence {avg_confidence:.2f}"
-                )
-                return easyocr_results
-        except Exception as e:
-            logger.warning(f"EasyOCR fallback failed: {e}")
-
-        # Step 3: Last resort — pytesseract
-        logger.warning("EasyOCR failed, trying pytesseract as last resort")
+        # Step 2: Last resort — pytesseract (light, deterministic)
+        logger.info("Chandra unavailable, falling back to pytesseract")
         try:
             if isinstance(image, np.ndarray):
                 pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if len(image.shape) == 3 else image)
@@ -412,7 +404,7 @@ class OCRService:
                 pil_image = image
             text = pytesseract.image_to_string(pil_image, lang='+'.join(self.config.languages))
             if text.strip():
-                logger.info(f"✅ Pytesseract last-resort succeeded ({len(text)} chars)")
+                logger.info(f"✅ Pytesseract fallback succeeded ({len(text)} chars)")
                 return [OCRResult(text=text.strip(), confidence=0.5, method='tesseract')]
         except Exception as e:
             logger.error(f"Pytesseract also failed: {e}")

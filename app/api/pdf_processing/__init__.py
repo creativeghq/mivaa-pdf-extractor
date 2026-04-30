@@ -15,6 +15,7 @@ Product-centric pipeline with single-product processing functions:
 """
 
 from .stage_0_discovery import process_stage_0_discovery
+from .stage_1_layout_precompute import precompute_document_layout, get_layout_from_document_cache
 from .stage_1_focused_extraction import extract_product_pages
 from .stage_2_chunking import process_product_chunking
 from .stage_3_images import process_product_images
@@ -33,6 +34,8 @@ from .parallel_product_processor import (
 
 __all__ = [
     'process_stage_0_discovery',
+    'precompute_document_layout',
+    'get_layout_from_document_cache',
     'extract_product_pages',
     'process_product_chunking',
     'process_product_images',

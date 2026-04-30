@@ -3302,6 +3302,61 @@ async def process_document_with_discovery(
         except Exception as scale_up_err:
             logger.debug(f"Proactive scale-up skipped (non-fatal): {scale_up_err}")
 
+        # ========================================================================
+        # STAGE 1.5: DOCUMENT-LEVEL LAYOUT PRECOMPUTE
+        # ========================================================================
+        # Run YOLO + bbox-text merge ONCE per page upfront, persist merged
+        # regions (with text_content populated) to document_layout_analysis.
+        # Stage 2 (per-product chunking) reads from this cache instead of
+        # running YOLO/Chandra per-product. Result: chunks=0 disappears
+        # structurally (was the b7d70de1 root cause), plus we don't pay HF
+        # cost N times for the same page.
+        #
+        # Toggle via LAYOUT_PRECOMPUTE_ENABLED — when False, Stage 2 falls
+        # back to its text-based path (round-14 fix in unified_chunking_service).
+        try:
+            _settings_for_precompute = get_settings()
+            if getattr(_settings_for_precompute, "layout_precompute_enabled", True):
+                from app.api.pdf_processing.stage_1_layout_precompute import (
+                    precompute_document_layout,
+                )
+                supabase_pre = get_supabase_client()
+                # `temp_pdf_path` is set by Stage 0 (the page-numbered local file).
+                # `catalog.total_pages` is the physical page count.
+                _precompute_pdf_path = temp_pdf_path if 'temp_pdf_path' in locals() else file_path
+                _total_pages = (
+                    getattr(catalog, "total_pages", 0)
+                    or getattr(catalog, "total_pdf_pages", 0)
+                    or 0
+                )
+                if _total_pages > 0 and _precompute_pdf_path:
+                    logger.info("=" * 80)
+                    logger.info("📐 STAGE 1.5: DOCUMENT-LEVEL LAYOUT PRECOMPUTE")
+                    logger.info("=" * 80)
+                    precompute_summary = await precompute_document_layout(
+                        document_id=document_id,
+                        pdf_path=_precompute_pdf_path,
+                        total_pages=_total_pages,
+                        supabase=supabase_pre,
+                        logger=logger,
+                    )
+                    job_storage[job_id]["metadata"] = {
+                        **job_storage[job_id].get("metadata", {}),
+                        "layout_precompute": precompute_summary,
+                    }
+                else:
+                    logger.warning(
+                        "⚠️ [STAGE 1.5] Skipping precompute — no temp_pdf_path or total_pages"
+                    )
+            else:
+                logger.info("⏭️  [STAGE 1.5] Skipped (LAYOUT_PRECOMPUTE_ENABLED=False)")
+        except Exception as precompute_err:
+            # Stage 1.5 is best-effort; chunker has a text-based fallback.
+            logger.warning(
+                f"⚠️ [STAGE 1.5] failed (chunker will fall back to text-based): {precompute_err}",
+                exc_info=True,
+            )
+
         # Initialize product progress tracker
         from app.services.tracking.product_progress_tracker import ProductProgressTracker
         from app.api.pdf_processing.product_processor import process_single_product

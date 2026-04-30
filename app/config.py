@@ -93,6 +93,16 @@ class Settings(BaseSettings):
         default=4000, env="PRODUCT_MEMORY_THRESHOLD_MB",
         description="Pause adding new products if process RSS exceeds this"
     )
+    # Stage 1.5 (document-level layout precompute) — runs YOLO + Chandra
+    # bbox-text merge once per page upfront and caches results in
+    # `document_layout_analysis`. Stage 2 chunker reads from that cache so
+    # layout-aware chunking actually has populated text_content (was the
+    # root cause of chunks=0 on stylized catalog pages). Set False to
+    # bypass and rely on the chunker's text-based fallback (round-14 fix).
+    layout_precompute_enabled: bool = Field(
+        default=True, env="LAYOUT_PRECOMPUTE_ENABLED",
+        description="Run Stage 1.5 layout+text precompute and cache to document_layout_analysis"
+    )
     # Per-call concurrency caps for outbound embedding HTTP calls. Defaults
     # are sized to fully utilize 4 HF replicas (each endpoint has maxReplica=4).
     # Each base cap × 4 replicas matches what the AIMD gate in

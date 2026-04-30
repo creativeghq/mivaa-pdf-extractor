@@ -59,22 +59,45 @@ async def process_product_chunking(
     # STEP 1: Load Layout Regions (for layout-aware chunking)
     # ========================================================================
     layout_regions_by_page = {}
-    
-    # Priority 1: Use provided layout regions (already in-memory)
-    if layout_regions:
-        logger.info(f"   📐 Using {len(layout_regions)} provided layout regions for chunking")
+
+    # Priority 1 (preferred): Stage 1.5 document-level cache.
+    # Stage 1.5 runs YOLO + bbox-text merge once per page upfront and
+    # persists merged regions (with `text_content` populated) to
+    # `document_layout_analysis`. Reading from that cache gives the
+    # chunker text-aware regions without any per-product YOLO/Chandra
+    # work. See app/api/pdf_processing/stage_1_layout_precompute.py.
+    if config.get('enable_layout_aware_chunking', True):
+        try:
+            from app.api.pdf_processing.stage_1_layout_precompute import (
+                get_layout_from_document_cache,
+            )
+            cached = await get_layout_from_document_cache(
+                document_id=document_id,
+                physical_pages=physical_pages,
+                supabase=supabase,
+                logger=logger,
+            )
+            if cached:
+                layout_regions_by_page = cached
+        except Exception as cache_err:
+            logger.debug(f"   document layout cache read failed (non-fatal): {cache_err}")
+
+    # Priority 2: Caller-provided in-memory regions (legacy paths that
+    # ran YOLO themselves). Only used if Priority 1 produced nothing.
+    if not layout_regions_by_page and layout_regions:
+        logger.info(f"   📐 Using {len(layout_regions)} caller-provided layout regions")
         for region in layout_regions:
             page_num = region.bbox.page
             if page_num not in layout_regions_by_page:
                 layout_regions_by_page[page_num] = []
-            
             # Convert to dict if it's a Pydantic model
             region_dict = region.dict() if hasattr(region, 'dict') else region
             layout_regions_by_page[page_num].append(region_dict)
-    
-    # Priority 2: Load from DB if product_id provided
-    elif product_id and config.get('enable_layout_aware_chunking', True):
-        logger.info(f"   📐 Loading layout regions from DB for layout-aware chunking...")
+
+    # Priority 3: Per-product DB regions (older code path that wrote
+    # `product_layout_regions` rows during Stage 4 of a prior job).
+    if not layout_regions_by_page and product_id and config.get('enable_layout_aware_chunking', True):
+        logger.info(f"   📐 Loading layout regions from product_layout_regions cache...")
         layout_regions_by_page = await get_layout_regions(
             product_id=product_id,
             supabase=supabase,
