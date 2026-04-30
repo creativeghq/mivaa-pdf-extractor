@@ -994,6 +994,23 @@ async def cleanup_product_memory(logger_instance: logging.Logger) -> None:
     collected_gen1 = gc.collect(1)
     logger_instance.debug(f"   Collected {collected_gen1} gen-1 objects")
 
+    # Generation-2 sweep — model caches, HF endpoint clients, numpy buffers,
+    # CLIP embeddings cached at module level all live here. Without this
+    # sweep, RSS climbs by ~100-200MB per product (Bug — job b7d70de1
+    # hit RSS=2.8GB on product 1 alone).
+    collected_gen2 = gc.collect(2)
+    logger_instance.debug(f"   Collected {collected_gen2} gen-2 objects (model caches, long-lived buffers)")
+
+    # Drop the cross-product PDFProcessor singleton so the next product's
+    # Stage 3 starts fresh. Without this, fitz docs + image buffers
+    # accumulate in module-level `_pdf_processor_instance` from
+    # stage_3_images.py.
+    try:
+        from app.api.pdf_processing.stage_3_images import clear_pdf_processor
+        clear_pdf_processor()
+    except Exception as cleanup_err:
+        logger_instance.debug(f"   PDFProcessor singleton clear skipped: {cleanup_err}")
+
     # Get memory after cleanup
     mem_after = memory_monitor.get_memory_stats()
     mem_freed = mem_before.used_mb - mem_after.used_mb

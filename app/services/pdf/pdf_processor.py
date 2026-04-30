@@ -1507,16 +1507,18 @@ class PDFProcessor:
                         pix = page.get_pixmap(matrix=mat, alpha=False)
 
                         # Convert pixmap to PIL via PNG (lossless intermediate)
-                        # then save as JPEG once — avoids double lossy compression
+                        # then save as JPEG once — avoids double lossy compression.
+                        # Use a context manager so PIL releases the Image's
+                        # internal buffer + closes the BytesIO immediately —
+                        # bare Image.open() leaks the PIL ImageFile until GC.
                         from PIL import Image
                         import io
                         img_data = pix.tobytes('png')
-                        pil_image = Image.open(io.BytesIO(img_data))
-
-                        # Single JPEG compression at quality=95
                         full_page_filename = f"page_{pdf_page}_full_render.jpg"
                         full_page_path = os.path.join(image_dir, full_page_filename)
-                        pil_image.save(full_page_path, "JPEG", quality=95, progressive=True)
+                        with io.BytesIO(img_data) as buf, Image.open(buf) as pil_image:
+                            pil_image.save(full_page_path, "JPEG", quality=95, progressive=True)
+                            img_w, img_h = pil_image.width, pil_image.height
 
                         # Get file size
                         file_size = os.path.getsize(full_page_path)
@@ -1531,14 +1533,15 @@ class PDFProcessor:
                             'captures_vector_graphics': True,  # Full render captures vector graphics
                             'format': 'jpg',
                             'size_bytes': file_size,
-                            'width': pil_image.width,
-                            'height': pil_image.height,
+                            'width': img_w,
+                            'height': img_h,
                             'render_dpi': 250
                         })
 
-                        # Free memory immediately
+                        # Free pixmap + img_data buffer immediately. The PIL
+                        # Image was already closed by the context manager above.
                         pix = None
-                        pil_image = None
+                        img_data = None
 
                         self.logger.info(
                             f"   ✅ [Job: {job_id}] Full page render saved: {full_page_filename} "

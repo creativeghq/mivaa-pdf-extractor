@@ -66,7 +66,15 @@ class YoloLayoutDetector:
             max_resume_retries=config.get("max_resume_retries", 3),
             enabled=self.enabled
         )
-        
+
+        # Serialize concurrent _ensure_endpoint_ready() calls so we don't
+        # fire 7 parallel warmups when N parallel YOLO requests arrive on
+        # a cold endpoint. Without this lock, every concurrent caller
+        # observes warmup_completed=False and races to call warmup() →
+        # 7 simultaneous resume + warmup attempts, observed at 16:20:13
+        # on job b7d70de1.
+        self._ready_lock = asyncio.Lock()
+
         logger.info(f"✅ YOLO Layout Detector initialized (enabled: {self.enabled})")
 
     async def _ensure_endpoint_ready(self) -> bool:
@@ -80,24 +88,36 @@ class YoloLayoutDetector:
         Returns:
             True if endpoint is ready for inference, False otherwise
         """
-        try:
-            # Run blocking resume_if_needed() in thread pool to avoid blocking event loop
-            is_running = await asyncio.to_thread(self.endpoint_manager.resume_if_needed)
+        # Serialize concurrent ensure-ready calls. Without this lock,
+        # parallel YOLO requests on a cold endpoint each see
+        # warmup_completed=False and fire concurrent warmups (Bug L,
+        # job b7d70de1). The lock is cheap when warmup is already done —
+        # the inner check returns True immediately.
+        async with self._ready_lock:
+            try:
+                # Fast path: already warm, no work needed.
+                if self.endpoint_manager.warmup_completed:
+                    return True
 
-            if not is_running:
-                logger.error("❌ Failed to resume YOLO endpoint")
+                # Run blocking resume_if_needed() in thread pool to avoid
+                # blocking event loop
+                is_running = await asyncio.to_thread(self.endpoint_manager.resume_if_needed)
+
+                if not is_running:
+                    logger.error("❌ Failed to resume YOLO endpoint")
+                    return False
+
+                # Re-check after resume — another coroutine may have
+                # warmed it while we were waiting on the lock.
+                if not self.endpoint_manager.warmup_completed:
+                    logger.info("🔥 YOLO endpoint needs warmup after resume...")
+                    await asyncio.to_thread(self.endpoint_manager.warmup)
+
+                return True
+
+            except Exception as e:
+                logger.error(f"❌ Failed to ensure YOLO endpoint ready: {e}")
                 return False
-
-            # If we just resumed, we need to warmup (the endpoint manager tracks this internally)
-            if not self.endpoint_manager.warmup_completed:
-                logger.info("🔥 YOLO endpoint needs warmup after resume...")
-                await asyncio.to_thread(self.endpoint_manager.warmup)
-
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to ensure YOLO endpoint ready: {e}")
-            return False
 
     def convert_pdf_page_to_image(
         self,
