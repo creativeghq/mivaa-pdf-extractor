@@ -327,11 +327,46 @@ class YoloEndpointManager:
         logger.error(f"❌ YOLO warmup failed after {time.time() - start_time:.1f}s")
         return False
 
+    def _resolve_endpoint_url(self) -> str:
+        """Return self.endpoint_url, falling back to dynamic HF SDK lookup
+        when it's empty / not a real URL.
+
+        The deploy workflow writes `Environment=YOLO_ENDPOINT_URL=${{ secrets.X }}`
+        which produces an *empty string* when the GH Secret is unset — that
+        empty string overrides Pydantic's `_coerce_empty_string_to_default`
+        because the manager is constructed from raw env, not via a Pydantic
+        Field. So when the URL looks unusable, ask HF directly using the
+        (always-known) endpoint_name + namespace pair. Result is cached on
+        self.endpoint_url for subsequent calls.
+        """
+        url = (self.endpoint_url or "").strip()
+        if url.startswith(("http://", "https://")):
+            return url
+
+        ep = self._get_endpoint()
+        if ep is not None:
+            try:
+                ep.fetch()
+                live_url = getattr(ep, "url", None)
+                if live_url and live_url.startswith(("http://", "https://")):
+                    self.endpoint_url = live_url
+                    logger.info(
+                        f"   🔗 YOLO endpoint URL resolved dynamically: {live_url}"
+                    )
+                    return live_url
+            except Exception as e:
+                logger.warning(f"   ⚠️ YOLO live URL resolve failed: {e}")
+        return ""
+
     def _test_inference(self) -> bool:
         """Test if YOLO endpoint can handle requests."""
         try:
+            url = self._resolve_endpoint_url()
+            if not url:
+                logger.debug("   YOLO _test_inference: no resolvable endpoint URL")
+                return False
             response = requests.get(
-                f"{self.endpoint_url.rstrip('/')}/health",
+                f"{url.rstrip('/')}/health",
                 headers={"Authorization": f"Bearer {self.hf_token}"},
                 timeout=10
             )

@@ -420,13 +420,16 @@ class QwenEndpointManager:
         """Quick test if Qwen can handle requests."""
         try:
             import requests
-            # Guard: refuse to probe an empty/non-HTTP URL. An unresolved endpoint_url
-            # is the root cause of MIVAA-507 "UnsupportedProtocol" — 296 Sentry events
-            # from health checks that ran before .resume() populated the URL.
+            # If endpoint_url isn't a real URL (empty / unset GH Secret),
+            # try to populate it from the live HF endpoint object before
+            # giving up. We always know endpoint_name + namespace, so the
+            # SDK can resolve the URL deterministically.
+            if not self.endpoint_url or not self.endpoint_url.startswith(("http://", "https://")):
+                self._refresh_url_from_endpoint()
             if not self.endpoint_url or not self.endpoint_url.startswith(("http://", "https://")):
                 logger.warning(
                     f"   Qwen warmup test skipped: endpoint_url not configured "
-                    f"(got {self.endpoint_url!r})"
+                    f"and HF SDK lookup returned no URL (got {self.endpoint_url!r})"
                 )
                 return False
 

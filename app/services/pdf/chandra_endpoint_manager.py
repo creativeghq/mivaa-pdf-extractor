@@ -344,6 +344,34 @@ class ChandraEndpointManager:
         logger.error(f"❌ Chandra warmup failed after {time.time() - start_time:.1f}s")
         return False
 
+    def _resolve_endpoint_url(self) -> str:
+        """Return self.endpoint_url, falling back to dynamic HF SDK lookup
+        when it's empty / not a real URL.
+
+        Same pattern as YOLO/Qwen managers — covers the case where
+        deploy.yml writes an empty `Environment=CHANDRA_ENDPOINT_URL=` line
+        (because the GH Secret is unset). Reads the live URL via
+        `get_inference_endpoint(name, namespace).url` and caches it.
+        """
+        url = (self.endpoint_url or "").strip()
+        if url.startswith(("http://", "https://")):
+            return url
+
+        ep = self._get_endpoint()
+        if ep is not None:
+            try:
+                ep.fetch()
+                live_url = getattr(ep, "url", None)
+                if live_url and live_url.startswith(("http://", "https://")):
+                    self.endpoint_url = live_url
+                    logger.info(
+                        f"   🔗 Chandra endpoint URL resolved dynamically: {live_url}"
+                    )
+                    return live_url
+            except Exception as e:
+                logger.warning(f"   ⚠️ Chandra live URL resolve failed: {e}")
+        return ""
+
     def _test_inference(self) -> bool:
         """
         Test if Chandra endpoint is alive via its /health route.
@@ -354,14 +382,17 @@ class ChandraEndpointManager:
         container itself is up and the /health route responds with
         {"status":"ok"}. The old behavior never recognized a paused endpoint
         as "alive" and the warmup loop timed out after 300s on every job
-        that hit a cold Chandra. Verified against the live endpoint
-        today: curl -H "Authorization: Bearer $TOKEN" .../health → 200 OK.
+        that hit a cold Chandra.
 
         Returns:
             True if endpoint responds with 200, False otherwise.
         """
         try:
-            base = self.endpoint_url.rstrip('/')
+            url = self._resolve_endpoint_url()
+            if not url:
+                logger.debug("   Chandra _test_inference: no resolvable endpoint URL")
+                return False
+            base = url.rstrip('/')
             health_url = base if base.endswith('/health') else base + '/health'
 
             response = requests.get(
@@ -371,9 +402,6 @@ class ChandraEndpointManager:
             )
             if response.status_code == 200:
                 return True
-            # Chandra /chat/completions bad request (400 "paused") still
-            # means the LLM route is scaled to zero — NOT a healthy state
-            # for this manager. Let the outer retry loop keep polling.
             logger.debug(
                 f"   Chandra /health returned HTTP {response.status_code}"
             )

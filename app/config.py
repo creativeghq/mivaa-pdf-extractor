@@ -384,9 +384,9 @@ class Settings(BaseSettings):
     # Semantic analysis and material identification via cloud endpoint
     # Uses huggingface_api_key for authentication (no separate token needed)
     qwen_endpoint_url: str = Field(
-        default="",
+        default="https://lv7trhkha3b5757r.us-east-1.aws.endpoints.huggingface.cloud",
         env="QWEN_ENDPOINT_URL",
-        description="Qwen HuggingFace inference endpoint base URL — resolved dynamically from HF at runtime via endpoint_name+namespace, this field is only a fallback"
+        description="Qwen HF inference endpoint base URL. Default points at the live `qwen3-6-35b-fp8` endpoint so the platform works out-of-the-box without GH Secrets. Override via env / GH Secret when redeploying to a different account / endpoint name."
     )
     qwen_endpoint_name: str = Field(
         default="qwen3-6-35b-fp8",
@@ -858,16 +858,20 @@ class Settings(BaseSettings):
         supplied None as a *value*, not "use default," so None → int fails
         the same way '' → int did.
 
-        Kept narrow: str / Optional[str] fields are preserved as '' because
-        an empty string may be semantically valid for them.
+        For str fields: previously we let '' through unchanged because some
+        fields (e.g. `openai_model = ""`) genuinely default to empty. That
+        meant `Environment=YOLO_ENDPOINT_URL=` from deploy.yml ALSO came
+        through as '' even when the field's default was a real URL — which
+        is what wedged the YOLO/Chandra warmup probe on 2026-04-30.
+
+        Refined rule: for str fields, fall back to the declared default
+        ONLY when that default is itself non-empty. So `'' → "https://..."`
+        is restored, but `'' → ""` stays as the explicit user choice.
         """
         if v != "":
             return v
         field = cls.model_fields.get(info.field_name) if info.field_name else None
         if field is None:
-            return v
-        raw = str(field.annotation)
-        if "str" in raw:
             return v
         # PydanticUndefined means no default was declared — leave '' alone
         # and let pydantic raise its normal validation error. The caller has
@@ -876,6 +880,12 @@ class Settings(BaseSettings):
         from pydantic_core import PydanticUndefined
         if field.default is PydanticUndefined:
             return v
+        raw = str(field.annotation)
+        if "str" in raw:
+            # str fields: only coerce '' → default when default is non-empty
+            if isinstance(field.default, str) and field.default == "":
+                return v
+            # else fall through to return field.default
         return field.default
 
     @field_validator("cors_origins", "cors_methods", "cors_headers", "allowed_extensions", mode='before')
