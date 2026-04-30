@@ -530,19 +530,19 @@ class QwenEndpointManager:
             endpoint.fetch()
             current_status = endpoint.status
 
-            if current_status == "paused":
-                logger.info("Qwen endpoint already paused — no-op")
+            if current_status in ("scaledToZero", "paused"):
+                logger.info(f"Qwen endpoint already at zero ({current_status}) — no-op")
                 return True
 
-            logger.info(f"📉 Pausing Qwen endpoint NOW (was: {current_status}) — instant $0/h")
-            endpoint.pause()
+            logger.info(f"📉 Scaling Qwen endpoint to zero NOW (was: {current_status}) — instant $0/h, URL stays alive")
+            endpoint.scale_to_zero()
 
             if self.last_resume_time:
                 uptime = time.time() - self.last_resume_time
                 self.total_uptime += uptime
 
             self.warmup_completed = False
-            logger.info(f"✅ Qwen endpoint paused — billing stopped immediately")
+            logger.info(f"✅ Qwen endpoint scaled to zero — billing stopped, auto-wakes on next request")
             return True
 
         except Exception as e:

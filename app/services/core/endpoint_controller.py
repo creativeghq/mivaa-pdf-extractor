@@ -404,18 +404,11 @@ class EndpointController:
                         name=name, namespace=namespace, token=tok,
                     )
                     ep.fetch()
-                    # Paused endpoints (we pause() at job terminal for
-                    # instant drain) need resume() before update() — HF
-                    # rejects scaling changes on paused endpoints.
-                    if ep.status == "paused":
-                        try:
-                            ep.resume().wait(timeout=120)
-                            ep.fetch()
-                        except Exception as resume_err:
-                            logger.warning(
-                                f"   ⚠️ resume() before prepare failed for {name}: "
-                                f"{resume_err} — proceeding to update anyway"
-                            )
+                    # `scaledToZero` state accepts update() directly — HF
+                    # auto-spins a replica when min_replica > 0 is set, so
+                    # we don't need an explicit resume() step. (Paused
+                    # state, on the other hand, would still need resume —
+                    # but we don't pause() any endpoints anymore.)
                     raw = getattr(ep, "raw", {}) or {}
                     current_scaling = (raw.get("compute", {}) or {}).get("scaling", {}) or {}
                     cur_min = current_scaling.get("minReplica")
@@ -522,19 +515,21 @@ class EndpointController:
                     token = cfg.get("hf_token") or cfg.get("endpoint_token")
                     if ep_name and token:
                         def _do_direct_scale(name=ep_name, namespace=ns, tok=token) -> bool:
-                            # Force-drain via pause() — kills the replica in
-                            # seconds. Setting min_replica=0 alone left the
-                            # replica running for up to 30 min idle (per
-                            # scaleToZeroTimeout), wasting GPU billing on
-                            # every job tail. pause() is the only HF API
-                            # primitive that drains immediately. Next job's
-                            # prepare_for_processing(min=1) resumes it.
+                            # Force-drain via scale_to_zero() — kills the
+                            # replica in seconds AND keeps the endpoint URL
+                            # alive so the next inference request auto-wakes
+                            # it (no explicit resume needed). Different from
+                            # pause(), which would 400-error on stray
+                            # post-job traffic. Setting min_replica=0 alone
+                            # would leave the replica running up to 30 min
+                            # idle per scaleToZeroTimeout — that's the
+                            # behavior this primitive bypasses.
                             from huggingface_hub import get_inference_endpoint
                             ep = get_inference_endpoint(name=name, namespace=namespace, token=tok)
                             ep.fetch()
-                            if ep.status == "paused":
+                            if ep.status in ("scaledToZero", "paused"):
                                 return True
-                            ep.pause()
+                            ep.scale_to_zero()
                             return True
 
                         ok = await asyncio.to_thread(_do_direct_scale)
