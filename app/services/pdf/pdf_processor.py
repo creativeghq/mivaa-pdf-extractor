@@ -2587,10 +2587,11 @@ class PDFProcessor:
                 f"({len(images_skipped)} skipped: {len(opencv_skipped)} no text, {len(clip_skipped)} decorative)"
             )
             
-            # PHASE 3: OCR — Chandra first (via ocr_service.extract_text_from_image),
-            # then EasyOCR, then Tesseract on fallback.
+            # PHASE 3: OCR — Chandra first via ocr_service.extract_text_from_image,
+            # Tesseract on fallback. EasyOCR was removed 2026-04-30 because its
+            # 600 MB PyTorch CPU load caused the b7d70de1 memory stall.
             self.logger.info(
-                f"📝 Phase 3: Running OCR (Chandra→EasyOCR→Tesseract chain) "
+                f"📝 Phase 3: Running OCR (Chandra→Tesseract chain) "
                 f"on {len(images_to_process)} filtered images"
             )
             

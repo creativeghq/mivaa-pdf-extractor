@@ -3306,12 +3306,17 @@ async def process_document_with_discovery(
                     precompute_document_layout,
                 )
                 supabase_pre = get_supabase_client()
-                # `temp_pdf_path` is set by Stage 0 (the page-numbered local file).
-                # `catalog.total_pages` is the physical page count.
+                # Use PDF sheet count, NOT physical page count. Stage 1.5's
+                # YOLO pass iterates `range(page_count)` and opens each page
+                # via PyMuPDF, which only knows about PDF sheets. For a
+                # spread-layout catalog, total_pages=140 (physical halves)
+                # but total_pdf_pages=71 (actual sheets); passing 140 made
+                # YOLO try to open pages 71..139 → 60+ "page X not in
+                # document" errors on job 6a48637e (MIVAA-5C1, 5C2).
                 _precompute_pdf_path = temp_pdf_path if 'temp_pdf_path' in locals() else file_path
                 _total_pages = (
-                    getattr(catalog, "total_pages", 0)
-                    or getattr(catalog, "total_pdf_pages", 0)
+                    getattr(catalog, "total_pdf_pages", 0)
+                    or getattr(catalog, "total_pages", 0)
                     or 0
                 )
                 if _total_pages > 0 and _precompute_pdf_path:

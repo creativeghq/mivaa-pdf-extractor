@@ -29,14 +29,17 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-# Module-level lock guarding the warmup/resume sequence. There are 5
-# different code paths in the codebase that each construct their own
-# YoloLayoutDetector (product_processor, stage_1_focused_extraction,
-# product_discovery_service, pdf_processor, pdf_worker). A per-instance
-# lock would only serialize inside ONE detector — N detectors would
-# still race. This module-level lock guarantees one warmup at a time
-# across the whole process, which is what HF actually wants.
-_yolo_warmup_lock = asyncio.Lock()
+import threading
+
+# Module-level lock guarding the warmup/resume sequence. Process-wide
+# (5 different code paths each construct their own YoloLayoutDetector)
+# AND cross-event-loop (Stage 1.5 calls _yolo_all_pages_sync via
+# asyncio.to_thread → asyncio.run() spawns a fresh loop in a worker
+# thread; an asyncio.Lock created in the main loop fails with
+# "bound to a different event loop" when the worker tries to acquire it).
+# threading.Lock works across loops AND across threads — we only hold
+# it briefly during warmup; HTTP I/O happens after release.
+_yolo_warmup_lock = threading.Lock()
 
 
 class YoloLayoutDetector:
@@ -95,37 +98,39 @@ class YoloLayoutDetector:
         Returns:
             True if endpoint is ready for inference, False otherwise
         """
-        # Serialize concurrent ensure-ready calls process-wide. Module-
-        # level lock so the 5 different code paths that each construct
-        # their own YoloLayoutDetector cooperate (Bug L1 — round-15 fix
-        # used a per-instance lock which didn't help cross-instance).
-        # The lock is cheap when warmup is already done — the inner
-        # check returns True immediately and releases it.
-        async with _yolo_warmup_lock:
+        # Serialize warmup process-wide via threading.Lock (works across
+        # loops and threads — see module-level comment).
+        # Fast-path the already-warm case OUTSIDE the lock to avoid the
+        # GIL-serialization cost on the hot read path.
+        if self.endpoint_manager.warmup_completed:
+            return True
+
+        try:
+            await asyncio.to_thread(_yolo_warmup_lock.acquire)
             try:
-                # Fast path: already warm, no work needed.
+                # Re-check after acquiring — another coroutine/thread
+                # may have warmed it while we were waiting.
                 if self.endpoint_manager.warmup_completed:
                     return True
 
-                # Run blocking resume_if_needed() in thread pool to avoid
-                # blocking event loop
+                # Run blocking resume_if_needed() in thread pool
                 is_running = await asyncio.to_thread(self.endpoint_manager.resume_if_needed)
 
                 if not is_running:
                     logger.error("❌ Failed to resume YOLO endpoint")
                     return False
 
-                # Re-check after resume — another coroutine may have
-                # warmed it while we were waiting on the lock.
                 if not self.endpoint_manager.warmup_completed:
                     logger.info("🔥 YOLO endpoint needs warmup after resume...")
                     await asyncio.to_thread(self.endpoint_manager.warmup)
 
                 return True
+            finally:
+                _yolo_warmup_lock.release()
 
-            except Exception as e:
-                logger.error(f"❌ Failed to ensure YOLO endpoint ready: {e}")
-                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to ensure YOLO endpoint ready: {e}")
+            return False
 
     def convert_pdf_page_to_image(
         self,
