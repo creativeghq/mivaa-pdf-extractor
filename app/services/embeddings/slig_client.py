@@ -346,20 +346,6 @@ class SLIGClient:
 
     # Endpoint lifecycle management methods
 
-    def pause_endpoint(self) -> bool:
-        """
-        Manually pause the endpoint to stop billing.
-        Use this after batch processing is complete.
-
-        Returns:
-            True if paused successfully, False if failed or not available
-        """
-        if self._endpoint_manager:
-            return self._endpoint_manager.force_pause()
-        else:
-            logger.warning("⚠️ Endpoint manager not available - cannot pause")
-            return False
-
     def pause_if_idle(self) -> bool:
         """
         Pause endpoint if it's been idle for too long.

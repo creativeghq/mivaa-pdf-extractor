@@ -394,54 +394,12 @@ class SLIGEndpointManager:
         logger.debug("pause_if_idle() disabled - letting HF handle scale-to-zero automatically")
         return True
 
-    def force_pause(self) -> bool:
-        """
-        Pause endpoint at JOB COMPLETION to stop billing.
-
-        IMPORTANT: Call this ONLY when the entire job is complete, NOT between
-        batches or processing steps. This puts endpoint in "paused" state which
-        requires explicit resume() - handled by resume_if_needed() and warmup().
-
-        The endpoint will be resumed automatically when the next job starts.
-
-        Returns:
-            True if paused successfully, False if failed
-        """
-        if not self._can_pause_resume:
-            logger.warning("Pause/resume not available - cannot pause")
-            return False
-
-        endpoint = self._get_endpoint()
-        if not endpoint:
-            return False
-
-        try:
-            endpoint.fetch()
-            if endpoint.status == "running":
-                logger.info("⏸️ Pausing SLIG endpoint (JOB COMPLETED - stopping billing)")
-                endpoint.pause()
-                self.pause_count += 1
-
-                if self.last_resume_time:
-                    uptime = time.time() - self.last_resume_time
-                    self.total_uptime += uptime
-
-                self.warmup_completed = False
-                logger.info("✅ SLIG endpoint paused (no billing until next job)")
-                return True
-            else:
-                logger.info(f"Endpoint already not running (status: {endpoint.status})")
-                return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to pause SLIG endpoint: {e}")
-            return False
-
     def scale_to_zero(self) -> bool:
         """Force-drain endpoint to 0 replicas IMMEDIATELY at job terminal.
 
-        Uses `endpoint.pause()` — replica killed in seconds, $0/h
-        immediately. Next job's prepare_for_processing resumes it.
+        Uses `endpoint.scale_to_zero()` — replica killed in seconds, $0/h
+        immediately. Endpoint URL stays alive so the next inference
+        request auto-wakes it (no explicit resume needed).
         """
         if not self._can_pause_resume:
             logger.warning("Endpoint management not available - cannot scale to zero")

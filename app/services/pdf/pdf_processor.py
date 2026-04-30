@@ -1315,8 +1315,10 @@ class PDFProcessor:
                 f"   ✅ [Job: {job_id}] YOLO extraction complete: {len(extracted_images)} images extracted"
             )
 
-            # Pause YOLO endpoint after batch
-            yolo_detector.pause_endpoint()
+            # Mid-job YOLO pause removed: Stage 3 image classification still
+            # needs YOLO for region detection. Terminal cleanup
+            # (scale_all_to_zero in rag_routes.py finally block) handles
+            # the end-of-job scale-to-zero call.
 
         except Exception as e:
             self.logger.error(f"   ❌ [Job: {job_id}] YOLO batch extraction failed: {e}")

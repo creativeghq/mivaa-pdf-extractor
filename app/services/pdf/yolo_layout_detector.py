@@ -484,20 +484,6 @@ class YoloLayoutDetector:
 
         return results
 
-    def pause_endpoint(self) -> bool:
-        """
-        Scale YOLO endpoint to zero replicas to stop billing.
-        Call this after batch processing is complete.
-
-        NOTE: Uses scale_to_zero instead of force_pause because:
-        - scale_to_zero: Endpoint auto-resumes on next request (recommended)
-        - force_pause: Requires manual resume, can cause delays
-
-        Returns:
-            True if scaled down successfully
-        """
-        return self.endpoint_manager.scale_to_zero()
-
     def get_stats(self) -> Dict[str, Any]:
         """
         Get YOLO endpoint usage statistics.
