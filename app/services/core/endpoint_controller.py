@@ -338,6 +338,110 @@ class EndpointController:
             # Cooperation is best-effort; never fail the pipeline on scaler noise.
             logger.debug("Auto-scaler alignment skipped: %s", e)
 
+    async def prepare_for_processing(
+        self,
+        reason: str = "job_start",
+        min_replica: int = 1,
+        max_replica: int = 4,
+        scale_to_zero_timeout: int = 30,
+    ) -> Dict[str, bool]:
+        """Pre-warm posture for an active job: ensure every HF endpoint has
+        `min_replica >= 1` (so we always have one warm replica) with a
+        `max_replica` ceiling for burst, and `scaleToZeroTimeout` set so
+        that the moment we later call `scale_all_to_zero`, HF's idle clock
+        starts ticking properly.
+
+        Calling this is the FIRST half of the per-job state machine:
+            prepare_for_processing → ... job runs ... → scale_all_to_zero
+
+        Args:
+            reason: log-correlation tag, e.g. "pdf_job_<id>", "scrape_<sid>"
+            min_replica: floor while job is active (default 1)
+            max_replica: ceiling (default 4)
+            scale_to_zero_timeout: minutes of idle before HF drains the last
+                replica AFTER min is dropped to 0 (default 30)
+
+        Returns:
+            Dict[endpoint_key, success_bool] for each of the 4 endpoints.
+        """
+        try:
+            from app.config import get_settings
+            settings = get_settings()
+            config_getters = {
+                "qwen":    settings.get_qwen_config,
+                "slig":    settings.get_slig_config,
+                "yolo":    settings.get_yolo_config,
+                "chandra": settings.get_chandra_config,
+            }
+        except Exception as e:
+            logger.warning(
+                "prepare_for_processing(reason=%s): could not load settings: %s",
+                reason, e,
+            )
+            return {k: False for k in HF_ENDPOINT_NAMES}
+
+        outcome: Dict[str, bool] = {}
+        for key in HF_ENDPOINT_NAMES:
+            ok = False
+            try:
+                cfg = config_getters[key]() or {}
+                ep_name = cfg.get("endpoint_name") or HF_ENDPOINT_NAMES[key]
+                ns = cfg.get("namespace", "basiliskan")
+                token = cfg.get("hf_token") or cfg.get("endpoint_token")
+                if not (ep_name and token):
+                    logger.warning(
+                        "prepare_for_processing: %s missing endpoint_name/token, skipping",
+                        key,
+                    )
+                    outcome[key] = False
+                    continue
+
+                def _do(name=ep_name, namespace=ns, tok=token,
+                        min_r=min_replica, max_r=max_replica,
+                        sttz=scale_to_zero_timeout) -> bool:
+                    from huggingface_hub import get_inference_endpoint
+                    ep = get_inference_endpoint(
+                        name=name, namespace=namespace, token=tok,
+                    )
+                    ep.fetch()
+                    raw = getattr(ep, "raw", {}) or {}
+                    current_scaling = (raw.get("compute", {}) or {}).get("scaling", {}) or {}
+                    cur_min = current_scaling.get("minReplica")
+                    cur_max = current_scaling.get("maxReplica")
+                    cur_sttz = current_scaling.get("scaleToZeroTimeout")
+                    # No-op when already at desired posture (avoid HF API write
+                    # rate-limit hits when multiple jobs queue up).
+                    if cur_min == min_r and cur_max == max_r and cur_sttz == sttz:
+                        return True
+                    ep.update(
+                        min_replica=min_r,
+                        max_replica=max_r,
+                        scale_to_zero_timeout=sttz,
+                    )
+                    return True
+
+                ok = await asyncio.to_thread(_do)
+                if ok:
+                    logger.info(
+                        "   📈 %s prepared for job (min=%d, max=%d, scaleToZero=%dmin, reason=%s)",
+                        key, min_replica, max_replica, scale_to_zero_timeout, reason,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "   ⚠️ prepare_for_processing %s failed: %s (reason=%s)",
+                    key, e, reason,
+                )
+            outcome[key] = ok
+
+        success_count = sum(1 for v in outcome.values() if v)
+        logger.info(
+            "📈 EndpointController.prepare_for_processing(reason=%s): "
+            "ready=%d/%d endpoints (min=%d, max=%d, scaleToZeroTimeout=%dmin)",
+            reason, success_count, len(outcome),
+            min_replica, max_replica, scale_to_zero_timeout,
+        )
+        return outcome
+
     async def scale_all_to_zero(self, reason: str = "cleanup") -> Dict[str, bool]:
         """Force every HF endpoint to min_replica=0.
 

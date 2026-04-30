@@ -2615,6 +2615,28 @@ async def process_document_with_discovery(
     await heartbeat.__aenter__()
     try:
         # ============================================================================
+        # POSTURE: warm-replica floor for the duration of this job
+        # ============================================================================
+        # Sets min_replica=1, max_replica=4, scaleToZeroTimeout=30min on all 4
+        # HF endpoints. Floor=1 guarantees one warm replica throughout the job
+        # (no per-stage cold-start tax), ceiling=4 allows HF to burst on load.
+        # Paired with scale_all_to_zero() in the finally block, which sets
+        # min=0 and lets HF's 30-min idle timer drain the last replica.
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            await endpoint_controller.prepare_for_processing(
+                reason=f"pdf_job_{job_id}",
+                min_replica=1,
+                max_replica=4,
+                scale_to_zero_timeout=30,
+            )
+        except Exception as prep_err:
+            logger.warning(
+                f"⚠️ prepare_for_processing failed (job will continue, "
+                f"may incur cold-start latency): {prep_err}"
+            )
+
+        # ============================================================================
         # WARMUP ALL HUGGINGFACE ENDPOINTS IN PARALLEL
         # ============================================================================
         logger.info("=" * 80)
