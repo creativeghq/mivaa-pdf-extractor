@@ -536,16 +536,40 @@ class ChandraEndpointManager:
             "Content-Type": "application/json",
         }
         api_url = self.endpoint_url.rstrip('/') + '/v1/chat/completions'
+        # Bug O fix (2026-04-30): Chandra was returning prose ("The image
+        # is a spread from a catalog...") instead of structured bbox-JSON
+        # for stylized catalog images. Three changes that together force
+        # the model into strict OCR mode:
+        #   1. system message that locks the role to OCR-engine and
+        #      forbids prose explicitly
+        #   2. text-before-image in the user message (some llama.cpp VLMs
+        #      follow whichever instruction comes first; image-first was
+        #      letting the model "describe what you see" by default)
+        #   3. temperature=0 (was unset → llama.cpp default ~0.8 →
+        #      creative output)
         payload = {
             "model": CHANDRA_V2_MODEL_ID,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}},
-                    {"type": "text", "text": prompt},
-                ],
-            }],
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an OCR engine. Your only job is to extract "
+                        "text fragments from images and emit a JSON array of "
+                        '{"text", "x", "y", "w", "h"} entries. '
+                        "Never describe images. Never write prose. "
+                        "Output JSON only — no markdown, no commentary."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}},
+                    ],
+                },
+            ],
             "stream": False,
+            "temperature": 0.0,
             "max_tokens": parameters.get('max_tokens', 4000) if parameters else 4000,
         }
 
