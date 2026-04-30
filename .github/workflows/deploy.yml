@@ -799,6 +799,28 @@ jobs:
           Environment=VISUAL_EMBEDDING_MODE=${{ secrets.VISUAL_EMBEDDING_MODE }}
           Environment=VISUAL_EMBEDDING_PRIMARY_MODEL=${{ secrets.VISUAL_EMBEDDING_PRIMARY_MODEL }}
           Environment=VISUAL_EMBEDDING_DIMENSIONS=${{ secrets.VISUAL_EMBEDDING_DIMENSIONS }}
+          # Qwen / YOLO / Chandra endpoint identity. Each of the four HF
+          # inference endpoints can be renamed/replaced without a code
+          # change — populate the GH secret instead. Empty secrets fall
+          # back to the field default in app/config.py via
+          # _coerce_empty_string_to_default. After all of these are set
+          # in GH, delete the legacy drop-in at
+          # /etc/systemd/system/mivaa-pdf-extractor.service.d/qwen-endpoint.conf.
+          Environment=QWEN_ENDPOINT_URL=${{ secrets.QWEN_ENDPOINT_URL }}
+          Environment=QWEN_ENDPOINT_NAME=${{ secrets.QWEN_ENDPOINT_NAME }}
+          Environment=QWEN_NAMESPACE=${{ secrets.QWEN_NAMESPACE }}
+          Environment=QWEN_MODEL=${{ secrets.QWEN_MODEL }}
+          Environment=YOLO_ENDPOINT_URL=${{ secrets.YOLO_ENDPOINT_URL }}
+          Environment=YOLO_ENDPOINT_NAME=${{ secrets.YOLO_ENDPOINT_NAME }}
+          Environment=YOLO_NAMESPACE=${{ secrets.YOLO_NAMESPACE }}
+          Environment=CHANDRA_ENDPOINT_URL=${{ secrets.CHANDRA_ENDPOINT_URL }}
+          Environment=CHANDRA_ENDPOINT_NAME=${{ secrets.CHANDRA_ENDPOINT_NAME }}
+          Environment=CHANDRA_NAMESPACE=${{ secrets.CHANDRA_NAMESPACE }}
+          # Pipeline runtime caps. MAX_CONCURRENT_PRODUCTS=1 is the only
+          # verified-safe value on a 4 GB droplet (above 1 hits cgroup
+          # MemoryHigh and OOM-killed on Apr 29). Override via GH secret
+          # if the droplet is upgraded. Empty secret → code default.
+          Environment=MAX_CONCURRENT_PRODUCTS=${{ secrets.MAX_CONCURRENT_PRODUCTS }}
           # Fix B: lifespan shutdown drain window (seconds). Caller-side
           # drain runs first (pause-for-deploy default 300s), then systemd
           # gives the lifespan hook this window before SIGKILL.
