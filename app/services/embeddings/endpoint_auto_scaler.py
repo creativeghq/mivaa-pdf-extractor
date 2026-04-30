@@ -247,38 +247,60 @@ class EndpointAutoScaler:
     
     def scale_endpoint(self, endpoint_name: str, desired_replicas: int) -> bool:
         """
-        Scale endpoint to specified number of replicas.
-        
-        Uses endpoint.update(min_replica=N, max_replica=M) API.
-        Respects endpoint's configured max_replica limit.
+        Cap an endpoint's MAX replicas based on queue depth — let HF's
+        hardware-usage autoscaler handle actually spinning replicas up
+        and down between 0 and that cap.
+
+        2026-04-30 fix: previously this called
+            endpoint.update(min_replica=target, max_replica=max_allowed)
+        which moved the FLOOR every time we wanted to scale up. With
+        target=4, that pinned `min_replica=4` and the endpoint stayed
+        at 4 replicas 24/7 (i.e. "Never scale to zero" in the HF UI),
+        until force_minimum() ran on idle. Costs are per-replica-hour,
+        so a single PDF with 11 products could leave 4 A100 replicas
+        burning $4.50/h × 4 = $18/h until idle cleanup. The whole point
+        of HF's `scaleToZeroTimeout=30` config is defeated.
+
+        New behavior: set `min_replica=0` always so scale-to-zero is
+        preserved, set `max_replica` to the desired cap so HF's
+        built-in `metric=hardwareUsage, threshold=80%` autoscaler
+        provisions only what's actually needed. The desired_replicas
+        argument therefore acts as a CEILING, not a floor.
         """
         endpoint = self.get_endpoint(endpoint_name)
         if not endpoint:
             return False
-        
+
         try:
             endpoint.fetch()
-            current = self._current_replicas.get(endpoint_name, 1)
             config = self._endpoint_configs.get(endpoint_name, {'min_replica': 0, 'max_replica': 2})
-            
-            # Clamp to endpoint's configured limits
-            max_allowed = config['max_replica']
-            min_allowed = config['min_replica']
-            target_replicas = max(min_allowed, min(desired_replicas, max_allowed))
-            
-            if target_replicas == current:
-                return True  # Already at desired scale
-            
-            logger.info(f"📈 Scaling {endpoint_name}: {current} → {target_replicas} replicas (max={max_allowed})")
-            
-            # Update endpoint scaling configuration
-            # Set min and max to same value for fixed replica count
-            endpoint.update(min_replica=target_replicas, max_replica=max_allowed)
-            
-            self._current_replicas[endpoint_name] = target_replicas
-            logger.info(f"✅ {endpoint_name} scaled to {target_replicas} replicas")
+
+            # Clamp the requested ceiling to the endpoint's configured maxReplica.
+            # `desired_replicas` is the suggested ceiling from queue-depth math;
+            # never raise above what HF was originally configured for.
+            absolute_max = config['max_replica']
+            new_max = max(1, min(desired_replicas, absolute_max))
+
+            current_max = config.get('max_replica', new_max)
+            if new_max == current_max:
+                return True  # Cap already where we want it
+
+            logger.info(
+                f"📈 Adjusting {endpoint_name} max_replica cap: "
+                f"{current_max} → {new_max} (min stays 0, HF autoscale fills based on hardware usage)"
+            )
+
+            # ALWAYS keep min_replica=0 so the endpoint can scale to zero on
+            # idle. We only move the ceiling.
+            endpoint.update(min_replica=0, max_replica=new_max)
+
+            # Track the effective cap, not the actual replica count — HF
+            # decides actual replicas based on load.
+            self._endpoint_configs[endpoint_name]['max_replica'] = new_max
+            self._current_replicas[endpoint_name] = self._current_replicas.get(endpoint_name, 0)
+            logger.info(f"✅ {endpoint_name} cap now {new_max}, min=0 (scale-to-zero preserved)")
             return True
-            
+
         except Exception as e:
             logger.warning(f"⚠️ Failed to scale {endpoint_name}: {e}")
             return False
