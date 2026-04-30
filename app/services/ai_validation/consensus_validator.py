@@ -68,6 +68,7 @@ class ConsensusValidator:
         qwen_config = settings.get_qwen_config()
         self.qwen_endpoint_url = qwen_config["endpoint_url"]
         self.qwen_endpoint_token = qwen_config["endpoint_token"]
+        self.qwen_model = qwen_config.get("model") or settings.qwen_model
         self.ai_logger = ai_logger or AICallLogger()
     
     async def validate_with_consensus(
@@ -282,7 +283,7 @@ class ConsensusValidator:
                             "Content-Type": "application/json"
                         },
                         json={
-                            "model": "Qwen/Qwen3-VL-32B-Instruct",
+                            "model": self.qwen_model,
                             "messages": [{"role": "user", "content": prompt}],
                             "max_tokens": 200,
                             "temperature": 0.1

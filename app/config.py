@@ -399,9 +399,9 @@ class Settings(BaseSettings):
         description="Qwen endpoint namespace"
     )
     qwen_model: str = Field(
-        default="Qwen/Qwen3-VL-32B-Instruct",
+        default="Qwen/Qwen3.6-35B-A3B-FP8",
         env="QWEN_MODEL",
-        description="Qwen vision model (GGUF quantized version for llamacpp)"
+        description="Qwen vision model id served by the qwen_endpoint_name endpoint. Must match what `/v1/models` reports — vLLM 404s on a model-name mismatch."
     )
     qwen_max_tokens: int = Field(
         default=4096,
@@ -731,7 +731,7 @@ class Settings(BaseSettings):
 
     # Document Chunking Models
     chunking_primary_model: str = Field(
-        default="Qwen/Qwen3-VL-32B-Instruct",
+        default="Qwen/Qwen3.6-35B-A3B-FP8",
         env="CHUNKING_PRIMARY_MODEL",
         description="Primary model for chunking"
     )
@@ -1251,12 +1251,18 @@ class Settings(BaseSettings):
     @field_validator("qwen_model")
     @classmethod
     def validate_qwen_model(cls, v):
-        """Validate Qwen vision model name (locked to 32B only)."""
-        valid_models = [
-            "Qwen/Qwen3-VL-32B-Instruct"  # Only 32B model supported
-        ]
-        if v not in valid_models:
-            raise ValueError(f"Qwen model must be: {valid_models[0]} (32B only)")
+        """Sanity-check qwen_model — only block obviously broken values.
+
+        Previously this hard-locked the value to `Qwen/Qwen3-VL-32B-Instruct`,
+        which actively prevented configuring the field for the 2026-04-29
+        endpoint swap to `Qwen/Qwen3.6-35B-A3B-FP8`. We don't try to maintain
+        an allow-list of valid Qwen IDs in code — just reject empty / non-Qwen
+        values that are clearly wrong.
+        """
+        if not v or not isinstance(v, str):
+            raise ValueError("Qwen model must be a non-empty string")
+        if not v.lower().startswith("qwen/"):
+            raise ValueError(f"Qwen model id must start with 'Qwen/' (got: {v!r})")
         return v
 
     def get_jwt_config(self) -> Dict[str, Any]:

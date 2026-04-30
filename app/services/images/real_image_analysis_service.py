@@ -71,6 +71,7 @@ class RealImageAnalysisService:
 
         self.qwen_endpoint_url = qwen_config["endpoint_url"]
         self.qwen_endpoint_token = qwen_config["endpoint_token"]
+        self.qwen_model = qwen_config.get("model") or settings.qwen_model
         self.anthropic_url = "https://api.anthropic.com/v1"
         self.clip_model = "clip-vit-base-patch32"
         self.workspace_id = workspace_id
@@ -411,7 +412,7 @@ class RealImageAnalysisService:
                                 "Content-Type": "application/json"
                             },
                             json={
-                                "model": "Qwen/Qwen3-VL-32B-Instruct",  # Model hosted on HuggingFace Endpoint
+                                "model": self.qwen_model,  # vLLM 404s on a name mismatch — read from settings
                                 "messages": [
                                     {
                                         "role": "user",

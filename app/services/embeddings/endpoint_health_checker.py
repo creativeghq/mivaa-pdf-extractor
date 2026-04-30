@@ -83,6 +83,10 @@ class EndpointHealthChecker:
         for attempt in range(1, self.max_health_check_attempts + 1):
             start_time = time.time()
             try:
+                # Resolve model id from settings — vLLM 404s on a mismatch
+                # between the `model` field and what `/v1/models` reports.
+                from app.config import get_settings
+                qwen_model = get_settings().qwen_model
                 async with httpx.AsyncClient(timeout=self.health_check_timeout_seconds) as client:
                     # Simple health check - ask for a single word response
                     response = await client.post(
@@ -92,7 +96,7 @@ class EndpointHealthChecker:
                             "Content-Type": "application/json"
                         },
                         json={
-                            "model": "Qwen/Qwen3-VL-32B-Instruct",
+                            "model": qwen_model,
                             "messages": [{"role": "user", "content": "Say OK"}],
                             "max_tokens": 5
                         }

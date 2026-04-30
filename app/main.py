@@ -1563,7 +1563,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                                     "Content-Type": "application/json"
                                 },
                                 json={
-                                    "model": "Qwen/Qwen3-VL-32B-Instruct",
+                                    "model": qwen_config.get("model") or get_settings().qwen_model,
                                     "messages": [{"role": "user", "content": "hi"}],
                                     "max_tokens": 1,
                                     "temperature": 0.1
