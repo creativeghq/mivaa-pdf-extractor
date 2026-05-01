@@ -16,16 +16,52 @@ from .common import BaseResponse, ProcessingStatus, PaginationParams
 
 
 class JobStatus(str, Enum):
-    """Extended job status enumeration."""
+    """`background_jobs.status` allowed values.
+
+    These are the ONLY values Postgres will accept — see the
+    `background_jobs_status_check` CHECK constraint. Writing any other
+    value silently fails (the UPDATE is rejected). If you find yourself
+    needing a new status, add it BOTH here AND in the DB constraint via
+    a migration.
+
+    Migration history:
+        2026-05-01: 'retrying' added (edge functions were already trying
+                    to write it; the constraint had been silently rejecting
+                    the update for weeks). See migration
+                    `add_retrying_to_background_jobs_status_check`.
+
+    The previous version of this enum had values 'queued', 'running',
+    'paused' that were aspirational only — not in the DB constraint.
+    Using them would have produced silent failures. Removed for that
+    reason.
+    """
 
     PENDING = "pending"
-    QUEUED = "queued"
-    RUNNING = "running"
-    PAUSED = "paused"
-    RETRYING = "retrying"
+    PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"
+    RETRYING = "retrying"
+
+
+# Convenience sets for downstream classification.
+JOB_STATUS_TERMINAL = frozenset({
+    JobStatus.COMPLETED,
+    JobStatus.FAILED,
+    JobStatus.CANCELLED,
+    JobStatus.INTERRUPTED,
+})
+JOB_STATUS_ACTIVE = frozenset({
+    JobStatus.PENDING,
+    JobStatus.PROCESSING,
+    JobStatus.RETRYING,
+})
+# When deleting a job: produced data is good only if status is COMPLETED.
+# Anything else (cancelled / failed / interrupted / still-active-but-deleted)
+# means the partial output should be wiped from the catalog.
+JOB_STATUS_PRESERVE_OUTPUTS = frozenset({JobStatus.COMPLETED})
+JOB_STATUS_WIPE_OUTPUTS = JOB_STATUS_TERMINAL - JOB_STATUS_PRESERVE_OUTPUTS
 
 
 class ProcessingStage(str, Enum):

@@ -584,9 +584,10 @@ async def cancel_job(
 
         # Mark job as cancelled in database
         # The heartbeat check will detect this and raise CancelledError
+        from app.schemas.jobs import JobStatus as _JobStatus
         supabase_client.client.table('background_jobs')\
             .update({
-                'status': 'cancelled',
+                'status': _JobStatus.CANCELLED.value,
                 'error': 'Job cancelled by user',
                 'updated_at': datetime.utcnow().isoformat(),
                 'metadata': {

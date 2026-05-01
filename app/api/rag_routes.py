@@ -1772,10 +1772,14 @@ async def delete_job(
         vecs_service = get_vecs_service()
 
         # Decide the mode. Explicit override wins; otherwise infer from status.
-        # Statuses that imply "the produced data is good, keep it":
-        COMPLETED_STATUSES = {"completed"}
-        # Statuses that imply "wipe the partial/bad output":
-        WIPE_STATUSES = {"cancelled", "failed", "stuck", "interrupted"}
+        # The enum-derived sets are the canonical source of truth — see
+        # app/schemas/jobs.py for the contract.
+        from app.schemas.jobs import (
+            JOB_STATUS_PRESERVE_OUTPUTS,
+            JOB_STATUS_WIPE_OUTPUTS,
+        )
+        COMPLETED_STATUSES = {s.value for s in JOB_STATUS_PRESERVE_OUTPUTS}
+        WIPE_STATUSES = {s.value for s in JOB_STATUS_WIPE_OUTPUTS}
 
         if preserve_outputs is not None:
             mode_preserve = bool(preserve_outputs)

@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
-from app.schemas.jobs import ProcessingStage, PageProcessingStatus, JobProgressDetail
+from app.schemas.jobs import ProcessingStage, PageProcessingStatus, JobProgressDetail, JobStatus
 from app.services.core.supabase_client import get_supabase_client
 from app.utils.retry_helper import async_retry_with_backoff
 
@@ -168,7 +168,7 @@ class ProgressTracker:
                 progress_pct = self.calculate_progress_percentage()
 
             job_update = {
-                'status': 'processing',
+                'status': JobStatus.PROCESSING.value,
                 'progress': int(progress_pct),
                 'metadata': {
                     'current_stage': self.current_stage.value,
@@ -652,7 +652,7 @@ class ProgressTracker:
 
         try:
             update_payload = {
-                'status': 'completed',
+                'status': JobStatus.COMPLETED.value,
                 'progress': 100,
                 'metadata': {
                     'pages_completed': self.pages_completed,
@@ -771,7 +771,7 @@ class ProgressTracker:
             if self._db_sync_enabled and self._supabase:
                 self._supabase.client.table('background_jobs')\
                     .update({
-                        'status': 'failed',
+                        'status': JobStatus.FAILED.value,
                         'progress': int(self.calculate_progress_percentage()),
                         'error': error_message,
                         'metadata': {
