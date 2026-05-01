@@ -380,9 +380,16 @@ class ProductRelationshipService:
                     score += 0.3
                     reasons.append(f"Same fire rating: {fire_rating}")
 
-                # Check dimension overlap
+                # Check dimension overlap. dimensions / product_dims may be
+                # lists of dicts (e.g. [{"width": 100, "height": 50}]) which
+                # aren't hashable — coerce each entry to a stable string key
+                # before set-intersecting so we don't blow up the entire call.
                 if dimensions and product_dims:
-                    common_dims = set(dimensions) & set(product_dims)
+                    def _dim_key(d: Any) -> str:
+                        if isinstance(d, dict):
+                            return json.dumps(d, sort_keys=True, default=str)
+                        return str(d)
+                    common_dims = {_dim_key(d) for d in dimensions} & {_dim_key(d) for d in product_dims}
                     if common_dims:
                         score += 0.3
                         reasons.append(f"Matching dimensions: {', '.join(common_dims)}")
