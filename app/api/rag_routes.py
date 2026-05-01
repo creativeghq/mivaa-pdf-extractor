@@ -3580,20 +3580,25 @@ async def process_document_with_discovery(
                 "parallel": parallel_config.enable_parallel,
             },
         ):
-            # `total_pages` is the upper bound used by stage_1_focused_extraction
-            # to validate `physical_page > total_pages`. For spread-layout
-            # catalogs (e.g. art-book layouts where each PDF sheet contains 2
-            # physical pages side-by-side), `page_count` returns PDF sheet
-            # count (e.g. 71) while physical page numbers go up to e.g. 140.
-            # Using `page_count` as the bound silently drops every product
-            # whose pages live past the sheet count — i.e. the back half of
-            # any spread-layout catalog. Prefer `catalog.total_pages` (the
-            # physical page count) when present, falling back to page_count
-            # only for non-spread layouts where they're equal.
-            physical_page_bound = (
-                getattr(catalog, "total_pages", None) or page_count
-            )
-            if physical_page_bound != page_count:
+            # `physical_page_upper_bound` is the upper bound used by
+            # stage_1_focused_extraction to validate `physical_page > bound`.
+            # For spread-layout catalogs (e.g. art-book layouts where each
+            # PDF sheet contains 2 physical pages side-by-side),
+            # `page_count` returns PDF sheet count (e.g. 71) while physical
+            # page numbers go up to e.g. 140. Using `page_count` as the
+            # bound silently drops every product whose pages live past the
+            # sheet count — i.e. the back half of any spread-layout
+            # catalog. Prefer `catalog.total_pages` (physical page count)
+            # when present, falling back to page_count only for non-spread
+            # layouts where they're equal.
+            #
+            # The `as_physical_page_bound` wrapper is a NewType-style guard
+            # that documents the intended meaning of the int and validates
+            # it's ≥1. See app/schemas/page_types.py for the rationale.
+            from app.schemas.page_types import as_physical_page_bound
+            _raw_bound = getattr(catalog, "total_pages", None) or page_count
+            physical_page_bound = as_physical_page_bound(_raw_bound)
+            if _raw_bound != page_count:
                 logger.info(
                     f"📐 Spread layout: using catalog.total_pages={physical_page_bound} "
                     f"(physical) for page validation instead of page_count={page_count} "

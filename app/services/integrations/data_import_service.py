@@ -943,15 +943,33 @@ class DataImportService:
             # Don't raise - product is already created
 
     async def _generate_chunk_embeddings(self, chunk_ids: list) -> None:
-        """Generate Voyage AI text embeddings for chunks inline."""
+        """Generate Voyage AI text embeddings for chunks inline.
+
+        Per-chunk skip diagnostics (promoted from silent `continue` to
+        WARNING-with-context on 2026-05-01): silent skips here turned
+        into "this product has no searchable text" weeks later in
+        production with nothing to grep for. Each skip now logs the
+        chunk_id and the trigger condition.
+        """
+        skipped_no_row = 0
+        skipped_empty = 0
         for chunk_ref in chunk_ids:
             chunk_id = chunk_ref['id']
             try:
                 chunk_response = await self.db.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
                 if not chunk_response.data:
+                    skipped_no_row += 1
+                    logger.warning(
+                        f"⚠️ Chunk {chunk_id} not found when generating embedding "
+                        f"(was it deleted between create and embed?). Skipping."
+                    )
                     continue
                 content = chunk_response.data.get('content', '')
                 if not content:
+                    skipped_empty += 1
+                    logger.warning(
+                        f"⚠️ Chunk {chunk_id} has empty content. Skipping embedding."
+                    )
                     continue
                 embedding = await self.embedding_service.generate_text_embedding(content)
                 if embedding:
@@ -961,6 +979,22 @@ class DataImportService:
                     logger.info(f"✅ Generated text embedding for chunk {chunk_id}")
             except Exception as e:
                 logger.error(f"Failed to generate text embedding for chunk {chunk_id}: {e}")
+
+        # Aggregate ERROR if more than half the chunks were silently skipped —
+        # that's a structural issue (e.g. chunks getting deleted by a
+        # parallel writer) and must be visible at job level, not buried in
+        # per-chunk WARNINGs.
+        total = len(chunk_ids)
+        skipped = skipped_no_row + skipped_empty
+        if total > 0 and skipped / total >= 0.5:
+            logger.error(
+                f"❌ Embedding loop skipped {skipped}/{total} chunks "
+                f"({skipped_no_row} missing rows, {skipped_empty} empty content). "
+                f"This is unusually high — a concurrent writer may be deleting "
+                f"chunks, or the upstream chunker is producing empty rows. "
+                f"Investigate before this batch's products go searchable with "
+                f"no text-embedding coverage."
+            )
 
     async def _get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         """Get job details from database."""

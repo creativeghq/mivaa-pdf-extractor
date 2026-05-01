@@ -459,6 +459,13 @@ class CleanupService:
                 'storage_files_deleted': 0,
                 'checkpoints_deleted': 0,
                 'temp_files_deleted': 0,
+                # XML import companion tables (cleanup added 2026-05-01)
+                'data_import_jobs_deleted': 0,
+                'data_import_job_products_deleted': 0,
+                'data_import_history_deleted': 0,
+                # Web scraping companion tables (cleanup added 2026-05-01)
+                'scraping_sessions_deleted': 0,
+                'scraping_pages_deleted': 0,
                 'errors': []
             }
 
@@ -756,6 +763,93 @@ class CleanupService:
                 except Exception as e:
                     self.logger.error(f"Failed to delete document: {e}")
                     stats['errors'].append(f"Document deletion failed: {str(e)}")
+
+            # 9b. Delete XML import companion tables.
+            # XML jobs maintain three companion tables that the cleanup
+            # function ignored before 2026-05-01:
+            #   data_import_jobs.background_job_id → background_jobs.id
+            #   data_import_job_products.job_id   → data_import_jobs.id
+            #   data_import_history.job_id        → data_import_jobs.id
+            # Without explicit cleanup, deleting an XML job leaves these
+            # rows orphaned forever — admin UIs that read them show ghosts
+            # and disk fills with stale operational state.
+            try:
+                import_jobs_resp = supabase_client.client.table('data_import_jobs')\
+                    .select('id')\
+                    .eq('background_job_id', job_id)\
+                    .execute()
+                import_job_ids = [r['id'] for r in (import_jobs_resp.data or []) if r.get('id')]
+
+                if import_job_ids:
+                    for table_name, stat_key in [
+                        ('data_import_history',      'data_import_history_deleted'),
+                        ('data_import_job_products', 'data_import_job_products_deleted'),
+                    ]:
+                        try:
+                            resp = supabase_client.client.table(table_name)\
+                                .delete()\
+                                .in_('job_id', import_job_ids)\
+                                .execute()
+                            stats[stat_key] = len(resp.data) if resp.data else 0
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Failed to clean {table_name}: {e}")
+                            stats['errors'].append(f"{table_name} deletion failed: {str(e)}")
+
+                    # Delete the data_import_jobs rows themselves
+                    try:
+                        dij_resp = supabase_client.client.table('data_import_jobs')\
+                            .delete()\
+                            .in_('id', import_job_ids)\
+                            .execute()
+                        stats['data_import_jobs_deleted'] = len(dij_resp.data) if dij_resp.data else 0
+                        self.logger.info(
+                            f"✅ Deleted {stats['data_import_jobs_deleted']} XML "
+                            f"import job(s) + companion rows"
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to clean data_import_jobs: {e}")
+                        stats['errors'].append(f"data_import_jobs deletion failed: {str(e)}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ XML companion table cleanup skipped: {e}")
+                stats['errors'].append(f"XML companion cleanup failed: {str(e)}")
+
+            # 9c. Delete web-scraping companion tables.
+            #   scraping_sessions.background_job_id → background_jobs.id
+            #   scraping_pages.session_id           → scraping_sessions.id
+            try:
+                scrape_sessions_resp = supabase_client.client.table('scraping_sessions')\
+                    .select('id')\
+                    .eq('background_job_id', job_id)\
+                    .execute()
+                scrape_session_ids = [r['id'] for r in (scrape_sessions_resp.data or []) if r.get('id')]
+
+                if scrape_session_ids:
+                    try:
+                        sp_resp = supabase_client.client.table('scraping_pages')\
+                            .delete()\
+                            .in_('session_id', scrape_session_ids)\
+                            .execute()
+                        stats['scraping_pages_deleted'] = len(sp_resp.data) if sp_resp.data else 0
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to clean scraping_pages: {e}")
+                        stats['errors'].append(f"scraping_pages deletion failed: {str(e)}")
+
+                    try:
+                        ss_resp = supabase_client.client.table('scraping_sessions')\
+                            .delete()\
+                            .in_('id', scrape_session_ids)\
+                            .execute()
+                        stats['scraping_sessions_deleted'] = len(ss_resp.data) if ss_resp.data else 0
+                        self.logger.info(
+                            f"✅ Deleted {stats['scraping_sessions_deleted']} scraping "
+                            f"session(s) + their pages"
+                        )
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to clean scraping_sessions: {e}")
+                        stats['errors'].append(f"scraping_sessions deletion failed: {str(e)}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Scraping companion table cleanup skipped: {e}")
+                stats['errors'].append(f"Scraping companion cleanup failed: {str(e)}")
 
             # 10. Delete job record
             try:

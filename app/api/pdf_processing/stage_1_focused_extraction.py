@@ -21,6 +21,7 @@ import os
 import fitz
 from typing import Set, Any, Optional, Dict, List
 from app.utils.pdf_to_images import get_physical_page_text
+from app.schemas.page_types import PhysicalPageBound
 
 
 async def extract_product_pages(
@@ -29,7 +30,7 @@ async def extract_product_pages(
     document_id: str,
     job_id: str,
     logger: logging.Logger,
-    physical_page_upper_bound: Optional[int] = None,
+    physical_page_upper_bound: Optional[PhysicalPageBound] = None,
     enable_layout_detection: bool = True,
     product_id: Optional[str] = None,
     catalog: Optional[Any] = None,  # Catalog with spread layout info
