@@ -58,17 +58,9 @@ class ConsensusValidator:
     }
     
     def __init__(self, ai_logger: Optional[AICallLogger] = None):
-        """
-        Initialize consensus validator.
-
-        Args:
-            ai_logger: AI call logger instance
-        """
-        settings = get_settings()
-        qwen_config = settings.get_qwen_config()
-        self.qwen_endpoint_url = qwen_config["endpoint_url"]
-        self.qwen_endpoint_token = qwen_config["endpoint_token"]
-        self.qwen_model = qwen_config.get("model") or settings.qwen_model
+        """Initialize consensus validator (Anthropic Claude)."""
+        import os
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.ai_logger = ai_logger or AICallLogger()
     
     async def validate_with_consensus(
@@ -271,38 +263,40 @@ class ConsensusValidator:
         Returns:
             Consensus validation result
         """
-        # Define extraction functions for different models
-        async def qwen_extract(data):
+        # Two consensus extractors, both Anthropic — Haiku (fast) + Opus
+        # (high-fidelity). Disagreement between them surfaces low-confidence
+        # extractions that need a human review or downstream rechecking.
+        async def haiku_extract(data):
             prompt = f"Extract {extraction_type} from: {data['content'][:1000]}"
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
+                async with httpx.AsyncClient(timeout=60.0) as client:
                     response = await client.post(
-                        self.qwen_endpoint_url,
+                        "https://api.anthropic.com/v1/messages",
                         headers={
-                            "Authorization": f"Bearer {self.qwen_endpoint_token}",
-                            "Content-Type": "application/json"
+                            "x-api-key": self.anthropic_api_key,
+                            "anthropic-version": "2023-06-01",
+                            "content-type": "application/json",
                         },
                         json={
-                            "model": self.qwen_model,
+                            "model": "claude-haiku-4-5",
+                            "max_tokens": 256,
                             "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 200,
-                            "temperature": 0.1
-                        }
+                        },
                     )
                     response.raise_for_status()
                     response_data = response.json()
-                    extracted_text = response_data["choices"][0]["message"]["content"]
+                    extracted_text = response_data["content"][0]["text"]
                     return {
                         "success": True,
                         "extracted_value": extracted_text,
-                        "confidence_score": 0.7,  # Default confidence
+                        "confidence_score": 0.7,
                     }
             except Exception as e:
-                logger.error(f"Qwen extraction failed: {e}")
+                logger.error(f"Haiku extraction failed: {e}")
                 return {
                     "success": False,
                     "extracted_value": "",
-                    "confidence_score": 0.0
+                    "confidence_score": 0.0,
                 }
 
         async def claude_opus_extract(data):
@@ -333,9 +327,9 @@ class ConsensusValidator:
 
         result = await self.validate_with_consensus(
             task_type=f"{extraction_type}_extraction",
-            task_functions=[qwen_extract, claude_opus_extract],
+            task_functions=[haiku_extract, claude_opus_extract],
             task_data=task_data,
-            model_names=["qwen3-vl-8b", "claude-opus-4-7"],
+            model_names=["claude-haiku-4-5", "claude-opus-4-7"],
             job_id=job_id,
         )
         

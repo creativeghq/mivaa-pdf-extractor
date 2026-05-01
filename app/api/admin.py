@@ -1688,3 +1688,46 @@ async def process_image_embedding_regeneration_job(
                 error=str(e)
             )
 
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Understanding-embedding backfill (post-Qwen-removal, 2026-05-01)
+# ──────────────────────────────────────────────────────────────────────
+
+class UnderstandingBackfillRequest(BaseModel):
+    """Request body for the understanding-embedding backfill endpoint.
+
+    All fields are optional. Defaults run a small, bounded scan so the
+    endpoint is safe to fire from the admin UI without operator
+    surprise; pass higher numbers to drive a full catalog backfill.
+    """
+    batch_size: int = 25
+    max_images: int = 200
+    workspace_id: Optional[str] = None
+
+
+@router.post("/admin/understanding-embeddings/backfill")
+async def backfill_understanding_embeddings_endpoint(
+    request: UnderstandingBackfillRequest,
+    user: User = Depends(require_admin),
+):
+    """Re-run vision_analysis + Voyage on stale understanding embeddings.
+
+    "Stale" means: no embedding, or schema_version below VisionAnalysis.
+    SCHEMA_VERSION, or embedding produced by the OpenAI fallback rather
+    than Voyage (audit gap A — embedding-space drift detection).
+
+    Bounded by `batch_size` and `max_images`; safe to call repeatedly.
+    Returns scanned/reembedded/skipped/failed counts.
+    """
+    from app.services.embeddings.understanding_backfill import (
+        backfill_understanding_embeddings,
+    )
+
+    summary = await backfill_understanding_embeddings(
+        batch_size=request.batch_size,
+        max_images=request.max_images,
+        workspace_id=request.workspace_id,
+    )
+    logger.info(f"📊 Understanding backfill summary: {summary}")
+    return JSONResponse(content=summary)

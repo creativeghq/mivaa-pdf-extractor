@@ -37,15 +37,15 @@ class AIModelConfig(BaseModel):
         description="Input type for Voyage AI: 'document' for indexing, 'query' for search"
     )
     
-    # Image Classification Models — must match what the configured Qwen
-    # endpoint actually serves (vLLM 404s on a name mismatch).
+    # Image Classification Models — Anthropic Claude Opus 4.7 (Qwen
+    # removed 2026-05-01). Tool use guarantees schema-conformant output.
     classification_primary_model: str = Field(
-        default="Qwen/Qwen3.6-35B-A3B-FP8",
-        description="Primary image classification model (Qwen vision via HF Endpoint)"
+        default="claude-opus-4-7",
+        description="Primary image classification model (Anthropic Claude Opus 4.7)"
     )
     classification_validation_model: str = Field(
-        default="Qwen/Qwen3.6-35B-A3B-FP8",
-        description="Validation model for low-confidence classifications"
+        default="claude-opus-4-7",
+        description="Validation model — same as primary now that Qwen is gone."
     )
     classification_confidence_threshold: float = Field(
         default=0.7,
@@ -120,7 +120,7 @@ class AIModelConfig(BaseModel):
                 "text_embedding_model": "voyage-4",
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",
-                "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
+                "classification_primary_model": "claude-opus-4-7",
                 "classification_validation_model": "claude-opus-4-7",
                 "classification_confidence_threshold": 0.7,
                 "discovery_model": "claude-opus-4-7",

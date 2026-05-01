@@ -101,70 +101,78 @@ class ChunkTypeClassificationService:
 
     async def _classify_with_qwen(self, content: str) -> Optional[ChunkClassificationResult]:
         """
-        Use Qwen to classify chunks that pattern matching couldn't confidently resolve.
-        Returns None if Qwen endpoint is unavailable (caller keeps pattern result).
+        Use Anthropic Claude Sonnet 4.6 to classify chunks that pattern matching
+        couldn't confidently resolve. Method name retained for call-site
+        compatibility — actual model is Sonnet 4.6 + tool use.
         """
         try:
-            import json
+            import os
             import httpx
-            from app.config import settings as app_settings
 
-            qwen_config = app_settings.get_qwen_config()
-            if not qwen_config.get("enabled") or not qwen_config.get("endpoint_url"):
+            anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+            if not anthropic_api_key:
                 return None
 
-            chunk_types = ", ".join(ct.value for ct in ChunkType if ct != ChunkType.UNCLASSIFIED)
-            system_prompt = f"""You are a document chunk classifier for a material catalog platform.
-Classify the given text into exactly one of these types: {chunk_types}
+            valid_types = [ct.value for ct in ChunkType if ct != ChunkType.UNCLASSIFIED]
+            chunk_types_str = ", ".join(valid_types)
 
-Rules:
-- product_description: describes a specific product (name, features, colors, sizes, finishes)
-- technical_specs: measurements, dimensions, technical properties, installation data
-- visual_showcase: describes aesthetics, visual appearance, mood, atmosphere
-- designer_story: about a designer, studio, creative process, or inspiration
-- collection_overview: introduces a product collection, range, or theme
-- supporting_content: general brand/company text, marketing copy, introductory content
-- index_content: table of contents, page numbers, navigation
-- sustainability_info: environmental, eco, recycled, carbon, sustainability
-- certification_info: ISO, CE, certifications, standards compliance
+            classify_tool = {
+                "name": "emit_chunk_classification",
+                "description": "Emit the chunk-type verdict for a document fragment.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "chunk_type": {"type": "string", "enum": valid_types},
+                        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                        "reasoning": {"type": "string"},
+                    },
+                    "required": ["chunk_type", "confidence", "reasoning"],
+                },
+            }
 
-Respond with ONLY this JSON: {{"chunk_type": "<type>", "confidence": <0.0-1.0>, "reasoning": "<brief>"}}"""
+            system_prompt = (
+                "You are a document chunk classifier for a material catalog platform. "
+                f"Classify into exactly one of: {chunk_types_str}. Use the "
+                "emit_chunk_classification tool. Be accurate; only claim high "
+                "confidence when the chunk clearly fits the chosen type."
+            )
 
-            async with httpx.AsyncClient(timeout=12.0) as http:
+            async with httpx.AsyncClient(timeout=30.0) as http:
                 response = await http.post(
-                    qwen_config["endpoint_url"],
+                    "https://api.anthropic.com/v1/messages",
                     headers={
-                        "Authorization": f"Bearer {qwen_config['endpoint_token']}",
-                        "Content-Type": "application/json",
+                        "x-api-key": anthropic_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
                     },
                     json={
-                        "model": qwen_config["model"],
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": f"Classify this chunk:\n\n{content[:1500]}"},
-                        ],
-                        "max_tokens": 128,
-                        "temperature": 0.1,
+                        "model": "claude-sonnet-4-6",
+                        "max_tokens": 256,
+                        "system": system_prompt,
+                        "tools": [classify_tool],
+                        "tool_choice": {"type": "tool", "name": "emit_chunk_classification"},
+                        "messages": [{
+                            "role": "user",
+                            "content": f"Classify this chunk:\n\n{content[:1500]}",
+                        }],
                     },
                 )
 
             if response.status_code != 200:
                 return None
 
-            raw = response.json()["choices"][0]["message"]["content"].strip()
-            # Strip markdown code fences
-            if raw.startswith("```json"):
-                raw = raw[7:]
-            if raw.startswith("```"):
-                raw = raw[3:]
-            if raw.endswith("```"):
-                raw = raw[:-3]
+            payload = response.json()
+            tool_block = next(
+                (b for b in payload.get("content", []) if b.get("type") == "tool_use"),
+                None,
+            )
+            if not tool_block:
+                return None
 
-            data = json.loads(raw.strip())
+            data = tool_block["input"]
             chunk_type_str = data.get("chunk_type", "")
             confidence = float(data.get("confidence", 0.0))
 
-            # Map string back to enum
             try:
                 chunk_type = ChunkType(chunk_type_str)
             except ValueError:
@@ -175,11 +183,11 @@ Respond with ONLY this JSON: {{"chunk_type": "<type>", "confidence": <0.0-1.0>, 
                 chunk_type=chunk_type,
                 confidence=confidence,
                 metadata=metadata,
-                reasoning=data.get("reasoning", "Qwen classification")
+                reasoning=data.get("reasoning", "Sonnet classification"),
             )
 
         except Exception as e:
-            logger.debug(f"Qwen chunk classification skipped: {e}")
+            logger.debug(f"Chunk classification skipped: {e}")
             return None
     
     async def classify_chunks_batch(self, chunks: List[Dict[str, str]]) -> List[ChunkClassificationResult]:

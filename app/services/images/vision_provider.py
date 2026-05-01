@@ -5,11 +5,10 @@ Tracks WHICH code path produced the `vision_analysis` JSON on a document_image
 row, so we can distinguish "primary path succeeded" from "safety net rescued
 the image" in stats and dashboards.
 
-Only QWEN and CLAUDE_FALLBACK are persisted to `document_images.vision_provider`
-— enforced by the `check_vision_provider_values` CHECK constraint. SKIPPED and
-FAILED are in-memory return values from `_analyze_material_image` describing
-code paths where no vision_analysis was produced (so no row is written) and
-exist for stats / logging purposes only.
+Post-Qwen-removal (2026-05-01) the only persistable producer is CLAUDE.
+QWEN and CLAUDE_FALLBACK are kept as legacy enum members so historical rows
+in `document_images.vision_provider` still validate — but new rows must
+write CLAUDE.
 """
 
 from enum import Enum
@@ -18,17 +17,20 @@ from enum import Enum
 class VisionProvider(str, Enum):
     """Provenance of the `vision_analysis` JSON on document_images."""
 
+    CLAUDE = "claude"
+    """Claude Opus 4.7 (the sole vision producer post-2026-05-01)."""
+
     QWEN = "qwen"
-    """Qwen3-VL primary path produced a valid vision_analysis JSON."""
+    """Legacy: pre-2026-05-01 rows produced by the removed Qwen3-VL path."""
 
     CLAUDE_FALLBACK = "claude_fallback"
-    """Qwen failed (or returned unparseable JSON); Claude Opus 4.7 produced it."""
+    """Legacy: pre-2026-05-01 rescue from Qwen by Claude. New writes use CLAUDE."""
 
     SKIPPED = "skipped"
     """In-memory only — analysis was deliberately skipped (prompt not loaded)."""
 
     FAILED = "failed"
-    """In-memory only — both Qwen and Claude failed; no vision_analysis written."""
+    """In-memory only — Claude failed; no vision_analysis written."""
 
     @classmethod
     def persistable(cls) -> "frozenset[VisionProvider]":
@@ -36,7 +38,7 @@ class VisionProvider(str, Enum):
 
         Anything outside this set will be rejected by the DB CHECK constraint.
         """
-        return frozenset({cls.QWEN, cls.CLAUDE_FALLBACK})
+        return frozenset({cls.CLAUDE, cls.QWEN, cls.CLAUDE_FALLBACK})
 
     def is_persistable(self) -> bool:
         """True if this provider value can be safely persisted to the DB."""

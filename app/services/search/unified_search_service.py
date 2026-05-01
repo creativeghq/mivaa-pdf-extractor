@@ -1043,43 +1043,41 @@ class UnifiedSearchService:
 
     async def _parse_query_with_qwen(self, query: str, system_prompt: str) -> Optional[Dict[str, Any]]:
         """
-        Try to parse search query using the Qwen endpoint (zero marginal cost when already running).
-        Returns parsed dict or raises on failure (caller falls back to GPT-4o-mini).
+        Parse a search query into structured filters using Anthropic Claude
+        Haiku 4.5 (fast, cheap, structured-output friendly). Returns the
+        parsed dict or raises on failure (caller falls back to GPT-4o-mini).
         """
         import json
+        import os
         import httpx
-        from app.config import get_settings
 
-        settings = get_settings()
-        qwen_config = settings.get_qwen_config()
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY not configured")
 
-        if not qwen_config.get("enabled") or not qwen_config.get("endpoint_url"):
-            raise ValueError("Qwen endpoint not configured or disabled")
-
-        async with httpx.AsyncClient(timeout=15.0) as http:
+        async with httpx.AsyncClient(timeout=30.0) as http:
             response = await http.post(
-                qwen_config["endpoint_url"],
+                "https://api.anthropic.com/v1/messages",
                 headers={
-                    "Authorization": f"Bearer {qwen_config['endpoint_token']}",
-                    "Content-Type": "application/json",
+                    "x-api-key": anthropic_api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
                 },
                 json={
-                    "model": qwen_config["model"],
+                    "model": "claude-haiku-4-5",
+                    "max_tokens": 1024,
+                    "system": system_prompt,
                     "messages": [
-                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": f"Parse this query: {query}"},
                     ],
-                    "max_tokens": 512,
-                    "temperature": 0.1,
                 },
             )
 
         if response.status_code != 200:
-            raise ValueError(f"Qwen endpoint error: {response.status_code}")
+            raise ValueError(f"Anthropic API error: {response.status_code}")
 
-        content = response.json()["choices"][0]["message"]["content"].strip()
+        content = response.json()["content"][0]["text"].strip()
 
-        # Strip markdown code fences (Qwen often wraps JSON in ```json ... ```)
         if content.startswith("```json"):
             content = content[7:]
         if content.startswith("```"):

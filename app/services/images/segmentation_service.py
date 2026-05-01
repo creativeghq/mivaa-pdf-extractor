@@ -1,9 +1,10 @@
 """
 Material Segmentation Service
 
-Detects distinct material zones in 3D rendered images using Qwen3-VL.
-Returns bounding boxes + metadata per zone so the frontend can crop and
-send each crop to the existing RAG image search endpoint.
+Detects distinct material zones in 3D rendered images using Anthropic
+Claude Opus 4.7 vision. Returns bounding boxes + metadata per zone so the
+frontend can crop and send each crop to the existing RAG image search
+endpoint.
 """
 
 import json
@@ -12,10 +13,6 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
-from app.config import get_settings
-from app.services.core.ai_client_service import get_ai_client_service
-from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
-
 logger = logging.getLogger(__name__)
 
 # Default prompt — used when no 'segmentation' agent prompt exists in the DB.
@@ -23,13 +20,23 @@ logger = logging.getLogger(__name__)
 #   prompt_type = 'agent', category = 'segmentation', is_active = true
 DEFAULT_SEGMENT_PROMPT = """You are a precision material-identification expert analyzing a 3D architectural rendering for catalog-based material matching.
 
-Identify every distinct material surface AND structural sub-element (floor, wall, ceiling, countertop, cabinetry, upholstery, curtains, trims, tiles, rugs, decorative panels, table legs, chair frames, door handles, hardware, etc.).
+Identify every distinct material surface AND structural sub-element. Be EXHAUSTIVE — this list drives the editor's "replace material" workflow, so a missing zone means the user cannot edit that element. Walk the image methodically: floor, ceiling, every wall plane, every piece of furniture (frames AND upholstery separately), every fixture, every fitting, every visible hardware element.
 
-For EACH surface or element return a JSON object. Respond ONLY with a valid JSON array — no explanation, no markdown, no code fences.
+CATEGORIES TO COVER (non-exhaustive — emit a separate zone for each one you see):
+- Architectural surfaces: floors, ceilings, walls (each visible plane separately), columns, beams, soffits, niches, skirting boards, ceiling cornices, door panels, door frames, window frames, window glass, window sills.
+- Tile/stone work: wall tiles, floor tiles, mosaic feature walls, splashbacks, shower walls, tub surrounds — emit each tiled plane as its own zone even if the tile pattern is the same.
+- Bathroom-specific: glass shower screens / partitions / enclosures (glass IS a material — emit it), shower trays, bathtubs, vanity tops, vanity cabinets, sink basins, toilet, bidet, mirror surfaces, mirror frames, towel rails, robe hooks, shelf supports, shower heads, taps/faucets, faucet handles, drain covers.
+- Kitchen-specific: countertops, splashbacks, upper cabinets, lower cabinets, kickboards, cooker hood, hob, oven door, sink, tap, cabinet handles/pulls, open-shelf brackets, integrated appliance fronts.
+- Soft furnishings: rugs, curtains, blinds, cushions, throws, headboards (frame vs fabric separately), bed bases, pillows.
+- Furniture: every distinct piece — sofa, chair, table, cabinet, bookshelf — AND each visually distinct sub-component (legs, frame, doors, drawer fronts, handles, glass tops).
+- Lighting: pendant lights, wall sconces, floor lamps, lamp shades, lamp bases.
+- Decorative: artwork, picture frames, vases, planters, plants, books, sculptures.
+
+DO NOT lump items together. If a wall has tile on one side and paint on another, that's TWO zones. If a vanity has a stone top and wood drawers, that's TWO zones (plus handles as a third sub_element).
 
 Rules:
 - bbox: RELATIVE coordinates (0.0–1.0), (0,0) = top-left, (1,1) = bottom-right
-- Skip surfaces smaller than 2% of the image area EXCEPT sub_element zones (legs, frames, hardware can be small — always include them if visually distinct)
+- Skip surfaces smaller than 1% of the image area EXCEPT sub_element / hardware / fixture zones (handles, taps, hooks, drains, shower heads can be small — always include them if visually distinct)
 - material_type MUST be catalog-grade specific — this text drives database search matching:
   • "brushed stainless steel" not "metal"
   • "Calacatta marble" or "Nero Marquina marble" not just "marble"
@@ -50,10 +57,10 @@ Rules:
   6. APPLICATION — where the surface lives (e.g. "kitchen countertop surface")
 
 - zone_intent: classify each zone as exactly one of:
-  • "surface"     — floor, wall, ceiling, countertop, backsplash, cladding — material/texture to replace
-  • "full_object" — sofa, chair, rug, curtain, table, cabinet, lamp — entire product could be swapped
-  • "upholstery"  — identifiable fabric/leather cover of furniture (seat cushion, sofa back panel, headboard fabric) — separate from the frame
-  • "sub_element" — table legs, chair frame/base, door handles, cabinet hardware, window frame, skirting board, shelf brackets — finish/colour change only
+  • "surface"     — floor, wall, ceiling, countertop, backsplash, cladding, tile fields, glass shower screens, mirror surfaces — material/texture to replace
+  • "full_object" — sofa, chair, rug, curtain, table, cabinet, lamp, bathtub, toilet, sink, vanity body — entire product could be swapped
+  • "upholstery"  — identifiable fabric/leather cover of furniture (seat cushion, sofa back panel, headboard fabric, padded vanity bench) — separate from the frame
+  • "sub_element" — table legs, chair frame/base, door handles, cabinet hardware, window frame, skirting board, shelf brackets, taps/faucets, faucet handles, shower heads, towel rails, robe hooks, drain covers, light switches, cabinet pulls — finish/colour change only
 
 Sub-element detection rule: If legs, frame, or hardware are visually distinct from the main object body, emit them as a SEPARATE zone entry with zone_intent="sub_element". Example: a dining table with visible metal legs MUST produce TWO zones — one for the table top (full_object) and one for the table legs (sub_element). Same for a chair with a distinct wooden frame vs upholstered seat.
 
@@ -75,28 +82,28 @@ Return ONLY the JSON array. Example:
   {"label": "back wall", "material_type": "smooth white gypsum plaster", "finish": "matte", "dominant_color": "#f5f0eb", "bbox": {"x": 0.0, "y": 0.0, "w": 1.0, "h": 0.6}, "confidence": 0.88, "zone_intent": "surface", "search_query": "smooth white gypsum plaster wall, off-white warm tone, matte finish, flat uniform texture, minimalist contemporary style, interior wall cladding"},
   {"label": "dining sofa", "material_type": "bouclé wool upholstery natural white", "finish": "textured", "dominant_color": "#f0ece6", "bbox": {"x": 0.1, "y": 0.3, "w": 0.5, "h": 0.4}, "confidence": 0.89, "zone_intent": "full_object", "search_query": "bouclé wool sofa upholstery, natural warm white, textured loop pile fabric, contemporary lounge seating, Scandinavian interior style"},
   {"label": "dining table top", "material_type": "Calacatta marble", "finish": "honed", "dominant_color": "#e8e4de", "bbox": {"x": 0.3, "y": 0.45, "w": 0.4, "h": 0.1}, "confidence": 0.91, "zone_intent": "full_object", "search_query": "Calacatta marble table top slab, warm white with grey veining, honed matte finish, natural stone veined texture, luxury contemporary style, dining table surface"},
-  {"label": "dining table legs", "material_type": "brushed brass metal", "finish": "brushed", "dominant_color": "#c9a84c", "bbox": {"x": 0.32, "y": 0.52, "w": 0.36, "h": 0.12}, "confidence": 0.85, "zone_intent": "sub_element", "search_query": "brushed brass metal table legs, warm gold tone, brushed satin finish, cylindrical metal legs, luxury contemporary style, dining furniture hardware"}
+  {"label": "dining table legs", "material_type": "brushed brass metal", "finish": "brushed", "dominant_color": "#c9a84c", "bbox": {"x": 0.32, "y": 0.52, "w": 0.36, "h": 0.12}, "confidence": 0.85, "zone_intent": "sub_element", "search_query": "brushed brass metal table legs, warm gold tone, brushed satin finish, cylindrical metal legs, luxury contemporary style, dining furniture hardware"},
+  {"label": "shower glass screen", "material_type": "frameless tempered safety glass", "finish": "polished", "dominant_color": "#dce6ea", "bbox": {"x": 0.55, "y": 0.15, "w": 0.4, "h": 0.7}, "confidence": 0.9, "zone_intent": "surface", "search_query": "frameless tempered safety glass shower screen, transparent clear glass with subtle blue-grey tint, polished smooth finish, vertical flat panel, contemporary minimalist bathroom style, walk-in shower partition"},
+  {"label": "shower wall tile field", "material_type": "large-format porcelain tile", "finish": "matte", "dominant_color": "#d6cfc4", "bbox": {"x": 0.6, "y": 0.0, "w": 0.4, "h": 0.85}, "confidence": 0.88, "zone_intent": "surface", "search_query": "large-format porcelain tile wall cladding, warm beige stone-look tone, matte natural finish, subtle veining texture in stacked-bond layout, contemporary spa bathroom style, wet-area shower wall"},
+  {"label": "wall-mounted basin tap", "material_type": "brushed nickel chrome alloy", "finish": "brushed", "dominant_color": "#9aa0a4", "bbox": {"x": 0.21, "y": 0.42, "w": 0.06, "h": 0.08}, "confidence": 0.86, "zone_intent": "sub_element", "search_query": "wall-mounted basin tap, brushed nickel finish on chrome alloy body, satin brushed surface, single-lever design with rectangular spout, contemporary minimalist bathroom style, lavatory faucet hardware"}
 ]"""
 
 
 class SegmentationService:
-    """Detects material zones in 3D renders via Qwen3-VL (primary) or Claude Opus (fallback)."""
+    """Detects material zones in 3D renders via Anthropic Claude Opus.
+
+    Note (2026-05-01): we used to attempt Qwen3-VL on an HF endpoint as a
+    speed-optimised primary, but the configured endpoint serves a text-only
+    model (Qwen3.6-35B-A3B-FP8) so every Qwen call 404'd in 0.7s and fell
+    through to Anthropic. Qwen has been removed entirely until/unless a real
+    Qwen-VL endpoint is provisioned. Claude Opus 4.7 is the only path now,
+    and quality on this task is already excellent (22 well-described zones
+    on a bathroom render in ~40s with catalog-grade material names).
+    """
 
     def __init__(self):
         import os
-        settings = get_settings()
-        qwen_config = settings.get_qwen_config()
-
         self.anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
-        self.qwen_endpoint_url: str = qwen_config["endpoint_url"]
-        self.qwen_endpoint_token: str = qwen_config["endpoint_token"]
-        self.qwen_manager = QwenEndpointManager(
-            endpoint_url=self.qwen_endpoint_url,
-            endpoint_name=qwen_config["endpoint_name"],
-            namespace=qwen_config["namespace"],
-            endpoint_token=self.qwen_endpoint_token,
-            enabled=qwen_config["enabled"],
-        )
 
     async def _get_prompt(self) -> str:
         """
@@ -121,10 +128,7 @@ class SegmentationService:
 
     async def segment_image(self, image_base64: str) -> List[Dict[str, Any]]:
         """
-        Detect material zones in a 3D render.
-
-        Primary:  HF Qwen3-VL — resume_if_needed handles cold start (~60-90s first call).
-        Fallback: Anthropic claude-opus-4-7 — always available, no warmup.
+        Detect material zones in a 3D render via Claude Opus 4.7.
 
         Prompt is loaded dynamically from the `prompts` table (category='segmentation').
         Falls back to DEFAULT_SEGMENT_PROMPT if no DB record exists.
@@ -135,49 +139,16 @@ class SegmentationService:
         Returns:
             List of zone dicts: label, material_type, finish, dominant_color, bbox, confidence
         """
-        import asyncio
         start = time.time()
-
         prompt = await self._get_prompt()
 
-        # Primary: HF Qwen3-VL
-        # 1. Quick status check (~1s) — is endpoint already running?
-        # 2. If not running: wait for full resume/warm-up (no timeout — can take 60-90s).
-        # 3. Only fall back to Anthropic on actual error (resume returned False or exception).
-        if self.qwen_endpoint_token:
-            try:
-                logger.info("Checking Qwen endpoint status...")
-                is_running = await asyncio.wait_for(
-                    asyncio.to_thread(self.qwen_manager.is_running),
-                    timeout=5.0,
-                )
-                if not is_running:
-                    logger.info("Qwen endpoint warming up — waiting until ready (may take 60-90s)...")
-                    resumed = await asyncio.to_thread(self.qwen_manager.resume_if_needed)
-                    if not resumed:
-                        raise RuntimeError("Qwen endpoint failed to resume")
-                zones = await self._segment_with_qwen(image_base64, prompt)
-                self.qwen_manager.mark_used()
-                elapsed = round((time.time() - start) * 1000)
-                logger.info(f"✅ Segmentation (Qwen): {len(zones)} zones in {elapsed}ms")
-                return zones
-            except asyncio.TimeoutError:
-                logger.warning("Qwen status check timed out (5s), falling back to Anthropic")
-            except Exception as e:
-                logger.warning(f"Qwen segmentation failed, falling back to Anthropic: {e}")
+        if not self.anthropic_api_key:
+            raise RuntimeError("Segmentation backend not configured — set ANTHROPIC_API_KEY")
 
-        # Fallback: Anthropic claude-opus-4-7
-        if self.anthropic_api_key:
-            try:
-                zones = await self._segment_with_anthropic(image_base64, prompt)
-                elapsed = round((time.time() - start) * 1000)
-                logger.info(f"✅ Segmentation (Anthropic fallback): {len(zones)} zones in {elapsed}ms")
-                return zones
-            except Exception as e:
-                logger.error(f"Anthropic segmentation also failed: {e}")
-                raise
-
-        raise RuntimeError("No segmentation backend available — configure ANTHROPIC_API_KEY or HF endpoint")
+        zones = await self._segment_with_anthropic(image_base64, prompt)
+        elapsed = round((time.time() - start) * 1000)
+        logger.info(f"✅ Segmentation (Anthropic): {len(zones)} zones in {elapsed}ms")
+        return zones
 
     @staticmethod
     def _detect_media_type(image_base64: str) -> str:
@@ -233,38 +204,6 @@ class SegmentationService:
             resp.raise_for_status()
             content = resp.json()["content"][0]["text"].strip()
             return self._parse_zones(content)
-
-    async def _segment_with_qwen(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
-        """Call HF Qwen3-VL endpoint (only if already running — no blocking resume)."""
-        ai_service = get_ai_client_service()
-        response = await ai_service.httpx.post(
-            self.qwen_endpoint_url,
-            headers={
-                "Authorization": f"Bearer {self.qwen_endpoint_token}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": "Qwen/Qwen3-VL-8B-Instruct",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
-                            },
-                        ],
-                    }
-                ],
-                "max_tokens": 16384,
-                "temperature": 0.1,
-                "top_p": 0.9,
-            },
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"].strip()
-        return self._parse_zones(content)
 
     def _parse_zones(self, content: str) -> List[Dict[str, Any]]:
         """Extract and validate zone list from model response."""

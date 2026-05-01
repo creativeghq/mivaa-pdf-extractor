@@ -229,8 +229,9 @@ class ChandraEndpointManager:
         poll_interval = 5  # Check every 5 seconds
         max_wait = self.warmup_timeout
 
-        # HF "no GPU capacity" detector — see qwen_endpoint_manager
-        # for the full rationale. Same pattern in all 4 managers.
+        # HF "no GPU capacity" detector — replicas can be requested but
+        # never become ready when the HF region is out of the requested
+        # GPU class. Detect by watching for a falling ready_count.
         last_ready_replica = 0
         last_progress_time = time.time()
         NO_PROGRESS_TIMEOUT = 90

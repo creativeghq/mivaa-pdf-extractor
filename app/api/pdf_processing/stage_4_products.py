@@ -549,11 +549,21 @@ async def create_single_product(
                     )
                     embedding_failed = True
                 else:
+                    # Persist provenance alongside the vector so the admin UI
+                    # can detect Voyage→OpenAI fallback drift and so the
+                    # backfill cron can target stale-schema rows. Audit gap A.
                     embedding_str = '[' + ','.join(str(x) for x in text_emb) + ']'
+                    embedding_model = emb_result.get('model') if isinstance(emb_result, dict) else None
+                    update_payload: Dict[str, Any] = {
+                        'text_embedding_1024': embedding_str,
+                        'text_embedding_schema_version': 1,
+                    }
+                    if embedding_model:
+                        update_payload['text_embedding_1024_model'] = embedding_model
                     supabase.client.table('products').update(
-                        {'text_embedding_1024': embedding_str}
+                        update_payload
                     ).eq('id', product_id).execute()
-                    logger.info(f"   🧠 Generated text_embedding_1024 for {product.name}")
+                    logger.info(f"   🧠 Generated text_embedding_1024 for {product.name} (model={embedding_model or 'voyage-4'})")
                     embedding_failed = False
             else:
                 logger.error(

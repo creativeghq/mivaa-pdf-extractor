@@ -62,13 +62,11 @@ class EndpointRegistry:
         self._slig_client = None
         self._slig_manager = None
         self._yolo_manager = None
-        self._qwen_manager = None
         self._chandra_manager = None
 
         # Track warmup status
         self._slig_warmed_up = False
         self._yolo_warmed_up = False
-        self._qwen_warmed_up = False
         self._chandra_warmed_up = False
 
         # Track health check status
@@ -240,7 +238,7 @@ class EndpointRegistry:
         the warmed-up managers with the processing pipeline.
 
         Args:
-            endpoint_managers: Dict with 'slig', 'yolo', 'qwen', 'chandra' keys
+            endpoint_managers: Dict with 'slig', 'yolo', 'chandra' keys
         """
         with self._client_lock:
             registered_count = 0
@@ -256,12 +254,6 @@ class EndpointRegistry:
                 self._yolo_warmed_up = True
                 registered_count += 1
                 logger.info("📌 Registered pre-warmed YOLO manager")
-
-            if 'qwen' in endpoint_managers:
-                self._qwen_manager = endpoint_managers['qwen']
-                self._qwen_warmed_up = True
-                registered_count += 1
-                logger.info("📌 Registered pre-warmed Qwen manager")
 
             if 'chandra' in endpoint_managers:
                 self._chandra_manager = endpoint_managers['chandra']
@@ -281,11 +273,9 @@ class EndpointRegistry:
             self._slig_client = None
             self._slig_manager = None
             self._yolo_manager = None
-            self._qwen_manager = None
             self._chandra_manager = None
             self._slig_warmed_up = False
             self._yolo_warmed_up = False
-            self._qwen_warmed_up = False
             self._chandra_warmed_up = False
             self._health_validated = False
             self._health_results = {}
@@ -301,8 +291,6 @@ class EndpointRegistry:
             "slig_warmed_up": self._slig_warmed_up,
             "yolo_manager_active": self._yolo_manager is not None,
             "yolo_warmed_up": self._yolo_warmed_up,
-            "qwen_manager_active": self._qwen_manager is not None,
-            "qwen_warmed_up": self._qwen_warmed_up,
             "chandra_manager_active": self._chandra_manager is not None,
             "chandra_warmed_up": self._chandra_warmed_up,
             "health_validated": self._health_validated,
@@ -398,8 +386,8 @@ class EndpointRegistry:
         # Check at least one manager is available
         has_manager = (
             self._slig_manager is not None or
-            self._qwen_manager is not None or
-            self._yolo_manager is not None
+            self._yolo_manager is not None or
+            self._chandra_manager is not None
         )
 
         if not has_manager:
@@ -407,10 +395,6 @@ class EndpointRegistry:
             return False
 
         return True
-
-    def get_qwen_manager(self) -> Optional[Any]:
-        """Get the registered Qwen manager."""
-        return self._qwen_manager
 
     def get_chandra_manager(self) -> Optional[Any]:
         """Get the registered Chandra manager."""

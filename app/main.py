@@ -297,7 +297,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"⚠️ Error cleaning up RAG service: {e}")
 
         component_manager.register("rag_service", load_rag_service, cleanup_rag_service)
-        logger.info(f"✅ RAG service registered for lazy loading ({settings.qwen_model} primary, Claude Opus 4.7 fallback)")
+        logger.info("✅ RAG service registered for lazy loading (Claude Opus 4.7 vision)")
 
         # Set placeholder
         app.state.rag_service = None
@@ -1498,141 +1498,6 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             "message": str(e)
         }
 
-    # HuggingFace (Qwen)
-    try:
-        import os
-        if os.getenv("HUGGINGFACE_API_KEY"):
-            # Check cache first (unless force_refresh is True)
-            cache_key = "qwen_endpoint"
-            current_time = time.time()
-
-            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
-                cached_status = _ai_health_cache[cache_key]["status"].copy()
-                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
-                cached_status["cached"] = True
-                services_status["qwen_endpoint"] = cached_status
-            else:
-                # Check HuggingFace Qwen endpoint status (without resuming to avoid billing)
-                try:
-                    import httpx
-                    settings = get_settings()
-                    qwen_config = settings.get_qwen_config()
-
-                    # Pull the LIVE endpoint URL from the registry manager, not
-                    # from settings: QWEN_ENDPOINT_URL is not set as an env var
-                    # in production — the real URL lives on
-                    # `qwen_manager.endpoint_url` after warmup/resume. Reading
-                    # from settings produces an empty base URL and the health
-                    # check fails with a missing-protocol error.
-                    qwen_endpoint_url = qwen_config.get('endpoint_url') or ''
-                    try:
-                        from app.services.embeddings.endpoint_registry import endpoint_registry
-                        qwen_manager = endpoint_registry.get_qwen_manager()
-                        if qwen_manager is not None:
-                            live_url = getattr(qwen_manager, 'endpoint_url', '') or ''
-                            if live_url and live_url.startswith(('http://', 'https://')):
-                                qwen_endpoint_url = live_url
-                    except Exception:
-                        pass
-
-                    if not (qwen_endpoint_url and qwen_endpoint_url.startswith(('http://', 'https://'))):
-                        # Endpoint URL truly not resolved yet (first boot, no
-                        # warmup run yet). Report cost-saving state instead of
-                        # failing the /health probe with "missing protocol".
-                        status_result = {
-                            "status": "healthy",
-                            "message": "Qwen endpoint URL not yet resolved (awaiting first warmup)",
-                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                            "cached": False,
-                        }
-                        services_status["qwen_endpoint"] = status_result
-                        cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
-                        _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
-                    else:
-                        start_time = time.time()
-
-                        # Test endpoint status with minimal request
-                        async with httpx.AsyncClient(timeout=10.0) as client:
-                            response = await client.post(
-                                f"{qwen_endpoint_url.rstrip('/')}/chat/completions",
-                                headers={
-                                    "Authorization": f"Bearer {qwen_config['endpoint_token']}",
-                                    "Content-Type": "application/json"
-                                },
-                                json={
-                                    "model": qwen_config.get("model") or get_settings().qwen_model,
-                                    "messages": [{"role": "user", "content": "hi"}],
-                                    "max_tokens": 1,
-                                    "temperature": 0.1
-                                }
-                            )
-
-                        latency_ms = int((time.time() - start_time) * 1000)
-
-                        # Check if endpoint is paused (normal state to save costs)
-                        if response.status_code == 400:
-                            response_text = response.text
-                            if "paused" in response_text.lower():
-                                status_result = {
-                                    "status": "healthy",
-                                    "message": "Endpoint paused (cost-saving mode - will auto-resume on use)",
-                                    "latency_ms": latency_ms,
-                                    "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                                    "cached": False
-                                }
-                            else:
-                                status_result = {
-                                    "status": "unhealthy",
-                                    "message": f"API error: {response_text[:100]}",
-                                    "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                                    "cached": False
-                                }
-                                overall_status = "unhealthy"
-                        elif response.status_code == 200:
-                            status_result = {
-                                "status": "healthy",
-                                "message": "Endpoint running and operational",
-                                "latency_ms": latency_ms,
-                                "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                                "cached": False
-                            }
-                        else:
-                            status_result = {
-                                "status": "unhealthy",
-                                "message": f"HTTP {response.status_code}: {response.text[:100]}",
-                                "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                                "cached": False
-                            }
-                            overall_status = "unhealthy"
-
-                        services_status["qwen_endpoint"] = status_result
-                        cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
-                        _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
-
-                except Exception as api_error:
-                    status_result = {
-                        "status": "unhealthy",
-                        "message": f"Connection error: {str(api_error)[:100]}",
-                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                        "cached": False
-                    }
-                    services_status["qwen_endpoint"] = status_result
-                    overall_status = "unhealthy"
-                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
-                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
-        else:
-            services_status["qwen_endpoint"] = {
-                "status": "degraded",
-                "message": "HuggingFace endpoint not configured"
-            }
-            if overall_status == "healthy":
-                overall_status = "degraded"
-    except Exception as e:
-        services_status["qwen_endpoint"] = {
-            "status": "unknown",
-            "message": str(e)
-        }
-
     # Voyage AI (Text Embeddings - Primary Provider)
     try:
         import os
@@ -2120,7 +1985,7 @@ async def root() -> Dict[str, Any]:
             "Semantic search and retrieval",
             "Conversational Q&A",
             "Supabase vector storage",
-            f"Qwen vision: {get_settings().qwen_model}"
+            "Claude Opus 4.7 vision (segmentation, classification, vision_analysis)",
         ]
     }
 
@@ -2315,8 +2180,8 @@ def custom_openapi():
         "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
         "vector_search": "7 specialized embedding types (text, visual, understanding, color, texture, style, material)",
         "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
-        "ai_models": f"Claude Opus 4.7, Haiku 4.5, GPT-4o-mini, {get_settings().qwen_model}, SLIG, Voyage AI",
-        "material_recognition": f"{get_settings().qwen_model} (configurable via QWEN_MODEL env)",
+        "ai_models": "Claude Opus 4.7, Sonnet 4.6, Haiku 4.5, GPT-4o-mini, SLIG, Voyage AI",
+        "material_recognition": "Claude Opus 4.7 (Anthropic vision)",
         "embedding_models": "Voyage AI voyage-4 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
         "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",
         "scalability": "5,000+ users, 99.5%+ uptime",

@@ -38,17 +38,9 @@ class DocumentClassifier:
     }
     
     def __init__(self, ai_logger: Optional[AICallLogger] = None):
-        """
-        Initialize document classifier.
-
-        Args:
-            ai_logger: AI call logger instance
-        """
-        settings = get_settings()
-        qwen_config = settings.get_qwen_config()
-        self.qwen_endpoint_url = qwen_config["endpoint_url"]
-        self.qwen_endpoint_token = qwen_config["endpoint_token"]
-        self.qwen_model = qwen_config.get("model") or settings.qwen_model
+        """Initialize document classifier (Anthropic Claude Opus 4.7)."""
+        import os
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.ai_logger = ai_logger or AICallLogger()
     
     async def classify_content(
@@ -136,20 +128,19 @@ Example: PRODUCT|0.85"""
         try:
             start_time = datetime.now()
 
-            # Call Qwen via HuggingFace endpoint for fast classification
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.post(
-                    self.qwen_endpoint_url,
+                    "https://api.anthropic.com/v1/messages",
                     headers={
-                        "Authorization": f"Bearer {self.qwen_endpoint_token}",
-                        "Content-Type": "application/json"
+                        "x-api-key": self.anthropic_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
                     },
                     json={
-                        "model": self.qwen_model,
+                        "model": "claude-haiku-4-5",
+                        "max_tokens": 64,
                         "messages": [{"role": "user", "content": prompt}],
-                        "max_tokens": 50,
-                        "temperature": 0.1
-                    }
+                    },
                 )
                 response.raise_for_status()
                 response_data = response.json()
@@ -157,8 +148,7 @@ Example: PRODUCT|0.85"""
             end_time = datetime.now()
             latency_ms = int((end_time - start_time).total_seconds() * 1000)
 
-            # Parse response
-            response_text = response_data["choices"][0]["message"]["content"].strip()
+            response_text = response_data["content"][0]["text"].strip()
             parts = response_text.split("|")
             
             if len(parts) >= 2:
@@ -186,12 +176,13 @@ Example: PRODUCT|0.85"""
             
             # Log AI call
             if self.ai_logger and job_id:
+                usage = response_data.get("usage", {}) or {}
                 await self.ai_logger.log_ai_call({
                     "job_id": job_id,
                     "task": "document_classification_stage1",
-                    "model": "Qwen/Qwen3-VL-8B-Instruct",
-                    "input_tokens": response.get("usage", {}).get("prompt_tokens", 0),
-                    "output_tokens": response.get("usage", {}).get("completion_tokens", 0),
+                    "model": "claude-haiku-4-5",
+                    "input_tokens": usage.get("input_tokens", 0),
+                    "output_tokens": usage.get("output_tokens", 0),
                     "latency_ms": latency_ms,
                     "confidence_score": confidence,
                     "response_data": {"category": category, "confidence": confidence},

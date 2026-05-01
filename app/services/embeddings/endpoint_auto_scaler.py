@@ -30,8 +30,7 @@ class EndpointAutoScaler:
     """
     Auto-scales HuggingFace endpoints based on job queue depth.
     
-    Manages all 4 HuggingFace endpoints:
-    - mh-qwen332binstruct (Qwen VLM - primary, high priority)
+    Manages the 3 HuggingFace endpoints we still depend on:
     - mh-slig (SLIG visual embeddings)
     - mh-chandra (Chandra OCR fallback)
     - mh-yolo (YOLO layout detection)
@@ -67,7 +66,6 @@ class EndpointAutoScaler:
             from app.config import get_settings
             _s = get_settings()
             self.managed_endpoints = [
-                _s.qwen_endpoint_name,
                 _s.slig_endpoint_name,
                 _s.chandra_endpoint_name,
                 _s.yolo_endpoint_name,
@@ -78,7 +76,6 @@ class EndpointAutoScaler:
                 f"falling back to current defaults"
             )
             self.managed_endpoints = [
-                "qwen3-6-35b-fp8",
                 "mh-slig",
                 "chandra-ocr-2",
                 "mh-yolo",

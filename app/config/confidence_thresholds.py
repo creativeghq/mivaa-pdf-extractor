@@ -196,13 +196,11 @@ class EscalationRules:
         "claude-opus-4-7",             # Most powerful (for critical tasks)
     ]
 
-    # Cost multipliers for each model (Qwen short-id `qwen3-vl-32b` = baseline).
-    # The short-id is a stable internal pricing key; the actual deployed
-    # model id is read from Settings.qwen_model at runtime.
+    # Cost multipliers (Haiku 4.5 = baseline post-Qwen-removal).
     COST_MULTIPLIERS = {
-        "qwen3-vl-32b": 1.0,           # Baseline — currently mapped to Qwen/Qwen3.6-35B-A3B-FP8 on A100
-        "claude-haiku-4-5": 2.0,
-        "claude-opus-4-7": 25.0,       # Opus is the top-tier model
+        "claude-haiku-4-5": 1.0,       # Baseline
+        "claude-sonnet-4-6": 4.0,
+        "claude-opus-4-7": 12.0,       # Opus is the top-tier model
     }
     
     # Maximum escalation attempts before giving up

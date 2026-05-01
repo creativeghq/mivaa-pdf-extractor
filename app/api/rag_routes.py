@@ -2691,7 +2691,7 @@ async def process_document_with_discovery(
         logger.info("=" * 80)
 
         # Create WARMUP_STARTED checkpoint
-        warmup_endpoints_to_start = ["qwen", "slig", "yolo", "chandra"]
+        warmup_endpoints_to_start = ["slig", "yolo", "chandra"]
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
             stage=ProcessingStage.WARMUP_STARTED,
@@ -2727,74 +2727,6 @@ async def process_document_with_discovery(
         settings = get_settings()
         endpoint_managers = {}
         warmup_results = {"success": [], "failed": [], "skipped": []}
-
-        async def warmup_qwen():
-            try:
-                from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
-                qwen_config = settings.get_qwen_config()
-                if qwen_config.get("enabled", False):
-                    manager = QwenEndpointManager(
-                        endpoint_url=qwen_config["endpoint_url"],
-                        endpoint_token=qwen_config.get("endpoint_token", qwen_config.get("hf_token", "")),
-                        endpoint_name=qwen_config.get("endpoint_name", "mh-qwen332binstruct"),
-                        namespace=qwen_config.get("namespace", "basiliskan"),
-                        warmup_timeout=qwen_config.get("warmup_timeout", 360),
-                        enabled=True
-                    )
-                    endpoint_managers['qwen'] = manager
-
-                    # Check status before resuming (use thread pool for blocking call)
-                    def check_qwen_status():
-                        endpoint = manager._get_endpoint()
-                        if endpoint:
-                            endpoint.fetch()
-                            return endpoint.status
-                        return None
-                    
-                    status = await asyncio.to_thread(check_qwen_status)
-                    if status == "running":
-                        # Audit fix #4: status="running" was previously trusted as
-                        # "endpoint healthy, skip warmup". Health-probe first; only
-                        # skip if the probe also succeeds. Endpoints can be marked
-                        # running but actually be in OOM/zombie state from prior jobs.
-                        await asyncio.to_thread(manager._refresh_url_from_endpoint)
-                        probe_ok = await asyncio.to_thread(manager._test_inference) if hasattr(manager, '_test_inference') else True
-                        if probe_ok:
-                            logger.info(f"   ✅ Qwen endpoint running + health probe OK, skipping warmup. URL={manager.endpoint_url}")
-                            manager.warmup_completed = True
-                            warmup_results["skipped"].append("qwen")
-                            return
-                        logger.warning("   ⚠️ Qwen endpoint status=running but health probe FAILED — running full warmup")
-
-                    # Run the REAL warmup in thread pool. The manager's
-                    # warmup() handles: refresh URL → inline resume →
-                    # poll /chat/completions until it's serving. This is
-                    # the only way to guarantee the endpoint is ready
-                    # BEFORE Stage 3 image classification starts — and
-                    # to refresh `manager.endpoint_url` from the live HF
-                    # SDK when QWEN_ENDPOINT_URL env var is empty.
-                    def resume_and_warmup_qwen():
-                        if manager.resume_if_needed():
-                            return manager.warmup()
-                        return False
-
-                    success = await asyncio.to_thread(resume_and_warmup_qwen)
-                    if success:
-                        warmup_results["success"].append("qwen")
-                        logger.info("   ✅ Qwen warmup complete")
-                    else:
-                        warmup_results["failed"].append({"endpoint": "qwen", "error": "warmup returned False"})
-                        logger.warning("   ⚠️ Qwen warmup returned False (will retry on first use)")
-                else:
-                    warmup_results["skipped"].append("qwen")
-            except Exception as e:
-                # Bubble HF billing errors to the gather so the orchestrator
-                # can fast-fail the whole job — retries cannot fix billing.
-                from app.services.embeddings.hf_errors import HFBillingError
-                if isinstance(e, HFBillingError):
-                    raise
-                warmup_results["failed"].append({"endpoint": "qwen", "error": str(e)})
-                logger.warning(f"⚠️ Failed to warmup Qwen endpoint: {e}")
 
         async def warmup_slig():
             try:
@@ -2986,7 +2918,6 @@ async def process_document_with_discovery(
         # a payment method; until then every warmup call is wasted.
         from app.services.embeddings.hf_errors import HFBillingError
         gather_results = await asyncio.gather(
-            warmup_qwen(),
             warmup_slig(),
             warmup_yolo(),
             warmup_chandra(),
@@ -3157,12 +3088,6 @@ async def process_document_with_discovery(
             return url
 
         endpoints_config = {}
-        if 'qwen' in endpoint_managers:
-            qwen_config = settings.get_qwen_config()
-            endpoints_config['qwen'] = {
-                'url': _live_url_from_manager(endpoint_managers['qwen'], qwen_config['endpoint_url']),
-                'token': qwen_config.get('endpoint_token', qwen_config.get('hf_token', ''))
-            }
         if 'slig' in endpoint_managers:
             slig_config = settings.get_slig_config()
             endpoints_config['slig'] = {
@@ -3182,13 +3107,11 @@ async def process_document_with_discovery(
                 'token': chandra_config.get('hf_token', '')
             }
 
-        # SLIG is required for CLIP embeddings
-        # Qwen is only required if NOT using Claude Vision for discovery
-        # YOLO and Chandra are optional (layout detection enhancement)
+        # SLIG is required for CLIP embeddings.
+        # Vision analysis + classification now run on Anthropic Claude Opus 4.7
+        # which has no warmup, so Qwen is no longer in this set.
+        # YOLO and Chandra are optional (layout detection enhancement).
         required_endpoints = []
-        if 'qwen' in endpoints_config and discovery_model != 'claude-vision':
-            # Only require Qwen when using it for discovery (not Claude Vision)
-            required_endpoints.append('qwen')
         if 'slig' in endpoints_config:
             required_endpoints.append('slig')
 
@@ -4319,7 +4242,7 @@ async def search_documents(
     - **Embeddings Combined:**
       - Text (15%) - Voyage AI 1024D semantic understanding
       - Visual (15%) - SLIG 768D visual similarity
-      - Understanding (20%) - Voyage AI 1024D from Qwen3-VL vision analysis
+      - Understanding (20%) - Voyage AI 1024D from Claude Opus 4.7 vision analysis
       - Color (12.5%) - SLIG 768D color palette matching
       - Texture (12.5%) - SLIG 768D texture pattern matching
       - Style (12.5%) - SLIG 768D design style matching
@@ -4892,7 +4815,7 @@ async def get_rag_statistics(
             "ai_models": {
                 "embeddings": "SLIG SigLIP2 768D / Voyage AI 1024D",
                 "rag_synthesis": "Claude Opus 4.7",
-                "vision": get_settings().qwen_model
+                "vision": "claude-opus-4-7"
             }
         }
 
@@ -5274,7 +5197,7 @@ async def search_knowledge_base(
     Uses the same **7-vector fusion search** as the main search endpoint, combining:
     - Text (15%) - Voyage AI 1024D semantic understanding
     - Visual (15%) - SLIG 768D visual similarity
-    - Understanding (20%) - Voyage AI 1024D from Qwen3-VL analysis
+    - Understanding (20%) - Voyage AI 1024D from Claude Opus 4.7 analysis
     - Color (12.5%) - SLIG 768D color palette matching
     - Texture (12.5%) - SLIG 768D texture pattern matching
     - Style (12.5%) - SLIG 768D design style matching

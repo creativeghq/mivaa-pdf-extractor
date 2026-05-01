@@ -39,17 +39,32 @@ class VecsService:
             self._supabase_rest = get_supabase_client()
         return self._supabase_rest
 
-    def _set_image_flag(self, image_id: str, flag_column: str) -> None:
+    def _set_image_flag(
+        self,
+        image_id: str,
+        flag_column: str,
+        extra_columns: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Set a presence flag (e.g. has_slig_embedding=true) on document_images.
 
         Failures are logged at WARNING because the flag is the canonical
         O(1) lookup retrievers use — silent drift here means a row is in
         VECS but the flag is false, so the retriever skips it and the
         whole specialized embedding stops contributing to search.
+
+        `extra_columns` lets the caller persist provenance alongside the
+        flag in a single round-trip (e.g. embedding_model + schema_version
+        for understanding embeddings). NULL values are dropped so we don't
+        overwrite existing data with NULL.
         """
+        update: Dict[str, Any] = {flag_column: True}
+        if extra_columns:
+            for k, v in extra_columns.items():
+                if v is not None:
+                    update[k] = v
         try:
             self._get_supabase_rest().client.table('document_images').update(
-                {flag_column: True}
+                update
             ).eq('id', image_id).execute()
         except Exception as flag_err:
             logger.warning(
@@ -337,15 +352,23 @@ class VecsService:
         self,
         image_id: str,
         embedding: List[float],
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        embedding_model: Optional[str] = None,
+        schema_version: Optional[int] = None,
     ) -> bool:
         """
-        Upsert a vision-understanding embedding (Qwen analysis → Voyage AI 1024D).
+        Upsert a vision-understanding embedding (Claude vision_analysis → Voyage AI 1024D).
 
         Args:
             image_id: Image UUID
             embedding: 1024D understanding embedding from Voyage AI
             metadata: Optional metadata (document_id, workspace_id, page_number, etc.)
+            embedding_model: Which model produced this embedding (e.g. 'voyage-4').
+                Persisted into VECS metadata + the document_images
+                understanding_embedding_model column so the admin UI can detect
+                fallback-drift across the catalog (audit gap A).
+            schema_version: VisionAnalysis schema version that fed this
+                embedding. Used by the backfill cron to identify stale rows.
 
         Returns:
             True if successful, False otherwise
@@ -356,14 +379,27 @@ class VecsService:
                 dimension=1024
             )
 
-            meta = metadata or {}
+            meta = dict(metadata or {})
+            if embedding_model:
+                meta["embedding_model"] = embedding_model
+            if schema_version is not None:
+                meta["schema_version"] = schema_version
 
             collection.upsert(
                 records=[(image_id, embedding, meta)]
             )
 
-            # Update canonical presence flag on document_images
-            self._set_image_flag(image_id, 'has_understanding_embedding')
+            # Update canonical presence flag + provenance on document_images.
+            # Provenance fields mirror the VECS metadata for fast filtering
+            # without joining VECS at admin-dashboard time.
+            self._set_image_flag(
+                image_id,
+                'has_understanding_embedding',
+                extra_columns={
+                    "understanding_embedding_model": embedding_model,
+                    "understanding_schema_version": schema_version,
+                } if (embedding_model or schema_version is not None) else None,
+            )
 
             logger.debug(f"✅ Upserted understanding embedding for image {image_id}")
             return True

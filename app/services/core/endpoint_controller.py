@@ -2,37 +2,37 @@
 Unified endpoint controller for all HuggingFace Inference Endpoints.
 
 This is the single coordination point for:
-  - lifecycle     (resume / warmup / pause of the 4 HF endpoints)
+  - lifecycle     (resume / warmup / pause of the 3 HF endpoints)
   - backpressure  (AdaptiveConcurrency gate per endpoint, AIMD)
   - supply/demand closed loop with EndpointAutoScaler
   - observability (one stats() call for everything)
 
 Why:
-  We have 4 HF endpoints (Qwen, SLIG, YOLO, Chandra). Each used to have its
+  We have 3 HF endpoints (SLIG, YOLO, Chandra). Each used to have its
   own scattered warmup path, its own (or no) concurrency gate, and its own
   call-site pattern. When one endpoint got overloaded, nothing shrank our
   in-flight request rate; we just piled requests into a saturated queue and
   timed them out.
 
   This controller:
-  - Warms all 4 endpoints in parallel at job start (saves 60-180s vs serial).
+  - Warms all 3 endpoints in parallel at job start (saves 60-180s vs serial).
   - Gives each endpoint its own AdaptiveConcurrency slot, tuned to its shape.
-  - Per-endpoint failures shrink that endpoint only — a Qwen meltdown does
-    NOT drag SLIG/YOLO/Chandra down with it.
+  - Per-endpoint failures shrink that endpoint only — a SLIG meltdown does
+    NOT drag YOLO/Chandra down with it.
   - If HF scales replicas up (via EndpointAutoScaler), the controller raises
     the concurrency cap to match. If HF cannot scale up, the controller
     AIMD-shrinks our in-flight rate to match whatever capacity exists.
 
-Call-site pattern (same for all 4 endpoints):
+Call-site pattern:
 
     from app.services.core.endpoint_controller import endpoint_controller
 
-    async with endpoint_controller.qwen.slot():
+    async with endpoint_controller.slig.slot():
         try:
-            result = await qwen_call(...)
-            endpoint_controller.record_success("qwen")
+            result = await slig_call(...)
+            endpoint_controller.record_success("slig")
         except (APITimeoutError, APIConnectionError, httpx.TimeoutException):
-            endpoint_controller.record_failure("qwen")
+            endpoint_controller.record_failure("slig")
             raise
 
 That's the entire integration — one import, one `async with`, two signals.
@@ -56,16 +56,12 @@ def _resolve_hf_endpoint_names() -> Dict[str, str]:
         from app.config import get_settings
         s = get_settings()
         return {
-            "qwen":    s.qwen_endpoint_name,
             "slig":    s.slig_endpoint_name,
             "yolo":    s.yolo_endpoint_name,
             "chandra": s.chandra_endpoint_name,
         }
     except Exception:
-        # Fallback to the historical defaults so import-time access still
-        # works in test contexts that don't configure Settings.
         return {
-            "qwen":    "qwen3-6-35b-fp8",
             "slig":    "mh-slig",
             "yolo":    "mh-yolo",
             "chandra": "chandra-ocr-2",
@@ -88,9 +84,6 @@ class EndpointController:
         # Per-endpoint AdaptiveConcurrency gates.
         #
         # Tuning rationale:
-        #   - Qwen (mh-qwen332binstruct): heavy VLM on a single GPU replica by
-        #     default. 4 concurrent is the honest ceiling for one replica;
-        #     8 is achievable only with 2+ replicas.
         #   - SLIG (mh-slig): lightweight text-guided embeddings, fast responses.
         #     16 concurrent is fine; failures here usually mean network, not load.
         #   - YOLO (mh-yolo): layout detection, ~2-5s per page, single-page calls.
@@ -98,7 +91,6 @@ class EndpointController:
         #   - Chandra (mh-chandra): OCR, highly variable latency depending on
         #     image complexity. 8 concurrent max; 1 minimum. Most runs, it's
         #     disabled — the controller force_minimum()s if the manager is None.
-        self.qwen    = AdaptiveConcurrency(name="qwen",    initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
         self.slig    = AdaptiveConcurrency(name="slig",    initial=8, minimum=2, maximum=16, failure_threshold=3, success_threshold=15)
         self.yolo    = AdaptiveConcurrency(name="yolo",    initial=6, minimum=2, maximum=12, failure_threshold=3, success_threshold=15)
         self.chandra = AdaptiveConcurrency(name="chandra", initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
@@ -158,7 +150,7 @@ class EndpointController:
     # ────────────────────────────────────────────────────────────────────
 
     def get_gate(self, endpoint: str) -> AdaptiveConcurrency:
-        """Look up the concurrency gate by short name ('qwen'/'slig'/...)."""
+        """Look up the concurrency gate by short name ('slig'/'yolo'/'chandra')."""
         if endpoint not in VALID_ENDPOINT_KEYS:
             raise ValueError(
                 f"Unknown endpoint key {endpoint!r}. Valid keys: {sorted(VALID_ENDPOINT_KEYS)}"
@@ -222,7 +214,7 @@ class EndpointController:
         to `minimum=1`. That prevents the pipeline from handing out slots that
         would just pile up against a broken endpoint — calls will either
         succeed slowly or fail fast into their application-level fallback
-        (e.g. Claude for Qwen, EasyOCR for Chandra).
+        (e.g. EasyOCR for Chandra).
 
         Args:
             job_id: for logging correlation.
@@ -237,7 +229,6 @@ class EndpointController:
             auto_scaler = self._get_auto_scaler()
 
             tasks = [
-                self._warm_one("qwen",    endpoint_registry.get_qwen_manager(),    job_id),
                 self._warm_one("slig",    endpoint_registry.get_slig_manager(),    job_id),
                 self._warm_one("yolo",    endpoint_registry.get_yolo_manager(),    job_id),
                 self._warm_one("chandra", endpoint_registry.get_chandra_manager(), job_id),
@@ -350,11 +341,11 @@ class EndpointController:
     def _align_caps_with_replica_counts(self, auto_scaler: Any) -> None:
         """Raise per-gate `maximum` to match actual HF replica counts.
 
-        If the auto-scaler has already scaled Qwen to 2 replicas, we can
-        safely run at 2 × base_max concurrent (8 → 16). This is the "supply
-        side" of the control loop — when HF grants more capacity, we let our
-        demand-side gate use it. AIMD still handles in-run overload; this is
-        just the ceiling.
+        If the auto-scaler has scaled SLIG to 2 replicas, we can safely run
+        at 2 × base_max concurrent (16 → 32). This is the "supply side" of
+        the control loop — when HF grants more capacity, we let our
+        demand-side gate use it. AIMD still handles in-run overload; this
+        is just the ceiling.
         """
         try:
             status = auto_scaler.get_status()
@@ -412,7 +403,6 @@ class EndpointController:
             from app.config import get_settings
             settings = get_settings()
             config_getters = {
-                "qwen":    settings.get_qwen_config,
                 "slig":    settings.get_slig_config,
                 "yolo":    settings.get_yolo_config,
                 "chandra": settings.get_chandra_config,
@@ -528,7 +518,6 @@ class EndpointController:
             from app.config import get_settings
             settings = get_settings()
             config_getters = {
-                "qwen":    settings.get_qwen_config,
                 "slig":    settings.get_slig_config,
                 "yolo":    settings.get_yolo_config,
                 "chandra": settings.get_chandra_config,
@@ -538,7 +527,6 @@ class EndpointController:
             config_getters = {}
 
         manager_getters = {
-            "qwen":    endpoint_registry.get_qwen_manager,
             "slig":    endpoint_registry.get_slig_manager,
             "yolo":    endpoint_registry.get_yolo_manager,
             "chandra": endpoint_registry.get_chandra_manager,
@@ -631,7 +619,7 @@ class EndpointController:
         """Ask the auto-scaler to add replicas for one endpoint.
 
         Useful at job start when you know you're about to hit an endpoint
-        hard — e.g. the main pipeline can call `request_scale_up('qwen', 2)`
+        hard — e.g. the main pipeline can call `request_scale_up('slig', 2)`
         before Stage 3 kicks off. If HF has capacity, we get more replicas;
         if not, this is a no-op and the adaptive gate still keeps us safe.
 
@@ -662,9 +650,8 @@ class EndpointController:
     # ────────────────────────────────────────────────────────────────────
 
     def stats(self) -> Dict[str, Any]:
-        """Single snapshot of all 4 gates for progress reports + logs."""
+        """Single snapshot of the 3 gates for progress reports + logs."""
         return {
-            "qwen":    self.qwen.stats(),
             "slig":    self.slig.stats(),
             "yolo":    self.yolo.stats(),
             "chandra": self.chandra.stats(),
@@ -675,9 +662,8 @@ class EndpointController:
         """Pretty-print gate state at stage boundaries."""
         s = self.stats()
         logger.info(
-            "%s: qwen=%d/%d (in=%d) | slig=%d/%d (in=%d) | yolo=%d/%d (in=%d) | chandra=%d/%d (in=%d)",
+            "%s: slig=%d/%d (in=%d) | yolo=%d/%d (in=%d) | chandra=%d/%d (in=%d)",
             prefix,
-            s["qwen"]["limit"], s["qwen"]["max"], s["qwen"]["in_flight"],
             s["slig"]["limit"], s["slig"]["max"], s["slig"]["in_flight"],
             s["yolo"]["limit"], s["yolo"]["max"], s["yolo"]["in_flight"],
             s["chandra"]["limit"], s["chandra"]["max"], s["chandra"]["in_flight"],

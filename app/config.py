@@ -113,10 +113,6 @@ class Settings(BaseSettings):
         default=32, env="SLIG_CONCURRENCY",
         description="Max concurrent SLIG visual-embedding requests (base=8 × 4 replicas)"
     )
-    qwen_concurrency: int = Field(
-        default=32, env="QWEN_CONCURRENCY",
-        description="Max concurrent Qwen vision-analysis requests (base=8 × 4 replicas)"
-    )
     yolo_concurrency: int = Field(
         default=48, env="YOLO_CONCURRENCY",
         description="Max concurrent YOLO layout-detection requests (base=12 × 4 replicas)"
@@ -388,62 +384,6 @@ class Settings(BaseSettings):
         env="IMAGE_FORMAT_CONVERSION"
     )
     
-    # ============================================================================
-    # Qwen Vision Model - HuggingFace Inference Endpoint
-    # ============================================================================
-    # Semantic analysis and material identification via cloud endpoint
-    # Uses huggingface_api_key for authentication (no separate token needed)
-    qwen_endpoint_url: str = Field(
-        default="https://lv7trhkha3b5757r.us-east-1.aws.endpoints.huggingface.cloud",
-        env="QWEN_ENDPOINT_URL",
-        description="Qwen HF inference endpoint base URL. Default points at the live `qwen3-6-35b-fp8` endpoint so the platform works out-of-the-box without GH Secrets. Override via env / GH Secret when redeploying to a different account / endpoint name."
-    )
-    qwen_endpoint_name: str = Field(
-        default="qwen3-6-35b-fp8",
-        env="QWEN_ENDPOINT_NAME",
-        description="Qwen endpoint service name"
-    )
-    qwen_namespace: str = Field(
-        default="basiliskan",
-        env="QWEN_NAMESPACE",
-        description="Qwen endpoint namespace"
-    )
-    qwen_model: str = Field(
-        default="Qwen/Qwen3.6-35B-A3B-FP8",
-        env="QWEN_MODEL",
-        description="Qwen vision model id served by the qwen_endpoint_name endpoint. Must match what `/v1/models` reports — vLLM 404s on a model-name mismatch."
-    )
-    qwen_max_tokens: int = Field(
-        default=4096,
-        env="QWEN_MAX_TOKENS",
-        description="Maximum tokens for Qwen vision model"
-    )
-    qwen_temperature: float = Field(
-        default=0.1,
-        env="QWEN_TEMPERATURE",
-        description="Temperature for Qwen vision model"
-    )
-    qwen_timeout: int = Field(
-        default=180,
-        env="QWEN_TIMEOUT",
-        description="Timeout for Qwen endpoint requests (seconds)"
-    )
-    qwen_enabled: bool = Field(
-        default=True,
-        env="QWEN_ENABLED",
-        description="Enable Qwen vision model"
-    )
-    qwen_max_retries: int = Field(
-        default=3,
-        env="QWEN_MAX_RETRIES",
-        description="Maximum retry attempts for Qwen endpoint"
-    )
-    qwen_retry_delay: float = Field(
-        default=1.0,
-        env="QWEN_RETRY_DELAY",
-        description="Delay between Qwen endpoint retries (seconds)"
-    )
-
     # Anthropic Claude Settings
     anthropic_api_key: str = Field(
         default="",
@@ -739,11 +679,14 @@ class Settings(BaseSettings):
         description="Fallback to OpenAI if Voyage AI fails"
     )
 
-    # Document Chunking Models
+    # Document Chunking Models — Sonnet 4.6 chosen post-Qwen-removal
+    # (2026-05-01). Chunking is a pure text task where Sonnet sits at the
+    # quality ceiling; Opus would be 5× more expensive on the most
+    # token-heavy step in the pipeline for a marginal accuracy gain.
     chunking_primary_model: str = Field(
-        default="Qwen/Qwen3.6-35B-A3B-FP8",
+        default="claude-sonnet-4-6",
         env="CHUNKING_PRIMARY_MODEL",
-        description="Primary model for chunking"
+        description="Primary model for chunking (text task — Sonnet 4.6 default)"
     )
     chunking_quality_threshold: float = Field(
         default=0.7,
@@ -1070,15 +1013,6 @@ class Settings(BaseSettings):
             "similarity_top_k": self.rag_similarity_top_k,
             "storage_dir": self.rag_storage_dir,
             "enable_rag": self.rag_enable,
-            # Qwen Vision Model Configuration (HuggingFace Endpoint)
-            "qwen_endpoint_url": self.qwen_endpoint_url,
-            "qwen_endpoint_token": self.huggingface_api_key,  # Use global HF token
-            "qwen_endpoint_name": self.qwen_endpoint_name,
-            "qwen_namespace": self.qwen_namespace,
-            "qwen_model": self.qwen_model,
-            "qwen_max_tokens": self.qwen_max_tokens,
-            "qwen_temperature": self.qwen_temperature,
-            "qwen_enabled": self.qwen_enabled,
         }
 
     def get_material_kai_config(self) -> Dict[str, Any]:
@@ -1261,21 +1195,6 @@ class Settings(BaseSettings):
             "format_conversion": self.image_format_conversion,
         }
     
-    @field_validator("qwen_model")
-    @classmethod
-    def validate_qwen_model(cls, v):
-        """Sanity-check qwen_model — only block obviously broken values.
-
-        We don't maintain an allow-list of valid Qwen IDs in code (so endpoint
-        swaps don't require a code change) — just reject empty / non-Qwen
-        values that are clearly wrong.
-        """
-        if not v or not isinstance(v, str):
-            raise ValueError("Qwen model must be a non-empty string")
-        if not v.lower().startswith("qwen/"):
-            raise ValueError(f"Qwen model id must start with 'Qwen/' (got: {v!r})")
-        return v
-
     def get_jwt_config(self) -> Dict[str, Any]:
         """
         Get JWT authentication configuration.
@@ -1290,28 +1209,6 @@ class Settings(BaseSettings):
             "refresh_token_expire_days": self.jwt_refresh_token_expire_days,
             "issuer": self.jwt_issuer,
             "audience": self.jwt_audience,
-        }
-    
-    def get_qwen_config(self) -> Dict[str, Any]:
-        """
-        Get Qwen HuggingFace endpoint configuration.
-
-        This provides all necessary configuration for Qwen vision model integration
-        including endpoint URL, authentication, model configuration, and retry logic.
-        Uses huggingface_api_key for authentication.
-        """
-        return {
-            "endpoint_url": self.qwen_endpoint_url,
-            "endpoint_token": self.huggingface_api_key,
-            "endpoint_name": self.qwen_endpoint_name,
-            "namespace": self.qwen_namespace,
-            "model": self.qwen_model,
-            "max_tokens": self.qwen_max_tokens,
-            "temperature": self.qwen_temperature,
-            "timeout": self.qwen_timeout,
-            "enabled": self.qwen_enabled,
-            "max_retries": self.qwen_max_retries,
-            "retry_delay": self.qwen_retry_delay,
         }
     
     model_config = SettingsConfigDict(

@@ -47,13 +47,10 @@ class RAGService:
         self.logger = logging.getLogger(__name__)
         self._available = True  # Service is available after initialization
 
-        # Load HuggingFace endpoint configuration from settings
-        from app.config import get_settings
-        settings = get_settings()
-        qwen_config = settings.get_qwen_config()
-
-        self.qwen_endpoint_url = qwen_config["endpoint_url"]
-        self.qwen_endpoint_token = qwen_config["endpoint_token"]
+        # Vision-analysis and image classification both run on Anthropic
+        # Claude Opus 4.7 (post-Qwen-removal). No HF endpoint plumbing
+        # needed here — the Anthropic API key is read on demand inside
+        # _analyze_image_material / _classify_image_material via os.getenv.
 
         # Initialize services
         try:
@@ -1916,10 +1913,15 @@ class RAGService:
         embedding_service: Any = None
     ) -> Dict[str, Any]:
         """
-        Analyze material image using Qwen Vision to extract properties, quality, and confidence.
+        Analyze material image with Claude Opus 4.7 vision via Anthropic tool use
+        to extract material properties, quality, and confidence.
 
-        This is the FULL analysis method (not just classification).
-        Returns quality_score, confidence_score, and material_properties.
+        Tool use forces a schema-conformant JSON response (no parsing/regex
+        recovery needed). The schema matches `app.models.vision_analysis.
+        VisionAnalysis` so the same shape feeds the Voyage understanding
+        embedding pipeline downstream — this is the single point that
+        keeps query-side analysis aligned with ingestion-side analysis,
+        preventing Voyage embedding-space drift.
 
         Args:
             image_base64: Base64 encoded image
@@ -1929,17 +1931,15 @@ class RAGService:
             embedding_service: Embedding service (unused, for compatibility)
 
         Returns:
-            Dict with quality_score, confidence_score, material_properties
+            Dict with quality_score, confidence_score, material_properties.
         """
         try:
-            import json
             import httpx
-            # NOTE: `os` is imported at module level — do not re-import here
-            # (would create a function-local that breaks unrelated branches).
+            from app.models.vision_analysis import VISION_ANALYSIS_TOOL
 
-            huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
-            if not huggingface_api_key:
-                self.logger.warning("HUGGINGFACE_API_KEY not set, skipping analysis")
+            anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_api_key:
+                self.logger.warning("ANTHROPIC_API_KEY not set, skipping analysis")
                 return {
                     'quality_score': 0.5,
                     'confidence_score': 0.0,
@@ -1947,43 +1947,47 @@ class RAGService:
                     'error': 'API key missing'
                 }
 
-            analysis_prompt = """Analyze this building/interior material image and extract detailed properties.
+            analysis_text = (
+                "Analyze this building/interior material image. Use the "
+                "emit_vision_analysis tool to return a structured material "
+                "analysis. Be catalog-grade specific (e.g. 'Calacatta marble' "
+                "not 'marble', 'herringbone white oak engineered wood' not "
+                "'wood floor'). Confidence must reflect how certain you are "
+                "of the material identification."
+            )
 
-Respond with JSON:
-{
-  "material_type": "tile|wood|fabric|stone|metal|flooring|wallpaper|other",
-  "color": "primary color description",
-  "finish": "matte|glossy|satin|textured|other",
-  "pattern": "solid|striped|geometric|floral|abstract|other",
-  "texture": "smooth|rough|embossed|woven|other",
-  "quality_assessment": 0.0-1.0,
-  "confidence": 0.0-1.0,
-  "notes": "brief description"
-}"""
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    self.qwen_endpoint_url,
+                    "https://api.anthropic.com/v1/messages",
                     headers={
-                        'Authorization': f'Bearer {self.qwen_endpoint_token}',
-                        'Content-Type': 'application/json'
+                        'x-api-key': anthropic_api_key,
+                        'anthropic-version': '2023-06-01',
+                        'content-type': 'application/json',
                     },
                     json={
-                        'model': 'Qwen/Qwen3-VL-8B-Instruct',
+                        'model': 'claude-opus-4-7',
+                        'max_tokens': 4096,
+                        'tools': [VISION_ANALYSIS_TOOL],
+                        'tool_choice': {'type': 'tool', 'name': 'emit_vision_analysis'},
                         'messages': [{
                             'role': 'user',
                             'content': [
-                                {'type': 'text', 'text': analysis_prompt},
-                                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_base64}'}}
-                            ]
+                                {
+                                    'type': 'image',
+                                    'source': {
+                                        'type': 'base64',
+                                        'media_type': 'image/jpeg',
+                                        'data': image_base64,
+                                    },
+                                },
+                                {'type': 'text', 'text': analysis_text},
+                            ],
                         }],
-                        'max_tokens': 500,
-                        'temperature': 0.1
-                    }
+                    },
                 )
 
                 if response.status_code != 200:
-                    self.logger.warning(f"Qwen API error: {response.status_code}")
+                    self.logger.warning(f"Anthropic API error: {response.status_code} - {response.text[:200]}")
                     return {
                         'quality_score': 0.5,
                         'confidence_score': 0.0,
@@ -1991,28 +1995,50 @@ Respond with JSON:
                         'error': f'API error {response.status_code}'
                     }
 
-                result_text = response.json()['choices'][0]['message']['content']
-                result = json.loads(result_text)
+                # Anthropic returns content as a list; the tool_use block has
+                # `input` already validated against the schema by the API.
+                payload = response.json()
+                tool_block = next(
+                    (b for b in payload.get('content', []) if b.get('type') == 'tool_use'),
+                    None,
+                )
+                if not tool_block or 'input' not in tool_block:
+                    self.logger.warning(f"No tool_use in Anthropic response: {payload}")
+                    return {
+                        'quality_score': 0.5,
+                        'confidence_score': 0.0,
+                        'material_properties': {},
+                        'error': 'No tool_use block returned'
+                    }
 
-                # Extract material properties
+                result = tool_block['input']
+
                 material_properties = {
                     'material_type': result.get('material_type', 'unknown'),
-                    'color': result.get('color'),
+                    'category': result.get('category'),
+                    'subcategory': result.get('subcategory'),
+                    'colors': result.get('colors') or [],
+                    'textures': result.get('textures') or [],
                     'finish': result.get('finish'),
-                    'pattern': result.get('pattern'),
-                    'texture': result.get('texture'),
-                    'notes': result.get('notes', '')
+                    'surface_pattern': result.get('surface_pattern'),
+                    'description': result.get('description'),
+                    'applications': result.get('applications') or [],
+                    'style': result.get('style'),
+                    'detected_text': result.get('detected_text') or [],
                 }
 
-                # Use Qwen's assessments for scores
-                quality_score = result.get('quality_assessment', 0.7)
-                confidence_score = result.get('confidence', 0.7)
+                # Quality score: high when confidence is high. We don't have
+                # a separate "image quality" field in the locked schema, so
+                # we use confidence as a proxy — same value, same call site.
+                confidence_score = float(result.get('confidence', 0.85))
+                quality_score = confidence_score
 
                 return {
                     'quality_score': quality_score,
                     'confidence_score': confidence_score,
                     'material_properties': material_properties,
-                    'model': 'qwen3-vl-8b'
+                    'vision_analysis': result,  # full schema-locked dict for embedding
+                    'model': 'claude-opus-4-7'
                 }
 
         except Exception as e:
@@ -2030,110 +2056,128 @@ Respond with JSON:
         confidence_threshold: float = 0.6
     ) -> Dict[str, Any]:
         """
-        Classify if an image shows material or not using Qwen Vision.
+        Classify if an image shows material content using Claude Opus 4.7 vision
+        + Anthropic tool use for guaranteed schema adherence.
 
         Args:
             image_base64: Base64 encoded image
             confidence_threshold: Minimum confidence to classify as material
 
         Returns:
-            Dict with is_material, confidence, reason
+            Dict with is_material, confidence, reason, classification.
         """
         try:
-            import json
             import httpx
-            # NOTE: `os` is imported at module level — see comment in
-            # _analyze_image_huggingface for why we don't re-import locally.
 
-            huggingface_api_key = os.getenv('HUGGINGFACE_API_KEY')
-            if not huggingface_api_key:
-                self.logger.warning("HUGGINGFACE_API_KEY not set, skipping classification")
+            anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_api_key:
+                self.logger.warning("ANTHROPIC_API_KEY not set, skipping classification")
                 return {'is_material': False, 'confidence': 0.0, 'reason': 'API key missing'}
 
-            # Use database prompt - NO FALLBACK
-            if self.classification_prompt:
-                classification_prompt = self.classification_prompt
-            else:
+            if not self.classification_prompt:
                 error_msg = "CRITICAL: Classification prompt not found in database. Add via /admin/ai-configs with prompt_type='classification', stage='image_analysis', category='image_classification'"
                 self.logger.error(f"❌ {error_msg}")
                 raise ValueError(error_msg)
 
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            # Tool-use schema mirrors the existing database prompt's expected
+            # output shape — classification + confidence + reasoning, plus
+            # product_indicators array. Force-calling the tool guarantees
+            # the API returns this exact structure.
+            classify_tool = {
+                "name": "emit_classification",
+                "description": "Emit the image classification verdict for the building-materials catalog filter.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "classification": {
+                            "type": "string",
+                            "enum": ["PRODUCT_IMAGE", "TECHNICAL_DIAGRAM", "DECORATIVE", "MIXED"],
+                            "description": "The dominant content category for this image.",
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "minimum": 0.0,
+                            "maximum": 1.0,
+                            "description": "0-1 confidence in the classification.",
+                        },
+                        "reasoning": {
+                            "type": "string",
+                            "description": "One-sentence justification.",
+                        },
+                        "product_indicators": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Catalog-grade product/material elements observed.",
+                        },
+                    },
+                    "required": ["classification", "confidence", "reasoning"],
+                },
+            }
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(
-                    self.qwen_endpoint_url,
+                    "https://api.anthropic.com/v1/messages",
                     headers={
-                        'Authorization': f'Bearer {self.qwen_endpoint_token}',
-                        'Content-Type': 'application/json'
+                        'x-api-key': anthropic_api_key,
+                        'anthropic-version': '2023-06-01',
+                        'content-type': 'application/json',
                     },
                     json={
-                        'model': 'Qwen/Qwen3-VL-8B-Instruct',
+                        'model': 'claude-opus-4-7',
+                        'max_tokens': 1024,
+                        'tools': [classify_tool],
+                        'tool_choice': {'type': 'tool', 'name': 'emit_classification'},
                         'messages': [{
                             'role': 'user',
                             'content': [
-                                {'type': 'text', 'text': classification_prompt},
-                                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{image_base64}'}}
-                            ]
+                                {
+                                    'type': 'image',
+                                    'source': {
+                                        'type': 'base64',
+                                        'media_type': 'image/jpeg',
+                                        'data': image_base64,
+                                    },
+                                },
+                                {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
+                            ],
                         }],
-                        'max_tokens': 200,
-                        'temperature': 0.1
-                    }
+                    },
                 )
 
                 if response.status_code != 200:
                     error_body = response.text[:500] if hasattr(response, 'text') else 'No response body'
-                    self.logger.error(f"❌ Qwen API error {response.status_code}: {error_body}")
+                    self.logger.error(f"❌ Anthropic API error {response.status_code}: {error_body}")
                     return {'is_material': False, 'confidence': 0.0, 'reason': f'API error {response.status_code}'}
 
-                result_text = response.json()['choices'][0]['message']['content']
+                payload = response.json()
+                tool_block = next(
+                    (b for b in payload.get('content', []) if b.get('type') == 'tool_use'),
+                    None,
+                )
+                if not tool_block or 'input' not in tool_block:
+                    self.logger.warning(f"No tool_use in classification response: {payload}")
+                    return {'is_material': False, 'confidence': 0.0, 'reason': 'No tool_use block returned'}
 
-                # Log full raw response for debugging.
-                self.logger.info(f"📝 Qwen RAW Response (length: {len(result_text)} chars):")
-                self.logger.info(f"   First 500 chars: {result_text[:500]}")
-                if len(result_text) > 500:
-                    self.logger.info(f"   Last 200 chars: ...{result_text[-200:]}")
+                result = tool_block['input']
+                classification = result.get('classification', 'DECORATIVE')
+                confidence = float(result.get('confidence', 0.5))
+                reason = result.get('reasoning', 'Unknown')
 
-                # Try to parse JSON, with fallback for malformed responses
-                try:
-                    result = json.loads(result_text)
-                    self.logger.info(f"✅ Qwen JSON parsed successfully: {result}")
-                except json.JSONDecodeError as json_err:
-                    # ✅ ENHANCED ERROR LOGGING: Show exact error location and context
-                    self.logger.error(f"❌ Qwen JSON Parse Error: {json_err}")
-                    self.logger.error(f"   Error at line {json_err.lineno}, column {json_err.colno}")
-                    self.logger.error(f"   Full response text ({len(result_text)} chars):")
-                    self.logger.error(f"   {result_text}")
-
-                    # Try to extract JSON from markdown code blocks
-                    if '```json' in result_text:
-                        self.logger.info("   Attempting to extract JSON from ```json block...")
-                        try:
-                            json_match = result_text.split('```json')[1].split('```')[0].strip()
-                            result = json.loads(json_match)
-                            self.logger.info(f"   ✅ Successfully extracted JSON from markdown: {result}")
-                        except Exception as extract_err:
-                            self.logger.error(f"   ❌ Failed to extract from ```json block: {extract_err}")
-                            return {'is_material': False, 'confidence': 0.0, 'reason': f'Invalid JSON in markdown block'}
-                    elif '```' in result_text:
-                        self.logger.info("   Attempting to extract JSON from ``` block...")
-                        try:
-                            json_match = result_text.split('```')[1].split('```')[0].strip()
-                            result = json.loads(json_match)
-                            self.logger.info(f"   ✅ Successfully extracted JSON from code block: {result}")
-                        except Exception as extract_err:
-                            self.logger.error(f"   ❌ Failed to extract from ``` block: {extract_err}")
-                            return {'is_material': False, 'confidence': 0.0, 'reason': f'Invalid JSON in code block'}
-                    else:
-                        # ✅ LOG FULL RESPONSE when no JSON found
-                        self.logger.error(f"   ❌ No JSON or markdown blocks found in response")
-                        self.logger.error(f"   Response type: {type(result_text)}")
-                        self.logger.error(f"   Response repr: {repr(result_text[:1000])}")
-                        return {'is_material': False, 'confidence': 0.0, 'reason': f'Invalid JSON response'}
+                # Map structured classification → is_material binary that
+                # legacy callers expect. PRODUCT_IMAGE and MIXED are kept;
+                # TECHNICAL_DIAGRAM and DECORATIVE are dropped.
+                is_material = (
+                    classification in ("PRODUCT_IMAGE", "MIXED")
+                    and confidence >= confidence_threshold
+                )
 
                 return {
-                    'is_material': result.get('is_material', False),
-                    'confidence': result.get('confidence', 0.5),
-                    'reason': result.get('reason', 'Unknown'),
-                    'model': 'qwen3-vl-8b'
+                    'is_material': is_material,
+                    'confidence': confidence,
+                    'reason': reason,
+                    'classification': classification,
+                    'product_indicators': result.get('product_indicators') or [],
+                    'model': 'claude-opus-4-7'
                 }
 
         except Exception as e:

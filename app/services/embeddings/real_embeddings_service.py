@@ -137,6 +137,16 @@ class RealEmbeddingsService:
         self._slig_client = None  # Lazy-initialized SLIG client
         self._voyage_client = None  # Lazy-initialized Voyage AI httpx client
 
+        # Records which provider (voyage-4 / openai-text-embedding-3-small)
+        # produced the most recent text embedding. The public
+        # `generate_text_embedding` reads this so callers can persist
+        # provenance for fallback-drift detection.
+        self._last_provider: Optional[str] = None
+
+        # Pull voyage_model from config once so call sites don't have to
+        # re-read settings on every embedding.
+        self.voyage_model = getattr(config, "voyage_model", None) or "voyage-4"
+
         # Log SLIG configuration
         self.logger.info(f"☁️ Visual Embeddings: SLIG Cloud Endpoint (basiliskan/siglip2, 768D)")
 
@@ -248,15 +258,21 @@ class RealEmbeddingsService:
                     except Exception:
                         pass
 
-            # 3. Understanding Embedding (1024D) - Qwen vision_analysis → Voyage AI
+            # 3. Understanding Embedding (1024D) — vision_analysis JSON → Voyage AI.
+            # Source vision_analysis comes from Claude Opus 4.7 via Anthropic
+            # tool use (post-Qwen-removal). Returns a dict with embedding +
+            # provenance so vecs_service can persist embedding_model and
+            # schema_version for fallback-drift detection.
             if vision_analysis:
-                understanding_embedding = await self.generate_understanding_embedding(
+                ue_result = await self.generate_understanding_embedding(
                     vision_analysis=vision_analysis,
                     material_properties=material_properties
                 )
-                if understanding_embedding:
-                    embeddings["embeddings"]["understanding_1024"] = understanding_embedding
-                    embeddings["metadata"]["model_versions"]["understanding"] = "voyage-4"
+                if ue_result and ue_result.get("embedding"):
+                    embeddings["embeddings"]["understanding_1024"] = ue_result["embedding"]
+                    embeddings["metadata"]["model_versions"]["understanding"] = ue_result.get("embedding_model", "voyage-4")
+                    embeddings["metadata"]["schema_versions"] = embeddings["metadata"].get("schema_versions", {})
+                    embeddings["metadata"]["schema_versions"]["understanding"] = ue_result.get("schema_version", 1)
                     embeddings["metadata"]["confidence_scores"]["understanding"] = 0.93
                     self.logger.info("✅ Understanding embedding generated (1024D)")
 
@@ -300,20 +316,30 @@ class RealEmbeddingsService:
         """
         Public method to generate a text embedding for search queries.
 
-        Returns dict with {"success": bool, "embedding": list} format
-        expected by RAG service.
+        Returns dict with {"success", "embedding", "model"} format. The
+        model field is set to the actual provider that returned the vector
+        (`voyage-4` on the happy path, `openai-text-embedding-3-small` on
+        fallback) so callers can persist provenance for drift tracking.
 
         Args:
             query: Text query to embed
             dimensions: Embedding dimensions (default 1024)
-
-        Returns:
-            Dict with success status and embedding vector
         """
         try:
+            # Track which provider answered by recording state before/after.
+            # _generate_text_embedding doesn't currently bubble that up, so we
+            # infer it from the AI logger's last entry — but cleaner is to
+            # default to the configured Voyage model and let the fallback
+            # path stamp openai. Implementation: peek at self._last_provider
+            # which the embedder sets at the end of the call.
+            self._last_provider = None
             embedding = await self._generate_text_embedding(text=query, dimensions=dimensions)
             if embedding:
-                return {"success": True, "embedding": embedding}
+                return {
+                    "success": True,
+                    "embedding": embedding,
+                    "model": self._last_provider or (self.voyage_model or "voyage-4"),
+                }
             return {"success": False, "error": "Text embedding generation returned None"}
         except Exception as e:
             self.logger.error(f"❌ generate_text_embedding failed: {e}")
@@ -370,54 +396,104 @@ class RealEmbeddingsService:
         vision_analysis: Dict[str, Any],
         material_properties: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None
-    ) -> Optional[List[float]]:
+    ) -> Optional[Dict[str, Any]]:
         """
-        Generate understanding embedding from Qwen3-VL vision_analysis JSON.
+        Generate understanding embedding from a structured vision_analysis dict.
 
-        Converts structured vision analysis into descriptive text, then embeds
+        Converts the structured vision analysis (produced by Claude Opus 4.7 via
+        Anthropic tool use) into deterministic descriptive text, then embeds
         via Voyage AI (1024D) to enable spec-based search queries like
         "porcelain tile 60x120cm" or "R10 slip rating".
 
         Args:
-            vision_analysis: Qwen3-VL analysis JSON with material_type, colors, textures, etc.
-            material_properties: Optional additional material properties
-            job_id: Optional job ID for logging
+            vision_analysis: vision_analysis JSON (preferred: shape matches
+                app.models.vision_analysis.VisionAnalysis; legacy free-form
+                dicts also accepted via vision_analysis_from_legacy_dict).
+            material_properties: Optional additional material properties.
+            job_id: Optional job ID for logging.
 
         Returns:
-            1024D embedding vector or None if failed
+            Dict with `embedding` (1024D list) + `embedding_model` + `schema_version`
+            on success. Returns None on failure.
+
+            IMPORTANT: this path deliberately does NOT fall back to OpenAI on
+            Voyage failure (audit gap B). Mixing voyage-4 and openai-3-small
+            vectors in image_understanding_embeddings poisons the cosine search
+            with two latent spaces. Better to fail-soft (no understanding
+            embedding for this image) — the visual + specialised SLIG vectors
+            still cover the row in fusion search.
         """
+        from app.models.vision_analysis import (
+            VisionAnalysis,
+            SCHEMA_VERSION,
+            serialize_vision_analysis_to_text,
+            vision_analysis_from_legacy_dict,
+        )
+
         try:
-            # Audit fix #33: validate Qwen vision_analysis schema before serializing.
-            # Without this check a malformed Qwen response (e.g. {"error": "OOM"})
-            # would yield near-empty text, which Voyage would happily embed as a
-            # degenerate "no text" vector that matches every search query — silent
-            # search corruption.
-            if not _is_valid_vision_analysis_schema(vision_analysis):
+            # Coerce to the strict schema. Accepts both new (VisionAnalysis)
+            # and legacy free-form dicts; refuses error payloads / missing
+            # material_type — same guarantee the legacy
+            # _is_valid_vision_analysis_schema gave but with structure.
+            if isinstance(vision_analysis, VisionAnalysis):
+                va = vision_analysis
+            else:
+                va = vision_analysis_from_legacy_dict(vision_analysis)
+            if va is None:
                 self.logger.warning(
-                    f"⚠️ Malformed vision_analysis schema (keys={list((vision_analysis or {}).keys())[:6]}); "
-                    f"refusing to embed degenerate text. Skipping understanding embedding."
+                    f"⚠️ Malformed vision_analysis (keys={list((vision_analysis or {}).keys())[:6]}); "
+                    f"refusing to embed. Skipping understanding embedding."
                 )
                 return None
 
-            # Convert vision_analysis JSON to descriptive text
-            text = self._vision_analysis_to_text(vision_analysis, material_properties)
+            # Single source of truth for the text serialisation. Same function
+            # is used at query time so ingestion and query land in the same
+            # Voyage embedding distribution.
+            text = serialize_vision_analysis_to_text(va)
+            if material_properties:
+                # Append additional material properties deterministically.
+                mp_parts = sorted(
+                    f"{k}: {v}"
+                    for k, v in material_properties.items()
+                    if v and k not in ("id", "created_at", "updated_at",
+                                       "document_id", "image_id")
+                )
+                if mp_parts:
+                    text = f"{text} Material properties: {', '.join(mp_parts)}."
 
-            if not text or not text.strip():
-                self.logger.warning("⚠️ Empty text from vision_analysis conversion, skipping understanding embedding")
+            if not text.strip():
+                self.logger.warning(
+                    "⚠️ Empty serialised text from VisionAnalysis, "
+                    "skipping understanding embedding"
+                )
                 return None
 
-            self.logger.debug(f"📝 Understanding embedding text ({len(text)} chars): {text[:200]}...")
+            self.logger.debug(
+                f"📝 Understanding embedding text ({len(text)} chars): {text[:200]}..."
+            )
 
-            # Embed via Voyage AI with input_type="document" for optimal retrieval
+            # Embed via Voyage AI with input_type="document". Audit gap B:
+            # disable OpenAI fallback for this specific path so we never mix
+            # embedding spaces in image_understanding_embeddings.
             embedding = await self._generate_text_embedding(
                 text=text,
                 input_type="document",
-                job_id=job_id
+                job_id=job_id,
+                allow_openai_fallback=False,
             )
 
-            if embedding:
-                self.logger.info(f"✅ Understanding embedding generated ({len(embedding)}D)")
-            return embedding
+            if not embedding:
+                return None
+
+            self.logger.info(
+                f"✅ Understanding embedding generated ({len(embedding)}D, "
+                f"schema_v{SCHEMA_VERSION})"
+            )
+            return {
+                "embedding": embedding,
+                "embedding_model": self.voyage_model or "voyage-4",
+                "schema_version": SCHEMA_VERSION,
+            }
 
         except Exception as e:
             self.logger.error(f"❌ Understanding embedding generation failed: {e}")
@@ -805,7 +881,8 @@ class RealEmbeddingsService:
         dimensions: int = 1024,
         input_type: Optional[str] = None,
         truncation: bool = True,
-        output_dtype: str = "float"
+        output_dtype: str = "float",
+        allow_openai_fallback: Optional[bool] = None,
     ) -> Optional[List[float]]:
         """Generate text embedding using Voyage AI (primary) with OpenAI fallback.
 
@@ -816,9 +893,13 @@ class RealEmbeddingsService:
             input_type: None (default), "document" for indexing, "query" for search (Voyage AI only)
             truncation: Whether to truncate text to fit context length (Voyage AI only, default: True)
             output_dtype: Output data type - 'float', 'int8', 'uint8', 'binary', 'ubinary' (Voyage AI only)
+            allow_openai_fallback: Per-call override of the global
+                voyage_fallback_to_openai setting. Set False on understanding-
+                embedding paths so we never mix Voyage and OpenAI vectors in
+                the same VECS collection (audit gap B). None = use global.
 
         Returns:
-            List of floats representing the embedding, or None if failed
+            List of floats representing the embedding, or None if failed.
         """
         start_time = time.time()
 
@@ -925,6 +1006,7 @@ class RealEmbeddingsService:
                         )
 
                         self.logger.info(f"✅ Generated Voyage AI embedding ({voyage_dimensions}D, {input_type})")
+                        self._last_provider = self.voyage_model or "voyage-4"
                         return embedding
                     else:
                         error_body = response.text
@@ -958,11 +1040,30 @@ class RealEmbeddingsService:
                     error_message=str(e)
                 )
 
-                # If fallback disabled, raise the error
-                if self.config and not getattr(self.config, 'voyage_fallback_to_openai', True):
-                    raise
+                # If fallback disabled (per-call override or global config), raise.
+                global_fallback_ok = (
+                    not self.config
+                    or getattr(self.config, 'voyage_fallback_to_openai', True)
+                )
+                effective_fallback_ok = (
+                    global_fallback_ok
+                    if allow_openai_fallback is None
+                    else allow_openai_fallback
+                )
+                if not effective_fallback_ok:
+                    self.logger.warning(
+                        "⛔ OpenAI fallback disabled for this call (caller "
+                        "opted out to prevent embedding-space drift). "
+                        "Returning None."
+                    )
+                    return None
 
         # Fallback to OpenAI (or primary if Voyage disabled)
+        # Honour the per-call opt-out even when reaching here via "Voyage disabled"
+        # rather than via Voyage failure.
+        if allow_openai_fallback is False:
+            return None
+
         try:
             if not self.openai_api_key:
                 self.logger.warning("OpenAI API key not available")
@@ -1020,6 +1121,7 @@ class RealEmbeddingsService:
                     )
 
                     self.logger.info(f"✅ Generated OpenAI embedding ({openai_dimensions}D) - fallback")
+                    self._last_provider = "openai-text-embedding-3-small"
                     return embedding
                 else:
                     self.logger.warning(f"OpenAI API error: {response.status_code}")

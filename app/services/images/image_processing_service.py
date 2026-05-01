@@ -166,9 +166,9 @@ class ImageProcessingService:
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Classify images as material or non-material.
 
-        Models default to settings (`qwen_model` primary, `anthropic_model_validation`
-        fallback). Pass overrides only for one-off experiments — do not hard-code
-        in callers.
+        Models default to Anthropic Claude Opus 4.7 (vision). The
+        primary/validation parameters are kept for call-site compatibility
+        but both flow into the same Anthropic call site post-Qwen-removal.
 
         Args:
             extracted_images: List of extracted image data
@@ -187,13 +187,17 @@ class ImageProcessingService:
         from app.config import get_settings as _get_settings
 
         _cfg = _get_settings()
-        primary_model = primary_model or _cfg.qwen_model
+        # Both "primary" and "validation" now point at the same Anthropic
+        # model — Stage 3 has been single-tier since Qwen was removed
+        # (2026-05-01). The primary/validation parameters are kept for
+        # call-site compatibility but the values flow into telemetry only.
+        primary_model = primary_model or 'claude-opus-4-7'
         validation_model = validation_model or _cfg.anthropic_model_validation
 
         classification_start_time = time.time()
 
         logger.info(f"🤖 Starting AI-based image classification for {len(extracted_images)} images...")
-        logger.info(f"   Strategy: {primary_model} (fast filter) → {validation_model} (validation for uncertain cases)")
+        logger.info(f"   Engine: {primary_model} (Anthropic + tool use, single-tier)")
         logger.info(f"   Batch size: {batch_size} images per batch (memory optimization)")
         logger.info(f"   Confidence threshold: {confidence_threshold} (lower = fewer validation calls)")
 
@@ -204,354 +208,181 @@ class ImageProcessingService:
 
         ai_service = get_ai_client_service()
 
-        # Get HuggingFace endpoint configuration from settings
-        from app.config import get_settings
-        from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
+        # Stage 3 image classification runs on Anthropic Claude Opus 4.7 via
+        # tool use (post-Qwen-removal, 2026-05-01). The deployed Qwen3.6-A3B
+        # endpoint was a text-only MoE model that 404'd on every vision call,
+        # so the system was already silently 100% Claude — this just makes
+        # the architecture honest. Tool use guarantees schema-conformant
+        # output without parsing/regex recovery.
+        from app.config import get_settings as _get_settings
+        settings = _get_settings()
 
-        settings = get_settings()
-        qwen_config = settings.get_qwen_config()
-
-        huggingface_api_key = qwen_config["endpoint_token"]
-        # ⚠️ DO NOT use qwen_config["endpoint_url"] here. Per config.py:320-324
-        # that field is "only a fallback" — the real URL is resolved dynamically
-        # from HF at runtime by the QwenEndpointManager during warmup/resume
-        # (qwen_endpoint_manager.py:131-132 logs `🔗 Qwen endpoint URL updated`).
-        # If we read from settings the URL is empty/stale and OpenAI client
-        # raises APIConnectionError on every classification → Stage 3 fails
-        # universally → falls back to Claude. Read it from the LIVE manager
-        # below after `qwen_manager` is initialized.
-        qwen_endpoint_url = None  # populated from qwen_manager.endpoint_url after init
-
-        if not huggingface_api_key:
-            logger.error("❌ CRITICAL: HUGGINGFACE_API_KEY not configured!")
-            logger.error("   Image classification will fail. Please set HUGGINGFACE_API_KEY.")
-            raise ValueError("HUGGINGFACE_API_KEY not configured")
-
-        # Initialize Qwen endpoint manager - prefer warmed-up manager from registry
-        qwen_manager = None
-        try:
-            from app.services.embeddings.endpoint_registry import endpoint_registry
-            registry_qwen = endpoint_registry.get_qwen_manager()
-            if registry_qwen is not None:
-                qwen_manager = registry_qwen
-                logger.info("✅ Using warmed-up Qwen manager from registry")
-                # Scale to max replicas for batch image processing
-                if hasattr(qwen_manager, 'scale_to_max'):
-                    try:
-                        qwen_manager.scale_to_max()
-                        logger.info("📈 Scaled Qwen to max replicas for batch processing")
-                    except Exception as scale_err:
-                        logger.warning(f"⚠️ Could not scale Qwen to max: {scale_err}")
-        except Exception as e:
-            logger.debug(f"Registry Qwen manager not available: {e}")
-
-        # Fallback: Create new manager if registry not available
-        if qwen_manager is None:
-            qwen_manager = QwenEndpointManager(
-                endpoint_url="",  # resolved dynamically by manager from HF
-                endpoint_name=qwen_config["endpoint_name"],
-                namespace=qwen_config["namespace"],
-                endpoint_token=huggingface_api_key,
-                enabled=qwen_config["enabled"]
-            )
-            logger.info("ℹ️ Created new Qwen manager (registry not available)")
-
-        # ⚠️ Pull the LIVE endpoint URL from the manager, not from settings.
-        # The manager updates its URL during warmup/resume (qwen_endpoint_manager.py:131-132).
-        # Settings may be empty or stale and will cause OpenAI client APIConnectionError.
-        qwen_endpoint_url = qwen_manager.endpoint_url
-        if not qwen_endpoint_url or not qwen_endpoint_url.startswith(("http://", "https://")):
-            logger.error(
-                f"❌ CRITICAL: qwen_manager.endpoint_url is invalid ({qwen_endpoint_url!r}). "
-                "Manager warmup probably did not run before classify_images was called."
-            )
-        else:
-            logger.info(f"✅ Using live Qwen endpoint URL from manager: {qwen_endpoint_url}")
-
-        # Check if Qwen is enabled and assume it's ready (warmup done at job start)
-        qwen_endpoint_available = qwen_config["enabled"] and bool(
-            qwen_endpoint_url and qwen_endpoint_url.startswith(("http://", "https://"))
-        )
-        if qwen_endpoint_available:
-            logger.info("✅ Qwen endpoint configured (warmup done at job start)")
-        else:
-            logger.info("ℹ️ Qwen endpoint disabled - will use Claude for all classifications")
+        anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
+        if not anthropic_api_key:
+            logger.error("❌ CRITICAL: ANTHROPIC_API_KEY not configured!")
+            logger.error("   Image classification will fail. Please set ANTHROPIC_API_KEY.")
+            raise ValueError("ANTHROPIC_API_KEY not configured")
 
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
-            """Fast classification using vision model (Qwen via HuggingFace Inference Endpoint)."""
+            """Image classification via Anthropic Claude Opus 4.7 + tool use.
+
+            Despite the legacy name, this no longer routes through any HF/Qwen
+            endpoint — Stage 3 has been Anthropic-only since 2026-05-01.
+            Tool use guarantees schema-conformant JSON output (no regex
+            recovery, no markdown stripping, no `_invalid_response` branch).
+            The `model` argument is now a tag used purely for logging; the
+            actual model is always `claude-opus-4-7`.
+            """
             import time
+            import httpx
             from app.services.core.ai_call_logger import AICallLogger
 
-            # Return early so the caller can fall back to Claude.
-            if not qwen_endpoint_available:
-                return {
-                    'is_material': False,
-                    'confidence': 0.0,
-                    'reason': 'Qwen endpoint unavailable - endpoint failed to resume',
-                    'model': f'{model.split("/")[-1]}_api_error',
-                    'error': 'Endpoint failed to resume'
-                }
-
             start_time = time.time()
-            # If base64_data is provided, we use it directly. Otherwise, we read from disk.
             image_base64 = base64_data
+            detected_media_type = "image/jpeg"
             try:
                 if not image_base64:
                     with open(image_path, 'rb') as f:
                         image_bytes = f.read()
+                        detected_media_type = _detect_image_media_type(image_bytes, image_path)
                         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
                         del image_bytes
 
-                # Use database prompt - NO FALLBACK
-                if self.classification_prompt:
-                    classification_prompt = self.classification_prompt
-                else:
+                if not self.classification_prompt:
                     error_msg = "CRITICAL: Classification prompt not found in database. Add via /admin/ai-configs with prompt_type='classification', stage='image_analysis', category='image_classification'"
                     logger.error(f"❌ {error_msg}")
                     raise ValueError(error_msg)
 
-                # HuggingFace llamacpp endpoint exposes an OpenAI-compatible API.
-                from openai import AsyncOpenAI
-
-                # Refuse a URL without a scheme — the OpenAI client raises
-                # "UnsupportedProtocol: Request URL is missing 'http://' or 'https://'" otherwise.
-                if not qwen_endpoint_url or not qwen_endpoint_url.startswith(("http://", "https://")):
-                    raise RuntimeError(
-                        f"Qwen endpoint URL not configured (got {qwen_endpoint_url!r}). "
-                        "Set QWEN_ENDPOINT_URL env var or wait for qwen_endpoint_manager.resume() to populate it."
-                    )
-
-                # Ensure base_url ends with /v1/ for OpenAI client compatibility
-                # The client will append /chat/completions to this base
-                if not qwen_endpoint_url.endswith('/v1/') and not qwen_endpoint_url.endswith('/v1'):
-                    base_url = qwen_endpoint_url.rstrip('/') + '/v1/'
-                else:
-                    base_url = qwen_endpoint_url if qwen_endpoint_url.endswith('/') else qwen_endpoint_url + '/'
-
-                logger.info(f"🔧 Qwen OpenAI client base_url: {base_url}")
-
-                # Tightened client config:
-                #   timeout=60  — fast-fail rather than wait 90s for an overloaded replica
-                #   max_retries=0 — kill openai SDK retries. Our app-level retry loop +
-                #                    AdaptiveConcurrency + Claude fallback handle resilience.
-                #                    The SDK's default max_retries=2 used to turn one
-                #                    timeout into 3×90s=270s of wasted queue pressure.
-                client = AsyncOpenAI(
-                    base_url=base_url,  # https://...huggingface.cloud/v1/
-                    api_key=huggingface_api_key,
-                    timeout=60.0,
-                    max_retries=0,
-                )
-
-                # ✅ Call endpoint with retry logic for 503 errors
-                import random
-                max_retries = 3
-                response = None
-                
-                for retry_attempt in range(max_retries):
-                    try:
-                        response = await client.chat.completions.create(
-                            model=model,
-                            messages=[{
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{image_base64}"
-                                        }
-                                    },
-                                    {
-                                        "type": "text",
-                                        "text": classification_prompt
-                                    }
-                                ]
-                            }],
-                            max_tokens=512,
-                            temperature=0.1,
-                            stream=False
-                        )
-                        break  # Success, exit retry loop
-                    except Exception as retry_e:
-                        error_str = str(retry_e)
-                        # Retry on 503 Service Unavailable
-                        if '503' in error_str or 'Service Unavailable' in error_str:
-                            if retry_attempt < max_retries - 1:
-                                delay = min(2 ** retry_attempt + random.uniform(0, 1), 15)
-                                logger.warning(f"⏳ Qwen 503 error, retrying in {delay:.1f}s (attempt {retry_attempt + 1}/{max_retries})")
-                                import asyncio
-                                await asyncio.sleep(delay)
-                                continue
-                            # All retries exhausted for 503 — return graceful fallback.
-                            # Audit fix #18: log a zero-cost ai_usage_logs row so the
-                            # audit trail captures the failure even though we paid $0.
-                            try:
-                                from app.services.core.supabase_client import get_supabase_client
-                                _sb = get_supabase_client()
-                                _sb.client.table("ai_usage_logs").insert({
-                                    "operation_type": "qwen_classification_failed_503",
-                                    "model_name": model,
-                                    "input_tokens": 0,
-                                    "output_tokens": 0,
-                                    "total_cost_usd": 0.0,
-                                    "billed_cost_usd": 0.0,
-                                    "metadata": {
-                                        "failure_kind": "qwen_503_after_retries",
-                                        "retries_burned": max_retries,
-                                        "error_excerpt": error_str[:200],
-                                        "image_path": str(image_path)[:200],
-                                    },
-                                }).execute()
-                            except Exception:
-                                pass
-                            logger.warning(f"⚠️ Qwen 503 persists after {max_retries} retries for {image_path} — falling back to Claude")
-                            return {
-                                'is_material': False,
-                                'confidence': 0.0,
-                                'reason': f'Qwen endpoint unavailable (503) after {max_retries} retries',
-                                'model': f'{model.split("/")[-1]}_503_fallback',
-                                'error': error_str
-                            }
-                        raise  # Re-raise for non-503 errors
-
-                if response is None:
-                    raise Exception("Qwen request failed after all retries")
-
-                # ✅ Parse response from OpenAI format
-                result_text = response.choices[0].message.content
-
-                # Qwen sometimes returns whitespace or a single character instead of JSON.
-                result_text_stripped = result_text.strip() if result_text else ""
-
-                if not result_text_stripped or len(result_text_stripped) < 10:
-                    logger.warning(f"⚠️ Invalid response from {model} for {image_path}")
-                    logger.warning(f"   Content length: {len(result_text) if result_text else 0}, Stripped: {len(result_text_stripped)}")
-                    logger.warning(f"   Content preview: {repr(result_text[:100]) if result_text else 'None'}")
-                    return {
-                        'is_material': False,
-                        'confidence': 0.0,
-                        'reason': f'Invalid response from vision model (length: {len(result_text_stripped)})',
-                        'model': f'{model.split("/")[-1]}_invalid_response'
-                    }
-
-                # Clean up response text (remove markdown code blocks if present)
-                result_text = result_text_stripped
-                if result_text.startswith("```json"):
-                    result_text = result_text[7:]
-                if result_text.startswith("```"):
-                    result_text = result_text[3:]
-                if result_text.endswith("```"):
-                    result_text = result_text[:-3]
-                result_text = result_text.strip()
-
-                # Final validation before JSON parsing
-                if not result_text.startswith('{'):
-                    logger.warning(f"⚠️ Response doesn't start with '{{' for {image_path}")
-                    logger.warning(f"   Content: {repr(result_text[:100])}")
-                    return {
-                        'is_material': False,
-                        'confidence': 0.0,
-                        'reason': f'Response not JSON format: {result_text[:50]}',
-                        'model': f'{model.split("/")[-1]}_not_json'
-                    }
-
-                result = json.loads(result_text)
-
-                # Extract model name for logging
-                model_short = model.split('/')[-1] if '/' in model else model
-
-                # Log Qwen endpoint call (HuggingFace Inference Endpoint)
-                ai_logger = AICallLogger()
-                latency_ms = int((time.time() - start_time) * 1000)
-
-                # Get usage from OpenAI response
-                usage = response.usage if hasattr(response, 'usage') else None
-                input_tokens = usage.prompt_tokens if usage else 0
-                output_tokens = usage.completion_tokens if usage else 0
-
-                # Qwen pricing (HuggingFace Endpoint, time-based on A100).
-                # The hourly_rate_usd ($4.50/h on A100) lives in
-                # app/config/ai_pricing.py; this token-based estimate is a
-                # rough fallback for places that don't query the pricing
-                # registry. Update if endpoint hardware changes.
-                cost = (input_tokens / 1_000_000) * 0.40 + (output_tokens / 1_000_000) * 0.40
-
-                # Convert OpenAI response to dict for logging
-                response_dict = {
-                    'choices': [{'message': {'content': result_text}}],
-                    'usage': {'prompt_tokens': input_tokens, 'completion_tokens': output_tokens}
+                classify_tool = {
+                    "name": "emit_classification",
+                    "description": "Emit the image classification verdict for the building-materials catalog filter.",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {
+                            "classification": {
+                                "type": "string",
+                                "enum": ["PRODUCT_IMAGE", "TECHNICAL_DIAGRAM", "DECORATIVE", "MIXED"],
+                            },
+                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                            "reasoning": {"type": "string"},
+                            "product_indicators": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["classification", "confidence", "reasoning"],
+                    },
                 }
 
-                # Qwen runs on a HuggingFace endpoint (time-based GPU billing).
-                # log_qwen_call uses token-based math which records $0 for these
-                # endpoints. log_time_based_call computes cost from latency × $/hr.
-                await ai_logger.log_time_based_call(
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={
+                            'x-api-key': anthropic_api_key,
+                            'anthropic-version': '2023-06-01',
+                            'content-type': 'application/json',
+                        },
+                        json={
+                            'model': 'claude-opus-4-7',
+                            'max_tokens': 1024,
+                            'tools': [classify_tool],
+                            'tool_choice': {'type': 'tool', 'name': 'emit_classification'},
+                            'messages': [{
+                                'role': 'user',
+                                'content': [
+                                    {
+                                        'type': 'image',
+                                        'source': {
+                                            'type': 'base64',
+                                            'media_type': detected_media_type,
+                                            'data': image_base64,
+                                        },
+                                    },
+                                    # Cache the prompt — same string for every image in the batch.
+                                    {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
+                                ],
+                            }],
+                        },
+                    )
+
+                if response.status_code != 200:
+                    error_body = response.text[:500] if hasattr(response, 'text') else 'No response body'
+                    logger.error(f"❌ Anthropic API error {response.status_code} for {image_path}: {error_body}")
+                    return {
+                        'is_material': False,
+                        'confidence': 0.0,
+                        'reason': f'Anthropic API error {response.status_code}',
+                        'model': 'claude-opus-4-7_api_error',
+                        'error': error_body,
+                    }
+
+                payload = response.json()
+                tool_block = next(
+                    (b for b in payload.get('content', []) if b.get('type') == 'tool_use'),
+                    None,
+                )
+                if not tool_block or 'input' not in tool_block:
+                    logger.warning(f"⚠️ No tool_use in classification response for {image_path}: {payload}")
+                    return {
+                        'is_material': False,
+                        'confidence': 0.0,
+                        'reason': 'No tool_use block returned',
+                        'model': 'claude-opus-4-7_invalid_response',
+                    }
+
+                result = tool_block['input']
+                classification_category = result.get('classification', 'DECORATIVE')
+                confidence = float(result.get('confidence', 0.5))
+                reason = result.get('reasoning', 'Unknown')
+
+                ai_logger = AICallLogger()
+                latency_ms = int((time.time() - start_time) * 1000)
+                usage = payload.get('usage', {}) or {}
+                input_tokens = usage.get('input_tokens', 0)
+                output_tokens = usage.get('output_tokens', 0)
+                # Claude Opus 4.7 pricing as of 2026-05-01: $15/M input, $75/M output.
+                cost = (input_tokens / 1_000_000) * 15.0 + (output_tokens / 1_000_000) * 75.0
+
+                await ai_logger.log_ai_call(
                     task="image_classification",
-                    model=model_short,
+                    model="claude-opus-4-7",
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cost=cost,
                     latency_ms=latency_ms,
-                    confidence_score=result.get('confidence', 0.5),
+                    confidence_score=confidence,
                     confidence_breakdown={
-                        "model_confidence": result.get('confidence', 0.5),
+                        "model_confidence": confidence,
                         "completeness": 1.0,
-                        "consistency": 0.95,
-                        "validation": 0.90,
+                        "consistency": 0.98,
+                        "validation": 0.95,
                     },
                     action="use_ai_result",
                     job_id=job_id,
                 )
 
-                # Determine is_material using category mapping
-                # The prompt returns classification categories like PRODUCT_IMAGE, DECORATIVE, etc.
-                # We map these to is_material boolean using the module-level mapping
-                classification_category = result.get('classification', '')
-                if classification_category:
-                    is_material = is_material_classification(classification_category)
-                else:
-                    # Fallback to direct is_material field if no classification category
-                    is_material = result.get('is_material', False)
+                # Use the existing category-mapping helper so PRODUCT_IMAGE /
+                # MIXED → True and DECORATIVE / TECHNICAL_DIAGRAM → False
+                # consistently with the rest of the pipeline.
+                is_material = is_material_classification(classification_category)
 
                 return {
                     'is_material': is_material,
-                    'confidence': result.get('confidence', 0.5),
-                    'reason': result.get('reason', 'Unknown'),
-                    'classification': classification_category,  # Include category for debugging
-                    'model': model_short
+                    'confidence': confidence,
+                    'reason': reason,
+                    'classification': classification_category,
+                    'product_indicators': result.get('product_indicators') or [],
+                    'model': 'claude-opus-4-7',
                 }
 
             except Exception as e:
-                model_short = model.split('/')[-1] if '/' in model else model
-                error_str = str(e)
-                api_status = getattr(getattr(e, 'response', None), 'status_code', None)
-                api_body = getattr(getattr(e, 'response', None), 'text', '')[:300] if hasattr(e, 'response') else ''
                 logger.error(
-                    f"❌ CLASSIFICATION FAILED for {image_path} | model={model_short} "
-                    f"| {type(e).__name__}: {error_str[:200]}"
-                    + (f" | HTTP {api_status}: {api_body}" if api_status else "")
+                    f"❌ CLASSIFICATION FAILED for {image_path} | model=claude-opus-4-7 "
+                    f"| {type(e).__name__}: {str(e)[:200]}"
                 )
-
-                # Signal the controller so the Qwen gate can shrink on repeated
-                # failures. Only treat overload-class errors as backpressure
-                # signals — semantic / bad-payload errors are filtered out.
-                exc_name = type(e).__name__
-                is_overload = (
-                    "Timeout" in exc_name
-                    or "Connection" in exc_name
-                    or "RateLimit" in exc_name
-                    or (api_status is not None and api_status in (429, 500, 502, 503, 504))
-                )
-                if is_overload:
-                    try:
-                        from app.services.core.endpoint_controller import endpoint_controller
-                        endpoint_controller.record_failure("qwen")
-                    except Exception:
-                        pass  # Never let observability fail the primary path
-
                 return {
                     'is_material': False,
                     'confidence': 0.0,
-                    'reason': f'{model_short} failed: {str(e)}',
-                    'model': f'{model_short}_failed',
-                    'error': str(e)
+                    'reason': f'claude-opus-4-7 failed: {str(e)}',
+                    'model': 'claude-opus-4-7_failed',
+                    'error': str(e),
                 }
             finally:
                 if not base64_data and image_base64 is not None:
@@ -706,31 +537,19 @@ class ImageProcessingService:
                     logger.error(f"   Filename: {filename}")
                     return None
 
-            # STAGE 1: Fast primary model classification with app-level retry.
-            # The unified EndpointController gates in-flight Qwen requests and
-            # learns the endpoint's real capacity across the whole pipeline.
-            # Timeout/503 errors signal overload and shrink the cap; successes
-            # grow it back. Cap also scales with HF replica count via the
-            # auto-scaler cooperation path.
-            async with endpoint_controller.qwen.slot():
-                primary_result = None
-                max_retries = 2  # Was 3. With max_retries=0 on the openai client
-                                  # and adaptive concurrency gating the burst, 2 app-level
-                                  # attempts is enough without wasting queue pressure.
-                retry_delay = 1.0
+            # STAGE 1: classification via Anthropic Claude Opus 4.7 (no HF gate
+            # needed — Anthropic's per-key concurrency is published and stable,
+            # and prompt caching gives us free fan-out within a batch).
+            # Single retry for transient API errors.
+            primary_result = None
+            max_retries = 2
+            retry_delay = 1.0
 
+            async with claude_semaphore:
                 for attempt in range(max_retries):
                     primary_result = await classify_image_with_vision_model(image_path, primary_model, base64_data=image_base64)
-
-                    # Signal the controller. Timeout/503/connection errors →
-                    # shrink Qwen concurrency. Clean success → grow back toward max.
                     result_model = primary_result.get('model', '')
-                    if '_503_fallback' in result_model or '_api_error' in result_model:
-                        endpoint_controller.record_failure("qwen")
-                    elif primary_result.get('confidence', 0) > 0 and '_invalid_response' not in result_model:
-                        endpoint_controller.record_success("qwen")
 
-                    # Only retry on endpoint-level API errors (not semantic failures).
                     should_retry = (
                         primary_result.get('retry_recommended', False) or
                         '_api_error' in result_model
@@ -739,11 +558,9 @@ class ImageProcessingService:
                         break
 
                     wait_time = retry_delay * (2 ** attempt) + (0.1 * attempt)
-                    qwen_gate = endpoint_controller.qwen
                     logger.warning(
                         f"   🔄 Retrying classification for {filename} "
-                        f"(attempt {attempt + 2}/{max_retries}) after {wait_time:.1f}s... "
-                        f"[qwen_limit={qwen_gate.limit}, in_flight={qwen_gate.in_flight}]"
+                        f"(attempt {attempt + 2}/{max_retries}) after {wait_time:.1f}s..."
                     )
                     await asyncio.sleep(wait_time)
 
@@ -1303,184 +1120,6 @@ class ImageProcessingService:
         )
         return vision_analysis
 
-    async def _try_qwen_material_analysis(
-        self,
-        image_base64: str,
-        image_id: str,
-        max_retries: int = 2,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Primary path: call Qwen3-VL with the Material Image Analyzer prompt.
-
-        Retries up to `max_retries` times on transient errors. Returns a
-        validated dict, or None if Qwen could not produce a usable response.
-        """
-        try:
-            from app.services.embeddings.endpoint_registry import endpoint_registry
-            from app.services.embeddings.qwen_endpoint_manager import QwenEndpointManager
-            from app.config import get_settings
-            from openai import AsyncOpenAI
-
-            settings = get_settings()
-            qwen_config = settings.get_qwen_config()
-            huggingface_api_key = qwen_config["endpoint_token"]
-
-            if not huggingface_api_key or not qwen_config.get("enabled"):
-                logger.warning(
-                    f"   ⚠️ Qwen endpoint not configured/enabled — skipping Qwen path "
-                    f"for material analysis of {image_id}"
-                )
-                return None
-
-            try:
-                qwen_manager = endpoint_registry.get_qwen_manager()
-            except Exception:
-                qwen_manager = None
-            if qwen_manager is None:
-                qwen_manager = QwenEndpointManager(
-                    endpoint_url="",  # resolved dynamically by manager from HF
-                    endpoint_name=qwen_config["endpoint_name"],
-                    namespace=qwen_config["namespace"],
-                    endpoint_token=huggingface_api_key,
-                    enabled=qwen_config["enabled"],
-                )
-
-            if not await asyncio.to_thread(qwen_manager.resume_if_needed):
-                logger.warning(
-                    f"   ⚠️ Failed to resume Qwen endpoint for material analysis of {image_id}"
-                )
-                return None
-
-            # ⚠️ Pull the LIVE endpoint URL from the manager, not from settings.
-            # The classification path already handles this correctly (line ~263).
-            # Settings["endpoint_url"] is typically unset in prod and was causing
-            # APIConnectionError ("Connection error.") on every material analysis
-            # call, which fell through to the Claude Opus fallback for EVERY
-            # image — defeating the whole purpose of having Qwen. Root cause of
-            # the "vision_provider = claude_fallback for every image" regression.
-            qwen_endpoint_url = qwen_manager.endpoint_url
-            if not qwen_endpoint_url or not qwen_endpoint_url.startswith(("http://", "https://")):
-                logger.error(
-                    f"   ❌ CRITICAL: qwen_manager.endpoint_url is invalid "
-                    f"({qwen_endpoint_url!r}) for material analysis of {image_id}. "
-                    f"Manager warmup probably did not run before this call."
-                )
-                return None
-
-            base_url = qwen_endpoint_url.rstrip('/')
-            if not base_url.endswith('/v1'):
-                base_url = base_url + '/v1'
-            base_url = base_url + '/'
-            logger.info(
-                f"   🔧 Qwen material analysis base_url: {base_url} (for {image_id})"
-            )
-
-            client = AsyncOpenAI(
-                base_url=base_url,
-                api_key=huggingface_api_key,
-                timeout=120.0,
-            )
-
-            # Sniff the real media type from the decoded base64 so PNG icons aren't
-            # sent as image/jpeg — Qwen's OpenAI-compat endpoint is more forgiving than Claude but
-            # has still returned 400s on mismatched data URLs in the past.
-            qwen_detected_media_type = "image/jpeg"
-            try:
-                import base64 as _b64
-                sample = _b64.b64decode(image_base64[:64], validate=False)[:16]
-                qwen_detected_media_type = _detect_image_media_type(sample)
-            except Exception:
-                pass
-
-            messages = []
-            if self.material_analyzer_system_prompt:
-                messages.append({
-                    "role": "system",
-                    "content": self.material_analyzer_system_prompt,
-                })
-            messages.append({
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{qwen_detected_media_type};base64,{image_base64}"},
-                    },
-                    {"type": "text", "text": self.material_analyzer_prompt},
-                ],
-            })
-
-            from app.config import get_settings as _get_settings_qwen
-            qwen_model_name = _get_settings_qwen().qwen_model
-            for attempt in range(max_retries + 1):
-                try:
-                    response = await client.chat.completions.create(
-                        model=qwen_model_name,
-                        messages=messages,
-                        max_tokens=1024,
-                        temperature=0.1,
-                        stream=False,
-                    )
-                    raw = response.choices[0].message.content if response.choices else None
-                    if not raw:
-                        logger.warning(
-                            f"   ⚠️ Qwen returned empty material analysis for {image_id} "
-                            f"(attempt {attempt + 1}/{max_retries + 1})"
-                        )
-                        if attempt < max_retries:
-                            await asyncio.sleep(1.5 ** attempt)
-                            continue
-                        return None
-
-                    parsed = self._parse_vision_analysis_json(raw, image_id)
-                    validated = self._validate_vision_analysis(parsed, image_id, source=VisionProvider.QWEN.value)
-                    if validated is not None:
-                        return validated
-
-                    # Parsed but failed validation — retry once in case of
-                    # a one-off bad sample.
-                    if attempt < max_retries:
-                        logger.info(
-                            f"   🔁 Retrying Qwen material analysis for {image_id} "
-                            f"(attempt {attempt + 2}/{max_retries + 1}) — "
-                            f"previous result failed validation"
-                        )
-                        await asyncio.sleep(1.0)
-                        continue
-                    return None
-
-                except Exception as call_err:
-                    err_str = str(call_err)
-                    is_transient = (
-                        '503' in err_str
-                        or '502' in err_str
-                        or '504' in err_str
-                        or 'timeout' in err_str.lower()
-                        or 'Service Unavailable' in err_str
-                        or 'Connection' in err_str
-                    )
-                    if is_transient and attempt < max_retries:
-                        backoff = min(1.5 ** attempt + 0.5, 6.0)
-                        logger.warning(
-                            f"   ⏳ Qwen material analysis transient error for {image_id} "
-                            f"(attempt {attempt + 1}/{max_retries + 1}): {err_str[:150]} — "
-                            f"retrying in {backoff:.1f}s"
-                        )
-                        await asyncio.sleep(backoff)
-                        continue
-                    logger.warning(
-                        f"   ⚠️ Qwen material analysis failed for {image_id} "
-                        f"(attempt {attempt + 1}/{max_retries + 1}): {err_str[:200]}"
-                    )
-                    return None
-
-            return None
-
-        except Exception as e:
-            logger.warning(
-                f"   ⚠️ Qwen material analysis path failed for {image_id}: {e}",
-                exc_info=True,
-            )
-            return None
 
     async def _try_claude_material_analysis(
         self,
@@ -1608,29 +1247,15 @@ class ImageProcessingService:
             )
             return None, VisionProvider.SKIPPED.value
 
-        # Primary: Qwen
-        qwen_result = await self._try_qwen_material_analysis(
-            image_base64=image_base64,
-            image_id=image_id,
-            max_retries=2,
-        )
-        if qwen_result is not None:
-            return qwen_result, VisionProvider.QWEN.value
-
-        # Fallback: Claude
-        logger.info(
-            f"   🩹 Falling back to Claude for material analysis of {image_id} "
-            f"(Qwen returned no usable result)"
-        )
         claude_result = await self._try_claude_material_analysis(
             image_base64=image_base64,
             image_id=image_id,
         )
         if claude_result is not None:
-            return claude_result, VisionProvider.CLAUDE_FALLBACK.value
+            return claude_result, VisionProvider.CLAUDE.value
 
         logger.error(
-            f"   ❌ Material analysis failed for {image_id} via BOTH Qwen and Claude — "
+            f"   ❌ Material analysis failed for {image_id} via Claude Opus 4.7 — "
             f"image will be missing the understanding embedding"
         )
         return None, VisionProvider.FAILED.value
@@ -1840,10 +1465,14 @@ class ImageProcessingService:
                 if embeddings.get('material_slig_768'):
                     specialized_embeddings['material'] = embeddings.get('material_slig_768')
 
-                # Save understanding embedding to VECS if present (1024D from Voyage AI)
+                # Save understanding embedding to VECS if present (1024D from Voyage AI).
+                # Pass embedding_model + schema_version so the row is provenance-tagged
+                # — the admin UI uses these to detect Voyage→OpenAI fallback drift.
                 understanding_embedding = embeddings.get('understanding_1024')
                 if understanding_embedding:
                     try:
+                        meta_versions = embeddings.get('metadata', {}).get('model_versions', {})
+                        meta_schemas = embeddings.get('metadata', {}).get('schema_versions', {})
                         await self.vecs_service.upsert_understanding_embedding(
                             image_id=image_id,
                             embedding=understanding_embedding,
@@ -1851,7 +1480,9 @@ class ImageProcessingService:
                                 'document_id': document_id,
                                 'workspace_id': workspace_id,
                                 'page_number': img_data.get('page_number', 1)
-                            }
+                            },
+                            embedding_model=meta_versions.get('understanding'),
+                            schema_version=meta_schemas.get('understanding'),
                         )
                         logger.debug(f"   ✅ Saved understanding embedding (1024D) to VECS for {image_id}")
                     except Exception as understanding_error:
@@ -2246,13 +1877,12 @@ class ImageProcessingService:
             except Exception as tracker_init_err:
                 logger.debug(f"   ⚠️ Tracker init update failed (non-critical): {tracker_init_err}")
 
-        # Run per-image work concurrently behind a semaphore. Sequential per-image
-        # processing left ~15s gaps between Qwen calls (save + update + embed in
-        # between), tripping the 60s endpoint auto-pause mid-job. Per-image work
-        # has no cross-image state, so QWEN_CONCURRENCY in flight saturates the
-        # cluster (4 replicas × 8 = 32 default). The outer batching loop bounds memory.
-        from app.config import get_settings as _get_settings_for_qwen_sem
-        POST_PROCESSING_CONCURRENCY = _get_settings_for_qwen_sem().qwen_concurrency
+        # Run per-image work concurrently behind a semaphore. Per-image work
+        # has no cross-image state. Post-Qwen-removal (2026-05-01) the cap
+        # is governed by the Anthropic concurrency limit on the API key,
+        # not an HF replica count — 32 in-flight is comfortable for Opus
+        # vision. The outer batching loop bounds memory.
+        POST_PROCESSING_CONCURRENCY = 32
         post_processing_sem = asyncio.Semaphore(POST_PROCESSING_CONCURRENCY)
 
         # Dedicated counter for "completed so far" so the per-image progress

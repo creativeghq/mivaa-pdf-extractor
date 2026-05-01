@@ -67,76 +67,6 @@ class EndpointHealthChecker:
         # Track health check results
         self._health_results: Dict[str, HealthCheckResult] = {}
 
-    async def check_qwen_health(self, endpoint_url: str, token: str) -> HealthCheckResult:
-        """
-        Check Qwen VLM endpoint health with a simple text completion.
-
-        Args:
-            endpoint_url: Qwen endpoint URL
-            token: HuggingFace API token
-
-        Returns:
-            HealthCheckResult with status and timing
-        """
-        import httpx
-
-        for attempt in range(1, self.max_health_check_attempts + 1):
-            start_time = time.time()
-            try:
-                # Resolve model id from settings — vLLM 404s on a mismatch
-                # between the `model` field and what `/v1/models` reports.
-                from app.config import get_settings
-                qwen_model = get_settings().qwen_model
-                async with httpx.AsyncClient(timeout=self.health_check_timeout_seconds) as client:
-                    # Simple health check - ask for a single word response
-                    response = await client.post(
-                        f"{endpoint_url.rstrip('/')}/chat/completions" if endpoint_url.rstrip('/').endswith('/v1') else f"{endpoint_url.rstrip('/')}/v1/chat/completions",
-                        headers={
-                            "Authorization": f"Bearer {token}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": qwen_model,
-                            "messages": [{"role": "user", "content": "Say OK"}],
-                            "max_tokens": 5
-                        }
-                    )
-
-                    response_time_ms = (time.time() - start_time) * 1000
-
-                    if response.status_code == 200:
-                        result = HealthCheckResult(
-                            endpoint_name="qwen",
-                            status=EndpointStatus.HEALTHY,
-                            response_time_ms=response_time_ms,
-                            attempts=attempt
-                        )
-                        self._health_results["qwen"] = result
-                        logger.info(f"✅ Qwen health check passed (attempt {attempt}, {response_time_ms:.0f}ms)")
-                        return result
-                    elif response.status_code == 503:
-                        logger.info(f"⏳ Qwen still warming up (attempt {attempt}/{self.max_health_check_attempts})")
-                    else:
-                        logger.warning(f"⚠️ Qwen health check failed: HTTP {response.status_code}")
-
-            except httpx.TimeoutException:
-                logger.info(f"⏳ Qwen health check timeout (attempt {attempt}/{self.max_health_check_attempts})")
-            except Exception as e:
-                logger.warning(f"⚠️ Qwen health check error (attempt {attempt}): {e}")
-
-            if attempt < self.max_health_check_attempts:
-                await asyncio.sleep(self.health_check_interval_seconds)
-
-        # All attempts failed
-        result = HealthCheckResult(
-            endpoint_name="qwen",
-            status=EndpointStatus.UNHEALTHY,
-            error_message=f"Failed after {self.max_health_check_attempts} attempts",
-            attempts=self.max_health_check_attempts
-        )
-        self._health_results["qwen"] = result
-        return result
-
     async def check_slig_health(self, endpoint_url: str, token: str) -> HealthCheckResult:
         """
         Check SLIG endpoint health with a simple text embedding request.
@@ -355,7 +285,7 @@ class EndpointHealthChecker:
 
         Args:
             endpoints_config: Dict mapping endpoint names to their configs
-                Example: {"qwen": {"url": "...", "token": "..."}, ...}
+                Example: {"slig": {"url": "...", "token": "..."}, ...}
             required_endpoints: List of endpoint names that MUST be healthy (default: all)
 
         Returns:
@@ -369,11 +299,6 @@ class EndpointHealthChecker:
         endpoint_names = []
 
         # Create health check tasks for each configured endpoint
-        if "qwen" in endpoints_config:
-            cfg = endpoints_config["qwen"]
-            tasks.append(self.check_qwen_health(cfg["url"], cfg["token"]))
-            endpoint_names.append("qwen")
-
         if "slig" in endpoints_config:
             cfg = endpoints_config["slig"]
             tasks.append(self.check_slig_health(cfg["url"], cfg["token"]))

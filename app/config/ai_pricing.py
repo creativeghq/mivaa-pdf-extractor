@@ -115,25 +115,12 @@ class AIPricingConfig:
         "nvidia-t4": Decimal("0.60"),        # ~$0.60/hour (16GB VRAM)
     }
 
-    # Qwen Vision Model (A10G GPU)
-    QWEN_PRICING = {
-        # Stable internal identifier — kept as `qwen3-vl-32b` so existing
-        # callers don't need updating. Metadata reflects the actual deployed
-        # endpoint (see `full_name` / `service` below).
-        "qwen3-vl-32b": {
-            "input": Decimal("0.00"),
-            "output": Decimal("0.00"),
-            "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("4.50"),  # A100 80GB on HF Inference Endpoints
-            "gpu_type": "nvidia-a100",
-            "last_verified": "2026-04-29",
-            "source": "HuggingFace Inference Endpoint",
-            "full_name": "Qwen/Qwen3.6-35B-A3B-FP8",
-            "namespace": "basiliskan",
-            "service": "qwen3-6-35b-fp8",
-            "note": "Primary vision model for material analysis (FP8-quantized 35B-A3B MoE on A100)"
-        }
-    }
+    # Qwen Vision Model — REMOVED 2026-05-01.
+    # All vision tasks moved to Anthropic Claude Opus 4.7. The QWEN_PRICING
+    # dict is kept as an empty placeholder so any downstream code that
+    # iterates over `[QWEN_PRICING, VISUAL_EMBEDDING_PRICING, ...]` still
+    # works without raising KeyError on the dict itself.
+    QWEN_PRICING: dict = {}
 
     # SLIG Visual Embedding Model (L4 GPU)
     VISUAL_EMBEDDING_PRICING = {
