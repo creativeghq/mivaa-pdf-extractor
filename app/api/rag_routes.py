@@ -3580,6 +3580,26 @@ async def process_document_with_discovery(
                 "parallel": parallel_config.enable_parallel,
             },
         ):
+            # `total_pages` is the upper bound used by stage_1_focused_extraction
+            # to validate `physical_page > total_pages`. For spread-layout
+            # catalogs (e.g. art-book layouts where each PDF sheet contains 2
+            # physical pages side-by-side), `page_count` returns PDF sheet
+            # count (e.g. 71) while physical page numbers go up to e.g. 140.
+            # Using `page_count` as the bound silently drops every product
+            # whose pages live past the sheet count — i.e. the back half of
+            # any spread-layout catalog. Prefer `catalog.total_pages` (the
+            # physical page count) when present, falling back to page_count
+            # only for non-spread layouts where they're equal.
+            physical_page_bound = (
+                getattr(catalog, "total_pages", None) or page_count
+            )
+            if physical_page_bound != page_count:
+                logger.info(
+                    f"📐 Spread layout: using catalog.total_pages={physical_page_bound} "
+                    f"(physical) for page validation instead of page_count={page_count} "
+                    f"(PDF sheets)"
+                )
+
             parallel_result = await process_products_parallel(
                 products=products_to_process,
                 file_content=file_content,
@@ -3593,7 +3613,7 @@ async def process_document_with_discovery(
                 supabase=supabase,
                 config=processing_config,
                 logger_instance=logger,
-                total_pages=page_count,
+                physical_page_upper_bound=physical_page_bound,
                 temp_pdf_path=file_path,
                 parallel_config=parallel_config,
             )

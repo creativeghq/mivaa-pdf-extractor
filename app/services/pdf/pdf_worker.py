@@ -367,15 +367,35 @@ def execute_pdf_extraction_job(
                 # Convert 1-indexed to 0-indexed for PyMuPDF4LLM
                 page_indices = [p - 1 for p in page_list if p > 0]
                 
-                # ✅ VALIDATION: Filter out-of-bounds pages
+                # ✅ VALIDATION: Filter out-of-bounds pages.
+                # Promoted from WARNING to ERROR when ALL pages drop or when
+                # >50% drop — those cases mean a calling-side bug (wrong
+                # `total_pages` argument, e.g. PDF-sheet-count vs physical
+                # page count for spread layouts) and should not be silently
+                # tolerated. See bug 2026-05-01.
                 valid_indices = [p for p in page_indices if p < total_pages]
                 if len(valid_indices) < len(page_indices):
                     dropped = [p + 1 for p in page_indices if p >= total_pages]
-                    logger.warning(f"Worker: Dropping {len(page_indices) - len(valid_indices)} out-of-bounds pages: {dropped} (Total pages in PDF: {total_pages})")
+                    drop_pct = 100.0 * (len(page_indices) - len(valid_indices)) / max(len(page_indices), 1)
+                    if drop_pct >= 50.0:
+                        logger.error(
+                            f"Worker: ❌ Dropping {len(page_indices) - len(valid_indices)}/{len(page_indices)} "
+                            f"({drop_pct:.0f}%) out-of-bounds pages: {dropped} (total_pages={total_pages}). "
+                            f"This usually means the caller passed the wrong page count "
+                            f"(e.g. PDF sheet count instead of physical page count for spread layouts)."
+                        )
+                    else:
+                        logger.warning(
+                            f"Worker: Dropping {len(page_indices) - len(valid_indices)} out-of-bounds pages: "
+                            f"{dropped} (Total pages in PDF: {total_pages})"
+                        )
                     page_indices = valid_indices
 
                 if not page_indices:
-                    logger.warning("Worker: No valid pages to extract, skipping page-aware extraction")
+                    logger.error(
+                        "Worker: ❌ No valid pages remain after out-of-bounds filtering — "
+                        "skipping page-aware extraction. Caller passed an invalid total_pages."
+                    )
                     page_chunks = None
                 else:
                     page_chunks = pymupdf4llm.to_markdown(pdf_path, pages=page_indices, page_chunks=True)

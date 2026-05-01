@@ -29,10 +29,11 @@ async def extract_product_pages(
     document_id: str,
     job_id: str,
     logger: logging.Logger,
-    total_pages: Optional[int] = None,
+    physical_page_upper_bound: Optional[int] = None,
     enable_layout_detection: bool = True,
     product_id: Optional[str] = None,
-    catalog: Optional[Any] = None  # Catalog with spread layout info
+    catalog: Optional[Any] = None,  # Catalog with spread layout info
+    total_pages: Optional[int] = None,  # DEPRECATED — kept for back-compat with old callers
 ) -> Dict[str, Any]:
     """
     Extract pages and detect layout regions for a single product.
@@ -53,10 +54,19 @@ async def extract_product_pages(
         document_id: Document identifier
         job_id: Job identifier
         logger: Logger instance
-        total_pages: Optional total PHYSICAL pages in PDF for validation
+        physical_page_upper_bound: Largest physical page number in the document.
+            Used as the upper bound for validating product.page_range entries.
+            For spread-layout PDFs (where 1 PDF sheet = 2 physical pages), this
+            MUST be the physical page count (e.g. 140), NOT the PDF sheet count
+            (e.g. 71). Pages above this bound are dropped silently.
+            See bug 2026-05-01: passing PDF-sheet-count silently dropped 50%
+            of products in a spread-layout catalog.
         enable_layout_detection: Enable YOLO layout detection (default: True)
         product_id: Database product ID (required for layout storage)
         catalog: Optional catalog with spread layout info (has_spread_layout, physical_to_pdf_map)
+        total_pages: DEPRECATED alias for `physical_page_upper_bound`. Kept so
+            existing callers don't break, but new code should use
+            `physical_page_upper_bound` to make the contract explicit.
 
     Returns:
         Dict with:
@@ -66,8 +76,13 @@ async def extract_product_pages(
         - has_spread_layout: Whether document uses spread layout
         - physical_to_pdf_map: Mapping for internal PDF access (passed through from catalog)
     """
+    # Resolve the bound — prefer the new explicit name, fall back to legacy.
+    if physical_page_upper_bound is None:
+        physical_page_upper_bound = total_pages
+
     logger.info(f"📄 [STAGE 1] Extracting pages for product: {product.name}")
     logger.info(f"   Physical page range: {product.page_range}")
+    logger.info(f"   Physical page upper bound: {physical_page_upper_bound}")
     logger.info(f"   Layout detection: {'ENABLED' if enable_layout_detection else 'DISABLED'}")
 
     # Check for spread layout
@@ -82,15 +97,35 @@ async def extract_product_pages(
     # STEP 1: Validate Physical Pages (NO CONVERSION - keep as physical pages)
     # ========================================================================
     physical_pages = []  # Physical page numbers (1-based) - this is our PRIMARY output
+    pages_dropped_out_of_bounds: List[int] = []
 
     if product.page_range:
         for physical_page in product.page_range:
-            # Validate physical page is within bounds
-            if total_pages and physical_page > total_pages:
-                logger.warning(f"   ⚠️ Skipping out-of-bounds page: physical page {physical_page} > {total_pages}")
+            # Validate physical page is within the document's PHYSICAL page bound.
+            # Caller must pass catalog.total_pages (physical), NOT len(fitz_doc)
+            # which is the PDF sheet count and can be half of the physical count
+            # for spread-layout PDFs.
+            if physical_page_upper_bound and physical_page > physical_page_upper_bound:
+                pages_dropped_out_of_bounds.append(physical_page)
                 continue
             if physical_page > 0:
                 physical_pages.append(physical_page)
+
+    # Out-of-bounds drops should never happen for a correctly-bounded call.
+    # Promote to ERROR with full context so the next regression of this kind
+    # fires loud immediately, not after 13 silent warnings (see bug 2026-05-01).
+    if pages_dropped_out_of_bounds:
+        requested = len(product.page_range or [])
+        dropped = len(pages_dropped_out_of_bounds)
+        logger.error(
+            f"   ❌ [STAGE 1] {product.name}: dropped {dropped}/{requested} pages "
+            f"as out-of-bounds (>{physical_page_upper_bound}). "
+            f"Dropped pages: {pages_dropped_out_of_bounds}. "
+            f"This usually means the caller passed PDF-sheet-count instead of "
+            f"physical-page-count for `physical_page_upper_bound`. "
+            f"For spread-layout PDFs, pass catalog.total_pages (physical), "
+            f"not len(fitz_doc) (sheets)."
+        )
 
     logger.info(f"   ✅ Validated {len(physical_pages)} physical pages: {physical_pages}")
 

@@ -39,8 +39,9 @@ async def process_single_product(
     supabase: Any,
     config: Dict[str, Any],
     logger_instance: logging.Logger,
-    total_pages: Optional[int] = None,
-    temp_pdf_path: Optional[str] = None
+    physical_page_upper_bound: Optional[int] = None,
+    temp_pdf_path: Optional[str] = None,
+    total_pages: Optional[int] = None,  # DEPRECATED — kept so existing callers don't break
 ) -> ProductProcessingResult:
     """
     Process a single product through all stages.
@@ -204,13 +205,15 @@ async def process_single_product(
 
         # extract_product_pages returns a dict with layout detection results.
         # Pass catalog for spread layout info (physical page -> PDF page mapping)
+        # Resolve which bound was passed (prefer the explicit name).
+        _physical_bound = physical_page_upper_bound if physical_page_upper_bound is not None else total_pages
         extraction_result = await extract_product_pages(
             file_content=file_content,
             product=product,
             document_id=document_id,
             job_id=job_id,
             logger=logger_instance,
-            total_pages=total_pages,
+            physical_page_upper_bound=_physical_bound,
             enable_layout_detection=False,  # Disable for now - will run after product creation
             product_id=None,  # Will be set after product creation
             catalog=catalog  # NEW: Pass catalog for spread layout handling

@@ -166,7 +166,26 @@ async def process_product_chunking(
         page_chunks_data = []
 
     if not page_chunks_data:
-        logger.warning(f"   ⚠️ No page text extracted for product {product.name} — skipping chunking")
+        # Promoted from WARNING to ERROR (2026-05-01): silent zero-chunk
+        # outcomes are how products end up with no search index entries
+        # without anyone noticing for weeks. If this fires, something is
+        # actually wrong upstream — usually a bad physical_page_upper_bound,
+        # a missing/corrupt PDF, or a YOLO/Chandra failure that nuked the
+        # text extraction. Don't whisper it; shout.
+        try:
+            requested_pages = list(getattr(product, 'page_range', None) or [])
+        except Exception:
+            requested_pages = []
+        logger.error(
+            f"   ❌ [STAGE 2] {product.name}: 0 chunks created — page_text "
+            f"extraction returned empty for ALL {len(requested_pages)} requested "
+            f"physical pages: {requested_pages}. Likely upstream causes: "
+            f"(a) physical_page_upper_bound was too small and Stage 1 dropped "
+            f"every page as out-of-bounds; (b) the document's text layer is "
+            f"empty (scanned PDF without OCR fallback); (c) Stage 1.5 cache "
+            f"miss forced an extraction that timed out. Check Stage 1's "
+            f"validated-physical-pages log for this product."
+        )
         return {
             'chunks_created': 0,
             'chunk_ids': [],

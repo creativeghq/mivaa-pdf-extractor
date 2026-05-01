@@ -79,9 +79,10 @@ async def process_products_parallel(
     supabase: Any,
     config: Dict[str, Any],
     logger_instance: logging.Logger,
-    total_pages: Optional[int] = None,
+    physical_page_upper_bound: Optional[int] = None,
     temp_pdf_path: Optional[str] = None,
-    parallel_config: Optional[ParallelProcessingConfig] = None
+    parallel_config: Optional[ParallelProcessingConfig] = None,
+    total_pages: Optional[int] = None,  # DEPRECATED — back-compat alias
 ) -> ParallelProcessingResult:
     """
     Process multiple products concurrently with controlled parallelism.
@@ -113,6 +114,9 @@ async def process_products_parallel(
     result = ParallelProcessingResult()
     start_time = datetime.utcnow()
 
+    # Resolve the page bound — explicit name wins over the legacy alias.
+    _physical_bound = physical_page_upper_bound if physical_page_upper_bound is not None else total_pages
+
     # If parallel processing is disabled, fall back to sequential
     if not parallel_config.enable_parallel or total_products <= 2:
         logger_instance.info("📝 Using sequential processing (parallel disabled or small catalog)")
@@ -129,8 +133,8 @@ async def process_products_parallel(
             supabase=supabase,
             config=config,
             logger_instance=logger_instance,
-            total_pages=total_pages,
-            temp_pdf_path=temp_pdf_path
+            physical_page_upper_bound=_physical_bound,
+            temp_pdf_path=temp_pdf_path,
         )
 
     logger_instance.info(f"🚀 Starting parallel processing: {total_products} products, max {parallel_config.max_concurrent} concurrent")
@@ -191,7 +195,7 @@ async def process_products_parallel(
                         supabase=supabase,
                         config=config,
                         logger_instance=logger_instance,
-                        total_pages=total_pages,
+                        physical_page_upper_bound=_physical_bound,
                         temp_pdf_path=temp_pdf_path,
                     ),
                     timeout=per_product_timeout,
@@ -332,8 +336,9 @@ async def _process_products_sequential(
     supabase: Any,
     config: Dict[str, Any],
     logger_instance: logging.Logger,
-    total_pages: Optional[int] = None,
-    temp_pdf_path: Optional[str] = None
+    physical_page_upper_bound: Optional[int] = None,
+    temp_pdf_path: Optional[str] = None,
+    total_pages: Optional[int] = None,  # DEPRECATED back-compat alias
 ) -> ParallelProcessingResult:
     """
     Process products sequentially (fallback when parallel is disabled).
@@ -343,6 +348,8 @@ async def _process_products_sequential(
     total_products = len(products)
     result = ParallelProcessingResult()
     start_time = datetime.utcnow()
+
+    _physical_bound = physical_page_upper_bound if physical_page_upper_bound is not None else total_pages
 
     # P2-2: per-product timeout (sequential path).
     import os as _os_p2_seq
@@ -376,7 +383,7 @@ async def _process_products_sequential(
                     supabase=supabase,
                     config=config,
                     logger_instance=logger_instance,
-                    total_pages=total_pages,
+                    physical_page_upper_bound=_physical_bound,
                     temp_pdf_path=temp_pdf_path,
                 ),
                 timeout=per_product_timeout,
