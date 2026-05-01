@@ -417,6 +417,14 @@ class CleanupService:
                 'embeddings_deleted': 0,
                 'images_deleted': 0,
                 'products_deleted': 0,
+                'product_processing_status_deleted': 0,
+                'product_layout_regions_deleted': 0,
+                'product_tables_deleted': 0,
+                'product_enrichments_deleted': 0,
+                'image_product_associations_deleted': 0,
+                'chunk_image_relationships_deleted': 0,
+                'image_metafield_values_deleted': 0,
+                'image_validations_deleted': 0,
                 'storage_files_deleted': 0,
                 'checkpoints_deleted': 0,
                 'temp_files_deleted': 0,
@@ -446,74 +454,206 @@ class CleanupService:
                 stats['errors'].append(f"Failed to get job details: {str(e)}")
                 return stats
 
-            # 2. Delete chunks
+            # 1b. Resolve the canonical product_id list for this job. Products
+            # may be linked via:
+            #   - `products.source_job_id = job_id`           (XML import, scraping, PDF stage_4)
+            #   - `products.source_document_id = document_id` (PDF, legacy rows)
+            #   - `product_processing_status.job_id = job_id` (defensive — per-product progress table)
+            # Union all three so we don't leave orphans regardless of pipeline.
+            product_ids: List[str] = []
+            try:
+                pid_set = set()
+
+                pids_by_job = supabase_client.client.table('products')\
+                    .select('id')\
+                    .eq('source_job_id', job_id)\
+                    .execute()
+                for row in (pids_by_job.data or []):
+                    if row.get('id'):
+                        pid_set.add(row['id'])
+
+                if document_id:
+                    pids_by_doc = supabase_client.client.table('products')\
+                        .select('id')\
+                        .eq('source_document_id', document_id)\
+                        .execute()
+                    for row in (pids_by_doc.data or []):
+                        if row.get('id'):
+                            pid_set.add(row['id'])
+
+                pps_response = supabase_client.client.table('product_processing_status')\
+                    .select('product_id')\
+                    .eq('job_id', job_id)\
+                    .execute()
+                for row in (pps_response.data or []):
+                    pid = row.get('product_id')
+                    if pid:
+                        pid_set.add(pid)
+
+                product_ids = list(pid_set)
+                if product_ids:
+                    self.logger.info(f"📦 Resolved {len(product_ids)} products tied to job {job_id}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to resolve product list for job {job_id}: {e}")
+
+            # 1c. Resolve the image_id list for those products. Used to clean
+            # up image-side child tables (chunk_image_relationships, etc.)
+            # that don't have a job_id or document_id of their own.
+            image_ids: List[str] = []
+            if product_ids:
+                try:
+                    img_resp = supabase_client.client.table('document_images')\
+                        .select('id')\
+                        .in_('product_id', product_ids)\
+                        .execute()
+                    image_ids = [r['id'] for r in (img_resp.data or []) if r.get('id')]
+                    if image_ids:
+                        self.logger.info(f"🖼️ Resolved {len(image_ids)} images tied to those products")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Failed to resolve image list: {e}")
             if document_id:
                 try:
-                    chunks_response = supabase_client.client.table('document_chunks')\
+                    img_resp_doc = supabase_client.client.table('document_images')\
+                        .select('id')\
+                        .eq('document_id', document_id)\
+                        .execute()
+                    for row in (img_resp_doc.data or []):
+                        iid = row.get('id')
+                        if iid and iid not in image_ids:
+                            image_ids.append(iid)
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Failed to resolve images by document_id: {e}")
+
+            # 2. Delete chunks. Delete by document_id (PDF path) AND by
+            # product_id (XML / scraping path — chunks live under products
+            # and may have no document_id).
+            try:
+                if document_id:
+                    chunks_doc = supabase_client.client.table('document_chunks')\
                         .delete()\
                         .eq('document_id', document_id)\
                         .execute()
-
-                    stats['chunks_deleted'] = len(chunks_response.data) if chunks_response.data else 0
-                    self.logger.info(f"✅ Deleted {stats['chunks_deleted']} chunks")
-
-                except Exception as e:
-                    self.logger.error(f"Failed to delete chunks: {e}")
-                    stats['errors'].append(f"Chunks deletion failed: {str(e)}")
+                    stats['chunks_deleted'] += len(chunks_doc.data) if chunks_doc.data else 0
+                if product_ids:
+                    chunks_pid = supabase_client.client.table('document_chunks')\
+                        .delete()\
+                        .in_('product_id', product_ids)\
+                        .execute()
+                    stats['chunks_deleted'] += len(chunks_pid.data) if chunks_pid.data else 0
+                self.logger.info(f"✅ Deleted {stats['chunks_deleted']} chunks")
+            except Exception as e:
+                self.logger.error(f"Failed to delete chunks: {e}")
+                stats['errors'].append(f"Chunks deletion failed: {str(e)}")
 
             # 3. Delete embeddings from vecs
             if document_id and vecs_service:
                 try:
-                    # Delete text embeddings
                     text_emb_deleted = await vecs_service.delete_document_embeddings(document_id)
                     stats['embeddings_deleted'] += text_emb_deleted
 
-                    # Delete image embeddings
                     image_emb_deleted = await vecs_service.delete_image_embeddings_by_document(document_id)
                     stats['embeddings_deleted'] += image_emb_deleted
 
                     self.logger.info(f"✅ Deleted {stats['embeddings_deleted']} embeddings from vecs")
-
                 except Exception as e:
                     self.logger.error(f"Failed to delete embeddings: {e}")
                     stats['errors'].append(f"Embeddings deletion failed: {str(e)}")
 
-            # 4. Delete images
-            if document_id:
-                try:
-                    images_response = supabase_client.client.table('document_images')\
+            # 4. Delete image-side child tables BEFORE the images themselves.
+            # These tables don't have a job_id of their own; they're keyed off
+            # image_id, so we need the resolved image_ids list.
+            if image_ids:
+                for table_name, stat_key in [
+                    ('chunk_image_relationships',  'chunk_image_relationships_deleted'),
+                    ('image_metafield_values',     'image_metafield_values_deleted'),
+                    ('image_validations',          'image_validations_deleted'),
+                    ('image_product_associations', 'image_product_associations_deleted'),
+                ]:
+                    try:
+                        resp = supabase_client.client.table(table_name)\
+                            .delete()\
+                            .in_('image_id', image_ids)\
+                            .execute()
+                        stats[stat_key] = len(resp.data) if resp.data else 0
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to clean {table_name} by image_id: {e}")
+                        stats['errors'].append(f"{table_name} deletion (by image_id) failed: {str(e)}")
+
+            # 5. Delete the images themselves (by id when known, by document_id
+            # as a fallback for legacy rows).
+            try:
+                deleted_imgs = 0
+                if image_ids:
+                    img_del = supabase_client.client.table('document_images')\
+                        .delete()\
+                        .in_('id', image_ids)\
+                        .execute()
+                    deleted_imgs += len(img_del.data) if img_del.data else 0
+                if document_id:
+                    img_del_doc = supabase_client.client.table('document_images')\
                         .delete()\
                         .eq('document_id', document_id)\
                         .execute()
+                    deleted_imgs += len(img_del_doc.data) if img_del_doc.data else 0
+                stats['images_deleted'] = deleted_imgs
+                self.logger.info(f"✅ Deleted {deleted_imgs} images")
+            except Exception as e:
+                self.logger.error(f"Failed to delete images: {e}")
+                stats['errors'].append(f"Images deletion failed: {str(e)}")
 
-                    stats['images_deleted'] = len(images_response.data) if images_response.data else 0
-                    self.logger.info(f"✅ Deleted {stats['images_deleted']} images")
+            # 6. Delete product-side child tables BEFORE products. We don't
+            # trust ON DELETE CASCADE here — historical schema migrations
+            # have not always added it consistently, and a missed cascade
+            # leaves orphans that survive every cleanup pass.
+            if product_ids:
+                for table_name, stat_key in [
+                    ('product_layout_regions',     'product_layout_regions_deleted'),
+                    ('product_tables',             'product_tables_deleted'),
+                    ('product_enrichments',        'product_enrichments_deleted'),
+                    ('image_product_associations', 'image_product_associations_deleted'),
+                ]:
+                    try:
+                        resp = supabase_client.client.table(table_name)\
+                            .delete()\
+                            .in_('product_id', product_ids)\
+                            .execute()
+                        deleted = len(resp.data) if resp.data else 0
+                        # image_product_associations is counted in stat_key above too
+                        # (image_id keyed). Add to whatever is already there.
+                        stats[stat_key] = stats.get(stat_key, 0) + deleted
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to clean {table_name} by product_id: {e}")
+                        stats['errors'].append(f"{table_name} deletion (by product_id) failed: {str(e)}")
 
-                except Exception as e:
-                    self.logger.error(f"Failed to delete images: {e}")
-                    stats['errors'].append(f"Images deletion failed: {str(e)}")
-
-            # 5. Delete products (if they exist for this document)
-            if document_id:
+            # 7. Delete the products themselves.
+            if product_ids:
                 try:
-                    products_response = supabase_client.client.table('products')\
+                    prod_del = supabase_client.client.table('products')\
                         .delete()\
-                        .eq('document_id', document_id)\
+                        .in_('id', product_ids)\
                         .execute()
-
-                    stats['products_deleted'] = len(products_response.data) if products_response.data else 0
+                    stats['products_deleted'] = len(prod_del.data) if prod_del.data else 0
                     self.logger.info(f"✅ Deleted {stats['products_deleted']} products")
-
                 except Exception as e:
                     self.logger.error(f"Failed to delete products: {e}")
                     stats['errors'].append(f"Products deletion failed: {str(e)}")
 
-            # 6. Delete files from storage (only if delete_storage_files=True)
+            # 7b. Delete product_processing_status rows (per-product job state).
+            try:
+                pps_del = supabase_client.client.table('product_processing_status')\
+                    .delete()\
+                    .eq('job_id', job_id)\
+                    .execute()
+                stats['product_processing_status_deleted'] = len(pps_del.data) if pps_del.data else 0
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to clean product_processing_status: {e}")
+                stats['errors'].append(f"product_processing_status deletion failed: {str(e)}")
+
+            # 8. Delete files from storage (only if delete_storage_files=True)
             if document_id and delete_storage_files:
                 try:
                     stats['storage_files_deleted'] = self.cleanup_storage_bucket('documents', document_id)
                     self.logger.info(f"✅ Deleted {stats['storage_files_deleted']} storage files")
-
                 except Exception as e:
                     self.logger.error(f"Failed to delete storage files: {e}")
                     stats['errors'].append(f"Storage deletion failed: {str(e)}")
@@ -521,10 +661,10 @@ class CleanupService:
                 self.logger.info(f"⏭️ Skipping storage file deletion (automatic cleanup mode)")
 
             # Checkpoints now live on background_jobs.stage_history; deleted
-            # automatically when the job row is removed in step 9.
+            # automatically when the job row is removed in step 10.
             stats['checkpoints_deleted'] = 0
 
-            # 8. Delete document record
+            # 9. Delete document record
             if document_id:
                 try:
                     doc_response = supabase_client.client.table('documents')\
@@ -534,12 +674,11 @@ class CleanupService:
 
                     stats['document_deleted'] = len(doc_response.data) > 0 if doc_response.data else False
                     self.logger.info(f"✅ Deleted document record")
-
                 except Exception as e:
                     self.logger.error(f"Failed to delete document: {e}")
                     stats['errors'].append(f"Document deletion failed: {str(e)}")
 
-            # 9. Delete job record
+            # 10. Delete job record
             try:
                 job_del_response = supabase_client.client.table('background_jobs')\
                     .delete()\
@@ -548,17 +687,15 @@ class CleanupService:
 
                 stats['job_deleted'] = len(job_del_response.data) > 0 if job_del_response.data else False
                 self.logger.info(f"✅ Deleted job record")
-
             except Exception as e:
                 self.logger.error(f"Failed to delete job: {e}")
                 stats['errors'].append(f"Job deletion failed: {str(e)}")
 
-            # 10. Clean temporary files
+            # 11. Clean temporary files
             if document_id:
                 try:
                     stats['temp_files_deleted'] = self._clean_temp_directories(job_id, document_id)
                     self.logger.info(f"✅ Cleaned {stats['temp_files_deleted']} temp directories")
-
                 except Exception as e:
                     self.logger.error(f"Failed to clean temp files: {e}")
                     stats['errors'].append(f"Temp files cleanup failed: {str(e)}")

@@ -82,14 +82,17 @@ class AlertCandidate:
     """Detected alert ready for dispatch."""
     alert_type: str        # 'price_drop' | 'new_retailer' | 'promo_started' | 'anomaly_detected'
     user_id: str
-    product_id: Optional[str]
-    tracked_query_id: Optional[str]
+    tracked_query_id: str
     retailer_name: str
     retailer_domain: Optional[str]
     title: str
     body: str
     action_url: str
     payload: Dict[str, Any]
+    # Optional product_id for downstream consumers (price_alert_log row,
+    # bell-action URL). Resolved from tracked_queries.product_id at dispatch
+    # time when the row is internal-flow.
+    product_id: Optional[str] = None
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -150,53 +153,38 @@ class PriceAlertDispatcher:
     def check_sanity(
         self,
         *,
-        product_id: Optional[str] = None,
-        tracked_query_id: Optional[str] = None,
+        tracked_query_id: str,
         retailer_domain: str,
         new_price: float,
     ) -> SanityVerdict:
         """
-        Compute the trailing-7d median for (subject, retailer) and decide
-        whether `new_price` is plausible. Returns a verdict the caller stamps
-        onto the row before insert.
+        Compute the trailing-7d median for (tracked_query, retailer) and
+        decide whether `new_price` is plausible. Returns a verdict the caller
+        stamps onto the row before insert.
         """
         if not retailer_domain or new_price is None or new_price <= 0:
             return SanityVerdict(False, None, 0, None)
+        if not tracked_query_id:
+            return SanityVerdict(False, None, 0, "no subject")
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=SANITY_WINDOW_DAYS)).isoformat()
 
         try:
-            # Exclude family + mismatch rows from the rolling median — they
-            # are different SKUs and would distort the band for the tracked
-            # product. neq() is used because the column is nullable.
-            if product_id:
-                resp = (
-                    self.supabase.client.table("price_history")
-                    .select("price, source_url, match_kind")
-                    .eq("product_id", product_id)
-                    .gte("scraped_at", cutoff)
-                    .eq("is_anomaly", False)
-                    .execute()
-                )
-            elif tracked_query_id:
-                resp = (
-                    self.supabase.client.table("tracked_query_price_history")
-                    .select("price, product_url, match_kind")
-                    .eq("tracked_query_id", tracked_query_id)
-                    .gte("scraped_at", cutoff)
-                    .eq("is_anomaly", False)
-                    .execute()
-                )
-            else:
-                return SanityVerdict(False, None, 0, "no subject")
-
+            resp = (
+                self.supabase.client.table("tracked_query_price_history")
+                .select("price, product_url, match_kind")
+                .eq("tracked_query_id", tracked_query_id)
+                .gte("scraped_at", cutoff)
+                .eq("is_anomaly", False)
+                .execute()
+            )
             rows = resp.data or []
         except Exception as e:
             logger.warning(f"price-alerts: sanity history fetch failed: {e}")
             return SanityVerdict(False, None, 0, f"history fetch failed: {e}")
 
         retailer_prices: List[float] = []
-        url_field = "source_url" if product_id else "product_url"
+        url_field = "product_url"
         for r in rows:
             if (r.get("match_kind") or "").lower() == "family":
                 continue
@@ -232,8 +220,7 @@ class PriceAlertDispatcher:
     def detect_after_refresh(
         self,
         *,
-        product_id: Optional[str] = None,
-        tracked_query_id: Optional[str] = None,
+        tracked_query_id: str,
         new_rows: List[Dict[str, Any]],
     ) -> List[AlertCandidate]:
         """
@@ -243,11 +230,11 @@ class PriceAlertDispatcher:
         new_rows are the just-written dicts as inserted (with is_anomaly /
         original_price already stamped).
         """
-        if not self._module_active():
+        if not self._module_active() or not tracked_query_id:
             return []
 
         candidates: List[AlertCandidate] = []
-        prefs, user_id = self._load_subject_prefs(product_id=product_id, tracked_query_id=tracked_query_id)
+        prefs, user_id, product_id = self._load_subject_prefs(tracked_query_id=tracked_query_id)
         if user_id is None or not prefs:
             return []
 
@@ -259,13 +246,13 @@ class PriceAlertDispatcher:
         for r in new_rows:
             if not r.get("is_anomaly"):
                 continue
-            domain = _domain_of(r.get("source_url") or r.get("product_url"))
+            domain = _domain_of(r.get("product_url"))
             candidates.append(AlertCandidate(
                 alert_type="anomaly_detected",
                 user_id=user_id,
-                product_id=product_id,
                 tracked_query_id=tracked_query_id,
-                retailer_name=r.get("retailer_name") or r.get("source_name") or domain or "unknown",
+                product_id=product_id,
+                retailer_name=r.get("retailer_name") or domain or "unknown",
                 retailer_domain=domain,
                 title=f"Anomalous price flagged: {r.get('retailer_name') or domain}",
                 body=(r.get("anomaly_reason") or "")[:240],
@@ -273,7 +260,7 @@ class PriceAlertDispatcher:
                 payload={
                     "rolling_median": r.get("rolling_median_at_check"),
                     "rejected_price": r.get("price"),
-                    "url": r.get("source_url") or r.get("product_url"),
+                    "url": r.get("product_url"),
                 },
             ))
 
@@ -284,16 +271,16 @@ class PriceAlertDispatcher:
             for r in new_rows:
                 if r.get("original_price") is None:
                     continue
-                domain = _domain_of(r.get("source_url") or r.get("product_url"))
+                domain = _domain_of(r.get("product_url"))
                 if not domain:
                     continue
-                if not self._previously_had_promo(product_id, tracked_query_id, domain):
+                if not self._previously_had_promo(tracked_query_id, domain):
                     candidates.append(AlertCandidate(
                         alert_type="promo_started",
                         user_id=user_id,
-                        product_id=product_id,
                         tracked_query_id=tracked_query_id,
-                        retailer_name=r.get("retailer_name") or r.get("source_name") or domain,
+                        product_id=product_id,
+                        retailer_name=r.get("retailer_name") or domain,
                         retailer_domain=domain,
                         title=f"Promo started at {r.get('retailer_name') or domain}",
                         body=(
@@ -303,46 +290,46 @@ class PriceAlertDispatcher:
                         payload={
                             "current_price": r.get("price"),
                             "original_price": r.get("original_price"),
-                            "url": r.get("source_url") or r.get("product_url"),
+                            "url": r.get("product_url"),
                         },
                     ))
 
-        # New retailer — domain we've never seen for this subject.
+        # New retailer — domain we've never seen for this tracked_query.
         if prefs.get("alert_on_new_retailer"):
-            seen_domains = self._known_retailer_domains(product_id, tracked_query_id, exclude_new_rows=new_rows)
+            seen_domains = self._known_retailer_domains(tracked_query_id, exclude_new_rows=new_rows)
             announced: set = set()
             for r in new_rows:
                 if r.get("is_anomaly"):
                     continue
-                domain = _domain_of(r.get("source_url") or r.get("product_url"))
+                domain = _domain_of(r.get("product_url"))
                 if not domain or domain in seen_domains or domain in announced:
                     continue
                 announced.add(domain)
                 candidates.append(AlertCandidate(
                     alert_type="new_retailer",
                     user_id=user_id,
-                    product_id=product_id,
                     tracked_query_id=tracked_query_id,
-                    retailer_name=r.get("retailer_name") or r.get("source_name") or domain,
+                    product_id=product_id,
+                    retailer_name=r.get("retailer_name") or domain,
                     retailer_domain=domain,
                     title=f"New retailer found: {r.get('retailer_name') or domain}",
                     body=f"Listed at €{r.get('price')}.",
                     action_url=self._build_action_url(product_id, tracked_query_id),
                     payload={
                         "current_price": r.get("price"),
-                        "url": r.get("source_url") or r.get("product_url"),
+                        "url": r.get("product_url"),
                     },
                 ))
 
         # Price drop — compares week-over-week median per retailer.
         if prefs.get("alert_on_price_drop"):
-            drops = self._detect_price_drops(product_id=product_id, tracked_query_id=tracked_query_id)
+            drops = self._detect_price_drops(tracked_query_id=tracked_query_id)
             for d in drops:
                 candidates.append(AlertCandidate(
                     alert_type="price_drop",
                     user_id=user_id,
-                    product_id=product_id,
                     tracked_query_id=tracked_query_id,
+                    product_id=product_id,
                     retailer_name=d["retailer_name"] or d["domain"],
                     retailer_domain=d["domain"],
                     title=f"Price drop at {d['retailer_name'] or d['domain']}",
@@ -602,38 +589,30 @@ class PriceAlertDispatcher:
     def _load_subject_prefs(
         self,
         *,
-        product_id: Optional[str],
-        tracked_query_id: Optional[str],
-    ) -> Tuple[Dict[str, Any], Optional[str]]:
+        tracked_query_id: str,
+    ) -> Tuple[Dict[str, Any], Optional[str], Optional[str]]:
+        """Read alert prefs + owner user_id + product_id (when internal-flow).
+        Returns (prefs_dict, user_id, product_id).
+        """
         try:
-            if product_id:
-                resp = (
-                    self.supabase.client.table("price_monitoring_products")
-                    .select("user_id, alert_on_price_drop, alert_on_new_retailer, alert_on_promo, alert_channels")
-                    .eq("product_id", product_id)
-                    .maybe_single()
-                    .execute()
+            resp = (
+                self.supabase.client.table("tracked_queries")
+                .select(
+                    "user_id, product_id, alert_on_price_drop, alert_on_new_retailer, "
+                    "alert_on_promo, alert_channels, alert_webhook_url"
                 )
-                row = (resp.data if resp else None) or {}
-                return row, row.get("user_id")
-            if tracked_query_id:
-                resp = (
-                    self.supabase.client.table("tracked_queries")
-                    .select("user_id, alert_on_price_drop, alert_on_new_retailer, alert_on_promo, alert_channels, alert_webhook_url")
-                    .eq("id", tracked_query_id)
-                    .maybe_single()
-                    .execute()
-                )
-                row = (resp.data if resp else None) or {}
-                return row, row.get("user_id")
+                .eq("id", tracked_query_id)
+                .maybe_single()
+                .execute()
+            )
+            row = (resp.data if resp else None) or {}
+            return row, row.get("user_id"), row.get("product_id")
         except Exception as e:
             logger.warning(f"price-alerts: subject prefs lookup failed: {e}")
-        return {}, None
+        return {}, None, None
 
     def _channels_for(self, cand: AlertCandidate) -> List[str]:
-        prefs, _ = self._load_subject_prefs(
-            product_id=cand.product_id, tracked_query_id=cand.tracked_query_id,
-        )
+        prefs, _, _ = self._load_subject_prefs(tracked_query_id=cand.tracked_query_id)
         chans = prefs.get("alert_channels") or ["bell"]
         # Dedupe + intersect with known channels
         return [c for c in chans if c in CHANNEL_CREDIT_COST]
@@ -653,11 +632,8 @@ class PriceAlertDispatcher:
                 .select("id")
                 .eq("alert_type", cand.alert_type)
                 .gte("created_at", cutoff)
+                .eq("tracked_query_id", cand.tracked_query_id)
             )
-            if cand.product_id:
-                q = q.eq("product_id", cand.product_id)
-            if cand.tracked_query_id:
-                q = q.eq("tracked_query_id", cand.tracked_query_id)
             if cand.retailer_domain:
                 q = q.eq("retailer_domain", cand.retailer_domain)
             resp = q.limit(1).execute()
@@ -666,37 +642,20 @@ class PriceAlertDispatcher:
             logger.debug(f"price-alerts: dedupe check failed (treating as not-dup): {e}")
             return False
 
-    def _previously_had_promo(
-        self, product_id: Optional[str], tracked_query_id: Optional[str], retailer_domain: str,
-    ) -> bool:
+    def _previously_had_promo(self, tracked_query_id: str, retailer_domain: str) -> bool:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
         try:
-            if product_id:
-                resp = (
-                    self.supabase.client.table("price_history")
-                    .select("original_price, source_url")
-                    .eq("product_id", product_id)
-                    .gte("scraped_at", cutoff)
-                    .not_.is_("original_price", "null")
-                    .limit(50)
-                    .execute()
-                )
-                url_field = "source_url"
-            elif tracked_query_id:
-                resp = (
-                    self.supabase.client.table("tracked_query_price_history")
-                    .select("original_price, product_url")
-                    .eq("tracked_query_id", tracked_query_id)
-                    .gte("scraped_at", cutoff)
-                    .not_.is_("original_price", "null")
-                    .limit(50)
-                    .execute()
-                )
-                url_field = "product_url"
-            else:
-                return False
+            resp = (
+                self.supabase.client.table("tracked_query_price_history")
+                .select("original_price, product_url")
+                .eq("tracked_query_id", tracked_query_id)
+                .gte("scraped_at", cutoff)
+                .not_.is_("original_price", "null")
+                .limit(50)
+                .execute()
+            )
             for r in resp.data or []:
-                if _domain_of(r.get(url_field)) == retailer_domain:
+                if _domain_of(r.get("product_url")) == retailer_domain:
                     return True
         except Exception:
             pass
@@ -704,95 +663,57 @@ class PriceAlertDispatcher:
 
     def _known_retailer_domains(
         self,
-        product_id: Optional[str],
-        tracked_query_id: Optional[str],
+        tracked_query_id: str,
         exclude_new_rows: List[Dict[str, Any]],
     ) -> set:
         seen: set = set()
         try:
-            if product_id:
-                resp = (
-                    self.supabase.client.table("competitor_sources")
-                    .select("source_domain, source_url, first_seen_at")
-                    .eq("product_id", product_id)
-                    .execute()
-                )
-                # Anything older than this refresh counts as "known". A retailer
-                # that ONLY appears in the new_rows is considered new.
-                new_urls = {r.get("source_url") or r.get("product_url") for r in exclude_new_rows}
-                for r in resp.data or []:
-                    if r.get("source_url") in new_urls and r.get("first_seen_at"):
-                        # skip — this row was just inserted now
-                        try:
-                            fs = datetime.fromisoformat(r["first_seen_at"].replace("Z", "+00:00"))
-                            if (datetime.now(timezone.utc) - fs).total_seconds() < 300:
-                                continue
-                        except Exception:
-                            pass
-                    domain = r.get("source_domain") or _domain_of(r.get("source_url"))
-                    if domain:
-                        seen.add(domain)
-            elif tracked_query_id:
-                # Exclude rows scraped in the last 5 minutes — those are the
-                # rows we just persisted. Without this filter every row is
-                # "known" the moment we insert it, and new_retailer alerts
-                # never fire on the tracked-query path.
-                cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-                resp = (
-                    self.supabase.client.table("tracked_query_price_history")
-                    .select("product_url, scraped_at")
-                    .eq("tracked_query_id", tracked_query_id)
-                    .lt("scraped_at", cutoff)
-                    .execute()
-                )
-                for r in resp.data or []:
-                    domain = _domain_of(r.get("product_url"))
-                    if domain:
-                        seen.add(domain)
+            # Exclude rows scraped in the last 5 minutes — those are the
+            # rows we just persisted. Without this filter every row is
+            # "known" the moment we insert it, and new_retailer alerts
+            # never fire.
+            cutoff = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            resp = (
+                self.supabase.client.table("tracked_query_price_history")
+                .select("product_url, scraped_at")
+                .eq("tracked_query_id", tracked_query_id)
+                .lt("scraped_at", cutoff)
+                .execute()
+            )
+            for r in resp.data or []:
+                domain = _domain_of(r.get("product_url"))
+                if domain:
+                    seen.add(domain)
         except Exception as e:
             logger.warning(f"price-alerts: known-retailer scan failed: {e}")
         return seen
 
-    def _detect_price_drops(
-        self, *, product_id: Optional[str], tracked_query_id: Optional[str],
-    ) -> List[Dict[str, Any]]:
-        """
-        Trailing 7d median vs prior 7d median per retailer. Returns one entry
-        per retailer whose drop ≥ PRICE_DROP_THRESHOLD_PCT.
+    def _detect_price_drops(self, *, tracked_query_id: str) -> List[Dict[str, Any]]:
+        """Trailing 7d median vs prior 7d median per retailer for this
+        tracked_query. Returns one entry per retailer whose drop ≥
+        PRICE_DROP_THRESHOLD_PCT.
         """
         now = datetime.now(timezone.utc)
         cur_lo = (now - timedelta(days=7)).isoformat()
         prev_lo = (now - timedelta(days=14)).isoformat()
         prev_hi = (now - timedelta(days=7)).isoformat()
 
-        try:
-            if product_id:
-                table = "price_history"
-                subj_col = "product_id"
-                subj_val = product_id
-                url_field = "source_url"
-                name_field = "source_name"
-            elif tracked_query_id:
-                table = "tracked_query_price_history"
-                subj_col = "tracked_query_id"
-                subj_val = tracked_query_id
-                url_field = "product_url"
-                name_field = "retailer_name"
-            else:
-                return []
+        url_field = "product_url"
+        name_field = "retailer_name"
 
+        try:
             cur_rows = (
-                self.supabase.client.table(table)
+                self.supabase.client.table("tracked_query_price_history")
                 .select(f"price, {url_field}, {name_field}, scraped_at")
-                .eq(subj_col, subj_val)
+                .eq("tracked_query_id", tracked_query_id)
                 .eq("is_anomaly", False)
                 .gte("scraped_at", cur_lo)
                 .execute()
             ).data or []
             prev_rows = (
-                self.supabase.client.table(table)
+                self.supabase.client.table("tracked_query_price_history")
                 .select(f"price, {url_field}, {name_field}, scraped_at")
-                .eq(subj_col, subj_val)
+                .eq("tracked_query_id", tracked_query_id)
                 .eq("is_anomaly", False)
                 .gte("scraped_at", prev_lo)
                 .lt("scraped_at", prev_hi)

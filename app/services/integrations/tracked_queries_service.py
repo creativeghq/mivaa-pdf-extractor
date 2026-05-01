@@ -19,6 +19,23 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 
+def _select_cheapest(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Pick the cheapest non-anomaly, non-family hit from a refresh batch.
+    Used to populate the denormalized `current_*` snapshot on tracked_queries
+    so summary cards can read a single row.
+    """
+    candidates = [
+        r for r in rows
+        if r.get("price") is not None
+        and not r.get("is_anomaly")
+        and (r.get("match_kind") or "").lower() != "family"
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda r: (not r.get("verified"), float(r["price"])))
+    return candidates[0]
+
+
 def _domain_of(url: Optional[str]) -> Optional[str]:
     if not url:
         return None
@@ -321,6 +338,197 @@ class TrackedQueriesService:
         )
         return bool(res.data)
 
+    async def reactivate(self, tracking_id: str) -> bool:
+        """Re-enable a previously deactivated row. Used by the internal-flow
+        Start Monitoring toggle when a product is re-enabled after being off.
+        """
+        res = (
+            self.supabase.client.table("tracked_queries")
+            .update({"is_active": True, "updated_at": datetime.now(timezone.utc).isoformat()})
+            .eq("id", tracking_id)
+            .execute()
+        )
+        return bool(res.data)
+
+    # ────────── Internal-flow helpers (api_key_id IS NULL, product_id NOT NULL) ──────────
+
+    async def find_for_product(self, product_id: str) -> Optional[Dict[str, Any]]:
+        """Return the internal tracked_query attached to this product, if any.
+        At most one exists — enforced by `uniq_tracked_queries_internal_product`.
+        """
+        res = (
+            self.supabase.client.table("tracked_queries")
+            .select("*")
+            .eq("product_id", product_id)
+            .is_("api_key_id", "null")
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+
+    async def find_or_create_for_product(
+        self,
+        *,
+        product_id: str,
+        product_name: str,
+        manufacturer: Optional[str] = None,
+        dimensions: Optional[str] = None,
+        country_code: Optional[str] = None,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        run_first_refresh: bool = True,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Return an existing internal tracked_query for this product or create
+        one. When created, runs the first refresh synchronously by default so
+        callers get initial results in the same response — matching the
+        external-flow `create()` semantics.
+
+        `force=True` re-runs refresh even if the row already exists.
+        """
+        existing = await self.find_for_product(product_id)
+        if existing:
+            if force or run_first_refresh and not existing.get("last_refreshed_at"):
+                # Existing row but no data yet (or admin force) — refresh now.
+                await self.refresh(existing["id"], force=force)
+                return await self.get(existing["id"]) or existing
+            return existing
+
+        # Build a sensible search_query: prefer "manufacturer product_name"
+        # so brand-aware ranking kicks in immediately.
+        search_query = product_name.strip()
+        if manufacturer and manufacturer.strip().lower() not in search_query.lower():
+            search_query = f"{manufacturer.strip()} {search_query}"
+
+        # Facet extraction is best-effort (matches external create() behavior).
+        facet_query = search_query
+        if dimensions:
+            facet_query = f"{search_query} {dimensions}"
+        facets: Optional[QueryFacets] = None
+        try:
+            identity_svc = get_product_identity_service()
+            facets = await identity_svc.extract_query_facets(
+                facet_query, manufacturer_hint=manufacturer
+            )
+        except Exception as e:
+            logger.warning(f"Facet extraction failed on internal create (non-fatal): {e}")
+
+        row: Dict[str, Any] = {
+            "api_key_id": None,
+            "product_id": product_id,
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "search_query": search_query,
+            "dimensions": dimensions,
+            "country_code": country_code,
+            "manufacturer": manufacturer,
+            "refresh_interval_hours": 24,
+            "verify_prices": True,
+            "query_facets": facets.to_dict() if facets else None,
+            "mode": "discovery",
+        }
+        res = self.supabase.client.table("tracked_queries").insert(row).execute()
+        created = (res.data or [{}])[0]
+        tracking_id = created.get("id")
+        if not tracking_id:
+            raise RuntimeError("Failed to create internal tracked_queries row")
+
+        if run_first_refresh:
+            await self.refresh(tracking_id, force=True)
+        return await self.get(tracking_id) or created
+
+    async def list_internal(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        include_inactive: bool = False,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """List every internal-flow tracked_query (api_key_id IS NULL). Used by
+        the admin monitored-products dashboard.
+        """
+        q = (
+            self.supabase.client.table("tracked_queries")
+            .select("*")
+            .is_("api_key_id", "null")
+            .order("created_at", desc=True)
+            .limit(max(1, min(limit, 1000)))
+        )
+        if workspace_id is not None:
+            q = q.eq("workspace_id", workspace_id)
+        if not include_inactive:
+            q = q.eq("is_active", True)
+        res = q.execute()
+        return res.data or []
+
+    async def add_url_only(
+        self,
+        *,
+        product_id: str,
+        url: str,
+        product_name: str,
+        user_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        country_code: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a `mode='url-only'` tracked_query attached to this product
+        for the user-pasted URL flow ("Custom Monitoring"). Each URL gets its
+        own row so refresh history is per-URL and cadence/exclusions stay
+        independent. The internal product can have at most one
+        `mode='discovery'` row + N `mode='url-only'` rows.
+        """
+        row: Dict[str, Any] = {
+            "api_key_id": None,
+            "product_id": None,  # url-only rows are not subject to the unique
+                                  # internal-product index — store product_id in
+                                  # pinned_url metadata via a side relation if we
+                                  # need product join later. For now we keep the
+                                  # row owner-less to avoid unique conflict.
+            "user_id": user_id,
+            "workspace_id": workspace_id,
+            "search_query": product_name.strip(),
+            "country_code": country_code,
+            "refresh_interval_hours": 24,
+            "verify_prices": True,
+            "mode": "url-only",
+            "pinned_url": url.strip(),
+        }
+        # The XOR check requires either api_key_id OR product_id. For url-only
+        # we hang it off the product but flag mode=url-only to keep the unique
+        # internal-product index clean (only mode='discovery' rows compete).
+        # Drop the partial uniqueness restriction: index is partial WHERE
+        # api_key_id IS NULL AND product_id IS NOT NULL — url-only rows pass
+        # because they ALSO carry product_id; multiple are allowed because the
+        # index is on (product_id) alone. To avoid that, we require product_id
+        # but rely on the unique partial NOT covering url-only rows. Simplest:
+        # the unique index covers all internal rows; url-only must use a
+        # distinct product_id strategy. Solution adopted: keep product_id on
+        # url-only rows but tag with mode; rebuild the unique index to include
+        # mode = 'discovery'. (Migration will add this constraint refinement.)
+        row["product_id"] = product_id
+        res = self.supabase.client.table("tracked_queries").insert(row).execute()
+        created = (res.data or [{}])[0]
+        tracking_id = created.get("id")
+        if not tracking_id:
+            raise RuntimeError("Failed to create url-only tracked_queries row")
+        # Run an initial verify for this URL so the user sees a price right away.
+        await self.refresh(tracking_id, force=True)
+        return await self.get(tracking_id) or created
+
+    async def list_url_only_for_product(self, product_id: str) -> List[Dict[str, Any]]:
+        """Every mode='url-only' row attached to this product."""
+        res = (
+            self.supabase.client.table("tracked_queries")
+            .select("*")
+            .eq("product_id", product_id)
+            .eq("mode", "url-only")
+            .is_("api_key_id", "null")
+            .order("created_at", desc=False)
+            .execute()
+        )
+        return res.data or []
+
     # ────────── Refresh flow ──────────
 
     async def refresh(self, tracking_id: str, force: bool = False) -> Dict[str, Any]:
@@ -573,15 +781,34 @@ class TrackedQueriesService:
                 logger.warning(f"price-alerts: dispatch failed (non-fatal): {e}")
 
         # Update counters on the tracked_query row + mark first-refresh done.
+        # Also denormalize a "current" snapshot — cheapest verified hit from
+        # the latest refresh — so summary cards / KPI counters can read one
+        # row instead of joining tracked_query_price_history. This replaces
+        # the old competitor_sources.current_price cache.
         prev_total = int(tq.get("total_credits_used") or 0)
-        self.supabase.client.table("tracked_queries").update({
+        cheapest = _select_cheapest(rows)
+        update_payload: Dict[str, Any] = {
             "last_refreshed_at": now_iso,
             "last_refresh_credits_used": result.credits_used,
             "total_credits_used": prev_total + result.credits_used,
             "last_error": None,
             "updated_at": now_iso,
             "first_refresh_verified": True,
-        }).eq("id", tracking_id).execute()
+            "current_price": cheapest.get("price") if cheapest else None,
+            "current_currency": cheapest.get("currency") if cheapest else None,
+            "current_availability": cheapest.get("availability") if cheapest else None,
+            "current_original_price": cheapest.get("original_price") if cheapest else None,
+            "current_price_verified": bool(cheapest.get("verified")) if cheapest else False,
+            "current_metadata": {
+                "retailer_name": cheapest.get("retailer_name"),
+                "product_url": cheapest.get("product_url"),
+                "product_title": cheapest.get("product_title"),
+                "source": cheapest.get("source"),
+                "rolling_median": cheapest.get("rolling_median_at_check"),
+            } if cheapest else None,
+            "current_price_updated_at": now_iso if cheapest else None,
+        }
+        self.supabase.client.table("tracked_queries").update(update_payload).eq("id", tracking_id).execute()
 
         # Volatility-based cadence (PR-C #3). Compute the max % move across
         # tracked retailers vs the prior refresh's median; pass to the SQL
