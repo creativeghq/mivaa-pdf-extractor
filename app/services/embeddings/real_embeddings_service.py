@@ -23,9 +23,15 @@ Understanding Embedding Strategy:
 
 import logging
 import asyncio
+import json
+import os
+import time
+from typing import Dict, List, Any, Optional, Tuple
+from datetime import datetime
+import httpx
 
 
-def _is_valid_vision_analysis_schema(vision_analysis: Any) -> bool:  # type: ignore[name-defined]
+def _is_valid_vision_analysis_schema(vision_analysis: Any) -> bool:
     """Reject malformed Qwen vision_analysis payloads (audit fix #33).
 
     Without this, error envelopes like {"error": "OOM", "message": "..."} would
@@ -44,12 +50,6 @@ def _is_valid_vision_analysis_schema(vision_analysis: Any) -> bool:  # type: ign
     expected_any = ('material_type', 'category', 'colors', 'textures',
                     'finish', 'surface_pattern', 'description')
     return any(k in vision_analysis for k in expected_any)
-import json
-import os
-import time
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
-import httpx
 import numpy as np
 import sentry_sdk
 
