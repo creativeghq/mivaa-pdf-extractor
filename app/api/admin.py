@@ -620,11 +620,13 @@ async def cancel_job(
 
             cleanup_service = CleanupService()
 
-            # Manual deletion from UI - delete everything including storage files
+            # User cancelled the job → wipe everything (the partial output
+            # is by definition no longer wanted in the catalog).
             cleanup_stats = await cleanup_service.delete_job_completely(
                 job_id=job_id,
                 supabase_client=supabase_client,
-                delete_storage_files=True  # ✅ Manual deletion includes storage files
+                delete_storage_files=True,
+                preserve_outputs=False,
             )
 
             logger.info(f"✅ Cleanup completed for job {job_id}: {cleanup_stats}")

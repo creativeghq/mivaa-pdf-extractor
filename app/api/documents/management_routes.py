@@ -553,12 +553,27 @@ async def delete_job(job_id: str):
         from app.services.utilities.cleanup_service import CleanupService
         cleanup_service = CleanupService()
 
-        # Perform complete deletion (manual deletion from UI - includes storage files)
+        # Decide deletion mode by job.status: completed → preserve catalog
+        # data; cancelled/failed/stuck → wipe everything.
+        try:
+            job_row = supabase_client.client.table('background_jobs')\
+                .select('status')\
+                .eq('id', job_id)\
+                .single()\
+                .execute()
+            job_status = (job_row.data or {}).get('status') or 'unknown'
+        except Exception:
+            job_status = 'unknown'
+
+        mode_preserve = job_status == 'completed'
+        logger.info(f"   📋 Mode: preserve_outputs={mode_preserve} (status={job_status})")
+
         stats = await cleanup_service.delete_job_completely(
             job_id=job_id,
             supabase_client=supabase_client,
             vecs_service=vecs_service,
-            delete_storage_files=True  # ✅ Manual deletion includes storage files
+            delete_storage_files=True,
+            preserve_outputs=mode_preserve,
         )
 
         # Check if job was actually deleted

@@ -378,39 +378,70 @@ class CleanupService:
         job_id: str,
         supabase_client,
         vecs_service=None,
-        delete_storage_files: bool = True
+        delete_storage_files: bool = True,
+        preserve_outputs: bool = False,
     ) -> Dict[str, Any]:
         """
-        Completely delete a job and ALL its associated data.
+        Delete a job, with two distinct semantics based on `preserve_outputs`.
 
-        This includes:
-        1. Job record from background_jobs table
-        2. Document record (if exists)
-        3. All chunks from document_chunks
-        4. All embeddings from vecs collections
-        5. All images from document_images
-        6. All products
-        7. Files from storage buckets (only if delete_storage_files=True)
-        8. Checkpoints
-        9. Temporary files
+        Two modes:
+
+        ──────────────────────────────────────────────────────────────────
+        preserve_outputs=False (default — CANCELLATION / FAILURE wipe)
+        ──────────────────────────────────────────────────────────────────
+        Wipes EVERYTHING tied to the job. Use when the user cancels a job,
+        a job fails irrecoverably, or admin wants to remove a stuck/bad job
+        and its partial outputs from the catalog. Removes:
+          - background_jobs row
+          - document row
+          - document_chunks
+          - document_images
+          - VECS embeddings (text + image collections)
+          - products + product_layout_regions + product_tables + product_enrichments
+          - image_product_associations + chunk_image_relationships +
+            image_metafield_values + image_validations
+          - product_processing_status
+          - storage bucket files (if delete_storage_files=True)
+          - server-side temp files in /tmp
+
+        ──────────────────────────────────────────────────────────────────
+        preserve_outputs=True (COMPLETED-JOB cleanup)
+        ──────────────────────────────────────────────────────────────────
+        Removes ONLY the job's tracking state — keeps the produced catalog
+        data so it remains queryable / sellable / exportable. Use when the
+        user deletes a completed job from the UI: they want the job entry
+        gone from "Recent jobs", but the products/images/chunks the job
+        produced should stay in the catalog. Removes:
+          - background_jobs row (and its embedded stage_history,
+            recovery_history, last_checkpoint JSONB columns)
+          - product_processing_status (per-product job state — not catalog data)
+          - server-side temp files in /tmp (workspace cleanup)
+        Preserves:
+          - documents, document_chunks, document_images
+          - products and all product child tables
+          - VECS embeddings
+          - storage bucket files
 
         Args:
             job_id: Job ID to delete
             supabase_client: Supabase client instance
             vecs_service: Optional vecs service for embedding deletion
-            delete_storage_files: If True, delete storage files. Set to False for automatic cleanup (default: True)
+            delete_storage_files: If True AND preserve_outputs=False, delete
+                storage bucket files. Ignored when preserve_outputs=True
+                (storage is always preserved in that mode).
+            preserve_outputs: If True, keep all produced catalog data
+                (documents/products/chunks/images/embeddings/storage). Use this
+                for completed-job removal-from-UI. Default False = full wipe.
 
         Returns:
             Dictionary with deletion statistics
-
-        Note:
-            - Manual deletion (from UI): delete_storage_files=True (deletes everything including PDFs)
-            - Automatic cleanup (cron): delete_storage_files=False (keeps storage files, only deletes DB records)
         """
         try:
-            self.logger.info(f"🗑️ Starting complete deletion for job {job_id}")
+            mode = "PRESERVE_OUTPUTS" if preserve_outputs else "FULL_WIPE"
+            self.logger.info(f"🗑️ Starting deletion for job {job_id} [mode={mode}]")
 
             stats = {
+                'mode': mode,
                 'job_deleted': False,
                 'document_deleted': False,
                 'chunks_deleted': 0,
@@ -452,6 +483,54 @@ class CleanupService:
             except Exception as e:
                 self.logger.error(f"Failed to get job details: {e}")
                 stats['errors'].append(f"Failed to get job details: {str(e)}")
+                return stats
+
+            # ──────────────────────────────────────────────────────────────
+            # SHORT PATH — preserve_outputs=True (completed-job removal)
+            # ──────────────────────────────────────────────────────────────
+            # Only remove tracking/job-state rows. Keep documents, products,
+            # chunks, images, embeddings, and storage files exactly as the
+            # finished job produced them.
+            if preserve_outputs:
+                # 1. product_processing_status — per-product job-state.
+                #    Catalog data lives in `products`; this table just tracks
+                #    "did stage X for product Y on job Z succeed?" and is
+                #    safe to wipe once the job row is gone.
+                try:
+                    pps_del = supabase_client.client.table('product_processing_status')\
+                        .delete()\
+                        .eq('job_id', job_id)\
+                        .execute()
+                    stats['product_processing_status_deleted'] = len(pps_del.data) if pps_del.data else 0
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Failed to clean product_processing_status: {e}")
+                    stats['errors'].append(f"product_processing_status deletion failed: {str(e)}")
+
+                # 2. Delete the job row (also wipes stage_history,
+                #    recovery_history, last_checkpoint JSONB columns).
+                try:
+                    job_del_response = supabase_client.client.table('background_jobs')\
+                        .delete()\
+                        .eq('id', job_id)\
+                        .execute()
+                    stats['job_deleted'] = len(job_del_response.data) > 0 if job_del_response.data else False
+                    self.logger.info(f"✅ Deleted job tracking row (preserve_outputs)")
+                except Exception as e:
+                    self.logger.error(f"Failed to delete job row: {e}")
+                    stats['errors'].append(f"Job deletion failed: {str(e)}")
+
+                # 3. Server-side temp workspace cleanup (/tmp/pdf_processing/{job_id}, etc.)
+                if document_id:
+                    try:
+                        stats['temp_files_deleted'] = self._clean_temp_directories(job_id, document_id)
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Temp file cleanup failed: {e}")
+                        stats['errors'].append(f"Temp files cleanup failed: {str(e)}")
+
+                self.logger.info(
+                    f"🎉 Job tracking removed (catalog data preserved) for job {job_id}"
+                )
+                self.logger.info(f"   Stats: {stats}")
                 return stats
 
             # 1b. Resolve the canonical product_id list for this job. Products

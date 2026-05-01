@@ -472,13 +472,39 @@ async def precompute_document_layout(
             #     valid: they short-circuit a future re-run from doing the
             #     same useless work).
             try:
+                # Build layout_elements + reading_order in lock-step so the
+                # cache readers (pdf_processor._load_cached_layout_for_pages
+                # and stage_1_focused_extraction._load_cached_layout) get
+                # both fields. The 2026-04-30 refactor of Stage 1.5 lost
+                # `processing_version`, `reading_order`, and
+                # `structure_confidence` from the payload — which silently
+                # invalidated every cache lookup downstream because the
+                # readers gate on `processing_version == 'yolo+chandra-v2'`.
+                # Result: Stage 3 Layer 2 (YOLO crop) saw cache=empty and
+                # fell back to live YOLO, which got hammered by the
+                # per-product loop and produced ~0 images. Restoring the
+                # three fields here brings image extraction back to its
+                # pre-refactor behavior. See migration df751cb.
+                layout_elements_payload = (
+                    [r.to_dict() for r in merged_regions]
+                    if merged_regions else []
+                )
+                reading_order_payload = [
+                    {
+                        "index": idx,
+                        "region_type": elem.get("region_type"),
+                        "reading_order": elem.get("reading_order"),
+                    }
+                    for idx, elem in enumerate(layout_elements_payload)
+                ]
+
                 payload = {
                     "document_id": document_id,
                     "page_number": physical_page,
-                    "layout_elements": (
-                        [r.to_dict() for r in merged_regions]
-                        if merged_regions else []
-                    ),
+                    "layout_elements": layout_elements_payload,
+                    "reading_order": reading_order_payload,
+                    "structure_confidence": 0.85,
+                    "processing_version": "yolo+chandra-v2",
                     "analysis_metadata": {
                         "stage_1_5": True,
                         "extraction_path": extraction_path,

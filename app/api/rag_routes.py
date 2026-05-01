@@ -1729,33 +1729,38 @@ async def list_jobs(
 
 
 @router.delete("/documents/jobs/{job_id}")
-async def delete_job(job_id: str):
+async def delete_job(
+    job_id: str,
+    preserve_outputs: Optional[bool] = Query(
+        None,
+        description=(
+            "Override the deletion mode. None (default) = decide based on job.status: "
+            "'completed' jobs preserve outputs, 'cancelled'/'failed'/'stuck' jobs wipe everything. "
+            "Pass true/false to force a specific mode."
+        ),
+    ),
+):
     """
-    Delete a job and ALL its associated data.
+    Delete a job with two distinct semantics, decided by `job.status` (or
+    overridden via the `preserve_outputs` query param).
 
-    This endpoint performs complete cleanup including:
-    1. Job record from background_jobs table
-    2. Document record (if exists)
-    3. All chunks from document_chunks
-    4. All embeddings from vecs collections
-    5. All images from document_images
-    6. All products
-    7. Files from storage buckets
-    8. Checkpoints
-    9. Temporary files
-    10. In-memory job_storage
+    ──────────────────────────────────────────────────────────────────────
+    `status='completed'` (or `preserve_outputs=true`) → PRESERVE_OUTPUTS
+    ──────────────────────────────────────────────────────────────────────
+    Removes the job tracking row and per-product status. KEEPS all the
+    catalog data the job produced: documents, chunks, products, images,
+    embeddings, storage files. Use case: "user removes a finished job from
+    'recent jobs' but the products are now in their catalog and must stay."
 
-    Args:
-        job_id: The unique identifier of the job to delete
-
-    Returns:
-        Success message with deletion statistics
-
-    Raises:
-        HTTPException: If job not found or deletion fails
+    ──────────────────────────────────────────────────────────────────────
+    `status` ∈ {'cancelled', 'failed', 'stuck'} (or `preserve_outputs=false`) → FULL_WIPE
+    ──────────────────────────────────────────────────────────────────────
+    Wipes everything: job, document, chunks, products, images, embeddings,
+    associations, storage files, temp files. Use case: "this job's output
+    is bad/partial — get it out of the catalog entirely."
     """
     try:
-        logger.info(f"🗑️ DELETE /documents/jobs/{job_id} - Starting complete deletion")
+        logger.info(f"🗑️ DELETE /documents/jobs/{job_id} - resolving deletion mode")
 
         # Remove from in-memory storage if exists
         if job_id in job_storage:
@@ -1766,16 +1771,52 @@ async def delete_job(job_id: str):
         supabase_client = get_supabase_client()
         vecs_service = get_vecs_service()
 
-        # Import cleanup service
+        # Decide the mode. Explicit override wins; otherwise infer from status.
+        # Statuses that imply "the produced data is good, keep it":
+        COMPLETED_STATUSES = {"completed"}
+        # Statuses that imply "wipe the partial/bad output":
+        WIPE_STATUSES = {"cancelled", "failed", "stuck", "interrupted"}
+
+        if preserve_outputs is not None:
+            mode_preserve = bool(preserve_outputs)
+            mode_source = "explicit_query_param"
+        else:
+            try:
+                job_row = supabase_client.client.table('background_jobs')\
+                    .select('status')\
+                    .eq('id', job_id)\
+                    .single()\
+                    .execute()
+                job_status = (job_row.data or {}).get('status') or 'unknown'
+            except Exception:
+                job_status = 'unknown'
+
+            if job_status in COMPLETED_STATUSES:
+                mode_preserve = True
+                mode_source = f"status={job_status}"
+            elif job_status in WIPE_STATUSES:
+                mode_preserve = False
+                mode_source = f"status={job_status}"
+            else:
+                # Unknown / processing / pending — be conservative: full wipe.
+                # If the user is deleting a job mid-processing, they almost
+                # certainly want the partial output gone.
+                mode_preserve = False
+                mode_source = f"status={job_status}_default_wipe"
+
+        logger.info(
+            f"   📋 Mode: preserve_outputs={mode_preserve} (decided by {mode_source})"
+        )
+
         from app.services.utilities.cleanup_service import CleanupService
         cleanup_service = CleanupService()
 
-        # Perform complete deletion (manual deletion from UI - includes storage files)
         stats = await cleanup_service.delete_job_completely(
             job_id=job_id,
             supabase_client=supabase_client,
             vecs_service=vecs_service,
-            delete_storage_files=True
+            delete_storage_files=True,
+            preserve_outputs=mode_preserve,
         )
 
         # Check if job was actually deleted
@@ -1786,12 +1827,17 @@ async def delete_job(job_id: str):
                 detail=f"Job {job_id} not found or deletion failed"
             )
 
-        logger.info(f"   ✅ Complete deletion finished for job {job_id}")
+        logger.info(f"   ✅ Deletion finished for job {job_id} [mode={stats.get('mode')}]")
         logger.info(f"   📊 Stats: {stats}")
 
+        msg_suffix = (
+            "tracking removed; produced catalog data preserved"
+            if mode_preserve
+            else "and all associated data deleted"
+        )
         return {
             "success": True,
-            "message": f"Job {job_id} and all associated data deleted successfully",
+            "message": f"Job {job_id} {msg_suffix}",
             "job_id": job_id,
             "stats": stats
         }
