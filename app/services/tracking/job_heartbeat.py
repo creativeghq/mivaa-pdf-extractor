@@ -57,7 +57,14 @@ class JobHeartbeat:
             logger.debug(f"heartbeat write failed for {self.job_id}: {e}")
 
     def _thread_loop(self) -> None:
-        """Threaded heartbeat loop. Runs independently of the asyncio event loop."""
+        """Threaded heartbeat loop. Runs independently of the asyncio event loop.
+
+        Audit fix #44: gates the per-tick write on a fresh status check. If the
+        job has been marked terminal (completed/failed/cancelled) by another
+        path, this loop stops writing — so a daemon thread that survives a
+        hard kill can't keep refreshing last_heartbeat on a finished job and
+        fool auto-recovery into thinking it's still alive.
+        """
         # Write one immediately so dashboards show "started" instantly.
         self._write_once()
         while not self._stop_event.is_set():
@@ -65,16 +72,42 @@ class JobHeartbeat:
             # as a non-busy sleep that can be interrupted by stop().
             if self._stop_event.wait(timeout=self.interval_seconds):
                 break
+            # Audit fix #44: gate write on terminal-status check.
+            if self._is_job_terminal():
+                logger.info(
+                    f"heartbeat thread for {self.job_id} detected terminal status — stopping"
+                )
+                self._stop_event.set()
+                break
             self._write_once()
         # Final heartbeat so the cron sees a fresh timestamp on natural completion.
-        self._write_once()
+        # Skipped if we exited due to terminal-status detection (already final).
+        if not self._is_job_terminal():
+            self._write_once()
+
+    def _is_job_terminal(self) -> bool:
+        """Best-effort check for terminal job status. Defaults to False on error
+        so a transient DB hiccup doesn't accidentally stop heartbeats."""
+        try:
+            if not self.supabase:
+                return False
+            resp = self.supabase.client.table("background_jobs")\
+                .select("status")\
+                .eq("id", self.job_id).single().execute()
+            status = (resp.data or {}).get("status")
+            return status in ("completed", "failed", "cancelled")
+        except Exception:
+            return False
 
     async def __aenter__(self) -> "JobHeartbeat":
         self._stop_event.clear()
+        # Audit fix #44: non-daemon so a hard process kill can't leave a
+        # thread alive writing to a finished job. Combined with terminal-
+        # status check above, double safety.
         self._thread = threading.Thread(
             target=self._thread_loop,
             name=f"heartbeat-{self.job_id}",
-            daemon=True,
+            daemon=False,
         )
         self._thread.start()
         return self
@@ -83,5 +116,4 @@ class JobHeartbeat:
         self._stop_event.set()
         if self._thread is not None:
             # Wait briefly for the thread to flush its final write.
-            # Don't block forever — daemon=True so it'll die with the process.
             await asyncio.to_thread(self._thread.join, 5.0)

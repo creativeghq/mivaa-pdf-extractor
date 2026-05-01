@@ -221,12 +221,21 @@ async def process_product_images(
                 )
 
                 if has_valid_bbox:
-                    img_width = bbox[2] if len(bbox) > 2 else 0
-                    center_x = bbox[0] + (img_width / 2)
+                    # Audit fix #28: bbox is stored NORMALIZED (0..1) in both
+                    # extraction paths (pdf_processor.py:1262 and 1397).
+                    # Previously this code compared `center_x = bbox[0] + bbox[2]/2`
+                    # against `mid_x = sheet_width/2` (PDF-points) — every image
+                    # had center_x < 1.0 < hundreds-of-points, so every image was
+                    # mis-assigned to the left page. Convert to PDF-points first.
+                    norm_x = bbox[0] if 0.0 <= bbox[0] <= 1.0 else bbox[0] / max(sheet_width, 1)
+                    norm_w = bbox[2] if 0.0 <= bbox[2] <= 1.0 else bbox[2] / max(sheet_width, 1)
+                    bbox_x_pts = norm_x * sheet_width
+                    bbox_w_pts = norm_w * sheet_width
+                    center_x = bbox_x_pts + (bbox_w_pts / 2)
 
                     # Scene detection: wide image spanning both pages
-                    spans_middle = (bbox[0] < mid_x) and (bbox[0] + img_width > mid_x)
-                    is_scene = spans_middle and (img_width > sheet_width * 0.45)
+                    spans_middle = (bbox_x_pts < mid_x) and (bbox_x_pts + bbox_w_pts > mid_x)
+                    is_scene = spans_middle and (bbox_w_pts > sheet_width * 0.45)
 
                     if is_scene:
                         # Scene spans both pages - assign to left page with scene flag
@@ -507,6 +516,33 @@ async def process_product_images(
     if failed_images:
         logger.warning(f"      ⚠️ Failed to save {len(failed_images)} images")
 
+    # ========================================================================
+    # PHASE 3 OCR — text-bearing product images (audit fix #10, 2026-05-01)
+    # ========================================================================
+    # Previously OCR fired only on icon candidates. Regular product images
+    # (yolo_crop of TABLE/TEXT/TITLE/CAPTION regions, embedded images flagged
+    # text-bearing by Phase 1 OpenCV) had no per-image OCR — so spec sheets in
+    # scanned catalogs lost all per-image text. Phase 3 OCR now runs on those
+    # too, writing to document_images.ocr_text / ocr_blocks columns. NEVER
+    # consumed by chunker (Stage 1.5 is the canonical chunk text source).
+    try:
+        ocr_summary = await _run_phase_3_ocr_for_product(
+            uploaded_regular=uploaded_regular,
+            document_id=document_id,
+            job_id=job_id,
+            product_name=product.name,
+            logger=logger,
+        )
+        if ocr_summary:
+            logger.info(
+                f"      Phase 3 OCR: ocr'd={ocr_summary['ocr_succeeded']}/"
+                f"{ocr_summary['ocr_attempted']} text-bearing, "
+                f"skipped={ocr_summary['ocr_skipped']} non-text"
+            )
+    except Exception as ocr_err:
+        # OCR is supplementary, never block Stage 3 completion.
+        logger.warning(f"      ⚠️ Phase 3 OCR pass failed (non-fatal): {ocr_err}")
+
     logger.info(f"   ✅ STAGE 3 COMPLETE for {product.name}")
     logger.info(f"      Total extracted: {total_images}")
     logger.info(f"      Regular material images: {len(regular_material_images)}")
@@ -523,6 +559,160 @@ async def process_product_images(
         'vector_stats': vector_stats,
         'failed_images': failed_images,
     }
+
+
+async def _run_phase_3_ocr_for_product(
+    uploaded_regular: List[Dict[str, Any]],
+    document_id: str,
+    job_id: Optional[str],
+    product_name: str,
+    logger: logging.Logger,
+) -> Optional[Dict[str, int]]:
+    """Run Chandra v2 OCR on text-bearing product images, write to document_images.ocr_*.
+
+    Filtering rule (per audit Q2):
+    - yolo_crop of region_type ∈ {TABLE, TEXT, TITLE, CAPTION}: OCR'd
+    - embedded with metadata.text_detected=True (Phase 1 OpenCV flagged): OCR'd
+    - full_render: SKIPPED (Stage 1.5 already covered the page)
+    - photo / decoration / yolo_crop of IMAGE: SKIPPED (no text expected)
+
+    Each OCR result lands in `document_images.{ocr_text, ocr_blocks, ocr_failed,
+    ocr_attempts, ocr_skipped_reason}`. Never flows into chunker; consumed by
+    vision_analysis prompt enrichment, icon-metadata, and image-search labels.
+
+    Returns counts dict for the per-product log line.
+    """
+    if not uploaded_regular:
+        return None
+
+    from app.services.core.supabase_client import get_supabase_client
+    from app.services.pdf.ocr_service import get_ocr_service
+
+    sb = get_supabase_client()
+
+    # Map filename → uploaded image dict so we can look up local paths after
+    # the DB returns ids by filename.
+    by_filename = {img.get('filename'): img for img in uploaded_regular if img.get('filename')}
+    if not by_filename:
+        return None
+
+    # Fetch the saved image rows for this batch (by document_id + filename).
+    # Note: extraction_layer column is currently always NULL in production —
+    # the actual layer info lives in metadata.extraction_method ('pymupdf_embedded'
+    # / 'pymupdf' / 'yolo_crop_<type>') and metadata.yolo_region_type. So we
+    # read both and filter from metadata.
+    try:
+        resp = (
+            sb.client.table("document_images")
+            .select("id, filename, extraction_layer, metadata")
+            .eq("document_id", document_id)
+            .in_("filename", list(by_filename.keys()))
+            .execute()
+        )
+        db_rows = resp.data or []
+    except Exception as e:
+        logger.warning(f"      Phase 3 OCR: failed to load image rows: {e}")
+        return None
+
+    ocr_service = get_ocr_service()
+
+    counts = {"ocr_attempted": 0, "ocr_succeeded": 0, "ocr_failed": 0, "ocr_skipped": 0}
+    for row in db_rows:
+        image_id = row["id"]
+        filename = row.get("filename")
+        metadata = row.get("metadata") or {}
+        # Prefer the metadata-derived layer info; column is unpopulated in prod.
+        extraction_layer = (
+            row.get("extraction_layer")
+            or metadata.get("extraction_layer")
+            or metadata.get("extraction_method")  # legacy field name in production
+            or "embedded"
+        )
+        # YOLO region type is persisted under metadata.yolo_region_type.
+        # Stage 1.5 layout-aware regions (TABLE/TEXT/TITLE/CAPTION) AND
+        # icon-style yolo crops both go through this path.
+        region_type = (
+            metadata.get("yolo_region_type")
+            or metadata.get("region_type")
+            or ""
+        ).upper()
+
+        # Apply text-bearing filter.
+        # Strategy: skip ONLY when we have positive evidence the image isn't
+        # text-bearing. Otherwise OCR — Chandra v2 returns empty blocks for
+        # pure photos so the cost of OCRing a photo is one Chandra call that
+        # produces no rows. Better than missing a spec sheet.
+        skipped_reason: Optional[str] = None
+        if extraction_layer == "full_render":
+            skipped_reason = "full_render_dup_of_stage_1_5"
+        elif region_type in ("IMAGE", "FIGURE", "PHOTO"):
+            # YOLO explicitly classified as non-text — skip.
+            skipped_reason = "photo_not_text_bearing"
+        # else: OCR it (embedded images, yolo_crop of unknown/text regions, etc.)
+
+        if skipped_reason is not None:
+            counts["ocr_skipped"] += 1
+            try:
+                sb.client.table("document_images").update({
+                    "ocr_skipped_reason": skipped_reason,
+                }).eq("id", image_id).execute()
+            except Exception:
+                pass
+            continue
+
+        # Locate the local image bytes/path. The pdf_processor stores under
+        # 'path'; we also check 'local_path' / 'image_path' for forward-compat.
+        src = by_filename.get(filename) or {}
+        local_path = src.get('path') or src.get('local_path') or src.get('image_path')
+        if not local_path:
+            counts["ocr_skipped"] += 1
+            continue
+
+        counts["ocr_attempted"] += 1
+        try:
+            results = ocr_service.extract_text_from_image(
+                local_path,
+                caller="phase_3_image_ocr",
+                image_id=image_id,
+                job_id=job_id,
+                document_id=document_id,
+            )
+            ocr_result = results[0] if results else None
+        except Exception as e:
+            logger.debug(f"      Phase 3 OCR exception for image {image_id}: {e}")
+            counts["ocr_failed"] += 1
+            try:
+                sb.client.table("document_images").update({
+                    "ocr_failed": True,
+                    "ocr_attempts": 1,
+                }).eq("id", image_id).execute()
+            except Exception:
+                pass
+            continue
+
+        if ocr_result is None or ocr_result.method == "chandra_failed":
+            counts["ocr_failed"] += 1
+            try:
+                sb.client.table("document_images").update({
+                    "ocr_failed": True,
+                    "ocr_attempts": ocr_result.attempts_made if ocr_result else 0,
+                }).eq("id", image_id).execute()
+            except Exception:
+                pass
+            continue
+
+        counts["ocr_succeeded"] += 1
+        try:
+            sb.client.table("document_images").update({
+                "ocr_text": ocr_result.text or None,
+                "ocr_blocks": ocr_result.blocks or [],
+                "ocr_failed": False,
+                "ocr_attempts": ocr_result.attempts_made,
+            }).eq("id", image_id).execute()
+        except Exception as e:
+            logger.debug(f"      Phase 3 OCR DB update failed for {image_id}: {e}")
+
+    return counts
 
 
 async def process_catalog_wide_icons(

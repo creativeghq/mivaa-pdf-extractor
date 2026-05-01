@@ -113,6 +113,10 @@ async def process_single_product(
         # Also peek at job stage_history for per-product checkpoint events
         # tied to THIS product_index (catches resumes where product_tracker
         # state was wiped on the previous restart).
+        # Audit fix #11: previously a transient Supabase 503 here would silently
+        # swallow the exception → prior_stages stays empty → all stages re-run
+        # → duplicate chunks/images. Now we log loudly so operator sees it,
+        # but still don't raise (resume-from-DB-state below is a safety net).
         try:
             sb_resp = supabase.client.table('background_jobs') \
                 .select('stage_history') \
@@ -121,8 +125,11 @@ async def process_single_product(
                 ed = entry.get('data') or {}
                 if str(ed.get('product_index')) == str(product_index):
                     prior_stages.add(entry.get('stage'))
-        except Exception:
-            pass
+        except Exception as ckpt_err:
+            logger_instance.error(
+                f"⚠️ Resume checkpoint read FAILED for product {product_index} — "
+                f"DB state will be sole source of truth: {ckpt_err}"
+            )
 
         # Verify with database state — checkpoints alone aren't authoritative
         # because a stage might have been MID-INSERT when the worker died.

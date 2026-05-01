@@ -23,6 +23,27 @@ Understanding Embedding Strategy:
 
 import logging
 import asyncio
+
+
+def _is_valid_vision_analysis_schema(vision_analysis: Any) -> bool:  # type: ignore[name-defined]
+    """Reject malformed Qwen vision_analysis payloads (audit fix #33).
+
+    Without this, error envelopes like {"error": "OOM", "message": "..."} would
+    survive the dict-extraction in `_vision_analysis_to_text`, produce an
+    almost-empty text payload, and Voyage would happily return a degenerate
+    embedding that matches every search query.
+    """
+    if not isinstance(vision_analysis, dict):
+        return False
+    # An error envelope is the most common failure shape.
+    if 'error' in vision_analysis and 'material_type' not in vision_analysis:
+        return False
+    # Require at least one of the expected describing fields. The schema is
+    # forgiving — Qwen sometimes drops keys — but if NONE of these are present
+    # the payload can't yield meaningful descriptive text.
+    expected_any = ('material_type', 'category', 'colors', 'textures',
+                    'finish', 'surface_pattern', 'description')
+    return any(k in vision_analysis for k in expected_any)
 import json
 import os
 import time
@@ -340,6 +361,10 @@ class RealEmbeddingsService:
             self.logger.error(f"❌ generate_visual_embedding failed: {e}")
             return {"success": False, "error": str(e)}
 
+    @staticmethod
+    def _validate_vision_analysis_schema_static(vision_analysis: Any) -> bool:
+        return _is_valid_vision_analysis_schema(vision_analysis)
+
     async def generate_understanding_embedding(
         self,
         vision_analysis: Dict[str, Any],
@@ -362,6 +387,18 @@ class RealEmbeddingsService:
             1024D embedding vector or None if failed
         """
         try:
+            # Audit fix #33: validate Qwen vision_analysis schema before serializing.
+            # Without this check a malformed Qwen response (e.g. {"error": "OOM"})
+            # would yield near-empty text, which Voyage would happily embed as a
+            # degenerate "no text" vector that matches every search query — silent
+            # search corruption.
+            if not _is_valid_vision_analysis_schema(vision_analysis):
+                self.logger.warning(
+                    f"⚠️ Malformed vision_analysis schema (keys={list((vision_analysis or {}).keys())[:6]}); "
+                    f"refusing to embed degenerate text. Skipping understanding embedding."
+                )
+                return None
+
             # Convert vision_analysis JSON to descriptive text
             text = self._vision_analysis_to_text(vision_analysis, material_properties)
 
@@ -826,6 +863,34 @@ class RealEmbeddingsService:
                         timeout=30.0
                     )
 
+                    # Audit fix #34: handle 429 rate-limit explicitly. Without this,
+                    # 429s fall through to the generic except → silent OpenAI fallback
+                    # → bursts of OpenAI cost during a Voyage rate-limit window.
+                    # Respect Retry-After header (Voyage sets it). Up to 3 retries
+                    # with capped backoff before giving up to fallback.
+                    rate_limit_attempt = 0
+                    while response.status_code == 429 and rate_limit_attempt < 3:
+                        retry_after_raw = response.headers.get("Retry-After", "5")
+                        try:
+                            retry_after = min(60.0, float(retry_after_raw))
+                        except ValueError:
+                            retry_after = 5.0
+                        self.logger.warning(
+                            f"⚠️ Voyage 429 rate-limit (attempt {rate_limit_attempt+1}/3); "
+                            f"sleeping {retry_after}s before retry"
+                        )
+                        await asyncio.sleep(retry_after)
+                        response = await client.post(
+                            "https://api.voyageai.com/v1/embeddings",
+                            headers={
+                                "Authorization": f"Bearer {self.voyage_api_key}",
+                                "Content-Type": "application/json"
+                            },
+                            json=request_data,
+                            timeout=30.0
+                        )
+                        rate_limit_attempt += 1
+
                     if response.status_code == 200:
                         data = response.json()
                         embedding = data["data"][0]["embedding"]
@@ -903,8 +968,17 @@ class RealEmbeddingsService:
                 self.logger.warning("OpenAI API key not available")
                 return None
 
-            # DB schema is vector(1024); ask OpenAI for the same dimension count.
-            openai_dimensions = dimensions
+            # Audit fix #16: pin OpenAI fallback to 1024D regardless of caller's
+            # `dimensions` arg. The DB schema is halfvec(1024) and there's no
+            # legitimate code path that should request a different dim. Previously
+            # legacy callers passing dimensions=1536 caused silent dim-mismatch
+            # storage (truncation or type error at write time).
+            openai_dimensions = 1024
+            if dimensions != 1024:
+                self.logger.warning(
+                    f"OpenAI fallback received dimensions={dimensions} but pinning to 1024 "
+                    f"(DB schema constraint). Caller should be updated."
+                )
 
             # Call OpenAI API
             async with httpx.AsyncClient() as client:
@@ -1075,18 +1149,31 @@ class RealEmbeddingsService:
                     pil_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
 
                 try:
-                    # Throttle SLIG calls — settings.slig_concurrency caps simultaneous
-                    # requests so 1000-image catalogs don't hammer the HF endpoint.
-                    async with self._get_slig_semaphore():
-                        embedding = await self._slig_client.get_image_embedding(pil_image)
+                    # Audit fix #14: SLIG dim-mismatch retry. Previously a single
+                    # wrong-dim response (transient model swap, partial deploy)
+                    # silently aborted with no retry → mass data loss. Now we
+                    # retry up to 3x, each with a fresh request — the endpoint
+                    # may have just swapped models mid-batch.
+                    embedding = None
+                    latency_ms = 0
+                    for slig_attempt in range(3):
+                        async with self._get_slig_semaphore():
+                            embedding = await self._slig_client.get_image_embedding(pil_image)
+                        latency_ms = int((time.time() - start_time) * 1000)
+                        if len(embedding) == self.slig_embedding_dimension:
+                            break
+                        self.logger.warning(
+                            f"⚠️ SLIG dim-mismatch attempt {slig_attempt+1}/3: "
+                            f"got {len(embedding)}D, expected {self.slig_embedding_dimension}D"
+                        )
+                        await asyncio.sleep(0.5 * (2 ** slig_attempt))
+                        embedding = None
 
-                    latency_ms = int((time.time() - start_time) * 1000)
-
-                    if len(embedding) != self.slig_embedding_dimension:
+                    if embedding is None or len(embedding) != self.slig_embedding_dimension:
                         self.logger.error(
-                            f"❌ SLIG endpoint returned {len(embedding)}D, expected "
-                            f"{self.slig_embedding_dimension}D — refusing to store. "
-                            f"The endpoint is likely serving the wrong model."
+                            f"❌ SLIG endpoint returned wrong-dim embedding 3x in a row — "
+                            f"refusing to store. The endpoint is likely misconfigured "
+                            f"(serving wrong model). Operator action required."
                         )
                         return None, None
 

@@ -191,28 +191,22 @@ class CheckpointRecoveryService:
 
             now_iso = datetime.utcnow().isoformat()
 
-            # last_checkpoint stays — frontend polling reads it directly,
-            # and so does the auto-recovery cron when re-dispatching.
-            self.supabase_client.client.table(self.jobs_table)\
-                .update({
-                    "last_checkpoint": {
-                        "stage": stage.value,
-                        "metadata": metadata or {},
-                        "created_at": now_iso,
-                    },
-                    "updated_at": now_iso,
-                })\
-                .eq("id", job_id)\
-                .execute()
-
-            # Append the stage event to background_jobs.stage_history. This
-            # is the single source of truth for the audit log; the legacy
-            # job_checkpoints upsert was removed in Phase 3.
+            # Audit fix #21: collapsed two-call (table.update + rpc append_stage_history)
+            # into a single atomic RPC. The previous pattern had a window where a
+            # crash between the two calls left last_checkpoint and stage_history
+            # divergent — the recovery cron would read a checkpoint with no
+            # corresponding audit-log entry. update_checkpoint_and_append_history
+            # is a single SQL UPDATE inside a transaction → cannot diverge.
             try:
                 self.supabase_client.client.rpc(
-                    'append_stage_history',
+                    'update_checkpoint_and_append_history',
                     {
                         'p_job_id': job_id,
+                        'p_checkpoint': {
+                            "stage": stage.value,
+                            "metadata": metadata or {},
+                            "created_at": now_iso,
+                        },
                         'p_event': {
                             'stage': stage.value,
                             'status': 'completed',
@@ -221,13 +215,30 @@ class CheckpointRecoveryService:
                             'attempt': 1,
                             'data': data,
                             'metadata': metadata or {},
+                            'source': 'checkpoint_recovery_service',
                         },
                     },
                 ).execute()
-            except Exception as shadow_err:
+            except Exception as atomic_err:
                 logger.error(
-                    f"Failed to write stage_history for {job_id} @ {stage.value}: {shadow_err}"
+                    f"Atomic checkpoint+history write failed for {job_id} @ {stage.value}: {atomic_err}"
                 )
+                # Fall back to legacy two-call pattern so we don't lose the
+                # checkpoint entirely if the new RPC isn't deployed yet.
+                try:
+                    self.supabase_client.client.table(self.jobs_table)\
+                        .update({
+                            "last_checkpoint": {"stage": stage.value, "metadata": metadata or {}, "created_at": now_iso},
+                            "updated_at": now_iso,
+                        }).eq("id", job_id).execute()
+                    self.supabase_client.client.rpc(
+                        'append_stage_history',
+                        {'p_job_id': job_id, 'p_event': {'stage': stage.value, 'status': 'completed',
+                                                          'completed_at': now_iso, 'data': data,
+                                                          'metadata': metadata or {}}},
+                    ).execute()
+                except Exception as fallback_err:
+                    logger.error(f"Legacy fallback also failed: {fallback_err}")
 
             logger.info(f"✅ Checkpoint created: {job_id} @ {stage.value}")
             return True

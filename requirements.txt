@@ -1,6 +1,7 @@
 # MIVAA PDF Extractor Dependencies
 # Cloud-only architecture - all ML inference via HuggingFace endpoints (SLIG, Qwen, OCR, YOLO)
-# OCR: Chandra (cloud, primary) → EasyOCR (local fallback, lazy-loaded) → Pytesseract (last resort)
+# OCR: Chandra v2 cloud endpoint only — retry-with-jitter (3 attempts at temp 0/0.1/0.2)
+# replaces the previous broken pytesseract/easyocr fallbacks (removed 2026-05-01).
 
 # Core FastAPI and server dependencies
 fastapi[standard]>=0.104.1
@@ -69,9 +70,8 @@ sentry-sdk[fastapi]>=2.35.0
 python-multipart>=0.0.6
 email-validator>=2.1.0
 
-# OCR Dependencies (EasyOCR is lazy-loaded fallback — torch pulled in only when needed)
-easyocr>=1.7.0
-pytesseract>=0.3.10
+# OCR: Chandra v2 only — see chandra_endpoint_manager.py. Pytesseract + EasyOCR
+# removed 2026-05-01 (silent failure surfaces, see audit). Chandra retry handles it.
 
 # NLP Dependencies
 nltk>=3.9.3

@@ -321,13 +321,27 @@ class UnifiedChunkingService:
             )
         else:
             if layout_regions:
-                self.logger.debug(
+                # WARNING (was debug): silent fallback was hiding the case where
+                # Stage 1.5 ran but produced empty text_content (Chandra OCR
+                # failed, scanned page). Bumped to WARNING so it shows up in
+                # production logs, plus a per-page-fallback counter is bumped on
+                # the metadata dict so downstream observability can quantify the
+                # rate (audit fix #8, #49).
+                self.logger.warning(
                     f"   Page {page_number}: {len(layout_regions)} layout "
                     f"region(s) provided but none carry text_content — "
-                    f"falling back to text-based chunking"
+                    f"falling back to text-based chunking. This indicates "
+                    f"Stage 1.5 OCR failed or the page is image-only. "
+                    f"Search/RAG quality on this page may be degraded."
                 )
+                if metadata is not None:
+                    metadata["chunker_fell_back_to_text"] = True
             # Select and execute chunking strategy on the full page text
             chunks = self._select_chunking_strategy(text, document_id, metadata, page_number)
+            # Track that we fell back so the page-level metric is accurate.
+            for ch in chunks or []:
+                if hasattr(ch, "metadata") and isinstance(ch.metadata, dict):
+                    ch.metadata.setdefault("chunking_strategy_fallback", "text_based_after_empty_layout")
 
         # Defensive fallback: if layout-aware path produced 0 chunks but
         # we have a valid page-text payload, retry with text-based

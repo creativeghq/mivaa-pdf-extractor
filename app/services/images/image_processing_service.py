@@ -382,7 +382,28 @@ class ImageProcessingService:
                                 import asyncio
                                 await asyncio.sleep(delay)
                                 continue
-                            # All retries exhausted for 503 — return graceful fallback (no Sentry noise)
+                            # All retries exhausted for 503 — return graceful fallback.
+                            # Audit fix #18: log a zero-cost ai_usage_logs row so the
+                            # audit trail captures the failure even though we paid $0.
+                            try:
+                                from app.services.core.supabase_client import get_supabase_client
+                                _sb = get_supabase_client()
+                                _sb.client.table("ai_usage_logs").insert({
+                                    "operation_type": "qwen_classification_failed_503",
+                                    "model_name": model,
+                                    "input_tokens": 0,
+                                    "output_tokens": 0,
+                                    "total_cost_usd": 0.0,
+                                    "billed_cost_usd": 0.0,
+                                    "metadata": {
+                                        "failure_kind": "qwen_503_after_retries",
+                                        "retries_burned": max_retries,
+                                        "error_excerpt": error_str[:200],
+                                        "image_path": str(image_path)[:200],
+                                    },
+                                }).execute()
+                            except Exception:
+                                pass
                             logger.warning(f"⚠️ Qwen 503 persists after {max_retries} retries for {image_path} — falling back to Claude")
                             return {
                                 'is_material': False,

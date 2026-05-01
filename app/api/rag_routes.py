@@ -1728,7 +1728,7 @@ async def list_jobs(
         )
 
 
-@router.delete("/documents/jobs/{job_id}", response_model=StatusResponse)
+@router.delete("/documents/jobs/{job_id}")
 async def delete_job(job_id: str):
     """
     Delete a job and ALL its associated data.
@@ -2702,14 +2702,18 @@ async def process_document_with_discovery(
                     
                     status = await asyncio.to_thread(check_qwen_status)
                     if status == "running":
-                        logger.info("   ✅ Qwen endpoint already running, skipping warmup")
-                        manager.warmup_completed = True
-                        # Even on skip, refresh endpoint_url from the live HF endpoint —
-                        # downstream OpenAI/health-check clients require an absolute URL.
+                        # Audit fix #4: status="running" was previously trusted as
+                        # "endpoint healthy, skip warmup". Health-probe first; only
+                        # skip if the probe also succeeds. Endpoints can be marked
+                        # running but actually be in OOM/zombie state from prior jobs.
                         await asyncio.to_thread(manager._refresh_url_from_endpoint)
-                        logger.info(f"   🔗 Qwen endpoint URL after refresh: {manager.endpoint_url}")
-                        warmup_results["skipped"].append("qwen")
-                        return
+                        probe_ok = await asyncio.to_thread(manager._test_inference) if hasattr(manager, '_test_inference') else True
+                        if probe_ok:
+                            logger.info(f"   ✅ Qwen endpoint running + health probe OK, skipping warmup. URL={manager.endpoint_url}")
+                            manager.warmup_completed = True
+                            warmup_results["skipped"].append("qwen")
+                            return
+                        logger.warning("   ⚠️ Qwen endpoint status=running but health probe FAILED — running full warmup")
 
                     # Run the REAL warmup in thread pool. The manager's
                     # warmup() handles: refresh URL → inline resume →
@@ -2765,9 +2769,15 @@ async def process_document_with_discovery(
                     
                     status = await asyncio.to_thread(check_slig_status)
                     if status == "running":
-                        logger.info("   ✅ SLIG endpoint already running")
-                        warmup_results["skipped"].append("slig")
-                        return
+                        # Audit fix #4 + #5: health-probe + URL refresh before trusting status.
+                        if hasattr(manager, '_refresh_url_from_endpoint'):
+                            await asyncio.to_thread(manager._refresh_url_from_endpoint)
+                        probe_ok = await asyncio.to_thread(manager._test_inference) if hasattr(manager, '_test_inference') else True
+                        if probe_ok:
+                            logger.info(f"   ✅ SLIG endpoint running + health probe OK, skipping warmup")
+                            warmup_results["skipped"].append("slig")
+                            return
+                        logger.warning("   ⚠️ SLIG endpoint status=running but health probe FAILED — running full warmup")
 
                     # Run blocking resume and warmup in thread pool
                     def resume_and_warmup_slig():
@@ -2812,9 +2822,15 @@ async def process_document_with_discovery(
                     
                     status = await asyncio.to_thread(check_yolo_status)
                     if status == "running":
-                        logger.info("   ✅ YOLO endpoint already running")
-                        warmup_results["skipped"].append("yolo")
-                        return
+                        # Audit fix #4 + #5: health-probe + URL refresh.
+                        if hasattr(manager, '_refresh_url_from_endpoint'):
+                            await asyncio.to_thread(manager._refresh_url_from_endpoint)
+                        probe_ok = await asyncio.to_thread(manager._test_inference) if hasattr(manager, '_test_inference') else True
+                        if probe_ok:
+                            logger.info(f"   ✅ YOLO endpoint running + health probe OK, skipping warmup")
+                            warmup_results["skipped"].append("yolo")
+                            return
+                        logger.warning("   ⚠️ YOLO endpoint status=running but health probe FAILED — running full warmup")
 
                     # Run blocking resume and warmup in thread pool
                     def resume_and_warmup_yolo():
@@ -2859,9 +2875,15 @@ async def process_document_with_discovery(
                     
                     status = await asyncio.to_thread(check_chandra_status)
                     if status == "running":
-                        logger.info("   ✅ Chandra endpoint already running")
-                        warmup_results["skipped"].append("chandra")
-                        return
+                        # Audit fix #4 + #5: Chandra has _test_inference (GET /health).
+                        if hasattr(manager, '_resolve_endpoint_url'):
+                            await asyncio.to_thread(manager._resolve_endpoint_url)
+                        probe_ok = await asyncio.to_thread(manager._test_inference) if hasattr(manager, '_test_inference') else True
+                        if probe_ok:
+                            logger.info(f"   ✅ Chandra endpoint running + health probe OK, skipping warmup")
+                            warmup_results["skipped"].append("chandra")
+                            return
+                        logger.warning("   ⚠️ Chandra endpoint status=running but health probe FAILED — running full warmup")
 
                     # P2-4: poll Chandra instead of blind sleep(60). Same
                     # pattern the other endpoints use — finish as soon as

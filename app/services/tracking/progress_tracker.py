@@ -273,6 +273,14 @@ class ProgressTracker:
         self.current_stage = ProcessingStage.DOWNLOADING
         logger.info(f"Started processing job {self.job_id} with {self.total_pages} pages")
 
+        # Audit fix #19: register active-job for scale-to-zero coordination.
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            if self.job_id:
+                endpoint_controller.register_job_start(self.job_id)
+        except Exception:
+            pass
+
         # Sync to database
         await self._sync_to_database()
 
@@ -600,34 +608,77 @@ class ProgressTracker:
         Args:
             result: Final result data
         """
+        # Audit fix #37: idempotency guard. Previously a second call (e.g.
+        # from auto-recovery picking up a job that was actually already done)
+        # would reset `completed_at` to a new timestamp, corrupting the audit
+        # trail. Now we early-return if the job is already marked complete.
+        if self._db_sync_enabled and self._supabase and self.job_id:
+            try:
+                existing = self._supabase.client.table('background_jobs')\
+                    .select('status, completed_at')\
+                    .eq('id', self.job_id).single().execute()
+                if existing.data and existing.data.get('status') == 'completed':
+                    logger.info(
+                        f"♻️ [JOB {self.job_id}] Already marked completed at "
+                        f"{existing.data.get('completed_at')} — idempotent no-op"
+                    )
+                    return
+            except Exception:
+                # If the read fails we fall through and try the write anyway.
+                pass
+
         self.current_stage = ProcessingStage.COMPLETED
 
-        # Stop heartbeat when job completes
+        # Stop heartbeat when job completes (audit fix #44 — definitive shutdown signal).
         await self.stop_heartbeat()
 
+        # Audit fix #17: compute final total_ai_cost_usd from ai_usage_logs.
+        # Previously this column was never written → cost-per-job was uncomputable
+        # at completion time. Sums billed_cost_usd (markup-applied) — that's
+        # what shows on user invoices. Best-effort: if read fails we still complete.
+        total_ai_cost_usd = None
+        if self._db_sync_enabled and self._supabase and self.job_id:
+            try:
+                cost_resp = self._supabase.client.table('ai_usage_logs')\
+                    .select('billed_cost_usd, total_cost_usd')\
+                    .eq('job_id', self.job_id).execute()
+                rows = cost_resp.data or []
+                total_ai_cost_usd = sum(
+                    float(r.get('billed_cost_usd') or r.get('total_cost_usd') or 0)
+                    for r in rows
+                )
+            except Exception as cost_err:
+                logger.warning(f"   ⚠️ Could not aggregate total_ai_cost_usd: {cost_err}")
+
         try:
+            update_payload = {
+                'status': 'completed',
+                'progress': 100,
+                'metadata': {
+                    'pages_completed': self.pages_completed,
+                    'pages_failed': self.pages_failed,
+                    'pages_skipped': self.pages_skipped,
+                    'database_records_created': self.database_records_created,
+                    'knowledge_base_entries': self.knowledge_base_entries,
+                    'images_extracted': self.images_extracted,
+                    'chunks_created': self.chunks_created,
+                    'products_created': self.products_created,
+                    'errors_count': len(self.errors),
+                    'warnings_count': len(self.warnings),
+                    'result': result
+                },
+                'completed_at': datetime.utcnow().isoformat(),
+                'updated_at': datetime.utcnow().isoformat(),
+                # Clear in-flight slow-op flag so the next job sees a clean slate.
+                'current_slow_operation': None,
+            }
+            if total_ai_cost_usd is not None:
+                update_payload['total_ai_cost_usd'] = total_ai_cost_usd
+
             # Update background_jobs table
             if self._db_sync_enabled and self._supabase:
                 self._supabase.client.table('background_jobs')\
-                    .update({
-                        'status': 'completed',
-                        'progress': 100,
-                        'metadata': {
-                            'pages_completed': self.pages_completed,
-                            'pages_failed': self.pages_failed,
-                            'pages_skipped': self.pages_skipped,
-                            'database_records_created': self.database_records_created,
-                            'knowledge_base_entries': self.knowledge_base_entries,
-                            'images_extracted': self.images_extracted,
-                            'chunks_created': self.chunks_created,
-                            'products_created': self.products_created,
-                            'errors_count': len(self.errors),
-                            'warnings_count': len(self.warnings),
-                            'result': result  # Store result in metadata instead
-                        },
-                        'completed_at': datetime.utcnow().isoformat(),
-                        'updated_at': datetime.utcnow().isoformat()
-                    })\
+                    .update(update_payload)\
                     .eq('id', self.job_id)\
                     .execute()
 
@@ -638,10 +689,22 @@ class ProgressTracker:
                 self.job_storage[self.job_id]['result'] = result
                 self.job_storage[self.job_id]['completed_at'] = datetime.utcnow().isoformat()
 
-            logger.info(f"✅ [JOB {self.job_id}] Completed successfully")
+            logger.info(
+                f"✅ [JOB {self.job_id}] Completed successfully. "
+                f"total_ai_cost_usd={total_ai_cost_usd}"
+            )
 
         except Exception as e:
             logger.error(f"❌ Failed to mark job as complete: {e}")
+
+        # Audit fix #19: deregister BEFORE scale-to-zero so the active-job
+        # check sees this job as done. Other jobs (if any) keep endpoints up.
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            if self.job_id:
+                endpoint_controller.register_job_done(self.job_id)
+        except Exception:
+            pass
 
         await _scale_endpoints_to_zero_safe(reason=f"job_completed_{self.job_id}")
 

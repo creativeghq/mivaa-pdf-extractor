@@ -969,12 +969,34 @@ class PDFProcessor:
 
                 self.logger.info(f"   ✅ Batch {batch_num + 1} complete: {len(batch_images)} images processed, {len(all_images)} total")
 
+            # Audit fix #30: extraction_stats counts the PRE-dedup numbers,
+            # which can be misleading after dedup removes some images. Recompute
+            # the per-layer counts from the actual `all_images` survivors so the
+            # log matches the data downstream stages will see.
+            actual_layer_counts: Dict[str, int] = {
+                "embedded": 0,
+                "yolo_crop": 0,
+                "full_render": 0,
+                "other": 0,
+            }
+            for img in all_images:
+                layer = img.get("extraction_layer") or "embedded"
+                actual_layer_counts[layer if layer in actual_layer_counts else "other"] += 1
+            extraction_stats["actual_embedded_count"] = actual_layer_counts["embedded"]
+            extraction_stats["actual_yolo_crop_count"] = actual_layer_counts["yolo_crop"]
+            extraction_stats["actual_full_render_count"] = actual_layer_counts["full_render"]
+            extraction_stats["actual_other_layer_count"] = actual_layer_counts["other"]
+
             self.logger.info(
-                f"✅ 4-LAYER EXTRACTION COMPLETE: {len(all_images)} total images "
-                f"(embedded: {extraction_stats['embedded_count']}, "
-                f"yolo_crop: {extraction_stats['yolo_crop_count']}, "
-                f"full_render: {extraction_stats['full_render_count']}, "
-                f"duplicates_removed: {extraction_stats['duplicates_removed']})"
+                f"✅ 4-LAYER EXTRACTION COMPLETE: {len(all_images)} total images survived dedup "
+                f"(actual: embedded={actual_layer_counts['embedded']}, "
+                f"yolo_crop={actual_layer_counts['yolo_crop']}, "
+                f"full_render={actual_layer_counts['full_render']}, "
+                f"other={actual_layer_counts['other']}; "
+                f"pre-dedup: embedded={extraction_stats['embedded_count']}, "
+                f"yolo_crop={extraction_stats['yolo_crop_count']}, "
+                f"full_render={extraction_stats['full_render_count']}; "
+                f"duplicates_removed={extraction_stats['duplicates_removed']})"
             )
 
             return all_images, extraction_stats
@@ -1589,11 +1611,21 @@ class PDFProcessor:
         )
 
         unique_images = []
-        seen_hashes = {}  # hash -> image_info mapping
+        # Audit fix #13: per-extraction-layer dedup. Previously a yolo_crop
+        # whose phash collided with an embedded image of the same material
+        # was silently dropped + the surviving layer kept the wrong label.
+        # Keying the seen-hashes map by extraction_layer means cross-layer
+        # collisions are kept (embedded preferred, yolo_crop preserved).
+        seen_hashes_by_layer: Dict[str, Dict] = {}
         duplicate_count = 0
+        # Audit fix #29: corrupted images that fail hash computation are now
+        # marked failed AND excluded from unique_images, instead of being
+        # silently included with `perceptual_hash=None` and bypassing dedup.
+        corrupted_count = 0
 
         for img_info in extracted_images:
             image_path = img_info.get('path')
+            extraction_layer = img_info.get('extraction_layer') or 'embedded'
 
             if not image_path or not os.path.exists(image_path):
                 self.logger.warning(f"   ⚠️ [Job: {job_id}] Image file not found: {image_path}")
@@ -1604,7 +1636,8 @@ class PDFProcessor:
                 with Image.open(image_path) as img:
                     phash = imagehash.phash(img)
 
-                # Check for duplicates
+                # Per-layer dedup: only compare against same-layer hashes.
+                seen_hashes = seen_hashes_by_layer.setdefault(extraction_layer, {})
                 is_duplicate = False
                 duplicate_of = None
 
@@ -1612,24 +1645,21 @@ class PDFProcessor:
                     hamming_distance = phash - existing_hash
 
                     if hamming_distance <= threshold:
-                        # Found a duplicate
                         is_duplicate = True
                         duplicate_of = existing_info.get('filename')
                         duplicate_count += 1
 
                         self.logger.debug(
-                            f"   🔄 [Job: {job_id}] Duplicate found: {img_info.get('filename')} "
+                            f"   🔄 [Job: {job_id}] Duplicate ({extraction_layer}): {img_info.get('filename')} "
                             f"(similar to {duplicate_of}, distance={hamming_distance})"
                         )
                         break
 
                 if is_duplicate:
-                    # Mark as duplicate but don't add to unique list
                     img_info['is_duplicate'] = True
                     img_info['duplicate_of'] = duplicate_of
                     img_info['perceptual_hash'] = str(phash)
                 else:
-                    # Add to unique images
                     img_info['is_duplicate'] = False
                     img_info['duplicate_of'] = None
                     img_info['perceptual_hash'] = str(phash)
@@ -1637,18 +1667,18 @@ class PDFProcessor:
                     seen_hashes[phash] = img_info
 
             except Exception as e:
+                # Audit fix #29: corrupted image — mark failed, exclude from output.
                 self.logger.error(
-                    f"   ❌ [Job: {job_id}] Failed to compute hash for {image_path}: {e}"
+                    f"   ❌ [Job: {job_id}] Hash computation failed for {image_path}: {e}. "
+                    f"Excluding from unique set (was previously included silently)."
                 )
-                # Include image anyway if hashing fails
-                img_info['is_duplicate'] = False
-                img_info['duplicate_of'] = None
-                img_info['perceptual_hash'] = None
-                unique_images.append(img_info)
+                corrupted_count += 1
 
         self.logger.info(
             f"   ✅ [Job: {job_id}] Layer 4 complete: {len(unique_images)} unique images "
-            f"({duplicate_count} duplicates removed)"
+            f"({duplicate_count} duplicates removed, {corrupted_count} corrupted-excluded). "
+            f"Per-layer dedup buckets: "
+            f"{ {layer: len(h) for layer, h in seen_hashes_by_layer.items()} }"
         )
 
         return unique_images

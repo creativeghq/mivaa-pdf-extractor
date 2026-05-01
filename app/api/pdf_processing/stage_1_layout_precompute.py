@@ -59,35 +59,48 @@ def _emit_stage_event(
 ) -> None:
     """Append a Stage 1.5 event to background_jobs.stage_history.
 
-    No-op when job_id is missing (lets us call this from contexts where
-    the orchestrator didn't pass one — e.g. ad-hoc backfills). Failures
-    are logged at WARNING but never propagate; observability must never
-    break the pipeline.
+    Audit fix #23: previously a single failed RPC silently lost the event.
+    Now retries once before logging at ERROR. Still never propagates —
+    observability must not break the pipeline — but the retry catches
+    transient network blips and the ERROR level surfaces persistent issues.
     """
     if not job_id:
         return
-    try:
-        supabase.client.rpc(
-            "append_stage_history",
-            {
-                "p_job_id": job_id,
-                "p_event": {
-                    "stage": STAGE_NAME,
-                    "status": status,
-                    "completed_at": datetime.utcnow().isoformat(),
-                    "data": data,
-                    "source": "stage_1_5_layout_precompute",
-                },
-            },
-        ).execute()
-    except Exception as hist_err:
-        logger.warning(f"   ⚠️ [STAGE 1.5] stage_history append failed: {hist_err}")
+    payload = {
+        "p_job_id": job_id,
+        "p_event": {
+            "stage": STAGE_NAME,
+            "status": status,
+            "completed_at": datetime.utcnow().isoformat(),
+            "data": data,
+            "source": "stage_1_5_layout_precompute",
+        },
+    }
+    last_err: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            supabase.client.rpc("append_stage_history", payload).execute()
+            return
+        except Exception as hist_err:
+            last_err = hist_err
+    logger.error(
+        f"❌ [STAGE 1.5] stage_history append failed twice for {job_id} "
+        f"(audit-log gap): {last_err}"
+    )
 
 
 # Render DPI for YOLO input. 250 keeps small typography legible while
 # capping per-page memory at ~3-5 MB for letter-sized sheets. Matches
 # the default `dpi` arg in YoloLayoutDetector.convert_pdf_page_to_image.
 LAYOUT_RENDER_DPI = 250
+
+# Stage 1.5 reuses the standard Chandra OCR prompt; named explicitly here
+# so the per-page call site doesn't have to know about chandra internals.
+DEFAULT_OCR_PROMPT_FOR_STAGE_1_5 = (
+    "Extract all text from this image. Return a JSON array where each entry is "
+    '{"text": <fragment>, "x": <int>, "y": <int>, "w": <int>, "h": <int>}. '
+    "Output JSON only - no commentary, no markdown."
+)
 
 # pdf-points → pixel scale for the render DPI above. fitz uses 72 dpi
 # baseline. PDF_POINTS_TO_PIXEL_ZOOM = LAYOUT_RENDER_DPI / 72.
@@ -247,16 +260,26 @@ async def precompute_document_layout(
         )
         return summary
 
-    # 2. Resume-safe: skip pages already in cache
+    # 2. Resume-safe: skip pages already in cache, BUT NOT pages whose cached
+    #    row is marked `cache_status='ocr_failed'`. Previously a transient
+    #    Chandra failure would persist an empty `layout_elements: []` row that
+    #    the resume check treated as "cached, skip forever", silently
+    #    suppressing OCR for that page on every subsequent run (audit fix #6).
+    #    Filtering by cache_status here lets re-runs retry failed pages.
     existing_pages: Set[int] = set()
     try:
         resp = (
             supabase.client.table("document_layout_analysis")
-            .select("page_number")
+            .select("page_number, analysis_metadata")
             .eq("document_id", document_id)
             .execute()
         )
-        existing_pages = {row["page_number"] for row in (resp.data or [])}
+        for row in (resp.data or []):
+            meta = row.get("analysis_metadata") or {}
+            if meta.get("cache_status") == "ocr_failed":
+                # Allow retry on next run.
+                continue
+            existing_pages.add(row["page_number"])
     except Exception as e:
         logger.warning(f"   ⚠️ [STAGE 1.5] cache-existence query failed: {e}")
 
@@ -333,6 +356,13 @@ async def precompute_document_layout(
             pdf_idx, position = physical_to_pdf[physical_page]
             extraction_path = "none"
             merged_regions: List[Any] = []
+            # cache_status semantics (audit fix #6, #24):
+            #   'success'      — text fragments + region structure both present
+            #   'yolo_only'    — YOLO regions present, no text (legitimate empty-text page)
+            #   'empty_page'   — neither YOLO regions nor text fragments
+            #   'ocr_failed'   — Chandra exhausted retries; row will be retried on next run
+            #   'page_failed'  — outer exception; row will be retried on next run
+            cache_status = "empty_page"
 
             try:
                 # 3a. Render the relevant half (or full sheet) to a PIL image.
@@ -357,32 +387,39 @@ async def precompute_document_layout(
                 )
 
                 fragments: List[Dict[str, Any]] = []
+                chandra_failed = False
                 if pdf_spans:
                     fragments = pdf_spans
                     extraction_path = "pymupdf_spans"
                 elif chandra_manager is not None:
                     try:
                         chandra_result = await asyncio.to_thread(
-                            chandra_manager.run_inference, image
+                            chandra_manager.run_inference,
+                            image,
+                            None,                                 # parameters
+                            DEFAULT_OCR_PROMPT_FOR_STAGE_1_5,     # prompt
+                            "stage_1_5_layout_precompute",        # caller
+                            None,                                 # image_id (unused at page level)
+                            job_id,                               # job_id
+                            document_id,                          # document_id
                         )
                         chandra_blocks = chandra_result.get("blocks") or []
                         if chandra_blocks:
                             fragments = chandra_blocks
-                            extraction_path = chandra_result.get(
-                                "extraction_path", "chandra_v2"
-                            )
-                            # Normalize reasoning-content path into the
-                            # chandra_v2 bucket for telemetry.
-                            if extraction_path != "pymupdf_spans":
-                                extraction_path = "chandra_v2"
+                            extraction_path = "chandra_v2"
                     except ChandraResponseError as cre:
+                        # All retries exhausted — mark cache_status='ocr_failed'
+                        # so the resume-skip filter excludes this row and a
+                        # future run will retry (audit fix #7).
+                        chandra_failed = True
                         logger.warning(
-                            f"   ⚠️ [STAGE 1.5] Chandra unparseable on physical "
+                            f"   ⚠️ [STAGE 1.5] Chandra exhausted retries on physical "
                             f"page {physical_page}: {cre}"
                         )
                     except Exception as ce:
+                        chandra_failed = True
                         logger.warning(
-                            f"   ⚠️ [STAGE 1.5] Chandra failed on physical "
+                            f"   ⚠️ [STAGE 1.5] Chandra HTTP/endpoint error on physical "
                             f"page {physical_page}: {ce}"
                         )
 
@@ -397,8 +434,23 @@ async def precompute_document_layout(
                 merged_regions = merge_layout(
                     yolo_regions, fragments, page_size=page_size_px
                 )
-                if not merged_regions and yolo_regions:
+
+                # Determine cache_status (audit fix #6, #24).
+                if chandra_failed:
+                    cache_status = "ocr_failed"
+                    if not merged_regions and yolo_regions:
+                        extraction_path = "yolo_only"
+                elif fragments and merged_regions:
+                    has_text = any(
+                        getattr(r, "text_content", "").strip()
+                        for r in merged_regions
+                    )
+                    cache_status = "success" if has_text else "yolo_only"
+                elif yolo_regions:
+                    cache_status = "yolo_only"
                     extraction_path = "yolo_only"
+                else:
+                    cache_status = "empty_page"
 
                 # Free the render before persisting (cap RSS).
                 try:
@@ -407,6 +459,7 @@ async def precompute_document_layout(
                     pass
 
             except Exception as e:
+                cache_status = "page_failed"
                 logger.warning(
                     f"   ⚠️ [STAGE 1.5] page {physical_page} failed: {e}"
                 )
@@ -429,6 +482,7 @@ async def precompute_document_layout(
                     "analysis_metadata": {
                         "stage_1_5": True,
                         "extraction_path": extraction_path,
+                        "cache_status": cache_status,
                         "pdf_idx": pdf_idx,
                         "position": position,
                         "region_count": len(merged_regions),
@@ -477,15 +531,37 @@ async def get_layout_from_document_cache(
     supabase: Any,
     logger: logging.Logger,
 ) -> Dict[int, List[Dict[str, Any]]]:
-    """Read cached merged regions for a subset of physical pages.
+    """Backward-compatible thin wrapper — same shape as before.
 
-    Used by Stage 2 chunking to look up Stage 1.5 results. Returns
-    `{physical_page_number: [region_dict, ...]}` where each region_dict
-    has the same shape `unified_chunking_service` already accepts
-    (`region_type`, `text_content`, `bbox`, `reading_order`).
+    Returns `{physical_page: [regions]}` for pages whose cache row has
+    non-empty regions. Use `get_layout_from_document_cache_with_status`
+    when the caller needs to distinguish "no cache row" from
+    "cached row with empty regions".
+    """
+    full = await get_layout_from_document_cache_with_status(
+        document_id, physical_pages, supabase, logger
+    )
+    return {p: v["regions"] for p, v in full.items() if v["regions"]}
 
-    Empty dict on cache miss; the caller falls back to in-memory or
-    product-level regions.
+
+async def get_layout_from_document_cache_with_status(
+    document_id: str,
+    physical_pages: List[int],
+    supabase: Any,
+    logger: logging.Logger,
+) -> Dict[int, Dict[str, Any]]:
+    """Read cached merged regions WITH cache_status semantics (audit fix #24).
+
+    Returns `{physical_page: {regions: [...], cache_status: 'success'|'yolo_only'|
+    'empty_page'|'ocr_failed'|'page_failed'|None}}`. cache_status=None means
+    the row exists but predates the 2026-05-01 migration that added the field.
+
+    The chunker uses this to decide:
+      - cache_status=='success' → use layout-aware chunking
+      - cache_status=='ocr_failed' → log + emit metric, fall back to text-based
+        (the failure will be retried by the next Stage 1.5 run because the
+         resume-skip query filters out ocr_failed rows)
+      - cache_status missing OR no row → cache miss, fall back to text-based
     """
     if not document_id or not physical_pages:
         return {}
@@ -493,7 +569,7 @@ async def get_layout_from_document_cache(
     try:
         resp = (
             supabase.client.table("document_layout_analysis")
-            .select("page_number, layout_elements")
+            .select("page_number, layout_elements, analysis_metadata")
             .eq("document_id", document_id)
             .in_("page_number", physical_pages)
             .execute()
@@ -503,16 +579,23 @@ async def get_layout_from_document_cache(
         return {}
 
     rows = resp.data or []
-    out: Dict[int, List[Dict[str, Any]]] = {}
+    out: Dict[int, Dict[str, Any]] = {}
     for row in rows:
         regions = row.get("layout_elements") or []
-        if isinstance(regions, list) and regions:
-            out[row["page_number"]] = regions
+        if not isinstance(regions, list):
+            regions = []
+        meta = row.get("analysis_metadata") or {}
+        out[row["page_number"]] = {
+            "regions": regions,
+            "cache_status": meta.get("cache_status"),
+            "extraction_path": meta.get("extraction_path"),
+        }
 
-    if out:
+    non_empty = sum(1 for v in out.values() if v["regions"])
+    if non_empty:
         logger.info(
-            f"   ♻️ Loaded {sum(len(v) for v in out.values())} merged regions "
+            f"   ♻️ Loaded {sum(len(v['regions']) for v in out.values())} merged regions "
             f"from document_layout_analysis cache "
-            f"({len(out)}/{len(physical_pages)} physical pages)"
+            f"({non_empty}/{len(physical_pages)} physical pages)"
         )
     return out

@@ -1,10 +1,14 @@
 """
 OCR Service for multi-modal text extraction from images.
 
-Two-tier chain:
+Single-tier: Chandra v2 cloud endpoint only (HuggingFace, GPU, structured bbox-JSON).
 
-    1. Chandra v2 cloud endpoint (HuggingFace, GPU, structured bbox-JSON)
-    2. Tesseract CLI (local, deterministic, last-resort fallback)
+Pytesseract was removed 2026-05-01 — it had been silently broken on production
+(TESSDATA_PREFIX unset, no en.traineddata installed) and even when "working" it
+produced bbox-less text that was indistinguishable to layout-merge from
+UNCLASSIFIED orphans, silently degrading layout-aware chunking. Chandra v2 now
+has retry-with-jitter (3 attempts, temps 0.0/0.1/0.2) which raises the success
+rate to >95% and eliminates the need for a fallback.
 """
 
 import asyncio
@@ -16,10 +20,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
-import pytesseract
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
+from app.services.pdf.chandra_endpoint_manager import (
+    ChandraEndpointManager,
+    ChandraResponseError,
+)
 
 # Import endpoint registry for using warmed-up managers
 try:
@@ -43,17 +49,31 @@ class IconMetadata:
 
 @dataclass
 class OCRResult:
-    """Data class for OCR extraction results."""
+    """Data class for OCR extraction results.
+
+    `blocks` carries the per-fragment bbox list from Chandra v2 (each entry is
+    {text, x, y, w, h} in image pixel coordinates). Consumers that need
+    bbox-aware processing (icon-metadata extraction, layout-merge fallback)
+    must read `blocks`, NOT the legacy single-`bbox` field.
+
+    `method` values:
+      - 'chandra'         — successful OCR
+      - 'chandra_failed'  — all retries exhausted; text is "" and blocks is []
+                            (explicit failure marker; downstream can distinguish
+                            from "page genuinely had no text")
+    """
     text: str
     confidence: float
-    bbox: Optional[List[int]] = None  # [x1, y1, x2, y2]
+    bbox: Optional[List[int]] = None  # [x1, y1, x2, y2] — legacy, generally None
     language: Optional[str] = None
-    method: Optional[str] = None  # 'chandra' or 'tesseract'
+    method: Optional[str] = None
+    blocks: List[Dict[str, Any]] = field(default_factory=list)
+    attempts_made: int = 0  # populated by _call_chandra; useful for telemetry
 
 
 @dataclass
 class OCRConfig:
-    """Configuration for OCR processing."""
+    """Configuration for OCR processing (Chandra v2 only)."""
     languages: List[str] = None
     use_gpu: bool = False
     confidence_threshold: float = 0.5
@@ -218,124 +238,134 @@ class OCRService:
         logger.info("OCR Service initialized (Chandra primary, Tesseract fallback)")
     
 
-    def _call_chandra(self, image: np.ndarray) -> Optional[List[OCRResult]]:
-        """Try Chandra cloud endpoint. Returns results or None on failure."""
+    def _call_chandra(
+        self,
+        image: np.ndarray,
+        caller: str = "ad_hoc",
+        image_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+    ) -> List[OCRResult]:
+        """Call Chandra v2 with retry-with-jitter.
+
+        Returns:
+            - One OCRResult with method='chandra' on success (text + blocks populated)
+            - One OCRResult with method='chandra_failed' on retry-exhaustion
+              (explicit failure marker — text="", blocks=[]; consumers must check
+              method, NOT just emptiness, to distinguish failure from "no text")
+
+        Never raises. HTTP errors are caught and converted to chandra_failed
+        results so callers don't need to wrap in try/except.
+        """
         if not self.chandra_manager:
-            return None
+            return [OCRResult(
+                text="", confidence=0.0, method='chandra_failed', blocks=[],
+                attempts_made=0,
+            )]
 
+        if isinstance(image, np.ndarray):
+            pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        else:
+            pil_image = image
+
+        import time as _time
+        _chandra_start = _time.time()
         try:
-            if isinstance(image, np.ndarray):
-                pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-            else:
-                pil_image = image
+            chandra_result = self.chandra_manager.run_inference(
+                pil_image,
+                caller=caller,
+                image_id=image_id,
+                job_id=job_id,
+                document_id=document_id,
+            )
+            from app.services.core.endpoint_controller import endpoint_controller
+            endpoint_controller.record_success("chandra")
+        except ChandraResponseError as parse_err:
+            # All retries exhausted — return explicit failure marker.
+            logger.warning(f"❌ Chandra OCR exhausted retries for {caller}: {parse_err}")
+            return [OCRResult(
+                text="", confidence=0.0, method='chandra_failed', blocks=[],
+                attempts_made=len(self.chandra_manager._RETRY_TEMPERATURES),
+            )]
+        except Exception as chandra_err:
+            from app.services.core.endpoint_controller import endpoint_controller
+            endpoint_controller.record_overload_exception("chandra", chandra_err)
+            logger.warning(f"❌ Chandra HTTP/endpoint error for {caller}: {chandra_err}")
+            return [OCRResult(
+                text="", confidence=0.0, method='chandra_failed', blocks=[],
+                attempts_made=0,
+            )]
 
-            import time as _time
-            _chandra_start = _time.time()
+        # Track GPU time-based cost (L4 endpoint, $0.80/hr) — sync-safe.
+        try:
+            import asyncio as _asyncio
+            from app.services.core.ai_call_logger import AICallLogger
+            _chandra_latency_ms = int((_time.time() - _chandra_start) * 1000)
+            _log_coro = AICallLogger().log_time_based_call(
+                task="pdf_ocr_chandra",
+                model="chandra-ocr-2",
+                latency_ms=_chandra_latency_ms,
+                confidence_score=0.85,
+                confidence_breakdown={},
+            )
             try:
-                chandra_result = self.chandra_manager.run_inference(pil_image)
-                from app.services.core.endpoint_controller import endpoint_controller
-                endpoint_controller.record_success("chandra")
-            except Exception as chandra_err:
-                from app.services.core.endpoint_controller import endpoint_controller
-                endpoint_controller.record_overload_exception("chandra", chandra_err)
-                raise
+                _loop = _asyncio.get_running_loop()
+                _loop.create_task(_log_coro)
+            except RuntimeError:
+                _asyncio.run(_log_coro)
+        except Exception as _log_err:
+            logger.debug(f"Chandra logging failed (non-fatal): {_log_err}")
 
-            # Track GPU time-based cost (L4 endpoint, $0.80/hr) — sync-safe
-            try:
-                import asyncio as _asyncio
-                from app.services.core.ai_call_logger import AICallLogger
-                _chandra_latency_ms = int((_time.time() - _chandra_start) * 1000)
-                _log_coro = AICallLogger().log_time_based_call(
-                    task="pdf_ocr_chandra",
-                    model="chandra-ocr-2",
-                    latency_ms=_chandra_latency_ms,
-                    confidence_score=0.85,
-                    confidence_breakdown={},
-                )
-                try:
-                    _loop = _asyncio.get_running_loop()
-                    _loop.create_task(_log_coro)
-                except RuntimeError:
-                    _asyncio.run(_log_coro)
-            except Exception as _log_err:
-                logger.debug(f"Chandra logging failed (non-fatal): {_log_err}")
+        chandra_text = chandra_result.get('generated_text', '') or ''
+        blocks = chandra_result.get('blocks', []) or []
+        attempts_made = chandra_result.get('attempts_made', 1)
 
-            # Parse Chandra result
-            if isinstance(chandra_result, list) and len(chandra_result) > 0:
-                chandra_text = chandra_result[0].get('generated_text', '')
-            elif isinstance(chandra_result, dict):
-                chandra_text = chandra_result.get('generated_text', '')
-            else:
-                chandra_text = str(chandra_result)
-
-            if chandra_text.strip():
-                logger.info(f"✅ Chandra OCR succeeded ({len(chandra_text)} chars)")
-                return [OCRResult(
-                    text=chandra_text,
-                    confidence=0.85,
-                    method='chandra'
-                )]
-            else:
-                logger.warning("Chandra returned empty text")
-                return None
-
-        except Exception as e:
-            logger.warning(f"Chandra endpoint failed: {e}")
-            return None
+        if chandra_text.strip() or blocks:
+            return [OCRResult(
+                text=chandra_text,
+                confidence=0.85,
+                method='chandra',
+                blocks=blocks,
+                attempts_made=attempts_made,
+            )]
+        # Parsed successfully but the page genuinely has no text.
+        return [OCRResult(
+            text="", confidence=0.85, method='chandra', blocks=[],
+            attempts_made=attempts_made,
+        )]
 
     def extract_text_from_image(
         self,
         image_input: Union[str, Path, np.ndarray, Image.Image],
-        use_preprocessing: bool = None
+        use_preprocessing: bool = None,
+        caller: str = "ad_hoc",
+        image_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+        document_id: Optional[str] = None,
     ) -> List[OCRResult]:
         """
-        Extract text from image using Chandra-first strategy.
-
-        Strategy (2-tier):
-        1. Try Chandra cloud endpoint FIRST (high quality, GPU, structured bbox-JSON)
-        2. Pytesseract as last resort (local, CPU-light, deterministic)
-
-        Tesseract is light, deterministic, and "valid text or nothing" — preferred
-        over heavier CPU OCR models that would thrash memory on cold paths.
-
-        Args:
-            image_input: Image file path, numpy array, or PIL Image
-            use_preprocessing: Whether to apply image preprocessing
+        Extract text from image using Chandra v2 (single-tier, with retry).
 
         Returns:
-            List of OCR results from best available engine; empty if all failed
+            List of OCRResult. Always non-empty:
+              - Success: one OCRResult with method='chandra', text + blocks
+              - Failure (retries exhausted): one OCRResult with method='chandra_failed'
+              - No-text (page parsed clean but has no text): one OCRResult with
+                method='chandra' and text="" / blocks=[]
 
-        Raises:
-            ValueError: If image input is invalid
+            Callers MUST check `result.method == 'chandra_failed'` to distinguish
+            real failure from "no text on page" — both have empty text.
         """
-        # Load and convert image to numpy array
         image = self._load_image(image_input)
 
-        # Apply preprocessing if enabled
         if use_preprocessing or (use_preprocessing is None and self.config.preprocessing_enabled):
             image = self.preprocessor.enhance_image(image)
             image = self.preprocessor.preprocess_for_ocr(image)
 
-        # Step 1: Try Chandra FIRST (primary — high quality cloud OCR)
-        chandra_results = self._call_chandra(image)
-        if chandra_results:
-            return chandra_results
-
-        # Step 2: Last resort — pytesseract (light, deterministic)
-        logger.info("Chandra unavailable, falling back to pytesseract")
-        try:
-            if isinstance(image, np.ndarray):
-                pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if len(image.shape) == 3 else image)
-            else:
-                pil_image = image
-            text = pytesseract.image_to_string(pil_image, lang='+'.join(self.config.languages))
-            if text.strip():
-                logger.info(f"✅ Pytesseract fallback succeeded ({len(text)} chars)")
-                return [OCRResult(text=text.strip(), confidence=0.5, method='tesseract')]
-        except Exception as e:
-            logger.error(f"Pytesseract also failed: {e}")
-
-        return []
+        return self._call_chandra(
+            image, caller=caller, image_id=image_id,
+            job_id=job_id, document_id=document_id,
+        )
     
     def extract_text_simple(
         self, 
@@ -464,20 +494,10 @@ class OCRService:
         status = {
             'initialized': self._initialized,
             'chandra_available': self.chandra_manager is not None,
-            'tesseract_available': False,
             'languages': self.config.languages,
             'gpu_enabled': self.config.use_gpu,
         }
-
-        # Check Tesseract
-        try:
-            pytesseract.get_tesseract_version()
-            status['tesseract_available'] = True
-        except Exception:
-            pass
-
-        status['healthy'] = status['chandra_available'] or status['tesseract_available']
-
+        status['healthy'] = status['chandra_available']
         return status
 
     async def extract_icon_metadata(
@@ -533,18 +553,41 @@ class OCRService:
                 False,  # use_preprocessing=False — we already preprocessed above
             )
 
+            # Filter out chandra_failed markers — they have no usable text.
+            ocr_results = [
+                r for r in (ocr_results or [])
+                if r.method != 'chandra_failed' and (r.text.strip() or r.blocks)
+            ]
             if not ocr_results:
-                logger.warning("No text extracted from image")
+                logger.warning("No text extracted from image (Chandra failed or page empty)")
                 return []
 
-            # Combine OCR results into structured format
+            # Build per-fragment OCR data from Chandra's bbox blocks.
+            # Previously we used `result.bbox` which was always None — Claude was
+            # asked to reason about icon positions with no positional info.
+            # Now we pass the per-fragment {text, x, y, w, h} list that Chandra
+            # actually produced (audit fix #22).
             ocr_data = []
             for result in ocr_results:
-                ocr_data.append({
-                    'text': result.text,
-                    'confidence': result.confidence,
-                    'bbox': result.bbox
-                })
+                if result.blocks:
+                    for block in result.blocks:
+                        ocr_data.append({
+                            'text': block.get('text', ''),
+                            'confidence': result.confidence,
+                            'bbox': {
+                                'x': block.get('x'),
+                                'y': block.get('y'),
+                                'w': block.get('w'),
+                                'h': block.get('h'),
+                            },
+                        })
+                elif result.text.strip():
+                    # No bbox available — emit a single-entry fallback.
+                    ocr_data.append({
+                        'text': result.text,
+                        'confidence': result.confidence,
+                        'bbox': None,
+                    })
 
             if use_ai:
                 # Load prompt from database

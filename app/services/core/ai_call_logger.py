@@ -114,34 +114,49 @@ class AICallLogger:
                     f"cost=${cost:.4f} | latency={latency_ms}ms"
                 )
 
-                # Mirror to ai_usage_logs (dashboard-facing table)
-                try:
-                    cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens)
-                    usage_entry = {
-                        "user_id": user_id,
-                        "workspace_id": workspace_id,
-                        "operation_type": task,
-                        "model_name": model,
-                        "input_tokens": input_tokens,
-                        "output_tokens": output_tokens,
-                        "input_cost_usd": float(cost_data.get("input_cost_usd", 0)),
-                        "output_cost_usd": float(cost_data.get("output_cost_usd", 0)),
-                        "total_cost_usd": float(cost_data.get("total_cost_usd", cost)),
-                        "raw_cost_usd": float(cost_data.get("raw_cost_usd", cost)),
-                        "markup_multiplier": float(cost_data.get("markup_multiplier", 1.5)),
-                        "billed_cost_usd": float(cost_data.get("billed_cost_usd", cost)),
-                        "job_id": job_id,
-                        "module_slug": module_slug,
-                        "metadata": {
-                            "action": action,
-                            "confidence_score": round(confidence_score, 2),
-                            "latency_ms": latency_ms,
-                            "fallback_reason": fallback_reason,
-                        },
-                    }
-                    self.supabase.client.table("ai_usage_logs").insert(usage_entry).execute()
-                except Exception as usage_err:
-                    self.logger.warning(f"⚠️ Failed to mirror to ai_usage_logs: {usage_err}")
+                # Mirror to ai_usage_logs (dashboard-facing table).
+                # Audit fix #35: previously a single failed insert silently lost
+                # the cost row. Now: 2 attempts, bump to ERROR on persistent
+                # failure so operator sees cost-tracking gap.
+                cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens)
+                usage_entry = {
+                    "user_id": user_id,
+                    "workspace_id": workspace_id,
+                    "operation_type": task,
+                    "model_name": model,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "input_cost_usd": float(cost_data.get("input_cost_usd", 0)),
+                    "output_cost_usd": float(cost_data.get("output_cost_usd", 0)),
+                    "total_cost_usd": float(cost_data.get("total_cost_usd", cost)),
+                    "raw_cost_usd": float(cost_data.get("raw_cost_usd", cost)),
+                    "markup_multiplier": float(cost_data.get("markup_multiplier", 1.5)),
+                    "billed_cost_usd": float(cost_data.get("billed_cost_usd", cost)),
+                    "job_id": job_id,
+                    "module_slug": module_slug,
+                    "metadata": {
+                        "action": action,
+                        "confidence_score": round(confidence_score, 2),
+                        "latency_ms": latency_ms,
+                        "fallback_reason": fallback_reason,
+                    },
+                }
+                mirror_attempt = 0
+                last_mirror_err = None
+                while mirror_attempt < 2:
+                    try:
+                        self.supabase.client.table("ai_usage_logs").insert(usage_entry).execute()
+                        last_mirror_err = None
+                        break
+                    except Exception as usage_err:
+                        last_mirror_err = usage_err
+                        mirror_attempt += 1
+                if last_mirror_err is not None:
+                    self.logger.error(
+                        f"❌ COST DATA LOST: ai_usage_logs mirror failed 2x for "
+                        f"{task}/{model} cost=${cost:.4f}: {last_mirror_err}. "
+                        f"This row will not appear in user-facing cost reports."
+                    )
 
                 return True
             else:

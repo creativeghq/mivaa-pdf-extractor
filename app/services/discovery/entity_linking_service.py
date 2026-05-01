@@ -340,6 +340,10 @@ class EntityLinkingService:
             # each chunk against EVERY page in its product's page range.  This ensures
             # images on any page of the product are linked to the product's chunks.
             page_to_chunks: Dict[int, List[str]] = {}
+            # Audit fix #47: count chunks skipped because of missing
+            # product_pages AND page_number, so silent linkage gaps are
+            # visible in logs instead of silently producing no relationships.
+            chunks_skipped_no_page = 0
             for chunk in chunks_response.data:
                 metadata = chunk.get('metadata', {}) or {}
                 product_pages = metadata.get('product_pages', [])
@@ -348,10 +352,12 @@ class EntityLinkingService:
                     # Fallback: use page_number directly as the actual page
                     page_num = metadata.get('page_number')
                     if page_num is None:
+                        chunks_skipped_no_page += 1
                         continue
                     try:
                         product_pages = [int(page_num)]
                     except (ValueError, TypeError):
+                        chunks_skipped_no_page += 1
                         continue
 
                 chunk_id = chunk['id']
@@ -394,6 +400,13 @@ class EntityLinkingService:
                     .insert(relationships)\
                     .execute()
                 self.logger.info(f"Created {len(relationships)} chunk-image relationship entries")
+
+            if chunks_skipped_no_page:
+                self.logger.warning(
+                    f"⚠️ Entity linking skipped {chunks_skipped_no_page} chunk(s) with no "
+                    f"product_pages and no page_number — these chunks have no images linked. "
+                    f"Inspect document_chunks.metadata for the skipped rows."
+                )
 
             return len(relationships)
 

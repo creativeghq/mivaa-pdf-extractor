@@ -107,6 +107,52 @@ class EndpointController:
         self._warmed: Dict[str, bool] = {k: False for k in VALID_ENDPOINT_KEYS}
         self._warm_lock = asyncio.Lock()
 
+        # Audit fix #19: active-job tracking for scale-to-zero coordination.
+        # Each register_job_start increments; register_job_done decrements.
+        # scale_all_to_zero queries DB-side for current 'processing' jobs as
+        # the source of truth (in-memory count would be lost across worker
+        # restarts), but in-memory is the fast path.
+        self._active_jobs: set = set()
+        self._active_jobs_lock = asyncio.Lock()
+
+    def register_job_start(self, job_id: str) -> None:
+        """Register a job as active. Suppresses scale-to-zero from other jobs."""
+        try:
+            self._active_jobs.add(job_id)
+        except Exception:
+            pass
+
+    def register_job_done(self, job_id: str) -> None:
+        """Unregister a job. The next scale-to-zero call may now proceed."""
+        try:
+            self._active_jobs.discard(job_id)
+        except Exception:
+            pass
+
+    def _get_active_job_count(self) -> int:
+        """Return the count of OTHER active jobs.
+
+        Sum of in-memory tracking + DB-side count of 'processing' background_jobs
+        with fresh heartbeat (<2 min). DB query is best-effort; if it fails we
+        fall back to in-memory only. In-memory may undercount across worker
+        restarts but never overcounts.
+        """
+        in_mem = len(self._active_jobs)
+        try:
+            from app.services.core.supabase_client import get_supabase_client
+            sb = get_supabase_client()
+            from datetime import datetime, timedelta
+            cutoff = (datetime.utcnow() - timedelta(minutes=2)).isoformat()
+            resp = sb.client.table("background_jobs")\
+                .select("id", count="exact")\
+                .eq("status", "processing")\
+                .gte("last_heartbeat", cutoff).execute()
+            db_count = int(resp.count or 0)
+            # Subtract one if we're called from inside the only active job.
+            return max(in_mem, db_count - len(self._active_jobs))
+        except Exception:
+            return in_mem
+
     # ────────────────────────────────────────────────────────────────────
     # Accessors
     # ────────────────────────────────────────────────────────────────────
@@ -445,25 +491,37 @@ class EndpointController:
         )
         return outcome
 
-    async def scale_all_to_zero(self, reason: str = "cleanup") -> Dict[str, bool]:
-        """Force every HF endpoint to min_replica=0.
+    async def scale_all_to_zero(self, reason: str = "cleanup", force: bool = False) -> Dict[str, bool]:
+        """Force every HF endpoint to min_replica=0, with concurrent-job guard.
 
-        Sequential by design — easier to debug and 4 calls is not enough volume
-        to justify parallel HF API hits. Manager path first; if a manager is
-        not registered (partial warmup, crashed mid-job, never warmed), falls
-        back to a direct HF API update so we still pin min_replica=0.
+        Audit fix #19: was unconditional. If Job A finished and called
+        scale_all_to_zero while Job B was still mid-call, Job B's next
+        inference would 503 / cold-start. Now we check `_active_job_count`
+        and skip scale-down if other jobs are still running. Pass
+        force=True for admin-cancel paths that should override.
 
-        After scale-down, resets the in-memory `_warmed` flags AND informs the
-        auto-scaler that current_replicas=0, so the next job re-warms cleanly
-        and the scaler doesn't think there's still capacity to use.
+        Audit fix #39: also resets manager.warmup_completed so the next job
+        knows the endpoint is cold.
 
         Args:
             reason: short tag for log correlation, e.g. "pdf_job_<id>",
                     "agent_<id>", "admin_cancel", "periodic_idle".
+            force: if True, bypass active-job-count guard.
 
         Returns:
             Dict[endpoint_key, success_bool] — same shape as warm_all().
         """
+        # Active-job guard.
+        if not force:
+            active_count = self._get_active_job_count()
+            if active_count > 0:
+                logger.info(
+                    "⏸ scale_all_to_zero(reason=%s): SKIPPED — %d other job(s) still running. "
+                    "Use force=True to override.",
+                    reason, active_count
+                )
+                return {k: False for k in HF_ENDPOINT_NAMES}
+
         from app.services.embeddings.endpoint_registry import endpoint_registry
 
         try:
@@ -539,6 +597,15 @@ class EndpointController:
 
             outcome[key] = scaled
             self._warmed[key] = False
+            # Audit fix #39: also reset the manager's own warmup_completed flag.
+            # Previously only the controller flag was cleared, so the manager
+            # thought it was still warm and the next call would skip warmup
+            # despite the endpoint actually being scaled to zero (cold-start).
+            if mgr is not None and hasattr(mgr, "warmup_completed"):
+                try:
+                    mgr.warmup_completed = False
+                except Exception:
+                    pass
 
         try:
             auto_scaler = self._get_auto_scaler()

@@ -444,6 +444,26 @@ async def create_single_product(
         'source_job_id': job_id
     }
 
+    # Audit fix #40: validate FK targets before insert. Previously a missing
+    # source_document_id would silently insert with the row failing at DB
+    # constraint level (or worse, succeeding without the relationship if
+    # constraints aren't enforced). Verifying upstream lets us fail with a
+    # clear error instead of relying on opaque DB constraint messages.
+    if document_id:
+        try:
+            doc_check = supabase.client.table('documents')\
+                .select('id').eq('id', document_id).limit(1).execute()
+            if not doc_check.data:
+                raise Exception(
+                    f"FK validation failed: source_document_id={document_id} does not exist in documents. "
+                    f"Refusing to insert orphan product '{product.name}'."
+                )
+        except Exception as fk_err:
+            if 'FK validation' in str(fk_err):
+                raise
+            # Network glitch — log and proceed (DB constraint will catch it).
+            logger.warning(f"   ⚠️ FK pre-check failed (network?), proceeding: {fk_err}")
+
     result = supabase.client.table('products').insert(product_data).execute()
 
     if result.data and len(result.data) > 0:
@@ -519,20 +539,80 @@ async def create_single_product(
                     await asyncio.sleep(0.5 * (2 ** attempt))
 
             if text_emb:
-                embedding_str = '[' + ','.join(str(x) for x in text_emb) + ']'
-                supabase.client.table('products').update(
-                    {'text_embedding_1024': embedding_str}
-                ).eq('id', product_id).execute()
-                logger.info(f"   🧠 Generated text_embedding_1024 for {product.name}")
+                # Audit fix #16: validate dimension before storage so we don't
+                # silently store a wrong-dim string (the OpenAI fallback now
+                # pins to 1024 but defense-in-depth here).
+                if len(text_emb) != 1024:
+                    logger.error(
+                        f"   ❌ Product embedding for {product.name} returned wrong dim "
+                        f"({len(text_emb)}D, expected 1024D). Refusing to store."
+                    )
+                    embedding_failed = True
+                else:
+                    embedding_str = '[' + ','.join(str(x) for x in text_emb) + ']'
+                    supabase.client.table('products').update(
+                        {'text_embedding_1024': embedding_str}
+                    ).eq('id', product_id).execute()
+                    logger.info(f"   🧠 Generated text_embedding_1024 for {product.name}")
+                    embedding_failed = False
             else:
                 logger.error(
                     f"   ❌ Product embedding failed after 3 attempts for {product.name}: {last_err}"
                 )
+                embedding_failed = True
 
         except Exception as emb_err:
             logger.error(f"   ❌ Product embedding generation crashed for {product.name}: {emb_err}")
+            embedding_failed = True
 
-        return {'product_id': product_id}
+        # Audit fix #15: surface embedding failure in the return so the orchestrator
+        # can mark the product as needing re-embedding rather than silently treating
+        # it as a successful product creation. Previously embedding-failed products
+        # had text_embedding_1024=NULL and were invisible to vector search forever.
+
+        # Audit fix #41: write image_product_associations immediately when we
+        # know the image set, instead of deferring to Stage 4.7. Closes the
+        # window where products are searchable but not linked to their images.
+        # Best-effort — failure here doesn't block the product creation;
+        # Stage 4.7 still runs as a backstop.
+        # Field name verified 2026-05-01: DiscoveredProduct uses `page_range`
+        # (List[int]), NOT product_pages — see document_entity_service.py:42.
+        try:
+            page_range = (
+                getattr(product, 'page_range', None)
+                or getattr(product, 'product_pages', None)  # forward-compat
+                or []
+            )
+            if page_range:
+                img_resp = supabase.client.table('document_images')\
+                    .select('id, page_number')\
+                    .eq('document_id', document_id)\
+                    .in_('page_number', page_range).execute()
+                image_ids = [r['id'] for r in (img_resp.data or [])]
+                if image_ids:
+                    # Verified 2026-05-01: image_product_associations columns
+                    # are (id, image_id, product_id, spatial_score, caption_score,
+                    # clip_score, overall_score, confidence, reasoning, metadata,
+                    # created_at, updated_at). Unique constraint is (image_id,
+                    # product_id) — note the order matters for on_conflict.
+                    # association_method has no dedicated column, store under metadata.
+                    rows = [
+                        {'product_id': product_id, 'image_id': iid,
+                         'metadata': {'association_method': 'stage_4_immediate_by_page'}}
+                        for iid in image_ids
+                    ]
+                    supabase.client.table('image_product_associations')\
+                        .upsert(rows, on_conflict='image_id,product_id').execute()
+                    logger.info(
+                        f"   🔗 Linked {len(image_ids)} images to product {product_id} "
+                        f"(immediate, audit fix #41, page_range={page_range})"
+                    )
+        except Exception as assoc_err:
+            logger.warning(
+                f"   ⚠️ Immediate image-product association failed (Stage 4.7 will retry): {assoc_err}"
+            )
+
+        return {'product_id': product_id, 'embedding_failed': embedding_failed if 'embedding_failed' in locals() else False}
     else:
         raise Exception(f"Failed to create product {product.name} in database")
 
@@ -743,6 +823,13 @@ async def _merge_icon_metadata_into_product(
             logger.warning(
                 f"   ⚠️ Icon metadata: dropped {sum(unknown_fields.values())} items with unknown field names: "
                 f"{dict(sorted(unknown_fields.items(), key=lambda x: -x[1])[:5])}"
+            )
+            # Audit fix #42: persist the dropped-field counts in the rollup
+            # under a sentinel key so an admin can later widen the
+            # known_spec_set / curate aliases. Was previously logged once
+            # then forgotten — no signal for which typos to alias.
+            rollup['_unknown_field_counts'] = dict(
+                sorted(unknown_fields.items(), key=lambda x: -x[1])[:20]
             )
 
         return rollup
