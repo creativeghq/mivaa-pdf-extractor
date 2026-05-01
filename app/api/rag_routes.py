@@ -263,9 +263,10 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
                 logger.info(f"   ⏭️  {job_id}: claim no-op (already recovered or attempts exhausted)")
                 continue
 
+            from app.schemas.jobs import JobStatus as _JS_recovery
             now_iso = datetime.utcnow().isoformat()
             supabase_client.client.table('background_jobs').update({
-                'status': 'processing',
+                'status': _JS_recovery.PROCESSING.value,
                 'last_heartbeat': now_iso,
                 'updated_at': now_iso,
             }).eq('id', job_id).execute()

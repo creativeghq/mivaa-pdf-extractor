@@ -513,12 +513,13 @@ async def lifespan(app: FastAPI):
                     f"last_heartbeat={row.get('last_heartbeat')}, file={row.get('filename')}"
                 )
                 try:
+                    from app.schemas.jobs import JobStatus as _JS_main_restart
                     supabase_client.client.table('background_jobs').update({
-                        'status': 'interrupted',
+                        'status': _JS_main_restart.INTERRUPTED.value,
                         'error': 'Service restart detected',
                         'interrupted_at': now_iso,
                         'updated_at': now_iso,
-                    }).eq('id', jid).eq('status', 'processing').execute()
+                    }).eq('id', jid).eq('status', _JS_main_restart.PROCESSING.value).execute()
                     logger.info(f"   ✅ Marked {jid} as interrupted")
                 except Exception as job_error:
                     logger.error(f"   ❌ Failed to mark {jid} as interrupted: {job_error}")

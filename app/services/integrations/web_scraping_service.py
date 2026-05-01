@@ -29,6 +29,7 @@ from app.utils.circuit_breaker import claude_breaker, gpt_breaker, CircuitBreake
 from app.utils.timeout_guard import with_timeout, TimeoutError, TimeoutConstants
 from app.services.tracking.web_scraping_stages import WebScrapingStage, get_web_scraping_progress
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
+from app.schemas.jobs import JobStatus
 import re
 
 # Sentry integration for error tracking and monitoring
@@ -1327,7 +1328,7 @@ class WebScrapingService:
             job_data = {
                 'id': job_id,
                 'job_type': 'web_scraping_processing',
-                'status': 'pending',
+                'status': JobStatus.PENDING.value,
                 'progress': 0,
                 'priority': priority,
                 'payload': {
@@ -1370,7 +1371,10 @@ class WebScrapingService:
         Args:
             job_id: Job ID
             progress: Progress percentage (0-100)
-            status: Optional status update ("pending", "processing", "completed", "failed")
+            status: Optional status update — must match a JobStatus enum value.
+                Validated against JobStatus on entry so a typo here fails
+                LOUDLY (ValueError) instead of being silently rejected by
+                Postgres' background_jobs_status_check CHECK constraint.
             metadata: Optional metadata to merge with existing metadata
         """
         try:
@@ -1381,7 +1385,9 @@ class WebScrapingService:
             }
 
             if status:
-                update_data['status'] = status
+                # Coerce-and-validate against the enum. JobStatus(status) raises
+                # ValueError on any value not in the DB CHECK constraint.
+                update_data['status'] = JobStatus(status).value
 
             # Scalar fields update (progress, status, heartbeat) — no read needed
             await self.db.table('background_jobs').update(update_data).eq('id', job_id).execute()

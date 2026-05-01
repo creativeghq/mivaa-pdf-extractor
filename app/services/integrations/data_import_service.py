@@ -1147,8 +1147,15 @@ class DataImportService:
                 logger.warning(f"No background_job_id found for data_import_job {job_id}")
                 return
 
+            # Validate status against the JobStatus enum. JobStatus(status)
+            # raises ValueError on values not in the DB CHECK constraint —
+            # so a typo from a caller fails LOUDLY here instead of being
+            # silently rejected by Postgres.
+            from app.schemas.jobs import JobStatus as _JS_dis
+            validated_status = _JS_dis(status).value
+
             # Build update data for scalar fields
-            update_data = {'status': status, 'last_heartbeat': datetime.utcnow().isoformat()}
+            update_data = {'status': validated_status, 'last_heartbeat': datetime.utcnow().isoformat()}
 
             # Separate out 'metadata' — merge atomically; everything else goes in update_data
             extra_metadata = None

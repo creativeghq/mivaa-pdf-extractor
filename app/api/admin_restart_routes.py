@@ -11,6 +11,7 @@ from pydantic import BaseModel
 import logging
 
 from app.services.core.supabase_client import get_supabase_client
+from app.schemas.jobs import JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +137,7 @@ async def restart_service(
         try:
             # Mark as interrupted
             supabase.client.table('background_jobs').update({
-                'status': 'interrupted',
+                'status': JobStatus.INTERRUPTED.value,
                 'error': f'Service restart (forced): {request.reason}',
                 'interrupted_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()

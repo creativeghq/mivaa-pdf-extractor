@@ -34,6 +34,7 @@ from app.services.search.relevancy_service import RelevancyService
 from app.services.core.supabase_client import get_supabase_client, SupabaseClient
 from app.services.tracking.progress_tracker import ProgressTracker
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
+from app.schemas.jobs import JobStatus
 
 logger = logging.getLogger(__name__)
 
@@ -1044,7 +1045,7 @@ async def regenerate_image_embeddings(
         # ✅ Update job status to processing (if job_id provided)
         if request.job_id:
             supabase.client.table('background_jobs').update({
-                'status': 'processing',
+                'status': JobStatus.PROCESSING.value,
                 'progress': 0,
                 'started_at': datetime.utcnow().isoformat(),
                 'last_heartbeat': datetime.utcnow().isoformat(),
@@ -1146,9 +1147,15 @@ async def regenerate_image_embeddings(
                     )
                     embeddings_generated += len(specialized_embeddings)
 
-                # Save understanding embedding to VECS (1024D from Voyage AI)
+                # Save understanding embedding to VECS (1024D from Voyage AI).
+                # Provenance fields propagate from generate_all_embeddings'
+                # metadata block so VECS rows + document_images columns mirror
+                # which model produced the vector (Voyage vs OpenAI fallback)
+                # and which VisionAnalysis schema version the input used.
                 understanding_embedding = embeddings.get('understanding_1024')
                 if understanding_embedding:
+                    meta_versions = embeddings.get('metadata', {}).get('model_versions', {})
+                    meta_schemas = embeddings.get('metadata', {}).get('schema_versions', {})
                     await vecs_service.upsert_understanding_embedding(
                         image_id=image_id,
                         embedding=understanding_embedding,
@@ -1156,7 +1163,9 @@ async def regenerate_image_embeddings(
                             'document_id': image.get('document_id'),
                             'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)
-                        }
+                        },
+                        embedding_model=meta_versions.get('understanding'),
+                        schema_version=meta_schemas.get('understanding'),
                     )
                     embeddings_generated += 1
 
@@ -1196,7 +1205,7 @@ async def regenerate_image_embeddings(
         # ✅ Mark job as completed (if job_id provided)
         if request.job_id:
             supabase.client.table('background_jobs').update({
-                'status': 'completed',
+                'status': JobStatus.COMPLETED.value,
                 'progress': 100,
                 'completed_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat(),
@@ -1230,7 +1239,7 @@ async def regenerate_image_embeddings(
         # ✅ Mark job as failed (if job_id provided)
         if request.job_id:
             supabase.client.table('background_jobs').update({
-                'status': 'failed',
+                'status': JobStatus.FAILED.value,
                 'error': str(e),
                 'failed_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
@@ -1308,7 +1317,7 @@ async def reset_job(
             )
 
         supabase.client.table('background_jobs').update({
-            'status': 'pending',  # was 'initialized' — not in the DB CHECK constraint
+            'status': JobStatus.PENDING.value,  # was 'initialized' — not in the DB CHECK constraint
             'progress': 0,
             'error_message': None,
             'started_at': None,

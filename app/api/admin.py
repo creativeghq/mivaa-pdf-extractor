@@ -26,7 +26,7 @@ from app.schemas.api_responses import (
 
 from ..schemas.jobs import (
     JobResponse, JobStatusResponse, JobListResponse, JobListItem,
-    JobStatistics, SystemMetrics
+    JobStatistics, SystemMetrics, JobStatus,
 )
 from ..schemas.common import BaseResponse, PaginationParams
 from ..services.pdf.pdf_processor import PDFProcessor
@@ -584,10 +584,9 @@ async def cancel_job(
 
         # Mark job as cancelled in database
         # The heartbeat check will detect this and raise CancelledError
-        from app.schemas.jobs import JobStatus as _JobStatus
         supabase_client.client.table('background_jobs')\
             .update({
-                'status': _JobStatus.CANCELLED.value,
+                'status': JobStatus.CANCELLED.value,
                 'error': 'Job cancelled by user',
                 'updated_at': datetime.utcnow().isoformat(),
                 'metadata': {
@@ -1577,7 +1576,7 @@ async def process_image_embedding_regeneration_job(
 
         # Mark job as processing
         supabase.client.table('background_jobs').update({
-            'status': 'processing',
+            'status': JobStatus.PROCESSING.value,
             'progress': 0,
             'started_at': datetime.utcnow().isoformat(),
             'last_heartbeat': datetime.utcnow().isoformat(),
@@ -1614,7 +1613,7 @@ async def process_image_embedding_regeneration_job(
         # Mark job as completed
         completed_at = datetime.utcnow()
         supabase.client.table('background_jobs').update({
-            'status': 'completed',
+            'status': JobStatus.COMPLETED.value,
             'progress': 100,
             'completed_at': completed_at.isoformat(),
             'updated_at': completed_at.isoformat(),
@@ -1668,7 +1667,7 @@ async def process_image_embedding_regeneration_job(
 
         # Mark job as failed
         supabase.client.table('background_jobs').update({
-            'status': 'failed',
+            'status': JobStatus.FAILED.value,
             'error': str(e),
             'failed_at': datetime.utcnow().isoformat(),
             'updated_at': datetime.utcnow().isoformat()
