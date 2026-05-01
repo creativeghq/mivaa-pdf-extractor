@@ -201,7 +201,7 @@ class SegmentationService:
         """Call Anthropic claude-opus-4-7 for segmentation."""
         import httpx
         media_type = self._detect_media_type(image_base64)
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=120) as client:
             resp = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
@@ -211,7 +211,7 @@ class SegmentationService:
                 },
                 json={
                     "model": "claude-opus-4-7",
-                    "max_tokens": 4096,
+                    "max_tokens": 16384,
                     "messages": [
                         {
                             "role": "user",
@@ -257,7 +257,7 @@ class SegmentationService:
                         ],
                     }
                 ],
-                "max_tokens": 4096,
+                "max_tokens": 16384,
                 "temperature": 0.1,
                 "top_p": 0.9,
             },
@@ -271,16 +271,9 @@ class SegmentationService:
         # Strip markdown code fences if present
         content = re.sub(r"```(?:json)?\s*", "", content).strip().rstrip("```").strip()
 
-        # Find JSON array
-        match = re.search(r"\[.*\]", content, re.DOTALL)
-        if not match:
-            logger.warning(f"No JSON array found in response: {content[:200]}")
-            return []
-
-        try:
-            zones = json.loads(match.group())
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON parse failed: {e} — content: {content[:200]}")
+        zones = self._extract_json_array(content)
+        if zones is None:
+            logger.warning(f"No JSON array recovered from response (len={len(content)}): {content[:300]}…{content[-200:] if len(content) > 500 else ''}")
             return []
 
         validated = []
@@ -312,6 +305,70 @@ class SegmentationService:
             validated.append(zone)
 
         return validated
+
+    @staticmethod
+    def _extract_json_array(content: str) -> Optional[List[Any]]:
+        """Parse a JSON array from model output, recovering from common truncations.
+
+        Recovery is deliberately limited to the most common failure mode: the model
+        ran out of max_tokens mid-object, so the response opens with ``[`` but never
+        closes. We rebuild the array by walking the string and tracking brace depth
+        outside of strings, taking everything up to the last complete top-level
+        ``}`` and re-wrapping with ``]``. Returns None only if no usable prefix exists.
+        """
+        if not content:
+            return None
+        start = content.find("[")
+        if start < 0:
+            return None
+
+        # Fast path: well-formed array.
+        match = re.search(r"\[.*\]", content[start:], re.DOTALL)
+        if match:
+            try:
+                parsed = json.loads(match.group())
+                if isinstance(parsed, list):
+                    return parsed
+            except json.JSONDecodeError:
+                pass  # fall through to recovery
+
+        # Recovery path: scan for the last complete top-level object in the array.
+        depth = 0
+        in_string = False
+        escape = False
+        last_complete = -1
+        for i in range(start + 1, len(content)):
+            ch = content[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_string:
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    last_complete = i
+
+        if last_complete < 0:
+            return None
+
+        recovered = content[start:last_complete + 1] + "]"
+        try:
+            parsed = json.loads(recovered)
+            if isinstance(parsed, list):
+                logger.info(f"Recovered truncated JSON array: kept {len(parsed)} complete objects (response len={len(content)})")
+                return parsed
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON recovery failed: {e}")
+        return None
 
 
 _instance: Optional[SegmentationService] = None

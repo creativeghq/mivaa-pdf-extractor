@@ -1005,7 +1005,7 @@ async def segment_image(
     image_base64 = request.image_base64
     if not image_base64 and request.image_url:
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
                 resp = await client.get(request.image_url)
                 resp.raise_for_status()
                 image_base64 = base64.b64encode(resp.content).decode()
