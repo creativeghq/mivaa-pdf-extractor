@@ -68,7 +68,7 @@ class AICallLogger:
         
         Args:
             task: Type of task (document_classification, product_extraction, etc.)
-            model: AI model used (claude-opus-4-7, claude-haiku-4-5, qwen3-vl-32b, etc.)
+            model: AI model used (claude-opus-4-7, claude-haiku-4-5, voyage-4, etc.)
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
             cost: Cost in USD
@@ -128,7 +128,6 @@ class AICallLogger:
                     "output_tokens": output_tokens,
                     "input_cost_usd": float(cost_data.get("input_cost_usd", 0)),
                     "output_cost_usd": float(cost_data.get("output_cost_usd", 0)),
-                    "total_cost_usd": float(cost_data.get("total_cost_usd", cost)),
                     "raw_cost_usd": float(cost_data.get("raw_cost_usd", cost)),
                     "markup_multiplier": float(cost_data.get("markup_multiplier", 1.5)),
                     "billed_cost_usd": float(cost_data.get("billed_cost_usd", cost)),
@@ -336,92 +335,13 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log GPT call: {e}")
             return False
     
-    async def log_qwen_call(
-        self,
-        task: str,
-        model: str,
-        response: Dict[str, Any],
-        latency_ms: int,
-        confidence_score: float,
-        confidence_breakdown: Dict[str, float],
-        action: str,
-        job_id: Optional[str] = None,
-        fallback_reason: Optional[str] = None,
-        request_data: Optional[Dict[str, Any]] = None,
-        user_id: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-        module_slug: Optional[str] = None
-    ) -> bool:
-        """
-        Log a Qwen (HuggingFace) API call and debit credits.
+    # `log_qwen_call` and `_calculate_qwen_cost` were removed 2026-05-02 as
+    # part of the post-Qwen-removal cleanup. All HF-endpoint billing now
+    # goes through `log_time_based_call` (per-GPU-second pricing), which
+    # is the only correct path for SLIG / YOLO / Chandra / future HF
+    # endpoints. Token-based cost math gave $0.00 for these and was a
+    # latent billing bug.
 
-        Args:
-            task: Type of task
-            model: Qwen model (qwen3-vl-32b, etc.)
-            response: HuggingFace API response dict
-            latency_ms: Latency in milliseconds
-            confidence_score: Calculated confidence score
-            confidence_breakdown: Confidence breakdown dict
-            action: 'use_ai_result' or 'fallback_to_rules'
-            job_id: Optional job ID for cost aggregation
-            fallback_reason: Optional fallback reason
-            request_data: Optional request data
-            user_id: Optional user ID for credit debit
-            workspace_id: Optional workspace ID for credit debit
-
-        Returns:
-            bool: True if logged successfully
-        """
-        try:
-            # Extract token usage from HuggingFace response
-            usage = response.get('usage', {})
-            input_tokens = usage.get('prompt_tokens', 0)
-            output_tokens = usage.get('completion_tokens', 0)
-
-            # Calculate cost based on model
-            cost = self._calculate_qwen_cost(model, input_tokens, output_tokens)
-
-            # Debit credits if user_id provided (with job_id for cost aggregation)
-            if user_id:
-                await self.credits_service.debit_credits_for_ai_operation(
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                    operation_type=task,
-                    model_name=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    job_id=job_id,
-                    metadata={'source': 'qwen_api'},
-                    module_slug=module_slug
-                )
-
-            # Extract response text
-            choices = response.get('choices', [])
-            response_text = choices[0].get('message', {}).get('content', '') if choices else ''
-
-            return await self.log_ai_call(
-                task=task,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cost=cost,
-                latency_ms=latency_ms,
-                confidence_score=confidence_score,
-                confidence_breakdown=confidence_breakdown,
-                action=action,
-                job_id=job_id,
-                fallback_reason=fallback_reason,
-                request_data=request_data,
-                response_data={"text": response_text[:500]},
-                user_id=user_id,
-                workspace_id=workspace_id,
-                module_slug=module_slug,
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to log Qwen call: {e}")
-            return False
-    
     async def log_replicate_call(
         self,
         task: str,
@@ -502,15 +422,13 @@ class AICallLogger:
         module_slug: Optional[str] = None,
     ) -> bool:
         """
-        Log a time-based (HuggingFace GPU endpoint) call: Qwen, SLIG, OCR, YOLO.
+        Log a time-based (HuggingFace GPU endpoint) call: SLIG, OCR (Chandra), YOLO.
 
         Cost is computed from latency × hourly_rate (no token math, since
         these endpoints bill per GPU-second). Uses ai_pricing.calculate_cost
         with provider='huggingface' which routes to the time-based branch.
 
-        IMPORTANT: This is the ONLY correct logger for time-based models.
-        Calling log_qwen_call (which uses token-based math) would record
-        $0.00 cost for these endpoints.
+        This is the ONLY correct logger for HuggingFace endpoint calls.
         """
         try:
             # ai_pricing handles time_based billing internally — pass duration as
@@ -530,7 +448,7 @@ class AICallLogger:
                     input_tokens=0,
                     output_tokens=0,
                     job_id=job_id,
-                    metadata={'source': 'huggingface_endpoint', 'duration_s': duration_seconds, 'billing': 'time_based'},
+                    metadata={'source': 'huggingface_endpoint', 'duration_s': inference_seconds, 'billing': 'time_based'},
                     module_slug=module_slug,
                 )
 
@@ -563,11 +481,6 @@ class AICallLogger:
     def _calculate_gpt_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
         """Calculate cost for GPT API call using centralized pricing (returns billed cost with markup)"""
         cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="openai")
-        return float(cost_data['billed_cost_usd'])
-
-    def _calculate_qwen_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        """Calculate cost for Qwen (HuggingFace) API call using centralized pricing (returns billed cost with markup)"""
-        cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="huggingface")
         return float(cost_data['billed_cost_usd'])
 
     async def log_firecrawl_call(
@@ -645,7 +558,7 @@ class AICallLogger:
                 'output_tokens': 0,
                 'input_cost_usd': 0,
                 'output_cost_usd': 0,
-                'total_cost_usd': float(cost_usd),
+                'billed_cost_usd': float(cost_usd),
                 'credits_debited': platform_credits,
                 'module_slug': module_slug,
                 'metadata': {
@@ -702,7 +615,7 @@ class AICallLogger:
 
         Args:
             page_num: PDF page number processed
-            model: Vision model used (claude-opus-4-7, claude-opus-4-7, qwen3-vl-32b, etc.)
+            model: Vision model used (e.g., claude-opus-4-7, claude-haiku-4-5)
             detections: Number of products detected on page
             confidence: Average detection confidence (0.0-1.0)
             latency_ms: Latency in milliseconds

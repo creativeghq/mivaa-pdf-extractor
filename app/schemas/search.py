@@ -502,7 +502,8 @@ class ImageSearchRequest(BaseModel):
     fusion_weights: Optional[Dict[str, float]] = Field(None, description="Weights for combining different analysis types")
     
     # Advanced options
-    enable_clip_embeddings: bool = Field(True, description="Enable CLIP embedding generation for visual similarity")
+    # Field name retained for API stability — actual model is SLIG (SigLIP2 768D), not CLIP.
+    enable_clip_embeddings: bool = Field(True, description="Enable SLIG (SigLIP2 768D) embedding generation for visual similarity")
     enable_vision_analysis: bool = Field(False, description="Enable vision model analysis for material properties")
     include_analytics: bool = Field(False, description="Include search analytics in response")
     
@@ -548,7 +549,8 @@ class ImageSearchResult(BaseModel):
     
     # Material analysis results
     material_analysis: Optional[Dict[str, Any]] = Field(None, description="Material property analysis results")
-    clip_embedding: Optional[List[float]] = Field(None, description="CLIP embedding vector for visual similarity")
+    # Field name kept for API stability — vector is from SLIG (SigLIP2 768D), not CLIP.
+    clip_embedding: Optional[List[float]] = Field(None, description="SLIG (SigLIP2 768D) visual embedding vector")
     vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Vision model material analysis")
     understanding_score: Optional[float] = Field(None, description="Vision-understanding embedding similarity score")
     
@@ -635,8 +637,10 @@ class MultiModalAnalysisRequest(BaseModel):
     # Material-specific analysis parameters
     enable_material_analysis: bool = Field(False, description="Enable material property analysis")
     material_analysis_types: List[str] = Field(default_factory=list, description="Types of material analysis (spectral, chemical, mechanical, thermal)")
-    enable_clip_embeddings: bool = Field(False, description="Generate CLIP embeddings for visual similarity")
-    enable_vision_analysis: bool = Field(False, description="Use Qwen Vision for material understanding")
+    # Field name retained for API stability — actual model is SLIG (SigLIP2 768D), not CLIP.
+    enable_clip_embeddings: bool = Field(False, description="Generate SLIG (SigLIP2 768D) embeddings for visual similarity")
+    # Vision now runs on Claude Opus 4.7 via Anthropic tool use (post-Qwen-removal 2026-05-01).
+    enable_vision_analysis: bool = Field(False, description="Use Claude Opus 4.7 vision for material understanding")
     
     # Advanced material analysis
     spectral_analysis: bool = Field(False, description="Perform spectral analysis on materials")
@@ -684,8 +688,9 @@ class MultiModalAnalysisResponse(BaseResponse):
     thermal_analysis: Optional[Dict[str, Any]] = Field(None, description="Thermal property analysis")
     
     # Visual embeddings and analysis
-    clip_embeddings: Optional[List[List[float]]] = Field(None, description="Generated CLIP embeddings for visual similarity")
-    vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Qwen Vision material understanding results")
+    # Field name kept for API stability — vectors are from SLIG (SigLIP2 768D), not CLIP.
+    clip_embeddings: Optional[List[List[float]]] = Field(None, description="Generated SLIG (SigLIP2 768D) embeddings for visual similarity")
+    vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Claude Opus 4.7 vision material understanding results")
     
     # Combined insights
     multimodal_insights: Optional[Dict[str, Any]] = Field(None, description="Combined multi-modal insights")

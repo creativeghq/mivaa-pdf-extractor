@@ -425,7 +425,7 @@ async def get_external_service_usage(
 
         query = supabase.client.table("ai_usage_logs").select(
             "id, user_id, operation_type, model_name, "
-            "total_cost_usd, billed_cost_usd, raw_cost_usd, credits_debited, "
+            "billed_cost_usd, raw_cost_usd, credits_debited, "
             "metadata, created_at"
         )
 
@@ -459,7 +459,7 @@ async def get_external_service_usage(
 
         # Summary
         total_credits = sum(float(log.get("credits_debited", 0) or 0) for log in logs)
-        total_cost = sum(float(log.get("billed_cost_usd", 0) or log.get("total_cost_usd", 0) or 0) for log in logs)
+        total_cost = sum(float(log.get("billed_cost_usd", 0) or 0) for log in logs)
 
         # By service
         service_stats: Dict[str, Dict[str, Any]] = {}
@@ -469,7 +469,7 @@ async def get_external_service_usage(
                 service_stats[svc] = {"operations": 0, "credits": 0.0, "cost_usd": 0.0}
             service_stats[svc]["operations"] += 1
             service_stats[svc]["credits"] += float(log.get("credits_debited", 0) or 0)
-            service_stats[svc]["cost_usd"] += float(log.get("billed_cost_usd", 0) or log.get("total_cost_usd", 0) or 0)
+            service_stats[svc]["cost_usd"] += float(log.get("billed_cost_usd", 0) or 0)
 
         by_service = [
             {"service": svc, **stats}

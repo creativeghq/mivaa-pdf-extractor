@@ -73,10 +73,10 @@ async def process_scraping_session(
     Called by the Edge Function (scrape-session-manager) when scraping completes.
     Creates a background job for tracking, then processes the session via
     WebScrapingService which runs the full pipeline:
-      1. Product discovery (Claude/GPT from markdown)
+      1. Product discovery (Claude from markdown)
       2. Product creation with text embeddings (Voyage AI, inline)
-      3. Image download → classification (Qwen/Claude) → 5 SLIG embeddings
-      4. Phase 2: Qwen3-VL analysis → understanding embeddings (1024D)
+      3. Image download → classification (Claude Opus 4.7 vision) → 5 SLIG embeddings
+      4. Phase 2: Claude vision_analysis → understanding embeddings (1024D)
     """
     try:
         logger.info(f"🚀 Starting scraping session processing: {request.session_id}")

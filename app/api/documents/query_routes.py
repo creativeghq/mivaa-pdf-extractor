@@ -407,7 +407,7 @@ async def search_documents(
     - **Embeddings Combined:**
       - Text (15%) - Voyage AI 1024D semantic understanding
       - Visual (15%) - SLIG 768D visual similarity
-      - Understanding (20%) - Voyage AI 1024D from Qwen3-VL vision analysis
+      - Understanding (20%) - Voyage AI 1024D from Claude Opus 4.7 vision analysis
       - Color (12.5%) - SLIG 768D color palette matching
       - Texture (12.5%) - SLIG 768D texture pattern matching
       - Style (12.5%) - SLIG 768D design style matching
@@ -745,7 +745,7 @@ async def search_knowledge_base(
     Uses the same **7-vector fusion search** as the main search endpoint, combining:
     - Text (15%) - Voyage AI 1024D semantic understanding
     - Visual (15%) - SLIG 768D visual similarity
-    - Understanding (20%) - Voyage AI 1024D from Qwen3-VL analysis
+    - Understanding (20%) - Voyage AI 1024D from Claude Opus 4.7 vision analysis
     - Color (12.5%) - SLIG 768D color palette matching
     - Texture (12.5%) - SLIG 768D texture pattern matching
     - Style (12.5%) - SLIG 768D design style matching

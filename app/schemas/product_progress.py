@@ -38,7 +38,10 @@ class ProductMetrics(BaseModel):
     images_material: int = Field(default=0, description="Number of material images")
     images_non_material: int = Field(default=0, description="Number of non-material images")
     relationships_created: int = Field(default=0, description="Number of relationships created")
-    clip_embeddings_generated: int = Field(default=0, description="Number of CLIP embeddings")
+    # Field name retained for API stability; the underlying model is SLIG
+    # (SigLIP2 768D) post the CLIP→SLIG migration, not CLIP.
+    # See `app/services/embeddings/slig_client.py`.
+    clip_embeddings_generated: int = Field(default=0, description="Number of SLIG (SigLIP2 768D) visual embeddings generated")
     pages_extracted: int = Field(default=0, description="Number of pages extracted")
     processing_time_ms: Optional[int] = Field(default=None, description="Total processing time in milliseconds")
     
@@ -142,7 +145,8 @@ class ProductProcessingResult(BaseModel):
     chunks_created: int = Field(default=0)
     images_processed: int = Field(default=0)
     relationships_created: int = Field(default=0)
-    clip_embeddings_generated: int = Field(default=0, description="Number of CLIP embeddings generated")
+    # Field name kept for API stability — model is SLIG (SigLIP2 768D), not CLIP.
+    clip_embeddings_generated: int = Field(default=0, description="Number of SLIG (SigLIP2 768D) visual embeddings generated")
 
     # Error info
     error: Optional[str] = Field(default=None)

@@ -369,7 +369,10 @@ async def create_single_product(
     factory_obj = _build_factory_object(metadata, factory_defaults)
     if factory_obj:
         metadata['factory'] = factory_obj
-        # Always keep backward-compat flat fields in sync
+        # Mirror the two filter-relevant fields to top-level metadata so the
+        # frontend's `.contains('metadata', { factory_name: X })` filter works.
+        # Used by MyFactoryTab and MarketTrendsTab — these flat keys are
+        # canonical for SQL-level metadata-jsonb filtering, not legacy mirrors.
         if factory_obj.get('factory_name'):
             metadata['factory_name'] = factory_obj['factory_name']
         if factory_obj.get('factory_group_name'):
@@ -1029,7 +1032,9 @@ async def propagate_common_fields_to_products(
                         if v and not _is_empty_value(v)
                     }}
                     updates_needed['factory'] = merged_factory
-                    # Keep flat backward-compat fields in sync
+                    # Mirror to top-level metadata for jsonb-contains filtering
+                    # by frontend (MyFactoryTab / MarketTrendsTab). Same
+                    # rationale as the assembly path above.
                     if merged_factory.get('factory_name'):
                         updates_needed['factory_name'] = merged_factory['factory_name']
                     if merged_factory.get('factory_group_name'):

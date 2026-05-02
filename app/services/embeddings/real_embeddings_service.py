@@ -4,7 +4,7 @@ Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 Generates embedding types using AI models:
 1. Text (1024D) - Voyage AI voyage-4 (primary) with OpenAI fallback (both 1024D)
 2. Visual Embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
-3. Understanding (1024D) - Qwen vision_analysis JSON → Voyage AI text embedding
+3. Understanding (1024D) - Claude Opus 4.7 vision_analysis JSON → Voyage AI text embedding
 4. Multimodal Fusion (1792D) - Combined text+visual (1024D + 768D = 1792D)
 
 Text Embedding Strategy:
@@ -17,8 +17,10 @@ Visual Embedding Strategy:
 - Cloud-only architecture - no local model loading
 
 Understanding Embedding Strategy:
-- Embeds Qwen3-VL's structured vision_analysis JSON as descriptive text via Voyage AI (1024D)
-- Enables spec-based search (e.g., "porcelain tile 60x120cm", "R10 slip rating")
+- Embeds Claude Opus 4.7's structured vision_analysis JSON (via Anthropic tool
+  use, schema-locked) as descriptive text → Voyage AI (1024D).
+- Enables spec-based search (e.g., "porcelain tile 60x120cm", "R10 slip rating").
+- Post-Qwen-removal (2026-05-01) Claude is the sole vision producer.
 """
 
 import logging
@@ -168,7 +170,7 @@ class RealEmbeddingsService:
         image_url: Optional[str] = None,
         material_properties: Optional[Dict[str, Any]] = None,
         image_data: Optional[str] = None,  # base64 encoded
-        vision_analysis: Optional[Dict[str, Any]] = None  # Qwen3-VL analysis JSON
+        vision_analysis: Optional[Dict[str, Any]] = None  # Claude Opus 4.7 vision_analysis JSON (schema-locked via Anthropic tool use)
     ) -> Dict[str, Any]:
         """
         Generate all embedding types for an entity.
@@ -180,7 +182,7 @@ class RealEmbeddingsService:
             image_url: URL of image (optional)
             material_properties: Material properties dict (optional)
             image_data: Base64 encoded image data (optional)
-            vision_analysis: Qwen3-VL vision_analysis JSON for understanding embedding (optional)
+            vision_analysis: Claude Opus 4.7 vision_analysis JSON for understanding embedding (optional)
 
         Returns:
             Dictionary with all embedding types
@@ -505,12 +507,12 @@ class RealEmbeddingsService:
         material_properties: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        Convert Qwen3-VL vision_analysis JSON into descriptive text for embedding.
+        Convert Claude Opus 4.7 vision_analysis JSON into descriptive text for embedding.
 
         Extracts all structured fields and combines into a searchable text representation.
 
         Args:
-            vision_analysis: Qwen3-VL analysis JSON
+            vision_analysis: Claude vision_analysis JSON (schema-locked via Anthropic tool use)
             material_properties: Optional additional material properties
 
         Returns:

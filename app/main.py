@@ -279,12 +279,12 @@ async def lifespan(app: FastAPI):
         component_manager = get_component_manager()
         app.state.component_manager = component_manager
 
-        # Register RAG service (with Qwen vision models) for lazy loading
+        # Register RAG service (Claude vision via Anthropic API) for lazy loading
         async def load_rag_service():
             from app.services.search.rag_service import RAGService
             rag_config = settings.get_rag_config()  # Model-agnostic config
             service = RAGService(rag_config)
-            logger.info("✅ RAG service loaded on-demand with Qwen vision models")
+            logger.info("✅ RAG service loaded on-demand (Claude vision via Anthropic API)")
             return service
 
         def cleanup_rag_service(service):
@@ -701,7 +701,7 @@ async def perform_comprehensive_health_checks(app: FastAPI, logger):
     try:
         component_health = {}
         
-        # Validate RAG service (Qwen vision models)
+        # Validate RAG service (Claude vision via Anthropic API)
         if hasattr(app.state, 'rag_service') and app.state.rag_service:
             try:
                 rag_health = await app.state.rag_service.health_check()
@@ -752,7 +752,7 @@ async def cleanup_resources(app: FastAPI, logger):
         logger: Logger instance
     """
     try:
-        # Close RAG service (Qwen vision models)
+        # Close RAG service (Claude vision via Anthropic API)
         if hasattr(app.state, 'rag_service') and app.state.rag_service:
             try:
                 await app.state.rag_service.cleanup()
@@ -846,13 +846,13 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - 🎯 **Enhanced Multi-Vector Search**: 7 specialized embeddings (text 15%, visual 15%, understanding 20%, color 12.5%, texture 12.5%, style 12.5%, material 12.5%) + JSONB metadata filtering + query understanding
 - **Query Understanding**: GPT-4o-mini parses natural language queries to auto-extract filters (enabled by default)
 - **Knowledge Base**: Semantic chunking, quality scoring, deduplication
-- **Image Analysis**: SLIG + Qwen3-VL vision models (cost-effective, high accuracy)
+- **Image Analysis**: SLIG (SigLIP2 768D) + Claude Opus 4.7 vision (cost-effective, high accuracy)
 - **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
 
 ### AI Models
 1. **Voyage AI**: voyage-4 (1024D text embeddings), GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus 4.7 (deep enrichment)
-3. **HuggingFace Endpoint**: Qwen vision (model id from `QWEN_MODEL` env, currently `Qwen/Qwen3.6-35B-A3B-FP8`)
+3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), YOLO DocParser, Chandra OCR — vision is on Anthropic Claude (post-Qwen-removal 2026-05-01).
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
 5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
 
@@ -1250,13 +1250,12 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
     - **Voyage AI** - Primary text embeddings provider
 
     ### HuggingFace Inference Endpoints
-    - **Qwen Vision (HF)** - Vision model for image analysis (auto-pause/resume)
     - **SLIG (SigLIP2)** - Visual embeddings endpoint (auto-pause/resume)
     - **YOLO DocParser** - Layout detection endpoint (auto-pause/resume)
     - **Chandra OCR** - Advanced OCR endpoint (auto-pause/resume)
 
     ### Application Services
-    - **RAG Service** - Lazy-loaded with Qwen3-VL models (memory optimized)
+    - **RAG Service** - Lazy-loaded; vision via Anthropic Claude Opus 4.7 (memory optimized)
     - **Database** - Supabase PostgreSQL with pgvector
     - **Storage** - Supabase Storage for images and PDFs
 
@@ -1288,7 +1287,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         },
         "rag": {
           "status": "healthy",
-          "message": "RAG service operational with Qwen vision models"
+          "message": "RAG service operational with Claude vision (Anthropic API)"
         }
       }
     }
@@ -1593,7 +1592,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 cached_status["cached"] = True
                 services_status["slig_endpoint"] = cached_status
             else:
-                # Check endpoint status (similar to Qwen - may be paused)
+                # Check endpoint status (HF endpoints may be auto-paused).
                 try:
                     import httpx
                     start_time = time.time()
@@ -1806,15 +1805,15 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             "message": str(e)
         }
 
-    # 4. Check RAG Service (Qwen Vision Models)
+    # 4. Check RAG Service (Claude vision via Anthropic API)
     # MEMORY OPTIMIZATION: Don't eagerly initialize RAG service during health check
-    # This was causing the service to load CLIP (7-8GB RAM) and trigger OOM kills
+    # — historical CLIP loader was 7-8 GB RAM and triggered OOM kills.
     try:
         # Check if the service is registered for lazy loading instead of instantiating it
         if hasattr(app.state, 'component_manager'):
             services_status["rag"] = {
                 "status": "healthy",
-                "message": "RAG service registered for lazy loading with Qwen3-VL models (memory optimized)"
+                "message": "RAG service registered for lazy loading; vision via Anthropic Claude Opus 4.7 (memory optimized)"
             }
         else:
             services_status["rag"] = {
@@ -1980,7 +1979,7 @@ async def root() -> Dict[str, Any]:
             "PDF to Markdown conversion",
             "Table extraction",
             "Image extraction",
-            "RAG integration with Qwen vision models",
+            "RAG integration with Anthropic Claude vision",
             "Document upload and processing",
             "Semantic search and retrieval",
             "Conversational Q&A",
@@ -2201,7 +2200,7 @@ def custom_openapi():
         "jobs_routes": "/api/jobs/* (7 endpoints) - Job progress, statistics, status tracking",
         "document_entities_routes": "/api/document-entities/* (5 endpoints) - Certificates, logos, specifications",
         "embeddings_routes": "/api/embeddings/* (4 endpoints) - CLIP text/image, material embeddings",
-        "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - Qwen vision, multimodal analysis",
+        "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - Claude vision, multimodal analysis",
         "anthropic_routes": "/api/v1/anthropic/* (3 endpoints) - Claude image validation, product enrichment",
         "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
         "monitoring_routes": "/, /metrics, /performance/summary (3 endpoints)",

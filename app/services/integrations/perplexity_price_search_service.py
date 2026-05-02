@@ -1469,7 +1469,7 @@ class PerplexityPriceSearchService:
                     "output_tokens": output_tokens,
                     "input_cost_usd": round((input_tokens / 1000) * SONAR_PRO_INPUT_PER_1K, 6),
                     "output_cost_usd": round((output_tokens / 1000) * SONAR_PRO_OUTPUT_PER_1K, 6),
-                    "total_cost_usd": round(cost_usd, 6),
+                    "billed_cost_usd": round(cost_usd, 6),
                     "credits_debited": platform_credits,
                     "metadata": {
                         "api_provider": "perplexity",

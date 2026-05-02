@@ -34,7 +34,6 @@ async def extract_product_pages(
     enable_layout_detection: bool = True,
     product_id: Optional[str] = None,
     catalog: Optional[Any] = None,  # Catalog with spread layout info
-    total_pages: Optional[int] = None,  # DEPRECATED — kept for back-compat with old callers
 ) -> Dict[str, Any]:
     """
     Extract pages and detect layout regions for a single product.
@@ -65,9 +64,6 @@ async def extract_product_pages(
         enable_layout_detection: Enable YOLO layout detection (default: True)
         product_id: Database product ID (required for layout storage)
         catalog: Optional catalog with spread layout info (has_spread_layout, physical_to_pdf_map)
-        total_pages: DEPRECATED alias for `physical_page_upper_bound`. Kept so
-            existing callers don't break, but new code should use
-            `physical_page_upper_bound` to make the contract explicit.
 
     Returns:
         Dict with:
@@ -77,10 +73,6 @@ async def extract_product_pages(
         - has_spread_layout: Whether document uses spread layout
         - physical_to_pdf_map: Mapping for internal PDF access (passed through from catalog)
     """
-    # Resolve the bound — prefer the new explicit name, fall back to legacy.
-    if physical_page_upper_bound is None:
-        physical_page_upper_bound = total_pages
-
     logger.info(f"📄 [STAGE 1] Extracting pages for product: {product.name}")
     logger.info(f"   Physical page range: {product.page_range}")
     logger.info(f"   Physical page upper bound: {physical_page_upper_bound}")

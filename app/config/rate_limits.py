@@ -1,11 +1,12 @@
 """
-Vision Model Rate Limit Configuration
+Vision / HuggingFace Endpoint Rate Limit Configuration
 
-This module defines rate limits for different HuggingFace/Qwen vision model tiers.
-Tiers are based on usage capacity and determine concurrency limits.
+This module defines rate limits for HuggingFace dedicated inference endpoints
+(SLIG, YOLO DocParser, Chandra OCR) and Anthropic vision tiers. Tiers are
+based on usage capacity and determine concurrency limits.
 
 Tiers:
-- Tier 1: Default (HuggingFace Qwen endpoints)
+- Tier 1: Default (HuggingFace dedicated endpoints + entry-level Anthropic)
 - Tier 2: Medium capacity
 - Tier 3: High capacity
 - Tier 4: Very high capacity
@@ -115,8 +116,8 @@ def get_vision_concurrency_limit() -> int:
     """
     tier = get_current_tier()
 
-    # For HuggingFace Qwen endpoints, we can use higher concurrency
-    # HuggingFace dedicated endpoints handle 10 concurrent requests well
+    # For HuggingFace dedicated endpoints (SLIG / YOLO / Chandra) we can use
+    # higher concurrency — they handle 10 concurrent requests well.
     if tier.tier == 1:
         return 10
 

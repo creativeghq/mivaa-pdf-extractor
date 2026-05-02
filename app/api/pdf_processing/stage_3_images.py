@@ -111,6 +111,19 @@ async def process_product_images(
     logger.info(f"🖼️  Processing images for product: {product.name}")
     logger.info(f"   Physical pages (1-based): {sorted(physical_pages)}")
 
+    # Register this stage as a known long-running op so the auto-recovery
+    # cron's stuck-job detector doesn't false-positive while we fan out
+    # SLIG / Voyage / Anthropic calls. Bound to the per-product wrapper
+    # timeout (PRODUCT_PROCESSING_TIMEOUT_SECONDS, default 600s).
+    if tracker is not None:
+        try:
+            await tracker.set_slow_operation(
+                operation=f"stage_3_images:{product.name}",
+                expected_max_seconds=600,
+            )
+        except Exception as _slow_err:
+            logger.debug(f"   set_slow_operation failed (non-fatal): {_slow_err}")
+
     # Get spread layout info from catalog
     has_spread_layout = catalog and getattr(catalog, 'has_spread_layout', False)
     physical_to_pdf_map = catalog.physical_to_pdf_map if catalog and hasattr(catalog, 'physical_to_pdf_map') else {}
@@ -330,12 +343,12 @@ async def process_product_images(
 
         logger.info(f"      Images per physical page: {dict(sorted(images_by_page.items()))}")
 
-        extraction_methods = {}
+        extraction_layers = {}
         for img in extracted_images_list:
-            method = img.get('extraction_method', 'unknown')
-            extraction_methods[method] = extraction_methods.get(method, 0) + 1
+            layer = img.get('extraction_layer', 'embedded')
+            extraction_layers[layer] = extraction_layers.get(layer, 0) + 1
 
-        logger.info(f"      Extraction methods: {extraction_methods}")
+        logger.info(f"      Extraction layers: {extraction_layers}")
 
     if total_images == 0:
         logger.warning(f"   ⚠️ NO IMAGES EXTRACTED!")
@@ -344,6 +357,11 @@ async def process_product_images(
         logger.warning(f"      1. Pages are text-only (no embedded images)")
         logger.warning(f"      2. Images were filtered out by size/quality thresholds")
         logger.warning(f"      3. YOLO endpoint returned errors")
+        if tracker is not None:
+            try:
+                await tracker.clear_slow_operation()
+            except Exception:
+                pass
         return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0, 'clip_embeddings_generated': 0}
 
     logger.info(f"   ✅ Extracted {total_images} images from {len(physical_pages)} physical pages")
@@ -550,6 +568,12 @@ async def process_product_images(
     logger.info(f"      Successfully processed: {images_processed}")
     logger.info(f"      CLIP embeddings: {clip_embeddings}")
 
+    if tracker is not None:
+        try:
+            await tracker.clear_slow_operation()
+        except Exception:
+            pass
+
     return {
         'images_processed': images_processed,
         'clip_embeddings_generated': clip_embeddings,
@@ -597,10 +621,10 @@ async def _run_phase_3_ocr_for_product(
         return None
 
     # Fetch the saved image rows for this batch (by document_id + filename).
-    # Note: extraction_layer column is currently always NULL in production —
-    # the actual layer info lives in metadata.extraction_method ('pymupdf_embedded'
-    # / 'pymupdf' / 'yolo_crop_<type>') and metadata.yolo_region_type. So we
-    # read both and filter from metadata.
+    # `extraction_layer` is the canonical column-backed enum since 2026-05-02
+    # ({embedded, yolo_crop, full_render, vision_guided}). The legacy
+    # `metadata.extraction_method` fallback was removed when pdf_processor
+    # was rewired to emit canonical values directly.
     try:
         resp = (
             sb.client.table("document_images")
@@ -621,13 +645,7 @@ async def _run_phase_3_ocr_for_product(
         image_id = row["id"]
         filename = row.get("filename")
         metadata = row.get("metadata") or {}
-        # Prefer the metadata-derived layer info; column is unpopulated in prod.
-        extraction_layer = (
-            row.get("extraction_layer")
-            or metadata.get("extraction_layer")
-            or metadata.get("extraction_method")  # legacy field name in production
-            or "embedded"
-        )
+        extraction_layer = row.get("extraction_layer") or "embedded"
         # YOLO region type is persisted under metadata.yolo_region_type.
         # Stage 1.5 layout-aware regions (TABLE/TEXT/TITLE/CAPTION) AND
         # icon-style yolo crops both go through this path.
@@ -656,8 +674,11 @@ async def _run_phase_3_ocr_for_product(
                 sb.client.table("document_images").update({
                     "ocr_skipped_reason": skipped_reason,
                 }).eq("id", image_id).execute()
-            except Exception:
-                pass
+            except Exception as upd_err:
+                logger.warning(
+                    f"      Phase 3 OCR: DB update of ocr_skipped_reason="
+                    f"{skipped_reason} failed for {image_id}: {upd_err}"
+                )
             continue
 
         # Locate the local image bytes/path. The pdf_processor stores under
@@ -665,7 +686,23 @@ async def _run_phase_3_ocr_for_product(
         src = by_filename.get(filename) or {}
         local_path = src.get('path') or src.get('local_path') or src.get('image_path')
         if not local_path:
+            # Audit fix 2026-05-02: write an explicit marker rather than
+            # silent skip. Every persisted-result row must carry an OCR
+            # outcome — emptiness alone is ambiguous (could be "ran clean
+            # and found nothing" OR "we never tried"). Without this,
+            # job 184ad4cf left every Phase 3 row with ocr_skipped_reason=
+            # NULL and there was no way to tell whether OCR was ever run.
             counts["ocr_skipped"] += 1
+            try:
+                sb.client.table("document_images").update({
+                    "ocr_skipped_reason": "local_path_unavailable",
+                }).eq("id", image_id).execute()
+            except Exception as upd_err:
+                logger.warning(
+                    f"      Phase 3 OCR: DB update of "
+                    f"ocr_skipped_reason=local_path_unavailable failed for "
+                    f"{image_id}: {upd_err}"
+                )
             continue
 
         counts["ocr_attempted"] += 1
@@ -679,15 +716,18 @@ async def _run_phase_3_ocr_for_product(
             )
             ocr_result = results[0] if results else None
         except Exception as e:
-            logger.debug(f"      Phase 3 OCR exception for image {image_id}: {e}")
+            logger.warning(f"      Phase 3 OCR exception for image {image_id}: {e}")
             counts["ocr_failed"] += 1
             try:
                 sb.client.table("document_images").update({
                     "ocr_failed": True,
                     "ocr_attempts": 1,
                 }).eq("id", image_id).execute()
-            except Exception:
-                pass
+            except Exception as upd_err:
+                logger.warning(
+                    f"      Phase 3 OCR: DB update of ocr_failed=true "
+                    f"after exception failed for {image_id}: {upd_err}"
+                )
             continue
 
         if ocr_result is None or ocr_result.method == "chandra_failed":
@@ -697,8 +737,11 @@ async def _run_phase_3_ocr_for_product(
                     "ocr_failed": True,
                     "ocr_attempts": ocr_result.attempts_made if ocr_result else 0,
                 }).eq("id", image_id).execute()
-            except Exception:
-                pass
+            except Exception as upd_err:
+                logger.warning(
+                    f"      Phase 3 OCR: DB update of ocr_failed=true "
+                    f"after chandra_failed failed for {image_id}: {upd_err}"
+                )
             continue
 
         counts["ocr_succeeded"] += 1
@@ -710,7 +753,10 @@ async def _run_phase_3_ocr_for_product(
                 "ocr_attempts": ocr_result.attempts_made,
             }).eq("id", image_id).execute()
         except Exception as e:
-            logger.debug(f"      Phase 3 OCR DB update failed for {image_id}: {e}")
+            logger.warning(
+                f"      Phase 3 OCR: DB update of ocr_text/blocks failed "
+                f"for {image_id}: {e}"
+            )
 
     return counts
 

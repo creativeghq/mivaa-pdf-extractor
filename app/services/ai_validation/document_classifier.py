@@ -5,7 +5,7 @@ Two-stage classification system for PDF content:
 1. Fast text classification (product/supporting/administrative/transitional)
 2. Deep enrichment with metadata extraction
 
-Uses Qwen3-VL for fast classification and Claude for deep analysis.
+Uses Claude Haiku 4.5 for fast classification and Claude Opus 4.7 for deep analysis.
 """
 
 import asyncio

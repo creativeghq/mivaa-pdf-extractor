@@ -79,9 +79,12 @@ class EntityLinkingService:
             self.logger.info(f"Linking images to products for document {document_id}")
 
             # Get all images for this document
-            # Include vision-guided metadata fields
+            # Include vision-guided metadata fields. `extraction_layer` is
+            # the canonical enum since 2026-05-02 ({embedded, yolo_crop,
+            # full_render, vision_guided}); the legacy `extraction_method`
+            # column is no longer written for new rows.
             images_response = self.supabase.client.table('document_images')\
-                .select('id, page_number, metadata, extraction_method, product_name, detection_confidence')\
+                .select('id, page_number, metadata, extraction_layer, product_name, detection_confidence')\
                 .eq('document_id', document_id)\
                 .execute()
 
@@ -125,7 +128,7 @@ class EntityLinkingService:
                 image_index = metadata.get('image_index')
 
                 # Get vision-guided metadata
-                extraction_method = image.get('extraction_method', 'pymupdf')
+                extraction_layer = image.get('extraction_layer', 'embedded')
                 vision_product_name = image.get('product_name')  # Atomic product name from vision AI
                 vision_confidence = image.get('detection_confidence', 0.0)
 
@@ -134,7 +137,7 @@ class EntityLinkingService:
                 linking_method = None  # Track how we linked this image
 
                 # PRIORITY 1: Vision-guided atomic linking (95% accuracy, no guesswork)
-                if extraction_method == 'vision_guided' and vision_product_name:
+                if extraction_layer == 'vision_guided' and vision_product_name:
                     product_name = vision_product_name
                     linking_method = 'vision_guided_atomic'
                     vision_stats['atomic_links'] += 1

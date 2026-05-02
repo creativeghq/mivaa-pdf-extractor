@@ -1458,12 +1458,18 @@ class PDFProcessor:
                             with open(image_path, "wb") as img_file:
                                 img_file.write(image_bytes)
 
-                            # Populate image metadata with Layer 1 information (using PDF page number)
+                            # Populate image metadata with Layer 1 information (using PDF page number).
+                            # `extraction_layer` is the canonical column-backed enum
+                            # ({embedded, yolo_crop, full_render, vision_guided}).
+                            # We no longer emit the legacy `pymupdf_*` strings — the
+                            # column constraint rejects them and the parallel
+                            # vocabulary caused the silent producer/consumer drift
+                            # cleaned up 2026-05-02.
                             extracted_images.append({
                                 'path': image_path,
                                 'filename': image_filename,
                                 'page_number': pdf_page,
-                                'extraction_method': 'pymupdf_embedded',  # Layer 1: Embedded images
+                                'extraction_layer': 'embedded',
                                 'layer': 1,
                                 'captures_vector_graphics': False,  # Embedded images don't capture vector graphics
                                 'format': image_ext,
@@ -1533,12 +1539,13 @@ class PDFProcessor:
                         # Get file size
                         file_size = os.path.getsize(full_page_path)
 
-                        # Add to extracted images with Layer 2 metadata (using PDF page number)
+                        # Add to extracted images with Layer 2 metadata (using PDF
+                        # page number). Same canonical vocabulary as Layer 1.
                         extracted_images.append({
                             'path': full_page_path,
                             'filename': full_page_filename,
                             'page_number': pdf_page,
-                            'extraction_method': 'pymupdf_full_render',  # Layer 2: Full page render
+                            'extraction_layer': 'full_render',
                             'layer': 2,
                             'captures_vector_graphics': True,  # Full render captures vector graphics
                             'format': 'jpg',

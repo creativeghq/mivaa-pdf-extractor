@@ -17,7 +17,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 
 from app.config import get_settings
-from app.schemas.product_progress import ProductProcessingResult
+from app.schemas.product_progress import ProductProcessingResult, ProductStage
 from app.services.tracking.product_progress_tracker import ProductProgressTracker
 from app.api.pdf_processing.product_processor import process_single_product
 from app.services.discovery.entity_linking_service import EntityLinkingService
@@ -82,7 +82,6 @@ async def process_products_parallel(
     physical_page_upper_bound: Optional[int] = None,
     temp_pdf_path: Optional[str] = None,
     parallel_config: Optional[ParallelProcessingConfig] = None,
-    total_pages: Optional[int] = None,  # DEPRECATED — back-compat alias
 ) -> ParallelProcessingResult:
     """
     Process multiple products concurrently with controlled parallelism.
@@ -100,7 +99,8 @@ async def process_products_parallel(
         supabase: Supabase client
         config: Processing configuration
         logger_instance: Logger instance
-        total_pages: Total pages in PDF
+        physical_page_upper_bound: Upper-bound page number — physical pages
+            for spread layouts, raw page count otherwise.
         temp_pdf_path: Path to temporary PDF file
         parallel_config: Configuration for parallel processing
 
@@ -114,8 +114,7 @@ async def process_products_parallel(
     result = ParallelProcessingResult()
     start_time = datetime.utcnow()
 
-    # Resolve the page bound — explicit name wins over the legacy alias.
-    _physical_bound = physical_page_upper_bound if physical_page_upper_bound is not None else total_pages
+    _physical_bound = physical_page_upper_bound
 
     # If parallel processing is disabled, fall back to sequential
     if not parallel_config.enable_parallel or total_products <= 2:
@@ -235,28 +234,69 @@ async def process_products_parallel(
                 return product_result
 
             except asyncio.TimeoutError:
+                # The wrapper's wait_for cancels process_single_product externally,
+                # so its own try/except never fires. We must write the DB row here
+                # ourselves — otherwise product_processing_status stays at
+                # current_stage=<whatever-was-running>, status='processing' forever
+                # and the orchestrator's "skip and continue" silently drops the
+                # product without surfacing the failure (audit incident 2026-05-02).
+                _product_id = f"product_{product_index}_{product.name.replace(' ', '_')}"
+                _err_msg = f"Per-product timeout ({per_product_timeout}s) exceeded"
                 logger_instance.error(
                     f"⏱️ Product {product_index}/{total_products} ({product.name}) "
                     f"exceeded {per_product_timeout}s timeout — marking failed"
                 )
+                try:
+                    await product_tracker.mark_product_failed(
+                        product_id=_product_id,
+                        error_message=_err_msg,
+                        error_stage=ProductStage.FAILED,
+                    )
+                except Exception as mark_err:
+                    logger_instance.error(
+                        f"   ❌ ALSO failed to mark product {_product_id} as failed in DB: {mark_err}"
+                    )
+                # Clear any in-flight slow-op marker the cancelled task left behind.
+                try:
+                    await tracker.clear_slow_operation()
+                except Exception:
+                    pass
                 async with update_lock:
                     metrics['failed'] += 1
                 return ProductProcessingResult(
-                    product_id=f"product_{product_index}_{product.name.replace(' ', '_')}",
+                    product_id=_product_id,
                     product_name=product.name,
                     product_index=product_index,
                     success=False,
-                    error=f"Per-product timeout ({per_product_timeout}s) exceeded",
+                    error=_err_msg,
                 )
 
             except Exception as e:
+                # Same reasoning as TimeoutError: an exception escaping
+                # process_single_product means its own try/except didn't run
+                # (or re-raised), so we own the DB row update here.
+                _product_id = f"product_{product_index}_{product.name.replace(' ', '_')}"
                 logger_instance.error(f"❌ Exception processing product {product.name}: {e}", exc_info=True)
+                try:
+                    await product_tracker.mark_product_failed(
+                        product_id=_product_id,
+                        error_message=str(e),
+                        error_stage=ProductStage.FAILED,
+                    )
+                except Exception as mark_err:
+                    logger_instance.error(
+                        f"   ❌ ALSO failed to mark product {_product_id} as failed in DB: {mark_err}"
+                    )
+                try:
+                    await tracker.clear_slow_operation()
+                except Exception:
+                    pass
                 async with update_lock:
                     metrics['failed'] += 1
 
                 # Return a failure result
                 return ProductProcessingResult(
-                    product_id=f"product_{product_index}_{product.name.replace(' ', '_')}",
+                    product_id=_product_id,
                     product_name=product.name,
                     product_index=product_index,
                     success=False,
@@ -338,7 +378,6 @@ async def _process_products_sequential(
     logger_instance: logging.Logger,
     physical_page_upper_bound: Optional[int] = None,
     temp_pdf_path: Optional[str] = None,
-    total_pages: Optional[int] = None,  # DEPRECATED back-compat alias
 ) -> ParallelProcessingResult:
     """
     Process products sequentially (fallback when parallel is disabled).
@@ -349,7 +388,7 @@ async def _process_products_sequential(
     result = ParallelProcessingResult()
     start_time = datetime.utcnow()
 
-    _physical_bound = physical_page_upper_bound if physical_page_upper_bound is not None else total_pages
+    _physical_bound = physical_page_upper_bound
 
     # P2-2: per-product timeout (sequential path).
     import os as _os_p2_seq

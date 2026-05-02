@@ -56,7 +56,6 @@ class CreditsIntegrationService:
             'raw_cost_usd': round(float(cost_data['raw_cost_usd']), 8),
             'billed_cost_usd': round(float(cost_data['billed_cost_usd']), 8),
             'markup_multiplier': float(cost_data['markup_multiplier']),
-            'total_cost_usd': round(float(cost_data['billed_cost_usd']), 6),  # For backward compatibility
             'credits_debited': round(float(cost_data['credits_to_debit']), 2)
         }
     
@@ -130,7 +129,6 @@ class CreditsIntegrationService:
                 'raw_cost_usd': costs['raw_cost_usd'],
                 'markup_multiplier': costs['markup_multiplier'],
                 'billed_cost_usd': costs['billed_cost_usd'],
-                'total_cost_usd': costs['total_cost_usd'],
                 'credits_debited': costs['credits_debited'],
                 'job_id': job_id,
                 'module_slug': module_slug,
@@ -249,7 +247,7 @@ class CreditsIntegrationService:
                 'credits_used': credits_used,
                 'input_cost_usd': 0,
                 'output_cost_usd': 0,
-                'total_cost_usd': float(cost_usd),
+                'billed_cost_usd': float(cost_usd),
                 'credits_debited': platform_credits,
                 'operation_details': {
                     'url': url,
@@ -303,7 +301,7 @@ class CreditsIntegrationService:
             user_id: User ID who initiated the operation
             workspace_id: Workspace ID (optional)
             operation_type: Type of operation (e.g., 'vision_analysis')
-            model_name: AI model used (e.g., 'qwen3-vl-32b')
+            model_name: HuggingFace endpoint model name (e.g., 'slig-768d', 'yolo-docparser', 'chandra-ocr-v2')
             inference_seconds: Time taken for inference in seconds
             job_id: Background job ID for cost aggregation (optional)
             metadata: Additional metadata to store
@@ -373,7 +371,6 @@ class CreditsIntegrationService:
                 'raw_cost_usd': round(float(costs['raw_cost_usd']), 8),
                 'markup_multiplier': float(costs['markup_multiplier']),
                 'billed_cost_usd': round(float(costs['billed_cost_usd']), 8),
-                'total_cost_usd': round(float(costs['billed_cost_usd']), 6),
                 'credits_debited': credits_to_debit,
                 'job_id': job_id,
                 'module_slug': module_slug,
@@ -508,7 +505,6 @@ class CreditsIntegrationService:
                 'raw_cost_usd': round(float(costs['raw_cost_usd']), 8),
                 'markup_multiplier': float(costs['markup_multiplier']),
                 'billed_cost_usd': round(float(costs['billed_cost_usd']), 8),
-                'total_cost_usd': round(float(costs['billed_cost_usd']), 6),
                 'credits_debited': credits_to_debit,
                 'module_slug': module_slug,
                 'metadata': {
@@ -630,7 +626,6 @@ class CreditsIntegrationService:
                 'raw_cost_usd': round(float(raw_cost), 8),
                 'markup_multiplier': float(AIPricingConfig.MARKUP_MULTIPLIER),
                 'billed_cost_usd': round(float(billed_cost), 8),
-                'total_cost_usd': round(float(billed_cost), 6),
                 'credits_debited': credits_to_debit,
                 'job_id': job_id,
                 'module_slug': module_slug,

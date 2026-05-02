@@ -1035,10 +1035,11 @@ class WebScrapingService:
         Pipeline (all inline — no queue/worker step):
         1. Merge URLs from markdown text + Firecrawl-extracted images
         2. Download images to Supabase Storage
-        3. Classify material vs non-material via Qwen/Claude
+        3. Classify material vs non-material via Claude
         4. Run SigLIP2 (SLIG 768D) for visual + color + texture + style + material
-        5. Run Qwen3-VL vision analysis → Voyage AI 1024D understanding embedding
-           when analysis is available; otherwise skipped per image
+        5. Run Claude Opus 4.7 vision analysis (Anthropic tool use, schema-locked)
+           → Voyage AI 1024D understanding embedding when analysis is available;
+           otherwise skipped per image.
         6. Save document_images rows and write diagnostic stats to
            products.metadata.image_extraction
 

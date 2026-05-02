@@ -31,7 +31,7 @@ class RealQualityScoringService:
     
     # Quality score weights
     IMAGE_QUALITY_WEIGHTS = {
-        "analysis_completeness": 0.30,  # Has Qwen, Claude, CLIP analysis
+        "analysis_completeness": 0.30,  # Has SLIG embedding + Claude vision_analysis
         "dimensions_quality": 0.20,      # Image dimensions and format
         "material_properties": 0.25,     # Extracted material properties
         "embedding_coverage": 0.15,      # Has all embedding types

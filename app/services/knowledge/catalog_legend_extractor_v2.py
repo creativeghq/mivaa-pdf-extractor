@@ -21,9 +21,11 @@ Runs ONCE per document. Consumes the page classification stored on
      which was focused only on markdown KB docs and didn't extract
      structured values.
 
-This v2 replaces the old `catalog_knowledge_extractor.py` as the primary
-legend-reading entry point. The old file is kept for backwards compat
-and now delegates to this module.
+This module is the structured-legend entry point and runs alongside the
+sibling `catalog_knowledge_extractor.py` (which produces unstructured
+markdown KB docs from tail catalog pages). Both are still imported by
+[stage_4_products.py](../../api/pdf_processing/stage_4_products.py); they
+are complementary, not a v1/v2 superseded pair.
 
 Design notes
 ------------

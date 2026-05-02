@@ -152,10 +152,11 @@ class ImageInfo(BaseModel):
     height: Optional[int] = Field(None, description="Image height in pixels", ge=1)
     page_number: Optional[int] = Field(None, description="Source page number", ge=1)
 
-    # 4-Layer Extraction Metadata
-    extraction_method: Optional[str] = Field(
+    # 4-Layer Extraction Metadata. Canonical enum values match the
+    # `document_images.extraction_layer` CHECK constraint.
+    extraction_layer: Optional[str] = Field(
         None,
-        description="Extraction method: pymupdf_embedded (Layer 1), pymupdf_full_render (Layer 2), vision_guided (Layer 3)"
+        description="Extraction layer: embedded (Layer 1), full_render (Layer 2), yolo_crop (YOLO-guided), vision_guided (Layer 3)"
     )
     layer: Optional[int] = Field(
         None,

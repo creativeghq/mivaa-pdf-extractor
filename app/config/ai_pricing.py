@@ -376,7 +376,7 @@ class AIPricingConfig:
         Get pricing for a specific model.
 
         Args:
-            model: Model name (e.g., 'claude-haiku-4-5', 'qwen3-vl-32b')
+            model: Model name (e.g., 'claude-haiku-4-5', 'claude-opus-4-7', 'voyage-4')
             provider: Optional provider hint ('anthropic', 'openai', 'huggingface', 'firecrawl')
 
         Returns:
@@ -532,7 +532,7 @@ class AIPricingConfig:
         Cost = inference_seconds × (hourly_rate / 3600)
 
         Args:
-            model: Model name (e.g., 'qwen3-vl-32b', 'slig-768d', 'yolo-docparser')
+            model: HuggingFace endpoint model name (e.g., 'slig-768d', 'yolo-docparser', 'chandra-ocr-v2')
             inference_seconds: Time taken for inference in seconds
             include_markup: If True, applies 50% markup (default: True)
 

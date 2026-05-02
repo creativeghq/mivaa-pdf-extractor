@@ -95,7 +95,9 @@ async def analyze_image(
     """
     **🔍 Image Analysis - AI-Powered Visual Understanding**
 
-    Analyze images using Qwen3-VL 17B Vision model for comprehensive visual understanding.
+    Analyze images using Claude Opus 4.7 Vision (via Anthropic tool use) for
+    comprehensive visual understanding. Post-Qwen-removal (2026-05-01) all
+    vision tasks run on Claude — same schema, same tool-use guarantees.
 
     ## 🎯 Analysis Types
 
@@ -142,7 +144,7 @@ async def analyze_image(
         "quality": 0.92
       },
       "processing_time": 1.23,
-      "model_used": "Qwen/Qwen3-VL-8B-Instruct"
+      "model_used": "claude-opus-4-7"
     }
     ```
 
@@ -910,7 +912,7 @@ async def reclassify_image(
         rag_service = RAGService()
 
         # Run primary classification
-        logger.info("🤖 Running primary classification (Qwen3-VL-8B)")
+        logger.info("🤖 Running primary classification (Claude Opus 4.7 vision)")
         primary_classification = await rag_service._classify_image_material(
             image_base64=image_base64,
             confidence_threshold=0.6
@@ -988,7 +990,7 @@ async def segment_image(
     """
     **🔍 Material Zone Segmentation**
 
-    Detect distinct material surfaces in a 3D rendered image using Qwen3-VL.
+    Detect distinct material surfaces in a 3D rendered image using Claude Opus 4.7 vision.
     Returns bounding boxes (relative 0–1) + metadata per zone.
 
     Accepts either `image_url` (fetched server-side, no CORS issues) or

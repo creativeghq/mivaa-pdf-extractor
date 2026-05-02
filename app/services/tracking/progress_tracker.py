@@ -640,11 +640,11 @@ class ProgressTracker:
         if self._db_sync_enabled and self._supabase and self.job_id:
             try:
                 cost_resp = self._supabase.client.table('ai_usage_logs')\
-                    .select('billed_cost_usd, total_cost_usd')\
+                    .select('billed_cost_usd')\
                     .eq('job_id', self.job_id).execute()
                 rows = cost_resp.data or []
                 total_ai_cost_usd = sum(
-                    float(r.get('billed_cost_usd') or r.get('total_cost_usd') or 0)
+                    float(r.get('billed_cost_usd') or 0)
                     for r in rows
                 )
             except Exception as cost_err:
@@ -681,6 +681,21 @@ class ProgressTracker:
                     .update(update_payload)\
                     .eq('id', self.job_id)\
                     .execute()
+
+                # Recompute the failure_summary aggregate so the admin UI
+                # reflects final OCR + recovery counts (the trigger on
+                # product_processing_status only catches per-product status
+                # changes, not chandra_ocr_metrics inserts).
+                try:
+                    self._supabase.client.rpc(
+                        'update_job_failure_summary',
+                        {'p_job_id': self.job_id},
+                    ).execute()
+                except Exception as fs_err:
+                    logger.debug(
+                        f"   update_job_failure_summary failed for "
+                        f"{self.job_id} (non-fatal): {fs_err}"
+                    )
 
             # Update job_storage
             if self.job_storage and self.job_id in self.job_storage:
@@ -785,6 +800,19 @@ class ProgressTracker:
                     })\
                     .eq('id', self.job_id)\
                     .execute()
+
+                # Recompute the failure_summary aggregate so OCR + recovery
+                # counts land in the admin UI's PipelineErrorsPanel.
+                try:
+                    self._supabase.client.rpc(
+                        'update_job_failure_summary',
+                        {'p_job_id': self.job_id},
+                    ).execute()
+                except Exception as fs_err:
+                    logger.debug(
+                        f"   update_job_failure_summary failed for "
+                        f"{self.job_id} (non-fatal): {fs_err}"
+                    )
 
             # Update job_storage
             if self.job_storage and self.job_id in self.job_storage:
@@ -905,6 +933,53 @@ class ProgressTracker:
             raise  # Re-raise cancellation
         except Exception as e:
             logger.error(f"❌ Failed to update heartbeat for job {self.job_id}: {e}")
+
+    async def set_slow_operation(
+        self,
+        operation: str,
+        expected_max_seconds: int,
+    ) -> None:
+        """Mark the job as inside a known long-running stage.
+
+        Writes ``current_slow_operation = {operation, started_at,
+        expected_max_seconds}`` so auto-recovery cron can suppress
+        false-positive "stuck job" recovery while a legitimate slow op
+        is in flight (per the post-2026-05-01 pipeline convention).
+
+        Always paired with `clear_slow_operation()` once the op completes
+        or fails.
+        """
+        if not (self._db_sync_enabled and self._supabase):
+            return
+        try:
+            self._supabase.client.table('background_jobs')\
+                .update({
+                    'current_slow_operation': {
+                        'operation': operation,
+                        'started_at': datetime.utcnow().isoformat(),
+                        'expected_max_seconds': int(expected_max_seconds),
+                    },
+                    'updated_at': datetime.utcnow().isoformat(),
+                })\
+                .eq('id', self.job_id)\
+                .execute()
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to set current_slow_operation for {self.job_id}: {e}")
+
+    async def clear_slow_operation(self) -> None:
+        """Clear the in-flight slow-op marker."""
+        if not (self._db_sync_enabled and self._supabase):
+            return
+        try:
+            self._supabase.client.table('background_jobs')\
+                .update({
+                    'current_slow_operation': None,
+                    'updated_at': datetime.utcnow().isoformat(),
+                })\
+                .eq('id', self.job_id)\
+                .execute()
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to clear current_slow_operation for {self.job_id}: {e}")
 
     async def stop_heartbeat(self):
         """Stop the heartbeat monitoring task"""

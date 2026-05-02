@@ -197,8 +197,8 @@ async def classify_images(
     3. Returns separated lists of material and non-material images
 
     AI Configuration (Optional):
-    - classification_primary_model: Primary classification model (default: Qwen3-VL-8B)
-    - classification_validation_model: Validation model (default: Claude Opus 4.7)
+    - classification_primary_model: Primary classification model (default: claude-haiku-4-5)
+    - classification_validation_model: Validation model (default: claude-opus-4-7)
     - classification_confidence_threshold: Threshold for validation (default: 0.7)
     - classification_temperature: Temperature setting (default: 0.1)
     - classification_max_tokens: Max tokens for responses (default: 512)
@@ -209,7 +209,7 @@ async def classify_images(
       "job_id": "abc123",
       "extracted_images": [...],
       "ai_config": {
-        "classification_primary_model": "Qwen/Qwen3-VL-8B-Instruct",
+        "classification_primary_model": "claude-haiku-4-5",
         "classification_validation_model": "claude-opus-4-7",
         "classification_confidence_threshold": 0.8
       }
@@ -1154,8 +1154,12 @@ async def regenerate_image_embeddings(
                 # and which VisionAnalysis schema version the input used.
                 understanding_embedding = embeddings.get('understanding_1024')
                 if understanding_embedding:
-                    meta_versions = embeddings.get('metadata', {}).get('model_versions', {})
-                    meta_schemas = embeddings.get('metadata', {}).get('schema_versions', {})
+                    # Provenance lives on the parent embedding_result dict,
+                    # not inside the inner `embeddings` vector sub-dict.
+                    # See image_processing_service.py for the same fix
+                    # (audit 2026-05-02 — silent NULL drift-detector field).
+                    meta_versions = embedding_result.get('metadata', {}).get('model_versions', {})
+                    meta_schemas = embedding_result.get('metadata', {}).get('schema_versions', {})
                     await vecs_service.upsert_understanding_embedding(
                         image_id=image_id,
                         embedding=understanding_embedding,
@@ -1164,7 +1168,7 @@ async def regenerate_image_embeddings(
                             'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)
                         },
-                        embedding_model=meta_versions.get('understanding'),
+                        embedding_model=meta_versions.get('understanding') or 'voyage-4',
                         schema_version=meta_schemas.get('understanding'),
                     )
                     embeddings_generated += 1

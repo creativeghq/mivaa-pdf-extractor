@@ -40,10 +40,12 @@ class ConsensusValidator:
     MEDIUM_AGREEMENT = 0.5 # Medium consensus - use weighted vote
     LOW_AGREEMENT = 0.3    # Low consensus - flag for human review
     
-    # Model weights (based on general performance)
+    # Model weights (based on general performance). Anthropic-only since
+    # the 2026-05-01 Qwen removal — kept the dict structure so future model
+    # additions (Sonnet, Haiku 4.6, etc.) can slot in easily.
     MODEL_WEIGHTS = {
-        "qwen3-vl-8b": 0.7,
         "claude-haiku-4-5": 0.85,
+        "claude-sonnet-4-6": 0.92,
         "claude-opus-4-7": 1.0,
     }
     

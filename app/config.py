@@ -108,7 +108,7 @@ class Settings(BaseSettings):
     # Each base cap × 4 replicas matches what the AIMD gate in
     # endpoint_controller.py raises to once replicas come online.
     # Without these caps, a 1000-image catalog fires 1000 simultaneous
-    # SLIG/Qwen requests and trips upstream rate limits.
+    # SLIG / YOLO / Chandra requests and trips upstream rate limits.
     slig_concurrency: int = Field(
         default=32, env="SLIG_CONCURRENCY",
         description="Max concurrent SLIG visual-embedding requests (base=8 × 4 replicas)"
@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     # Multi-Query Expansion
     multi_query_variations: int = Field(default=3, env="MULTI_QUERY_VARIATIONS")
 
-    # Understanding Embeddings (Qwen vision_analysis → Voyage AI text embedding)
+    # Understanding Embeddings (Claude Opus 4.7 vision_analysis → Voyage AI text embedding)
     enable_understanding_embeddings: bool = Field(default=True, env="ENABLE_UNDERSTANDING_EMBEDDINGS")
     understanding_embedding_dimension: int = Field(default=1024, env="UNDERSTANDING_EMBEDDING_DIMENSION")
 
@@ -242,14 +242,11 @@ class Settings(BaseSettings):
     database_timeout: int = Field(default=30, env="DATABASE_TIMEOUT")
 
     # ============================================================================
-    # OpenAI API Settings (Fallback for Voyage AI text embeddings)
+    # OpenAI API Settings (only used as Voyage AI text-embedding fallback —
+    # the platform runs Claude exclusively for chat / vision / tool use).
     # ============================================================================
     openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
-    # OpenAI chat models removed — platform uses Claude exclusively. Field kept for env-var compat.
-    openai_model: str = Field(default="", env="OPENAI_MODEL")
     openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
-    openai_max_tokens: int = Field(default=4096, env="OPENAI_MAX_TOKENS")
-    openai_temperature: float = Field(default=0.1, env="OPENAI_TEMPERATURE")
     openai_timeout: int = Field(default=30, env="OPENAI_TIMEOUT")
 
     # ============================================================================
@@ -436,7 +433,7 @@ class Settings(BaseSettings):
     vision_guided_provider: str = Field(
         default="anthropic",
         env="VISION_GUIDED_PROVIDER",
-        description="Vision model provider: 'anthropic' (Claude), 'openai' (GPT-4o), 'huggingface' (Qwen)"
+        description="Vision model provider: 'anthropic' (Claude — primary post-Qwen-removal), 'openai' (GPT-4o, fallback only)"
     )
     vision_guided_model: str = Field(
         default="claude-opus-4-7",
@@ -811,8 +808,8 @@ class Settings(BaseSettings):
 
         Rule for str fields: fall back to the declared default only when that
         default is itself non-empty. So `'' → "https://..."` is restored, but
-        `'' → ""` stays as the explicit user choice (some fields like
-        `openai_model = ""` genuinely default to empty).
+        `'' → ""` stays as the explicit user choice (some fields genuinely
+        default to empty — e.g. optional API keys for disabled providers).
         """
         if v != "":
             return v

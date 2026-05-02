@@ -1,9 +1,10 @@
 """
 Adaptive concurrency controller — AIMD backpressure.
 
-When an upstream endpoint (Qwen HF Inference, SLIG, etc.) cannot scale up its
-replicas (no available GPU, or rate-limited), we scale DOWN our in-flight
-request rate instead of queuing requests that will time out. Classic AIMD:
+When an upstream endpoint (SLIG, YOLO, Chandra OCR, Anthropic, etc.) cannot
+scale up its replicas (no available GPU, or rate-limited), we scale DOWN our
+in-flight request rate instead of queuing requests that will time out.
+Classic AIMD:
 
     Additive Increase: +1 concurrency slot after N consecutive successes
     Multiplicative Decrease: /2 concurrency slots after M consecutive failures
@@ -13,14 +14,14 @@ fresh at `initial`. The controller is reusable for any rate-limited endpoint.
 
 Usage:
 
-    qwen_concurrency = AdaptiveConcurrency(initial=3, minimum=1, maximum=8)
+    slig_concurrency = AdaptiveConcurrency(initial=3, minimum=1, maximum=8)
 
-    async with qwen_concurrency.slot():
+    async with slig_concurrency.slot():
         try:
-            result = await qwen_call(...)
-            qwen_concurrency.record_success()
+            result = await slig_call(...)
+            slig_concurrency.record_success()
         except (APITimeoutError, APIConnectionError, RateLimitError):
-            qwen_concurrency.record_failure()
+            slig_concurrency.record_failure()
             raise
 """
 

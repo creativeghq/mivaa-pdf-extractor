@@ -12,7 +12,7 @@ Search Strategy:
   4. vecs.image_texture_embeddings (768D SLIG, 12.5%) - Texture pattern matching
   5. vecs.image_style_embeddings (768D SLIG, 12.5%) - Design style matching
   6. vecs.image_material_embeddings (768D SLIG, 12.5%) - Material type matching
-  7. vecs.image_understanding_embeddings (1024D Voyage from Qwen3-VL, 10%) - Vision-understanding
+  7. vecs.image_understanding_embeddings (1024D Voyage from Claude Opus 4.7 vision, 10%) - Vision-understanding
 """
 
 import logging
@@ -503,7 +503,7 @@ class RAGService:
            - vecs.image_texture_embeddings (texture pattern matching)
            - vecs.image_style_embeddings (design style matching)
            - vecs.image_material_embeddings (material type matching)
-           - vecs.image_understanding_embeddings (Qwen3-VL → Voyage 1024D)
+           - vecs.image_understanding_embeddings (Claude Opus 4.7 vision → Voyage 1024D)
 
         2. **Text Embeddings** (document_chunks) - Semantic text search
            - Searches document_chunks.text_embedding (halfvec(1024) Voyage AI 3.5)

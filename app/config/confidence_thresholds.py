@@ -189,11 +189,12 @@ class EscalationRules:
     Rules for escalating AI tasks to more powerful (and expensive) models.
     """
     
-    # Model escalation chain (cheapest to most expensive)
+    # Model escalation chain (cheapest to most expensive). Post-Qwen-removal
+    # 2026-05-01: vision is Anthropic-only.
     MODEL_CHAIN = [
-        "qwen3-vl-32b",                # Primary vision model (HF Endpoint)
-        "claude-haiku-4-5",   # Balanced
-        "claude-opus-4-7",             # Most powerful (for critical tasks)
+        "claude-haiku-4-5",   # Cheapest vision-capable
+        "claude-sonnet-4-6",  # Balanced
+        "claude-opus-4-7",    # Most powerful (for critical tasks)
     ]
 
     # Cost multipliers (Haiku 4.5 = baseline post-Qwen-removal).
@@ -275,7 +276,7 @@ class EscalationRules:
     @classmethod
     def get_cost_multiplier(cls, model: str) -> float:
         """
-        Get cost multiplier for a model relative to Qwen3-VL-8B.
+        Get cost multiplier for a model relative to Claude Haiku 4.5 baseline.
         
         Args:
             model: Model name

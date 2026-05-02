@@ -621,7 +621,7 @@ async def get_document_content(
     Returns comprehensive document data including:
     - Document metadata
     - All chunks with embeddings
-    - All images with AI analysis (CLIP, Qwen, Claude)
+    - All images with AI analysis (SLIG visual + Claude vision_analysis)
     - All products created from the document
     - Complete AI model usage statistics
     """

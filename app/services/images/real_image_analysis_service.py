@@ -1,11 +1,13 @@
 """
 Real Image Analysis Service - Stage 4 Implementation
 
-1. Vision model (default Qwen3-VL-8B) for detailed image analysis
-2. Claude Opus 4.7 Vision for validation
-3. SigLIP2 (SLIG 768D) embeddings for visual similarity
-4. Material property extraction
-5. Quality scoring
+1. Vision model (Claude Opus 4.7 via Anthropic tool use) for detailed image analysis
+2. SigLIP2 (SLIG 768D) embeddings for visual similarity
+3. Material property extraction
+4. Quality scoring
+
+Post-Qwen-removal (2026-05-01) all vision tasks run on Claude — same schema,
+same tool-use guarantees. No HF vision endpoint involved.
 """
 
 import logging
@@ -39,7 +41,7 @@ class ImageAnalysisResult:
     image_id: str
     vision_analysis: Dict[str, Any]  # Vision model analysis (configurable)
     claude_validation: Optional[Dict[str, Any]]  # Claude Opus 4.7 validation (optional, async)
-    clip_embedding: List[float]  # 768D SigLIP2 (SLIG) embedding — legacy field name
+    slig_embedding: List[float]  # 768D SigLIP2 (SLIG) visual embedding
     material_properties: Dict[str, Any]  # Extracted properties
     quality_score: float  # Real quality score (0.0-1.0)
     confidence_score: float  # Confidence in analysis (0.0-1.0)
@@ -50,7 +52,7 @@ class ImageAnalysisResult:
 
 class RealImageAnalysisService:
     """
-    Provides real image analysis using vision models and CLIP embeddings.
+    Provides real image analysis using vision models and SLIG embeddings.
 
     This service uses Anthropic Claude Opus 4.7 for both vision analysis and
     validation. CLIP/SLIG handles visual embeddings separately.
@@ -158,12 +160,12 @@ class RealImageAnalysisService:
             # Step 2: Run parallel analysis
             vision_task = self._analyze_with_vision_model(image_base64, context)
             claude_task = self._analyze_with_claude(image_url, context)
-            clip_task = self._generate_clip_embedding(image_base64)
+            slig_task = self._generate_slig_embedding(image_base64)
 
-            vision_result, claude_result, clip_embedding = await asyncio.gather(
+            vision_result, claude_result, slig_embedding = await asyncio.gather(
                 vision_task,
                 claude_task,
-                clip_task,
+                slig_task,
                 return_exceptions=True
             )
 
@@ -174,9 +176,9 @@ class RealImageAnalysisService:
             if isinstance(claude_result, Exception):
                 self.logger.error(f"Claude analysis failed: {claude_result}")
                 claude_result = {"error": str(claude_result)}
-            if isinstance(clip_embedding, Exception):
-                self.logger.error(f"CLIP embedding failed: {clip_embedding}")
-                clip_embedding = []
+            if isinstance(slig_embedding, Exception):
+                self.logger.error(f"SLIG embedding failed: {slig_embedding}")
+                slig_embedding = []
             
             # Step 3: Extract material properties
             material_properties = self._extract_material_properties(
@@ -188,7 +190,7 @@ class RealImageAnalysisService:
             quality_score = self._calculate_quality_score(
                 vision_result,
                 claude_result,
-                clip_embedding,
+                slig_embedding,
                 material_properties
             )
 
@@ -205,7 +207,7 @@ class RealImageAnalysisService:
                 image_id=image_id,
                 vision_analysis=vision_result,
                 claude_validation=claude_result,
-                clip_embedding=clip_embedding,
+                slig_embedding=slig_embedding,
                 material_properties=material_properties,
                 quality_score=quality_score,
                 confidence_score=confidence_score,
@@ -235,7 +237,7 @@ class RealImageAnalysisService:
         - Use ONLY vision model (configurable) for sync processing
         - Calculate quality score based on vision model confidence
         - Queue Claude validation ONLY if vision score < threshold (0.7)
-        - Keep ALL 5 CLIP embeddings
+        - Keep ALL 5 SLIG embeddings
 
         This prevents OOM crashes by removing dual-model sync processing.
 
@@ -247,7 +249,7 @@ class RealImageAnalysisService:
             document_id: Optional document ID for queuing Claude validation
 
         Returns:
-            ImageAnalysisResult with vision model analysis + CLIP embeddings
+            ImageAnalysisResult with vision model analysis + SLIG embeddings
         """
         start_time = datetime.now()
 
@@ -256,11 +258,11 @@ class RealImageAnalysisService:
 
             # Step 1: Run vision model + CLIP in parallel (NO CLAUDE)
             vision_task = self._analyze_with_vision_model(image_base64, context, job_id)
-            clip_task = self._generate_clip_embedding(image_base64)
+            slig_task = self._generate_slig_embedding(image_base64)
 
-            vision_result, clip_embedding = await asyncio.gather(
+            vision_result, slig_embedding = await asyncio.gather(
                 vision_task,
-                clip_task,
+                slig_task,
                 return_exceptions=True
             )
 
@@ -268,9 +270,9 @@ class RealImageAnalysisService:
             if isinstance(vision_result, Exception):
                 self.logger.error(f"Vision model analysis failed: {vision_result}")
                 vision_result = {"error": str(vision_result), "confidence": 0.0}
-            if isinstance(clip_embedding, Exception):
-                self.logger.error(f"CLIP embedding failed: {clip_embedding}")
-                clip_embedding = []
+            if isinstance(slig_embedding, Exception):
+                self.logger.error(f"SLIG embedding failed: {slig_embedding}")
+                slig_embedding = []
 
             # Step 2: Extract material properties from vision model ONLY
             material_properties = self._extract_material_properties_from_vision(vision_result)
@@ -279,7 +281,7 @@ class RealImageAnalysisService:
             vision_confidence = vision_result.get('confidence', 0.0)
             quality_score = self._calculate_vision_quality_score(
                 vision_result,
-                clip_embedding,
+                slig_embedding,
                 material_properties
             )
 
@@ -318,7 +320,7 @@ class RealImageAnalysisService:
                 image_id=image_id,
                 vision_analysis=vision_result,
                 claude_validation=None,  # No Claude in sync processing
-                clip_embedding=clip_embedding,
+                slig_embedding=slig_embedding,
                 material_properties=material_properties,
                 quality_score=quality_score,
                 confidence_score=vision_confidence,
@@ -594,7 +596,7 @@ class RealImageAnalysisService:
             self.logger.error(f"Claude analysis failed: {e}")
             raise RuntimeError(f"Claude Opus 4.7 Vision analysis failed: {str(e)}") from e
 
-    async def _generate_clip_embedding(self, image_base64: str) -> List[float]:
+    async def _generate_slig_embedding(self, image_base64: str) -> List[float]:
         """Generate SigLIP embedding for image using RealEmbeddingsService"""
         try:
             # Use RealEmbeddingsService directly instead of HTTP call
@@ -636,7 +638,7 @@ class RealImageAnalysisService:
 
         except Exception as e:
             self.logger.error(f"❌ SigLIP embedding generation failed: {e}")
-            raise RuntimeError(f"CLIP embedding generation failed: {str(e)}") from e
+            raise RuntimeError(f"SLIG embedding generation failed: {str(e)}") from e
 
     def _extract_material_properties(
         self,
@@ -721,7 +723,7 @@ class RealImageAnalysisService:
     def _calculate_vision_quality_score(
         self,
         vision_result: Dict[str, Any],
-        clip_embedding: List[float],
+        slig_embedding: List[float],
         material_properties: Dict[str, Any]
     ) -> float:
         """
@@ -730,7 +732,7 @@ class RealImageAnalysisService:
         NEW SCORING (Vision-only):
         - Vision model confidence: 60% weight
         - Material properties completeness: 30% weight
-        - CLIP embedding validity: 10% weight
+        - SLIG embedding validity: 10% weight
 
         Returns:
             Quality score between 0.0 and 1.0
@@ -760,11 +762,11 @@ class RealImageAnalysisService:
             score += properties_score * 0.3
             weight_count += 0.3
 
-        # CLIP embedding validity (10% weight)
-        if clip_embedding and len(clip_embedding) > 0:
+        # SLIG embedding validity (10% weight)
+        if slig_embedding and len(slig_embedding) > 0:
             # Check if embedding is not all zeros
-            non_zero_count = sum(1 for v in clip_embedding if abs(v) > 0.001)
-            if non_zero_count > len(clip_embedding) * 0.1:  # At least 10% non-zero
+            non_zero_count = sum(1 for v in slig_embedding if abs(v) > 0.001)
+            if non_zero_count > len(slig_embedding) * 0.1:  # At least 10% non-zero
                 score += 1.0 * 0.1
                 weight_count += 0.1
 
@@ -778,7 +780,7 @@ class RealImageAnalysisService:
         self,
         vision_result: Dict[str, Any],
         claude_result: Dict[str, Any],
-        clip_embedding: List[float],
+        slig_embedding: List[float],
         material_properties: Dict[str, Any]
     ) -> float:
         """Calculate real quality score based on analysis results"""

@@ -284,7 +284,6 @@ class SupabaseClient:
         image_index: int = 0,
         category: Optional[str] = None,
         job_id: Optional[str] = None,
-        extraction_method: str = 'pymupdf',
         bbox: Optional[list] = None,
         detection_confidence: Optional[float] = None,
         product_name: Optional[str] = None,
@@ -312,7 +311,6 @@ class SupabaseClient:
             image_index: Index of image in processing sequence
             category: Image category (product, certificate, logo, specification, general)
             job_id: Job ID for source tracking (optional)
-            extraction_method: Extraction method (pymupdf, manual)
             bbox: Bounding box coordinates [x, y, width, height] normalized to 0-1
             detection_confidence: Confidence score (0.0-1.0)
             product_name: Product name
@@ -407,6 +405,14 @@ class SupabaseClient:
                     logger.error(f"   This may indicate an embedding was incorrectly assigned to bbox")
             bbox = validated_bbox
 
+            # `extraction_layer` is the canonical column-backed enum
+            # ({embedded, yolo_crop, full_render, vision_guided}). PyMuPDF is
+            # the engine for embedded/full_render/yolo_crop; the column
+            # describes what kind of output we got, not which library did it.
+            # Producer (pdf_processor) emits canonical values directly since
+            # the 2026-05-02 cleanup, so all callers funnel through image_info.
+            extraction_layer_val = image_info.get('extraction_layer') or 'embedded'
+
             # Prepare image entry (same format as batch save)
             image_entry = {
                 'document_id': document_id,
@@ -419,8 +425,12 @@ class SupabaseClient:
                 'category': final_category,  # AI-derived category
                 'source_type': 'pdf_processing',
                 'source_job_id': job_id,
-                # Extraction metadata
-                'extraction_method': extraction_method,
+                # Extraction metadata — `extraction_layer` is canonical.
+                # Legacy `extraction_method` column write removed
+                # 2026-05-02; the field now lives only in metadata for
+                # backwards-compat with existing read sites that still
+                # reference it (frontend display, analytics).
+                'extraction_layer': extraction_layer_val,
                 'bbox': bbox,
                 'detection_confidence': detection_confidence,
                 'product_name': product_name,
@@ -435,7 +445,10 @@ class SupabaseClient:
                 'metadata': {
                     'source': 'mivaa_pdf_extraction',
                     'image_index': image_index,
-                    'extraction_method': extraction_method,
+                    # `extraction_layer` is the canonical enum on the row;
+                    # we mirror it here (not `extraction_method`) so any
+                    # consumer reading from metadata sees the same value.
+                    'extraction_layer': extraction_layer_val,
                     'storage_uploaded': image_info.get('storage_uploaded', False),
                     'storage_bucket': image_info.get('storage_bucket', 'material-images'),
                     'storage_path': image_info.get('storage_path'),
@@ -460,7 +473,7 @@ class SupabaseClient:
                         'provider': vision_provider or image_info.get('vision_provider'),
                         'model': vision_model or image_info.get('vision_model'),
                         'product_name': product_name
-                    } if extraction_method == 'vision_guided' else None,
+                    } if extraction_layer_val == 'vision_guided' else None,
                     # 4-Layer extraction metadata
                     'layer_info': {
                         'layer': layer or image_info.get('layer'),
@@ -682,6 +695,15 @@ class SupabaseClient:
 
                     # Only add images with valid URLs (not placeholders)
                     if not image_url.startswith('placeholder_'):
+                        # Producer (pdf_processor) emits canonical
+                        # extraction_layer values directly since the
+                        # 2026-05-02 cleanup. Default to 'embedded' if the
+                        # caller didn't set it (this batch path is used
+                        # for legacy embedded-image extraction).
+                        _layer_val = (
+                            image.get('extraction_layer')
+                            if isinstance(image, dict) else None
+                        ) or 'embedded'
                         image_entry = {
                             'document_id': document_id,
                             'image_url': image_url,
@@ -690,10 +712,11 @@ class SupabaseClient:
                             'page_number': page_num,
                             'confidence': 0.95,  # Default confidence
                             'processing_status': 'completed',
+                            'extraction_layer': _layer_val,
                             'metadata': {
                                 'source': 'mivaa_pdf_extraction',
                                 'image_index': i,
-                                'extraction_method': 'pymupdf',
+                                'extraction_layer': _layer_val,
                                 'storage_uploaded': image.get('storage_uploaded', False) if isinstance(image, dict) else False,
                                 'storage_bucket': image.get('storage_bucket', 'pdf-tiles') if isinstance(image, dict) else 'pdf-tiles',
                                 'original_data': image if isinstance(image, dict) else {'url': str(image)}

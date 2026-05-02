@@ -48,7 +48,7 @@ def _detect_image_media_type(image_bytes: bytes, file_path: str = "") -> str:
 # ============================================================================
 # IMAGE CLASSIFICATION CATEGORY MAPPING
 # ============================================================================
-# The Qwen vision model returns these categories:
+# The Claude vision model returns these categories:
 #   - PRODUCT_IMAGE: Clear shot of a material/product (KEEP)
 #   - MIXED: Product with context/environment (KEEP)
 #   - DECORATIVE: Lifestyle/artistic images without clear product (FILTER)
@@ -1008,10 +1008,11 @@ class ImageProcessingService:
     # ------------------------------------------------------------------ #
     #
     # The flow is:
-    #   1. Try Qwen3-VL via the warmed-up endpoint, with N retries on
-    #      transient (5xx / connection) failures.
-    #   2. If Qwen returns nothing parseable after retries, fall back to
-    #      Claude Opus 4.7 which is highly reliable for strict JSON.
+    #   1. Run Claude Opus 4.7 via Anthropic tool use (schema-locked
+    #      VisionAnalysis Pydantic model) — the sole vision producer post
+    #      the 2026-05-01 Qwen removal.
+    #   2. Tool use eliminates JSON regex recovery and provides a hard
+    #      guarantee of schema adherence.
     #   3. Parse the response into a dict, validate against the expected
     #      schema, and return None if both providers failed.
     #
@@ -1227,10 +1228,11 @@ class ImageProcessingService:
         `vecs.image_understanding_embeddings`.
 
         Strategy:
-          1. Try Qwen3-VL (warm endpoint, with retries) — primary path.
-          2. On failure, fall back to Claude Opus 4.7 — secondary path.
-          3. If both fail, return (None, FAILED) so the caller can record
-             the failure in job-level stats and the image gets all other
+          1. Run Claude Opus 4.7 via Anthropic tool use (schema-locked
+             VisionAnalysis) — the sole vision producer since the
+             2026-05-01 Qwen removal.
+          2. On failure, return (None, FAILED) so the caller can record the
+             failure in job-level stats and the image gets all other
              vectors except `understanding_1024`.
 
         Returns:
@@ -1308,14 +1310,15 @@ class ImageProcessingService:
                     logger.error(f"   ❌ [BBOX TRACE] img_data keys: {list(img_data.keys())}")
 
                 # Save to database with material_category for proper categorization
-                # (ai_classification is already in img_data from classify_images)
+                # (ai_classification is already in img_data from classify_images).
+                # extraction_layer is read from img_data inside save_single_image
+                # — no need to pass it explicitly.
                 image_id = await self.supabase_client.save_single_image(
                     image_info=img_data,
                     document_id=document_id,
                     workspace_id=workspace_id,
                     image_index=idx,
                     category='product',  # Fallback category if material_category not provided
-                    extraction_method=img_data.get('extraction_method', 'pymupdf'),
                     bbox=img_data.get('bbox'),
                     detection_confidence=img_data.get('detection_confidence'),
                     product_name=img_data.get('product_name'),
@@ -1358,11 +1361,12 @@ class ImageProcessingService:
                     image_base64_raw = base64.b64encode(image_bytes).decode('utf-8')
                     image_base64_data = f"data:image/jpeg;base64,{image_base64_raw}"
 
-                # Run rich material analysis (Qwen3-VL primary, Claude Opus 4.7
-                # fallback) to produce the structured `vision_analysis` JSON. This
-                # is the input the Voyage understanding embedding consumes — without
-                # it, the 1024D understanding branch is skipped and we lose the 7th
-                # vector. The (vision_analysis, source) tuple lets us track which
+                # Run rich material analysis (Claude Opus 4.7 via Anthropic
+                # tool use, post-Qwen-removal) to produce the structured
+                # `vision_analysis` JSON. This is the input the Voyage
+                # understanding embedding consumes — without it, the 1024D
+                # understanding branch is skipped and we lose the 7th vector.
+                # The (vision_analysis, source) tuple lets us track which
                 # provider produced the result for job-level stats.
                 vision_analysis, vision_analysis_source = await self._analyze_material_image(
                     image_base64=image_base64_raw,
@@ -1468,11 +1472,19 @@ class ImageProcessingService:
                 # Save understanding embedding to VECS if present (1024D from Voyage AI).
                 # Pass embedding_model + schema_version so the row is provenance-tagged
                 # — the admin UI uses these to detect Voyage→OpenAI fallback drift.
+                #
+                # NOTE 2026-05-02: provenance lives at embedding_result['metadata'],
+                # NOT inside the local `embeddings` sub-dict (which only carries
+                # the vectors). Reading from `embeddings.get('metadata')` here used
+                # to resolve to {} every time, so understanding_embedding_model
+                # silently stayed NULL on every row — Voyage→OpenAI drift detection
+                # was inert until this fix. Confirmed via job 184ad4cf where 4
+                # images had has_understanding_embedding=true and embedding_model=NULL.
                 understanding_embedding = embeddings.get('understanding_1024')
                 if understanding_embedding:
                     try:
-                        meta_versions = embeddings.get('metadata', {}).get('model_versions', {})
-                        meta_schemas = embeddings.get('metadata', {}).get('schema_versions', {})
+                        meta_versions = embedding_result.get('metadata', {}).get('model_versions', {})
+                        meta_schemas = embedding_result.get('metadata', {}).get('schema_versions', {})
                         await self.vecs_service.upsert_understanding_embedding(
                             image_id=image_id,
                             embedding=understanding_embedding,
@@ -1481,7 +1493,7 @@ class ImageProcessingService:
                                 'workspace_id': workspace_id,
                                 'page_number': img_data.get('page_number', 1)
                             },
-                            embedding_model=meta_versions.get('understanding'),
+                            embedding_model=meta_versions.get('understanding') or 'voyage-4',
                             schema_version=meta_schemas.get('understanding'),
                         )
                         logger.debug(f"   ✅ Saved understanding embedding (1024D) to VECS for {image_id}")
@@ -1648,14 +1660,14 @@ class ImageProcessingService:
         }
 
         try:
-            # Step 1: save the document_images row, marked as an icon
+            # Step 1: save the document_images row, marked as an icon.
+            # extraction_layer comes from img_data via save_single_image.
             image_id = await self.supabase_client.save_single_image(
                 image_info=img_data,
                 document_id=document_id,
                 workspace_id=workspace_id,
                 image_index=idx,
                 category='icon_metadata',
-                extraction_method=img_data.get('extraction_method', 'pymupdf'),
                 bbox=img_data.get('bbox'),
                 detection_confidence=img_data.get('detection_confidence'),
                 product_name=img_data.get('product_name'),

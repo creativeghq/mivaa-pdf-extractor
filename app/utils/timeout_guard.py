@@ -161,10 +161,10 @@ class TimeoutConstants:
     PYMUPDF4LLM_EXTRACTION = 180  # 3min for PyMuPDF4LLM
     
     # AI Model Calls
-    CLAUDE_API_CALL = 120  # 2min for Claude API
-    QWEN_VISION_CALL = 90  # 90s for Qwen Vision (increased from 60s - handles complex images and large batches better)
-    CLIP_EMBEDDING = 90  # 90s for CLIP embedding (includes 4 specialized embeddings: 4×15s + overhead)
-    GPT_API_CALL = 60  # 1min for GPT API
+    CLAUDE_API_CALL = 120  # 2min for Claude API (chat / tool use)
+    VISION_API_CALL = 90  # 90s for Claude Opus 4.7 vision_analysis (handles complex images and large batches)
+    SLIG_EMBEDDING = 90  # 90s for SLIG (SigLIP2 768D) embedding (includes 4 specialized embeddings: 4×15s + overhead)
+    GPT_API_CALL = 60  # 1min for GPT API (Voyage fallback only)
     
     # Database Operations
     DATABASE_QUERY = 30  # 30s for database query
@@ -297,12 +297,12 @@ class ProgressiveTimeoutStrategy:
         """
         Calculate timeout for image processing based on image count.
 
-        Base: 60s per image (CLIP 90s + Qwen Vision 60s, but parallel)
+        Base: 60s per image (SLIG 90s + Claude Vision 90s, but parallel)
         Parallel: Divide by concurrency limit
         Buffer: +20% safety margin
         Max: 30min
         """
-        # Time per image (60s for CLIP + QWEN in parallel)
+        # Time per image (60s for SLIG + Claude Vision in parallel)
         total_time = image_count * 60
 
         # Account for parallel processing

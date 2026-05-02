@@ -212,11 +212,22 @@ class MultiModalImageProductAssociationService:
     async def _calculate_spatial_score(self, image: Dict[str, Any], product: Dict[str, Any]) -> float:
         """Calculate spatial proximity score (0-1).
 
-        Checks all pages in product's page_range and returns the best score.
+        HARD RULE (added 2026-05-02 after audit incident): an image is
+        spatially associated with a product **only if its page_number falls
+        inside the product's declared page_range**. Adjacent / nearby pages
+        score 0.0 — they belong to the *next* product, not this one.
+
+        Previously this method gave 0.85 to adjacent pages, 0.7 to ±2
+        pages, etc. With overall_threshold=0.3 that meant every image got
+        linked to 2-3 products in dense catalogs. Concrete failure: a 140-
+        page catalog (job 184ad4cf) wrote 12 image_product_associations
+        for 4 images — every page-34/36 image was linked to VALENOVA (24-
+        31), FOLD (32-37), AND PIQUÉ (38-51). Search retrieval was
+        contaminated by 3× the correct row count.
         """
         image_page = image.get('page_number', 0)
         if not image_page:
-            return 0.1  # No image page info, low score
+            return 0.0  # No image page info — can't anchor it.
 
         # Get all product pages from both top-level and metadata.page_range
         product_pages = []
@@ -235,36 +246,16 @@ class MultiModalImageProductAssociationService:
                     product_pages.append(int(page))
 
         if not product_pages:
-            return 0.1  # No product page info, low score
+            return 0.0  # No product page info — can't anchor it.
 
-        # Calculate score for each product page and return the best
-        best_score = 0.1
-        for product_page in product_pages:
-            page_difference = abs(image_page - product_page)
+        # HARD CUTOFF: image page must be inside the product's page set.
+        if int(image_page) not in product_pages:
+            return 0.0
 
-            # Same page = highest score
-            if page_difference == 0:
-                return 1.0  # Can't get better, return immediately
-
-            # Adjacent pages = high score
-            if page_difference == 1:
-                score = 0.85
-            # Within 2 pages = good score
-            elif page_difference <= 2:
-                score = 0.7
-            # Within 3 pages = medium score
-            elif page_difference <= 3:
-                score = 0.5
-            # Within 5 pages = low-medium score
-            elif page_difference <= 5:
-                score = 0.3
-            # Further apart = very low score
-            else:
-                score = max(0.1, 0.5 / page_difference)
-
-            best_score = max(best_score, score)
-
-        return best_score
+        # Inside the range — full proximity score. We no longer score by
+        # distance because the binary "is the image on one of this
+        # product's pages?" is the only safe signal.
+        return 1.0
 
     async def _calculate_caption_score(self, image: Dict[str, Any], product: Dict[str, Any]) -> float:
         """Calculate caption similarity score (0-1).
