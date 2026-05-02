@@ -933,6 +933,25 @@ async def upload_document(
                     detail=f"Workspace {workspace_id} does not exist. Please create the workspace first."
                 )
 
+            # Resolve the canonical storage location (bucket + object path) so
+            # the AFTER DELETE trigger on `documents` can wipe the original PDF
+            # without parsing URLs at delete time. We back-derive from
+            # `file_url` because that's the only thing the frontend hands us.
+            storage_bucket: Optional[str] = None
+            storage_object_path: Optional[str] = None
+            if file_url and "/storage/v1/object/" in file_url:
+                try:
+                    marker = "/storage/v1/object/"
+                    tail = file_url.split(marker, 1)[1]            # public/<bucket>/<path>?token=
+                    # Strip the public/sign segment
+                    if tail.startswith("public/") or tail.startswith("sign/"):
+                        tail = tail.split("/", 1)[1]
+                    if "/" in tail:
+                        storage_bucket, rest = tail.split("/", 1)
+                        storage_object_path = rest.split("?", 1)[0]
+                except Exception:
+                    pass
+
             supabase_client.client.table('documents').insert({
                 "id": document_id,
                 "workspace_id": workspace_id,
@@ -940,6 +959,8 @@ async def upload_document(
                 "content_type": "application/pdf",
                 "file_size": file_size,
                 "file_path": file_path,
+                "storage_bucket": storage_bucket,
+                "storage_object_path": storage_object_path,
                 "processing_status": "processing",
                 "metadata": {
                     "title": title or filename,
@@ -1575,14 +1596,45 @@ async def reprocess_document(
                 .execute()
             product_ids = [p["id"] for p in (prods.data or [])]
 
-            # image_product_associations (not ON DELETE CASCADE from products)
-            if product_ids:
-                supabase.client.table("image_product_associations") \
-                    .delete().in_("product_id", product_ids).execute()
-                supabase.client.table("kb_doc_attachments") \
-                    .delete().in_("product_id", product_ids).execute()
+            # 3a. VECS embeddings — these are NOT FK-cascaded from
+            # document_images / products. Without explicit cleanup the
+            # vector index keeps returning hits to deleted rows and the
+            # next reprocess writes new vectors alongside the stale ones.
+            try:
+                from app.services.embeddings.vecs_service import get_vecs_service
+                vecs = get_vecs_service()
+                vec_count = await vecs.delete_document_embeddings(document_id)
+                logger.info(f"🧹 reprocess: cleared {vec_count} VECS embeddings for {document_id}")
+            except Exception as vec_err:
+                logger.warning(f"reprocess: VECS cleanup failed (continuing): {vec_err}")
 
-            # Derived tables (products → chunks → images)
+            # 3b. Storage objects — pdf-tiles under extracted/{document_id}/.
+            # The original PDF is preserved (we need it on disk to reprocess).
+            # We deliberately do NOT call cleanup_document_storage here, since
+            # the trigger on the documents row would also try to fire if we
+            # ended up touching the row. Use cleanup_storage_bucket directly.
+            try:
+                from app.services.utilities.cleanup_service import CleanupService
+                cs = CleanupService()
+                tiles_deleted = cs.cleanup_storage_bucket(
+                    "pdf-tiles", f"extracted/{document_id}", supabase
+                )
+                legacy_deleted = cs.cleanup_storage_bucket(
+                    "documents", document_id, supabase
+                )
+                logger.info(
+                    f"🧹 reprocess: deleted {tiles_deleted + legacy_deleted} extracted tiles"
+                )
+            except Exception as storage_err:
+                logger.warning(f"reprocess: storage cleanup failed (continuing): {storage_err}")
+
+            # 3c. Tables. document_images delete fires the per-row trigger
+            # which scrubs any image_url that points at a storage object —
+            # so any stragglers the prefix-based delete missed get cleaned
+            # row-by-row.
+            #
+            # image_product_associations / kb_doc_attachments cascade off
+            # both products and document_images, so they go automatically.
             supabase.client.table("products") \
                 .delete().eq("source_document_id", document_id).execute()
             supabase.client.table("document_chunks") \

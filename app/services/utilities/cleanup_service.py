@@ -320,58 +320,165 @@ class CleanupService:
             stats['errors'].append(str(e))
             return stats
     
-    def cleanup_storage_bucket(self, bucket_name: str, document_id: str) -> int:
+    def cleanup_storage_bucket(
+        self,
+        bucket_name: str,
+        prefix: str,
+        supabase_client=None,
+    ) -> int:
         """
-        Clean up files from Supabase storage bucket.
-        
+        Recursively delete every storage object whose name starts with `prefix`
+        in the given bucket.
+
+        Supabase's storage.list() returns at most 100 entries per page and does
+        NOT recurse into sub-folders, so we paginate AND walk sub-folders.
+
         Args:
-            bucket_name: Storage bucket name
-            document_id: Document ID
-            
+            bucket_name: Storage bucket (e.g. 'pdf-tiles', 'pdf-documents')
+            prefix: Path prefix WITHOUT trailing slash (e.g. 'extracted/<doc_id>'
+                    for pdf-tiles, '<user_id>' or '' for pdf-documents).
+            supabase_client: Optional preconfigured client. Pulled from the
+                container if not provided.
+
         Returns:
-            Number of files deleted
+            Number of files deleted.
         """
         try:
-            from app.services.core.supabase_client import get_supabase_client
+            if supabase_client is None:
+                from app.services.core.supabase_client import get_supabase_client
+                supabase_client = get_supabase_client()
 
-            supabase = get_supabase_client()
-            
-            # List all files for this document
-            prefix = f"{document_id}/"
-            
-            self.logger.info(f"🗑️ Cleaning storage bucket {bucket_name} for document {document_id}")
+            sb = supabase_client.client if hasattr(supabase_client, 'client') else supabase_client
 
-            # List all files in the bucket for this document
-            # Files are typically stored with document_id as prefix
-            try:
-                # List files with document_id prefix
-                list_response = self.supabase.storage.from_(bucket_name).list(path=document_id)
+            self.logger.info(f"🗑️ Cleaning storage bucket {bucket_name} prefix='{prefix}'")
 
-                if not list_response:
-                    self.logger.info(f"No files found in bucket {bucket_name} for document {document_id}")
-                    return 0
+            files_deleted = 0
+            stack: List[str] = [prefix.rstrip('/')]
 
-                # Delete each file
-                files_deleted = 0
-                for file_obj in list_response:
-                    file_path = f"{document_id}/{file_obj['name']}"
-                    try:
-                        self.supabase.storage.from_(bucket_name).remove([file_path])
-                        files_deleted += 1
-                        self.logger.info(f"✅ Deleted file: {file_path}")
-                    except Exception as file_error:
-                        self.logger.warning(f"Failed to delete file {file_path}: {file_error}")
+            while stack:
+                cur = stack.pop()
+                try:
+                    # Paginate through 1000-at-a-time. Supabase storage list()
+                    # default limit is 100; ask for more.
+                    offset = 0
+                    while True:
+                        page = sb.storage.from_(bucket_name).list(
+                            path=cur or None,
+                            options={'limit': 1000, 'offset': offset},
+                        ) or []
+                        if not page:
+                            break
 
-                self.logger.info(f"🗑️ Deleted {files_deleted} files from bucket {bucket_name}")
-                return files_deleted
+                        # Collect leaf files for batch delete; queue sub-folders.
+                        leaf_paths: List[str] = []
+                        for entry in page:
+                            ename = entry.get('name')
+                            if not ename:
+                                continue
+                            full = f"{cur}/{ename}" if cur else ename
+                            # Folder marker: id is null or metadata is null
+                            is_folder = entry.get('id') is None
+                            if is_folder:
+                                stack.append(full)
+                            else:
+                                leaf_paths.append(full)
 
-            except Exception as list_error:
-                self.logger.warning(f"Failed to list files in bucket {bucket_name}: {list_error}")
-                return 0
+                        if leaf_paths:
+                            try:
+                                sb.storage.from_(bucket_name).remove(leaf_paths)
+                                files_deleted += len(leaf_paths)
+                            except Exception as rm_err:
+                                self.logger.warning(
+                                    f"Batch remove failed in {bucket_name} "
+                                    f"({len(leaf_paths)} paths): {rm_err}"
+                                )
+
+                        if len(page) < 1000:
+                            break
+                        offset += 1000
+
+                except Exception as list_err:
+                    self.logger.warning(
+                        f"Failed to list bucket={bucket_name} prefix='{cur}': {list_err}"
+                    )
+
+            self.logger.info(f"🗑️ Deleted {files_deleted} files from {bucket_name} ({prefix})")
+            return files_deleted
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to clean storage bucket: {e}")
+            self.logger.error(f"❌ Failed to clean storage bucket {bucket_name}/{prefix}: {e}")
             return 0
+
+    def cleanup_document_storage(
+        self,
+        document_id: str,
+        supabase_client,
+        document_row: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """
+        Wipe every storage object that belongs to a document across all buckets
+        we know it could live in.
+
+        - `pdf-tiles` under `extracted/{document_id}/` (Stage 1.5 + Phase 3 outputs)
+        - the legacy `documents` bucket under `{document_id}/`
+        - the original PDF in `pdf-documents` (resolved from
+          `documents.storage_bucket` / `storage_object_path`, falling back to
+          `metadata.file_url`)
+
+        Args:
+            document_id: Document UUID
+            supabase_client: Supabase client
+            document_row: Optional pre-fetched document row to avoid an extra
+                round trip when called from delete_job_completely().
+
+        Returns:
+            Total objects removed.
+        """
+        total = 0
+
+        # Tiles + legacy documents bucket — always keyed by document_id prefix.
+        total += self.cleanup_storage_bucket(
+            'pdf-tiles', f"extracted/{document_id}", supabase_client
+        )
+        total += self.cleanup_storage_bucket(
+            'documents', document_id, supabase_client
+        )
+
+        # Original PDF — resolve the explicit storage path if present.
+        try:
+            row = document_row
+            if row is None:
+                resp = supabase_client.client.table('documents')\
+                    .select('storage_bucket, storage_object_path, metadata')\
+                    .eq('id', document_id)\
+                    .single()\
+                    .execute()
+                row = resp.data or {}
+
+            bucket = row.get('storage_bucket')
+            path = row.get('storage_object_path')
+            metadata = row.get('metadata') or {}
+
+            if (not bucket or not path) and metadata.get('file_url'):
+                file_url = metadata['file_url']
+                marker = '/storage/v1/object/public/'
+                if marker in file_url:
+                    tail = file_url.split(marker, 1)[1]
+                    if '/' in tail:
+                        bucket = tail.split('/', 1)[0]
+                        path = tail.split('/', 1)[1].split('?', 1)[0]
+
+            if bucket and path:
+                try:
+                    supabase_client.client.storage.from_(bucket).remove([path])
+                    total += 1
+                    self.logger.info(f"✅ Deleted original file {bucket}/{path}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to delete original file {bucket}/{path}: {e}")
+        except Exception as e:
+            self.logger.warning(f"Failed to resolve document storage path for {document_id}: {e}")
+
+        return total
 
     async def delete_job_completely(
         self,
@@ -492,6 +599,22 @@ class CleanupService:
                 stats['errors'].append(f"Failed to get job details: {str(e)}")
                 return stats
 
+            # Pre-fetch the document row once so we have storage_bucket /
+            # storage_object_path available for both modes without double
+            # queries later on.
+            document_row: Optional[Dict[str, Any]] = None
+            if document_id:
+                try:
+                    doc_resp = supabase_client.client.table('documents')\
+                        .select('id, storage_bucket, storage_object_path, metadata')\
+                        .eq('id', document_id)\
+                        .limit(1)\
+                        .execute()
+                    if doc_resp.data:
+                        document_row = doc_resp.data[0]
+                except Exception as e:
+                    self.logger.warning(f"Could not pre-fetch document row: {e}")
+
             # ──────────────────────────────────────────────────────────────
             # SHORT PATH — preserve_outputs=True (completed-job removal)
             # ──────────────────────────────────────────────────────────────
@@ -513,7 +636,33 @@ class CleanupService:
                     self.logger.warning(f"⚠️ Failed to clean product_processing_status: {e}")
                     stats['errors'].append(f"product_processing_status deletion failed: {str(e)}")
 
-                # 2. Delete the job row (also wipes stage_history,
+                # 2. Original PDF + extracted-tile cleanup. The job is done
+                #    and outputs are durable in the catalog; the source PDF
+                #    + per-page tiles are no longer load-bearing. Keeping
+                #    them was the leak that filled `pdf-documents` with 800MB
+                #    of zombie PDFs across months of completed jobs.
+                if document_id and delete_storage_files:
+                    try:
+                        stats['storage_files_deleted'] = self.cleanup_document_storage(
+                            document_id, supabase_client, document_row=document_row
+                        )
+                        # Null out the path columns so a follow-up audit doesn't
+                        # think the row still owns the (now-deleted) object.
+                        try:
+                            supabase_client.client.table('documents')\
+                                .update({
+                                    'storage_bucket': None,
+                                    'storage_object_path': None,
+                                })\
+                                .eq('id', document_id)\
+                                .execute()
+                        except Exception:
+                            pass
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Storage cleanup failed: {e}")
+                        stats['errors'].append(f"Storage cleanup failed: {str(e)}")
+
+                # 3. Delete the job row (also wipes stage_history,
                 #    recovery_history, last_checkpoint JSONB columns).
                 try:
                     job_del_response = supabase_client.client.table('background_jobs')\
@@ -526,7 +675,7 @@ class CleanupService:
                     self.logger.error(f"Failed to delete job row: {e}")
                     stats['errors'].append(f"Job deletion failed: {str(e)}")
 
-                # 3. Server-side temp workspace cleanup (/tmp/pdf_processing/{job_id}, etc.)
+                # 4. Server-side temp workspace cleanup (/tmp/pdf_processing/{job_id}, etc.)
                 if document_id:
                     try:
                         stats['temp_files_deleted'] = self._clean_temp_directories(job_id, document_id)
@@ -631,15 +780,17 @@ class CleanupService:
                 self.logger.error(f"Failed to delete chunks: {e}")
                 stats['errors'].append(f"Chunks deletion failed: {str(e)}")
 
-            # 3. Delete embeddings from vecs
+            # 3. Delete embeddings from vecs.
+            # `delete_document_embeddings` already wipes the primary +
+            # specialized image collections by document_id. The previous
+            # follow-up call to `delete_image_embeddings_by_document` was
+            # a typo — that method does not exist on VecsService — and the
+            # AttributeError was being swallowed silently, double-counting
+            # would never have triggered anyway.
             if document_id and vecs_service:
                 try:
-                    text_emb_deleted = await vecs_service.delete_document_embeddings(document_id)
-                    stats['embeddings_deleted'] += text_emb_deleted
-
-                    image_emb_deleted = await vecs_service.delete_image_embeddings_by_document(document_id)
+                    image_emb_deleted = await vecs_service.delete_document_embeddings(document_id)
                     stats['embeddings_deleted'] += image_emb_deleted
-
                     self.logger.info(f"✅ Deleted {stats['embeddings_deleted']} embeddings from vecs")
                 except Exception as e:
                     self.logger.error(f"Failed to delete embeddings: {e}")
@@ -735,10 +886,15 @@ class CleanupService:
                 self.logger.warning(f"⚠️ Failed to clean product_processing_status: {e}")
                 stats['errors'].append(f"product_processing_status deletion failed: {str(e)}")
 
-            # 8. Delete files from storage (only if delete_storage_files=True)
+            # 8. Delete files from storage (only if delete_storage_files=True).
+            # cleanup_document_storage covers pdf-tiles + the legacy
+            # `documents` bucket + the original file in pdf-documents
+            # resolved from documents.storage_bucket / storage_object_path.
             if document_id and delete_storage_files:
                 try:
-                    stats['storage_files_deleted'] = self.cleanup_storage_bucket('documents', document_id)
+                    stats['storage_files_deleted'] = self.cleanup_document_storage(
+                        document_id, supabase_client, document_row=document_row
+                    )
                     self.logger.info(f"✅ Deleted {stats['storage_files_deleted']} storage files")
                 except Exception as e:
                     self.logger.error(f"Failed to delete storage files: {e}")

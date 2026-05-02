@@ -341,6 +341,22 @@ async def upload_document(
                     detail=f"Workspace {workspace_id} does not exist. Please create the workspace first."
                 )
 
+            # Resolve canonical (storage_bucket, storage_object_path) from
+            # file_url so the AFTER DELETE trigger on `documents` can wipe the
+            # original PDF without parsing URLs at delete time.
+            storage_bucket: Optional[str] = None
+            storage_object_path: Optional[str] = None
+            if file_url and "/storage/v1/object/" in file_url:
+                try:
+                    tail = file_url.split("/storage/v1/object/", 1)[1]
+                    if tail.startswith("public/") or tail.startswith("sign/"):
+                        tail = tail.split("/", 1)[1]
+                    if "/" in tail:
+                        storage_bucket, rest = tail.split("/", 1)
+                        storage_object_path = rest.split("?", 1)[0]
+                except Exception:
+                    pass
+
             supabase_client.client.table('documents').insert({
                 "id": document_id,
                 "workspace_id": workspace_id,
@@ -349,6 +365,8 @@ async def upload_document(
                 "file_size": file_size,
                 "file_path": file_url or file_path,  # Store durable file_url, fallback to local path
                 "file_url": file_url,  # Also store in dedicated column if available
+                "storage_bucket": storage_bucket,
+                "storage_object_path": storage_object_path,
                 "processing_status": "processing",
                 "metadata": {
                     "title": title or filename,
