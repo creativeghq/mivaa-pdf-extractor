@@ -2021,6 +2021,7 @@ from app.api.price_monitoring_routes import router as price_monitoring_router
 from app.api.price_lookup_routes import router as price_lookup_router
 from app.api.tracked_queries_routes import router as tracked_queries_router
 from app.api.mention_monitoring_routes import router as mention_monitoring_router
+from app.api.mention_tracking_routes import router as mention_tracking_router
 from app.api.websocket_routes import router as websocket_router
 from app.api.logs_routes import router as logs_router
 from app.api.admin_linking import router as admin_linking_router
@@ -2061,7 +2062,8 @@ app.include_router(chunk_quality_router)  # NEW: Chunk quality metrics and flagg
 app.include_router(price_monitoring_router)  # NEW: Price monitoring with Firecrawl (competitor scraping, alerts, history)
 app.include_router(price_lookup_router)  # NEW: Public POST /api/v1/prices/lookup — one-shot price lookup for external API callers
 app.include_router(tracked_queries_router)  # NEW: Public /api/v1/prices/track/* — external price tracking (CRUD + refresh)
-app.include_router(mention_monitoring_router)  # NEW: Mention monitoring (DataForSEO News + Perplexity + Reddit + RSS + LLM probes)
+app.include_router(mention_monitoring_router)  # NEW: Mention monitoring (DataForSEO News + Perplexity + RSS + LLM probes) — internal flow (session JWT)
+app.include_router(mention_tracking_router)    # NEW: Public /api/v1/mentions/track/* — external mention tracking (api_keys Bearer auth)
 app.include_router(websocket_router)  # NEW: WebSocket endpoint for real-time updates (job progress, system health)
 app.include_router(logs_router)  # NEW: System logs API (fetch, filter, clear logs from database)
 app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual chunk-product linking for debugging)
