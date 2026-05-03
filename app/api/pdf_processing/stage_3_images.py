@@ -601,8 +601,10 @@ async def _run_phase_3_ocr_for_product(
     - photo / decoration / yolo_crop of IMAGE: SKIPPED (no text expected)
 
     Each OCR result lands in `document_images.{ocr_text, ocr_blocks, ocr_failed,
-    ocr_attempts, ocr_skipped_reason}`. Never flows into chunker; consumed by
-    vision_analysis prompt enrichment, icon-metadata, and image-search labels.
+    ocr_attempts, ocr_skipped_reason}`. Never flows into chunker. Runs AFTER
+    vision_analysis (which executes inside save_images_and_generate_clips above),
+    so it does NOT enrich the vision prompt — consumed by icon-metadata
+    extraction and image-search labels only.
 
     Returns counts dict for the per-product log line.
     """

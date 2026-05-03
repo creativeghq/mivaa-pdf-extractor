@@ -983,9 +983,7 @@ class RealEmbeddingsService:
                         usage = data.get("usage", {})
                         input_tokens = usage.get("total_tokens", 0)
 
-                        # Voyage AI Pricing (as of Dec 2024)
-                        # voyage-4: $0.06 per 1M tokens
-                        # voyage-3-large: $0.18 per 1M tokens
+                        # voyage-4: $0.06 per 1M tokens (sole production embedder)
                         cost_per_million = 0.06  # voyage-4
                         cost = (input_tokens / 1_000_000) * cost_per_million
 

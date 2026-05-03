@@ -69,7 +69,7 @@ class AIPricingConfig:
         }
     }
 
-    # Voyage AI Embedding Pricing (per 1M tokens) — voyage-4 is primary (voyage-3.5 retained for historical usage logs)
+    # Voyage AI Embedding Pricing (per 1M tokens) — voyage-4 is sole production embedder.
     VOYAGE_PRICING = {
         "voyage-4": {
             "input": Decimal("0.06"),
@@ -77,15 +77,7 @@ class AIPricingConfig:
             "last_verified": "2026-04-19",
             "source": "https://docs.voyageai.com/docs/pricing",
             "dimensions": 1024,
-            "note": "PRIMARY text embedding model (Voyage 4 family, 1024D via Matryoshka)"
-        },
-        "voyage-3.5": {
-            "input": Decimal("0.06"),
-            "output": Decimal("0.00"),
-            "last_verified": "2026-04-19",
-            "source": "https://docs.voyageai.com/docs/pricing",
-            "dimensions": 1024,
-            "note": "LEGACY — kept for historical usage logs; replaced by voyage-4"
+            "note": "Sole text embedding model — 1024D"
         }
     }
     
