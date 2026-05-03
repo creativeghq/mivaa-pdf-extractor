@@ -3363,11 +3363,29 @@ async def process_document_with_discovery(
                 # but Stage 1.5 derives the authoritative count itself.
                 _precompute_pdf_path = temp_pdf_path if 'temp_pdf_path' in locals() else file_path
                 _physical_pages_hint = getattr(catalog, "total_pages", None)
+
+                # Test-mode page-range scoping (added 2026-05-03): when
+                # `test_single_product=True`, only precompute layout for the
+                # FIRST product's page range. The full-document precompute on
+                # a 140-page catalog burned ~5-6 min before the test product
+                # ever started (job 051e1dda). Single-product validation
+                # doesn't need every page cached — only the test product's.
+                _test_page_range: Optional[List[int]] = None
+                if test_single_product and getattr(catalog, 'products', None):
+                    first_prod = catalog.products[0]
+                    _test_page_range = sorted(set(getattr(first_prod, 'page_range', None) or []))
+                    if _test_page_range:
+                        logger.info(
+                            f"🧪 STAGE 1.5 TEST MODE: scoping precompute to first product's pages only — "
+                            f"{first_prod.name}: {_test_page_range[0]}..{_test_page_range[-1]} "
+                            f"({len(_test_page_range)} pages, vs full doc {_physical_pages_hint or '?'})"
+                        )
+
                 if _precompute_pdf_path:
                     logger.info("=" * 80)
                     logger.info("📐 STAGE 1.5: DOCUMENT-LEVEL LAYOUT PRECOMPUTE")
                     logger.info("=" * 80)
-                    precompute_summary = await precompute_document_layout(
+                    _precompute_kwargs = dict(
                         document_id=document_id,
                         pdf_path=_precompute_pdf_path,
                         supabase=supabase_pre,
@@ -3375,6 +3393,9 @@ async def process_document_with_discovery(
                         total_physical_pages_hint=_physical_pages_hint,
                         job_id=job_id,
                     )
+                    if _test_page_range:
+                        _precompute_kwargs['only_physical_pages'] = _test_page_range
+                    precompute_summary = await precompute_document_layout(**_precompute_kwargs)
                     job_storage[job_id]["metadata"] = {
                         **job_storage[job_id].get("metadata", {}),
                         "layout_precompute": precompute_summary,
@@ -3485,7 +3506,28 @@ async def process_document_with_discovery(
         # `compliance / performance` blocks we saw on FOLD (job acff9ebb).
         _icon_relevant_categories = {'products', 'specifications', 'certificates', 'logos'}
         _icon_pass_relevant = bool(set(extract_categories) & _icon_relevant_categories)
-        if not _icon_pass_relevant:
+
+        # Test-mode skip (added 2026-05-03): the icon pre-pass is a catalog-level
+        # operation that scans ALL supplementary pages — typically 30+ pages of
+        # OCR + Anthropic icon extraction. In `test_single_product=True` runs we
+        # only process one product, so spending 20-100 minutes on a catalog-wide
+        # pre-pass before that single product's Stage 3 is the wrong tradeoff
+        # (job 051e1dda timed out here without ever reaching VALENOVA). Skip
+        # it; the missing compliance/PEI rollups can be backfilled by a full run.
+        if test_single_product and _icon_pass_relevant:
+            logger.info(
+                f"🔖 Skipping catalog-wide icon pass — test_single_product=True "
+                f"(catalog-level pre-pass would burn the per-product budget)"
+            )
+            catalog_icon_stats = {
+                'supplementary_pages_scanned': 0,
+                'icon_candidates_found': 0,
+                'icon_metadata_extracted': 0,
+                'icon_extraction_failed': 0,
+                'skipped': True,
+                'skipped_reason': 'test_single_product',
+            }
+        elif not _icon_pass_relevant:
             logger.info(
                 f"🔖 Skipping catalog-wide icon pass — "
                 f"categories={extract_categories} don't include icon-relevant types"

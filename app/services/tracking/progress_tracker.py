@@ -682,10 +682,58 @@ class ProgressTracker:
                     .eq('id', self.job_id)\
                     .execute()
 
+                # Sweep orphaned per-product rows BEFORE recomputing failure_summary.
+                # Audit incident 2026-05-03 (job acff9ebb): if recovery rebuilt the
+                # parent job but a child task never re-dispatched, its row stayed
+                # at status='processing' forever and the UI kept showing the job
+                # as in-flight even though background_jobs.status='completed'.
+                # Anything still pending/processing at job-completion time is
+                # provably orphaned — flip it to 'failed' so admin metrics + UI
+                # presence checks reflect reality.
+                try:
+                    self._supabase.client.table('product_processing_status')\
+                        .update({
+                            'status': 'failed',
+                            'error_message': 'orphaned_at_job_completion',
+                            'error_stage': 'failed',
+                            'error_timestamp': datetime.utcnow().isoformat(),
+                            'updated_at': datetime.utcnow().isoformat(),
+                        })\
+                        .eq('job_id', self.job_id)\
+                        .in_('status', ['pending', 'processing'])\
+                        .execute()
+                except Exception as sweep_err:
+                    logger.warning(
+                        f"   ⚠️ Orphan-product sweep failed for {self.job_id} "
+                        f"(non-fatal): {sweep_err}"
+                    )
+
+                # Mirror status to processed_documents. Stage 0 / upload routes
+                # write the row at processing_status='processing' but no path
+                # was flipping it back to 'completed' on success — the row sat
+                # forever as 'processing' and any UI panel reading from this
+                # table (vs documents.processing_status) showed the job as
+                # still in flight (job acff9ebb symptom).
+                if self.document_id:
+                    try:
+                        self._supabase.client.table('processed_documents')\
+                            .update({
+                                'processing_status': 'completed',
+                                'processing_completed_at': datetime.utcnow().isoformat(),
+                                'updated_at': datetime.utcnow().isoformat(),
+                            })\
+                            .eq('pdf_document_id', self.document_id)\
+                            .execute()
+                    except Exception as pd_err:
+                        logger.warning(
+                            f"   ⚠️ processed_documents mirror failed for "
+                            f"{self.document_id} (non-fatal): {pd_err}"
+                        )
+
                 # Recompute the failure_summary aggregate so the admin UI
-                # reflects final OCR + recovery counts (the trigger on
-                # product_processing_status only catches per-product status
-                # changes, not chandra_ocr_metrics inserts).
+                # reflects final OCR + recovery counts AND the just-swept
+                # orphan products (the trigger on product_processing_status
+                # fires per-row but we want one final canonical roll-up).
                 try:
                     self._supabase.client.rpc(
                         'update_job_failure_summary',
@@ -800,6 +848,42 @@ class ProgressTracker:
                     })\
                     .eq('id', self.job_id)\
                     .execute()
+
+                # Sweep orphan per-product rows + mirror processed_documents
+                # (same rationale as complete_job — see that handler for context).
+                try:
+                    self._supabase.client.table('product_processing_status')\
+                        .update({
+                            'status': 'failed',
+                            'error_message': 'orphaned_at_job_failure',
+                            'error_stage': 'failed',
+                            'error_timestamp': datetime.utcnow().isoformat(),
+                            'updated_at': datetime.utcnow().isoformat(),
+                        })\
+                        .eq('job_id', self.job_id)\
+                        .in_('status', ['pending', 'processing'])\
+                        .execute()
+                except Exception as sweep_err:
+                    logger.warning(
+                        f"   ⚠️ Orphan-product sweep failed for {self.job_id} "
+                        f"(non-fatal): {sweep_err}"
+                    )
+
+                if self.document_id:
+                    try:
+                        self._supabase.client.table('processed_documents')\
+                            .update({
+                                'processing_status': 'failed',
+                                'processing_error': error_message[:2000],
+                                'updated_at': datetime.utcnow().isoformat(),
+                            })\
+                            .eq('pdf_document_id', self.document_id)\
+                            .execute()
+                    except Exception as pd_err:
+                        logger.warning(
+                            f"   ⚠️ processed_documents mirror failed for "
+                            f"{self.document_id} (non-fatal): {pd_err}"
+                        )
 
                 # Recompute the failure_summary aggregate so OCR + recovery
                 # counts land in the admin UI's PipelineErrorsPanel.

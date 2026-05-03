@@ -19,6 +19,7 @@ association logic.
 """
 
 import os
+import asyncio
 import logging
 from typing import Dict, Any, Optional, List
 
@@ -867,38 +868,62 @@ async def process_catalog_wide_icons(
             return min(pdf_idx_to_physical[pdf_idx])
         return pdf_idx + 1  # 1-based physical = 0-based pdf idx + 1
 
-    # Extract images from every supplementary PDF page.
+    # Extract images from every supplementary PDF page IN PARALLEL.
+    # Pre-2026-05-03 this was a sequential loop, and `process_pdf_from_bytes`
+    # auto-enabled multimodal OCR (Chandra) on every supplementary page even
+    # though the icon-classification step downstream runs its own OCR per icon
+    # candidate. Net effect: 30+ supplementary pages × 1-3 wasted Chandra calls
+    # × 80s each = 1-2+ hours of pure waste before reaching VALENOVA's actual
+    # processing (job 051e1dda timed out here). Two changes:
+    #   - `enable_multimodal=False` skips the redundant page-level OCR pass.
+    #   - `asyncio.gather` with a semaphore (4 concurrent) parallelizes the
+    #     per-page extract step, so YOLO/PyMuPDF work runs in parallel instead
+    #     of single-file.
+    catalog_icon_sem = asyncio.Semaphore(4)
     extracted_images_list: List[Dict[str, Any]] = []
-    for pdf_idx in supplementary_pages_0based:
+
+    async def _extract_one_supplementary(pdf_idx: int) -> List[Dict[str, Any]]:
         pdf_page_1based = pdf_idx + 1
         processing_options = {
             'extract_images': True,
             'extract_text': False,
             'extract_tables': False,
+            'enable_multimodal': False,  # icon-class step runs its own OCR — don't double-OCR.
             'page_list': [pdf_page_1based],
             'extract_categories': ['products'],
             'job_id': job_id,
         }
-        try:
-            page_result = await pdf_processor.process_pdf_from_bytes(
-                pdf_bytes=file_content,
-                document_id=document_id,
-                processing_options=processing_options,
-            )
-        except Exception as extract_err:
-            logger.warning(
-                f"   ⚠️ [catalog-icons] Failed to extract PDF page {pdf_page_1based}: {extract_err}"
-            )
-            continue
+        async with catalog_icon_sem:
+            try:
+                page_result = await pdf_processor.process_pdf_from_bytes(
+                    pdf_bytes=file_content,
+                    document_id=document_id,
+                    processing_options=processing_options,
+                )
+            except Exception as extract_err:
+                logger.warning(
+                    f"   ⚠️ [catalog-icons] Failed to extract PDF page {pdf_page_1based}: {extract_err}"
+                )
+                return []
 
         if not page_result or not page_result.extracted_images:
-            continue
+            return []
 
         phys_page = _physical_for(pdf_idx)
+        page_images: List[Dict[str, Any]] = []
         for img in page_result.extracted_images:
             img['page_number'] = phys_page
             img['catalog_wide_icon_source'] = True
-            extracted_images_list.append(img)
+            page_images.append(img)
+        return page_images
+
+    page_tasks = [_extract_one_supplementary(pdf_idx) for pdf_idx in supplementary_pages_0based]
+    page_results = await asyncio.gather(*page_tasks, return_exceptions=True)
+    for r in page_results:
+        if isinstance(r, list):
+            extracted_images_list.extend(r)
+        elif isinstance(r, Exception):
+            logger.warning(f"   ⚠️ [catalog-icons] supplementary extract task failed: {r}")
 
     stats['images_extracted'] = len(extracted_images_list)
     if not extracted_images_list:

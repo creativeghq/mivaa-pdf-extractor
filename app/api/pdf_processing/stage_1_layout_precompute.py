@@ -199,6 +199,7 @@ async def precompute_document_layout(
     logger: logging.Logger,
     total_physical_pages_hint: Optional[int] = None,
     job_id: Optional[str] = None,
+    only_physical_pages: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Run YOLO + bbox-text merge for every uncached physical page; persist.
 
@@ -284,8 +285,23 @@ async def precompute_document_layout(
         logger.warning(f"   ⚠️ [STAGE 1.5] cache-existence query failed: {e}")
 
     summary["pages_cached_already"] = len(existing_pages)
+
+    # Optional per-product scoping (test-mode): when caller provides
+    # `only_physical_pages`, restrict the work to those pages instead of
+    # the full document range. Used by `test_single_product=True` to skip
+    # ~5-6 min of full-document precompute on 140-page catalogs (job
+    # 051e1dda). The full-document path remains the default for normal runs.
+    if only_physical_pages:
+        candidate_pages = sorted(set(only_physical_pages) & set(physical_to_pdf.keys()))
+        logger.info(
+            f"🧪 [STAGE 1.5] Page-range scoping: limiting to {len(candidate_pages)} "
+            f"of {total_physical} pages (caller passed only_physical_pages)"
+        )
+    else:
+        candidate_pages = list(range(1, total_physical + 1))
+
     pages_to_process = sorted(
-        p for p in range(1, total_physical + 1)
+        p for p in candidate_pages
         if p not in existing_pages and p in physical_to_pdf
     )
 

@@ -200,11 +200,14 @@ class ProductProgressTracker:
     ) -> None:
         """
         Update the current processing stage for a product.
-        
-        Args:
-            product_id: Product identifier
-            stage: Current processing stage
-            status: Current status (default: PROCESSING)
+
+        Terminal-state guard (audit incident 2026-05-03 / job acff9ebb):
+        the wrapper's `asyncio.wait_for` cancels the inner product task externally,
+        but a Supabase HTTP request already in-flight inside that task can still
+        complete *after* the wrapper writes status='failed' via mark_product_failed.
+        That late write would silently revert the row to status='processing'. We
+        therefore filter on status NOT IN ('failed','completed') so any update
+        racing with terminal-state writes is a no-op.
         """
         try:
             update_data = {
@@ -212,19 +215,19 @@ class ProductProgressTracker:
                 "current_stage": stage.value,
                 "updated_at": datetime.utcnow().isoformat()
             }
-            
-            # Set started_at if this is the first stage
+
             if stage == ProductStage.EXTRACTION:
                 update_data["started_at"] = datetime.utcnow().isoformat()
-            
+
             self.supabase.client.table(self.table)\
                 .update(update_data)\
                 .eq("job_id", self.job_id)\
                 .eq("product_id", product_id)\
+                .not_.in_("status", [ProductStatus.FAILED.value, ProductStatus.COMPLETED.value])\
                 .execute()
-            
+
             logger.debug(f"Updated product {product_id} to stage {stage.value}")
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to update product stage: {e}")
             raise
@@ -266,19 +269,20 @@ class ProductProgressTracker:
             if metrics:
                 current_metrics.update(metrics)
             
-            # Update database
+            # Update database (terminal-state guard — see update_product_stage docstring)
             update_data = {
                 "stages_completed": stages_completed,
                 "metrics": current_metrics,
                 "updated_at": datetime.utcnow().isoformat()
             }
-            
+
             self.supabase.client.table(self.table)\
                 .update(update_data)\
                 .eq("job_id", self.job_id)\
                 .eq("product_id", product_id)\
+                .not_.in_("status", [ProductStatus.FAILED.value, ProductStatus.COMPLETED.value])\
                 .execute()
-            
+
             logger.debug(f"✅ Marked stage {stage.value} complete for product {product_id}")
 
         except Exception as e:
@@ -313,10 +317,13 @@ class ProductProgressTracker:
                 "updated_at": datetime.utcnow().isoformat()
             }
 
+            # Don't overwrite a row that's already terminal-failed (race against the
+            # parallel-processor's mark_product_failed timeout handler).
             self.supabase.client.table(self.table)\
                 .update(update_data)\
                 .eq("job_id", self.job_id)\
                 .eq("product_id", product_id)\
+                .neq("status", ProductStatus.FAILED.value)\
                 .execute()
 
             logger.info(f"✅ Product {product_id} marked as COMPLETED")
