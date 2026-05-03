@@ -42,8 +42,8 @@ OPENAI_API = "https://api.openai.com/v1/chat/completions"
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models"
 PERPLEXITY_API = "https://api.perplexity.ai/chat/completions"
 
-# Cheap-tier IDs only
-HAIKU = "claude-haiku-4-5"
+# Cheap-tier IDs only — Haiku uses dated form because we hit Anthropic's HTTP API directly
+HAIKU = "claude-haiku-4-5-20251001"
 GPT4O_MINI = "gpt-4o-mini"
 GEMINI_FLASH = "gemini-2.0-flash"
 SONAR = "sonar"
@@ -51,6 +51,7 @@ SONAR = "sonar"
 # Token-cost in USD per 1K tokens (input, output) — for ai_usage_logs
 COST_TABLE: Dict[str, Dict[str, float]] = {
     HAIKU: {"input": 0.001, "output": 0.005},
+    "claude-haiku-4-5": {"input": 0.001, "output": 0.005},  # alias still tracked
     GPT4O_MINI: {"input": 0.00015, "output": 0.0006},
     GEMINI_FLASH: {"input": 0.00010, "output": 0.0004},
     SONAR: {"input": 0.0010, "output": 0.0010},

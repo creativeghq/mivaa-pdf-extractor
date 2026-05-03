@@ -240,6 +240,45 @@ class MentionSearchService:
             errors=errors,
         )
 
+    # ───── Helpers ─────
+
+    def _fanout_queries(self, facets: SubjectFacets, *, max_queries: int = 3) -> List[str]:
+        """Pick distinctive aliases to fan discovery queries across.
+
+        Strategy: full label first, then single-word aliases ranked by
+        distinctiveness (length + uppercase letters as a cheap signal).
+        Skip aliases that are very short (<3 chars) or pure numeric, since
+        those return mostly noise.
+
+        The first query is always the most specific (full label). Subsequent
+        queries broaden coverage when the niche subject has zero exact-phrase
+        mentions globally.
+        """
+        candidates: List[str] = []
+        seen: set = set()
+        for a in facets.all_aliases():
+            if not a:
+                continue
+            stripped = a.strip()
+            if not stripped:
+                continue
+            # Skip ultra-short or pure-numeric aliases (poor signal)
+            if len(stripped) < 3:
+                continue
+            if all(ch.isdigit() or ch in "._" for ch in stripped):
+                continue
+            key = normalize_text(stripped)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(stripped)
+        if not candidates:
+            return [facets.label] if facets.label else []
+        # Order: full label first, then by distinctiveness (length desc)
+        primary = candidates[0]
+        rest = sorted(candidates[1:], key=lambda s: -len(s))
+        return [primary, *rest][:max_queries]
+
     # ───── DataForSEO News ─────
 
     async def _search_dataforseo_news(
@@ -248,61 +287,78 @@ class MentionSearchService:
         if not self.dataforseo_b64:
             return {"hits": [], "credits": 0}
 
-        # Use the strongest alias as the search query
-        aliases = facets.all_aliases() or [facets.label]
-        query = aliases[0]
-
-        body = [{
-            "keyword": query,
-            "depth": MAX_RESULTS_PER_SOURCE,
-            "location_code": _country_to_dfs_location(country) if country else 2840,  # default US
-            "language_code": (facets.language_codes or ["en"])[0].lower(),
-        }]
-
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.post(
-                    DATAFORSEO_NEWS_API,
-                    headers={"Authorization": f"Basic {self.dataforseo_b64}",
-                             "Content-Type": "application/json"},
-                    json=body,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as e:
-            logger.warning(f"dataforseo_news: request failed: {e}")
+        # Multi-query fan-out: search the primary alias first, and if it
+        # returns 0 results, try the next 1-2 distinctive aliases. Each
+        # DataForSEO call is ~$0.0006 — fanning to 2-3 queries is still
+        # cheap and dramatically improves coverage when the full label is
+        # too niche (e.g. "ORABELLA PRECIOSA" alone returns 0 globally,
+        # but "ORABELLA" or "PRECIOSA" find plenty).
+        queries = self._fanout_queries(facets, max_queries=3)
+        if not queries:
             return {"hits": [], "credits": 0}
 
-        hits: List[MentionHit] = []
         cutoff = datetime.now(timezone.utc) - timedelta(days=recency_days)
+        all_hits: List[MentionHit] = []
+        seen_urls: set = set()
+        credits = 0
 
-        for task in (data.get("tasks") or []):
-            for r in (task.get("result") or []):
-                for item in (r.get("items") or []):
-                    if (item.get("type") or "").lower() not in ("news_search", "news"):
-                        continue
-                    url = item.get("url") or ""
-                    if not url:
-                        continue
-                    pub_at = item.get("timestamp") or item.get("date_posted")
-                    pub_dt = _parse_iso(pub_at)
-                    if pub_dt and pub_dt < cutoff:
-                        continue
-                    host = domain_of(url)
-                    hits.append(MentionHit(
-                        url=url,
-                        title=item.get("title"),
-                        excerpt=item.get("snippet") or item.get("description"),
-                        outlet_domain=host,
-                        outlet_name=item.get("source") or item.get("source_url"),
-                        outlet_type=classify_outlet_type(host),
-                        language_code=(facets.language_codes or ["en"])[0],
-                        country_code=country,
-                        published_at=pub_dt.isoformat() if pub_dt else None,
-                        source="dataforseo_news",
-                        raw={"rank": item.get("rank_absolute")},
-                    ))
-        return {"hits": hits[:MAX_RESULTS_PER_SOURCE], "credits": 1}
+        for query in queries:
+            body = [{
+                "keyword": query,
+                "depth": MAX_RESULTS_PER_SOURCE,
+                "location_code": _country_to_dfs_location(country) if country else 2840,
+                "language_code": (facets.language_codes or ["en"])[0].lower(),
+            }]
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.post(
+                        DATAFORSEO_NEWS_API,
+                        headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                                 "Content-Type": "application/json"},
+                        json=body,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                credits += 1
+            except Exception as e:
+                logger.warning(f"dataforseo_news: request '{query}' failed: {e}")
+                continue
+
+            query_hits = 0
+            for task in (data.get("tasks") or []):
+                for r in (task.get("result") or []):
+                    for item in (r.get("items") or []):
+                        if (item.get("type") or "").lower() not in ("news_search", "news"):
+                            continue
+                        url = item.get("url") or ""
+                        if not url or url in seen_urls:
+                            continue
+                        pub_at = item.get("timestamp") or item.get("date_posted")
+                        pub_dt = _parse_iso(pub_at)
+                        if pub_dt and pub_dt < cutoff:
+                            continue
+                        host = domain_of(url)
+                        seen_urls.add(url)
+                        query_hits += 1
+                        all_hits.append(MentionHit(
+                            url=url,
+                            title=item.get("title"),
+                            excerpt=item.get("snippet") or item.get("description"),
+                            outlet_domain=host,
+                            outlet_name=item.get("source") or item.get("source_url"),
+                            outlet_type=classify_outlet_type(host),
+                            language_code=(facets.language_codes or ["en"])[0],
+                            country_code=country,
+                            published_at=pub_dt.isoformat() if pub_dt else None,
+                            source="dataforseo_news",
+                            raw={"rank": item.get("rank_absolute"), "query": query},
+                        ))
+
+            # Stop early if the primary alias already returned plenty
+            if query_hits >= MAX_RESULTS_PER_SOURCE // 2:
+                break
+
+        return {"hits": all_hits[:MAX_RESULTS_PER_SOURCE], "credits": credits}
 
     # ───── Perplexity Sonar (blogs + general web) ─────
 
@@ -316,12 +372,22 @@ class MentionSearchService:
         # Cost: sonar (cheap) when stable; sonar-pro on first/forced
         model = "sonar-pro" if force_full_discovery else "sonar"
         recency = "week" if recency_days <= 7 else "month"
-        aliases = facets.all_aliases()
-        primary = aliases[0] if aliases else facets.label
+        # Build a disjunctive query — Sonar handles "X OR Y OR Z" naturally.
+        # Use up to 3 distinctive aliases for coverage when the full phrase
+        # is too niche.
+        queries = self._fanout_queries(facets, max_queries=3)
+        if not queries:
+            return {"hits": [], "credits": 0}
+        primary = queries[0]
+        alts = queries[1:]
+        alt_clause = ""
+        if alts:
+            alt_str = " or ".join(f'"{a}"' for a in alts)
+            alt_clause = f" (also accept mentions of {alt_str} when those refer to the same subject)"
         # Phrase the prompt as a recent-mentions sweep
         question = (
             f"Find blog posts and articles from the last {recency_days} days that mention "
-            f"\"{primary}\""
+            f"\"{primary}\"{alt_clause}"
         )
         if facets.brand and facets.brand != primary:
             question += f" (brand: {facets.brand})"
