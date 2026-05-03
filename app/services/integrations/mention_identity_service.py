@@ -146,13 +146,40 @@ def content_hash(*, url: str, title: Optional[str], body: Optional[str]) -> str:
 
 
 def alias_present(text: str, facets: SubjectFacets) -> bool:
-    """Cheap deterministic check: does at least one alias appear in text?"""
+    """Cheap deterministic check: does at least one alias appear in text?
+
+    Single-word aliases use substring match. Multi-word aliases (e.g. brand +
+    model phrases like "ORABELLA PRECIOSA") require ALL constituent words to
+    be present — order and adjacency don't matter. This is critical for
+    real-world coverage where news/blog articles split the words across a
+    sentence ("The Orabella line by Preciosa...", "Preciosa's Orabella
+    collection", etc.).
+
+    Skips ultra-short tokens (≤2 chars) to avoid false positives from things
+    like "6.1" matching every "6.1mm" reference. Numeric model codes still
+    work because the multi-word path matches them as one of several tokens.
+    """
     if not text:
         return False
     nt = normalize_text(text)
     for a in facets.all_aliases():
-        if normalize_text(a) in nt:
-            return True
+        n = normalize_text(a)
+        if not n:
+            continue
+        words = [w for w in n.split() if len(w) >= 3]
+        if not words:
+            # All tokens too short — fall back to strict substring match
+            if n in nt:
+                return True
+            continue
+        if len(words) == 1:
+            # Single-word alias: substring match (cheap)
+            if words[0] in nt:
+                return True
+        else:
+            # Multi-word alias: ALL words must appear, any order
+            if all(w in nt for w in words):
+                return True
     return False
 
 
@@ -454,7 +481,12 @@ Seed aliases:
 {seed}
 
 Return ONLY a JSON object with these keys:
-- aliases: array of alternate spellings, abbreviations, model SKUs, brand variants. Include the original label.
+- aliases: array of strings that should count as a hit when found in text. Include:
+  * The original full label.
+  * Each meaningful word in the label as a separate entry (e.g. label "ORABELLA PRECIOSA" → also include "ORABELLA" and "PRECIOSA" as separate aliases, since articles often mention only one).
+  * Common reorderings (e.g. "PRECIOSA ORABELLA" if the words can swap).
+  * Alternate spellings, abbreviations, model SKUs, brand variants.
+  Skip generic words ("the", "tile", "collection"). Aim for 4-8 entries.
 - brand: the brand string if applicable, else null.
 - product_type: the noun-category if applicable (e.g. "porcelain tile", "console table"), else null.
 - must_have_tokens: array of strings that MUST appear in a candidate page for it to count as a real mention. Usually = brand + model token. Keep tight (1-3 items).
