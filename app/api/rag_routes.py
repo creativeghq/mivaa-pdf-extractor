@@ -3473,9 +3473,17 @@ async def process_document_with_discovery(
         # P2-9: skip the catalog-wide icon pass when the user's category
         # selection makes it irrelevant. The pass calls Claude on every
         # supplementary page — pure waste if the user only asked for
-        # products and not for icons/specs/certificates. Saves 1× Claude
-        # call per supplementary page on every upload.
-        _icon_relevant_categories = {'specifications', 'certificates', 'logos'}
+        # categories whose products have no compliance icons.
+        #
+        # 2026-05-03 fix: `'products'` MUST trigger the pass. Ceramic
+        # catalogs put slip resistance / PEI / fire rating / water absorption /
+        # frost / shade-variation icons on shared legend pages, NOT on each
+        # product's own pages. Stage 4's `_merge_icon_metadata_into_product`
+        # rollup queries all icon images for the document and copies their
+        # spec verdicts onto every product's metadata. Skip the pass and
+        # those product fields all stay null — exactly the all-empty
+        # `compliance / performance` blocks we saw on FOLD (job acff9ebb).
+        _icon_relevant_categories = {'products', 'specifications', 'certificates', 'logos'}
         _icon_pass_relevant = bool(set(extract_categories) & _icon_relevant_categories)
         if not _icon_pass_relevant:
             logger.info(

@@ -110,6 +110,8 @@ async def tracked_claude_call_async(
     confidence_breakdown: Optional[Dict[str, float]] = None,
     action: str = "use_ai_result",
     extra_kwargs: Optional[Dict[str, Any]] = None,
+    product_id: Optional[str] = None,
+    image_id: Optional[str] = None,
 ):
     """Async Claude messages.create with automatic logging + credit debit.
 
@@ -142,6 +144,8 @@ async def tracked_claude_call_async(
         job_id=job_id,
         user_id=user_id,
         workspace_id=workspace_id,
+        product_id=product_id,
+        image_id=image_id,
     )
     return response
 
@@ -161,6 +165,8 @@ def tracked_claude_call(
     confidence_breakdown: Optional[Dict[str, float]] = None,
     action: str = "use_ai_result",
     extra_kwargs: Optional[Dict[str, Any]] = None,
+    product_id: Optional[str] = None,
+    image_id: Optional[str] = None,
 ):
     """Sync Claude messages.create with automatic logging + credit debit.
 
@@ -196,6 +202,8 @@ def tracked_claude_call(
         job_id=job_id,
         user_id=user_id,
         workspace_id=workspace_id,
+        product_id=product_id,
+        image_id=image_id,
     )
 
     try:

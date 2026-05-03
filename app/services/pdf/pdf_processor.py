@@ -71,6 +71,25 @@ class PDFProcessingConstants:
     # 100 DPI is the floor — below this, the image looks visibly soft/pixelated
     MIN_EFFECTIVE_DPI: float = 100.0
 
+    # YOLO crop region types — which YOLO layout-region classifications get
+    # emitted as `extraction_layer='yolo_crop'` rows. Pre-audit this also
+    # included FIGURE/TABLE so that small-tile grids in ceramic catalogs
+    # (where YOLO commonly classifies a 12-tile color-swatch grid as a single
+    # TABLE region or a FIGURE) still produced per-region crops. Audit
+    # incident: job acff9ebb 2026-05-03, FOLD page 37 had small color-variant
+    # tiles invisible to PyMuPDF (flattened into render commands) and
+    # classified by YOLO as TABLE — they vanished from extraction entirely.
+    # Override via `PDF_YOLO_CROP_REGION_TYPES` env var (comma-separated).
+    YOLO_CROP_REGION_TYPES: tuple = ("IMAGE", "FIGURE", "TABLE")
+
+    # YOLO crop padding — fraction of page dimensions added on each side of
+    # the YOLO bbox before crop. Default 0.03 (3%) captures the headline,
+    # caption, or label sitting just outside the detected region. Vision
+    # analysis quality improves materially when the crop includes the text
+    # the human eye reads with the image. Set to 0.0 to disable.
+    # Override via `PDF_YOLO_CROP_PADDING_FRACTION` env var.
+    YOLO_CROP_PADDING_FRACTION: float = 0.03
+
 
 # Global instance for easy access
 PDF_CONSTANTS = PDFProcessingConstants()
@@ -1163,18 +1182,34 @@ class PDFProcessor:
                             dpi=PDF_CONSTANTS.YOLO_RENDER_DPI
                         )
 
-                    # Get IMAGE and CAPTION regions
-                    image_regions = layout_result.get_regions_by_type("IMAGE")
+                    # Collect all image-bearing region types — pre-audit behavior.
+                    # YOLO often classifies small-tile grids in ceramic catalogs as
+                    # TABLE or FIGURE, not IMAGE. Restricting to IMAGE-only loses
+                    # those tiles entirely. Region types come from
+                    # PDFProcessingConstants.YOLO_CROP_REGION_TYPES, env-overridable
+                    # via `PDF_YOLO_CROP_REGION_TYPES`.
+                    crop_region_types_env = os.environ.get('PDF_YOLO_CROP_REGION_TYPES')
+                    if crop_region_types_env:
+                        crop_region_types = tuple(
+                            t.strip().upper() for t in crop_region_types_env.split(',') if t.strip()
+                        )
+                    else:
+                        crop_region_types = PDF_CONSTANTS.YOLO_CROP_REGION_TYPES
+
+                    image_regions = []
+                    for region_type in crop_region_types:
+                        image_regions.extend(layout_result.get_regions_by_type(region_type))
                     caption_regions = layout_result.get_regions_by_type("CAPTION")
 
                     if not image_regions:
                         self.logger.info(
-                            f"   ℹ️ [Job: {job_id}] No IMAGE regions detected on PDF page {pdf_page}"
+                            f"   ℹ️ [Job: {job_id}] No image-bearing regions ({','.join(crop_region_types)}) detected on PDF page {pdf_page}"
                         )
                         continue
 
                     self.logger.info(
-                        f"   ✅ [Job: {job_id}] Found {len(image_regions)} IMAGE regions and {len(caption_regions)} CAPTION regions on PDF page {pdf_page}"
+                        f"   ✅ [Job: {job_id}] Found {len(image_regions)} image-bearing regions "
+                        f"(types={','.join(crop_region_types)}) and {len(caption_regions)} CAPTION regions on PDF page {pdf_page}"
                     )
 
                     # Render full page for cropping - use try/finally to ensure cleanup
@@ -1195,18 +1230,41 @@ class PDFProcessor:
                         img_data = pix.tobytes("png")
                         full_page_image = Image.open(io.BytesIO(img_data))
 
-                        # Crop each IMAGE region
+                        # YOLO crop padding — env-overridable, defaults to 3% of
+                        # page dimensions. Captures headlines/captions/labels that
+                        # sit just outside the detected region so vision_analysis
+                        # has the surrounding context the human eye reads with the
+                        # image. Audit incident: job acff9ebb 2026-05-03.
+                        try:
+                            pad_fraction = float(
+                                os.environ.get(
+                                    'PDF_YOLO_CROP_PADDING_FRACTION',
+                                    PDF_CONSTANTS.YOLO_CROP_PADDING_FRACTION,
+                                )
+                            )
+                        except (TypeError, ValueError):
+                            pad_fraction = PDF_CONSTANTS.YOLO_CROP_PADDING_FRACTION
+                        pad_x = int(full_page_image.width * pad_fraction)
+                        pad_y = int(full_page_image.height * pad_fraction)
+
+                        # Crop each image-bearing region (with padding)
                         for region_idx, region in enumerate(image_regions):
                             try:
                                 # Get bounding box coordinates
                                 bbox = region.bbox
 
-                                # Crop region from full page image
+                                # Apply padding, clamped to page bounds.
+                                crop_x1 = max(0, int(bbox.x) - pad_x)
+                                crop_y1 = max(0, int(bbox.y) - pad_y)
+                                crop_x2 = min(full_page_image.width, int(bbox.x2) + pad_x)
+                                crop_y2 = min(full_page_image.height, int(bbox.y2) + pad_y)
+
+                                # Crop region from full page image with padding
                                 cropped_image = full_page_image.crop((
-                                    bbox.x,
-                                    bbox.y,
-                                    bbox.x2,
-                                    bbox.y2
+                                    crop_x1,
+                                    crop_y1,
+                                    crop_x2,
+                                    crop_y2,
                                 ))
 
                                 # Save cropped image

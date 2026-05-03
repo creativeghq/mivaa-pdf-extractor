@@ -1,7 +1,11 @@
 """
 SLIG (SigLIP2) Cloud Client
 
-Client for HuggingFace Inference Endpoint running SigLIP2-base-patch16-512.
+Client for HuggingFace Inference Endpoint `mh-slig` (namespace `basiliskan`)
+serving the custom HF model `basiliskan/slig`. Underlying architecture is
+SigLIP2 SO400M (native 1152D); the endpoint applies a 1152D → 768D projection
+head so every downstream consumer sees a uniform 768D output.
+
 Supports 4 modes: zero_shot, image_embedding, text_embedding, similarity.
 
 Includes automatic endpoint lifecycle management (pause/resume) to control costs.
@@ -40,7 +44,7 @@ class SLIGClient:
         endpoint_url: str,
         token: str,
         timeout: float = 30.0,
-        model_name: str = "basiliskan/siglip2",
+        model_name: str = "basiliskan/slig",
         endpoint_name: str = "mh-slig",
         namespace: str = "basiliskan",
         auto_pause: bool = True,

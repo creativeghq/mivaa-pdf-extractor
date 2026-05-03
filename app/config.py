@@ -490,14 +490,14 @@ class Settings(BaseSettings):
         description="SLIG endpoint namespace"
     )
     slig_model_name: str = Field(
-        default="basiliskan/siglip2",
+        default="basiliskan/slig",
         env="SLIG_MODEL_NAME",
-        description="SLIG model name for logging and tracking"
+        description="SLIG model name for logging and tracking (production: basiliskan/slig — SigLIP2 SO400M with 1152D→768D projection head)"
     )
     slig_embedding_dimension: int = Field(
         default=768,
         env="SLIG_EMBEDDING_DIMENSION",
-        description="SLIG embedding dimension (768 for basiliskan/siglip2)"
+        description="SLIG embedding dimension (768 — projected from SO400M's native 1152D)"
     )
     slig_enabled: bool = Field(
         default=True,

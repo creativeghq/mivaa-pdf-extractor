@@ -300,7 +300,8 @@ class EntityLinkingService:
 
     async def link_images_to_chunks(
         self,
-        document_id: str
+        document_id: str,
+        product_db_id: Optional[str] = None,
     ) -> int:
         """
         Link images to chunks based on shared product page ranges.
@@ -309,26 +310,64 @@ class EntityLinkingService:
         Any image whose page_number falls within that list is considered related to the chunk.
         relevance_score is set to 1.0 for all product-level page associations.
 
+        When `product_db_id` is provided, scope the operation to a single product —
+        intended to be called immediately after each product's Stage 3 completes so
+        that partial-success runs (some products fail, others succeed) still get
+        their chunk-image links written. The end-of-document call remains as a
+        safety net to catch anything missed. Audit incident: job acff9ebb 2026-05-03,
+        FOLD completed cleanly but the job was cancelled before reaching the
+        document-level finalize block, leaving 0 chunk_image_relationships for an
+        otherwise-successful product.
+
         Args:
             document_id: Document ID
+            product_db_id: Optional product UUID — when set, only chunks/images for
+                           this product are linked (uses chunk.product_id column +
+                           page_number membership).
 
         Returns:
-            Number of image-chunk links created
+            Number of image-chunk links created (or upserted when pair already exists)
         """
         try:
-            self.logger.info(f"Linking images to chunks for document {document_id}")
+            self.logger.info(
+                f"Linking images to chunks for document {document_id}"
+                + (f" (scoped to product {product_db_id})" if product_db_id else "")
+            )
 
-            # Get all images
-            images_response = self.supabase.client.table('document_images')\
-                .select('id, page_number')\
-                .eq('document_id', document_id)\
-                .execute()
-
-            # Get all chunks
-            chunks_response = self.supabase.client.table('document_chunks')\
+            # Build chunk query — when product-scoped, narrow via product_id column.
+            chunks_q = self.supabase.client.table('document_chunks')\
                 .select('id, metadata')\
-                .eq('document_id', document_id)\
-                .execute()
+                .eq('document_id', document_id)
+            if product_db_id:
+                chunks_q = chunks_q.eq('product_id', product_db_id)
+            chunks_response = chunks_q.execute()
+
+            # When product-scoped, build the page set from this product's chunks
+            # so the image query can pre-filter by page_number; saves loading
+            # every image on the document just to discard most of them.
+            allowed_pages: Optional[set] = None
+            if product_db_id:
+                allowed_pages = set()
+                for ch in (chunks_response.data or []):
+                    md = ch.get('metadata') or {}
+                    for p in (md.get('product_pages') or []):
+                        try:
+                            allowed_pages.add(int(p))
+                        except (ValueError, TypeError):
+                            continue
+                    pn = md.get('page_number')
+                    if pn is not None:
+                        try:
+                            allowed_pages.add(int(pn))
+                        except (ValueError, TypeError):
+                            pass
+
+            images_q = self.supabase.client.table('document_images')\
+                .select('id, page_number')\
+                .eq('document_id', document_id)
+            if allowed_pages:
+                images_q = images_q.in_('page_number', sorted(allowed_pages))
+            images_response = images_q.execute()
 
             if not images_response.data or not chunks_response.data:
                 self.logger.warning(f"No images or chunks found for document {document_id}")
@@ -397,12 +436,21 @@ class EntityLinkingService:
                         'created_at': datetime.utcnow().isoformat()
                     })
 
-            # Batch insert all relationships (using SAME table as frontend)
+            # Batch upsert all relationships — `chunk_image_relationships` has a
+            # UNIQUE(chunk_id, image_id) constraint, and per-product callers may
+            # request the same pair across multiple invocations (e.g., the final
+            # document-level safety-net pass after all products finished). Use
+            # ignore_duplicates=True so re-inserting an existing pair is a no-op
+            # rather than a constraint error that aborts the whole batch.
             if relationships:
                 self.supabase.client.table('chunk_image_relationships')\
-                    .insert(relationships)\
+                    .upsert(
+                        relationships,
+                        on_conflict='chunk_id,image_id',
+                        ignore_duplicates=True,
+                    )\
                     .execute()
-                self.logger.info(f"Created {len(relationships)} chunk-image relationship entries")
+                self.logger.info(f"Upserted {len(relationships)} chunk-image relationship entries")
 
             if chunks_skipped_no_page:
                 self.logger.warning(

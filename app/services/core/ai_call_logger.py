@@ -62,6 +62,8 @@ class AICallLogger:
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         module_slug: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> bool:
         """
         Log an AI call to the database.
@@ -133,6 +135,8 @@ class AICallLogger:
                     "billed_cost_usd": float(cost_data.get("billed_cost_usd", cost)),
                     "job_id": job_id,
                     "module_slug": module_slug,
+                    "product_id": product_id,
+                    "image_id": image_id,
                     "metadata": {
                         "action": action,
                         "confidence_score": round(confidence_score, 2),
@@ -181,7 +185,9 @@ class AICallLogger:
         request_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
-        module_slug: Optional[str] = None
+        module_slug: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> bool:
         """
         Log a Claude API call and debit credits from user account.
@@ -245,6 +251,8 @@ class AICallLogger:
                 user_id=user_id,
                 workspace_id=workspace_id,
                 module_slug=module_slug,
+                product_id=product_id,
+                image_id=image_id,
             )
 
         except Exception as e:
@@ -265,7 +273,9 @@ class AICallLogger:
         request_data: Optional[Dict[str, Any]] = None,
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
-        module_slug: Optional[str] = None
+        module_slug: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> bool:
         """
         Log a GPT API call and debit credits from user account.
@@ -329,6 +339,8 @@ class AICallLogger:
                 user_id=user_id,
                 workspace_id=workspace_id,
                 module_slug=module_slug,
+                product_id=product_id,
+                image_id=image_id,
             )
 
         except Exception as e:
@@ -357,6 +369,8 @@ class AICallLogger:
         request_data: Optional[Dict[str, Any]] = None,
         response_data: Optional[Dict[str, Any]] = None,
         module_slug: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> bool:
         """
         Log a Replicate per-generation API call.
@@ -401,6 +415,8 @@ class AICallLogger:
                 user_id=user_id,
                 workspace_id=workspace_id,
                 module_slug=module_slug,
+                product_id=product_id,
+                image_id=image_id,
             )
         except Exception as e:
             self.logger.error(f"❌ Failed to log Replicate call: {e}")
@@ -420,6 +436,8 @@ class AICallLogger:
         request_data: Optional[Dict[str, Any]] = None,
         response_data: Optional[Dict[str, Any]] = None,
         module_slug: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> bool:
         """
         Log a time-based (HuggingFace GPU endpoint) call: SLIG, OCR (Chandra), YOLO.
@@ -468,6 +486,8 @@ class AICallLogger:
                 user_id=user_id,
                 workspace_id=workspace_id,
                 module_slug=module_slug,
+                product_id=product_id,
+                image_id=image_id,
             )
         except Exception as e:
             self.logger.error(f"❌ Failed to log time-based call: {e}")

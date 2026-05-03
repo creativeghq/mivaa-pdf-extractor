@@ -137,10 +137,23 @@ def get_claude_concurrency_limit() -> int:
     """
     Get safe concurrency limit for Claude API requests.
 
-    Returns:
-        int: Safe number of concurrent Claude requests
+    Post-Qwen-removal (2026-05-01) Stage 3 image classification AND
+    vision_analysis both run through Anthropic Claude Opus 4.7. The
+    previous hardcoded `2` was set when Claude was a rare fallback —
+    leaving it at 2 now serializes ~80 images/product behind a 2-wide
+    gate at ~10s per Opus call, eating the full 600s per-product budget
+    on classification alone (incident: VALENOVA, 2026-05-03, job
+    acff9ebb-8daf-48f0-acd3-4f77308faf8b).
+
+    Anthropic Tier 1 = 600 RPM = 10 RPS. With ~10s avg vision-call
+    latency, Little's Law allows ~100 in-flight before saturation;
+    we cap at 10 by default to leave headroom for product_discovery,
+    icon extraction, and retries running in parallel.
+
+    Override via `CLAUDE_VISION_CONCURRENCY` env var to tune per-tier
+    without redeploy.
     """
-    return 2
+    return int(os.getenv('CLAUDE_VISION_CONCURRENCY', '10'))
 
 
 # Export current tier for easy access

@@ -12,11 +12,12 @@ from pydantic import BaseModel, Field
 class AIModelConfig(BaseModel):
     """Configuration for AI models used in PDF processing pipeline."""
 
-    # Visual Embedding Model (SLIG Cloud Endpoint - basiliskan/siglip2)
-    # All visual embeddings are generated via HuggingFace cloud endpoint (768D)
+    # Visual Embedding Model (SLIG Cloud Endpoint - basiliskan/slig)
+    # SigLIP2 SO400M (native 1152D) with a 1152D→768D projection head; all
+    # visual embeddings emerge as a uniform 768D output for VECS storage parity.
     visual_embedding_primary: str = Field(
-        default="basiliskan/siglip2",
-        description="Visual embedding model via SLIG cloud endpoint (768D)"
+        default="basiliskan/slig",
+        description="Visual embedding model via SLIG cloud endpoint (SigLIP2 SO400M projected to 768D)"
     )
     visual_embedding_fallback: str = Field(
         default=None,
@@ -115,7 +116,7 @@ class AIModelConfig(BaseModel):
     class Config:
         json_schema_extra = {
             "example": {
-                "visual_embedding_primary": "basiliskan/siglip2",
+                "visual_embedding_primary": "basiliskan/slig",
                 "visual_embedding_fallback": None,
                 "text_embedding_model": "voyage-4",
                 "text_embedding_dimensions": 1024,

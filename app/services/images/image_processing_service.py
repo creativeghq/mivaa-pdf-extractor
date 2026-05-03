@@ -163,6 +163,7 @@ class ImageProcessingService:
         validation_model: Optional[str] = None,
         batch_size: int = 15,
         job_id: Optional[str] = None,
+        product_id: Optional[str] = None,  # FK to products.id for ai_usage_logs attribution
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Classify images as material or non-material.
 
@@ -356,6 +357,7 @@ class ImageProcessingService:
                     },
                     action="use_ai_result",
                     job_id=job_id,
+                    product_id=product_id,
                 )
 
                 # Use the existing category-mapping helper so PRODUCT_IMAGE /
@@ -428,6 +430,8 @@ class ImageProcessingService:
                             {"type": "text", "text": classification_prompt}
                         ]
                     }],
+                    job_id=job_id,
+                    product_id=product_id,
                 )
 
                 # Diagnose the "Expecting value: line 1 column 1 (char 0)" bug — that
@@ -1126,6 +1130,8 @@ class ImageProcessingService:
         self,
         image_base64: str,
         image_id: str,
+        product_id: Optional[str] = None,
+        job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Fallback path: call Claude Opus 4.7 with the same prompt when
@@ -1187,6 +1193,9 @@ class ImageProcessingService:
                 max_tokens=kwargs["max_tokens"],
                 messages=kwargs["messages"],
                 system=kwargs.get("system"),
+                job_id=job_id,
+                product_id=product_id,
+                image_id=image_id,
             )
 
             # Anthropic SDK returns a list of content blocks; concatenate
@@ -1217,6 +1226,8 @@ class ImageProcessingService:
         self,
         image_base64: str,
         image_id: str,
+        product_id: Optional[str] = None,  # FK for ai_usage_logs cost attribution
+        job_id: Optional[str] = None,
     ) -> Tuple[Optional[Dict[str, Any]], str]:
         """
         Run rich material analysis on a confirmed-material image and return
@@ -1252,6 +1263,8 @@ class ImageProcessingService:
         claude_result = await self._try_claude_material_analysis(
             image_base64=image_base64,
             image_id=image_id,
+            product_id=product_id,
+            job_id=job_id,
         )
         if claude_result is not None:
             return claude_result, VisionProvider.CLAUDE.value
@@ -1271,6 +1284,8 @@ class ImageProcessingService:
         total: int,
         max_retries: int = 3,
         material_category: Optional[str] = None,
+        product_id: Optional[str] = None,  # FK for ai_usage_logs cost attribution
+        job_id: Optional[str] = None,
     ) -> Tuple[bool, bool, Optional[str], Dict[str, Any]]:
         """
         Process a single image with retry logic.
@@ -1371,6 +1386,8 @@ class ImageProcessingService:
                 vision_analysis, vision_analysis_source = await self._analyze_material_image(
                     image_base64=image_base64_raw,
                     image_id=image_id,
+                    product_id=product_id,
+                    job_id=job_id,
                 )
 
                 # Persist vision_analysis (and provenance) to document_images so the
@@ -1776,6 +1793,7 @@ class ImageProcessingService:
         tracker: Optional[Any] = None,  # NEW: ProgressTracker for per-image events
         progress_label: Optional[str] = None,  # e.g. "Stage 3: Processing images for {product}"
         icon_candidates: Optional[List[Dict[str, Any]]] = None,  # NEW: spec icons → OCR + Claude path
+        product_id: Optional[str] = None,  # FK to products.id for per-product cost attribution
     ) -> Dict[str, Any]:
         """
         Save images to database and generate CLIP embeddings with batching and retry logic.
@@ -1923,6 +1941,8 @@ class ImageProcessingService:
                         total=total_with_checkpoint,
                         max_retries=max_retries,
                         material_category=material_category,
+                        product_id=product_id,
+                        job_id=job_id,
                     )
                 )
 

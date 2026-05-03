@@ -80,6 +80,7 @@ async def process_product_images(
     logger: logging.Logger,
     layout_regions: Optional[List[Any]] = None,  # YOLO layout regions with bbox data
     tracker: Optional[Any] = None,  # ProgressTracker for per-image progress events
+    product_db_id: Optional[str] = None,  # `products.id` for ai_usage_logs cost attribution
 ) -> Dict[str, Any]:
     """
     Process images for a single product (product-centric pipeline).
@@ -401,7 +402,9 @@ async def process_product_images(
         material_images, non_material_images = await image_service.classify_images(
             extracted_images=extracted_images_list,
             confidence_threshold=0.6,
-            batch_size=15
+            batch_size=15,
+            job_id=job_id,
+            product_id=product_db_id,
         )
     except Exception as e:
         logger.error(f"   ❌ Image classification failed: {type(e).__name__}: {str(e)}")
@@ -491,6 +494,7 @@ async def process_product_images(
         tracker=tracker,
         progress_label=f"Stage 3: Processing images for {product.name}",
         icon_candidates=uploaded_icons,
+        product_id=product_db_id,
     )
 
     images_processed = save_result.get('images_saved', 0)
@@ -616,23 +620,29 @@ async def _run_phase_3_ocr_for_product(
 
     sb = get_supabase_client()
 
-    # Map filename → uploaded image dict so we can look up local paths after
-    # the DB returns ids by filename.
-    by_filename = {img.get('filename'): img for img in uploaded_regular if img.get('filename')}
-    if not by_filename:
+    # Map image_id → uploaded image dict so we can look up local paths.
+    # `save_images_and_generate_clips` mutates each uploaded dict in place
+    # to set `id` (image_processing_service.py:1335) — that DB id is the
+    # canonical join key. Previously this code queried `document_images`
+    # by `filename`, but `document_images` has no `filename` column —
+    # the query 500'd, the outer except swallowed it, and the entire
+    # Phase 3 OCR pass silently no-op'd, leaving every image row with
+    # ocr_attempts=0 / ocr_skipped_reason=null in violation of the
+    # "explicit failure markers" audit rule. Audit incident: job
+    # acff9ebb 2026-05-03, FOLD's 4 images all NULL on every OCR field.
+    by_image_id = {img.get('id'): img for img in uploaded_regular if img.get('id')}
+    if not by_image_id:
         return None
 
-    # Fetch the saved image rows for this batch (by document_id + filename).
-    # `extraction_layer` is the canonical column-backed enum since 2026-05-02
-    # ({embedded, yolo_crop, full_render, vision_guided}). The legacy
-    # `metadata.extraction_method` fallback was removed when pdf_processor
-    # was rewired to emit canonical values directly.
+    # Fetch the saved image rows by image_id. extraction_layer is the
+    # canonical column-backed enum since 2026-05-02
+    # ({embedded, yolo_crop, full_render, vision_guided}).
     try:
         resp = (
             sb.client.table("document_images")
-            .select("id, filename, extraction_layer, metadata")
+            .select("id, extraction_layer, metadata")
             .eq("document_id", document_id)
-            .in_("filename", list(by_filename.keys()))
+            .in_("id", list(by_image_id.keys()))
             .execute()
         )
         db_rows = resp.data or []
@@ -645,7 +655,6 @@ async def _run_phase_3_ocr_for_product(
     counts = {"ocr_attempted": 0, "ocr_succeeded": 0, "ocr_failed": 0, "ocr_skipped": 0}
     for row in db_rows:
         image_id = row["id"]
-        filename = row.get("filename")
         metadata = row.get("metadata") or {}
         extraction_layer = row.get("extraction_layer") or "embedded"
         # YOLO region type is persisted under metadata.yolo_region_type.
@@ -685,7 +694,7 @@ async def _run_phase_3_ocr_for_product(
 
         # Locate the local image bytes/path. The pdf_processor stores under
         # 'path'; we also check 'local_path' / 'image_path' for forward-compat.
-        src = by_filename.get(filename) or {}
+        src = by_image_id.get(image_id) or {}
         local_path = src.get('path') or src.get('local_path') or src.get('image_path')
         if not local_path:
             # Audit fix 2026-05-02: write an explicit marker rather than

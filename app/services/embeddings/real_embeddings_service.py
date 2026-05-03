@@ -150,7 +150,7 @@ class RealEmbeddingsService:
         self.voyage_model = getattr(config, "voyage_model", None) or "voyage-4"
 
         # Log SLIG configuration
-        self.logger.info(f"☁️ Visual Embeddings: SLIG Cloud Endpoint (basiliskan/siglip2, 768D)")
+        self.logger.info(f"☁️ Visual Embeddings: SLIG Cloud Endpoint (basiliskan/slig — SigLIP2 SO400M projected to 768D)")
 
         # Voyage AI configuration
         self.voyage_api_key = settings.voyage_api_key

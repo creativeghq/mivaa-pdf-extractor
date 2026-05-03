@@ -569,6 +569,7 @@ async def process_single_product(
                 logger=logger_instance,
                 layout_regions=layout_regions,  # YOLO layout regions for bbox data
                 tracker=tracker,  # Per-image progress events visible in admin UI
+                product_db_id=product_db_id,  # plumb FK for ai_usage_logs cost attribution
             )
 
             images_processed = image_result.get('images_processed', 0)
@@ -684,7 +685,72 @@ async def process_single_product(
         # Update product with extracted metadata from Stage 1.
         # MERGE with existing metadata to preserve discovery metadata.
         extracted_metadata = extraction_result.get('metadata', {})
-        if extracted_metadata:
+
+        # Pull chunk-level structured_metadata aggregated across all of this
+        # product's chunks. Sonnet 4.6 chunk classification writes per-chunk
+        # `metadata.structured_metadata.{dimensions, colors, materials,
+        # keyFeatures, productName, studioName}` but those values were never
+        # rolled up onto the product's metadata before — leaving
+        # `product.metadata.dimensions=[]` even when chunks clearly captured
+        # the size. Audit incident: job acff9ebb 2026-05-03, FOLD chunks
+        # carried `structured_metadata.dimensions='15x38'` but
+        # `products.metadata.dimensions` was an empty list.
+        chunk_aggregated: Dict[str, Any] = {}
+        try:
+            chunk_resp = supabase.client.table('document_chunks') \
+                .select('metadata') \
+                .eq('product_id', product_db_id) \
+                .execute()
+            agg_dimensions: set = set()
+            agg_colors: set = set()
+            agg_materials: set = set()
+            agg_features: set = set()
+            studio_name: Optional[str] = None
+            for ch in (chunk_resp.data or []):
+                sm = ((ch.get('metadata') or {}).get('structured_metadata') or {})
+                # dimensions: usually a single string like "15x38" but allow lists.
+                sm_dim = sm.get('dimensions')
+                if isinstance(sm_dim, str) and sm_dim.strip():
+                    agg_dimensions.add(sm_dim.strip())
+                elif isinstance(sm_dim, list):
+                    agg_dimensions.update(d for d in sm_dim if isinstance(d, str) and d.strip())
+                for k_src, target_set in (
+                    ('colors', agg_colors),
+                    ('materials', agg_materials),
+                    ('keyFeatures', agg_features),
+                ):
+                    val = sm.get(k_src)
+                    if isinstance(val, list):
+                        target_set.update(v for v in val if isinstance(v, str) and v.strip())
+                    elif isinstance(val, str) and val.strip():
+                        target_set.add(val.strip())
+                if not studio_name:
+                    sn = sm.get('studioName')
+                    if isinstance(sn, str) and sn.strip():
+                        studio_name = sn.strip()
+            if agg_dimensions:
+                chunk_aggregated['dimensions'] = sorted(agg_dimensions)
+            if agg_colors:
+                chunk_aggregated['available_colors'] = sorted(agg_colors)
+            if agg_materials:
+                chunk_aggregated.setdefault('material_properties', {})
+                chunk_aggregated['material_properties']['materials_mentioned'] = sorted(agg_materials)
+            if agg_features:
+                chunk_aggregated['key_features'] = sorted(agg_features)
+            if studio_name and not extracted_metadata.get('studio_name'):
+                chunk_aggregated['studio_name'] = studio_name
+            if chunk_aggregated:
+                logger_instance.info(
+                    f"   📦 Chunk-aggregated structured_metadata: "
+                    f"dimensions={len(agg_dimensions)}, colors={len(agg_colors)}, "
+                    f"materials={len(agg_materials)}, features={len(agg_features)}"
+                )
+        except Exception as agg_err:
+            logger_instance.warning(
+                f"   ⚠️ Failed to aggregate chunk structured_metadata for {product.name}: {agg_err}"
+            )
+
+        if extracted_metadata or chunk_aggregated:
             try:
                 # First fetch existing metadata to merge (preserves discovery metadata)
                 existing_product = supabase.client.table('products')\
@@ -697,23 +763,34 @@ async def process_single_product(
                 if existing_metadata is None:
                     existing_metadata = {}
 
-                # Deep merge: extracted_metadata takes priority but preserves existing fields
+                # Deep merge: extracted_metadata takes priority but preserves existing fields.
+                # Chunk-aggregated values come in last so they fill empty / missing keys
+                # without overriding values the per-product extractor already produced.
                 merged_metadata = {**existing_metadata}
-                for key, value in extracted_metadata.items():
-                    if value is not None:  # Only update if new value is not None
-                        if key in merged_metadata and isinstance(merged_metadata[key], dict) and isinstance(value, dict):
-                            # Merge nested dicts
-                            merged_metadata[key] = {**merged_metadata[key], **value}
-                        elif key in merged_metadata and isinstance(merged_metadata[key], list) and isinstance(value, list):
-                            # Merge lists (deduplicate)
-                            existing_set = set(merged_metadata[key]) if all(isinstance(x, (str, int, float)) for x in merged_metadata[key]) else merged_metadata[key]
-                            new_set = set(value) if all(isinstance(x, (str, int, float)) for x in value) else value
-                            if isinstance(existing_set, set) and isinstance(new_set, set):
-                                merged_metadata[key] = sorted(list(existing_set | new_set))
-                            else:
-                                merged_metadata[key] = merged_metadata[key] + [v for v in value if v not in merged_metadata[key]]
-                        else:
+                for source in (extracted_metadata, chunk_aggregated):
+                    for key, value in source.items():
+                        if value is None or value == "" or value == [] or value == {}:
+                            continue
+                        existing_val = merged_metadata.get(key)
+                        existing_empty = existing_val in (None, "", [], {})
+                        if existing_empty:
                             merged_metadata[key] = value
+                        elif isinstance(existing_val, dict) and isinstance(value, dict):
+                            merged_metadata[key] = {**existing_val, **value}
+                        elif isinstance(existing_val, list) and isinstance(value, list):
+                            try:
+                                existing_set = set(existing_val) if all(isinstance(x, (str, int, float)) for x in existing_val) else None
+                                new_set = set(value) if all(isinstance(x, (str, int, float)) for x in value) else None
+                                if existing_set is not None and new_set is not None:
+                                    merged_metadata[key] = sorted(list(existing_set | new_set))
+                                else:
+                                    merged_metadata[key] = existing_val + [v for v in value if v not in existing_val]
+                            except TypeError:
+                                merged_metadata[key] = existing_val + [v for v in value if v not in existing_val]
+                        elif source is extracted_metadata:
+                            # extracted_metadata wins over existing
+                            merged_metadata[key] = value
+                        # else: chunk-aggregated value loses to non-empty extracted/existing
 
                 supabase.client.table('products')\
                     .update({'metadata': merged_metadata})\
@@ -895,7 +972,29 @@ async def process_single_product(
             logger=logger_instance
         )
 
-        relationships_created = linking_result.get('relationships_created', 0)
+        # Per-product chunk-image linking — was previously only run as a
+        # document-level pass at end-of-job, which meant a partial-success
+        # run (some products fail, others succeed) lost ALL chunk-image
+        # links. Audit incident: job acff9ebb 2026-05-03, FOLD completed
+        # cleanly but the cancelled job never reached the finalize block →
+        # 0 chunk_image_relationships for an otherwise-successful product.
+        # The end-of-document pass remains as a safety net.
+        try:
+            chunk_image_links = await entity_linking_service.link_images_to_chunks(
+                document_id=document_id,
+                product_db_id=product_db_id,
+            )
+            logger_instance.info(
+                f"   🔗 Per-product chunk-image links: {chunk_image_links} for {product.name}"
+            )
+        except Exception as link_err:
+            logger_instance.warning(
+                f"   ⚠️ Per-product chunk-image linking failed for {product.name} "
+                f"(safety-net pass at end-of-document will retry): {link_err}"
+            )
+            chunk_image_links = 0
+
+        relationships_created = linking_result.get('relationships_created', 0) + chunk_image_links
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.RELATIONSHIPS,

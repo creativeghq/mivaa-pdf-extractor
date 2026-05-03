@@ -282,8 +282,20 @@ async def _classify_and_update_chunks(
             if cls.metadata:
                 existing_meta['structured_metadata'] = cls.metadata
 
+            # Write the AI verdict to BOTH the canonical column and the metadata
+            # jsonb. Previously we only wrote metadata, leaving `chunk_type` column
+            # stuck at the default 'unclassified' even when the classifier produced
+            # a real verdict — admin UI / search filters / RPC indexes that key off
+            # the column never saw it. Audit incident: job acff9ebb 2026-05-03,
+            # 16/16 chunks had column='unclassified' while metadata.chunk_type was
+            # correct on every row.
             supabase.client.table('document_chunks') \
-                .update({'metadata': existing_meta}) \
+                .update({
+                    'metadata': existing_meta,
+                    'chunk_type': cls.chunk_type.value,
+                    'chunk_type_confidence': cls.confidence,
+                    'chunk_type_metadata': cls.metadata or None,
+                }) \
                 .eq('id', row['id']) \
                 .execute()
             updates_made += 1
