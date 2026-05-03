@@ -176,11 +176,20 @@ async def process_product_images(
 
         logger.info(f"   🔍 Extracting from PDF sheet {pdf_page_1based} for physical pages {sheet_physical_pages}")
 
-        # Extract images for this PDF sheet
+        # Extract images for this PDF sheet.
+        # `enable_multimodal=False` (added 2026-05-03): pdf_processor's auto-detect
+        # would otherwise run a per-image OCR pass (Chandra+Tesseract chain) inside
+        # extraction. That pass is REDUNDANT with the canonical Phase 3 OCR run
+        # (`_run_phase_3_ocr_for_product`) that fires after save_images_and_generate_clips.
+        # Doubling OCR was burning ~7-15 min/product on a 30-image catalog (job
+        # 72031fb0 hit the 1200s budget because of it). The Phase 3 pass is the
+        # canonical writer for `document_images.ocr_text` / `ocr_failed` markers,
+        # so disabling extraction-phase OCR doesn't lose any data.
         processing_options = {
             'extract_images': True,
             'extract_text': False,
             'extract_tables': False,
+            'enable_multimodal': False,
             'page_list': [pdf_page_1based],  # 1-based for pdf_processor
             'extract_categories': ['products'],
             'job_id': job_id
@@ -770,6 +779,18 @@ async def _run_phase_3_ocr_for_product(
                 f"for {image_id}: {e}"
             )
 
+    # Per-product Phase 3 OCR summary — added 2026-05-03 to make OCR
+    # coverage visible in journalctl per product. Lets ops eyeball
+    # success rate without joining `chandra_ocr_metrics` against
+    # `document_images`.
+    total = sum(counts.values())
+    logger.info(
+        f"      🔖 Phase 3 OCR summary [{product_name}]: "
+        f"attempted={counts['ocr_attempted']} "
+        f"(succeeded={counts['ocr_succeeded']}, failed={counts['ocr_failed']}), "
+        f"skipped={counts['ocr_skipped']} (non-text or no local path), "
+        f"total_rows={total}"
+    )
     return counts
 
 

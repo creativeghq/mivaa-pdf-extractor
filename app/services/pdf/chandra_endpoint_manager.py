@@ -859,6 +859,16 @@ def _extract_bbox_json_from_response(result: Dict[str, Any]) -> Dict[str, Any]:
             f"Chandra response is not valid JSON: {exc}. cleaned_head={cleaned[:300]!r}"
         ) from exc
 
+    # Accept a single bbox dict as a degenerate one-element array. Chandra v2
+    # occasionally drops the wrapping `[]` when the image has exactly one
+    # text region — e.g. a single SKU stamp on a tile photo:
+    #   {"text": "39659 VALENOVA CLAY LT/11,8x11,8", "x": 200, "y": 910, "w": ...}
+    # Pre-2026-05-03 we rejected this with `Chandra response is not a JSON
+    # array (got dict)` and burned 3 retries before giving up. Now we wrap
+    # it as a single-element list and treat it as a successful parse.
+    if isinstance(parsed, dict) and isinstance(parsed.get("text"), str):
+        parsed = [parsed]
+
     if not isinstance(parsed, list):
         raise ChandraResponseError(
             f"Chandra response is not a JSON array (got {type(parsed).__name__}): {cleaned[:300]!r}"
@@ -879,10 +889,18 @@ def _extract_bbox_json_from_response(result: Dict[str, Any]) -> Dict[str, Any]:
             "h": entry.get("h") if entry.get("h") is not None else entry.get("height"),
         })
 
+    # Empty `parsed` array OR all entries had no usable text → "ran clean,
+    # found nothing". This is a legitimate outcome (system prompt explicitly
+    # allows `[]` for no-text images: "If the image has no readable text,
+    # return an empty array []"). Pre-2026-05-03 we raised here, which
+    # forced 3 retries on every photo with no embedded text, wasting ~180s
+    # per image. Now we return success with empty blocks.
     if not blocks:
-        raise ChandraResponseError(
-            f"Chandra response parsed but contained no usable bbox text: {cleaned[:300]!r}"
-        )
+        return {
+            "blocks": [],
+            "generated_text": "",
+            "extraction_path": extraction_path,
+        }
 
     return {
         "blocks": blocks,
