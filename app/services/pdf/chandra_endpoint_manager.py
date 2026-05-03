@@ -626,12 +626,15 @@ class ChandraEndpointManager:
             "Content-Type": "application/json",
         }
         api_url = self.endpoint_url.rstrip('/') + '/v1/chat/completions'
-        # JSON-priming assistant prefill (added 2026-05-03): force the model to
-        # continue from a literal `[` so it cannot emit narrative prose. Even
-        # with the system prompt + retry-with-jitter, graphic-heavy supplementary
-        # pages had ~55% prose-failure rate (job 051e1dda). The prefill closes
-        # the door on prose entirely — the model has nowhere to write "The image
-        # is..." once the response is forced to start with `[`.
+        # NOTE 2026-05-03: a previous attempt added a trailing assistant prefill
+        # `{"role":"assistant","content":"["}` to force JSON-array output and
+        # eliminate prose freelancing. Chandra v2's chat-completions server
+        # rejected every request with HTTP 400 ("Bad Request") because trailing
+        # assistant messages aren't valid in the OpenAI chat format the model
+        # was tuned on. Reverted — strengthened system prompt + widened
+        # retry-with-jitter (0.0 / 0.4 / 0.8) instead. The "If image has no
+        # readable text, return empty array" line is kept as it was a useful
+        # disambiguation that doesn't break anything.
         payload = {
             "model": CHANDRA_V2_MODEL_ID,
             "messages": [
@@ -653,10 +656,6 @@ class ChandraEndpointManager:
                         {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}},
                     ],
                 },
-                {
-                    "role": "assistant",
-                    "content": "[",
-                },
             ],
             "stream": False,
             "temperature": temperature,
@@ -668,10 +667,6 @@ class ChandraEndpointManager:
         response.raise_for_status()
         result = response.json()
 
-        # The assistant prefill `[` is NOT echoed back in the chat-completions
-        # response. Re-attach it before parsing so the bbox-JSON parser sees a
-        # complete array. _augment_response_with_prefill does this in place.
-        _augment_response_with_prefill(result, prefill="[")
         parsed = _extract_bbox_json_from_response(result)
         return result, parsed["blocks"], parsed["generated_text"], parsed["extraction_path"]
 
@@ -823,30 +818,6 @@ def _join_blocks_in_reading_order(blocks: List[Dict[str, Any]]) -> str:
             return (0.0, 0.0)
     sorted_blocks = sorted(blocks, key=_key)
     return "\n".join(b["text"].strip() for b in sorted_blocks if isinstance(b.get("text"), str) and b["text"].strip())
-
-
-def _augment_response_with_prefill(result: Dict[str, Any], prefill: str) -> None:
-    """Re-attach a chat-completions assistant prefill to the response in place.
-
-    OpenAI-compatible chat-completions endpoints (including Chandra v2) do not
-    echo the trailing assistant message back in the response — they return only
-    what the model continued from it. Without re-attaching, our parser sees the
-    continuation alone (e.g. `{"text":...},...]`) and rejects it as malformed.
-
-    Mutates `result['choices'][0]['message']['content']` (or `reasoning_content`
-    when content is empty) so the parser sees the complete prefill+continuation.
-    """
-    choices = result.get("choices") or []
-    if not choices:
-        return
-    message = choices[0].get("message") or {}
-    content = message.get("content") or ""
-    if content:
-        message["content"] = prefill + content
-        return
-    reasoning = message.get("reasoning_content") or ""
-    if reasoning:
-        message["reasoning_content"] = prefill + reasoning
 
 
 def _extract_bbox_json_from_response(result: Dict[str, Any]) -> Dict[str, Any]:
