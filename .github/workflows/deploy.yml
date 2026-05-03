@@ -789,6 +789,16 @@ jobs:
           Environment=DATAFORSEO_LOGIN=${{ secrets.DATAFORSEO_LOGIN }}
           Environment=DATAFORSEO_PASSWORD=${{ secrets.DATAFORSEO_PASSWORD }}
           Environment=DATAFORSEO_BASE64=${{ secrets.DATAFORSEO_BASE64 }}
+          # Mention Monitoring (2026-05-03) — YouTube + Gemini for the
+          # LLM-probe matrix. Both optional: empty values cause the
+          # corresponding source to silently no-op. News (DataForSEO),
+          # Sonar (Perplexity), RSS, and the Haiku/GPT/Sonar probes all
+          # keep working with the existing keyset above.
+          # Reddit was dropped 2026-05-03 — Reddit's Responsible Builder
+          # Policy onboarding wasn't worth the friction for marginal
+          # coverage gain.
+          Environment=YOUTUBE_DATA_API_KEY=${{ secrets.YOUTUBE_DATA_API_KEY }}
+          Environment=GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
           Environment=ENCRYPTION_KEY=${{ secrets.ENCRYPTION_KEY }}
           Environment=MATERIAL_KAI_API_KEY=${{ secrets.MATERIAL_KAI_API_KEY }}
           Environment=MATERIAL_KAI_API_URL=${{ secrets.MATERIAL_KAI_API_URL }}
