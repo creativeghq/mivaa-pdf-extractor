@@ -662,9 +662,35 @@ class RAGService:
                 embedding_types = ['color', 'texture', 'style', 'material']
                 search_tasks = []
 
+                # Per-aspect query embedding selection.
+                # The 4 aspect collections changed dimension + model with v2:
+                #   v2 (post-2026-05-04): 1024D Voyage of VisionAnalysis text.
+                #     Query must match — we use the 1024D Voyage understanding
+                #     embedding (same model + space) as the per-aspect query.
+                #     Falls back to skipping the aspect search if understanding
+                #     embedding is missing (rather than blindly sending the
+                #     768D SLIG visual into a 1024D collection).
+                #   legacy: 768D SLIG-blend, queried with the SLIG visual
+                #     embedding (matches the pre-v2 collection dim).
+                import os as _os
+                use_v2_aspects = _os.getenv(
+                    "EMBED_ASPECTS_FROM_VISION_ANALYSIS", "false"
+                ).lower() in ("1", "true", "yes")
+                aspect_query = (
+                    understanding_embedding if use_v2_aspects else visual_embedding
+                )
+
+                if not aspect_query:
+                    self.logger.warning(
+                        "⚠️ Aspect search skipped — no compatible query embedding "
+                        f"(v2_aspects={use_v2_aspects}, has_understanding={bool(understanding_embedding)}, "
+                        f"has_visual={bool(visual_embedding)})"
+                    )
+                    embedding_types = []
+
                 for emb_type in embedding_types:
                     task = self.vecs_service.search_specialized_embeddings(
-                        query_embedding=visual_embedding,
+                        query_embedding=aspect_query,
                         embedding_type=emb_type,
                         limit=top_k * 3,
                         workspace_id=workspace_id,

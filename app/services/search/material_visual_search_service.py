@@ -10,6 +10,7 @@ import logging
 import asyncio
 import aiohttp
 import json
+import os
 from typing import Dict, List, Optional, Any, Union
 from datetime import datetime
 from pydantic import BaseModel, Field
@@ -543,7 +544,9 @@ class MaterialVisualSearchService:
                     logger.error("❌ SLIG client not available for embedding generation")
 
             elif request.query_text:
-                # Generate CLIP text embedding using SLIG client
+                # Generate CLIP text embedding using SLIG client (768D — for the
+                # primary visual collection image_slig_embeddings, which stays
+                # SLIG SigLIP2 768D regardless of v2 rollout state).
                 from app.services.embeddings.endpoint_registry import endpoint_registry
 
                 slig_client = endpoint_registry.get_slig_client()
@@ -551,24 +554,65 @@ class MaterialVisualSearchService:
                     query_embedding = await slig_client.get_text_embedding(request.query_text)
                     logger.info(f"✅ Generated text CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
 
-                    # Generate specialized embeddings for multi-vector search —
-                    # find images by color, texture, style, and material attributes.
+                    # Per-aspect query embeddings — must match the dimension of
+                    # the aspect collection being queried:
+                    #   v2 (post-2026-05-04): collections are 1024D Voyage
+                    #     embeddings of VisionAnalysis text; queries are
+                    #     1024D Voyage of the user's text intent.
+                    #   legacy: collections are 768D SLIG-blend; queries are
+                    #     768D SLIG text embeddings prefixed with the aspect
+                    #     phrase (matching the pre-v2 prompt convention).
+                    use_v2_aspects = os.getenv(
+                        "EMBED_ASPECTS_FROM_VISION_ANALYSIS", "false"
+                    ).lower() in ("1", "true", "yes")
+
                     try:
-                        import asyncio
-                        color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
-                            slig_client.get_text_embedding(f"color palette: {request.query_text}"),
-                            slig_client.get_text_embedding(f"texture pattern: {request.query_text}"),
-                            slig_client.get_text_embedding(f"design style: {request.query_text}"),
-                            slig_client.get_text_embedding(f"material type: {request.query_text}"),
-                            return_exceptions=True
-                        )
+                        if use_v2_aspects:
+                            # 1024D Voyage queries — same model + space as the
+                            # aspect collection itself.
+                            from app.services.embeddings.real_embeddings_service import (
+                                RealEmbeddingsService,
+                            )
+                            voyage_svc = RealEmbeddingsService()
+                            color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
+                                voyage_svc._generate_text_embedding(
+                                    text=request.query_text, input_type="query"
+                                ),
+                                voyage_svc._generate_text_embedding(
+                                    text=request.query_text, input_type="query"
+                                ),
+                                voyage_svc._generate_text_embedding(
+                                    text=request.query_text, input_type="query"
+                                ),
+                                voyage_svc._generate_text_embedding(
+                                    text=request.query_text, input_type="query"
+                                ),
+                                return_exceptions=True,
+                            )
+                            logger.info(
+                                "✅ Generated specialized aspect query embeddings via Voyage (1024D × 4)"
+                            )
+                        else:
+                            # Legacy 768D SLIG queries — unchanged from pre-v2
+                            # behavior. The aspect-prefixed phrasing matched
+                            # the SLIG-blend collection's training distribution.
+                            color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
+                                slig_client.get_text_embedding(f"color palette: {request.query_text}"),
+                                slig_client.get_text_embedding(f"texture pattern: {request.query_text}"),
+                                slig_client.get_text_embedding(f"design style: {request.query_text}"),
+                                slig_client.get_text_embedding(f"material type: {request.query_text}"),
+                                return_exceptions=True,
+                            )
+                            logger.info(
+                                "✅ Generated specialized text embeddings via SLIG (legacy path, 768D × 4)"
+                            )
+
                         specialized_embeddings = {
                             'color': color_emb if not isinstance(color_emb, Exception) else None,
                             'texture': texture_emb if not isinstance(texture_emb, Exception) else None,
                             'style': style_emb if not isinstance(style_emb, Exception) else None,
-                            'material': material_emb if not isinstance(material_emb, Exception) else None
+                            'material': material_emb if not isinstance(material_emb, Exception) else None,
                         }
-                        logger.info("✅ Generated specialized text embeddings for multi-vector search")
                     except Exception as spec_err:
                         logger.warning(f"⚠️ Failed to generate specialized embeddings: {spec_err}")
                         specialized_embeddings = None
