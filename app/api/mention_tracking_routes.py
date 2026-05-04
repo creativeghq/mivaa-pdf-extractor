@@ -59,26 +59,83 @@ router = APIRouter(
 # ────────────────────────────────────────────────────────────────────────────
 
 class CreateMentionTrackRequest(BaseModel):
-    subject_type: str = Field("brand", pattern="^(product|brand|keyword)$")
-    subject_label: str = Field(..., min_length=1, max_length=200)
-    brand_name: Optional[str] = None
-    aliases: Optional[List[str]] = None
-    # When true, an LLM (Claude Haiku) expands the subject_label into per-word
-    # aliases on first refresh — broader recall on multi-word subjects but
-    # higher cost and a dependency on Anthropic. Default off: discovery uses
-    # only the subject_label and any aliases the caller supplied above.
-    auto_expand_aliases: bool = False
-    sources_enabled: Optional[Dict[str, bool]] = None
-    source_config: Optional[Dict[str, Any]] = None
-    language_codes: Optional[List[str]] = None
-    country_codes: Optional[List[str]] = None
-    refresh_interval_hours: int = Field(24, ge=1, le=720)
-    alert_channels: Optional[List[str]] = None
-    alert_on_spike: bool = False
-    alert_on_negative_sentiment: bool = False
-    alert_on_new_outlet: bool = False
-    alert_on_llm_visibility_change: bool = False
-    alert_webhook_url: Optional[str] = None
+    """Body for `POST /api/v1/mentions/track` — register a new tracked subject.
+    First refresh runs synchronously; the response includes the initial results."""
+
+    subject_type: str = Field(
+        "brand", pattern="^(product|brand|keyword)$",
+        description="What kind of subject this is. Currently informational; doesn't gate behavior.",
+        examples=["brand"],
+    )
+    subject_label: str = Field(
+        ..., min_length=1, max_length=200,
+        description="The literal string to track. Discovery searches for this exact phrase.",
+        examples=["Flobali"],
+    )
+    brand_name: Optional[str] = Field(
+        None, description="Brand string when known. Used as a hint and stored on the row.",
+    )
+    aliases: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Alternate strings to also search for (e.g. brand abbreviations, model SKUs, "
+            "Greek/Latin spellings). Each alias is matched as a literal phrase. "
+            "Recommended for multi-word labels where articles split the words apart."
+        ),
+        examples=[["Flobali Tiles", "Flobali Hellas"]],
+    )
+    auto_expand_aliases: bool = Field(
+        False,
+        description=(
+            "Default false. When true, an LLM (Claude Haiku) expands the subject_label "
+            "into per-word aliases on first refresh — broader recall on multi-word "
+            "subjects but higher cost and a dependency on Anthropic. When false, "
+            "discovery uses only the subject_label and any aliases supplied above."
+        ),
+    )
+    sources_enabled: Optional[Dict[str, bool]] = Field(
+        None,
+        description=(
+            "Per-source toggles. Defaults: news=true, blogs=true, rss=true, llm=true, "
+            "youtube=false. Only the keys you set are overridden."
+        ),
+        examples=[{"news": True, "blogs": True, "youtube": False, "rss": True, "llm": True}],
+    )
+    source_config: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Per-source config blob. Currently supports `rss_feeds: string[]` for user-curated RSS URLs.",
+    )
+    language_codes: Optional[List[str]] = Field(
+        None, description="ISO 639-1 codes the subject is likely discussed in. Default ['en'].",
+        examples=[["en", "el"]],
+    )
+    country_codes: Optional[List[str]] = Field(
+        None,
+        description=(
+            "ISO 3166-1 alpha-2 codes. When set, results are STRICTLY filtered to TLDs "
+            "matching these countries (plus the curated per-country outlet allowlist). "
+            "Drop the field for global discovery."
+        ),
+        examples=[["GR", "DE"]],
+    )
+    refresh_interval_hours: int = Field(
+        24, ge=1, le=720,
+        description="Volatility-aware base cadence. Stable subjects auto-stretch up to weekly.",
+    )
+    alert_channels: Optional[List[str]] = Field(
+        None,
+        description="Channels to fire alerts on. Subset of: 'bell', 'email', 'webhook'. Default ['bell'].",
+        examples=[["webhook"]],
+    )
+    alert_on_spike: bool = Field(False, description="Fire when today's count ≥ 2× trailing 7d daily-average baseline.")
+    alert_on_negative_sentiment: bool = Field(False, description="Fire on a new negative-sentiment mention from a high-DA outlet (DA ≥ 30).")
+    alert_on_new_outlet: bool = Field(False, description="Fire on the first-ever mention from a new domain.")
+    alert_on_llm_visibility_change: bool = Field(False, description="Fire when average LLM rank shifts ≥ 2 positions week-over-week.")
+    alert_webhook_url: Optional[str] = Field(
+        None,
+        description="HTTPS URL to receive POSTed alert payloads. Required when 'webhook' is in alert_channels.",
+        examples=["https://your.api/webhooks/material-kai-mentions"],
+    )
 
 
 class UpdateMentionTrackRequest(BaseModel):
@@ -100,27 +157,39 @@ class UpdateMentionTrackRequest(BaseModel):
 
 
 class RefreshRequest(BaseModel):
-    force: bool = False
+    """Body for `POST /api/v1/mentions/track/{id}/refresh`. Cost: 5 credits."""
+    force: bool = Field(
+        False,
+        description="When true, bypass the volatility cadence even if next_check_at is in the future.",
+    )
 
 
 class ExcludeRequest(BaseModel):
-    url: Optional[str] = None
-    domain: Optional[str] = None
-    reason: Optional[str] = None
+    """Body for `POST /track/{id}/exclude` and `/include`. Either url or domain is required."""
+    url: Optional[str] = Field(None, description="Specific URL to exclude. Mutually exclusive with `domain`.")
+    domain: Optional[str] = Field(None, description="Whole domain to exclude (e.g. 'spammer.com').")
+    reason: Optional[str] = Field(None, description="Free-text reason saved on the exclusion row.")
 
 
 class OpportunitiesRequest(BaseModel):
-    """Generate content + outreach opportunities from the existing mention data.
-
-    `types` is the subset to surface; default = all six. `use_llm_summary=true`
-    runs Haiku to polish each opportunity's rationale and suggested action
-    (small token cost). When false (default), returns the deterministic
-    rationales the service composes from the raw signals.
-    """
-    types: Optional[List[str]] = None
-    days: int = Field(30, ge=1, le=180)
-    limit_per_type: int = Field(5, ge=1, le=20)
-    use_llm_summary: bool = False
+    """Body for `POST /track/{id}/opportunities`. Cost: 2 credits (or 5 with `use_llm_summary`)."""
+    types: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Subset of opportunity types to return. Default = all six: "
+            "['trending_topic','outlet_pitch','keyword_opportunity','pao_question',"
+            "'author_relationship','sentiment_response']."
+        ),
+    )
+    days: int = Field(30, ge=1, le=180, description="Discovery window for source signals.")
+    limit_per_type: int = Field(5, ge=1, le=20, description="Max opportunities returned per type.")
+    use_llm_summary: bool = Field(
+        False,
+        description=(
+            "When true, Haiku rewrites each opportunity's rationale and suggested_action in "
+            "tighter, more actionable language (+3 credits over the default cost)."
+        ),
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────

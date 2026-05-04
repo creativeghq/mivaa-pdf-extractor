@@ -43,8 +43,8 @@ from app.services.integrations.mention_identity_service import (
     SubjectFacets, normalize_text,
 )
 from app.services.integrations.mention_cost_logger import (
-    CostAttribution, log_dataforseo_labs_call, log_haiku_call,
-    recompute_lifetime_cost,
+    CostAttribution, log_dataforseo_labs_call, log_dataforseo_serp_call,
+    log_haiku_call, recompute_lifetime_cost,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 
 DATAFORSEO_LABS_RELATED = "https://api.dataforseo.com/v3/dataforseo_labs/google/related_keywords/live"
 DATAFORSEO_LABS_SUGGESTIONS = "https://api.dataforseo.com/v3/dataforseo_labs/google/keyword_suggestions/live"
+DATAFORSEO_SERP_ORGANIC = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced"
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
@@ -116,9 +117,19 @@ class MentionOpportunityService:
         """
         Generate opportunities for a tracked subject.
 
-        types: subset of {'trending_topic','outlet_pitch','keyword_opportunity',
-                          'pao_question','author_relationship','sentiment_response'}
-               default = all
+        Two categories of opportunity types:
+
+        Subject-driven (work on a fresh subject with zero mention history):
+          - keyword_opportunity   — DataForSEO Labs Related Keywords on subject_label
+          - pao_question          — DataForSEO SERP "People Also Ask" on subject_label
+
+        Mention-derived (require existing mention_history; skip silently when 0):
+          - trending_topic        — bigram analysis over recent mention titles/excerpts
+          - outlet_pitch          — outlets that have covered the subject
+          - author_relationship   — authors who covered the subject 2+ times
+          - sentiment_response    — recent negative-sentiment mentions
+
+        types: subset of all 6 names; default = all
         """
         types = types or [
             "trending_topic", "outlet_pitch", "keyword_opportunity",
@@ -185,10 +196,11 @@ class MentionOpportunityService:
 
         if "pao_question" in types:
             try:
-                pao_ops = self._pao_questions(mentions, subject, limit_per_type)
+                pao_ops = await self._pao_questions(subject, limit_per_type, attribution)
                 opportunities.extend(pao_ops)
             except Exception as e:
                 errors["pao_question"] = str(e)[:200]
+                logger.warning(f"opportunity: pao fetch failed: {e}")
 
         # Sort by priority desc
         opportunities.sort(key=lambda o: o.priority_score, reverse=True)
@@ -529,42 +541,107 @@ class MentionOpportunityService:
             ))
         return out
 
-    # ───── 6. People-Also-Ask questions ─────
+    # ───── 6. People-Also-Ask questions (subject-driven, no mention dependency) ─────
 
-    def _pao_questions(
-        self, mentions: List[Dict[str, Any]], subject: Dict[str, Any], limit: int,
+    async def _pao_questions(
+        self, subject: Dict[str, Any], limit: int,
+        attribution: Optional[CostAttribution] = None,
     ) -> List[Opportunity]:
-        # PAO data isn't currently captured in our discovery layer (we only
-        # call /serp/google/news, not the regular SERP with people_also_ask).
-        # For v1 of opportunities, surface excerpts that look like questions
-        # ("How do…", "What is…", "Why does…") found in mention bodies.
-        question_re = re.compile(r"\b(how|what|why|when|where|which|can|does|is|are)\s+[^.?!]+\?", re.IGNORECASE)
-        seen: set = set()
+        """Pull "People Also Ask" questions directly from Google SERP via the
+        DataForSEO Advanced SERP endpoint. This is purely subject-driven —
+        works regardless of how much mention history exists. Each PAO entry
+        is a real search query Google's data shows readers asking, which is
+        exactly what content readers want answered."""
+        if not self.dataforseo_b64:
+            return []
+        seed = subject.get("subject_label") or subject.get("brand_name") or ""
+        if not seed:
+            return []
+        country_code = (subject.get("country_codes") or [None])[0]
+        language_code = (subject.get("language_codes") or ["en"])[0].lower()
+
+        body = [{
+            "keyword": seed,
+            "location_code": _country_to_dfs_location(country_code),
+            "language_code": language_code,
+            "depth": 30,  # SERP depth — PAO blocks usually appear in top 10
+            "people_also_ask_click_depth": 1,
+        }]
+
+        call_start = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    DATAFORSEO_SERP_ORGANIC,
+                    headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                             "Content-Type": "application/json"},
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            logger.warning(f"opportunity: DataForSEO SERP PAO failed: {e}")
+            log_dataforseo_serp_call(
+                attribution=attribution, operation="pao_question",
+                query=seed, items_returned=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
+            return []
+
+        # Walk the SERP items to find people_also_ask blocks. Each block has
+        # `items` containing the questions and (sometimes) clicked answers.
+        questions: List[Dict[str, Any]] = []
+        seen_q: set = set()
+        for task in (data.get("tasks") or []):
+            for r in (task.get("result") or []):
+                for item in (r.get("items") or []):
+                    if (item.get("type") or "").lower() != "people_also_ask":
+                        continue
+                    for q in (item.get("items") or []):
+                        title = (q.get("title") or "").strip()
+                        if not title:
+                            continue
+                        key = normalize_text(title)
+                        if key in seen_q:
+                            continue
+                        seen_q.add(key)
+                        questions.append({
+                            "title": title,
+                            "expanded": q.get("expanded_element") or [],
+                        })
+                        if len(questions) >= limit * 2:
+                            break
+
+        log_dataforseo_serp_call(
+            attribution=attribution, operation="pao_question",
+            query=seed, items_returned=len(questions),
+            latency_ms=int((time.time() - call_start) * 1000), success=True,
+        )
+
         out: List[Opportunity] = []
-        for m in mentions:
-            text = " ".join(filter(None, [m.get("title"), m.get("excerpt")]))
-            for match in question_re.finditer(text):
-                q = match.group(0).strip()
-                key = normalize_text(q)
-                if key in seen or len(q) > 200:
-                    continue
-                seen.add(key)
-                out.append(Opportunity(
-                    type="pao_question",
-                    title=q,
-                    rationale=(
-                        f"This question appeared in coverage of \"{subject.get('subject_label')}\". "
-                        "Readers searching this exact question are looking for an answer."
-                    ),
-                    suggested_action=(
-                        "Write a focused FAQ-style post or section answering this question. "
-                        "Cite your expertise."
-                    ),
-                    priority_score=0.5,
-                    source={"question": q, "mention_id": m["id"], "url": m.get("url")},
-                ))
-                if len(out) >= limit:
-                    return out
+        for q in questions[:limit]:
+            answer_snippet = ""
+            for exp in (q.get("expanded") or []):
+                ds = exp.get("description") or exp.get("answer")
+                if ds:
+                    answer_snippet = (ds or "")[:240]
+                    break
+            out.append(Opportunity(
+                type="pao_question",
+                title=q["title"],
+                rationale=(
+                    f"Real Google searchers are asking this when they search \"{seed}\". "
+                    "Sourced from Google's People Also Ask block."
+                ) + (f" Current top answer snippet: \"{answer_snippet}\"" if answer_snippet else ""),
+                suggested_action=(
+                    "Write a focused FAQ-style post or article section answering this exact question. "
+                    "Optimize the H2 to match the question text — Google often pulls these straight into "
+                    "PAA blocks, giving you free SERP real estate."
+                ),
+                priority_score=0.6,
+                source={"question": q["title"], "seed_keyword": seed},
+            ))
         return out
 
     # ───── Optional Haiku polish ─────

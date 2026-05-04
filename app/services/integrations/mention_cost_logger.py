@@ -216,6 +216,28 @@ def log_dataforseo_labs_call(
     )
 
 
+def log_dataforseo_serp_call(
+    *,
+    attribution: Optional[CostAttribution],
+    operation: str,                    # 'pao_question' / 'serp_organic'
+    query: str,
+    items_returned: int,
+    latency_ms: int,
+    success: bool = True,
+    error_message: Optional[str] = None,
+) -> None:
+    log_external_call(
+        operation_type=f"mention_monitoring.opportunities.dataforseo_serp.{operation}",
+        model_name="dataforseo-serp-google-organic",
+        raw_cost_usd=DATAFORSEO_NEWS_PER_CALL,  # SERP API priced same as News
+        attribution=attribution,
+        latency_ms=latency_ms,
+        extra_metadata={"query": query[:120], "items_returned": items_returned},
+        success=success,
+        error_message=error_message,
+    )
+
+
 def log_perplexity_call(
     *,
     attribution: Optional[CostAttribution],
