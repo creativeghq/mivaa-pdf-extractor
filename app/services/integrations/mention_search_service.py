@@ -136,6 +136,41 @@ def domain_of(url: Optional[str]) -> Optional[str]:
 _YOUTUBE_HOSTS = {"youtube.com", "youtu.be", "m.youtube.com"}
 _AGGREGATOR_HOSTS = {"news.google.com", "flipboard.com"}
 
+# Country → known major outlets that don't use a country TLD but publish
+# country-specific editions or are heavily covered by that country's audience.
+# Keep tight — adding too many breaks the "strict country filter" promise.
+_COUNTRY_OUTLET_ALLOWLIST: Dict[str, set] = {
+    "GR": {
+        "ekathimerini.com", "kathimerini.com", "tovima.com",
+        "naftemporiki.gr", "tanea.gr", "in.gr", "iefimerida.gr",
+        "ert.gr", "skai.gr", "protothema.gr",
+    },
+    "DE": set(),
+    "GB": {"bbc.co.uk", "bbc.com", "ft.com", "theguardian.com"},
+    "US": set(),
+}
+
+
+def _matches_country(host: Optional[str], country_codes: List[str]) -> bool:
+    """True when host's TLD matches one of the country codes, OR when host
+    is in that country's curated outlet allowlist. Empty country_codes →
+    always True (no filtering)."""
+    if not country_codes:
+        return True
+    if not host:
+        return False
+    host = host.lower()
+    for cc in country_codes:
+        cc = (cc or "").upper().strip()
+        if not cc:
+            continue
+        tld = "." + cc.lower()
+        if host.endswith(tld):
+            return True
+        if host in _COUNTRY_OUTLET_ALLOWLIST.get(cc, set()):
+            return True
+    return False
+
 
 def classify_outlet_type(host: Optional[str]) -> str:
     if not host:
@@ -222,11 +257,21 @@ class MentionSearchService:
         deduped = self._dedupe(all_hits)
 
         # Apply alias presence filter (cheap rule check; full classifier runs upstream)
+        # AND country filter (when caller supplied country_codes — keep only
+        # results whose outlet TLD matches, or hosts in the curated per-country
+        # allowlist). Discovery layers bias toward the country at query time
+        # but Google/Sonar still surface globally-popular results; the strict
+        # filter here is what enforces the user's country pref.
+        country_filter = [c.upper() for c in (country_codes or []) if c]
         kept: List[MentionHit] = []
         for h in deduped:
             text = " ".join(filter(None, [h.title, h.excerpt, (h.body_md or "")[:600]]))
-            if alias_present(text, facets):
-                kept.append(h)
+            if not alias_present(text, facets):
+                continue
+            host = h.outlet_domain or domain_of(h.url)
+            if country_filter and not _matches_country(host, country_filter):
+                continue
+            kept.append(h)
 
         # Cap total
         kept = kept[:MAX_TOTAL_RESULTS]
@@ -391,11 +436,27 @@ class MentionSearchService:
         )
         if facets.brand and facets.brand != primary:
             question += f" (brand: {facets.brand})"
+        if country:
+            question += f". Prefer publications based in or covering {country.upper()}"
         question += (
             ". For each mention return: title, url, outlet name, publication date, "
             "and a 2-sentence summary. Skip retailer product pages and pure listings."
         )
 
+        # Build the request body. Perplexity Sonar supports geo-biasing via
+        # web_search_options.user_location.country (ISO-3166-1 alpha-2).
+        request_body: Dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Return JSON only, no prose."},
+                {"role": "user", "content": question},
+            ],
+            "search_recency_filter": recency,
+        }
+        if country:
+            request_body["web_search_options"] = {
+                "user_location": {"country": country.upper()}
+            }
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
@@ -403,12 +464,7 @@ class MentionSearchService:
                     headers={"Authorization": f"Bearer {self.perplexity_key}",
                              "Content-Type": "application/json"},
                     json={
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": "Return JSON only, no prose."},
-                            {"role": "user", "content": question},
-                        ],
-                        "search_recency_filter": recency,
+                        **request_body,
                         "response_format": {
                             "type": "json_schema",
                             "json_schema": {
