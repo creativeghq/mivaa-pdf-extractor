@@ -76,6 +76,7 @@ class TrackedMentionsService:
         alert_on_new_outlet: Optional[bool] = None,
         alert_on_llm_visibility_change: Optional[bool] = None,
         alert_webhook_url: Optional[str] = None,
+        auto_expand_aliases: bool = False,
         run_first_refresh: bool = True,
     ) -> Dict[str, Any]:
         row: Dict[str, Any] = {
@@ -87,6 +88,7 @@ class TrackedMentionsService:
             "user_id": user_id,
             "workspace_id": workspace_id,
             "aliases": aliases or [],
+            "auto_expand_aliases": bool(auto_expand_aliases),
             "sources_enabled": sources_enabled or {
                 "news": True, "blogs": True,
                 "youtube": False, "rss": True, "llm": True,
@@ -157,6 +159,7 @@ class TrackedMentionsService:
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
         country_codes: Optional[List[str]] = None,
+        auto_expand_aliases: bool = False,
         run_first_refresh: bool = True,
     ) -> Dict[str, Any]:
         existing = self.find_for_product(product_id)
@@ -168,6 +171,7 @@ class TrackedMentionsService:
             product_id=product_id,
             brand_name=brand_name,
             aliases=aliases,
+            auto_expand_aliases=auto_expand_aliases,
             user_id=user_id,
             workspace_id=workspace_id,
             country_codes=country_codes,
@@ -201,7 +205,7 @@ class TrackedMentionsService:
             "language_codes", "country_codes", "refresh_interval_hours",
             "alert_channels", "alert_on_spike", "alert_on_negative_sentiment",
             "alert_on_new_outlet", "alert_on_llm_visibility_change",
-            "alert_webhook_url", "is_active",
+            "alert_webhook_url", "is_active", "auto_expand_aliases",
         }
         payload = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not payload:
@@ -318,14 +322,18 @@ class TrackedMentionsService:
 
         run_id = str(uuid.uuid4())
 
-        # Facets
+        # Facets — Haiku expansion is opt-in via auto_expand_aliases flag.
+        # Default is deterministic (label + user aliases only, no LLM call,
+        # no Anthropic dependency).
         cached_facets = row.get("subject_facets")
+        use_llm = bool(row.get("auto_expand_aliases"))
         facets = await self.identity.extract_facets(
             subject_label=row["subject_label"],
             subject_type=row["subject_type"],
             aliases_seed=row.get("aliases") or [],
             brand_hint=row.get("brand_name"),
             cached=cached_facets,
+            use_llm=use_llm,
         )
         if not cached_facets:
             try:

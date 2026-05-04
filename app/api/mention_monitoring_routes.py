@@ -138,6 +138,9 @@ class TrackRequest(BaseModel):
     product_id: Optional[str] = None
     brand_name: Optional[str] = None
     aliases: Optional[List[str]] = None
+    # Opt-in: when true, Haiku expands the label into per-word aliases on the
+    # first refresh. Default off — discovery uses only label + supplied aliases.
+    auto_expand_aliases: bool = False
     sources_enabled: Optional[Dict[str, bool]] = None
     source_config: Optional[Dict[str, Any]] = None
     language_codes: Optional[List[str]] = None
@@ -155,6 +158,7 @@ class TrackRequest(BaseModel):
 class UpdateRequest(BaseModel):
     subject_label: Optional[str] = None
     aliases: Optional[List[str]] = None
+    auto_expand_aliases: Optional[bool] = None
     sources_enabled: Optional[Dict[str, bool]] = None
     source_config: Optional[Dict[str, Any]] = None
     language_codes: Optional[List[str]] = None
@@ -222,6 +226,7 @@ async def track_product(
         product_name=product.get("name") or product_id,
         brand_name=brand,
         aliases=aliases,
+        auto_expand_aliases=(body.auto_expand_aliases if body else False),
         user_id=str(user.id),
         workspace_id=getattr(workspace, "workspace_id", None) if workspace else None,
         country_codes=(body.country_codes if body else None) or [],
@@ -443,6 +448,7 @@ async def create_tracked_mention(
         product_id=product_id,
         brand_name=brand,
         aliases=body.aliases,
+        auto_expand_aliases=body.auto_expand_aliases,
         sources_enabled=body.sources_enabled,
         source_config=body.source_config,
         language_codes=body.language_codes,

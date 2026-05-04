@@ -57,6 +57,11 @@ class CreateMentionTrackRequest(BaseModel):
     subject_label: str = Field(..., min_length=1, max_length=200)
     brand_name: Optional[str] = None
     aliases: Optional[List[str]] = None
+    # When true, an LLM (Claude Haiku) expands the subject_label into per-word
+    # aliases on first refresh — broader recall on multi-word subjects but
+    # higher cost and a dependency on Anthropic. Default off: discovery uses
+    # only the subject_label and any aliases the caller supplied above.
+    auto_expand_aliases: bool = False
     sources_enabled: Optional[Dict[str, bool]] = None
     source_config: Optional[Dict[str, Any]] = None
     language_codes: Optional[List[str]] = None
@@ -73,6 +78,7 @@ class CreateMentionTrackRequest(BaseModel):
 class UpdateMentionTrackRequest(BaseModel):
     subject_label: Optional[str] = None
     aliases: Optional[List[str]] = None
+    auto_expand_aliases: Optional[bool] = None
     sources_enabled: Optional[Dict[str, bool]] = None
     source_config: Optional[Dict[str, Any]] = None
     language_codes: Optional[List[str]] = None
@@ -138,6 +144,7 @@ async def create_tracking(
         product_id=None,
         brand_name=body.brand_name or (body.subject_label if body.subject_type == "brand" else None),
         aliases=body.aliases,
+        auto_expand_aliases=body.auto_expand_aliases,
         sources_enabled=body.sources_enabled,
         source_config=body.source_config,
         language_codes=body.language_codes,

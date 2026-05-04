@@ -207,11 +207,22 @@ class MentionIdentityService:
         brand_hint: Optional[str] = None,
         product_type_hint: Optional[str] = None,
         cached: Optional[Dict[str, Any]] = None,
+        use_llm: bool = False,
     ) -> SubjectFacets:
         """
-        Decompose the subject into facets. If a cached payload is provided
-        (from tracked_mentions.subject_facets) we round-trip via from_dict.
-        Otherwise call Haiku once and the caller persists the result.
+        Decompose the subject into facets.
+
+        Default behavior (use_llm=False): build deterministic facets from the
+        inputs only. No Haiku call. Discovery searches use the label + any
+        aliases the caller supplied — nothing more, nothing less.
+
+        Opt-in behavior (use_llm=True): run Haiku once to expand the label
+        into per-word aliases, infer brand/product_type, and surface
+        competitor brands. Broader recall, higher cost, dependency on
+        Anthropic. Caller persists the result.
+
+        If `cached` is provided (from tracked_mentions.subject_facets) we
+        round-trip via from_dict regardless of use_llm.
         """
         if cached:
             try:
@@ -219,8 +230,8 @@ class MentionIdentityService:
             except Exception as e:
                 logger.warning(f"mention-identity: cached facets parse failed, regenerating: {e}")
 
-        if not self.api_key:
-            # Fail-open: build minimal facets from the inputs
+        # Deterministic path — default
+        if not use_llm or not self.api_key:
             return SubjectFacets(
                 label=subject_label,
                 aliases=list(aliases_seed or []),
