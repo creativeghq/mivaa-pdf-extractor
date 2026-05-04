@@ -350,6 +350,7 @@ class TrackedMentionsService:
             subject_type=row["subject_type"],
             aliases_seed=row.get("aliases") or [],
             brand_hint=row.get("brand_name"),
+            language_codes=row.get("language_codes") or None,
             cached=cached_facets,
             use_llm=use_llm,
             attribution=attribution,

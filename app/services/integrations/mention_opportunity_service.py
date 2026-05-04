@@ -121,7 +121,11 @@ class MentionOpportunityService:
 
         Subject-driven (work on a fresh subject with zero mention history):
           - keyword_opportunity   — DataForSEO Labs Related Keywords on subject_label
-          - pao_question          — DataForSEO SERP "People Also Ask" on subject_label
+          - pao_question          — DataForSEO SERP "People Also Ask" block
+          - ai_overview           — Google's generative AI Overview answer; brand-mention check
+          - featured_snippet      — current position-0 snippet to outrank
+          - related_search        — Google's "Searches related to" block
+          - competitor_ranking    — top organic pages currently ranking for the subject
 
         Mention-derived (require existing mention_history; skip silently when 0):
           - trending_topic        — bigram analysis over recent mention titles/excerpts
@@ -129,11 +133,15 @@ class MentionOpportunityService:
           - author_relationship   — authors who covered the subject 2+ times
           - sentiment_response    — recent negative-sentiment mentions
 
-        types: subset of all 6 names; default = all
+        types: subset of all 10 names; default = all
         """
         types = types or [
-            "trending_topic", "outlet_pitch", "keyword_opportunity",
-            "pao_question", "author_relationship", "sentiment_response",
+            # Subject-driven (always work)
+            "keyword_opportunity", "pao_question", "ai_overview",
+            "featured_snippet", "related_search", "competitor_ranking",
+            # Mention-derived (require mention history)
+            "trending_topic", "outlet_pitch",
+            "author_relationship", "sentiment_response",
         ]
         start = time.time()
 
@@ -194,13 +202,27 @@ class MentionOpportunityService:
                 errors["keyword_opportunity"] = str(e)[:200]
                 logger.warning(f"opportunity: keyword fetch failed: {e}")
 
-        if "pao_question" in types:
+        # SERP-derived signals share one DataForSEO call. If any of these
+        # types are requested, fetch the SERP response once and extract each
+        # block. Cost: ≤ 3 SERP calls (fallback chain) regardless of how
+        # many of the 5 signal types are requested.
+        serp_types = {
+            "pao_question", "ai_overview", "featured_snippet",
+            "related_search", "competitor_ranking",
+        } & set(types)
+        if serp_types:
             try:
-                pao_ops = await self._pao_questions(subject, limit_per_type, attribution)
-                opportunities.extend(pao_ops)
+                serp_ops = await self._serp_signals(
+                    subject=subject,
+                    types_wanted=serp_types,
+                    limit=limit_per_type,
+                    attribution=attribution,
+                )
+                for t, ops in serp_ops.items():
+                    opportunities.extend(ops)
             except Exception as e:
-                errors["pao_question"] = str(e)[:200]
-                logger.warning(f"opportunity: pao fetch failed: {e}")
+                errors["serp_signals"] = str(e)[:200]
+                logger.warning(f"opportunity: SERP signals fetch failed: {e}")
 
         # Sort by priority desc
         opportunities.sort(key=lambda o: o.priority_score, reverse=True)
@@ -601,29 +623,39 @@ class MentionOpportunityService:
             ))
         return out
 
-    # ───── 6. People-Also-Ask questions (subject-driven, no mention dependency) ─────
+    # ───── SERP signals (PAA + AI Overview + Featured Snippet + Related + Top Organic) ─────
 
-    async def _pao_questions(
-        self, subject: Dict[str, Any], limit: int,
+    async def _serp_signals(
+        self, *, subject: Dict[str, Any],
+        types_wanted: set,  # subset of {pao_question, ai_overview, featured_snippet, related_search, competitor_ranking}
+        limit: int,
         attribution: Optional[CostAttribution] = None,
-    ) -> List[Opportunity]:
-        """Pull "People Also Ask" questions directly from Google SERP via the
-        DataForSEO Advanced SERP endpoint. This is purely subject-driven —
-        works regardless of how much mention history exists. Each PAO entry
-        is a real search query Google's data shows readers asking, which is
-        exactly what content readers want answered."""
+    ) -> Dict[str, List[Opportunity]]:
+        """One DataForSEO SERP call → up to 5 different opportunity types extracted
+        from the response. Same fallback-seed chain as keyword opportunities.
+
+        Returns a dict keyed by opportunity type. Caller filters by `types_wanted`
+        to control which signal types to surface; we always parse all blocks since
+        the parsing cost is trivial vs the SERP call cost.
+        """
         if not self.dataforseo_b64:
-            return []
+            return {}
         seeds = self._fallback_seeds(subject)
         if not seeds:
-            return []
+            return {}
         country_code = (subject.get("country_codes") or [None])[0]
         language_code = (subject.get("language_codes") or ["en"])[0].lower()
 
-        # Try fallback seeds in order until one returns PAA blocks.
-        # Niche full SKUs rarely have PAA — brand or category usually do.
-        questions: List[Dict[str, Any]] = []
+        # Fallback chain: try up to 3 seeds. Switch seeds when the current one
+        # returns no signal blocks at all (no PAA, no AI Overview, no Featured
+        # Snippet, no related searches). Brand/product names with very low
+        # search volume often have empty SERP feature blocks.
         used_seed = seeds[0]
+        blocks: Dict[str, Any] = {
+            "pao": [], "ai_overview": None, "featured_snippet": None,
+            "related_searches": [], "organic": [],
+        }
+
         for seed in seeds[:3]:
             body = [{
                 "keyword": seed,
@@ -644,22 +676,84 @@ class MentionOpportunityService:
                     resp.raise_for_status()
                     data = resp.json()
             except Exception as e:
-                logger.warning(f"opportunity: DataForSEO SERP PAO '{seed}' failed: {e}")
+                logger.warning(f"opportunity: DataForSEO SERP '{seed}' failed: {e}")
                 log_dataforseo_serp_call(
-                    attribution=attribution, operation="pao_question",
+                    attribution=attribution, operation="serp_signals",
                     query=seed, items_returned=0,
                     latency_ms=int((time.time() - call_start) * 1000),
                     success=False, error_message=str(e),
                 )
                 continue
 
-            this_round: List[Dict[str, Any]] = []
-            seen_q: set = set()
-            for task in (data.get("tasks") or []):
-                for r in (task.get("result") or []):
-                    for item in (r.get("items") or []):
-                        if (item.get("type") or "").lower() != "people_also_ask":
-                            continue
+            this_round = self._parse_serp_blocks(data, limit=limit)
+            log_dataforseo_serp_call(
+                attribution=attribution, operation="serp_signals",
+                query=seed,
+                items_returned=(
+                    len(this_round["pao"])
+                    + (1 if this_round["ai_overview"] else 0)
+                    + (1 if this_round["featured_snippet"] else 0)
+                    + len(this_round["related_searches"])
+                    + len(this_round["organic"])
+                ),
+                latency_ms=int((time.time() - call_start) * 1000), success=True,
+            )
+
+            # Stop falling back as soon as we get any signal at all
+            has_signal = (
+                this_round["pao"]
+                or this_round["ai_overview"]
+                or this_round["featured_snippet"]
+                or this_round["related_searches"]
+                or this_round["organic"]
+            )
+            if has_signal:
+                blocks = this_round
+                used_seed = seed
+                break
+
+        seed_was_fallback = (used_seed != seeds[0])
+
+        # Build opportunity lists per requested type
+        out: Dict[str, List[Opportunity]] = {}
+        if "pao_question" in types_wanted:
+            out["pao_question"] = self._build_pao_opps(
+                blocks["pao"], used_seed, seed_was_fallback, limit,
+            )
+        if "ai_overview" in types_wanted:
+            out["ai_overview"] = self._build_ai_overview_opps(
+                blocks["ai_overview"], subject, used_seed, seed_was_fallback,
+            )
+        if "featured_snippet" in types_wanted:
+            out["featured_snippet"] = self._build_featured_snippet_opps(
+                blocks["featured_snippet"], used_seed, seed_was_fallback,
+            )
+        if "related_search" in types_wanted:
+            out["related_search"] = self._build_related_search_opps(
+                blocks["related_searches"], used_seed, seed_was_fallback, limit,
+            )
+        if "competitor_ranking" in types_wanted:
+            out["competitor_ranking"] = self._build_competitor_ranking_opps(
+                blocks["organic"], subject, used_seed, seed_was_fallback, limit,
+            )
+        return out
+
+    def _parse_serp_blocks(self, data: Dict[str, Any], *, limit: int) -> Dict[str, Any]:
+        """Walk the DataForSEO SERP response and extract every block type we care
+        about into normalized dicts. Single pass through the items array."""
+        result: Dict[str, Any] = {
+            "pao": [], "ai_overview": None, "featured_snippet": None,
+            "related_searches": [], "organic": [],
+        }
+        seen_q: set = set()
+        seen_related: set = set()
+
+        for task in (data.get("tasks") or []):
+            for r in (task.get("result") or []):
+                for item in (r.get("items") or []):
+                    itype = (item.get("type") or "").lower()
+
+                    if itype == "people_also_ask":
                         for q in (item.get("items") or []):
                             title = (q.get("title") or "").strip()
                             if not title:
@@ -668,31 +762,74 @@ class MentionOpportunityService:
                             if key in seen_q:
                                 continue
                             seen_q.add(key)
-                            this_round.append({
+                            result["pao"].append({
                                 "title": title,
                                 "expanded": q.get("expanded_element") or [],
                             })
-                            if len(this_round) >= limit * 2:
+                            if len(result["pao"]) >= limit * 2:
                                 break
 
-            log_dataforseo_serp_call(
-                attribution=attribution, operation="pao_question",
-                query=seed, items_returned=len(this_round),
-                latency_ms=int((time.time() - call_start) * 1000), success=True,
-            )
+                    elif itype == "ai_overview" and result["ai_overview"] is None:
+                        # AI Overview = Google's generative answer at the top
+                        # of the SERP. May contain text + cited references.
+                        ai_text_parts: List[str] = []
+                        for sub in (item.get("items") or []):
+                            t = (sub.get("text") or sub.get("description") or "").strip()
+                            if t:
+                                ai_text_parts.append(t)
+                        ai_text = " ".join(ai_text_parts)[:1500]
+                        references: List[Dict[str, Any]] = []
+                        for ref in (item.get("references") or []):
+                            references.append({
+                                "title": (ref.get("title") or "")[:200],
+                                "url": ref.get("url") or "",
+                                "domain": ref.get("domain") or "",
+                                "source": ref.get("source") or "",
+                            })
+                        result["ai_overview"] = {
+                            "text": ai_text,
+                            "references": references[:10],
+                        }
 
-            if this_round:
-                questions = this_round
-                used_seed = seed
-                break
+                    elif itype == "featured_snippet" and result["featured_snippet"] is None:
+                        result["featured_snippet"] = {
+                            "title": (item.get("title") or "")[:200],
+                            "description": (item.get("description") or "")[:400],
+                            "url": item.get("url") or "",
+                            "domain": item.get("domain") or "",
+                        }
 
-        if not questions:
-            return []
+                    elif itype == "related_searches":
+                        for term in (item.get("items") or []):
+                            t = (term or "").strip() if isinstance(term, str) else (term.get("title") or "").strip()
+                            if not t:
+                                continue
+                            key = normalize_text(t)
+                            if key in seen_related:
+                                continue
+                            seen_related.add(key)
+                            result["related_searches"].append(t)
+                            if len(result["related_searches"]) >= limit * 2:
+                                break
 
-        seed_was_fallback = (used_seed != seeds[0])
+                    elif itype == "organic":
+                        # Top organic results — keep in rank order, capped
+                        if len(result["organic"]) < 10:
+                            result["organic"].append({
+                                "rank": item.get("rank_absolute") or item.get("rank_group"),
+                                "title": (item.get("title") or "")[:200],
+                                "description": (item.get("description") or "")[:400],
+                                "url": item.get("url") or "",
+                                "domain": item.get("domain") or "",
+                            })
+        return result
 
+    def _build_pao_opps(
+        self, pao_items: List[Dict[str, Any]], used_seed: str,
+        seed_was_fallback: bool, limit: int,
+    ) -> List[Opportunity]:
         out: List[Opportunity] = []
-        for q in questions[:limit]:
+        for q in pao_items[:limit]:
             answer_snippet = ""
             for exp in (q.get("expanded") or []):
                 ds = exp.get("description") or exp.get("answer")
@@ -705,7 +842,8 @@ class MentionOpportunityService:
                 rationale=(
                     f"Real Google searchers are asking this when they search \"{used_seed}\". "
                     "Sourced from Google's People Also Ask block."
-                ) + (f" Current top answer snippet: \"{answer_snippet}\"" if answer_snippet else ""),
+                    + (f" Current top answer snippet: \"{answer_snippet}\"" if answer_snippet else "")
+                ),
                 suggested_action=(
                     "Write a focused FAQ-style post or article section answering this exact question. "
                     "Optimize the H2 to match the question text — Google often pulls these straight into "
@@ -715,6 +853,199 @@ class MentionOpportunityService:
                 source={"question": q["title"], "seed_keyword": used_seed,
                         "fallback": seed_was_fallback},
             ))
+        return out
+
+    def _build_ai_overview_opps(
+        self, ai_overview: Optional[Dict[str, Any]],
+        subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
+    ) -> List[Opportunity]:
+        if not ai_overview or not ai_overview.get("text"):
+            return []
+        ai_text = ai_overview["text"]
+        references = ai_overview.get("references") or []
+
+        # Brand-mention check: does the AI Overview text or any reference
+        # mention the subject? Compare normalized strings.
+        nt_ai = normalize_text(ai_text)
+        nt_refs = " ".join(
+            normalize_text(r.get("title") or "") + " " + normalize_text(r.get("domain") or "")
+            for r in references
+        )
+        haystack = nt_ai + " " + nt_refs
+
+        candidates: List[str] = []
+        for s in [subject.get("subject_label"), subject.get("brand_name"),
+                  *(subject.get("aliases") or [])]:
+            if s and s.strip():
+                candidates.append(s.strip())
+        # Dedup normalized candidates
+        seen: set = set()
+        unique_candidates: List[str] = []
+        for c in candidates:
+            n = normalize_text(c)
+            if n and n not in seen:
+                seen.add(n)
+                unique_candidates.append(c)
+
+        brand_mentioned = any(normalize_text(c) in haystack for c in unique_candidates if normalize_text(c))
+
+        # Find competitor brands that DID get cited (from reference domains/titles)
+        cited_domains = [r.get("domain") for r in references if r.get("domain")]
+        cited_titles = [r.get("title") for r in references if r.get("title")]
+
+        if brand_mentioned:
+            return [Opportunity(
+                type="ai_overview",
+                title=f"Google's AI Overview cites {subject.get('subject_label') or used_seed}",
+                rationale=(
+                    f"For the search \"{used_seed}\", Google's generative AI Overview "
+                    f"includes your subject. The AI says: \"{ai_text[:280]}{'…' if len(ai_text) > 280 else ''}\""
+                    + (f" Cited references: {', '.join(cited_domains[:5])}" if cited_domains else "")
+                ),
+                suggested_action=(
+                    "If the AI's framing is correct, amplify it in your own content to reinforce. "
+                    "If it's incomplete or wrong, write authoritative content that targets the cited "
+                    "URLs' position — Google regenerates the AI Overview as new content gets indexed."
+                ),
+                priority_score=0.95,
+                source={
+                    "ai_overview_text": ai_text,
+                    "references": references,
+                    "brand_mentioned": True,
+                    "cited_domains": cited_domains,
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            )]
+        else:
+            return [Opportunity(
+                type="ai_overview",
+                title=f"Google's AI Overview does NOT cite {subject.get('subject_label') or used_seed}",
+                rationale=(
+                    f"For \"{used_seed}\", Google's generative AI answer does not mention your subject. "
+                    f"It cites these sources instead: {', '.join(cited_domains[:5]) if cited_domains else '(no references shown)'}. "
+                    f"AI text: \"{ai_text[:240]}{'…' if len(ai_text) > 240 else ''}\""
+                ),
+                suggested_action=(
+                    "Generative Engine Optimization (GEO) opportunity: study what the cited sources say, "
+                    "write content that more authoritatively answers the same query intent, and target "
+                    "those domains to displace them. Also pitch the cited outlets directly — getting "
+                    "linked from them feeds the next AI Overview regeneration."
+                ),
+                priority_score=0.95,
+                source={
+                    "ai_overview_text": ai_text,
+                    "references": references,
+                    "brand_mentioned": False,
+                    "cited_domains": cited_domains,
+                    "cited_titles": cited_titles,
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            )]
+
+    def _build_featured_snippet_opps(
+        self, snippet: Optional[Dict[str, Any]],
+        used_seed: str, seed_was_fallback: bool,
+    ) -> List[Opportunity]:
+        if not snippet or not (snippet.get("title") or snippet.get("description")):
+            return []
+        return [Opportunity(
+            type="featured_snippet",
+            title=f"Position-0 snippet held by {snippet.get('domain') or 'unknown'}",
+            rationale=(
+                f"For \"{used_seed}\", Google's featured snippet (position 0) is currently held by "
+                f"{snippet.get('domain') or 'a competitor'}: \"{(snippet.get('description') or snippet.get('title') or '')[:240]}\". "
+                "Featured snippets get the largest CTR share above the standard organic results."
+            ),
+            suggested_action=(
+                "Write a piece that answers the underlying question more directly and concisely. "
+                "Aim for a 40–60 word answer in a single paragraph immediately after a matching H2. "
+                "Outranking the snippet's source on the underlying query is the typical way to take it."
+            ),
+            priority_score=0.85,
+            source={
+                "current_url": snippet.get("url"),
+                "current_domain": snippet.get("domain"),
+                "current_title": snippet.get("title"),
+                "current_description": snippet.get("description"),
+                "seed_keyword": used_seed,
+                "fallback": seed_was_fallback,
+            },
+        )]
+
+    def _build_related_search_opps(
+        self, related: List[str], used_seed: str,
+        seed_was_fallback: bool, limit: int,
+    ) -> List[Opportunity]:
+        out: List[Opportunity] = []
+        for term in related[:limit]:
+            out.append(Opportunity(
+                type="related_search",
+                title=term,
+                rationale=(
+                    f"Google's \"Searches related to {used_seed}\" block surfaces this term, "
+                    "meaning real users searching your subject also search for this. "
+                    "Direct intent overlap — different from the keyword-volume signal."
+                ),
+                suggested_action=(
+                    f"Write a piece optimized for \"{term}\" and cross-link to your existing content "
+                    "on the parent subject. Google itself is telling you these queries cluster together "
+                    "in user intent."
+                ),
+                priority_score=0.5,
+                source={"related_term": term, "seed_keyword": used_seed,
+                        "fallback": seed_was_fallback},
+            ))
+        return out
+
+    def _build_competitor_ranking_opps(
+        self, organic: List[Dict[str, Any]],
+        subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
+        limit: int,
+    ) -> List[Opportunity]:
+        # Skip rankings where your own brand-related domain is the result
+        own_haystack = normalize_text(" ".join(filter(None, [
+            subject.get("brand_name"), subject.get("subject_label"),
+            *(subject.get("aliases") or [])
+        ])))
+
+        out: List[Opportunity] = []
+        kept = 0
+        for item in organic:
+            if kept >= limit:
+                break
+            domain = (item.get("domain") or "").lower()
+            if not domain:
+                continue
+            # Best-effort: skip if the ranking page is from your own brand
+            if own_haystack and normalize_text(domain) and normalize_text(domain) in own_haystack:
+                continue
+            out.append(Opportunity(
+                type="competitor_ranking",
+                title=f"#{item.get('rank') or '?'} — {domain}",
+                rationale=(
+                    f"For \"{used_seed}\", Google ranks {domain} at position {item.get('rank') or '?'}: "
+                    f"\"{item.get('title') or ''}\" — {(item.get('description') or '')[:160]}. "
+                    "These are the pages currently capturing organic traffic for the keyword."
+                ),
+                suggested_action=(
+                    f"Audit the page at {item.get('url') or domain}: what intent does it serve, what "
+                    "questions does it answer, what depth/structure does it use. Write content that "
+                    "matches the same intent more authoritatively to outrank it."
+                ),
+                priority_score=max(0.3, 1.0 - (kept * 0.1)),  # rank 1 = highest priority
+                source={
+                    "rank": item.get("rank"),
+                    "url": item.get("url"),
+                    "domain": domain,
+                    "title": item.get("title"),
+                    "description": item.get("description"),
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            ))
+            kept += 1
         return out
 
     # ───── Optional Haiku polish ─────

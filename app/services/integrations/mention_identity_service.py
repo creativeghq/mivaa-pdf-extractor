@@ -201,6 +201,7 @@ class MentionIdentityService:
         aliases_seed: Optional[List[str]] = None,
         brand_hint: Optional[str] = None,
         product_type_hint: Optional[str] = None,
+        language_codes: Optional[List[str]] = None,
         cached: Optional[Dict[str, Any]] = None,
         use_llm: bool = False,
         attribution: Optional[CostAttribution] = None,
@@ -234,6 +235,7 @@ class MentionIdentityService:
                 brand=brand_hint,
                 product_type=product_type_hint,
                 must_have_tokens=[t for t in [brand_hint, subject_label] if t],
+                language_codes=list(language_codes) if language_codes else ["en"],
             )
 
         # One Haiku call — extract aliases, must-have tokens, competitor brands.
@@ -264,10 +266,17 @@ class MentionIdentityService:
                 brand=brand_hint,
                 product_type=product_type_hint,
                 must_have_tokens=[t for t in [brand_hint, subject_label] if t],
+                language_codes=list(language_codes) if language_codes else ["en"],
             )
 
         try:
             payload = self._parse_json_block(text)
+            # Caller-supplied language_codes always wins — Haiku's guess is a
+            # fallback only used when the caller didn't provide any.
+            resolved_languages = (
+                list(language_codes) if language_codes
+                else list(payload.get("language_codes") or ["en"])
+            )
             facets = SubjectFacets(
                 label=subject_label,
                 aliases=list(payload.get("aliases") or aliases_seed or []),
@@ -275,7 +284,7 @@ class MentionIdentityService:
                 product_type=payload.get("product_type") or product_type_hint,
                 must_have_tokens=list(payload.get("must_have_tokens") or []),
                 competitor_brands=list(payload.get("competitor_brands") or []),
-                language_codes=list(payload.get("language_codes") or ["en"]),
+                language_codes=resolved_languages,
             )
             if not facets.must_have_tokens:
                 facets.must_have_tokens = [t for t in [facets.brand, subject_label] if t]
