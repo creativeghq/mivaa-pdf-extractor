@@ -1231,10 +1231,12 @@ class PDFProcessor:
                         full_page_image = Image.open(io.BytesIO(img_data))
 
                         # YOLO crop padding — env-overridable, defaults to 3% of
-                        # page dimensions. Captures headlines/captions/labels that
-                        # sit just outside the detected region so vision_analysis
-                        # has the surrounding context the human eye reads with the
-                        # image. Audit incident: job acff9ebb 2026-05-03.
+                        # page dimensions. The padded crop is used ONLY as input to
+                        # classification + vision_analysis (Claude Opus reads
+                        # adjacent SKU/brand/dimension labels to fill VisionAnalysis
+                        # fields). The primary stored / displayed / embedded image
+                        # is a TIGHT crop (no padding) so visual SLIG embeddings
+                        # don't get contaminated by surrounding catalog text.
                         try:
                             pad_fraction = float(
                                 os.environ.get(
@@ -1247,33 +1249,54 @@ class PDFProcessor:
                         pad_x = int(full_page_image.width * pad_fraction)
                         pad_y = int(full_page_image.height * pad_fraction)
 
-                        # Crop each image-bearing region (with padding)
+                        # Crop each image-bearing region (tight + padded sidecar)
                         for region_idx, region in enumerate(image_regions):
                             try:
                                 # Get bounding box coordinates
                                 bbox = region.bbox
 
-                                # Apply padding, clamped to page bounds.
-                                crop_x1 = max(0, int(bbox.x) - pad_x)
-                                crop_y1 = max(0, int(bbox.y) - pad_y)
-                                crop_x2 = min(full_page_image.width, int(bbox.x2) + pad_x)
-                                crop_y2 = min(full_page_image.height, int(bbox.y2) + pad_y)
+                                # Tight crop = exact YOLO bbox, clamped to page.
+                                tight_x1 = max(0, int(bbox.x))
+                                tight_y1 = max(0, int(bbox.y))
+                                tight_x2 = min(full_page_image.width, int(bbox.x2))
+                                tight_y2 = min(full_page_image.height, int(bbox.y2))
 
-                                # Crop region from full page image with padding
                                 cropped_image = full_page_image.crop((
-                                    crop_x1,
-                                    crop_y1,
-                                    crop_x2,
-                                    crop_y2,
+                                    tight_x1,
+                                    tight_y1,
+                                    tight_x2,
+                                    tight_y2,
                                 ))
 
-                                # Save cropped image
+                                # Save tight crop as the primary file (storage,
+                                # SLIG embeddings, UI all read this).
                                 image_filename = f"page_{pdf_page}_yolo_region_{region_idx}.jpg"
                                 image_path = os.path.join(image_dir, image_filename)
 
                                 cropped_image.save(image_path, "JPEG", quality=95, progressive=True)
 
-                                # Get image dimensions
+                                # Padded crop sidecar — only used by Claude
+                                # classification + vision_analysis so labels
+                                # adjacent to the image stay visible to the LLM.
+                                # Skip when padding is disabled (the two crops
+                                # would be identical).
+                                vision_input_path = None
+                                if pad_x > 0 or pad_y > 0:
+                                    pad_x1 = max(0, int(bbox.x) - pad_x)
+                                    pad_y1 = max(0, int(bbox.y) - pad_y)
+                                    pad_x2 = min(full_page_image.width, int(bbox.x2) + pad_x)
+                                    pad_y2 = min(full_page_image.height, int(bbox.y2) + pad_y)
+                                    if (pad_x1, pad_y1, pad_x2, pad_y2) != (tight_x1, tight_y1, tight_x2, tight_y2):
+                                        padded_image = full_page_image.crop((pad_x1, pad_y1, pad_x2, pad_y2))
+                                        try:
+                                            vision_filename = f"page_{pdf_page}_yolo_region_{region_idx}_padded.jpg"
+                                            vision_input_path = os.path.join(image_dir, vision_filename)
+                                            padded_image.save(vision_input_path, "JPEG", quality=95, progressive=True)
+                                        finally:
+                                            padded_image.close()
+
+                                # Get image dimensions (of the tight crop — this
+                                # is the canonical image written to DB).
                                 width, height = cropped_image.size
 
                                 # Find nearby caption for this image region
@@ -1328,6 +1351,7 @@ class PDFProcessor:
                                 # Create image metadata (using PDF page number)
                                 image_info = {
                                     'path': image_path,
+                                    'vision_input_path': vision_input_path,
                                     'filename': image_filename,
                                     'page_number': pdf_page,
                                     'width': width,

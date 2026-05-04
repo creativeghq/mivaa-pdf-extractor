@@ -512,7 +512,12 @@ class ImageProcessingService:
         claude_semaphore = Semaphore(CLAUDE_CONCURRENCY)
 
         async def classify_with_two_stage(img_data):
-            image_path = img_data.get('path')
+            # Prefer the padded sidecar crop (`vision_input_path`) for Claude
+            # classification — surrounding labels (SKU, brand, dimensions)
+            # help the model identify swatches vs spec diagrams vs banners.
+            # Fall back to the tight primary crop when no sidecar exists
+            # (embedded layer, full_render layer, or pad_fraction=0).
+            image_path = img_data.get('vision_input_path') or img_data.get('path')
             filename = img_data.get('filename', 'unknown')
             image_base64 = None
 
@@ -1367,14 +1372,28 @@ class ImageProcessingService:
 
                 logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{total}")
 
-                # Read image once and prepare two encodings:
-                #   - `image_base64_raw`  : raw base64 (what Qwen / Material Image Analyzer expects)
-                #   - `image_base64_data` : `data:image/jpeg;base64,...` data URL (what the
-                #                            embeddings service / SLIG client expect)
+                # Read tight crop (the primary file) for embedding generation.
+                # SLIG visual / color / texture / style / material vectors must
+                # NOT see surrounding catalog text — the tight crop is what the
+                # storage bucket holds and what visual search compares against.
+                #   - `image_base64_data` : `data:image/jpeg;base64,...` data URL
+                #     (what the embeddings service / SLIG client expect)
                 with open(image_path, 'rb') as img_file:
                     image_bytes = img_file.read()
-                    image_base64_raw = base64.b64encode(image_bytes).decode('utf-8')
-                    image_base64_data = f"data:image/jpeg;base64,{image_base64_raw}"
+                    image_base64_data = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+
+                # Read padded crop (sidecar, when present) for vision_analysis.
+                # Claude Opus reads the SKU / brand / dimension labels printed
+                # next to the tile to fill `model_number`, `brand_name`,
+                # `dimensions` on the VisionAnalysis schema. Falls back to the
+                # tight crop for layers that don't produce a sidecar (embedded,
+                # full_render) or when pad_fraction=0.
+                vision_input_path = img_data.get('vision_input_path')
+                if vision_input_path and os.path.exists(vision_input_path):
+                    with open(vision_input_path, 'rb') as vf:
+                        vision_base64_raw = base64.b64encode(vf.read()).decode('utf-8')
+                else:
+                    vision_base64_raw = base64.b64encode(image_bytes).decode('utf-8')
 
                 # Run rich material analysis (Claude Opus 4.7 via Anthropic
                 # tool use, post-Qwen-removal) to produce the structured
@@ -1384,7 +1403,7 @@ class ImageProcessingService:
                 # The (vision_analysis, source) tuple lets us track which
                 # provider produced the result for job-level stats.
                 vision_analysis, vision_analysis_source = await self._analyze_material_image(
-                    image_base64=image_base64_raw,
+                    image_base64=vision_base64_raw,
                     image_id=image_id,
                     product_id=product_id,
                     job_id=job_id,

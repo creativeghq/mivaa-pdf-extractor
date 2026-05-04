@@ -150,6 +150,7 @@ class TrackRequest(BaseModel):
     country_codes: Optional[List[str]] = None
     refresh_interval_hours: int = 24
     recency_days: int = 30
+    homepage_domain: Optional[str] = None
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None
@@ -169,6 +170,7 @@ class UpdateRequest(BaseModel):
     country_codes: Optional[List[str]] = None
     refresh_interval_hours: Optional[int] = None
     recency_days: Optional[int] = None
+    homepage_domain: Optional[str] = None
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None
@@ -467,6 +469,7 @@ async def create_tracked_mention(
         country_codes=body.country_codes,
         refresh_interval_hours=body.refresh_interval_hours,
         recency_days=body.recency_days,
+        homepage_domain=body.homepage_domain,
         alert_channels=body.alert_channels,
         alert_on_spike=body.alert_on_spike,
         alert_on_negative_sentiment=body.alert_on_negative_sentiment,
@@ -867,3 +870,60 @@ async def cron_probe_llm(
         processed += 1
     return {"success": True, "due_count": len(due), "processed": processed,
             "succeeded": succeeded, "failed": failed}
+
+
+# ============================================================================
+# Stateless opportunities — no DB row, used by SEO pipeline edge functions
+# ============================================================================
+
+class StatelessOpportunitiesRequest(BaseModel):
+    """Body for `POST /opportunities-stateless`. Bypasses the persisted
+    `tracked_mentions` row entirely. Used by the SEO pipeline (seo-research)
+    so a content-research run doesn't have to spawn an ephemeral row.
+
+    Auth: `x-cron-secret` header (same secret as the cron endpoints) — this
+    endpoint is internal-only, called by edge functions on the platform's
+    own infrastructure. Not exposed to external API consumers.
+    """
+    subject_label: str = Field(..., min_length=1, max_length=200,
+                               description="The keyword / topic / brand to research.")
+    brand_name: Optional[str] = Field(None, description="Brand string when known.")
+    aliases: Optional[List[str]] = Field(None, description="Alternate strings to fall back on if the label has no SERP data.")
+    language_codes: Optional[List[str]] = Field(None, description="e.g. ['en'], ['el','en']. Default ['en'].")
+    country_codes: Optional[List[str]] = Field(None, description="ISO-3166 alpha-2. e.g. ['US'], ['GR']. Default ['US'].")
+    homepage_domain: Optional[str] = Field(None, description="Brand homepage domain — required for `domain_snapshot` type.")
+    types: Optional[List[str]] = Field(None, description="Subset of opportunity types. Default = all subject-driven (mention-derived auto-skip).")
+    limit_per_type: int = Field(5, ge=1, le=20)
+    use_llm_summary: bool = Field(False, description="When true, Haiku polishes rationales/actions.")
+
+
+@router.post("/opportunities-stateless")
+async def opportunities_stateless(
+    request: Request,
+    body: StatelessOpportunitiesRequest,
+):
+    """Generate opportunities for an inline subject — no DB row required.
+
+    Mention-derived types (`trending_topic`, `outlet_pitch`, `author_relationship`,
+    `sentiment_response`, `llm_visibility`) auto-skip in this mode since they
+    need data that only exists on a real tracked subject.
+    """
+    secret = request.headers.get("x-cron-secret")
+    expected = os.getenv("CRON_SECRET")
+    if not expected or secret != expected:
+        raise HTTPException(status_code=401, detail="bad cron secret")
+    subject_override = {
+        "subject_label": body.subject_label,
+        "brand_name": body.brand_name,
+        "aliases": body.aliases or [],
+        "language_codes": body.language_codes or ["en"],
+        "country_codes": body.country_codes or ["US"],
+        "homepage_domain": body.homepage_domain,
+    }
+    out = await get_mention_opportunity_service().generate(
+        subject_override=subject_override,
+        types=body.types,
+        limit_per_type=body.limit_per_type,
+        use_llm_summary=body.use_llm_summary,
+    )
+    return {"success": True, "data": out}

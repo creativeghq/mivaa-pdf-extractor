@@ -52,6 +52,9 @@ logger = logging.getLogger(__name__)
 
 DATAFORSEO_LABS_RELATED = "https://api.dataforseo.com/v3/dataforseo_labs/google/related_keywords/live"
 DATAFORSEO_LABS_SUGGESTIONS = "https://api.dataforseo.com/v3/dataforseo_labs/google/keyword_suggestions/live"
+DATAFORSEO_LABS_DIFFICULTY = "https://api.dataforseo.com/v3/dataforseo_labs/google/bulk_keyword_difficulty/live"
+DATAFORSEO_LABS_INTENT = "https://api.dataforseo.com/v3/dataforseo_labs/google/search_intent/live"
+DATAFORSEO_LABS_DOMAIN_RANK = "https://api.dataforseo.com/v3/dataforseo_labs/google/domain_rank_overview/live"
 DATAFORSEO_SERP_ORGANIC = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced"
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
@@ -107,7 +110,8 @@ class MentionOpportunityService:
     async def generate(
         self,
         *,
-        tracked_mention_id: str,
+        tracked_mention_id: Optional[str] = None,
+        subject_override: Optional[Dict[str, Any]] = None,
         types: Optional[List[str]] = None,
         days: int = 30,
         limit_per_type: int = 5,
@@ -116,6 +120,17 @@ class MentionOpportunityService:
     ) -> Dict[str, Any]:
         """
         Generate opportunities for a tracked subject.
+
+        Two modes:
+          1. Persisted (DB-backed): pass `tracked_mention_id`. Subject is loaded
+             from `tracked_mentions`, mentions from `mention_history`, and the
+             lifetime-cost rollup runs at the end.
+          2. Stateless (synthetic subject): pass `subject_override` with the
+             subject fields inline. No DB load, no mention history, no lifetime
+             rollup. Used by the SEO pipeline so research runs don't spawn
+             ephemeral tracked_mentions rows. `tracked_mention_id` is ignored
+             in this mode (mention-derived types are also skipped — they need
+             history that doesn't exist).
 
         Two categories of opportunity types:
 
@@ -126,6 +141,11 @@ class MentionOpportunityService:
           - featured_snippet      — current position-0 snippet to outrank
           - related_search        — Google's "Searches related to" block
           - competitor_ranking    — top organic pages currently ranking for the subject
+          - video_carousel        — Google's video / shorts / inline-video blocks (TikTok / YT / IG mix)
+          - news_carousel         — Google's "Top stories" featured news block
+          - knowledge_graph       — whether the subject has a Google entity card
+          - paid_competitor       — Google Ads / shopping-ad bidders on the keyword
+          - shopping_listing      — Google Shopping carousel hits with prices
 
         Mention-derived (require existing mention_history; skip silently when 0):
           - trending_topic        — bigram analysis over recent mention titles/excerpts
@@ -133,27 +153,45 @@ class MentionOpportunityService:
           - author_relationship   — authors who covered the subject 2+ times
           - sentiment_response    — recent negative-sentiment mentions
 
-        types: subset of all 10 names; default = all
+        types: subset of all 17 names; default = all
         """
+        stateless = subject_override is not None
+
         types = types or [
             # Subject-driven (always work)
             "keyword_opportunity", "pao_question", "ai_overview",
             "featured_snippet", "related_search", "competitor_ranking",
+            "video_carousel", "news_carousel", "knowledge_graph",
+            "paid_competitor", "shopping_listing",
+            # v0.4.7
+            "llm_visibility", "domain_snapshot",
             # Mention-derived (require mention history)
             "trending_topic", "outlet_pitch",
             "author_relationship", "sentiment_response",
         ]
         start = time.time()
 
-        # Load subject + recent mentions
-        subject = self._load_subject(tracked_mention_id)
-        if not subject:
-            return {
-                "tracked_mention_id": tracked_mention_id,
-                "opportunities": [],
-                "errors": {"subject": "not found"},
-            }
-        mentions = self._load_mentions(tracked_mention_id, days=days)
+        if stateless:
+            # Synthetic subject — pull everything from override dict.
+            # No DB row, no mention history, no llm_visibility (needs probe row).
+            subject = dict(subject_override or {})
+            mentions = []
+        else:
+            if not tracked_mention_id:
+                return {
+                    "tracked_mention_id": None,
+                    "opportunities": [],
+                    "errors": {"subject": "tracked_mention_id required when subject_override not provided"},
+                }
+            # Load subject + recent mentions
+            subject = self._load_subject(tracked_mention_id)
+            if not subject:
+                return {
+                    "tracked_mention_id": tracked_mention_id,
+                    "opportunities": [],
+                    "errors": {"subject": "not found"},
+                }
+            mentions = self._load_mentions(tracked_mention_id, days=days)
 
         # If caller didn't pre-build attribution, derive it from the subject row
         # so cost logging still works.
@@ -161,7 +199,7 @@ class MentionOpportunityService:
             attribution = CostAttribution(
                 user_id=subject.get("user_id"),
                 workspace_id=subject.get("workspace_id"),
-                tracked_mention_id=tracked_mention_id,
+                tracked_mention_id=tracked_mention_id if not stateless else None,
                 product_id=subject.get("product_id"),
                 api_key_id=subject.get("api_key_id"),
             )
@@ -202,13 +240,37 @@ class MentionOpportunityService:
                 errors["keyword_opportunity"] = str(e)[:200]
                 logger.warning(f"opportunity: keyword fetch failed: {e}")
 
+        # v0.4.7: LLM visibility — read latest probe snapshot, no fresh probe.
+        # Stateless mode has no probe row to read from, so skip silently.
+        if "llm_visibility" in types and not stateless and tracked_mention_id:
+            try:
+                opportunities.extend(self._build_llm_visibility_opps(
+                    tracked_mention_id=tracked_mention_id, subject=subject,
+                ))
+            except Exception as e:
+                errors["llm_visibility"] = str(e)[:200]
+                logger.warning(f"opportunity: llm_visibility failed: {e}")
+
+        # v0.4.7: Domain snapshot — DataForSEO Labs domain_rank_overview
+        if "domain_snapshot" in types:
+            try:
+                ds_ops = await self._build_domain_snapshot_opps(
+                    subject=subject, attribution=attribution,
+                )
+                opportunities.extend(ds_ops)
+            except Exception as e:
+                errors["domain_snapshot"] = str(e)[:200]
+                logger.warning(f"opportunity: domain_snapshot failed: {e}")
+
         # SERP-derived signals share one DataForSEO call. If any of these
         # types are requested, fetch the SERP response once and extract each
         # block. Cost: ≤ 3 SERP calls (fallback chain) regardless of how
-        # many of the 5 signal types are requested.
+        # many of the 10 signal types are requested.
         serp_types = {
             "pao_question", "ai_overview", "featured_snippet",
             "related_search", "competitor_ranking",
+            "video_carousel", "news_carousel", "knowledge_graph",
+            "paid_competitor", "shopping_listing",
         } & set(types)
         if serp_types:
             try:
@@ -235,11 +297,14 @@ class MentionOpportunityService:
                 errors["llm_summary"] = str(e)[:200]
                 logger.warning(f"opportunity: Haiku polish failed: {e}")
 
-        # Roll up lifetime cost (Layer C) so total_billed_usd on the row stays current
-        recompute_lifetime_cost(tracked_mention_id=tracked_mention_id)
+        # Roll up lifetime cost (Layer C) so total_billed_usd on the row stays current.
+        # Skip in stateless mode — there's no row to update.
+        if not stateless and tracked_mention_id:
+            recompute_lifetime_cost(tracked_mention_id=tracked_mention_id)
 
         return {
-            "tracked_mention_id": tracked_mention_id,
+            "tracked_mention_id": tracked_mention_id if not stateless else None,
+            "stateless": stateless,
             "subject_label": subject.get("subject_label"),
             "days": days,
             "mention_count": len(mentions),
@@ -257,7 +322,8 @@ class MentionOpportunityService:
                 .select(
                     "id, subject_label, brand_name, aliases, "
                     "language_codes, country_codes, subject_facets, "
-                    "user_id, workspace_id, product_id, api_key_id"
+                    "user_id, workspace_id, product_id, api_key_id, "
+                    "homepage_domain"
                 )
                 .eq("id", tracked_mention_id)
                 .maybe_single()
@@ -587,12 +653,49 @@ class MentionOpportunityService:
                 used_seed = seed
                 break  # found a seed with data, stop fallback
 
+        # v0.4.7 — `keyword_suggestions` fallback. Related Keywords requires
+        # the seed to be in DataForSEO's database; phrase-match Suggestions
+        # is more permissive and rescues niche brands that have no Related
+        # Keywords data.
+        used_endpoint = "related_keywords"
+        if not items:
+            for seed in seeds[:3]:
+                this_round, latency_ms, ok = await self._call_keyword_suggestions(
+                    seed=seed, country_code=country_code, language_code=language_code,
+                    limit_hint=max(20, limit * 4),
+                )
+                log_dataforseo_labs_call(
+                    attribution=attribution, seed_keyword=f"suggestions:{seed}",
+                    items_returned=len(this_round),
+                    latency_ms=latency_ms, success=ok,
+                )
+                if this_round:
+                    items = this_round
+                    used_seed = seed
+                    used_endpoint = "keyword_suggestions"
+                    break
+
         if not items:
             return []
 
         # Rank by search volume desc
         items.sort(key=lambda x: -(x.get("search_volume") or 0))
         items = items[:limit]
+
+        # v0.4.7 — Enrich with keyword_difficulty + search_intent (single batch
+        # call each, ~$0.001 total). Adds SEO-difficulty score (0–100) and
+        # intent classification (info/nav/commercial/transactional) per keyword.
+        keywords = [it["keyword"] for it in items]
+        difficulty_map: Dict[str, Optional[int]] = {}
+        intent_map: Dict[str, Optional[str]] = {}
+        if keywords:
+            difficulty_map = await self._call_keyword_difficulty(
+                keywords=keywords, country_code=country_code,
+                language_code=language_code, attribution=attribution,
+            )
+            intent_map = await self._call_search_intent(
+                keywords=keywords, language_code=language_code, attribution=attribution,
+            )
 
         # Note used_seed in source so partners can see WHICH seed produced the
         # opportunities — important when fallback kicked in (e.g. brand_name
@@ -604,23 +707,199 @@ class MentionOpportunityService:
             volume = item.get("search_volume") or 0
             if volume < 10:
                 continue
+            kw = item["keyword"]
+            difficulty = difficulty_map.get(kw)
+            intent = intent_map.get(kw)
+            difficulty_str = (
+                f" SEO difficulty: {difficulty}/100." if difficulty is not None else ""
+            )
+            intent_str = f" Intent: {intent}." if intent else ""
+            intent_action = ""
+            if intent:
+                intent_action = {
+                    "informational": " Match informational intent: write a deep how-to / explainer / FAQ.",
+                    "navigational": " Match navigational intent: optimize the brand's main landing page for this term.",
+                    "commercial": " Match commercial-investigation intent: write a comparison / buyer's-guide / 'best X for Y' piece.",
+                    "transactional": " Match transactional intent: this should target a product page or category page, not a blog post.",
+                }.get(intent.lower(), "")
             out.append(Opportunity(
                 type="keyword_opportunity",
-                title=item["keyword"],
+                title=kw,
                 rationale=(
-                    f"\"{item['keyword']}\" gets {volume:,} monthly searches in "
+                    f"\"{kw}\" gets {volume:,} monthly searches in "
                     f"{country_code or 'your target market'}. Related to "
-                    f"\"{used_seed}\". Potential SEO content angle."
+                    f"\"{used_seed}\".{difficulty_str}{intent_str}"
                 ),
                 suggested_action=(
-                    f"Write a piece optimized for \"{item['keyword']}\". Anchor it to "
-                    "your brand's expertise on the topic."
+                    f"Write a piece optimized for \"{kw}\". Anchor it to "
+                    "your brand's expertise on the topic." + intent_action
                 ),
                 priority_score=min(1.0, 0.3 + (volume / 5000.0)),
-                source={"keyword": item["keyword"], "search_volume": volume,
-                        "competition": item.get("competition"), "cpc": item.get("cpc"),
-                        "seed_used": used_seed, "fallback": seed_was_fallback},
+                source={
+                    "keyword": kw, "search_volume": volume,
+                    "competition": item.get("competition"),
+                    "cpc": item.get("cpc"),
+                    "difficulty": difficulty,
+                    "intent": intent,
+                    "seed_used": used_seed,
+                    "fallback": seed_was_fallback,
+                    "source_endpoint": used_endpoint,
+                },
             ))
+        return out
+
+    # ───── v0.4.7: keyword_suggestions fallback (phrase-match) ─────
+
+    async def _call_keyword_suggestions(
+        self, *, seed: str, country_code: Optional[str],
+        language_code: str, limit_hint: int,
+    ) -> Tuple[List[Dict[str, Any]], int, bool]:
+        """Call DataForSEO Labs Keyword Suggestions. Phrase-match — more
+        permissive than Related Keywords. Returns (items, latency_ms, success)."""
+        body = [{
+            "keyword": seed,
+            "location_code": _country_to_dfs_location(country_code),
+            "language_code": language_code,
+            "limit": limit_hint,
+            "include_seed_keyword": False,
+            "include_serp_info": False,
+        }]
+        call_start = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    DATAFORSEO_LABS_SUGGESTIONS,
+                    headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                             "Content-Type": "application/json"},
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            logger.warning(f"opportunity: DataForSEO suggestions '{seed}' failed: {e}")
+            return [], int((time.time() - call_start) * 1000), False
+
+        items: List[Dict[str, Any]] = []
+        for task in (data.get("tasks") or []):
+            for r in (task.get("result") or []):
+                for it in (r.get("items") or []):
+                    kw_data = (it.get("keyword_data") or {})
+                    kw = kw_data.get("keyword") or it.get("keyword")
+                    info = kw_data.get("keyword_info") or {}
+                    if not kw:
+                        continue
+                    items.append({
+                        "keyword": kw,
+                        "search_volume": info.get("search_volume") or 0,
+                        "competition": info.get("competition") or "",
+                        "cpc": info.get("cpc") or 0.0,
+                    })
+        return items, int((time.time() - call_start) * 1000), True
+
+    # ───── v0.4.7: keyword_difficulty enrichment (batch) ─────
+
+    async def _call_keyword_difficulty(
+        self, *, keywords: List[str], country_code: Optional[str],
+        language_code: str, attribution: Optional[CostAttribution] = None,
+    ) -> Dict[str, Optional[int]]:
+        """Bulk-fetch SEO difficulty scores (0–100) for up to 1000 keywords
+        in one call. Returns {keyword: difficulty | None}."""
+        if not keywords:
+            return {}
+        body = [{
+            "keywords": keywords[:100],
+            "location_code": _country_to_dfs_location(country_code),
+            "language_code": language_code,
+        }]
+        call_start = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    DATAFORSEO_LABS_DIFFICULTY,
+                    headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                             "Content-Type": "application/json"},
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            logger.debug(f"opportunity: bulk_keyword_difficulty failed: {e}")
+            log_dataforseo_labs_call(
+                attribution=attribution, seed_keyword="difficulty:batch",
+                items_returned=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
+            return {}
+
+        out: Dict[str, Optional[int]] = {}
+        for task in (data.get("tasks") or []):
+            for r in (task.get("result") or []):
+                for it in (r.get("items") or []):
+                    kw = it.get("keyword")
+                    diff = it.get("keyword_difficulty")
+                    if kw and diff is not None:
+                        try:
+                            out[kw] = int(diff)
+                        except (TypeError, ValueError):
+                            pass
+        log_dataforseo_labs_call(
+            attribution=attribution, seed_keyword="difficulty:batch",
+            items_returned=len(out),
+            latency_ms=int((time.time() - call_start) * 1000), success=True,
+        )
+        return out
+
+    # ───── v0.4.7: search_intent enrichment (batch) ─────
+
+    async def _call_search_intent(
+        self, *, keywords: List[str], language_code: str,
+        attribution: Optional[CostAttribution] = None,
+    ) -> Dict[str, Optional[str]]:
+        """Bulk-fetch intent classification per keyword.
+        Possible values: 'informational' | 'navigational' | 'commercial' | 'transactional'.
+        Returns {keyword: intent | None}."""
+        if not keywords:
+            return {}
+        body = [{
+            "keywords": keywords[:100],
+            "language_code": language_code,
+        }]
+        call_start = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    DATAFORSEO_LABS_INTENT,
+                    headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                             "Content-Type": "application/json"},
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            logger.debug(f"opportunity: search_intent failed: {e}")
+            log_dataforseo_labs_call(
+                attribution=attribution, seed_keyword="intent:batch",
+                items_returned=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
+            return {}
+
+        out: Dict[str, Optional[str]] = {}
+        for task in (data.get("tasks") or []):
+            for r in (task.get("result") or []):
+                for it in (r.get("items") or []):
+                    kw = it.get("keyword")
+                    info = it.get("keyword_intent") or it.get("keyword_intent_info") or {}
+                    intent = info.get("label") or info.get("main_intent")
+                    if kw and intent:
+                        out[kw] = str(intent).lower()
+        log_dataforseo_labs_call(
+            attribution=attribution, seed_keyword="intent:batch",
+            items_returned=len(out),
+            latency_ms=int((time.time() - call_start) * 1000), success=True,
+        )
         return out
 
     # ───── SERP signals (PAA + AI Overview + Featured Snippet + Related + Top Organic) ─────
@@ -706,6 +985,11 @@ class MentionOpportunityService:
                 or this_round["featured_snippet"]
                 or this_round["related_searches"]
                 or this_round["organic"]
+                or this_round["videos"]
+                or this_round["news_stories"]
+                or this_round["knowledge_graph"]
+                or this_round["paid"]
+                or this_round["shopping"]
             )
             if has_signal:
                 blocks = this_round
@@ -736,6 +1020,27 @@ class MentionOpportunityService:
             out["competitor_ranking"] = self._build_competitor_ranking_opps(
                 blocks["organic"], subject, used_seed, seed_was_fallback, limit,
             )
+        # v0.4.6 additions
+        if "video_carousel" in types_wanted:
+            out["video_carousel"] = self._build_video_carousel_opps(
+                blocks["videos"], subject, used_seed, seed_was_fallback,
+            )
+        if "news_carousel" in types_wanted:
+            out["news_carousel"] = self._build_news_carousel_opps(
+                blocks["news_stories"], used_seed, seed_was_fallback, limit,
+            )
+        if "knowledge_graph" in types_wanted:
+            out["knowledge_graph"] = self._build_knowledge_graph_opps(
+                blocks["knowledge_graph"], subject, used_seed, seed_was_fallback,
+            )
+        if "paid_competitor" in types_wanted:
+            out["paid_competitor"] = self._build_paid_competitor_opps(
+                blocks["paid"], subject, used_seed, seed_was_fallback, limit,
+            )
+        if "shopping_listing" in types_wanted:
+            out["shopping_listing"] = self._build_shopping_listing_opps(
+                blocks["shopping"], subject, used_seed, seed_was_fallback, limit,
+            )
         return out
 
     def _parse_serp_blocks(self, data: Dict[str, Any], *, limit: int) -> Dict[str, Any]:
@@ -744,9 +1049,16 @@ class MentionOpportunityService:
         result: Dict[str, Any] = {
             "pao": [], "ai_overview": None, "featured_snippet": None,
             "related_searches": [], "organic": [],
+            # v0.4.6 additions
+            "videos": [],          # union of video / short_videos / inline_videos
+            "news_stories": [],    # top_stories block
+            "knowledge_graph": None,
+            "paid": [],            # paid + commercial_units
+            "shopping": [],        # popular_products + shopping
         }
         seen_q: set = set()
         seen_related: set = set()
+        seen_video_url: set = set()
 
         for task in (data.get("tasks") or []):
             for r in (task.get("result") or []):
@@ -822,6 +1134,104 @@ class MentionOpportunityService:
                                 "url": item.get("url") or "",
                                 "domain": item.get("domain") or "",
                             })
+
+                    # ───── v0.4.6: video blocks ─────
+                    elif itype in ("video", "short_videos", "inline_videos"):
+                        # Each contains an `items` list with per-clip details.
+                        # Mark each clip with the parent block type so consumers
+                        # can tell shorts vs full vs inline.
+                        kind = "short" if itype == "short_videos" else (
+                            "inline" if itype == "inline_videos" else "video"
+                        )
+                        for v in (item.get("items") or []):
+                            url = v.get("url") or ""
+                            if not url or url in seen_video_url:
+                                continue
+                            seen_video_url.add(url)
+                            domain = (v.get("domain") or "").lower()
+                            # Infer platform from URL/domain
+                            if "tiktok.com" in domain:
+                                platform = "tiktok"
+                            elif "youtube.com" in domain or "youtu.be" in domain:
+                                platform = "youtube_shorts" if kind == "short" else "youtube"
+                            elif "instagram.com" in domain:
+                                platform = "instagram"
+                            elif "facebook.com" in domain or "fb.watch" in domain:
+                                platform = "facebook"
+                            elif "vimeo.com" in domain:
+                                platform = "vimeo"
+                            else:
+                                platform = "other"
+                            result["videos"].append({
+                                "kind": kind,
+                                "platform": platform,
+                                "title": (v.get("title") or "")[:200],
+                                "url": url,
+                                "domain": domain,
+                                "creator": (v.get("source") or v.get("author") or "")[:120],
+                                "duration": v.get("duration") or "",
+                                "timestamp": v.get("timestamp") or v.get("date_posted") or "",
+                            })
+                            if len(result["videos"]) >= 30:
+                                break
+
+                    # ───── v0.4.6: top stories (news carousel) ─────
+                    elif itype == "top_stories":
+                        for s in (item.get("items") or []):
+                            result["news_stories"].append({
+                                "title": (s.get("title") or "")[:200],
+                                "url": s.get("url") or "",
+                                "domain": (s.get("domain") or "").lower(),
+                                "source": (s.get("source") or "")[:120],
+                                "timestamp": s.get("timestamp") or "",
+                            })
+                            if len(result["news_stories"]) >= 12:
+                                break
+
+                    # ───── v0.4.6: knowledge graph (entity card) ─────
+                    elif itype == "knowledge_graph" and result["knowledge_graph"] is None:
+                        result["knowledge_graph"] = {
+                            "title": (item.get("title") or "")[:200],
+                            "subtitle": (item.get("subtitle") or "")[:200],
+                            "description": (item.get("description") or "")[:600],
+                            "url": item.get("url") or "",
+                            "card_id": item.get("card_id") or "",
+                            "image_url": item.get("image_url") or "",
+                        }
+
+                    # ───── v0.4.6: paid ads / commercial units (competitive intel) ─────
+                    elif itype in ("paid", "commercial_units"):
+                        # `paid` contains individual ad items. `commercial_units`
+                        # is sometimes a wrapper for shopping ads.
+                        candidates = item.get("items") if itype == "commercial_units" else [item]
+                        for ad in (candidates or []):
+                            domain = (ad.get("domain") or "").lower()
+                            if not domain:
+                                continue
+                            result["paid"].append({
+                                "title": (ad.get("title") or "")[:200],
+                                "description": (ad.get("description") or "")[:300],
+                                "url": ad.get("url") or "",
+                                "domain": domain,
+                                "rank": ad.get("rank_absolute") or ad.get("rank_group"),
+                            })
+                            if len(result["paid"]) >= 10:
+                                break
+
+                    # ───── v0.4.6: shopping carousel ─────
+                    elif itype in ("popular_products", "shopping"):
+                        for prod in (item.get("items") or []):
+                            result["shopping"].append({
+                                "title": (prod.get("title") or "")[:200],
+                                "url": prod.get("url") or "",
+                                "domain": (prod.get("domain") or "").lower(),
+                                "seller": (prod.get("seller") or prod.get("source") or "")[:120],
+                                "price": prod.get("price"),
+                                "currency": prod.get("currency"),
+                                "rating_value": ((prod.get("rating") or {}).get("value") if isinstance(prod.get("rating"), dict) else None),
+                            })
+                            if len(result["shopping"]) >= 12:
+                                break
         return result
 
     def _build_pao_opps(
@@ -1050,6 +1460,566 @@ class MentionOpportunityService:
             ))
             kept += 1
         return out
+
+    # ───── v0.4.6: video carousel (video + short_videos + inline_videos) ─────
+
+    def _build_video_carousel_opps(
+        self, videos: List[Dict[str, Any]],
+        subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
+    ) -> List[Opportunity]:
+        """One opportunity card summarizing the video presence Google shows
+        for the seed query. Surfaces platform mix (TikTok / YT / Shorts /
+        Reels) and brand-presence check. Single card — not one-per-video —
+        because the actionable insight is the carousel as a whole."""
+        if not videos:
+            return []
+
+        # Platform mix
+        platforms: Dict[str, int] = {}
+        for v in videos:
+            p = v.get("platform") or "other"
+            platforms[p] = platforms.get(p, 0) + 1
+
+        # Brand-presence check
+        nt_haystack = " ".join(
+            normalize_text((v.get("title") or "") + " " + (v.get("creator") or "") + " " + (v.get("domain") or ""))
+            for v in videos
+        )
+        candidates = [
+            (subject.get("subject_label") or "").strip(),
+            (subject.get("brand_name") or "").strip(),
+            *(subject.get("aliases") or []),
+        ]
+        seen_c: set = set()
+        unique_candidates = []
+        for c in candidates:
+            n = normalize_text(c)
+            if n and n not in seen_c:
+                seen_c.add(n)
+                unique_candidates.append(c)
+        brand_present = any(normalize_text(c) in nt_haystack for c in unique_candidates if normalize_text(c))
+
+        platforms_summary = ", ".join(f"{k}:{v}" for k, v in sorted(platforms.items(), key=lambda kv: -kv[1]))
+        sample_titles = [v.get("title") or v.get("url") for v in videos[:5] if v.get("title") or v.get("url")]
+        sample_creators = [v.get("creator") for v in videos[:5] if v.get("creator")]
+
+        if brand_present:
+            return [Opportunity(
+                type="video_carousel",
+                title=f"Google's video carousel for \"{used_seed}\" — your subject IS present",
+                rationale=(
+                    f"For \"{used_seed}\", Google surfaces {len(videos)} video clips at the top of the SERP. "
+                    f"Platform mix: {platforms_summary}. Your subject appears in the carousel."
+                ),
+                suggested_action=(
+                    "Audit which clips of yours are surfacing — these are your highest-leverage video assets. "
+                    "Double down on whatever creator/format is winning. Consider commissioning more clips with "
+                    "the same hook structure to expand carousel ownership."
+                ),
+                priority_score=0.7,
+                source={
+                    "videos": videos[:10],
+                    "platforms": platforms,
+                    "brand_present": True,
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            )]
+        else:
+            return [Opportunity(
+                type="video_carousel",
+                title=f"Google's video carousel for \"{used_seed}\" — your subject NOT present",
+                rationale=(
+                    f"For \"{used_seed}\", Google's video carousel surfaces {len(videos)} clips. "
+                    f"Platform mix: {platforms_summary}. Your subject does not appear in any of them. "
+                    + (f"Top creators currently winning: {', '.join(sample_creators[:3])}" if sample_creators else "")
+                ),
+                suggested_action=(
+                    f"Publish short-form video on the dominant platform for this query "
+                    f"({max(platforms.items(), key=lambda kv: kv[1])[0] if platforms else 'tiktok/youtube'}). "
+                    "Study the top-performing clips' hooks, length, and structure — match those patterns "
+                    "while adding your brand's perspective. Video carousel real estate often outranks "
+                    "page-1 organic in CTR for visual queries."
+                ),
+                priority_score=0.85,
+                source={
+                    "videos": videos[:10],
+                    "platforms": platforms,
+                    "brand_present": False,
+                    "sample_titles": sample_titles,
+                    "sample_creators": sample_creators,
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            )]
+
+    # ───── v0.4.6: news carousel (top_stories block) ─────
+
+    def _build_news_carousel_opps(
+        self, stories: List[Dict[str, Any]], used_seed: str,
+        seed_was_fallback: bool, limit: int,
+    ) -> List[Opportunity]:
+        """Top stories — what Google chose to FEATURE in the news carousel.
+        This is different from our DataForSEO News discovery (which returns
+        articles in the news index); top_stories is what's *editorially
+        surfaced* by Google for this query."""
+        out: List[Opportunity] = []
+        for s in stories[:limit]:
+            domain = s.get("domain") or ""
+            out.append(Opportunity(
+                type="news_carousel",
+                title=f"Top story: {s.get('source') or domain}",
+                rationale=(
+                    f"For \"{used_seed}\", Google's Top Stories block features: "
+                    f"\"{s.get('title') or '(no title)'}\" from {s.get('source') or domain}. "
+                    "Top Stories carousel sits above organic results for newsworthy queries — "
+                    "high-attention surface that's editorially curated by Google."
+                ),
+                suggested_action=(
+                    f"Pitch {s.get('source') or domain} a complementary angle. They're already covering "
+                    "the topic and Google is amplifying them — relationship-building here pays off in two ways: "
+                    "your future stories ride the same Top Stories carousel, plus you get inbound link authority."
+                ),
+                priority_score=0.7,
+                source={
+                    "title": s.get("title"),
+                    "url": s.get("url"),
+                    "source": s.get("source"),
+                    "domain": domain,
+                    "timestamp": s.get("timestamp"),
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            ))
+        return out
+
+    # ───── v0.4.6: knowledge graph (entity card) ─────
+
+    def _build_knowledge_graph_opps(
+        self, kg: Optional[Dict[str, Any]],
+        subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
+    ) -> List[Opportunity]:
+        """Whether the subject has a Google Knowledge Panel (the right-rail
+        entity card). Brands with one are recognized as entities by Google;
+        brands without one have a major entity-SEO opportunity."""
+        if not kg:
+            # No knowledge graph block → that's itself an opportunity for
+            # branded queries where you'd EXPECT one to exist.
+            return [Opportunity(
+                type="knowledge_graph",
+                title="No Google Knowledge Panel found for this subject",
+                rationale=(
+                    f"For \"{used_seed}\", Google does NOT show a Knowledge Panel (the entity card "
+                    "in the right rail of search results). Brands without a knowledge graph entry "
+                    "are not yet recognized as distinct entities by Google's knowledge layer — a "
+                    "blocker for brand-search appearance, AI Overview citations, and entity-aware "
+                    "ranking signals."
+                ),
+                suggested_action=(
+                    "Build entity authority: claim/optimize a Wikipedia (or Wikidata) entry for the brand, "
+                    "ensure structured-data markup (Organization schema) on the brand homepage, get cited "
+                    "in industry directories with consistent NAP. Once Wikidata recognizes the entity, "
+                    "Google typically follows within a few weeks."
+                ),
+                priority_score=0.75,
+                source={
+                    "knowledge_graph_present": False,
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            )]
+        # Knowledge graph exists → confirm it's actually about the subject
+        title = kg.get("title") or ""
+        return [Opportunity(
+            type="knowledge_graph",
+            title=f"Google Knowledge Panel exists: {title or '(unnamed)'}",
+            rationale=(
+                f"For \"{used_seed}\", Google shows a Knowledge Panel: \"{title}\""
+                + (f" — {kg.get('subtitle')}" if kg.get('subtitle') else "")
+                + (f". Description: \"{(kg.get('description') or '')[:280]}\"" if kg.get('description') else "")
+            ),
+            suggested_action=(
+                "Audit the knowledge panel content for accuracy. If wrong info shows: submit feedback through "
+                "Google's 'Suggest an edit' link. If correct but incomplete: add structured data + Wikidata "
+                "entries to enrich the entity. The knowledge panel feeds AI Overview citations and brand-name "
+                "search results."
+            ),
+            priority_score=0.6,
+            source={
+                "knowledge_graph_present": True,
+                "title": title,
+                "subtitle": kg.get("subtitle"),
+                "description": kg.get("description"),
+                "url": kg.get("url"),
+                "card_id": kg.get("card_id"),
+                "image_url": kg.get("image_url"),
+                "seed_keyword": used_seed,
+                "fallback": seed_was_fallback,
+            },
+        )]
+
+    # ───── v0.4.6: paid competitor (Google Ads / commercial units) ─────
+
+    def _build_paid_competitor_opps(
+        self, paid: List[Dict[str, Any]],
+        subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
+        limit: int,
+    ) -> List[Opportunity]:
+        """Who's spending Google Ads money to bid on this keyword. Pure
+        competitive intelligence — these are advertisers willing to pay
+        per click for traffic on this query."""
+        out: List[Opportunity] = []
+        for ad in paid[:limit]:
+            domain = ad.get("domain") or ""
+            if not domain:
+                continue
+            out.append(Opportunity(
+                type="paid_competitor",
+                title=f"Paid bidder: {domain}",
+                rationale=(
+                    f"For \"{used_seed}\", {domain} is paying Google Ads to appear at "
+                    f"position {ad.get('rank') or '?'}: \"{ad.get('title') or ''}\". "
+                    "Advertisers paying per click on this keyword are explicit competitors targeting "
+                    "the same buyer-intent traffic."
+                ),
+                suggested_action=(
+                    f"Audit {domain}'s ad copy + landing page. Note their value props, pricing positioning, "
+                    "and CTAs — these are vetted by their ad-budget review and proven to convert on this "
+                    "keyword. Use them as a reference for your own campaigns or organic content."
+                ),
+                priority_score=0.55,
+                source={
+                    "domain": domain,
+                    "title": ad.get("title"),
+                    "description": ad.get("description"),
+                    "url": ad.get("url"),
+                    "rank": ad.get("rank"),
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            ))
+        return out
+
+    # ───── v0.4.6: shopping listing (Google Shopping carousel) ─────
+
+    def _build_shopping_listing_opps(
+        self, products: List[Dict[str, Any]],
+        subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
+        limit: int,
+    ) -> List[Opportunity]:
+        """Products surfaced in Google's Shopping carousel for the keyword.
+        Only relevant for transactional queries; on informational queries
+        Google won't render this block."""
+        out: List[Opportunity] = []
+        for p in products[:limit]:
+            seller = p.get("seller") or p.get("domain") or ""
+            price_str = ""
+            if p.get("price") and p.get("currency"):
+                price_str = f"{p['price']} {p['currency']}"
+            elif p.get("price"):
+                price_str = str(p["price"])
+            out.append(Opportunity(
+                type="shopping_listing",
+                title=(p.get("title") or seller)[:160],
+                rationale=(
+                    f"For \"{used_seed}\", Google's Shopping carousel surfaces this product"
+                    + (f" at {price_str}" if price_str else "")
+                    + (f" sold by {seller}" if seller else "")
+                    + (f" (rating: {p.get('rating_value')})" if p.get('rating_value') else "")
+                    + ". Shopping carousel sits above organic results for transactional queries — "
+                    "high-CTR placement for buyer-intent traffic."
+                ),
+                suggested_action=(
+                    "If you sell competing products, ensure your product feed is in Google Merchant Center "
+                    "with optimized titles, schema-marked prices, and competitive ratings. If this listing "
+                    "is yours, audit the price/rating relative to other carousel positions."
+                ),
+                priority_score=0.5,
+                source={
+                    "title": p.get("title"),
+                    "url": p.get("url"),
+                    "seller": seller,
+                    "domain": p.get("domain"),
+                    "price": p.get("price"),
+                    "currency": p.get("currency"),
+                    "rating_value": p.get("rating_value"),
+                    "seed_keyword": used_seed,
+                    "fallback": seed_was_fallback,
+                },
+            ))
+        return out
+
+    # ───── v0.4.7: llm_visibility (reads existing /probe-llm snapshot) ─────
+
+    def _build_llm_visibility_opps(
+        self, *, tracked_mention_id: str, subject: Dict[str, Any],
+    ) -> List[Opportunity]:
+        """Read the latest LLM probe snapshot for the subject and convert
+        into an opportunity card. Does NOT fire a fresh probe (that's a
+        separate 15-credit `/probe-llm` endpoint). When no snapshot exists,
+        returns a card pointing the partner to the probe endpoint."""
+        try:
+            from app.services.integrations.llm_mention_probe_service import (
+                get_llm_mention_probe_service,
+            )
+            snapshot = get_llm_mention_probe_service().visibility_snapshot(
+                tracked_mention_id,
+            )
+        except Exception as e:
+            logger.warning(f"llm_visibility snapshot fetch failed: {e}")
+            return []
+
+        if not snapshot or not snapshot.get("present"):
+            return [Opportunity(
+                type="llm_visibility",
+                title="No LLM visibility data yet",
+                rationale=(
+                    f"No `/probe-llm` run has been executed for "
+                    f"\"{subject.get('subject_label')}\" yet. The LLM probe matrix asks "
+                    "Haiku, GPT-4o-mini, Gemini Flash, and Sonar 4 templated questions "
+                    "about your subject and reports whether each LLM mentioned you, at "
+                    "what rank, with what sentiment, and which competitors appeared "
+                    "alongside."
+                ),
+                suggested_action=(
+                    f"Trigger one probe run with `POST /api/v1/mentions/track/{tracked_mention_id}/probe-llm` "
+                    "(15 credits). Subsequent /opportunities calls will then surface the visibility "
+                    "snapshot inline. Probes also run automatically once a week per active subject."
+                ),
+                priority_score=0.4,
+                source={"snapshot_present": False,
+                        "tracked_mention_id": tracked_mention_id},
+            )]
+
+        sov = snapshot.get("share_of_voice") or 0.0
+        avg_pos = snapshot.get("avg_position")
+        per_model = snapshot.get("per_model") or {}
+        top_competitors = snapshot.get("top_competitors") or []
+        total_probes = snapshot.get("total_probes") or 0
+
+        # Per-model breakdown for rationale text
+        per_model_text = ""
+        for m, stats in per_model.items():
+            mentioned = stats.get("mentioned", 0)
+            probes = stats.get("probes", 0)
+            per_model_text += f"\n  • {m}: {mentioned}/{probes} probes mentioned"
+            positions = stats.get("positions") or []
+            if positions:
+                avg = sum(positions) / len(positions)
+                per_model_text += f" (avg rank #{avg:.1f})"
+
+        competitors_text = ""
+        if top_competitors:
+            top_5 = top_competitors[:5]
+            competitors_text = "\n  Top co-mentioned competitors: " + ", ".join(
+                f"{c[0]} ({c[1]})" for c in top_5 if isinstance(c, (list, tuple)) and len(c) >= 2
+            )
+
+        # Two narrative variants — strong vs weak presence
+        if sov >= 0.5:
+            title = f"Strong LLM visibility: {sov*100:.0f}% share-of-voice"
+            priority = 0.6  # not urgent — already winning
+            action = (
+                "Maintain content depth + entity authority signals to keep your share. "
+                "Monitor week-over-week probe data for any drop — the `llm_visibility_change` "
+                "alert fires automatically when avg rank shifts ≥ 2 positions."
+            )
+        elif sov > 0:
+            title = f"Partial LLM visibility: {sov*100:.0f}% share-of-voice"
+            priority = 0.8
+            action = (
+                "Identify which models cite you vs which don't (per-model breakdown above). "
+                "For models that don't cite: write content targeting the queries the cited "
+                "competitors won on, with structured-data + Wikidata signals to help the "
+                "LLMs disambiguate your brand."
+            )
+        else:
+            title = "No LLM visibility — your brand isn't in any LLM's answers"
+            priority = 0.95
+            action = (
+                "Generative Engine Optimization priority. Build authoritative pages on the "
+                "queries the probe templates use. Get cited in Wikipedia / Wikidata. The LLMs "
+                "rely heavily on these layers for recall. Re-probe weekly to track progress."
+            )
+
+        rationale = (
+            f"Across {total_probes} probe calls (Haiku, GPT-4o-mini, Gemini Flash, Sonar) "
+            f"asking 4 templated questions about \"{subject.get('subject_label')}\":\n"
+            f"  Share-of-voice: {sov*100:.0f}%"
+            + (f"\n  Avg rank: #{avg_pos:.1f}" if avg_pos else "")
+            + per_model_text
+            + competitors_text
+        )
+
+        return [Opportunity(
+            type="llm_visibility",
+            title=title,
+            rationale=rationale,
+            suggested_action=action,
+            priority_score=priority,
+            source={
+                "snapshot_present": True,
+                "share_of_voice": sov,
+                "avg_position": avg_pos,
+                "total_probes": total_probes,
+                "per_model": per_model,
+                "top_competitors": top_competitors[:10],
+                "probe_run_id": snapshot.get("probe_run_id"),
+                "tracked_mention_id": tracked_mention_id,
+            },
+        )]
+
+    # ───── v0.4.7: domain_snapshot (Labs domain_rank_overview) ─────
+
+    async def _build_domain_snapshot_opps(
+        self, *, subject: Dict[str, Any],
+        attribution: Optional[CostAttribution] = None,
+    ) -> List[Opportunity]:
+        """Fetch domain-level SEO metrics for the brand's homepage_domain.
+        Returns Domain Rank, organic traffic estimation, referring domains,
+        backlinks count. When `homepage_domain` is unset, returns a
+        configuration card explaining how to enable."""
+        homepage_domain = (subject.get("homepage_domain") or "").strip().lower()
+        if not homepage_domain:
+            return [Opportunity(
+                type="domain_snapshot",
+                title="Domain snapshot not configured",
+                rationale=(
+                    f"`domain_snapshot` requires the subject's `homepage_domain` field "
+                    f"to be set (the brand's primary domain, e.g. `flobali.gr`). "
+                    "When set, this card surfaces Domain Rank, estimated organic traffic, "
+                    "referring-domains count, and total backlinks."
+                ),
+                suggested_action=(
+                    f"Update the subject via PUT /api/v1/mentions/track/{{id}} with "
+                    "`{ \"homepage_domain\": \"yourbrand.com\" }`. Next /opportunities call "
+                    "will surface the domain snapshot."
+                ),
+                priority_score=0.3,
+                source={"configured": False},
+            )]
+
+        if not self.dataforseo_b64:
+            return []
+
+        country_code = (subject.get("country_codes") or [None])[0]
+        language_code = (subject.get("language_codes") or ["en"])[0].lower()
+
+        body = [{
+            "target": homepage_domain,
+            "language_code": language_code,
+            "location_code": _country_to_dfs_location(country_code),
+        }]
+        call_start = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                resp = await client.post(
+                    DATAFORSEO_LABS_DOMAIN_RANK,
+                    headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                             "Content-Type": "application/json"},
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:
+            logger.warning(f"domain_snapshot: domain_rank_overview '{homepage_domain}' failed: {e}")
+            log_dataforseo_labs_call(
+                attribution=attribution, seed_keyword=f"domain_rank:{homepage_domain}",
+                items_returned=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
+            return []
+
+        # Parse the metrics from the response
+        rank: Optional[int] = None
+        organic_count: Optional[int] = None
+        organic_traffic: Optional[int] = None
+        organic_traffic_value: Optional[float] = None
+        referring_domains: Optional[int] = None
+        backlinks: Optional[int] = None
+
+        for task in (data.get("tasks") or []):
+            for r in (task.get("result") or []):
+                for it in (r.get("items") or []):
+                    metrics = it.get("metrics") or {}
+                    organic = metrics.get("organic") or {}
+                    organic_count = organic.get("count") or organic_count
+                    organic_traffic = organic.get("etv") or organic_traffic
+                    organic_traffic_value = organic.get("estimated_paid_traffic_cost") or organic_traffic_value
+                    rank_info = it.get("metrics_info") or it.get("rank_info") or {}
+                    rank = rank_info.get("rank") or rank
+                    bl = it.get("backlinks_info") or {}
+                    referring_domains = bl.get("referring_domains") or referring_domains
+                    backlinks = bl.get("backlinks") or backlinks
+
+        log_dataforseo_labs_call(
+            attribution=attribution, seed_keyword=f"domain_rank:{homepage_domain}",
+            items_returned=1 if (organic_count or rank) else 0,
+            latency_ms=int((time.time() - call_start) * 1000), success=True,
+        )
+
+        if not (organic_count or rank or referring_domains):
+            # DataForSEO has no record of this domain — likely brand-new or very small
+            return [Opportunity(
+                type="domain_snapshot",
+                title=f"DataForSEO has no organic data for {homepage_domain}",
+                rationale=(
+                    f"The domain {homepage_domain} returned no organic ranking, traffic, "
+                    "or backlink data in DataForSEO's index. Either the domain is brand-new, "
+                    "very small, or hasn't been crawled yet. This is itself an SEO position "
+                    "indicator: the brand has effectively zero organic presence to measure."
+                ),
+                suggested_action=(
+                    "Confirm the homepage_domain is correct (no typos, no www. prefix needed). "
+                    "If correct, prioritize on-page SEO foundations: ensure the domain is indexable "
+                    "(robots.txt + sitemap), add Organization schema, build initial backlinks "
+                    "from industry directories. Re-check in 30 days."
+                ),
+                priority_score=0.7,
+                source={"homepage_domain": homepage_domain, "configured": True,
+                        "indexed_in_dataforseo": False},
+            )]
+
+        # Build narrative based on whether the brand has measurable presence
+        details_parts: List[str] = []
+        if organic_count is not None:
+            details_parts.append(f"{organic_count:,} ranking keywords")
+        if organic_traffic is not None:
+            details_parts.append(f"~{organic_traffic:,} estimated monthly organic visits")
+        if referring_domains is not None:
+            details_parts.append(f"{referring_domains:,} referring domains")
+        if backlinks is not None:
+            details_parts.append(f"{backlinks:,} total backlinks")
+        details_str = " · ".join(details_parts)
+
+        return [Opportunity(
+            type="domain_snapshot",
+            title=f"Domain snapshot — {homepage_domain}",
+            rationale=(
+                f"Overall organic SEO position for {homepage_domain}: {details_str}."
+                + (f" Domain Rank: {rank}." if rank is not None else "")
+            ),
+            suggested_action=(
+                "Use this as the baseline for measuring SEO progress over time. "
+                "Re-call /opportunities monthly to track keyword count + traffic estimation "
+                "trends. To see WHICH keywords the domain ranks for and which competitors "
+                "outrank you, the next building block would be a domain-keywords endpoint "
+                "(can be added on request — DataForSEO has dedicated Labs endpoints for that)."
+            ),
+            priority_score=0.6,
+            source={
+                "homepage_domain": homepage_domain,
+                "configured": True,
+                "indexed_in_dataforseo": True,
+                "domain_rank": rank,
+                "ranking_keywords_count": organic_count,
+                "estimated_organic_monthly_traffic": organic_traffic,
+                "estimated_traffic_value_usd": organic_traffic_value,
+                "referring_domains": referring_domains,
+                "backlinks": backlinks,
+            },
+        )]
 
     # ───── Optional Haiku polish ─────
 

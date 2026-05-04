@@ -132,6 +132,17 @@ class CreateMentionTrackRequest(BaseModel):
         ),
         examples=[30, 90, 180],
     )
+    homepage_domain: Optional[str] = Field(
+        None,
+        description=(
+            "Optional. The brand's primary domain (no scheme, no path) — e.g. "
+            "'flobali.gr'. Powers the `domain_snapshot` opportunity type, which "
+            "returns Domain Rank, organic-traffic estimation, referring-domains "
+            "count, and total backlinks. When unset, `domain_snapshot` returns "
+            "a configuration card explaining how to enable."
+        ),
+        examples=["flobali.gr", "yourbrand.com"],
+    )
     alert_channels: Optional[List[str]] = Field(
         None,
         description="Channels to fire alerts on. Subset of: 'bell', 'email', 'webhook'. Default ['bell'].",
@@ -158,6 +169,7 @@ class UpdateMentionTrackRequest(BaseModel):
     country_codes: Optional[List[str]] = None
     refresh_interval_hours: Optional[int] = Field(None, ge=1, le=720)
     recency_days: Optional[int] = Field(None, ge=1, le=730)
+    homepage_domain: Optional[str] = None
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None
@@ -251,6 +263,7 @@ async def create_tracking(
         country_codes=body.country_codes,
         refresh_interval_hours=body.refresh_interval_hours,
         recency_days=body.recency_days,
+        homepage_domain=body.homepage_domain,
         alert_channels=body.alert_channels,
         alert_on_spike=body.alert_on_spike,
         alert_on_negative_sentiment=body.alert_on_negative_sentiment,
