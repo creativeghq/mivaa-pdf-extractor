@@ -33,6 +33,9 @@ from app.services.integrations.llm_mention_probe_service import (
     get_llm_mention_probe_service,
 )
 from app.services.integrations.mention_identity_service import SubjectFacets
+from app.services.integrations.mention_opportunity_service import (
+    get_mention_opportunity_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +104,20 @@ class ExcludeRequest(BaseModel):
     url: Optional[str] = None
     domain: Optional[str] = None
     reason: Optional[str] = None
+
+
+class OpportunitiesRequest(BaseModel):
+    """Generate content + outreach opportunities from the existing mention data.
+
+    `types` is the subset to surface; default = all six. `use_llm_summary=true`
+    runs Haiku to polish each opportunity's rationale and suggested action
+    (small token cost). When false (default), returns the deterministic
+    rationales the service composes from the raw signals.
+    """
+    types: Optional[List[str]] = None
+    days: int = Field(30, ge=1, le=180)
+    limit_per_type: int = Field(5, ge=1, le=20)
+    use_llm_summary: bool = False
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -346,3 +363,34 @@ async def list_exclusions(
     _check_owner(sb, tracking_id=tracking_id, api_key_id=ctx.api_key_id)
     rows = get_tracked_mentions_service().list_exclusions(tracking_id)
     return {"success": True, "data": rows}
+
+
+@router.post("/{tracking_id}/opportunities")
+async def get_opportunities(
+    tracking_id: str,
+    body: Optional[OpportunitiesRequest] = None,
+    ctx: ApiKeyContext = Depends(authenticate_api_key),
+):
+    """Generate content + outreach opportunities from existing mention data.
+
+    Returns a ranked list of typed opportunities the user can act on:
+      - trending_topic        (write a post on a recurring theme)
+      - outlet_pitch          (warm outlets to pitch)
+      - keyword_opportunity   (high-volume related keywords)
+      - pao_question          (questions readers are asking)
+      - author_relationship   (warm author contacts)
+      - sentiment_response    (negative mentions to address)
+
+    Read-only — does not mutate state or trigger a refresh.
+    """
+    sb = get_supabase_client().client
+    _check_owner(sb, tracking_id=tracking_id, api_key_id=ctx.api_key_id)
+    body = body or OpportunitiesRequest()
+    out = await get_mention_opportunity_service().generate(
+        tracked_mention_id=tracking_id,
+        types=body.types,
+        days=body.days,
+        limit_per_type=body.limit_per_type,
+        use_llm_summary=body.use_llm_summary,
+    )
+    return {"success": True, "data": out}

@@ -150,16 +150,20 @@ def content_hash(*, url: str, title: Optional[str], body: Optional[str]) -> str:
 def alias_present(text: str, facets: SubjectFacets) -> bool:
     """Cheap deterministic check: does at least one alias appear in text?
 
-    Single-word aliases use substring match. Multi-word aliases (e.g. brand +
-    model phrases like "ORABELLA PRECIOSA") require ALL constituent words to
-    be present — order and adjacency don't matter. This is critical for
-    real-world coverage where news/blog articles split the words across a
-    sentence ("The Orabella line by Preciosa...", "Preciosa's Orabella
-    collection", etc.).
+    Strict substring match — every alias is matched as a literal phrase
+    (after case-fold + accent-strip + whitespace collapse). The string the
+    caller supplied is the string we look for. We do NOT split multi-word
+    aliases into individual words and accept "any of them anywhere"; that
+    would silently turn `ORABELLA PRECIOSA` into a query for two unrelated
+    brands and produce false positives.
 
-    Skips ultra-short tokens (≤2 chars) to avoid false positives from things
-    like "6.1" matching every "6.1mm" reference. Numeric model codes still
-    work because the multi-word path matches them as one of several tokens.
+    To get broader matching on multi-word labels, the caller has two opt-in
+    paths:
+      1. Supply variants explicitly via `aliases` (e.g. ["Orabella",
+         "Preciosa", "Orabella by Preciosa"]) — each is matched as a phrase.
+      2. Set `auto_expand_aliases: true` on subject create — the LLM
+         produces both the full label AND per-word splits as separate
+         aliases, each then matched as a phrase here.
     """
     if not text:
         return False
@@ -168,20 +172,8 @@ def alias_present(text: str, facets: SubjectFacets) -> bool:
         n = normalize_text(a)
         if not n:
             continue
-        words = [w for w in n.split() if len(w) >= 3]
-        if not words:
-            # All tokens too short — fall back to strict substring match
-            if n in nt:
-                return True
-            continue
-        if len(words) == 1:
-            # Single-word alias: substring match (cheap)
-            if words[0] in nt:
-                return True
-        else:
-            # Multi-word alias: ALL words must appear, any order
-            if all(w in nt for w in words):
-                return True
+        if n in nt:
+            return True
     return False
 
 

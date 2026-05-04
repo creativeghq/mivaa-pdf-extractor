@@ -354,7 +354,7 @@ class TrackedMentionsService:
             sources_enabled=sources_enabled,
             source_config=source_config,
             country_codes=country_codes,
-            recency_days=14,
+            recency_days=30,
             force_full_discovery=is_first_refresh or force,
         )
         if not result.hits:

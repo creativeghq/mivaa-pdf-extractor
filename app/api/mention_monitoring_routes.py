@@ -55,6 +55,9 @@ from app.services.integrations.llm_mention_probe_service import (
     build_probes, get_llm_mention_probe_service,
 )
 from app.services.integrations.mention_identity_service import SubjectFacets
+from app.services.integrations.mention_opportunity_service import (
+    get_mention_opportunity_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +201,13 @@ class ClassifierCorrectionRequest(BaseModel):
 
 class ProbeLlmRequest(BaseModel):
     models: Optional[List[str]] = None
+
+
+class OpportunitiesRequest(BaseModel):
+    types: Optional[List[str]] = None
+    days: int = Field(30, ge=1, le=180)
+    limit_per_type: int = Field(5, ge=1, le=20)
+    use_llm_summary: bool = False
 
 
 # ============================================================================
@@ -681,6 +691,54 @@ async def share_of_voice(
             for k, v in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
         ],
     }}
+
+
+@router.post("/products/{product_id}/opportunities")
+async def get_product_opportunities(
+    product_id: str,
+    body: Optional[OpportunitiesRequest] = None,
+    user: User = Depends(get_current_user),
+):
+    """Generate content + outreach opportunities for a product's tracked mentions."""
+    sb = get_supabase_client().client
+    svc = get_tracked_mentions_service()
+    existing = svc.find_for_product(product_id)
+    if not existing:
+        return {"success": True, "data": {
+            "tracked_mention_id": None, "opportunities": [],
+            "errors": {"subject": "product is not enrolled in mention monitoring"},
+        }}
+    if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+        raise HTTPException(status_code=403, detail="not the owner")
+    body = body or OpportunitiesRequest()
+    out = await get_mention_opportunity_service().generate(
+        tracked_mention_id=existing["id"],
+        types=body.types,
+        days=body.days,
+        limit_per_type=body.limit_per_type,
+        use_llm_summary=body.use_llm_summary,
+    )
+    return {"success": True, "data": out}
+
+
+@router.post("/track/{tracked_mention_id}/opportunities")
+async def get_tracked_opportunities(
+    tracked_mention_id: str,
+    body: Optional[OpportunitiesRequest] = None,
+    user: User = Depends(get_current_user),
+):
+    """Generate content + outreach opportunities for any tracked subject."""
+    sb = get_supabase_client().client
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    body = body or OpportunitiesRequest()
+    out = await get_mention_opportunity_service().generate(
+        tracked_mention_id=tracked_mention_id,
+        types=body.types,
+        days=body.days,
+        limit_per_type=body.limit_per_type,
+        use_llm_summary=body.use_llm_summary,
+    )
+    return {"success": True, "data": out}
 
 
 # ============================================================================

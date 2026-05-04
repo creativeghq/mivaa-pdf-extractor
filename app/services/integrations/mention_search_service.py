@@ -52,9 +52,13 @@ YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 # Cost caps per refresh (avoid runaway spend on a single subject)
 MAX_RESULTS_PER_SOURCE = 30
 MAX_TOTAL_RESULTS = 80
-PERPLEXITY_RECENCY_DAYS = 14
-RSS_RECENCY_DAYS = 14
-NEWS_RECENCY_DAYS = 14
+# Discovery window: how far back to look for mentions on each refresh.
+# 30 days is the sweet spot for monthly trade press cadence — covers a full
+# news cycle while staying within DataForSEO's freshness window. Sonar maps
+# this to its "month" recency filter automatically.
+PERPLEXITY_RECENCY_DAYS = 30
+RSS_RECENCY_DAYS = 30
+NEWS_RECENCY_DAYS = 30
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -207,7 +211,7 @@ class MentionSearchService:
         sources_enabled: Dict[str, bool],
         source_config: Optional[Dict[str, Any]] = None,
         country_codes: Optional[List[str]] = None,
-        recency_days: int = 14,
+        recency_days: int = 30,
         force_full_discovery: bool = False,
     ) -> MentionSearchResult:
         """Run all enabled sources in parallel. Returns deduped hits."""
