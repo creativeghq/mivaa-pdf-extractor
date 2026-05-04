@@ -1004,12 +1004,17 @@ class MentionOpportunityService:
         subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
         limit: int,
     ) -> List[Opportunity]:
-        # Skip rankings where your own brand-related domain is the result
-        own_haystack = normalize_text(" ".join(filter(None, [
-            subject.get("brand_name"), subject.get("subject_label"),
-            *(subject.get("aliases") or [])
-        ])))
+        """Return top-ranked organic results for the seed keyword as-is.
 
+        We do NOT auto-skip the brand's own domain. The same tracked subject
+        gets used in two opposite ways:
+          - In-house team tracking their own brand → wants competitor cards only.
+          - Third-party analyst / distributor / competitor tracking the brand →
+            wants the brand's own ranking too (signals SEO ownership).
+        Implicit filtering would silently break the second use case. Callers
+        who want to filter their own domain can use `mention_excluded_urls`
+        (the existing exclude mechanism takes a `domain` field).
+        """
         out: List[Opportunity] = []
         kept = 0
         for item in organic:
@@ -1017,9 +1022,6 @@ class MentionOpportunityService:
                 break
             domain = (item.get("domain") or "").lower()
             if not domain:
-                continue
-            # Best-effort: skip if the ranking page is from your own brand
-            if own_haystack and normalize_text(domain) and normalize_text(domain) in own_haystack:
                 continue
             out.append(Opportunity(
                 type="competitor_ranking",
@@ -1032,7 +1034,8 @@ class MentionOpportunityService:
                 suggested_action=(
                     f"Audit the page at {item.get('url') or domain}: what intent does it serve, what "
                     "questions does it answer, what depth/structure does it use. Write content that "
-                    "matches the same intent more authoritatively to outrank it."
+                    "matches the same intent more authoritatively to outrank it — or, if it's the "
+                    "tracked brand's own domain, treat this as a baseline for their current SEO position."
                 ),
                 priority_score=max(0.3, 1.0 - (kept * 0.1)),  # rank 1 = highest priority
                 source={
