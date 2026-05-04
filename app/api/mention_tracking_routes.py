@@ -36,6 +36,9 @@ from app.services.integrations.mention_identity_service import SubjectFacets
 from app.services.integrations.mention_opportunity_service import (
     get_mention_opportunity_service,
 )
+from app.services.integrations.mention_cost_logger import (
+    MENTION_OP_CREDIT_COST, debit_credits, refund_credits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +247,26 @@ async def refresh_tracking(
     sb = get_supabase_client().client
     _check_owner(sb, tracking_id=tracking_id, api_key_id=ctx.api_key_id)
     force = bool(body.force) if body else False
-    outcome = await get_tracked_mentions_service().refresh(tracking_id, force=force)
+
+    # Layer B: debit credits before doing the work; refund on hard failure or
+    # when the refresh short-circuits (throttled / inactive). Successful refreshes
+    # keep the credits even if 0 hits land — the external API calls still ran.
+    cost = MENTION_OP_CREDIT_COST["refresh"]
+    if not debit_credits(user_id=ctx.user_id or "", amount=cost,
+                         operation_type="mention_monitoring.refresh"):
+        raise HTTPException(status_code=402, detail="insufficient credits")
+    try:
+        outcome = await get_tracked_mentions_service().refresh(tracking_id, force=force)
+    except Exception:
+        refund_credits(user_id=ctx.user_id or "", amount=cost,
+                       operation_type="mention_monitoring.refresh")
+        raise
+
+    if outcome.get("status") in ("throttled", "inactive", "not_found", "error"):
+        refund_credits(user_id=ctx.user_id or "", amount=cost,
+                       operation_type="mention_monitoring.refresh")
+    else:
+        outcome["partner_credits_debited"] = cost
     return {"success": True, "data": outcome}
 
 
@@ -317,9 +339,23 @@ async def probe_llm(
         "aliases": row.get("aliases") or [],
         "brand": row.get("brand_name"),
     })
-    result = await get_llm_mention_probe_service().probe(
-        tracked_mention_id=tracking_id, facets=facets,
-    )
+    cost = MENTION_OP_CREDIT_COST["probe_llm"]
+    if not debit_credits(user_id=ctx.user_id or "", amount=cost,
+                         operation_type="mention_monitoring.probe_llm"):
+        raise HTTPException(status_code=402, detail="insufficient credits")
+    try:
+        result = await get_llm_mention_probe_service().probe(
+            tracked_mention_id=tracking_id, facets=facets,
+        )
+    except Exception:
+        refund_credits(user_id=ctx.user_id or "", amount=cost,
+                       operation_type="mention_monitoring.probe_llm")
+        raise
+    if result.get("status") != "completed":
+        refund_credits(user_id=ctx.user_id or "", amount=cost,
+                       operation_type="mention_monitoring.probe_llm")
+    else:
+        result["partner_credits_debited"] = cost
     return {"success": True, "data": result}
 
 
@@ -386,11 +422,22 @@ async def get_opportunities(
     sb = get_supabase_client().client
     _check_owner(sb, tracking_id=tracking_id, api_key_id=ctx.api_key_id)
     body = body or OpportunitiesRequest()
-    out = await get_mention_opportunity_service().generate(
-        tracked_mention_id=tracking_id,
-        types=body.types,
-        days=body.days,
-        limit_per_type=body.limit_per_type,
-        use_llm_summary=body.use_llm_summary,
-    )
+    cost_key = "opportunities_with_llm" if body.use_llm_summary else "opportunities"
+    cost = MENTION_OP_CREDIT_COST[cost_key]
+    if not debit_credits(user_id=ctx.user_id or "", amount=cost,
+                         operation_type=f"mention_monitoring.{cost_key}"):
+        raise HTTPException(status_code=402, detail="insufficient credits")
+    try:
+        out = await get_mention_opportunity_service().generate(
+            tracked_mention_id=tracking_id,
+            types=body.types,
+            days=body.days,
+            limit_per_type=body.limit_per_type,
+            use_llm_summary=body.use_llm_summary,
+        )
+    except Exception:
+        refund_credits(user_id=ctx.user_id or "", amount=cost,
+                       operation_type=f"mention_monitoring.{cost_key}")
+        raise
+    out["partner_credits_debited"] = cost
     return {"success": True, "data": out}

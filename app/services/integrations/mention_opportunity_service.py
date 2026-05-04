@@ -42,6 +42,10 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.mention_identity_service import (
     SubjectFacets, normalize_text,
 )
+from app.services.integrations.mention_cost_logger import (
+    CostAttribution, log_dataforseo_labs_call, log_haiku_call,
+    recompute_lifetime_cost,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +111,7 @@ class MentionOpportunityService:
         days: int = 30,
         limit_per_type: int = 5,
         use_llm_summary: bool = False,
+        attribution: Optional[CostAttribution] = None,
     ) -> Dict[str, Any]:
         """
         Generate opportunities for a tracked subject.
@@ -130,6 +135,17 @@ class MentionOpportunityService:
                 "errors": {"subject": "not found"},
             }
         mentions = self._load_mentions(tracked_mention_id, days=days)
+
+        # If caller didn't pre-build attribution, derive it from the subject row
+        # so cost logging still works.
+        if attribution is None:
+            attribution = CostAttribution(
+                user_id=subject.get("user_id"),
+                workspace_id=subject.get("workspace_id"),
+                tracked_mention_id=tracked_mention_id,
+                product_id=subject.get("product_id"),
+                api_key_id=subject.get("api_key_id"),
+            )
 
         # Build opportunities per type
         opportunities: List[Opportunity] = []
@@ -161,7 +177,7 @@ class MentionOpportunityService:
 
         if "keyword_opportunity" in types:
             try:
-                kw_ops = await self._keyword_opportunities(subject, limit_per_type)
+                kw_ops = await self._keyword_opportunities(subject, limit_per_type, attribution)
                 opportunities.extend(kw_ops)
             except Exception as e:
                 errors["keyword_opportunity"] = str(e)[:200]
@@ -180,10 +196,13 @@ class MentionOpportunityService:
         # Optional LLM polish: rewrite rationales + suggested_actions in better prose
         if use_llm_summary and opportunities and self.anthropic_key:
             try:
-                opportunities = await self._polish_with_haiku(opportunities, subject)
+                opportunities = await self._polish_with_haiku(opportunities, subject, attribution)
             except Exception as e:
                 errors["llm_summary"] = str(e)[:200]
                 logger.warning(f"opportunity: Haiku polish failed: {e}")
+
+        # Roll up lifetime cost (Layer C) so total_billed_usd on the row stays current
+        recompute_lifetime_cost(tracked_mention_id=tracked_mention_id)
 
         return {
             "tracked_mention_id": tracked_mention_id,
@@ -201,7 +220,11 @@ class MentionOpportunityService:
         try:
             r = (
                 self.supabase.client.table("tracked_mentions")
-                .select("id, subject_label, brand_name, aliases, language_codes, country_codes, subject_facets")
+                .select(
+                    "id, subject_label, brand_name, aliases, "
+                    "language_codes, country_codes, subject_facets, "
+                    "user_id, workspace_id, product_id, api_key_id"
+                )
                 .eq("id", tracked_mention_id)
                 .maybe_single()
                 .execute()
@@ -419,6 +442,7 @@ class MentionOpportunityService:
 
     async def _keyword_opportunities(
         self, subject: Dict[str, Any], limit: int,
+        attribution: Optional[CostAttribution] = None,
     ) -> List[Opportunity]:
         if not self.dataforseo_b64:
             return []
@@ -437,6 +461,7 @@ class MentionOpportunityService:
             "include_seed_keyword": False,
         }]
 
+        call_start = time.time()
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.post(
@@ -449,6 +474,11 @@ class MentionOpportunityService:
                 data = resp.json()
         except Exception as e:
             logger.warning(f"opportunity: DataForSEO related-keywords failed: {e}")
+            log_dataforseo_labs_call(
+                attribution=attribution, seed_keyword=seed, items_returned=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
             return []
 
         items: List[Dict[str, Any]] = []
@@ -469,6 +499,11 @@ class MentionOpportunityService:
 
         # Rank by search volume desc
         items.sort(key=lambda x: -(x.get("search_volume") or 0))
+        log_dataforseo_labs_call(
+            attribution=attribution, seed_keyword=seed,
+            items_returned=len(items),
+            latency_ms=int((time.time() - call_start) * 1000), success=True,
+        )
         items = items[:limit]
 
         out: List[Opportunity] = []
@@ -536,6 +571,7 @@ class MentionOpportunityService:
 
     async def _polish_with_haiku(
         self, ops: List[Opportunity], subject: Dict[str, Any],
+        attribution: Optional[CostAttribution] = None,
     ) -> List[Opportunity]:
         if not ops or not self.anthropic_key:
             return ops
@@ -555,6 +591,7 @@ Opportunities:
     "rationale": o.rationale, "suggested_action": o.suggested_action,
 } for o in batch], ensure_ascii=False)}
 """
+        call_start = time.time()
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.post(
@@ -574,6 +611,14 @@ Opportunities:
                 data = resp.json()
             blocks = data.get("content") or []
             text = "\n".join([b.get("text", "") for b in blocks if b.get("type") == "text"])
+            usage = data.get("usage") or {}
+            log_haiku_call(
+                attribution=attribution, operation="opportunity_polish",
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=True,
+            )
             arr = self._parse_json_array(text)
             for i, polished in enumerate(arr[:len(batch)]):
                 if isinstance(polished, dict):
@@ -583,6 +628,12 @@ Opportunities:
                         batch[i].suggested_action = polished["suggested_action"][:160]
         except Exception as e:
             logger.warning(f"opportunity: Haiku polish failed: {e}")
+            log_haiku_call(
+                attribution=attribution, operation="opportunity_polish",
+                input_tokens=0, output_tokens=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
         return ops
 
     def _parse_json_array(self, text: str) -> List[Any]:

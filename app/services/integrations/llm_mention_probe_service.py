@@ -33,6 +33,10 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.mention_identity_service import (
     SubjectFacets, normalize_text,
 )
+from app.services.integrations.mention_cost_logger import (
+    CostAttribution, log_llm_probe_call, log_haiku_call,
+    recompute_lifetime_cost,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +134,7 @@ class LlmMentionProbeService:
         facets: SubjectFacets,
         models: Optional[List[str]] = None,
         templates: Optional[List[Dict[str, str]]] = None,
+        attribution: Optional[CostAttribution] = None,
     ) -> Dict[str, Any]:
         run_id = str(uuid.uuid4())
         models_to_use = models or self.enabled_models()
@@ -152,9 +157,18 @@ class LlmMentionProbeService:
                 cost = self._cost(model, in_tok, out_tok)
                 total_cost += cost
 
+                # Layer A: log every probe call with attribution
+                log_llm_probe_call(
+                    attribution=attribution, model=model,
+                    input_tokens=in_tok, output_tokens=out_tok,
+                    latency_ms=latency_ms,
+                    success=err is None, error_message=err,
+                )
+
                 # Post-process: extract structured signal via Haiku tool use
                 extraction = await self._extract(
                     response_text=text or "", facets=facets, model_used=model,
+                    attribution=attribution,
                 )
                 rows.append({
                     "tracked_mention_id": tracked_mention_id,
@@ -180,6 +194,9 @@ class LlmMentionProbeService:
                 self.supabase.client.table("llm_mention_probes").insert(rows[i:i + 25]).execute()
         except Exception as e:
             logger.error(f"llm_probes insert failed: {e}")
+
+        # Layer C: roll up the new cost into total_billed_usd on the row
+        recompute_lifetime_cost(tracked_mention_id=tracked_mention_id)
 
         return {
             "status": "completed",
@@ -390,6 +407,7 @@ class LlmMentionProbeService:
 
     async def _extract(
         self, *, response_text: str, facets: SubjectFacets, model_used: str,
+        attribution: Optional[CostAttribution] = None,
     ) -> Dict[str, Any]:
         """Use Haiku to extract structured signal from a model's free-text response.
         Falls back to deterministic parsing if Haiku is unavailable."""
@@ -401,6 +419,7 @@ class LlmMentionProbeService:
         if not self.anthropic_key:
             return self._extract_deterministic(response_text, facets)
 
+        call_start = time.time()
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 resp = await client.post(
@@ -445,8 +464,22 @@ class LlmMentionProbeService:
                 )
                 resp.raise_for_status()
                 data = resp.json()
+            usage = data.get("usage") or {}
+            log_haiku_call(
+                attribution=attribution, operation="llm_probe_extract",
+                input_tokens=int(usage.get("input_tokens") or 0),
+                output_tokens=int(usage.get("output_tokens") or 0),
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=True,
+            )
         except Exception as e:
             logger.debug(f"llm-probe extract Haiku failed: {e}")
+            log_haiku_call(
+                attribution=attribution, operation="llm_probe_extract",
+                input_tokens=0, output_tokens=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
             return self._extract_deterministic(response_text, facets)
 
         for block in (data.get("content") or []):

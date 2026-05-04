@@ -41,6 +41,10 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.mention_identity_service import (
     SubjectFacets, alias_present, content_hash, normalize_text,
 )
+from app.services.integrations.mention_cost_logger import (
+    CostAttribution, log_dataforseo_news_call, log_perplexity_call,
+    log_youtube_call,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +217,7 @@ class MentionSearchService:
         country_codes: Optional[List[str]] = None,
         recency_days: int = 30,
         force_full_discovery: bool = False,
+        attribution: Optional[CostAttribution] = None,
     ) -> MentionSearchResult:
         """Run all enabled sources in parallel. Returns deduped hits."""
         start = time.time()
@@ -222,13 +227,15 @@ class MentionSearchService:
         tasks: List[Tuple[str, asyncio.Task]] = []
         if sources_enabled.get("news", True):
             tasks.append(("dataforseo_news", asyncio.create_task(
-                self._search_dataforseo_news(facets, country=country, recency_days=recency_days)
+                self._search_dataforseo_news(facets, country=country, recency_days=recency_days,
+                                             attribution=attribution)
             )))
         if sources_enabled.get("blogs", True):
             # Blog discovery via Perplexity Sonar (web mode)
             tasks.append(("perplexity_sonar", asyncio.create_task(
                 self._search_perplexity(facets, country=country, recency_days=recency_days,
-                                       force_full_discovery=force_full_discovery)
+                                       force_full_discovery=force_full_discovery,
+                                       attribution=attribution)
             )))
         if sources_enabled.get("rss", True):
             tasks.append(("rss", asyncio.create_task(
@@ -236,7 +243,7 @@ class MentionSearchService:
             )))
         if sources_enabled.get("youtube", False):
             tasks.append(("youtube", asyncio.create_task(
-                self._search_youtube(facets)
+                self._search_youtube(facets, attribution=attribution)
             )))
 
         all_hits: List[MentionHit] = []
@@ -332,6 +339,7 @@ class MentionSearchService:
 
     async def _search_dataforseo_news(
         self, facets: SubjectFacets, *, country: Optional[str], recency_days: int,
+        attribution: Optional[CostAttribution] = None,
     ) -> Dict[str, Any]:
         if not self.dataforseo_b64:
             return {"hits": [], "credits": 0}
@@ -358,6 +366,7 @@ class MentionSearchService:
                 "location_code": _country_to_dfs_location(country) if country else 2840,
                 "language_code": (facets.language_codes or ["en"])[0].lower(),
             }]
+            call_start = time.time()
             try:
                 async with httpx.AsyncClient(timeout=20.0) as client:
                     resp = await client.post(
@@ -371,6 +380,11 @@ class MentionSearchService:
                 credits += 1
             except Exception as e:
                 logger.warning(f"dataforseo_news: request '{query}' failed: {e}")
+                log_dataforseo_news_call(
+                    attribution=attribution, query=query, hits_returned=0,
+                    latency_ms=int((time.time() - call_start) * 1000),
+                    success=False, error_message=str(e),
+                )
                 continue
 
             query_hits = 0
@@ -403,6 +417,11 @@ class MentionSearchService:
                             raw={"rank": item.get("rank_absolute"), "query": query},
                         ))
 
+            log_dataforseo_news_call(
+                attribution=attribution, query=query, hits_returned=query_hits,
+                latency_ms=int((time.time() - call_start) * 1000), success=True,
+            )
+
             # Stop early if the primary alias already returned plenty
             if query_hits >= MAX_RESULTS_PER_SOURCE // 2:
                 break
@@ -414,6 +433,7 @@ class MentionSearchService:
     async def _search_perplexity(
         self, facets: SubjectFacets, *, country: Optional[str], recency_days: int,
         force_full_discovery: bool,
+        attribution: Optional[CostAttribution] = None,
     ) -> Dict[str, Any]:
         if not self.perplexity_key:
             return {"hits": [], "credits": 0}
@@ -461,6 +481,7 @@ class MentionSearchService:
             request_body["web_search_options"] = {
                 "user_location": {"country": country.upper()}
             }
+        call_start = time.time()
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 resp = await client.post(
@@ -500,13 +521,29 @@ class MentionSearchService:
                 payload = resp.json()
         except Exception as e:
             logger.warning(f"perplexity_sonar: request failed: {e}")
+            log_perplexity_call(
+                attribution=attribution, model=model,
+                input_tokens=0, output_tokens=0, hits_returned=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
             return {"hits": [], "credits": 0}
+
+        usage = payload.get("usage") or {}
+        in_tok = int(usage.get("prompt_tokens") or 0)
+        out_tok = int(usage.get("completion_tokens") or 0)
+        latency_ms = int((time.time() - call_start) * 1000)
 
         text = ((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         try:
             import json as _json
             data = _json.loads(text)
         except Exception:
+            log_perplexity_call(
+                attribution=attribution, model=model,
+                input_tokens=in_tok, output_tokens=out_tok, hits_returned=0,
+                latency_ms=latency_ms, success=True,
+            )
             return {"hits": [], "credits": 1}
 
         hits: List[MentionHit] = []
@@ -528,6 +565,12 @@ class MentionSearchService:
                 source="perplexity_sonar",
             ))
         # ~1 sonar credit; sonar-pro is more — bill 2 vs 1 as a cost proxy
+        log_perplexity_call(
+            attribution=attribution, model=model,
+            input_tokens=in_tok, output_tokens=out_tok,
+            hits_returned=min(len(hits), MAX_RESULTS_PER_SOURCE),
+            latency_ms=latency_ms, success=True,
+        )
         return {"hits": hits[:MAX_RESULTS_PER_SOURCE], "credits": 2 if force_full_discovery else 1}
 
     # ───── RSS ─────
@@ -612,11 +655,15 @@ class MentionSearchService:
 
     # ───── YouTube ─────
 
-    async def _search_youtube(self, facets: SubjectFacets) -> Dict[str, Any]:
+    async def _search_youtube(
+        self, facets: SubjectFacets, *,
+        attribution: Optional[CostAttribution] = None,
+    ) -> Dict[str, Any]:
         if not self.youtube_key:
             return {"hits": [], "credits": 0}
         aliases = facets.all_aliases()
         query = aliases[0] if aliases else facets.label
+        call_start = time.time()
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.get(
@@ -634,6 +681,11 @@ class MentionSearchService:
                 data = resp.json()
         except Exception as e:
             logger.warning(f"youtube: search failed: {e}")
+            log_youtube_call(
+                attribution=attribution, query=query, hits_returned=0,
+                latency_ms=int((time.time() - call_start) * 1000),
+                success=False, error_message=str(e),
+            )
             return {"hits": [], "credits": 0}
 
         hits: List[MentionHit] = []
@@ -655,6 +707,11 @@ class MentionSearchService:
                 source="youtube",
                 raw={"video_id": vid},
             ))
+        log_youtube_call(
+            attribution=attribution, query=query,
+            hits_returned=min(len(hits), MAX_RESULTS_PER_SOURCE),
+            latency_ms=int((time.time() - call_start) * 1000), success=True,
+        )
         return {"hits": hits[:MAX_RESULTS_PER_SOURCE], "credits": 0}
 
     # ───── Dedupe ─────

@@ -38,6 +38,9 @@ from app.services.integrations.mention_identity_service import (
 from app.services.integrations.mention_search_service import (
     MentionHit, canonicalize_url, domain_of, get_mention_search_service,
 )
+from app.services.integrations.mention_cost_logger import (
+    CostAttribution, stamp_refresh_cost,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -322,6 +325,18 @@ class TrackedMentionsService:
 
         run_id = str(uuid.uuid4())
 
+        # Build attribution context — every external call inside this
+        # refresh tags ai_usage_logs entries with these IDs so we can
+        # roll up cost per-subject / per-product / per-run.
+        attribution = CostAttribution(
+            user_id=row.get("user_id"),
+            workspace_id=row.get("workspace_id"),
+            tracked_mention_id=tracked_mention_id,
+            product_id=row.get("product_id"),
+            refresh_run_id=run_id,
+            api_key_id=row.get("api_key_id"),
+        )
+
         # Facets — Haiku expansion is opt-in via auto_expand_aliases flag.
         # Default is deterministic (label + user aliases only, no LLM call,
         # no Anthropic dependency).
@@ -334,6 +349,7 @@ class TrackedMentionsService:
             brand_hint=row.get("brand_name"),
             cached=cached_facets,
             use_llm=use_llm,
+            attribution=attribution,
         )
         if not cached_facets:
             try:
@@ -356,6 +372,7 @@ class TrackedMentionsService:
             country_codes=country_codes,
             recency_days=30,
             force_full_discovery=is_first_refresh or force,
+            attribution=attribution,
         )
         if not result.hits:
             self._stamp_refresh(
@@ -400,6 +417,7 @@ class TrackedMentionsService:
         ]
         verdicts = await self.identity.classify_batch(
             candidates=candidates_for_classifier, facets=facets,
+            attribution=attribution,
         )
 
         # Persist + sentiment metrics
@@ -501,6 +519,14 @@ class TrackedMentionsService:
             dispatcher.dispatch(candidates)
         except Exception as e:
             logger.warning(f"mention alert dispatch failed: {e}")
+
+        # Roll up per-refresh cost (Layer C). Sums every ai_usage_logs row
+        # tagged with refresh_run_id into last_refresh_billed_usd, and bumps
+        # total_billed_usd. Best-effort; never fails the refresh.
+        stamp_refresh_cost(
+            tracked_mention_id=tracked_mention_id,
+            refresh_run_id=run_id,
+        )
 
         return {
             "status": "refreshed",

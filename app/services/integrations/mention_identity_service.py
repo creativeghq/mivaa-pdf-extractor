@@ -35,6 +35,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.mention_cost_logger import (
+    CostAttribution, log_haiku_call,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +203,7 @@ class MentionIdentityService:
         product_type_hint: Optional[str] = None,
         cached: Optional[Dict[str, Any]] = None,
         use_llm: bool = False,
+        attribution: Optional[CostAttribution] = None,
     ) -> SubjectFacets:
         """
         Decompose the subject into facets.
@@ -241,9 +245,19 @@ class MentionIdentityService:
             product_type_hint=product_type_hint,
         )
         try:
-            text = await self._haiku_completion(prompt, max_tokens=600)
+            text, in_tok, out_tok, latency_ms = await self._haiku_completion(prompt, max_tokens=600)
+            log_haiku_call(
+                attribution=attribution, operation="facet_extraction",
+                input_tokens=in_tok, output_tokens=out_tok, latency_ms=latency_ms,
+                success=True,
+            )
         except Exception as e:
             logger.warning(f"mention-identity: facet Haiku call failed: {e}")
+            log_haiku_call(
+                attribution=attribution, operation="facet_extraction",
+                input_tokens=0, output_tokens=0, latency_ms=0,
+                success=False, error_message=str(e),
+            )
             return SubjectFacets(
                 label=subject_label,
                 aliases=list(aliases_seed or []),
@@ -342,6 +356,7 @@ class MentionIdentityService:
         *,
         candidates: List[Dict[str, Any]],
         facets: SubjectFacets,
+        attribution: Optional[CostAttribution] = None,
     ) -> List[Dict[str, Any]]:
         """
         Classify each candidate. Returns parallel list of verdicts:
@@ -389,6 +404,7 @@ class MentionIdentityService:
                     candidates=[item[1] for item in chunk],
                     facets=facets,
                     few_shot=few_shot,
+                    attribution=attribution,
                 )
             except Exception as e:
                 logger.warning(f"mention-identity: classifier batch failed: {e}")
@@ -426,9 +442,15 @@ class MentionIdentityService:
 
     # ───── Internal: anthropic completion ─────
 
-    async def _haiku_completion(self, prompt: str, max_tokens: int = 1000) -> str:
+    async def _haiku_completion(
+        self, prompt: str, max_tokens: int = 1000,
+    ) -> Tuple[str, int, int, int]:
+        """Returns (text, input_tokens, output_tokens, latency_ms). Raises on
+        any HTTP / network error so the caller knows the call failed."""
+        import time as _time
         if not self.api_key:
             raise RuntimeError("ANTHROPIC_API_KEY not configured")
+        start = _time.time()
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{ANTHROPIC_API_BASE}/messages",
@@ -447,7 +469,14 @@ class MentionIdentityService:
             data = resp.json()
             blocks = data.get("content") or []
             text_parts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
-            return "\n".join(text_parts).strip()
+            usage = data.get("usage") or {}
+            latency = int((_time.time() - start) * 1000)
+            return (
+                "\n".join(text_parts).strip(),
+                int(usage.get("input_tokens") or 0),
+                int(usage.get("output_tokens") or 0),
+                latency,
+            )
 
     def _parse_json_block(self, text: str) -> Dict[str, Any]:
         # Strip ```json fences
@@ -506,6 +535,7 @@ Be terse. No prose. Just JSON.
         candidates: List[Dict[str, Any]],
         facets: SubjectFacets,
         few_shot: List[Dict[str, Any]],
+        attribution: Optional[CostAttribution] = None,
     ) -> List[Dict[str, Any]]:
         if not self.api_key:
             return [
@@ -550,7 +580,20 @@ Candidates:
 Return ONLY a JSON array of length {len(candidates)}, in input order. Each entry:
 {{"relevance": "...", "relevance_score": 0.0-1.0, "sentiment": "...", "sentiment_score": -1.0-1.0, "match_note": "..."}}
 """
-        text = await self._haiku_completion(prompt, max_tokens=2000)
+        try:
+            text, in_tok, out_tok, latency_ms = await self._haiku_completion(prompt, max_tokens=2000)
+            log_haiku_call(
+                attribution=attribution, operation="classifier",
+                input_tokens=in_tok, output_tokens=out_tok, latency_ms=latency_ms,
+                success=True,
+            )
+        except Exception as e:
+            log_haiku_call(
+                attribution=attribution, operation="classifier",
+                input_tokens=0, output_tokens=0, latency_ms=0,
+                success=False, error_message=str(e),
+            )
+            raise
         # Parse top-level array
         s = text.strip()
         if s.startswith("```"):
