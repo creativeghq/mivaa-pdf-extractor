@@ -273,23 +273,48 @@ class VecsService:
         self,
         image_id: str,
         embeddings: Dict[str, List[float]],
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
+        embedding_model: Optional[str] = None,
+        schema_version: Optional[int] = None,
     ) -> Dict[str, bool]:
         """
-        Upsert all 4 specialized SLIG embeddings for an image with rollback semantics.
+        Upsert per-aspect embeddings for an image with rollback semantics.
+
+        Dimension is derived from the first non-empty embedding rather than
+        hard-coded — supports both:
+          - Legacy 768D SLIG-blend vectors (pre-2026-05-04)
+          - New 1024D Voyage-from-VisionAnalysis aspect vectors (post-2026-05-04)
+        After the migration truncates the four collections at 1024D, only the
+        new path will succeed; the legacy path will get a dim-mismatch from
+        Postgres and we'll see the error in logs (intentional — surfaces
+        misconfigured callers rather than silently writing wrong-dim data).
 
         Audit fix #32: previously each upsert+flag pair was independent — if
         color succeeded and texture failed, the flag set was inconsistent with
         VECS contents (has_color_slig=true, has_texture_slig=false, but the
         next consumer might re-attempt all 4 and double-write). Now we:
-          1. Write all 4 vectors to VECS first (collect failures).
+          1. Write all vectors to VECS first (collect failures).
           2. Only set flags for the ones that succeeded.
-          3. If ANY failed, log loudly so operator can see partial state.
+          3. Persist provenance (`<aspect>_aspect_embedding_model` and
+             `<aspect>_aspect_schema_version`) alongside the flag in a
+             single round-trip — mirrors the pattern already used for
+             `understanding_embedding_model` / `understanding_schema_version`.
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with keys: color, texture, style, material (each 768D)
+            embeddings: Dict with keys: color, texture, style, material. Empty
+                values mean "skip this aspect" (the aspect's source fields
+                were empty in VisionAnalysis — see app.models.vision_analysis
+                serializers).
             metadata: Metadata to store with each embedding
+            embedding_model: Provenance — which model produced these vectors
+                (e.g. 'voyage-3' for v2, 'slig-similarity-guided' for legacy).
+                Persisted to document_images.<aspect>_aspect_embedding_model
+                so admin tooling can detect drift across the catalog.
+            schema_version: VisionAnalysis schema version that fed these
+                aspect strings. Used by the backfill cron to identify stale
+                rows after a serializer change. Only meaningful for the v2
+                Voyage path; legacy path passes None.
 
         Returns:
             Dict mapping collection name to success status
@@ -304,29 +329,65 @@ class VecsService:
             "material": "image_material_embeddings"
         }
 
-        # Phase 1: write all 4 vectors to VECS, collect outcomes.
+        # Derive dimension from the first non-empty embedding. The 4 vectors
+        # are always the same dim (all 768 SLIG OR all 1024 Voyage — never
+        # mixed in a single call) so one peek is enough. If all 4 are empty,
+        # fall back to 1024 (the post-migration shape) so vecs.collection
+        # creation doesn't fail on the lookup before we know we have nothing
+        # to write.
+        derived_dim: Optional[int] = None
+        for emb in embeddings.values():
+            if emb:
+                derived_dim = len(emb)
+                break
+        if derived_dim is None:
+            logger.debug(f"⏭️ All aspect embeddings empty for image {image_id} — nothing to upsert")
+            for collection_name in collection_mapping.values():
+                results[collection_name] = False
+            return results
+
+        # Phase 1: write all available vectors to VECS, collect outcomes.
         for embedding_type, collection_name in collection_mapping.items():
             if embedding_type in embeddings and embeddings[embedding_type]:
                 try:
                     collection = self.get_or_create_collection(
                         name=collection_name,
-                        dimension=768  # SLIG SigLIP2 cloud endpoint
+                        dimension=derived_dim,
                     )
                     collection.upsert(records=[(image_id, embeddings[embedding_type], metadata)])
                     results[collection_name] = True
                     succeeded_types.append(embedding_type)
-                    logger.debug(f"✅ Upserted {embedding_type} embedding (768D) to '{collection_name}'")
+                    logger.debug(
+                        f"✅ Upserted {embedding_type} embedding ({derived_dim}D) to '{collection_name}'"
+                    )
                 except Exception as e:
                     logger.error(f"❌ Failed to upsert {embedding_type} embedding: {e}")
                     results[collection_name] = False
             else:
                 results[collection_name] = False
 
-        # Phase 2: set flags ONLY for successful upserts. Done after VECS writes
-        # so a partial failure can't leave flag=true with no vector.
+        # Phase 2: set flags ONLY for successful upserts, with provenance.
+        # The flag column name is kept as `has_<aspect>_slig` for now to
+        # avoid touching the 30+ frontend/SQL/script references in one PR;
+        # the column rename to `has_<aspect>_aspect` is queued as a follow-
+        # up after the v2 rollout settles. The provenance columns DO carry
+        # the new naming — `<aspect>_aspect_embedding_model` /
+        # `<aspect>_aspect_schema_version` — so we can distinguish v1 vs
+        # v2 rows even while flag names stay legacy.
+        is_v2 = derived_dim == 1024
         for embedding_type in succeeded_types:
+            extra: Dict[str, Any] = {}
+            if is_v2:
+                if embedding_model:
+                    extra[f"{embedding_type}_aspect_embedding_model"] = embedding_model
+                if schema_version is not None:
+                    extra[f"{embedding_type}_aspect_schema_version"] = schema_version
             try:
-                self._set_image_flag(image_id, f'has_{embedding_type}_slig')
+                self._set_image_flag(
+                    image_id,
+                    f'has_{embedding_type}_slig',
+                    extra_columns=extra or None,
+                )
             except Exception as flag_err:
                 # Flag-set failure: VECS has the vector but flag stays false.
                 # Acceptable — search will skip via O(1) flag check; backfill
@@ -337,14 +398,18 @@ class VecsService:
                 )
 
         success_count = len(succeeded_types)
-        if success_count < 4:
+        attempted_count = sum(1 for emb in embeddings.values() if emb)
+        if success_count < attempted_count:
             logger.warning(
-                f"⚠️ Image {image_id}: only {success_count}/4 specialized embeddings "
-                f"succeeded — flags set: {succeeded_types}, missing: "
-                f"{[t for t in collection_mapping if t not in succeeded_types]}"
+                f"⚠️ Image {image_id}: only {success_count}/{attempted_count} specialized embeddings "
+                f"succeeded — flags set: {succeeded_types}, "
+                f"missing: {[t for t in collection_mapping if t in embeddings and embeddings[t] and t not in succeeded_types]}"
             )
         else:
-            logger.info(f"✅ Upserted 4/4 specialized embeddings for image {image_id}")
+            logger.info(
+                f"✅ Upserted {success_count}/{attempted_count} specialized embeddings "
+                f"({derived_dim}D, model={embedding_model or 'unspecified'}) for image {image_id}"
+            )
 
         return results
 
@@ -603,10 +668,21 @@ class VecsService:
         include_metadata: bool = True
     ) -> List[Dict[str, Any]]:
         """
-        Search for similar images using text-guided specialized SigLIP embeddings.
+        Search for similar images using per-aspect embeddings.
+
+        Pre-2026-05-04: queries were SLIG 768D vectors derived from the SLIG
+        blend-trick path. Post-2026-05-04: queries are Voyage 1024D text
+        embeddings (typically of the user's query text) — same model the
+        aspect collection itself was built with.
+
+        Dimension is read from the query vector rather than hardcoded so
+        this method works across the rollout (and so a misconfigured caller
+        passing wrong-dim data gets a clear Postgres dim-mismatch instead of
+        silently storing the wrong-shape vector).
 
         Args:
-            query_embedding: Query embedding vector (768D)
+            query_embedding: Query embedding vector. 768D during legacy
+                rollout window, 1024D post-migration.
             embedding_type: Type of embedding ('color', 'texture', 'style', 'material')
             limit: Maximum number of results
             workspace_id: Optional workspace ID filter
@@ -628,10 +704,14 @@ class VecsService:
                 logger.error(f"Invalid embedding type: {embedding_type}")
                 return []
 
+            if not query_embedding:
+                logger.warning(f"Empty query embedding for {embedding_type} search")
+                return []
+
             collection_name = collection_mapping[embedding_type]
             collection = self.get_or_create_collection(
                 name=collection_name,
-                dimension=768  # Updated to 768D for SLIG
+                dimension=len(query_embedding),  # Auto-detect: 768 (legacy SLIG) or 1024 (Voyage v2)
             )
 
             # Build filters
@@ -683,9 +763,10 @@ class VecsService:
             return formatted_results
 
         except Exception as e:
-            # Post-migration: all 4 specialized collections are 768D halfvec, matching
-            # the SLIG cloud endpoint output. Any dimension mismatch here is a real
-            # bug (e.g. caller passing the wrong-size query embedding) — log as ERROR.
+            # Dim mismatches surface here (e.g. caller passes a 768D SLIG
+            # vector after the migration brought the collection to 1024D
+            # Voyage). Log as ERROR — silently returning [] would hide the
+            # configuration bug from operators.
             logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
             return []
 
@@ -702,17 +783,20 @@ class VecsService:
         Search all VECS collections in parallel and return combined results with multi-vector scores.
 
         This enables true multi-vector search by querying:
-        - image_slig_embeddings (primary visual, 768D)
-        - image_understanding_embeddings (vision-understanding, 1024D)
-        - image_color_embeddings (768D)
-        - image_texture_embeddings (768D)
-        - image_style_embeddings (768D)
-        - image_material_embeddings (768D)
+        - image_slig_embeddings (primary visual, 768D SLIG)
+        - image_understanding_embeddings (vision-understanding, 1024D Voyage)
+        - image_color_embeddings (1024D Voyage post-2026-05-04 / 768D SLIG legacy)
+        - image_texture_embeddings (1024D Voyage post-2026-05-04 / 768D SLIG legacy)
+        - image_style_embeddings (1024D Voyage post-2026-05-04 / 768D SLIG legacy)
+        - image_material_embeddings (1024D Voyage post-2026-05-04 / 768D SLIG legacy)
 
         Args:
-            visual_query_embedding: Primary 768D visual query embedding
-            specialized_query_embeddings: Optional dict with keys: color, texture, style, material
-                                         If not provided, visual_query_embedding is used for all
+            visual_query_embedding: Primary 768D SLIG visual query embedding
+            specialized_query_embeddings: Optional dict with keys: color, texture, style, material.
+                Post-v2: 1024D Voyage text embeddings (e.g. from Voyage-embedding the
+                user's query text). Pre-v2: 768D SLIG vectors. The dim is auto-detected
+                per-aspect by search_specialized_embeddings — do NOT mix dims across
+                the 4 aspects in a single call.
             understanding_query_embedding: Optional 1024D understanding query embedding from Voyage AI
             limit: Maximum results per collection
             filters: Optional metadata filters

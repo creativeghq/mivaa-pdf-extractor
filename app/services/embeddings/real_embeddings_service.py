@@ -57,6 +57,12 @@ import sentry_sdk
 
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.supabase_client import SupabaseClient
+from app.models.vision_analysis import (
+    VisionAnalysis,
+    SCHEMA_VERSION,
+    ASPECT_SERIALIZERS,
+    vision_analysis_from_legacy_dict,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -231,15 +237,67 @@ class RealEmbeddingsService:
                     embeddings["metadata"]["confidence_scores"]["visual"] = 0.95
                     self.logger.info(f"✅ Visual embedding generated (768D) using {model_used}")
 
-                # 2a. Generate text-guided specialized visual embeddings using SLIG similarity mode.
-                # Pass the visual_embedding we just computed so the specialized
-                # path doesn't re-fetch the same image embedding from SLIG.
-                # Saves 1 SLIG call per image (was 1 base + 1 re-base + 4 sim + 4 text = 10/img;
-                # now 1 base + 4 sim + 0 text-cached = 5/img).
-                specialized_embeddings, pil_image_for_reuse = await self._generate_specialized_siglip_embeddings(
+                # Close PIL image after the SLIG visual call. Aspect embeddings
+                # post-v2 are derived from VisionAnalysis text, not from the
+                # image bytes, so we no longer need to keep the PIL image
+                # alive past this point.
+                if pil_image_for_reuse and hasattr(pil_image_for_reuse, 'close'):
+                    try:
+                        pil_image_for_reuse.close()
+                        self.logger.debug("✅ Closed PIL image after visual embedding")
+                    except Exception:
+                        pass
+
+            # 2a. Per-aspect embeddings (color / texture / style / material).
+            #
+            # Pre-v2 (the SLIG blend trick): 4 vectors computed as
+            #     guided = 0.7-0.9 × base_image_emb + 0.1-0.3 × fixed_text_emb
+            # where the text embeddings were 4 fixed global prompts shared
+            # across every image. Result: 4 vectors that were ~80% identical
+            # to the base visual embedding and to each other. Same fixed
+            # text → same fixed perturbation direction for every image.
+            #
+            # Post-v2 (this path): each aspect string is built deterministically
+            # from the per-image VisionAnalysis fields (colors[], textures[]+
+            # finish, style+surface_pattern+applications, material_type+
+            # category+subcategory) and Voyage-embedded to 1024D. The aspect
+            # vector now actually encodes "what this image's color/texture/
+            # style/material looks like according to Claude Opus 4.7" —
+            # rather than "this image plus a generic shove toward the word
+            # 'color'". Same model and dimension as image_understanding_
+            # embeddings so the four collections share an embedding space.
+            #
+            # Behind feature flag EMBED_ASPECTS_FROM_VISION_ANALYSIS so the
+            # rollout can flip atomically once the migration has cleared
+            # the old 768D blend vectors out of the four collections.
+            use_v2_aspects = os.getenv(
+                "EMBED_ASPECTS_FROM_VISION_ANALYSIS", "false"
+            ).lower() in ("1", "true", "yes")
+
+            if use_v2_aspects and vision_analysis:
+                aspect_embeddings = await self._generate_specialized_aspect_embeddings(
+                    vision_analysis=vision_analysis,
+                )
+                if aspect_embeddings:
+                    embeddings["embeddings"]["color_aspect_1024"] = aspect_embeddings.get("color")
+                    embeddings["embeddings"]["texture_aspect_1024"] = aspect_embeddings.get("texture")
+                    embeddings["embeddings"]["style_aspect_1024"] = aspect_embeddings.get("style")
+                    embeddings["embeddings"]["material_aspect_1024"] = aspect_embeddings.get("material")
+                    embeddings["metadata"]["model_versions"]["specialized_aspect"] = "voyage-3"
+                    embeddings["metadata"]["confidence_scores"]["specialized_aspect"] = 0.95
+                    embeddings["metadata"]["schema_versions"] = embeddings["metadata"].get("schema_versions", {})
+                    embeddings["metadata"]["schema_versions"]["specialized_aspect"] = SCHEMA_VERSION
+                    self.logger.info(
+                        f"✅ Per-aspect embeddings generated ({len(aspect_embeddings)} × 1024D Voyage)"
+                    )
+            elif image_url or image_data:
+                # Legacy path — kept until the v2 rollout is complete and the
+                # SQL migration has truncated the four 768D collections.
+                # The flag will be removed in the cleanup phase.
+                specialized_embeddings, _legacy_pil = await self._generate_specialized_siglip_embeddings(
                     image_url,
                     image_data,
-                    pil_image=pil_image_for_reuse,
+                    pil_image=None,
                     base_image_embedding=visual_embedding,
                 )
                 if specialized_embeddings:
@@ -247,16 +305,12 @@ class RealEmbeddingsService:
                     embeddings["embeddings"]["texture_slig_768"] = specialized_embeddings.get("texture")
                     embeddings["embeddings"]["style_slig_768"] = specialized_embeddings.get("style")
                     embeddings["embeddings"]["material_slig_768"] = specialized_embeddings.get("material")
-                    # Text-guided SLIG embeddings using similarity mode
                     embeddings["metadata"]["model_versions"]["specialized_visual"] = "slig-similarity-guided"
-                    embeddings["metadata"]["confidence_scores"]["specialized_visual"] = 0.90  # High confidence for SLIG
-                    self.logger.info("✅ Text-guided specialized SLIG embeddings generated (4 × 768D)")
-
-                # Close PIL image after all embeddings are generated
-                if pil_image_for_reuse and hasattr(pil_image_for_reuse, 'close'):
+                    embeddings["metadata"]["confidence_scores"]["specialized_visual"] = 0.90
+                    self.logger.info("✅ Text-guided specialized SLIG embeddings generated (legacy path, 4 × 768D)")
+                if _legacy_pil and hasattr(_legacy_pil, 'close'):
                     try:
-                        pil_image_for_reuse.close()
-                        self.logger.debug("✅ Closed PIL image after all embeddings generated")
+                        _legacy_pil.close()
                     except Exception:
                         pass
 
@@ -1372,6 +1426,146 @@ class RealEmbeddingsService:
                 return emb
             return None
 
+    async def _generate_specialized_aspect_embeddings(
+        self,
+        vision_analysis: Any,
+    ) -> Optional[Dict[str, List[float]]]:
+        """Generate 4 per-image aspect embeddings (1024D Voyage) from VisionAnalysis.
+
+        Replaces the legacy SLIG-blend trick (`_generate_specialized_siglip_embeddings`)
+        which produced 4 vectors that were ~80% identical to the base image
+        embedding because they were just blended copies of it with 4 fixed
+        global text directions. This new path embeds **per-image** aspect
+        text derived from the vision-model's structured output, so the
+        4 vectors actually carry independent per-aspect signal.
+
+        Source mapping (see app.models.vision_analysis):
+          color    → VisionAnalysis.colors[]
+          texture  → VisionAnalysis.textures[] + finish
+          style    → VisionAnalysis.style + surface_pattern + applications
+          material → VisionAnalysis.material_type + category + subcategory
+
+        Behavior:
+          - color/texture/style aspects skip when their source fields are
+            empty (returns dict missing that key — caller upserts only the
+            ones present). Material always returns text since material_type
+            is required.
+          - Returns None on hard failure (vision_analysis unparseable, all
+            Voyage calls failed). Caller treats None as "skip aspect
+            embeddings entirely for this image".
+          - Each per-aspect Voyage call is logged via ai_call_logger so
+            cost attribution lines up with the rest of the pipeline.
+
+        Cost: 4 short Voyage `voyage-3` text embeddings per image. Aspect
+        strings average <30 tokens, so ~$0.0001 per image — much cheaper
+        than the ~12 SLIG calls the legacy path made.
+        """
+        # Normalize input → VisionAnalysis instance. Accepts dict (from
+        # cached DB JSON), VisionAnalysis (when called directly from
+        # ingestion), or legacy dict shape (from pre-schema rows).
+        try:
+            if isinstance(vision_analysis, VisionAnalysis):
+                va = vision_analysis
+            elif isinstance(vision_analysis, dict):
+                if not _is_valid_vision_analysis_schema(vision_analysis):
+                    self.logger.info(
+                        "⚠️ Aspect embeddings: vision_analysis dict failed schema validation — skipping"
+                    )
+                    return None
+                try:
+                    va = VisionAnalysis(**vision_analysis)
+                except Exception:
+                    # Fall back to legacy coercion for older rows whose JSON
+                    # predates the strict schema.
+                    va = vision_analysis_from_legacy_dict(vision_analysis)
+                    if va is None:
+                        self.logger.info(
+                            "⚠️ Aspect embeddings: legacy vision_analysis coercion failed — skipping"
+                        )
+                        return None
+            else:
+                self.logger.info(
+                    f"⚠️ Aspect embeddings: unsupported vision_analysis type {type(vision_analysis)} — skipping"
+                )
+                return None
+        except Exception as e:
+            self.logger.error(f"❌ Aspect embeddings: VisionAnalysis parse failed: {e}")
+            return None
+
+        # Build 4 deterministic aspect strings via the registry. None means
+        # the source fields didn't carry enough text for that aspect.
+        aspect_texts: Dict[str, Optional[str]] = {
+            aspect: serializer(va) for aspect, serializer in ASPECT_SERIALIZERS.items()
+        }
+
+        # Embed each non-None aspect string via Voyage 1024D. We allow per-
+        # aspect skip (rather than all-or-nothing) because color/texture/
+        # style are legitimately optional — we don't want a missing color
+        # field to also wipe out a perfectly good material vector.
+        embeddings: Dict[str, List[float]] = {}
+        any_failure = False
+        for aspect, text in aspect_texts.items():
+            if not text:
+                self.logger.debug(f"⏭️ Aspect '{aspect}' skipped — empty source text")
+                continue
+            try:
+                vec = await self._generate_text_embedding(
+                    text=text,
+                    input_type="document",
+                )
+                if not vec:
+                    self.logger.warning(f"⚠️ Aspect '{aspect}' Voyage embed returned None")
+                    any_failure = True
+                    continue
+                if len(vec) != 1024:
+                    self.logger.error(
+                        f"❌ Aspect '{aspect}' wrong dim: got {len(vec)}, expected 1024"
+                    )
+                    any_failure = True
+                    continue
+                embeddings[aspect] = vec
+                self.logger.debug(
+                    f"✅ Aspect '{aspect}' embedded: '{text[:60]}{'…' if len(text) > 60 else ''}'"
+                )
+            except Exception as e:
+                self.logger.error(f"❌ Aspect '{aspect}' embed failed: {e}", exc_info=True)
+                any_failure = True
+
+        if not embeddings:
+            self.logger.warning(
+                "⚠️ Aspect embeddings: 0/4 generated (all aspects empty or all failed) — skipping"
+            )
+            return None
+
+        # Aggregate cost log so analytics shows one row per image rather
+        # than four. Confidence breakdown mirrors the understanding-
+        # embedding logger so dashboards can stack them.
+        try:
+            await self.ai_logger.log_ai_call(
+                task="aspect_embeddings_batch",
+                model="voyage-3",
+                input_tokens=0,  # voyage doesn't surface token count on text embed
+                output_tokens=0,
+                cost=0.0,  # cost rolled up by Voyage account-level billing
+                latency_ms=0,
+                confidence_score=0.95,
+                confidence_breakdown={
+                    "model_confidence": 0.98,
+                    "completeness": 1.0 if not any_failure else 0.7,
+                    "consistency": 1.0,
+                    "validation": 1.0,
+                    "vectors_generated": len(embeddings),
+                    "vector_dimension": 1024,
+                    "vector_kinds": list(embeddings.keys()),
+                    "schema_version": SCHEMA_VERSION,
+                },
+                action="use_ai_result",
+            )
+        except Exception as log_err:
+            self.logger.debug(f"Aspect aggregate log skipped: {log_err}")
+
+        return embeddings
+
     async def _generate_specialized_siglip_embeddings(
         self,
         image_url: Optional[str],
@@ -1380,6 +1574,12 @@ class RealEmbeddingsService:
         base_image_embedding: Optional[List[float]] = None,
     ) -> tuple[Optional[Dict[str, List[float]]], Optional[any]]:
         """
+        LEGACY (pre-2026-05-04) — text-guided SLIG blend trick. Retained behind
+        the EMBED_ASPECTS_FROM_VISION_ANALYSIS feature flag during the rollout
+        of `_generate_specialized_aspect_embeddings` (Voyage 1024D). To be
+        deleted in the cleanup phase once the new aspect embeddings are
+        backfilled across the catalog.
+
         Generate 4 text-guided SLIG embeddings (color / texture / style / material).
 
         All-or-nothing: if any of the 4 fail, this returns None for the whole set

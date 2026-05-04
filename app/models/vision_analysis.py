@@ -23,7 +23,11 @@ from pydantic import BaseModel, Field, ConfigDict
 
 # Bump this when the schema or the serialiser changes. The backfill cron
 # uses it to identify stale embeddings.
-SCHEMA_VERSION: int = 1
+#
+# v2 (2026-05-04): added 4 per-aspect serializers (color/texture/style/material)
+# that produce real per-image text from VisionAnalysis fields. The aspect
+# embedding collections (image_color_embeddings etc.) consume these.
+SCHEMA_VERSION: int = 2
 
 
 class VisionAnalysis(BaseModel):
@@ -193,6 +197,94 @@ def serialize_vision_analysis_to_text(va: VisionAnalysis) -> str:
         parts.append(f"Text detected: {' '.join(va.detected_text)}.")
 
     return " ".join(parts)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Per-aspect serializers (v2, 2026-05-04)
+#
+# Each function consumes the same VisionAnalysis instance and returns a
+# deterministic text string that captures one aspect of the material as
+# the vision model actually saw it. Voyage embeds these strings into the
+# four aspect collections (image_color_embeddings etc.) — replacing the
+# pre-v2 "SLIG blend" trick where every image got the same fixed text
+# vector mixed into its visual embedding regardless of its actual content.
+#
+# Critical contract: byte-identical output for any two VisionAnalysis
+# instances with the same field values. Otherwise the aspect embedding
+# space drifts between runs. Caller treats `None` as "skip this aspect"
+# (insufficient source data on the image).
+# ──────────────────────────────────────────────────────────────────────
+
+
+def serialize_aspect_color(va: VisionAnalysis) -> Optional[str]:
+    """Per-image color text for image_color_embeddings.
+
+    Source: VisionAnalysis.colors[]. Each entry is a descriptive color
+    name as observed on the image (e.g. 'warm white', 'grey veining').
+    Returns None when the vision model didn't surface any colors — the
+    aspect embedding for this image is then skipped rather than filled
+    with a placeholder.
+    """
+    parts = [c.strip() for c in va.colors if c and c.strip()]
+    return ", ".join(parts) if parts else None
+
+
+def serialize_aspect_texture(va: VisionAnalysis) -> Optional[str]:
+    """Per-image texture text for image_texture_embeddings.
+
+    Source: VisionAnalysis.textures[] + finish. Both contribute to the
+    tactile/surface character of the material. Returns None when neither
+    is present.
+    """
+    parts = [t.strip() for t in va.textures if t and t.strip()]
+    if va.finish and va.finish.strip():
+        parts.append(va.finish.strip())
+    return ", ".join(parts) if parts else None
+
+
+def serialize_aspect_style(va: VisionAnalysis) -> Optional[str]:
+    """Per-image style text for image_style_embeddings.
+
+    Source: VisionAnalysis.style + surface_pattern + applications. The
+    aesthetic and intended-use signals together describe the material's
+    design role. Returns None when none of the three fields are populated.
+    """
+    parts: List[str] = []
+    if va.style and va.style.strip():
+        parts.append(va.style.strip())
+    if va.surface_pattern and va.surface_pattern.strip():
+        parts.append(va.surface_pattern.strip())
+    for app in va.applications:
+        if app and app.strip():
+            parts.append(app.strip())
+    return ", ".join(parts) if parts else None
+
+
+def serialize_aspect_material(va: VisionAnalysis) -> str:
+    """Per-image material text for image_material_embeddings.
+
+    Source: VisionAnalysis.material_type + category + subcategory.
+    material_type is required so this serializer always returns a
+    non-empty string — every PRODUCT_IMAGE has at least the bare
+    material name.
+    """
+    parts = [va.material_type.strip()]
+    if va.category and va.category.strip():
+        parts.append(va.category.strip())
+    if va.subcategory and va.subcategory.strip():
+        parts.append(va.subcategory.strip())
+    return ", ".join(parts)
+
+
+# Aspect-name → serializer registry. Lets the embedding service iterate
+# the four aspects without naming them in code, and lets the admin
+# inspector endpoint surface the source text per aspect for diagnosis.
+ASPECT_SERIALIZERS = {
+    "color": serialize_aspect_color,
+    "texture": serialize_aspect_texture,
+    "style": serialize_aspect_style,
+    "material": serialize_aspect_material,
+}
 
 
 def vision_analysis_from_legacy_dict(d: Dict[str, Any]) -> Optional[VisionAnalysis]:

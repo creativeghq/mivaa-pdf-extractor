@@ -1731,3 +1731,275 @@ async def backfill_understanding_embeddings_endpoint(
     )
     logger.info(f"📊 Understanding backfill summary: {summary}")
     return JSONResponse(content=summary)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Per-aspect embedding backfill + per-image rebuild + inspector
+# (post-2026-05-04 — see app.services.embeddings.aspect_backfill)
+# ──────────────────────────────────────────────────────────────────────
+
+class AspectBackfillRequest(BaseModel):
+    """Request body for the aspect-embeddings backfill endpoint.
+
+    Two modes:
+      - Cron (no selectors): scans up to `max_images` rows globally,
+        re-embeds any with stale aspect collections.
+      - Bulk-admin (with selectors): targets a specific document, product,
+        workspace, or explicit image-id list. `image_ids` overrides the
+        other selectors when present.
+    """
+    batch_size: int = 25
+    max_images: int = 200
+    workspace_id: Optional[str] = None
+    document_id: Optional[str] = None
+    product_id: Optional[str] = None
+    image_ids: Optional[List[str]] = None
+
+
+@router.post("/admin/aspect-embeddings/backfill")
+async def backfill_aspect_embeddings_endpoint(
+    request: AspectBackfillRequest,
+    user: User = Depends(require_admin),
+):
+    """Re-embed the four aspect collections from cached VisionAnalysis JSON.
+
+    Cheap path — Voyage-embeds 4 short strings per image (~$0.0001 each).
+    Does NOT re-run Claude Opus 4.7. If a row has no usable
+    vision_analysis, run `/admin/understanding-embeddings/backfill` first
+    (that one DOES re-run Opus + repopulates the JSON cache).
+
+    Stale = (any aspect collection missing) OR (any aspect_schema_version
+    below current SCHEMA_VERSION) OR (aspect_embedding_model not 'voyage-3').
+
+    Selectors stack (workspace_id ∧ document_id ∧ ...). `image_ids` and
+    `product_id` are special: image_ids resolves directly; product_id
+    joins through image_product_associations.
+
+    Bounded by `batch_size` and `max_images`; safe to call repeatedly.
+    Returns scanned/reembedded/partial/skipped/failed counts.
+    """
+    from app.services.embeddings.aspect_backfill import (
+        backfill_aspect_embeddings,
+    )
+
+    summary = await backfill_aspect_embeddings(
+        batch_size=request.batch_size,
+        max_images=request.max_images,
+        workspace_id=request.workspace_id,
+        document_id=request.document_id,
+        image_ids=request.image_ids,
+        product_id=request.product_id,
+    )
+    logger.info(f"📊 Aspect backfill summary: {summary}")
+    return JSONResponse(content=summary)
+
+
+class ImageRebuildRequest(BaseModel):
+    """Request body for per-image manual rebuild.
+
+    `aspects` is the list of aspects to re-embed (all four if omitted).
+    `rerun_vision_analysis` is reserved for a follow-up — when true the
+    endpoint will first re-fetch the image bytes and re-run Claude Opus
+    4.7 to repopulate `document_images.vision_analysis`, then cascade
+    aspect re-embedding. Today (v1) we only support re-embedding from
+    cached VA — operators chain `/admin/understanding-embeddings/backfill`
+    with explicit `image_ids` for the Opus re-run.
+    """
+    aspects: Optional[List[str]] = None
+    reason: Optional[str] = None
+    rerun_vision_analysis: bool = False
+
+
+@router.post("/admin/images/{image_id}/rerun-aspect-embeddings")
+async def rerun_aspect_embeddings_endpoint(
+    image_id: str,
+    request: ImageRebuildRequest,
+    user: User = Depends(require_admin),
+):
+    """Per-image manual rebuild of the four aspect collections.
+
+    Synchronous — single image, returns the result inline so the admin
+    UI can show "what changed" without a polling loop. Reads the cached
+    vision_analysis JSON, re-runs the deterministic aspect serializers,
+    Voyage-embeds each non-empty aspect string, upserts to VECS with
+    fresh provenance.
+
+    Returns:
+        - `aspects_embedded`: which aspects were rewritten this call
+        - `aspects_skipped_empty_text`: aspects whose source fields in
+          VisionAnalysis were empty (legitimate skip)
+        - `aspects_errored`: per-aspect Voyage / VECS failures
+        - `source_texts`: the exact string Voyage embedded for each aspect
+          — critical for diagnosing "why does this image return wrong
+          color matches" (operator can spot bad VisionAnalysis output)
+        - `upsert_results`: per-collection upsert success flags
+    """
+    from app.services.embeddings.aspect_backfill import (
+        rerun_aspect_embeddings_for_image,
+    )
+
+    if request.rerun_vision_analysis:
+        # Reserved — current implementation does not re-run Opus from this
+        # endpoint. Returning 501 makes the unsupported branch explicit
+        # rather than silently ignoring the flag.
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "rerun_vision_analysis=true is not yet supported on this endpoint. "
+                "Run POST /admin/understanding-embeddings/backfill with image_ids=[<id>] "
+                "first to repopulate VisionAnalysis, then call this endpoint without "
+                "rerun_vision_analysis to re-embed aspects."
+            ),
+        )
+
+    result = await rerun_aspect_embeddings_for_image(
+        image_id=image_id,
+        aspects=request.aspects,
+    )
+    if not result.get("ok"):
+        # Mirror the rerun helper's error code → HTTP status mapping.
+        err = result.get("error", "")
+        if err == "image_not_found":
+            raise HTTPException(status_code=404, detail=result)
+        if err == "vision_analysis_missing_or_unparseable":
+            raise HTTPException(status_code=409, detail=result)
+        raise HTTPException(status_code=500, detail=result)
+    logger.info(
+        f"✅ Per-image aspect rebuild: image={image_id}, "
+        f"embedded={result.get('aspects_embedded')}, "
+        f"skipped_empty={result.get('aspects_skipped_empty_text')}, "
+        f"errored={list((result.get('aspects_errored') or {}).keys())}, "
+        f"reason={request.reason or 'unspecified'}"
+    )
+    return JSONResponse(content=result)
+
+
+@router.get("/admin/images/{image_id}/embeddings-status")
+async def get_image_embeddings_status_endpoint(
+    image_id: str,
+    user: User = Depends(require_admin),
+):
+    """Diagnostic — return the full embedding state of one image.
+
+    Read-only. The companion to `/admin/images/{id}/rerun-aspect-embeddings` —
+    you call this FIRST when triaging "why is this image returning wrong
+    matches", inspect the source texts each aspect was built from, and
+    THEN call rerun if you find a bad input.
+
+    Surfaces, per image:
+      - VisionAnalysis schema_version + the JSON itself
+      - Each of the six embedding collections: present?, model,
+        schema_version, plus the source text the aspect was derived from
+        (the killer feature — lets you spot e.g. `color="black"` for an
+        obviously white image without hitting the model)
+      - Boolean flags state on document_images
+      - Which collections are stale relative to the current SCHEMA_VERSION
+    """
+    from app.models.vision_analysis import (
+        SCHEMA_VERSION as CURRENT_SCHEMA_VERSION,
+        serialize_aspect_color,
+        serialize_aspect_texture,
+        serialize_aspect_style,
+        serialize_aspect_material,
+        VisionAnalysis,
+        vision_analysis_from_legacy_dict,
+    )
+
+    supabase = SupabaseClient()
+    row_resp = supabase.client.table("document_images").select(
+        "id, image_url, vision_analysis, "
+        "has_slig_embedding, has_understanding_embedding, "
+        "has_color_slig, has_texture_slig, has_style_slig, has_material_slig, "
+        "understanding_embedding_model, understanding_schema_version, "
+        "color_aspect_embedding_model, color_aspect_schema_version, "
+        "texture_aspect_embedding_model, texture_aspect_schema_version, "
+        "style_aspect_embedding_model, style_aspect_schema_version, "
+        "material_aspect_embedding_model, material_aspect_schema_version"
+    ).eq("id", image_id).maybe_single().execute()
+    row = row_resp.data
+    if not row:
+        raise HTTPException(status_code=404, detail={"image_id": image_id, "error": "image_not_found"})
+
+    # Build VisionAnalysis instance for source-text rendering. Tolerant of
+    # missing / malformed rows — the inspector should still work even when
+    # VA is broken, since broken VA is the most likely thing the operator
+    # is investigating.
+    va_raw = row.get("vision_analysis")
+    va: Optional[VisionAnalysis] = None
+    va_parse_error: Optional[str] = None
+    if va_raw is not None:
+        if isinstance(va_raw, dict):
+            try:
+                va = VisionAnalysis(**va_raw)
+            except Exception as e:
+                va = vision_analysis_from_legacy_dict(va_raw)
+                if va is None:
+                    va_parse_error = f"strict_parse_failed_and_legacy_coercion_returned_none: {e}"
+
+    # Per-aspect source texts (only meaningful if va parsed).
+    serializers = {
+        "color":    serialize_aspect_color,
+        "texture":  serialize_aspect_texture,
+        "style":    serialize_aspect_style,
+        "material": serialize_aspect_material,
+    }
+    source_texts: Dict[str, Optional[str]] = {}
+    if va is not None:
+        for aspect, fn in serializers.items():
+            source_texts[aspect] = fn(va)
+
+    # Compose per-collection status.
+    def _aspect_status(aspect: str) -> Dict[str, Any]:
+        flag = bool(row.get(f"has_{aspect}_slig"))
+        model = row.get(f"{aspect}_aspect_embedding_model")
+        sv = row.get(f"{aspect}_aspect_schema_version")
+        is_v2 = bool(model and model.startswith("voyage"))
+        stale = (
+            (not flag)
+            or (sv is None or sv < CURRENT_SCHEMA_VERSION)
+            or (not is_v2)
+        )
+        return {
+            "present": flag,
+            "model": model,
+            "schema_version": sv,
+            "is_v2": is_v2,
+            "stale": stale,
+            "source_text": source_texts.get(aspect),
+            "storage": f"vecs.image_{aspect}_embeddings",
+        }
+
+    embeddings_state = {
+        "slig_visual": {
+            "present": bool(row.get("has_slig_embedding")),
+            "model": "siglip2",
+            "dimension": 768,
+            "storage": "vecs.image_slig_embeddings",
+        },
+        "understanding": {
+            "present": bool(row.get("has_understanding_embedding")),
+            "model": row.get("understanding_embedding_model"),
+            "schema_version": row.get("understanding_schema_version"),
+            "dimension": 1024,
+            "storage": "vecs.image_understanding_embeddings",
+        },
+        "color":    _aspect_status("color"),
+        "texture":  _aspect_status("texture"),
+        "style":    _aspect_status("style"),
+        "material": _aspect_status("material"),
+    }
+    stale_aspects = [a for a in ("color", "texture", "style", "material")
+                     if embeddings_state[a]["stale"]]
+
+    return JSONResponse(content={
+        "image_id": image_id,
+        "image_url": row.get("image_url"),
+        "current_schema_version": CURRENT_SCHEMA_VERSION,
+        "vision_analysis": {
+            "present": va is not None,
+            "parse_error": va_parse_error,
+            "data": va.model_dump() if va else None,
+        },
+        "embeddings": embeddings_state,
+        "stale_aspects": stale_aspects,
+    })
