@@ -354,76 +354,96 @@ class MentionSearchService:
         if not queries:
             return {"hits": [], "credits": 0}
 
+        # Language fan-out: when the caller supplied multiple language_codes,
+        # we run each query under each language. DataForSEO's `language_code`
+        # parameter filters Google News to articles in that language — so an
+        # English-only call won't surface Greek articles even when the keyword
+        # appears in them. Cap at 2 languages to keep cost bounded.
+        languages: List[str] = []
+        for lc in (facets.language_codes or ["en"]):
+            l = (lc or "").lower().strip()
+            if l and l not in languages:
+                languages.append(l)
+            if len(languages) >= 2:
+                break
+        if not languages:
+            languages = ["en"]
+
         cutoff = datetime.now(timezone.utc) - timedelta(days=recency_days)
         all_hits: List[MentionHit] = []
         seen_urls: set = set()
         credits = 0
 
+        # Iterate (alias × language). With 1 alias + 1 language = 1 call (default
+        # case). With 3 aliases + 2 languages = 6 calls worst case, ~$0.004.
         for query in queries:
-            body = [{
-                "keyword": query,
-                "depth": MAX_RESULTS_PER_SOURCE,
-                "location_code": _country_to_dfs_location(country) if country else 2840,
-                "language_code": (facets.language_codes or ["en"])[0].lower(),
-            }]
-            call_start = time.time()
-            try:
-                async with httpx.AsyncClient(timeout=20.0) as client:
-                    resp = await client.post(
-                        DATAFORSEO_NEWS_API,
-                        headers={"Authorization": f"Basic {self.dataforseo_b64}",
-                                 "Content-Type": "application/json"},
-                        json=body,
+            for language_code in languages:
+                body = [{
+                    "keyword": query,
+                    "depth": MAX_RESULTS_PER_SOURCE,
+                    "location_code": _country_to_dfs_location(country) if country else 2840,
+                    "language_code": language_code,
+                }]
+                call_start = time.time()
+                try:
+                    async with httpx.AsyncClient(timeout=20.0) as client:
+                        resp = await client.post(
+                            DATAFORSEO_NEWS_API,
+                            headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                                     "Content-Type": "application/json"},
+                            json=body,
+                        )
+                        resp.raise_for_status()
+                        data = resp.json()
+                    credits += 1
+                except Exception as e:
+                    logger.warning(f"dataforseo_news: request '{query}' [{language_code}] failed: {e}")
+                    log_dataforseo_news_call(
+                        attribution=attribution, query=f"{query} [{language_code}]", hits_returned=0,
+                        latency_ms=int((time.time() - call_start) * 1000),
+                        success=False, error_message=str(e),
                     )
-                    resp.raise_for_status()
-                    data = resp.json()
-                credits += 1
-            except Exception as e:
-                logger.warning(f"dataforseo_news: request '{query}' failed: {e}")
+                    continue
+
+                query_hits = 0
+                for task in (data.get("tasks") or []):
+                    for r in (task.get("result") or []):
+                        for item in (r.get("items") or []):
+                            if (item.get("type") or "").lower() not in ("news_search", "news"):
+                                continue
+                            url = item.get("url") or ""
+                            if not url or url in seen_urls:
+                                continue
+                            pub_at = item.get("timestamp") or item.get("date_posted")
+                            pub_dt = _parse_iso(pub_at)
+                            if pub_dt and pub_dt < cutoff:
+                                continue
+                            host = domain_of(url)
+                            seen_urls.add(url)
+                            query_hits += 1
+                            all_hits.append(MentionHit(
+                                url=url,
+                                title=item.get("title"),
+                                excerpt=item.get("snippet") or item.get("description"),
+                                outlet_domain=host,
+                                outlet_name=item.get("source") or item.get("source_url"),
+                                outlet_type=classify_outlet_type(host),
+                                language_code=language_code,
+                                country_code=country,
+                                published_at=pub_dt.isoformat() if pub_dt else None,
+                                source="dataforseo_news",
+                                raw={"rank": item.get("rank_absolute"), "query": query,
+                                     "lang": language_code},
+                            ))
+
                 log_dataforseo_news_call(
-                    attribution=attribution, query=query, hits_returned=0,
-                    latency_ms=int((time.time() - call_start) * 1000),
-                    success=False, error_message=str(e),
+                    attribution=attribution, query=f"{query} [{language_code}]",
+                    hits_returned=query_hits,
+                    latency_ms=int((time.time() - call_start) * 1000), success=True,
                 )
-                continue
 
-            query_hits = 0
-            for task in (data.get("tasks") or []):
-                for r in (task.get("result") or []):
-                    for item in (r.get("items") or []):
-                        if (item.get("type") or "").lower() not in ("news_search", "news"):
-                            continue
-                        url = item.get("url") or ""
-                        if not url or url in seen_urls:
-                            continue
-                        pub_at = item.get("timestamp") or item.get("date_posted")
-                        pub_dt = _parse_iso(pub_at)
-                        if pub_dt and pub_dt < cutoff:
-                            continue
-                        host = domain_of(url)
-                        seen_urls.add(url)
-                        query_hits += 1
-                        all_hits.append(MentionHit(
-                            url=url,
-                            title=item.get("title"),
-                            excerpt=item.get("snippet") or item.get("description"),
-                            outlet_domain=host,
-                            outlet_name=item.get("source") or item.get("source_url"),
-                            outlet_type=classify_outlet_type(host),
-                            language_code=(facets.language_codes or ["en"])[0],
-                            country_code=country,
-                            published_at=pub_dt.isoformat() if pub_dt else None,
-                            source="dataforseo_news",
-                            raw={"rank": item.get("rank_absolute"), "query": query},
-                        ))
-
-            log_dataforseo_news_call(
-                attribution=attribution, query=query, hits_returned=query_hits,
-                latency_ms=int((time.time() - call_start) * 1000), success=True,
-            )
-
-            # Stop early if the primary alias already returned plenty
-            if query_hits >= MAX_RESULTS_PER_SOURCE // 2:
+            # Stop early if the primary alias already returned plenty across both languages
+            if len(all_hits) >= MAX_RESULTS_PER_SOURCE // 2:
                 break
 
         return {"hits": all_hits[:MAX_RESULTS_PER_SOURCE], "credits": credits}

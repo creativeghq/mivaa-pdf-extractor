@@ -149,6 +149,7 @@ class TrackRequest(BaseModel):
     language_codes: Optional[List[str]] = None
     country_codes: Optional[List[str]] = None
     refresh_interval_hours: int = 24
+    recency_days: int = 30
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None
@@ -167,6 +168,7 @@ class UpdateRequest(BaseModel):
     language_codes: Optional[List[str]] = None
     country_codes: Optional[List[str]] = None
     refresh_interval_hours: Optional[int] = None
+    recency_days: Optional[int] = None
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None
@@ -464,6 +466,7 @@ async def create_tracked_mention(
         language_codes=body.language_codes,
         country_codes=body.country_codes,
         refresh_interval_hours=body.refresh_interval_hours,
+        recency_days=body.recency_days,
         alert_channels=body.alert_channels,
         alert_on_spike=body.alert_on_spike,
         alert_on_negative_sentiment=body.alert_on_negative_sentiment,

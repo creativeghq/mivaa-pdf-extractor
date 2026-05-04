@@ -122,6 +122,16 @@ class CreateMentionTrackRequest(BaseModel):
         24, ge=1, le=720,
         description="Volatility-aware base cadence. Stable subjects auto-stretch up to weekly.",
     )
+    recency_days: int = Field(
+        30, ge=1, le=730,
+        description=(
+            "Discovery window in days. Articles older than this are dropped. "
+            "Default 30. Bump higher (90/180/365) for niche brands whose coverage "
+            "cadence is slower than monthly — e.g. regional outlets that publish "
+            "quarterly, trade press with monthly issues."
+        ),
+        examples=[30, 90, 180],
+    )
     alert_channels: Optional[List[str]] = Field(
         None,
         description="Channels to fire alerts on. Subset of: 'bell', 'email', 'webhook'. Default ['bell'].",
@@ -147,6 +157,7 @@ class UpdateMentionTrackRequest(BaseModel):
     language_codes: Optional[List[str]] = None
     country_codes: Optional[List[str]] = None
     refresh_interval_hours: Optional[int] = Field(None, ge=1, le=720)
+    recency_days: Optional[int] = Field(None, ge=1, le=730)
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None
@@ -239,6 +250,7 @@ async def create_tracking(
         language_codes=body.language_codes,
         country_codes=body.country_codes,
         refresh_interval_hours=body.refresh_interval_hours,
+        recency_days=body.recency_days,
         alert_channels=body.alert_channels,
         alert_on_spike=body.alert_on_spike,
         alert_on_negative_sentiment=body.alert_on_negative_sentiment,

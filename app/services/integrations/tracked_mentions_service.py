@@ -73,6 +73,7 @@ class TrackedMentionsService:
         language_codes: Optional[List[str]] = None,
         country_codes: Optional[List[str]] = None,
         refresh_interval_hours: int = HEALTHY_CADENCE_HOURS,
+        recency_days: int = 30,
         alert_channels: Optional[List[str]] = None,
         alert_on_spike: Optional[bool] = None,
         alert_on_negative_sentiment: Optional[bool] = None,
@@ -100,6 +101,7 @@ class TrackedMentionsService:
             "language_codes": language_codes or ["en"],
             "country_codes": country_codes or [],
             "refresh_interval_hours": refresh_interval_hours,
+            "recency_days": max(1, min(int(recency_days or 30), 730)),
             "alert_channels": alert_channels or ["bell"],
             "alert_on_spike": bool(alert_on_spike),
             "alert_on_negative_sentiment": bool(alert_on_negative_sentiment),
@@ -206,6 +208,7 @@ class TrackedMentionsService:
         allowed = {
             "subject_label", "aliases", "sources_enabled", "source_config",
             "language_codes", "country_codes", "refresh_interval_hours",
+            "recency_days",
             "alert_channels", "alert_on_spike", "alert_on_negative_sentiment",
             "alert_on_new_outlet", "alert_on_llm_visibility_change",
             "alert_webhook_url", "is_active", "auto_expand_aliases",
@@ -365,12 +368,14 @@ class TrackedMentionsService:
         source_config = row.get("source_config") or {}
         country_codes = row.get("country_codes") or []
         is_first_refresh = not row.get("last_refreshed_at")
+        # Per-subject recency window (default 30; bump higher for niche brands)
+        recency_days = int(row.get("recency_days") or 30)
         result = await self.search.search(
             facets=facets,
             sources_enabled=sources_enabled,
             source_config=source_config,
             country_codes=country_codes,
-            recency_days=30,
+            recency_days=recency_days,
             force_full_discovery=is_first_refresh or force,
             attribution=attribution,
         )

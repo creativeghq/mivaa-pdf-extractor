@@ -452,71 +452,130 @@ class MentionOpportunityService:
 
     # ───── 5. Keyword opportunities (DataForSEO Labs) ─────
 
+    def _fallback_seeds(self, subject: Dict[str, Any]) -> List[str]:
+        """Order of seeds to try when keyword-research APIs return 0 items.
+
+        Niche multi-word product SKUs often have no search volume in
+        DataForSEO's database, so the API returns empty for the literal
+        label. To still produce useful results, we try ONLY seeds the
+        caller explicitly provided:
+
+          1. subject_label    (always tried first)
+          2. brand_name       (when set on the row)
+          3. aliases[*]       (when supplied)
+
+        We do NOT autonomously split the label into individual words —
+        that decomposes the input string in ways the caller didn't
+        request and risks producing unrelated keyword data (a niche SKU's
+        last word is often not a meaningful brand or category). To get
+        that breadth, the caller supplies their own variants in `aliases`
+        or sets `auto_expand_aliases: true` at create time.
+        """
+        seeds: List[str] = []
+        seen: set = set()
+
+        def _add(s: Optional[str]) -> None:
+            if not s:
+                return
+            v = s.strip()
+            if not v or len(v) < 3:
+                return
+            key = normalize_text(v)
+            if key in seen:
+                return
+            seen.add(key)
+            seeds.append(v)
+
+        _add(subject.get("subject_label"))
+        _add(subject.get("brand_name"))
+        for a in (subject.get("aliases") or []):
+            _add(a)
+        return seeds
+
     async def _keyword_opportunities(
         self, subject: Dict[str, Any], limit: int,
         attribution: Optional[CostAttribution] = None,
     ) -> List[Opportunity]:
         if not self.dataforseo_b64:
             return []
-        seed = subject.get("subject_label") or subject.get("brand_name") or ""
-        if not seed:
+        seeds = self._fallback_seeds(subject)
+        if not seeds:
             return []
         country_code = (subject.get("country_codes") or [None])[0]
         language_code = (subject.get("language_codes") or ["en"])[0].lower()
 
-        body = [{
-            "keyword": seed,
-            "location_code": _country_to_dfs_location(country_code),
-            "language_code": language_code,
-            "limit": max(20, limit * 4),
-            "include_serp_info": False,
-            "include_seed_keyword": False,
-        }]
-
-        call_start = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.post(
-                    DATAFORSEO_LABS_RELATED,
-                    headers={"Authorization": f"Basic {self.dataforseo_b64}",
-                             "Content-Type": "application/json"},
-                    json=body,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as e:
-            logger.warning(f"opportunity: DataForSEO related-keywords failed: {e}")
-            log_dataforseo_labs_call(
-                attribution=attribution, seed_keyword=seed, items_returned=0,
-                latency_ms=int((time.time() - call_start) * 1000),
-                success=False, error_message=str(e),
-            )
-            return []
-
+        # Try seeds in order until one returns enough items. Cap at 3 calls so
+        # the worst case is 3× DataForSEO Labs (~$0.003) — still well under
+        # the 2-credit charge.
         items: List[Dict[str, Any]] = []
-        for task in (data.get("tasks") or []):
-            for r in (task.get("result") or []):
-                for it in (r.get("items") or []):
-                    kw_data = (it.get("keyword_data") or {})
-                    kw = kw_data.get("keyword") or it.get("keyword")
-                    info = kw_data.get("keyword_info") or {}
-                    if not kw:
-                        continue
-                    items.append({
-                        "keyword": kw,
-                        "search_volume": info.get("search_volume") or 0,
-                        "competition": info.get("competition") or "",
-                        "cpc": info.get("cpc") or 0.0,
-                    })
+        used_seed = seeds[0]
+        for seed in seeds[:3]:
+            body = [{
+                "keyword": seed,
+                "location_code": _country_to_dfs_location(country_code),
+                "language_code": language_code,
+                "limit": max(20, limit * 4),
+                "include_serp_info": False,
+                "include_seed_keyword": False,
+            }]
+            call_start = time.time()
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.post(
+                        DATAFORSEO_LABS_RELATED,
+                        headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                                 "Content-Type": "application/json"},
+                        json=body,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+            except Exception as e:
+                logger.warning(f"opportunity: DataForSEO related-keywords '{seed}' failed: {e}")
+                log_dataforseo_labs_call(
+                    attribution=attribution, seed_keyword=seed, items_returned=0,
+                    latency_ms=int((time.time() - call_start) * 1000),
+                    success=False, error_message=str(e),
+                )
+                continue
+
+            this_round: List[Dict[str, Any]] = []
+            for task in (data.get("tasks") or []):
+                for r in (task.get("result") or []):
+                    for it in (r.get("items") or []):
+                        kw_data = (it.get("keyword_data") or {})
+                        kw = kw_data.get("keyword") or it.get("keyword")
+                        info = kw_data.get("keyword_info") or {}
+                        if not kw:
+                            continue
+                        this_round.append({
+                            "keyword": kw,
+                            "search_volume": info.get("search_volume") or 0,
+                            "competition": info.get("competition") or "",
+                            "cpc": info.get("cpc") or 0.0,
+                        })
+
+            log_dataforseo_labs_call(
+                attribution=attribution, seed_keyword=seed,
+                items_returned=len(this_round),
+                latency_ms=int((time.time() - call_start) * 1000), success=True,
+            )
+
+            if this_round:
+                items = this_round
+                used_seed = seed
+                break  # found a seed with data, stop fallback
+
+        if not items:
+            return []
 
         # Rank by search volume desc
         items.sort(key=lambda x: -(x.get("search_volume") or 0))
-        log_dataforseo_labs_call(
-            attribution=attribution, seed_keyword=seed,
-            items_returned=len(items),
-            latency_ms=int((time.time() - call_start) * 1000), success=True,
-        )
         items = items[:limit]
+
+        # Note used_seed in source so partners can see WHICH seed produced the
+        # opportunities — important when fallback kicked in (e.g. brand_name
+        # was used because subject_label had no data).
+        seed_was_fallback = (used_seed != seeds[0]) if seeds else False
 
         out: List[Opportunity] = []
         for item in items:
@@ -528,8 +587,8 @@ class MentionOpportunityService:
                 title=item["keyword"],
                 rationale=(
                     f"\"{item['keyword']}\" gets {volume:,} monthly searches in "
-                    f"{country_code or 'your target market'}. Related to your subject. "
-                    "Potential SEO content angle."
+                    f"{country_code or 'your target market'}. Related to "
+                    f"\"{used_seed}\". Potential SEO content angle."
                 ),
                 suggested_action=(
                     f"Write a piece optimized for \"{item['keyword']}\". Anchor it to "
@@ -537,7 +596,8 @@ class MentionOpportunityService:
                 ),
                 priority_score=min(1.0, 0.3 + (volume / 5000.0)),
                 source={"keyword": item["keyword"], "search_volume": volume,
-                        "competition": item.get("competition"), "cpc": item.get("cpc")},
+                        "competition": item.get("competition"), "cpc": item.get("cpc"),
+                        "seed_used": used_seed, "fallback": seed_was_fallback},
             ))
         return out
 
@@ -554,70 +614,82 @@ class MentionOpportunityService:
         exactly what content readers want answered."""
         if not self.dataforseo_b64:
             return []
-        seed = subject.get("subject_label") or subject.get("brand_name") or ""
-        if not seed:
+        seeds = self._fallback_seeds(subject)
+        if not seeds:
             return []
         country_code = (subject.get("country_codes") or [None])[0]
         language_code = (subject.get("language_codes") or ["en"])[0].lower()
 
-        body = [{
-            "keyword": seed,
-            "location_code": _country_to_dfs_location(country_code),
-            "language_code": language_code,
-            "depth": 30,  # SERP depth — PAO blocks usually appear in top 10
-            "people_also_ask_click_depth": 1,
-        }]
-
-        call_start = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.post(
-                    DATAFORSEO_SERP_ORGANIC,
-                    headers={"Authorization": f"Basic {self.dataforseo_b64}",
-                             "Content-Type": "application/json"},
-                    json=body,
+        # Try fallback seeds in order until one returns PAA blocks.
+        # Niche full SKUs rarely have PAA — brand or category usually do.
+        questions: List[Dict[str, Any]] = []
+        used_seed = seeds[0]
+        for seed in seeds[:3]:
+            body = [{
+                "keyword": seed,
+                "location_code": _country_to_dfs_location(country_code),
+                "language_code": language_code,
+                "depth": 30,
+                "people_also_ask_click_depth": 1,
+            }]
+            call_start = time.time()
+            try:
+                async with httpx.AsyncClient(timeout=20.0) as client:
+                    resp = await client.post(
+                        DATAFORSEO_SERP_ORGANIC,
+                        headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                                 "Content-Type": "application/json"},
+                        json=body,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+            except Exception as e:
+                logger.warning(f"opportunity: DataForSEO SERP PAO '{seed}' failed: {e}")
+                log_dataforseo_serp_call(
+                    attribution=attribution, operation="pao_question",
+                    query=seed, items_returned=0,
+                    latency_ms=int((time.time() - call_start) * 1000),
+                    success=False, error_message=str(e),
                 )
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as e:
-            logger.warning(f"opportunity: DataForSEO SERP PAO failed: {e}")
+                continue
+
+            this_round: List[Dict[str, Any]] = []
+            seen_q: set = set()
+            for task in (data.get("tasks") or []):
+                for r in (task.get("result") or []):
+                    for item in (r.get("items") or []):
+                        if (item.get("type") or "").lower() != "people_also_ask":
+                            continue
+                        for q in (item.get("items") or []):
+                            title = (q.get("title") or "").strip()
+                            if not title:
+                                continue
+                            key = normalize_text(title)
+                            if key in seen_q:
+                                continue
+                            seen_q.add(key)
+                            this_round.append({
+                                "title": title,
+                                "expanded": q.get("expanded_element") or [],
+                            })
+                            if len(this_round) >= limit * 2:
+                                break
+
             log_dataforseo_serp_call(
                 attribution=attribution, operation="pao_question",
-                query=seed, items_returned=0,
-                latency_ms=int((time.time() - call_start) * 1000),
-                success=False, error_message=str(e),
+                query=seed, items_returned=len(this_round),
+                latency_ms=int((time.time() - call_start) * 1000), success=True,
             )
+
+            if this_round:
+                questions = this_round
+                used_seed = seed
+                break
+
+        if not questions:
             return []
 
-        # Walk the SERP items to find people_also_ask blocks. Each block has
-        # `items` containing the questions and (sometimes) clicked answers.
-        questions: List[Dict[str, Any]] = []
-        seen_q: set = set()
-        for task in (data.get("tasks") or []):
-            for r in (task.get("result") or []):
-                for item in (r.get("items") or []):
-                    if (item.get("type") or "").lower() != "people_also_ask":
-                        continue
-                    for q in (item.get("items") or []):
-                        title = (q.get("title") or "").strip()
-                        if not title:
-                            continue
-                        key = normalize_text(title)
-                        if key in seen_q:
-                            continue
-                        seen_q.add(key)
-                        questions.append({
-                            "title": title,
-                            "expanded": q.get("expanded_element") or [],
-                        })
-                        if len(questions) >= limit * 2:
-                            break
-
-        log_dataforseo_serp_call(
-            attribution=attribution, operation="pao_question",
-            query=seed, items_returned=len(questions),
-            latency_ms=int((time.time() - call_start) * 1000), success=True,
-        )
+        seed_was_fallback = (used_seed != seeds[0])
 
         out: List[Opportunity] = []
         for q in questions[:limit]:
@@ -631,7 +703,7 @@ class MentionOpportunityService:
                 type="pao_question",
                 title=q["title"],
                 rationale=(
-                    f"Real Google searchers are asking this when they search \"{seed}\". "
+                    f"Real Google searchers are asking this when they search \"{used_seed}\". "
                     "Sourced from Google's People Also Ask block."
                 ) + (f" Current top answer snippet: \"{answer_snippet}\"" if answer_snippet else ""),
                 suggested_action=(
@@ -640,7 +712,8 @@ class MentionOpportunityService:
                     "PAA blocks, giving you free SERP real estate."
                 ),
                 priority_score=0.6,
-                source={"question": q["title"], "seed_keyword": seed},
+                source={"question": q["title"], "seed_keyword": used_seed,
+                        "fallback": seed_was_fallback},
             ))
         return out
 
