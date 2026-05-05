@@ -2145,7 +2145,12 @@ async def get_embeddings(
             # vector in VECS is the legacy 768D SLIG-blend or the v2 1024D
             # Voyage-from-VisionAnalysis variant. During the rollout window
             # both can coexist across rows; post-migration only v2 remains.
-            image_result = supabase_client.client.table('document_images').select(
+            #
+            # Two-tier select: full preferred, fallback to base if the v2
+            # SQL migration hasn't been applied yet. Pre-migration, every
+            # aspect row simply renders as legacy (no provenance found
+            # → is_v2=false). Endpoint stays usable through the rollout.
+            full_select = (
                 'id, image_url, '
                 'has_slig_embedding, has_color_slig, has_texture_slig, '
                 'has_style_slig, has_material_slig, has_understanding_embedding, '
@@ -2153,7 +2158,28 @@ async def get_embeddings(
                 'texture_aspect_embedding_model, texture_aspect_schema_version, '
                 'style_aspect_embedding_model, style_aspect_schema_version, '
                 'material_aspect_embedding_model, material_aspect_schema_version'
-            ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
+            )
+            base_select = (
+                'id, image_url, '
+                'has_slig_embedding, has_color_slig, has_texture_slig, '
+                'has_style_slig, has_material_slig, has_understanding_embedding'
+            )
+            try:
+                image_result = supabase_client.client.table('document_images').select(
+                    full_select
+                ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
+            except Exception as e:
+                err_msg = str(e).lower()
+                if "does not exist" in err_msg or "42703" in err_msg:
+                    logger.warning(
+                        "⚠️ Embeddings list: aspect provenance columns missing — "
+                        f"falling back to base select. Apply v2 migration to enable provenance labels. ({e})"
+                    )
+                    image_result = supabase_client.client.table('document_images').select(
+                        base_select
+                    ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
+                else:
+                    raise
 
             # Aspect rows: tuple is (legacy_label, legacy_dim, legacy_model,
             # v2_label, v2_dim, v2_model, type_alias). Picked at render time

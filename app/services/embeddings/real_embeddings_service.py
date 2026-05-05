@@ -1502,6 +1502,14 @@ class RealEmbeddingsService:
         # aspect skip (rather than all-or-nothing) because color/texture/
         # style are legitimately optional — we don't want a missing color
         # field to also wipe out a perfectly good material vector.
+        #
+        # `allow_openai_fallback=False` matches the same audit-gap-B
+        # discipline applied to image_understanding_embeddings: never let
+        # OpenAI 1024D vectors silently mix into the four aspect collections
+        # alongside Voyage vectors. Mixed-provider rows would corrode
+        # cosine similarity even though they share dimensionality. On
+        # Voyage outage the aspect for this image stays unembedded; the
+        # backfill cron picks it up on the next run.
         embeddings: Dict[str, List[float]] = {}
         any_failure = False
         for aspect, text in aspect_texts.items():
@@ -1512,6 +1520,7 @@ class RealEmbeddingsService:
                 vec = await self._generate_text_embedding(
                     text=text,
                     input_type="document",
+                    allow_openai_fallback=False,
                 )
                 if not vec:
                     self.logger.warning(f"⚠️ Aspect '{aspect}' Voyage embed returned None")

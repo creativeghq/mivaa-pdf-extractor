@@ -867,9 +867,13 @@ class UnifiedSearchService:
             ).lower() in ("1", "true", "yes")
 
             if use_v2_aspects:
+                # allow_openai_fallback=False — the v2 aspect collections live
+                # in Voyage 1024D space; an OpenAI query vector would compute
+                # meaningless similarity scores against Voyage row vectors.
                 query_embedding = await embeddings_service._generate_text_embedding(
                     text=query,
                     input_type="query",
+                    allow_openai_fallback=False,
                 )
                 if not query_embedding or len(query_embedding) != 1024:
                     self.logger.warning(

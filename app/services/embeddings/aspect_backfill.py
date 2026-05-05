@@ -112,43 +112,71 @@ async def _fetch_stale_aspect_images(
     OR none-at-all (cron mode → just `limit`).
     """
     client = get_supabase_client().client
-    query = (
-        client.table("document_images")
-        .select(
-            "id, image_url, document_id, workspace_id, page_number, "
-            "vision_analysis, "
-            "has_color_slig, has_texture_slig, has_style_slig, has_material_slig, "
-            "color_aspect_embedding_model, color_aspect_schema_version, "
-            "texture_aspect_embedding_model, texture_aspect_schema_version, "
-            "style_aspect_embedding_model, style_aspect_schema_version, "
-            "material_aspect_embedding_model, material_aspect_schema_version"
-        )
-        .order("id")
-        .limit(limit)
+
+    # Two-tier select: full (with provenance columns) first, falling back
+    # to base (no provenance) if the migration hasn't been applied yet.
+    # The fallback path treats every row as stale on schema_version because
+    # the column doesn't exist — which is exactly the right behavior:
+    # pre-migration the aspect collections are still 768D SLIG-blend, every
+    # row is "stale" relative to v2, and the backfill can produce v2 vectors
+    # the moment migration completes.
+    full_select = (
+        "id, image_url, document_id, workspace_id, page_number, "
+        "vision_analysis, "
+        "has_color_slig, has_texture_slig, has_style_slig, has_material_slig, "
+        "color_aspect_embedding_model, color_aspect_schema_version, "
+        "texture_aspect_embedding_model, texture_aspect_schema_version, "
+        "style_aspect_embedding_model, style_aspect_schema_version, "
+        "material_aspect_embedding_model, material_aspect_schema_version"
     )
-    if workspace_id:
-        query = query.eq("workspace_id", workspace_id)
-    if document_id:
-        query = query.eq("document_id", document_id)
-    if image_ids:
-        query = query.in_("id", image_ids)
+    base_select = (
+        "id, image_url, document_id, workspace_id, page_number, "
+        "vision_analysis, "
+        "has_color_slig, has_texture_slig, has_style_slig, has_material_slig"
+    )
+
+    def _build_query(select_str: str):
+        q = client.table("document_images").select(select_str).order("id").limit(limit)
+        if workspace_id:
+            q = q.eq("workspace_id", workspace_id)
+        if document_id:
+            q = q.eq("document_id", document_id)
+        if image_ids:
+            q = q.in_("id", image_ids)
+        return q
+
+    # Resolve product_id → image_ids ONCE before building the query so the
+    # narrowing applies to either select-shape we choose below.
     if product_id:
-        # `product_id` selector pulls images via image_product_associations.
-        # Fetch the linked image ids first, then narrow the document_images
-        # query — keeps this query single-table and lets the caller index
-        # straightforwardly on document_images.id.
         assoc = await asyncio.to_thread(
             client.table("image_product_associations")
             .select("image_id")
             .eq("product_id", product_id)
             .execute
         )
-        ids = [r["image_id"] for r in (assoc.data or []) if r.get("image_id")]
-        if not ids:
+        product_image_ids = [r["image_id"] for r in (assoc.data or []) if r.get("image_id")]
+        if not product_image_ids:
             return []
-        query = query.in_("id", ids)
+        image_ids = list(set((image_ids or []) + product_image_ids))
 
-    response = await asyncio.to_thread(query.execute)
+    # Try the full select first; on PostgREST 'column does not exist' (42703)
+    # fall back to the base select. Migration is REQUIRED before the v2 path
+    # produces useful output, but pre-migration we can still surface "every
+    # row is stale" so the operator sees something rather than a 500.
+    try:
+        response = await asyncio.to_thread(_build_query(full_select).execute)
+    except Exception as e:
+        err_msg = str(e).lower()
+        if "does not exist" in err_msg or "42703" in err_msg:
+            logger.warning(
+                "⚠️ Aspect provenance columns missing — falling back to base select. "
+                "Apply the v2 SQL migration to enable provenance-aware staleness detection. "
+                f"({e})"
+            )
+            response = await asyncio.to_thread(_build_query(base_select).execute)
+        else:
+            raise
+
     rows = response.data or []
     stale = [r for r in rows if any(_is_aspect_stale(r, a) for a in ASPECT_NAMES)]
     return stale
@@ -181,9 +209,13 @@ async def _generate_aspects_for_row(
         if not text:
             continue
         try:
+            # allow_openai_fallback=False — never let an OpenAI 1024D vector
+            # land in a Voyage 1024D collection. Same audit-gap-B discipline
+            # applied to image_understanding_embeddings.
             vec = await embeddings_svc._generate_text_embedding(
                 text=text,
                 input_type="document",
+                allow_openai_fallback=False,
             )
             if vec and len(vec) == 1024:
                 embeddings[aspect] = vec
@@ -346,11 +378,17 @@ async def rerun_aspect_embeddings_for_image(
     aspects = aspects or list(ASPECT_NAMES)
 
     client = get_supabase_client().client
-    row_result = await asyncio.to_thread(
-        client.table("document_images").select(
-            "id, document_id, workspace_id, page_number, vision_analysis"
-        ).eq("id", image_id).single().execute
-    )
+    # Use .maybe_single() rather than .single() — the latter raises on
+    # zero rows (PostgREST 406), which would translate into a 500 from
+    # the admin endpoint instead of the cleaner 404 we return below.
+    try:
+        row_result = await asyncio.to_thread(
+            client.table("document_images").select(
+                "id, document_id, workspace_id, page_number, vision_analysis"
+            ).eq("id", image_id).maybe_single().execute
+        )
+    except Exception as e:
+        return {"ok": False, "error": "image_lookup_failed", "image_id": image_id, "detail": str(e)}
     row = row_result.data
     if not row:
         return {"ok": False, "error": "image_not_found", "image_id": image_id}
@@ -389,6 +427,7 @@ async def rerun_aspect_embeddings_for_image(
             vec = await embeddings_svc._generate_text_embedding(
                 text=text,
                 input_type="document",
+                allow_openai_fallback=False,
             )
             if vec and len(vec) == 1024:
                 aspect_embeddings[aspect] = vec

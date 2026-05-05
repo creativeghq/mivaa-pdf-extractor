@@ -56,6 +56,17 @@ class VecsService:
         flag in a single round-trip (e.g. embedding_model + schema_version
         for understanding embeddings). NULL values are dropped so we don't
         overwrite existing data with NULL.
+
+        Fallback: if the combined UPDATE fails (most likely cause: a
+        provenance column doesn't exist yet — e.g. operator flipped the v2
+        feature flag before applying the SQL migration), we retry with
+        ONLY the flag column. This guarantees the flag never silently
+        diverges from VECS contents — the worst-case is provenance ends up
+        NULL on this row, which the staleness detector + backfill cron
+        will pick up next run. Without the fallback, a single missing
+        provenance column would block the flag set and leave the VECS
+        vector orphaned (search retriever would skip it forever via the
+        O(1) flag pre-filter even though the vector is materially present).
         """
         update: Dict[str, Any] = {flag_column: True}
         if extra_columns:
@@ -66,11 +77,34 @@ class VecsService:
             self._get_supabase_rest().client.table('document_images').update(
                 update
             ).eq('id', image_id).execute()
-        except Exception as flag_err:
-            logger.warning(
-                f"⚠️ Failed to set {flag_column} for image {image_id} — "
-                f"VECS↔flag drift; row will be skipped by retrievers using flag pre-filter: {flag_err}"
-            )
+        except Exception as combined_err:
+            # If we tried to write provenance + flag together, retry with
+            # just the flag — guarantees the boolean flips even when a
+            # provenance column is missing or mismatched.
+            if extra_columns:
+                logger.warning(
+                    f"⚠️ Combined update of {flag_column} + provenance failed for "
+                    f"image {image_id} ({combined_err}). Retrying with flag only."
+                )
+                try:
+                    self._get_supabase_rest().client.table('document_images').update(
+                        {flag_column: True}
+                    ).eq('id', image_id).execute()
+                    logger.info(
+                        f"   ✅ Flag-only fallback succeeded for {flag_column} on image {image_id}; "
+                        f"provenance left NULL (will be picked up by next backfill)"
+                    )
+                    return
+                except Exception as flag_only_err:
+                    logger.warning(
+                        f"⚠️ Flag-only fallback ALSO failed for {flag_column} on image {image_id} — "
+                        f"VECS↔flag drift; row will be skipped by retrievers using flag pre-filter: {flag_only_err}"
+                    )
+            else:
+                logger.warning(
+                    f"⚠️ Failed to set {flag_column} for image {image_id} — "
+                    f"VECS↔flag drift; row will be skipped by retrievers using flag pre-filter: {combined_err}"
+                )
 
     def image_has_embedding(self, image_id: str, flag_column: str) -> bool:
         """O(1) presence check on document_images.

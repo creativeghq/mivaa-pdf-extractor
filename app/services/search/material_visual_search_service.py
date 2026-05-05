@@ -574,18 +574,25 @@ class MaterialVisualSearchService:
                                 RealEmbeddingsService,
                             )
                             voyage_svc = RealEmbeddingsService()
+                            # allow_openai_fallback=False on all four — the v2
+                            # aspect collections are Voyage 1024D; an OpenAI
+                            # query vector against them returns nonsense.
                             color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
                                 voyage_svc._generate_text_embedding(
-                                    text=request.query_text, input_type="query"
+                                    text=request.query_text, input_type="query",
+                                    allow_openai_fallback=False,
                                 ),
                                 voyage_svc._generate_text_embedding(
-                                    text=request.query_text, input_type="query"
+                                    text=request.query_text, input_type="query",
+                                    allow_openai_fallback=False,
                                 ),
                                 voyage_svc._generate_text_embedding(
-                                    text=request.query_text, input_type="query"
+                                    text=request.query_text, input_type="query",
+                                    allow_openai_fallback=False,
                                 ),
                                 voyage_svc._generate_text_embedding(
-                                    text=request.query_text, input_type="query"
+                                    text=request.query_text, input_type="query",
+                                    allow_openai_fallback=False,
                                 ),
                                 return_exceptions=True,
                             )
