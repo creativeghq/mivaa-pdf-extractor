@@ -70,12 +70,9 @@ class EmbeddingToTextService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict carrying per-aspect embeddings. Both naming
-                conventions are accepted during the v2 rollout:
-                  - v2 (post-2026-05-04): color_aspect_1024 / texture_aspect_1024
-                    / style_aspect_1024 / material_aspect_1024 (1024D Voyage)
-                  - legacy: color_slig_768 / texture_slig_768 / style_slig_768 /
-                    material_slig_768 (768D SLIG-blend)
+            embeddings: Dict carrying per-aspect embeddings under the v2 keys
+                color_aspect_1024 / texture_aspect_1024 / style_aspect_1024 /
+                material_aspect_1024 (1024D Voyage of VisionAnalysis text).
 
         Returns:
             Dict with extracted metadata and confidence scores
@@ -85,20 +82,10 @@ class EmbeddingToTextService:
             return {}
 
         try:
-            # Pick whichever aspect key the caller provided (v2 first, legacy fallback).
-            # The dict-fallback chain returns the first non-empty value for each
-            # aspect; downstream code only sees a single `embeddings.<aspect>` per call.
-            def _pick(*keys: str) -> List[float]:
-                for k in keys:
-                    val = embeddings.get(k)
-                    if val:
-                        return val
-                return []
-
-            color_vec = _pick("color_aspect_1024", "color_slig_768")
-            texture_vec = _pick("texture_aspect_1024", "texture_slig_768")
-            material_vec = _pick("material_aspect_1024", "material_slig_768")
-            style_vec = _pick("style_aspect_1024", "style_slig_768")
+            color_vec = embeddings.get("color_aspect_1024") or []
+            texture_vec = embeddings.get("texture_aspect_1024") or []
+            material_vec = embeddings.get("material_aspect_1024") or []
+            style_vec = embeddings.get("style_aspect_1024") or []
 
             # Build context for AI
             embedding_context = {

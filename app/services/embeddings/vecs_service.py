@@ -314,14 +314,11 @@ class VecsService:
         """
         Upsert per-aspect embeddings for an image with rollback semantics.
 
-        Dimension is derived from the first non-empty embedding rather than
-        hard-coded — supports both:
-          - Legacy 768D SLIG-blend vectors (pre-2026-05-04)
-          - New 1024D Voyage-from-VisionAnalysis aspect vectors (post-2026-05-04)
-        After the migration truncates the four collections at 1024D, only the
-        new path will succeed; the legacy path will get a dim-mismatch from
-        Postgres and we'll see the error in logs (intentional — surfaces
-        misconfigured callers rather than silently writing wrong-dim data).
+        v2 architecture (post-2026-05-04): each aspect collection is
+        halfvec(1024) holding Voyage embeddings of per-image VisionAnalysis
+        text. Dimension is derived from the first non-empty embedding so
+        that callers passing wrong-dim data fail loudly at the Postgres
+        boundary rather than silently storing mis-shaped vectors.
 
         Audit fix #32: previously each upsert+flag pair was independent — if
         color succeeded and texture failed, the flag set was inconsistent with
@@ -704,20 +701,15 @@ class VecsService:
         """
         Search for similar images using per-aspect embeddings.
 
-        Pre-2026-05-04: queries were SLIG 768D vectors derived from the SLIG
-        blend-trick path. Post-2026-05-04: queries are Voyage 1024D text
-        embeddings (typically of the user's query text) — same model the
-        aspect collection itself was built with.
-
-        Dimension is read from the query vector rather than hardcoded so
-        this method works across the rollout (and so a misconfigured caller
+        Queries are Voyage 1024D text embeddings (typically of the user's
+        query text) — same model the aspect collection rows were built with.
+        Dimension is read from the query vector so a misconfigured caller
         passing wrong-dim data gets a clear Postgres dim-mismatch instead of
-        silently storing the wrong-shape vector).
+        silently storing or comparing the wrong-shape vector.
 
         Args:
-            query_embedding: Query embedding vector. 768D during legacy
-                rollout window, 1024D post-migration.
-            embedding_type: Type of embedding ('color', 'texture', 'style', 'material')
+            query_embedding: 1024D Voyage text embedding
+            embedding_type: 'color', 'texture', 'style', or 'material'
             limit: Maximum number of results
             workspace_id: Optional workspace ID filter
             document_id: Optional document ID filter
@@ -797,10 +789,8 @@ class VecsService:
             return formatted_results
 
         except Exception as e:
-            # Dim mismatches surface here (e.g. caller passes a 768D SLIG
-            # vector after the migration brought the collection to 1024D
-            # Voyage). Log as ERROR — silently returning [] would hide the
-            # configuration bug from operators.
+            # Dim mismatches surface here. Log as ERROR — silently returning []
+            # would hide the configuration bug from operators.
             logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
             return []
 
@@ -819,18 +809,16 @@ class VecsService:
         This enables true multi-vector search by querying:
         - image_slig_embeddings (primary visual, 768D SLIG)
         - image_understanding_embeddings (vision-understanding, 1024D Voyage)
-        - image_color_embeddings (1024D Voyage post-2026-05-04 / 768D SLIG legacy)
-        - image_texture_embeddings (1024D Voyage post-2026-05-04 / 768D SLIG legacy)
-        - image_style_embeddings (1024D Voyage post-2026-05-04 / 768D SLIG legacy)
-        - image_material_embeddings (1024D Voyage post-2026-05-04 / 768D SLIG legacy)
+        - image_color_embeddings (1024D Voyage of VisionAnalysis.colors[])
+        - image_texture_embeddings (1024D Voyage of VisionAnalysis.textures+finish)
+        - image_style_embeddings (1024D Voyage of style+pattern+applications)
+        - image_material_embeddings (1024D Voyage of material_type+category+sub)
 
         Args:
             visual_query_embedding: Primary 768D SLIG visual query embedding
             specialized_query_embeddings: Optional dict with keys: color, texture, style, material.
-                Post-v2: 1024D Voyage text embeddings (e.g. from Voyage-embedding the
-                user's query text). Pre-v2: 768D SLIG vectors. The dim is auto-detected
-                per-aspect by search_specialized_embeddings — do NOT mix dims across
-                the 4 aspects in a single call.
+                1024D Voyage text embeddings of the user's query text — same
+                embedding space as the aspect collection rows.
             understanding_query_embedding: Optional 1024D understanding query embedding from Voyage AI
             limit: Maximum results per collection
             filters: Optional metadata filters

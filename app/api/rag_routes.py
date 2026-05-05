@@ -2140,17 +2140,10 @@ async def get_embeddings(
             'visual', 'slig', 'color', 'texture', 'style', 'material', 'understanding'
         )
         if wants_image:
-            # Pull the `*_aspect_embedding_model` provenance columns alongside
-            # the boolean flags so each row's label reflects whether the
-            # vector in VECS is the legacy 768D SLIG-blend or the v2 1024D
-            # Voyage-from-VisionAnalysis variant. During the rollout window
-            # both can coexist across rows; post-migration only v2 remains.
-            #
-            # Two-tier select: full preferred, fallback to base if the v2
-            # SQL migration hasn't been applied yet. Pre-migration, every
-            # aspect row simply renders as legacy (no provenance found
-            # → is_v2=false). Endpoint stays usable through the rollout.
-            full_select = (
+            # Aspect collections post-2026-05-04 are 1024D Voyage embeddings of
+            # VisionAnalysis text; provenance columns on document_images carry
+            # the model + schema_version that produced each row's vector.
+            image_result = supabase_client.client.table('document_images').select(
                 'id, image_url, '
                 'has_slig_embedding, has_color_slig, has_texture_slig, '
                 'has_style_slig, has_material_slig, has_understanding_embedding, '
@@ -2158,37 +2151,13 @@ async def get_embeddings(
                 'texture_aspect_embedding_model, texture_aspect_schema_version, '
                 'style_aspect_embedding_model, style_aspect_schema_version, '
                 'material_aspect_embedding_model, material_aspect_schema_version'
-            )
-            base_select = (
-                'id, image_url, '
-                'has_slig_embedding, has_color_slig, has_texture_slig, '
-                'has_style_slig, has_material_slig, has_understanding_embedding'
-            )
-            try:
-                image_result = supabase_client.client.table('document_images').select(
-                    full_select
-                ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
-            except Exception as e:
-                err_msg = str(e).lower()
-                if "does not exist" in err_msg or "42703" in err_msg:
-                    logger.warning(
-                        "⚠️ Embeddings list: aspect provenance columns missing — "
-                        f"falling back to base select. Apply v2 migration to enable provenance labels. ({e})"
-                    )
-                    image_result = supabase_client.client.table('document_images').select(
-                        base_select
-                    ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
-                else:
-                    raise
+            ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
 
-            # Aspect rows: tuple is (legacy_label, legacy_dim, legacy_model,
-            # v2_label, v2_dim, v2_model, type_alias). Picked at render time
-            # by inspecting the provenance column.
             aspect_rows = {
-                'has_color_slig':    ('color_slig_768',    768, 'siglip2', 'color_aspect_1024',    1024, 'voyage-3', 'color'),
-                'has_texture_slig':  ('texture_slig_768',  768, 'siglip2', 'texture_aspect_1024',  1024, 'voyage-3', 'texture'),
-                'has_style_slig':    ('style_slig_768',    768, 'siglip2', 'style_aspect_1024',    1024, 'voyage-3', 'style'),
-                'has_material_slig': ('material_slig_768', 768, 'siglip2', 'material_aspect_1024', 1024, 'voyage-3', 'material'),
+                'has_color_slig':    ('color_aspect_1024',    'color'),
+                'has_texture_slig':  ('texture_aspect_1024',  'texture'),
+                'has_style_slig':    ('style_aspect_1024',    'style'),
+                'has_material_slig': ('material_aspect_1024', 'material'),
             }
             non_aspect_rows = {
                 'has_slig_embedding':         ('visual_slig_768',     768,  'siglip2',  'visual'),
@@ -2213,25 +2182,20 @@ async def get_embeddings(
                     })
                     embedding_stats[label] = embedding_stats.get(label, 0) + 1
 
-                for flag, (legacy_label, legacy_dim, legacy_model,
-                           v2_label, v2_dim, v2_model, type_alias) in aspect_rows.items():
+                for flag, (label, type_alias) in aspect_rows.items():
                     if not img.get(flag):
                         continue
                     if embedding_type and embedding_type != type_alias and embedding_type not in ('visual', 'slig'):
                         continue
-                    prov_model = img.get(f'{type_alias}_aspect_embedding_model')
+                    prov_model = img.get(f'{type_alias}_aspect_embedding_model') or 'voyage-3'
                     prov_schema = img.get(f'{type_alias}_aspect_schema_version')
-                    is_v2 = bool(prov_model and prov_model.startswith('voyage'))
-                    label = v2_label if is_v2 else legacy_label
-                    dim = v2_dim if is_v2 else legacy_dim
-                    model = prov_model or (v2_model if is_v2 else legacy_model)
                     embeddings.append({
                         'id': f"{img['id']}_{type_alias}",
                         'entity_id': img['id'],
                         'entity_type': 'image',
                         'embedding_type': label,
-                        'dimension': dim,
-                        'model': model,
+                        'dimension': 1024,
+                        'model': prov_model,
                         'schema_version': prov_schema,
                         'present': True,
                         'storage': f"vecs.image_{type_alias}_embeddings",

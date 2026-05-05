@@ -1906,12 +1906,7 @@ async def get_image_embeddings_status_endpoint(
     )
 
     supabase = SupabaseClient()
-
-    # Two-tier select: full row (with v2 aspect provenance) preferred,
-    # fallback to base columns if the v2 SQL migration hasn't been applied
-    # yet. The inspector should still load — it's the operator's primary
-    # diagnostic surface during the rollout window.
-    full_select = (
+    row_resp = supabase.client.table("document_images").select(
         "id, image_url, vision_analysis, "
         "has_slig_embedding, has_understanding_embedding, "
         "has_color_slig, has_texture_slig, has_style_slig, has_material_slig, "
@@ -1920,31 +1915,7 @@ async def get_image_embeddings_status_endpoint(
         "texture_aspect_embedding_model, texture_aspect_schema_version, "
         "style_aspect_embedding_model, style_aspect_schema_version, "
         "material_aspect_embedding_model, material_aspect_schema_version"
-    )
-    base_select = (
-        "id, image_url, vision_analysis, "
-        "has_slig_embedding, has_understanding_embedding, "
-        "has_color_slig, has_texture_slig, has_style_slig, has_material_slig, "
-        "understanding_embedding_model, understanding_schema_version"
-    )
-    provenance_columns_present = True
-    try:
-        row_resp = supabase.client.table("document_images").select(
-            full_select
-        ).eq("id", image_id).maybe_single().execute()
-    except Exception as e:
-        err_msg = str(e).lower()
-        if "does not exist" in err_msg or "42703" in err_msg:
-            provenance_columns_present = False
-            logger.warning(
-                f"⚠️ /embeddings-status: aspect provenance columns missing for image {image_id} — "
-                f"falling back to base select. Apply the v2 SQL migration to enable full diagnostics. ({e})"
-            )
-            row_resp = supabase.client.table("document_images").select(
-                base_select
-            ).eq("id", image_id).maybe_single().execute()
-        else:
-            raise
+    ).eq("id", image_id).maybe_single().execute()
 
     row = row_resp.data
     if not row:
@@ -2025,7 +1996,6 @@ async def get_image_embeddings_status_endpoint(
         "image_id": image_id,
         "image_url": row.get("image_url"),
         "current_schema_version": CURRENT_SCHEMA_VERSION,
-        "v2_migration_applied": provenance_columns_present,
         "vision_analysis": {
             "present": va is not None,
             "parse_error": va_parse_error,

@@ -250,31 +250,16 @@ class RealEmbeddingsService:
 
             # 2a. Per-aspect embeddings (color / texture / style / material).
             #
-            # Pre-v2 (the SLIG blend trick): 4 vectors computed as
-            #     guided = 0.7-0.9 × base_image_emb + 0.1-0.3 × fixed_text_emb
-            # where the text embeddings were 4 fixed global prompts shared
-            # across every image. Result: 4 vectors that were ~80% identical
-            # to the base visual embedding and to each other. Same fixed
-            # text → same fixed perturbation direction for every image.
-            #
-            # Post-v2 (this path): each aspect string is built deterministically
-            # from the per-image VisionAnalysis fields (colors[], textures[]+
-            # finish, style+surface_pattern+applications, material_type+
-            # category+subcategory) and Voyage-embedded to 1024D. The aspect
-            # vector now actually encodes "what this image's color/texture/
-            # style/material looks like according to Claude Opus 4.7" —
-            # rather than "this image plus a generic shove toward the word
-            # 'color'". Same model and dimension as image_understanding_
-            # embeddings so the four collections share an embedding space.
-            #
-            # Behind feature flag EMBED_ASPECTS_FROM_VISION_ANALYSIS so the
-            # rollout can flip atomically once the migration has cleared
-            # the old 768D blend vectors out of the four collections.
-            use_v2_aspects = os.getenv(
-                "EMBED_ASPECTS_FROM_VISION_ANALYSIS", "false"
-            ).lower() in ("1", "true", "yes")
-
-            if use_v2_aspects and vision_analysis:
+            # Each aspect string is built deterministically from per-image
+            # VisionAnalysis fields (colors[], textures[]+finish, style+
+            # surface_pattern+applications, material_type+category+subcategory)
+            # and Voyage-embedded to 1024D — same model and embedding space
+            # as image_understanding_embeddings. The aspect vector encodes
+            # what THIS image's color/texture/style/material looks like
+            # according to Claude Opus 4.7. Skipped when vision_analysis
+            # is missing (caller provides it for image entities; not for
+            # text-only entities).
+            if vision_analysis:
                 aspect_embeddings = await self._generate_specialized_aspect_embeddings(
                     vision_analysis=vision_analysis,
                 )
@@ -290,29 +275,6 @@ class RealEmbeddingsService:
                     self.logger.info(
                         f"✅ Per-aspect embeddings generated ({len(aspect_embeddings)} × 1024D Voyage)"
                     )
-            elif image_url or image_data:
-                # Legacy path — kept until the v2 rollout is complete and the
-                # SQL migration has truncated the four 768D collections.
-                # The flag will be removed in the cleanup phase.
-                specialized_embeddings, _legacy_pil = await self._generate_specialized_siglip_embeddings(
-                    image_url,
-                    image_data,
-                    pil_image=None,
-                    base_image_embedding=visual_embedding,
-                )
-                if specialized_embeddings:
-                    embeddings["embeddings"]["color_slig_768"] = specialized_embeddings.get("color")
-                    embeddings["embeddings"]["texture_slig_768"] = specialized_embeddings.get("texture")
-                    embeddings["embeddings"]["style_slig_768"] = specialized_embeddings.get("style")
-                    embeddings["embeddings"]["material_slig_768"] = specialized_embeddings.get("material")
-                    embeddings["metadata"]["model_versions"]["specialized_visual"] = "slig-similarity-guided"
-                    embeddings["metadata"]["confidence_scores"]["specialized_visual"] = 0.90
-                    self.logger.info("✅ Text-guided specialized SLIG embeddings generated (legacy path, 4 × 768D)")
-                if _legacy_pil and hasattr(_legacy_pil, 'close'):
-                    try:
-                        _legacy_pil.close()
-                    except Exception:
-                        pass
 
             # 3. Understanding Embedding (1024D) — vision_analysis JSON → Voyage AI.
             # Source vision_analysis comes from Claude Opus 4.7 via Anthropic
@@ -1348,12 +1310,11 @@ class RealEmbeddingsService:
                             "completeness": 1.0,
                             "consistency": 0.95,
                             "validation": 0.90,
-                            # Each visual call yields ONE 768D vector. The
-                            # specialized (color/texture/style/material) calls
-                            # log themselves separately — see
-                            # _generate_specialized_siglip_embeddings — so the
-                            # `vectors_generated` field tells analytics how
-                            # many vectors a single document run produced.
+                            # Each visual call yields ONE 768D vector. The 4
+                            # per-aspect Voyage embeddings (color/texture/style/
+                            # material) are logged separately by
+                            # _generate_specialized_aspect_embeddings under
+                            # task="aspect_embeddings_batch".
                             "vectors_generated": 1,
                             "vector_dimension": self.slig_embedding_dimension,
                             "vector_kind": "visual",
@@ -1385,46 +1346,6 @@ class RealEmbeddingsService:
                     pass
 
         return None, None
-
-    # Class-level cache for the 4 fixed text-prompt SLIG embeddings.
-    # These prompts are CONSTANTS — embedding them once per pipeline run
-    # instead of per-image saves 4 SLIG calls × N images per product.
-    # On a 30-image product = 120 fewer SLIG calls per product.
-    _SPECIALIZED_TEXT_PROMPTS = {
-        "color": "focus on color palette and color relationships",
-        "texture": "focus on surface patterns and texture details",
-        "material": "focus on material type and physical properties",
-        "style": "focus on design style and aesthetic elements",
-    }
-    _text_prompt_embedding_cache: Dict[str, List[float]] = {}
-    _text_prompt_cache_lock: Optional[asyncio.Lock] = None
-
-    @classmethod
-    def _get_text_cache_lock(cls) -> asyncio.Lock:
-        if cls._text_prompt_cache_lock is None:
-            cls._text_prompt_cache_lock = asyncio.Lock()
-        return cls._text_prompt_cache_lock
-
-    async def _get_cached_specialized_text_embedding(self, prompt_key: str) -> Optional[List[float]]:
-        """Return SLIG text embedding for a fixed specialized prompt, computing
-        once per process and caching forever. The prompts are constants so
-        re-embedding them per image is pure waste."""
-        prompt = self._SPECIALIZED_TEXT_PROMPTS.get(prompt_key)
-        if not prompt:
-            return None
-        cached = RealEmbeddingsService._text_prompt_embedding_cache.get(prompt_key)
-        if cached is not None:
-            return cached
-        async with self._get_text_cache_lock():
-            cached = RealEmbeddingsService._text_prompt_embedding_cache.get(prompt_key)
-            if cached is not None:
-                return cached
-            async with self._get_slig_semaphore():
-                emb = await self._slig_client.get_text_embedding(prompt)
-            if emb and len(emb) == self.slig_embedding_dimension:
-                RealEmbeddingsService._text_prompt_embedding_cache[prompt_key] = emb
-                return emb
-            return None
 
     async def _generate_specialized_aspect_embeddings(
         self,
@@ -1575,122 +1496,6 @@ class RealEmbeddingsService:
 
         return embeddings
 
-    async def _generate_specialized_siglip_embeddings(
-        self,
-        image_url: Optional[str],
-        image_data: Optional[str],
-        pil_image=None,
-        base_image_embedding: Optional[List[float]] = None,
-    ) -> tuple[Optional[Dict[str, List[float]]], Optional[any]]:
-        """
-        LEGACY (pre-2026-05-04) — text-guided SLIG blend trick. Retained behind
-        the EMBED_ASPECTS_FROM_VISION_ANALYSIS feature flag during the rollout
-        of `_generate_specialized_aspect_embeddings` (Voyage 1024D). To be
-        deleted in the cleanup phase once the new aspect embeddings are
-        backfilled across the catalog.
-
-        Generate 4 text-guided SLIG embeddings (color / texture / style / material).
-
-        All-or-nothing: if any of the 4 fail, this returns None for the whole set
-        so the image doesn't end up with partial specialized coverage.
-
-        `base_image_embedding`: pass the already-computed visual_768 embedding
-        from the caller so we don't re-compute it. Saves 1 SLIG call per image.
-        """
-        try:
-            import numpy as np
-
-            text_prompts = self._SPECIALIZED_TEXT_PROMPTS
-
-            if base_image_embedding is None:
-                async with self._get_slig_semaphore():
-                    base_image_embedding = await self._slig_client.get_image_embedding(
-                        image=image_data if image_data else image_url
-                    )
-            if not base_image_embedding or len(base_image_embedding) != self.slig_embedding_dimension:
-                self.logger.warning(
-                    f"⚠️ Specialized embeddings: base image embedding invalid "
-                    f"(len={len(base_image_embedding) if base_image_embedding else 0}, "
-                    f"expected={self.slig_embedding_dimension}) — skipping all 4"
-                )
-                return None, pil_image
-
-            specialized: Dict[str, List[float]] = {}
-            image_input = image_data if image_data else image_url
-
-            for embedding_type, text_prompt in text_prompts.items():
-                try:
-                    async with self._get_slig_semaphore():
-                        similarity_result = await self._slig_client.calculate_similarity(
-                            images=image_input,
-                            texts=text_prompt,
-                        )
-                    sim_matrix = similarity_result.get("similarity_scores") if similarity_result else None
-                    if not sim_matrix or not sim_matrix[0]:
-                        raise ValueError(f"empty similarity_scores for {embedding_type}")
-                    similarity_score = float(sim_matrix[0][0])
-
-                    # Cached: only computed once per process for the 4 fixed prompts.
-                    text_embedding = await self._get_cached_specialized_text_embedding(embedding_type)
-                    if not text_embedding or len(text_embedding) != self.slig_embedding_dimension:
-                        raise ValueError(
-                            f"text embedding wrong size for {embedding_type}: "
-                            f"len={len(text_embedding) if text_embedding else 0}"
-                        )
-
-                    img_emb = np.array(base_image_embedding, dtype=np.float32)
-                    txt_emb = np.array(text_embedding, dtype=np.float32)
-                    blend_weight = 0.7 + (0.2 * similarity_score)
-                    guided = blend_weight * img_emb + (1 - blend_weight) * txt_emb
-                    norm = np.linalg.norm(guided)
-                    if norm > 0:
-                        guided = guided / norm
-
-                    specialized[embedding_type] = guided.tolist()
-
-                except Exception as e:
-                    self.logger.error(
-                        f"❌ Specialized {embedding_type} embedding failed — aborting all 4: {e}",
-                        exc_info=True,
-                    )
-                    return None, pil_image
-
-            self.logger.info("✅ Generated 4 text-guided specialized SLIG embeddings (768D each)")
-            try:
-                await self.ai_logger.log_ai_call(
-                    task="visual_specialized_embeddings_batch",
-                    model=self.slig_model_name,
-                    input_tokens=0,
-                    output_tokens=0,
-                    cost=0.0,
-                    latency_ms=0,
-                    confidence_score=0.95,
-                    confidence_breakdown={
-                        "model_confidence": 0.98,
-                        "completeness": 1.0,
-                        "consistency": 0.95,
-                        "validation": 0.90,
-                        # 4 vectors × (1 image_embedding + 1 text_embedding +
-                        # 1 calculate_similarity) = up to 12 SLIG calls per
-                        # image; we log the count so analytics knows the
-                        # actual fan-out behind the single "specialized" log.
-                        "vectors_generated": len(specialized),
-                        "vector_dimension": self.slig_embedding_dimension,
-                        "vector_kinds": list(specialized.keys()),
-                    },
-                    action="use_ai_result",
-                )
-            except Exception as log_err:
-                self.logger.debug(f"Specialized SLIG aggregate log skipped: {log_err}")
-            return specialized, pil_image
-
-        except Exception as e:
-            self.logger.error(f"❌ Specialized SLIG embedding generation failed: {e}", exc_info=True)
-            return None, pil_image
-
-
-    # Replaced by SLIG text-guided specialized embeddings (color, texture, style, material)
-    # stored in VECS collections at 768D each.
 
 
 

@@ -37,12 +37,9 @@ class VisualMetadataService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with per-aspect embeddings. Both naming conventions
-                accepted by EmbeddingToTextService during the v2 rollout:
-                  - v2: color_aspect_1024, texture_aspect_1024,
-                        style_aspect_1024, material_aspect_1024 (Voyage 1024D)
-                  - legacy: color_slig_768, texture_slig_768,
-                            style_slig_768, material_slig_768 (SLIG 768D)
+            embeddings: Dict with v2 per-aspect embeddings (color_aspect_1024,
+                texture_aspect_1024, style_aspect_1024, material_aspect_1024) —
+                Voyage 1024D embeddings of VisionAnalysis text.
 
         Returns:
             Dict with extracted visual metadata or None if failed
@@ -122,8 +119,7 @@ class VisualMetadataService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with per-aspect embeddings (v2 keys
-                color_aspect_1024 etc. or legacy color_slig_768 etc.)
+            embeddings: Dict with v2 per-aspect embeddings (color_aspect_1024 etc.)
 
         Returns:
             Dict with success status and metadata

@@ -834,63 +834,34 @@ class UnifiedSearchService:
     ) -> List[SearchResult]:
         """Per-aspect VECS search — single chokepoint for color/texture/style/material.
 
-        Pre-2026-05-04 the four aspect-specific methods (`_search_color`,
-        `_search_texture`, etc.) all:
-          - Generated 768D SLIG visual queries via `generate_visual_embedding`
-            (pre-v2 the aspect collections were 768D SLIG-blend, so this matched;
-            post-v2 they are 1024D Voyage of VisionAnalysis text and would
-            dim-mismatch).
-          - Passed `filters=` and `min_similarity=` to
-            `vecs_service.search_specialized_embeddings`, which doesn't accept
-            either parameter — silent TypeError on every call.
+        Voyage-embeds the user's text at 1024D (same model + embedding space
+        as the aspect collection rows) and queries vecs.image_<aspect>_embeddings.
+        `allow_openai_fallback=False` so an OpenAI fallback vector can never
+        live in the same collection as Voyage rows (would corrupt similarity).
 
-        Both bugs fixed here. The four legacy methods are now thin wrappers.
-
-        Query embedding selection mirrors rag_service.py:
-          v2 (EMBED_ASPECTS_FROM_VISION_ANALYSIS=true): 1024D Voyage of the
-            user's text — same model + space as the aspect collection.
-          legacy: 768D SLIG visual embedding via `generate_visual_embedding`,
-            matches the pre-v2 768D SLIG-blend collection dim.
-
-        `min_similarity` is applied client-side because vecs_service doesn't
-        support a server-side cutoff.
+        `min_similarity` is applied client-side — vecs_service doesn't support
+        a server-side cutoff.
         """
-        import os as _os
-
         try:
             from app.services.embeddings.vecs_service import get_vecs_service
             from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
             embeddings_service = RealEmbeddingsService()
-            use_v2_aspects = _os.getenv(
-                "EMBED_ASPECTS_FROM_VISION_ANALYSIS", "false"
-            ).lower() in ("1", "true", "yes")
-
-            if use_v2_aspects:
-                # allow_openai_fallback=False — the v2 aspect collections live
-                # in Voyage 1024D space; an OpenAI query vector would compute
-                # meaningless similarity scores against Voyage row vectors.
-                query_embedding = await embeddings_service._generate_text_embedding(
-                    text=query,
-                    input_type="query",
-                    allow_openai_fallback=False,
+            query_embedding = await embeddings_service._generate_text_embedding(
+                text=query,
+                input_type="query",
+                allow_openai_fallback=False,
+            )
+            if not query_embedding or len(query_embedding) != 1024:
+                self.logger.warning(
+                    f"Aspect '{aspect}': Voyage query embed wrong dim "
+                    f"(got {len(query_embedding) if query_embedding else 0}, expected 1024)"
                 )
-                if not query_embedding or len(query_embedding) != 1024:
-                    self.logger.warning(
-                        f"Aspect '{aspect}': Voyage query embed wrong dim "
-                        f"(got {len(query_embedding) if query_embedding else 0}, expected 1024)"
-                    )
-                    return []
-            else:
-                embedding_result = await embeddings_service.generate_visual_embedding(query)
-                if not embedding_result.get("success"):
-                    self.logger.warning(f"Failed to generate {aspect} query embedding (legacy SLIG path)")
-                    return []
-                query_embedding = embedding_result.get("embedding", [])
+                return []
 
             # workspace_id and document_id are first-class params on
-            # search_specialized_embeddings — pass them directly rather than
-            # via the unsupported `filters=` shape the legacy code attempted.
+            # search_specialized_embeddings — translate the legacy `filters`
+            # shape some callers still pass.
             vecs_service = get_vecs_service()
             doc_id = None
             if filters:
@@ -923,8 +894,7 @@ class UnifiedSearchService:
                     source_type="image",
                 ))
             self.logger.info(
-                f"✅ Unified aspect search ({aspect}): {len(search_results)}/{len(raw_results)} above threshold "
-                f"(query_path={'voyage_1024' if use_v2_aspects else 'slig_768'})"
+                f"✅ Unified aspect search ({aspect}): {len(search_results)}/{len(raw_results)} above threshold"
             )
             return search_results
 

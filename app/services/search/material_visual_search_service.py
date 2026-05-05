@@ -554,74 +554,46 @@ class MaterialVisualSearchService:
                     query_embedding = await slig_client.get_text_embedding(request.query_text)
                     logger.info(f"✅ Generated text CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
 
-                    # Per-aspect query embeddings — must match the dimension of
-                    # the aspect collection being queried:
-                    #   v2 (post-2026-05-04): collections are 1024D Voyage
-                    #     embeddings of VisionAnalysis text; queries are
-                    #     1024D Voyage of the user's text intent.
-                    #   legacy: collections are 768D SLIG-blend; queries are
-                    #     768D SLIG text embeddings prefixed with the aspect
-                    #     phrase (matching the pre-v2 prompt convention).
-                    use_v2_aspects = os.getenv(
-                        "EMBED_ASPECTS_FROM_VISION_ANALYSIS", "false"
-                    ).lower() in ("1", "true", "yes")
-
+                    # Per-aspect query embeddings: 1024D Voyage of the user's
+                    # text — same model and embedding space as the aspect
+                    # collection rows. allow_openai_fallback=False so an
+                    # OpenAI fallback can never produce a query vector that
+                    # would return nonsense similarity against Voyage rows.
                     try:
-                        if use_v2_aspects:
-                            # 1024D Voyage queries — same model + space as the
-                            # aspect collection itself.
-                            from app.services.embeddings.real_embeddings_service import (
-                                RealEmbeddingsService,
-                            )
-                            voyage_svc = RealEmbeddingsService()
-                            # allow_openai_fallback=False on all four — the v2
-                            # aspect collections are Voyage 1024D; an OpenAI
-                            # query vector against them returns nonsense.
-                            color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
-                                voyage_svc._generate_text_embedding(
-                                    text=request.query_text, input_type="query",
-                                    allow_openai_fallback=False,
-                                ),
-                                voyage_svc._generate_text_embedding(
-                                    text=request.query_text, input_type="query",
-                                    allow_openai_fallback=False,
-                                ),
-                                voyage_svc._generate_text_embedding(
-                                    text=request.query_text, input_type="query",
-                                    allow_openai_fallback=False,
-                                ),
-                                voyage_svc._generate_text_embedding(
-                                    text=request.query_text, input_type="query",
-                                    allow_openai_fallback=False,
-                                ),
-                                return_exceptions=True,
-                            )
-                            logger.info(
-                                "✅ Generated specialized aspect query embeddings via Voyage (1024D × 4)"
-                            )
-                        else:
-                            # Legacy 768D SLIG queries — unchanged from pre-v2
-                            # behavior. The aspect-prefixed phrasing matched
-                            # the SLIG-blend collection's training distribution.
-                            color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
-                                slig_client.get_text_embedding(f"color palette: {request.query_text}"),
-                                slig_client.get_text_embedding(f"texture pattern: {request.query_text}"),
-                                slig_client.get_text_embedding(f"design style: {request.query_text}"),
-                                slig_client.get_text_embedding(f"material type: {request.query_text}"),
-                                return_exceptions=True,
-                            )
-                            logger.info(
-                                "✅ Generated specialized text embeddings via SLIG (legacy path, 768D × 4)"
-                            )
-
+                        from app.services.embeddings.real_embeddings_service import (
+                            RealEmbeddingsService,
+                        )
+                        voyage_svc = RealEmbeddingsService()
+                        color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
+                            voyage_svc._generate_text_embedding(
+                                text=request.query_text, input_type="query",
+                                allow_openai_fallback=False,
+                            ),
+                            voyage_svc._generate_text_embedding(
+                                text=request.query_text, input_type="query",
+                                allow_openai_fallback=False,
+                            ),
+                            voyage_svc._generate_text_embedding(
+                                text=request.query_text, input_type="query",
+                                allow_openai_fallback=False,
+                            ),
+                            voyage_svc._generate_text_embedding(
+                                text=request.query_text, input_type="query",
+                                allow_openai_fallback=False,
+                            ),
+                            return_exceptions=True,
+                        )
                         specialized_embeddings = {
                             'color': color_emb if not isinstance(color_emb, Exception) else None,
                             'texture': texture_emb if not isinstance(texture_emb, Exception) else None,
                             'style': style_emb if not isinstance(style_emb, Exception) else None,
                             'material': material_emb if not isinstance(material_emb, Exception) else None,
                         }
+                        logger.info(
+                            "✅ Generated specialized aspect query embeddings via Voyage (1024D × 4)"
+                        )
                     except Exception as spec_err:
-                        logger.warning(f"⚠️ Failed to generate specialized embeddings: {spec_err}")
+                        logger.warning(f"⚠️ Failed to generate aspect query embeddings: {spec_err}")
                         specialized_embeddings = None
                 else:
                     logger.error("❌ SLIG client not available for text embedding generation")
