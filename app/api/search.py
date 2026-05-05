@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from ..schemas.search import (
     # Enhanced multi-modal schemas
@@ -1144,287 +1145,324 @@ async def material_search_health_check(
 
 
 # ============================================================================
-# SPECIALIZED CLIP EMBEDDING SEARCH ENDPOINTS
+# PER-ASPECT SEARCH ENDPOINTS
+#
+# Pre-2026-05-04 these called _generate_specialized_clip_embeddings (which
+# never existed in the SLIG codebase — the endpoints had been silently 4xx-ing
+# on AttributeError since the 2026-04 CLIP→SLIG migration). They also
+# referenced ImageSearchRequest fields (query_image, workspace_id,
+# min_similarity) that don't exist on the schema, so even if the embedding
+# method were rewired the request parsing would fail.
+#
+# Rewritten 2026-05-05 to use the v2 aspect architecture:
+#   - Voyage `voyage-3` 1024D queries (matches the aspect collection space)
+#   - Optional query_image path runs Claude Opus 4.7 vision_analysis on the
+#     image, then the per-aspect serializer to build a query string Voyage-
+#     embeds — exactly mirrors the ingestion pipeline so the query embedding
+#     is a sibling of the row embeddings it'll be compared against.
+#   - Optional query_text path skips the Opus pass and Voyage-embeds the
+#     user's text directly. Cheaper (no vision call), good for "all images
+#     that look like 'warm white veined marble'" style queries.
 # ============================================================================
+
+
+class AspectSearchRequest(BaseModel):
+    """Request schema for the four /search/by-<aspect> endpoints.
+
+    Either `query_image` or `query_text` must be provided. If both are given,
+    image takes precedence (the user obviously wants per-aspect retrieval
+    grounded in actual material visible in the image).
+    """
+
+    query_image: Optional[str] = Field(
+        None,
+        description=(
+            "Base64-encoded image OR HTTPS URL. When provided, the server runs "
+            "Claude Opus 4.7 vision_analysis on the image and Voyage-embeds the "
+            "per-aspect text derived from the result — same pipeline as ingestion."
+        ),
+    )
+    query_text: Optional[str] = Field(
+        None,
+        description=(
+            "Free-form text describing the aspect to match (e.g. 'warm white "
+            "veined marble' for color search). Voyage-embedded directly. "
+            "Cheaper than query_image; use when the user already knows the words."
+        ),
+    )
+
+    workspace_id: Optional[str] = Field(None, description="Restrict results to this workspace")
+    document_id: Optional[str] = Field(None, description="Restrict results to this document")
+    limit: int = Field(10, ge=1, le=50, description="Max results to return")
+    min_similarity: float = Field(0.5, ge=0.0, le=1.0, description="Drop results below this cosine similarity")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "query_text": "warm white veined marble",
+                "limit": 15,
+                "min_similarity": 0.6,
+            }
+        }
+
+
+class AspectSearchResultItem(BaseModel):
+    image_id: str
+    similarity_score: float
+    distance: Optional[float] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class AspectSearchResponse(BaseModel):
+    success: bool
+    aspect: str
+    results: List[AspectSearchResultItem]
+    total_results: int
+    query_summary: Optional[str] = Field(
+        None,
+        description=(
+            "The text string the server actually Voyage-embedded for the query. "
+            "Surfaced so callers can see exactly what was compared — particularly "
+            "useful when query_image was provided (shows the Opus output)."
+        ),
+    )
+
+
+async def _build_aspect_query_embedding(
+    aspect: str,
+    query_image: Optional[str],
+    query_text: Optional[str],
+) -> tuple[Optional[List[float]], Optional[str], Optional[str]]:
+    """Resolve `(query_image | query_text) → (1024D Voyage embedding, source text, error)`.
+
+    The single chokepoint for all 4 aspect endpoints. Returns:
+        (embedding, source_text, error) — exactly one of (embedding, error)
+        is populated. `source_text` is the string Voyage embedded, returned
+        to the caller for transparency.
+
+    `aspect` is one of color/texture/style/material. Drives which serializer
+    we call when query_image was provided.
+    """
+    if not query_image and not query_text:
+        return None, None, "Provide either query_image or query_text"
+
+    from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+    voyage_svc = RealEmbeddingsService()
+
+    # Path A — query_image: run Opus vision_analysis, build aspect text via
+    # serializer, embed. Mirrors ingestion exactly so query and row vectors
+    # live in the same Voyage embedding space.
+    if query_image:
+        from app.models.vision_analysis import (
+            VisionAnalysis,
+            VISION_ANALYSIS_TOOL,
+            ASPECT_SERIALIZERS,
+        )
+        import base64 as _b64
+        import os as _os
+
+        anthropic_key = _os.getenv("ANTHROPIC_API_KEY")
+        if not anthropic_key:
+            return None, None, "ANTHROPIC_API_KEY not configured"
+
+        # Accept either a data URL or a raw base64 string. URLs are fetched
+        # before sending to Anthropic so we don't have to deal with anthropic
+        # supporting only certain URL patterns.
+        if query_image.startswith("http"):
+            import httpx
+            try:
+                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                    resp = await client.get(query_image)
+                    if resp.status_code != 200:
+                        return None, None, f"Failed to fetch query_image (HTTP {resp.status_code})"
+                    image_b64 = _b64.b64encode(resp.content).decode()
+            except Exception as e:
+                return None, None, f"Failed to fetch query_image: {e}"
+        elif query_image.startswith("data:"):
+            try:
+                _, _, encoded = query_image.partition("base64,")
+                if not encoded:
+                    return None, None, "Malformed data URL (no base64 payload)"
+                image_b64 = encoded
+            except Exception as e:
+                return None, None, f"Failed to parse data URL: {e}"
+        else:
+            image_b64 = query_image  # assume raw base64
+
+        # Run vision_analysis via Anthropic tool use. Schema-locked output.
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(
+                    "https://api.anthropic.com/v1/messages",
+                    headers={
+                        "x-api-key": anthropic_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json",
+                    },
+                    json={
+                        "model": "claude-opus-4-7",
+                        "max_tokens": 4096,
+                        "tools": [VISION_ANALYSIS_TOOL],
+                        "tool_choice": {"type": "tool", "name": "emit_vision_analysis"},
+                        "messages": [{
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "source": {
+                                    "type": "base64", "media_type": "image/jpeg", "data": image_b64,
+                                }},
+                                {"type": "text", "text": (
+                                    "Use the emit_vision_analysis tool to return a "
+                                    "structured catalog-grade material analysis for this image."
+                                )},
+                            ],
+                        }],
+                    },
+                )
+                if resp.status_code != 200:
+                    return None, None, f"Anthropic vision_analysis returned HTTP {resp.status_code}"
+                payload = resp.json()
+                tool_block = next(
+                    (b for b in payload.get("content", []) if b.get("type") == "tool_use"),
+                    None,
+                )
+                if not tool_block:
+                    return None, None, "Anthropic response missing tool_use block"
+                va = VisionAnalysis(**tool_block["input"])
+        except Exception as e:
+            return None, None, f"Anthropic vision_analysis call failed: {e}"
+
+        serializer = ASPECT_SERIALIZERS.get(aspect)
+        if not serializer:
+            return None, None, f"Unknown aspect: {aspect}"
+        source_text = serializer(va)
+        if not source_text:
+            return None, None, f"VisionAnalysis from query_image had no {aspect} content (e.g. empty colors[])"
+    else:
+        # Path B — query_text: skip Opus, embed the user's text directly.
+        source_text = query_text.strip()
+        if not source_text:
+            return None, None, "query_text is empty"
+
+    # Common terminus: Voyage-embed the source_text at 1024D.
+    try:
+        vec = await voyage_svc._generate_text_embedding(text=source_text, input_type="query")
+    except Exception as e:
+        return None, None, f"Voyage embed failed: {e}"
+
+    if not vec or len(vec) != 1024:
+        return None, None, f"Voyage returned wrong-dim embedding (len={len(vec) if vec else 0}, expected 1024)"
+
+    return vec, source_text, None
+
+
+async def _run_aspect_search(
+    aspect: str,
+    request: AspectSearchRequest,
+) -> AspectSearchResponse:
+    """Shared body for the four /search/by-<aspect> endpoints."""
+    from app.services.embeddings.vecs_service import get_vecs_service
+
+    embedding, source_text, error = await _build_aspect_query_embedding(
+        aspect=aspect,
+        query_image=request.query_image,
+        query_text=request.query_text,
+    )
+    if error:
+        raise HTTPException(status_code=400, detail=error)
+
+    vecs_svc = get_vecs_service()
+    raw_results = await vecs_svc.search_specialized_embeddings(
+        query_embedding=embedding,
+        embedding_type=aspect,
+        limit=request.limit,
+        workspace_id=request.workspace_id,
+        document_id=request.document_id,
+        include_metadata=True,
+    )
+
+    # Apply min_similarity client-side — search_specialized_embeddings doesn't
+    # accept a threshold (it converts distance → similarity inside, but doesn't
+    # filter). Cosine similarity sits in [-1, 1]; the cutoff is requested by
+    # the caller and we trust their value.
+    filtered = [
+        AspectSearchResultItem(
+            image_id=r.get("image_id"),
+            similarity_score=r.get("similarity_score"),
+            distance=r.get("distance"),
+            metadata=r.get("metadata"),
+        )
+        for r in raw_results
+        if (r.get("similarity_score") or 0.0) >= request.min_similarity
+    ]
+
+    logger.info(
+        f"✅ /search/by-{aspect}: {len(filtered)}/{len(raw_results)} results above min_similarity "
+        f"(query_path={'image' if request.query_image else 'text'})"
+    )
+
+    return AspectSearchResponse(
+        success=True,
+        aspect=aspect,
+        results=filtered,
+        total_results=len(filtered),
+        query_summary=source_text,
+    )
+
 
 @router.post(
     "/search/by-color",
-    response_model=ImageSearchResponse,
+    response_model=AspectSearchResponse,
     summary="Search images by color palette",
-    description="Search for images with similar color palettes using specialized SLIG embeddings"
+    description=(
+        "Per-aspect search against `image_color_embeddings`. With query_image, "
+        "the server runs vision_analysis and Voyage-embeds the resulting "
+        "VisionAnalysis.colors[] string. With query_text, it Voyage-embeds your "
+        "text directly. Either way the query lives in the same Voyage 1024D "
+        "space as the rows it's compared against."
+    ),
 )
-async def search_by_color(
-    request: ImageSearchRequest,
-    rag: RAGService = Depends(get_rag_service)
-) -> ImageSearchResponse:
-    """
-    **🎨 Color Palette Search**
-
-    Search for images with similar color palettes using specialized color SLIG embeddings.
-
-    ## Use Cases
-    - Find materials with matching color schemes
-    - Discover products in specific color families
-    - Match color palettes across different materials
-
-    ## Request Example
-    ```json
-    {
-      "query_image": "data:image/jpeg;base64,...",
-      "workspace_id": "workspace-uuid",
-      "limit": 10,
-      "min_similarity": 0.7
-    }
-    ```
-    """
-    try:
-        from app.services.embeddings.vecs_service import get_vecs_service
-        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-
-        # Generate color embedding from query image
-        embeddings_service = RealEmbeddingsService()
-        result = await embeddings_service._generate_specialized_clip_embeddings(
-            image_url=None,
-            image_data=request.query_image
-        )
-
-        if not result or 'color' not in result:
-            raise HTTPException(status_code=500, detail="Failed to generate color embedding")
-
-        color_embedding = result['color']
-
-        # Search VECS color collection
-        vecs_service = get_vecs_service()
-        results = await vecs_service.search_specialized_embeddings(
-            embedding_type='color',
-            query_embedding=color_embedding,
-            limit=request.limit or 10,
-            filters={"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None,
-            min_similarity=request.min_similarity or 0.5
-        )
-
-        # Format response
-        image_results = []
-        for item in results:
-            image_results.append(ImageSearchResult(
-                image_id=item.get('image_id'),
-                similarity_score=item.get('similarity_score'),
-                metadata=item.get('metadata', {}),
-                search_type='color_palette'
-            ))
-
-        return ImageSearchResponse(
-            success=True,
-            results=image_results,
-            total_results=len(image_results),
-            search_type='color_palette'
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Color search failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Color search failed: {str(e)}")
+async def search_by_color(request: AspectSearchRequest) -> AspectSearchResponse:
+    return await _run_aspect_search("color", request)
 
 
 @router.post(
     "/search/by-texture",
-    response_model=ImageSearchResponse,
+    response_model=AspectSearchResponse,
     summary="Search images by texture pattern",
-    description="Search for images with similar textures using specialized SLIG embeddings"
+    description=(
+        "Per-aspect search against `image_texture_embeddings`. Source field set: "
+        "VisionAnalysis.textures[] + finish. See /search/by-color for the query "
+        "model — same shape across the four aspect endpoints."
+    ),
 )
-async def search_by_texture(
-    request: ImageSearchRequest,
-    rag: RAGService = Depends(get_rag_service)
-) -> ImageSearchResponse:
-    """
-    **🔲 Texture Pattern Search**
-
-    Search for images with similar texture patterns using specialized texture SLIG embeddings.
-
-    ## Use Cases
-    - Find materials with similar surface textures
-    - Match rough/smooth/patterned textures
-    - Discover materials with specific tactile properties
-    """
-    try:
-        from app.services.embeddings.vecs_service import get_vecs_service
-        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-
-        embeddings_service = RealEmbeddingsService()
-        result = await embeddings_service._generate_specialized_clip_embeddings(
-            image_url=None,
-            image_data=request.query_image
-        )
-
-        if not result or 'texture' not in result:
-            raise HTTPException(status_code=500, detail="Failed to generate texture embedding")
-
-        texture_embedding = result['texture']
-
-        vecs_service = get_vecs_service()
-        results = await vecs_service.search_specialized_embeddings(
-            embedding_type='texture',
-            query_embedding=texture_embedding,
-            limit=request.limit or 10,
-            filters={"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None,
-            min_similarity=request.min_similarity or 0.5
-        )
-
-        image_results = []
-        for item in results:
-            image_results.append(ImageSearchResult(
-                image_id=item.get('image_id'),
-                similarity_score=item.get('similarity_score'),
-                metadata=item.get('metadata', {}),
-                search_type='texture_pattern'
-            ))
-
-        return ImageSearchResponse(
-            success=True,
-            results=image_results,
-            total_results=len(image_results),
-            search_type='texture_pattern'
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Texture search failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Texture search failed: {str(e)}")
+async def search_by_texture(request: AspectSearchRequest) -> AspectSearchResponse:
+    return await _run_aspect_search("texture", request)
 
 
 @router.post(
     "/search/by-style",
-    response_model=ImageSearchResponse,
+    response_model=AspectSearchResponse,
     summary="Search images by design style",
-    description="Search for images with similar design styles using specialized SLIG embeddings"
+    description=(
+        "Per-aspect search against `image_style_embeddings`. Source field set: "
+        "VisionAnalysis.style + surface_pattern + applications."
+    ),
 )
-async def search_by_style(
-    request: ImageSearchRequest,
-    rag: RAGService = Depends(get_rag_service)
-) -> ImageSearchResponse:
-    """
-    **✨ Design Style Search**
-
-    Search for images with similar design styles using specialized style SLIG embeddings.
-
-    ## Use Cases
-    - Find materials in modern/classic/minimalist styles
-    - Match aesthetic preferences
-    - Discover products with similar design language
-    """
-    try:
-        from app.services.embeddings.vecs_service import get_vecs_service
-        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-
-        embeddings_service = RealEmbeddingsService()
-        result = await embeddings_service._generate_specialized_clip_embeddings(
-            image_url=None,
-            image_data=request.query_image
-        )
-
-        if not result or 'style' not in result:
-            raise HTTPException(status_code=500, detail="Failed to generate style embedding")
-
-        style_embedding = result['style']
-
-        vecs_service = get_vecs_service()
-        results = await vecs_service.search_specialized_embeddings(
-            embedding_type='style',
-            query_embedding=style_embedding,
-            limit=request.limit or 10,
-            filters={"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None,
-            min_similarity=request.min_similarity or 0.5
-        )
-
-        image_results = []
-        for item in results:
-            image_results.append(ImageSearchResult(
-                image_id=item.get('image_id'),
-                similarity_score=item.get('similarity_score'),
-                metadata=item.get('metadata', {}),
-                search_type='design_style'
-            ))
-
-        return ImageSearchResponse(
-            success=True,
-            results=image_results,
-            total_results=len(image_results),
-            search_type='design_style'
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Style search failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Style search failed: {str(e)}")
+async def search_by_style(request: AspectSearchRequest) -> AspectSearchResponse:
+    return await _run_aspect_search("style", request)
 
 
 @router.post(
     "/search/by-material",
-    response_model=ImageSearchResponse,
+    response_model=AspectSearchResponse,
     summary="Search images by material type",
-    description="Search for images with similar material types using specialized SLIG embeddings"
+    description=(
+        "Per-aspect search against `image_material_embeddings`. Source field set: "
+        "VisionAnalysis.material_type + category + subcategory."
+    ),
 )
-async def search_by_material(
-    request: ImageSearchRequest,
-    rag: RAGService = Depends(get_rag_service)
-) -> ImageSearchResponse:
-    """
-    **🪨 Material Type Search**
-
-    Search for images with similar material types using specialized material SLIG embeddings.
-
-    ## Use Cases
-    - Find wood/metal/stone/fabric materials
-    - Match material properties
-    - Discover similar material compositions
-    """
-    try:
-        from app.services.embeddings.vecs_service import get_vecs_service
-        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-
-        embeddings_service = RealEmbeddingsService()
-        result = await embeddings_service._generate_specialized_clip_embeddings(
-            image_url=None,
-            image_data=request.query_image
-        )
-
-        if not result or 'material' not in result:
-            raise HTTPException(status_code=500, detail="Failed to generate material embedding")
-
-        material_embedding = result['material']
-
-        vecs_service = get_vecs_service()
-        results = await vecs_service.search_specialized_embeddings(
-            embedding_type='material',
-            query_embedding=material_embedding,
-            limit=request.limit or 10,
-            filters={"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None,
-            min_similarity=request.min_similarity or 0.5
-        )
-
-        image_results = []
-        for item in results:
-            image_results.append(ImageSearchResult(
-                image_id=item.get('image_id'),
-                similarity_score=item.get('similarity_score'),
-                metadata=item.get('metadata', {}),
-                search_type='material_type'
-            ))
-
-        return ImageSearchResponse(
-            success=True,
-            results=image_results,
-            total_results=len(image_results),
-            search_type='material_type'
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Material search failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Material search failed: {str(e)}")
+async def search_by_material(request: AspectSearchRequest) -> AspectSearchResponse:
+    return await _run_aspect_search("material", request)
 
 

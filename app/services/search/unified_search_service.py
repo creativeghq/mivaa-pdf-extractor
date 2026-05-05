@@ -825,221 +825,144 @@ class UnifiedSearchService:
             self.logger.error(f"Understanding search failed: {e}")
             return []
 
+    async def _search_aspect(
+        self,
+        aspect: str,
+        query: str,
+        filters: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None,
+    ) -> List[SearchResult]:
+        """Per-aspect VECS search — single chokepoint for color/texture/style/material.
+
+        Pre-2026-05-04 the four aspect-specific methods (`_search_color`,
+        `_search_texture`, etc.) all:
+          - Generated 768D SLIG visual queries via `generate_visual_embedding`
+            (pre-v2 the aspect collections were 768D SLIG-blend, so this matched;
+            post-v2 they are 1024D Voyage of VisionAnalysis text and would
+            dim-mismatch).
+          - Passed `filters=` and `min_similarity=` to
+            `vecs_service.search_specialized_embeddings`, which doesn't accept
+            either parameter — silent TypeError on every call.
+
+        Both bugs fixed here. The four legacy methods are now thin wrappers.
+
+        Query embedding selection mirrors rag_service.py:
+          v2 (EMBED_ASPECTS_FROM_VISION_ANALYSIS=true): 1024D Voyage of the
+            user's text — same model + space as the aspect collection.
+          legacy: 768D SLIG visual embedding via `generate_visual_embedding`,
+            matches the pre-v2 768D SLIG-blend collection dim.
+
+        `min_similarity` is applied client-side because vecs_service doesn't
+        support a server-side cutoff.
+        """
+        import os as _os
+
+        try:
+            from app.services.embeddings.vecs_service import get_vecs_service
+            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+
+            embeddings_service = RealEmbeddingsService()
+            use_v2_aspects = _os.getenv(
+                "EMBED_ASPECTS_FROM_VISION_ANALYSIS", "false"
+            ).lower() in ("1", "true", "yes")
+
+            if use_v2_aspects:
+                query_embedding = await embeddings_service._generate_text_embedding(
+                    text=query,
+                    input_type="query",
+                )
+                if not query_embedding or len(query_embedding) != 1024:
+                    self.logger.warning(
+                        f"Aspect '{aspect}': Voyage query embed wrong dim "
+                        f"(got {len(query_embedding) if query_embedding else 0}, expected 1024)"
+                    )
+                    return []
+            else:
+                embedding_result = await embeddings_service.generate_visual_embedding(query)
+                if not embedding_result.get("success"):
+                    self.logger.warning(f"Failed to generate {aspect} query embedding (legacy SLIG path)")
+                    return []
+                query_embedding = embedding_result.get("embedding", [])
+
+            # workspace_id and document_id are first-class params on
+            # search_specialized_embeddings — pass them directly rather than
+            # via the unsupported `filters=` shape the legacy code attempted.
+            vecs_service = get_vecs_service()
+            doc_id = None
+            if filters:
+                doc_filter = filters.get("document_id")
+                if isinstance(doc_filter, dict):
+                    doc_id = doc_filter.get("$eq")
+                else:
+                    doc_id = doc_filter
+
+            raw_results = await vecs_service.search_specialized_embeddings(
+                embedding_type=aspect,
+                query_embedding=query_embedding,
+                limit=self.config.max_results,
+                workspace_id=workspace_id,
+                document_id=doc_id,
+                include_metadata=True,
+            )
+
+            min_sim = getattr(self.config, "similarity_threshold", 0.0) or 0.0
+            search_results: List[SearchResult] = []
+            for item in raw_results:
+                if (item.get("similarity_score") or 0.0) < min_sim:
+                    continue
+                search_results.append(SearchResult(
+                    id=item.get("image_id"),
+                    content=(item.get("metadata") or {}).get("image_url", ""),
+                    similarity_score=item.get("similarity_score", 0.0),
+                    metadata=item.get("metadata") or {},
+                    embedding_type=aspect,
+                    source_type="image",
+                ))
+            self.logger.info(
+                f"✅ Unified aspect search ({aspect}): {len(search_results)}/{len(raw_results)} above threshold "
+                f"(query_path={'voyage_1024' if use_v2_aspects else 'slig_768'})"
+            )
+            return search_results
+
+        except Exception as e:
+            self.logger.error(f"{aspect.title()} search failed: {e}")
+            return []
+
     async def _search_color(
         self,
         query: str,
         filters: Optional[Dict[str, Any]] = None,
         workspace_id: Optional[str] = None
     ) -> List[SearchResult]:
-        """
-        Color palette search using specialized color CLIP embeddings.
-
-        Searches images by color similarity.
-        """
-        try:
-            from app.services.embeddings.vecs_service import get_vecs_service
-            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-
-            # Generate color embedding from query
-            embeddings_service = RealEmbeddingsService()
-
-            # If query is text, generate visual embedding from text description
-            embedding_result = await embeddings_service.generate_visual_embedding(query)
-            if not embedding_result.get("success"):
-                self.logger.warning("Failed to generate color embedding")
-                return []
-
-            query_embedding = embedding_result.get("embedding", [])
-
-            # Search VECS color collection
-            vecs_service = get_vecs_service()
-            results = await vecs_service.search_specialized_embeddings(
-                embedding_type='color',
-                query_embedding=query_embedding,
-                limit=self.config.max_results,
-                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
-                min_similarity=self.config.similarity_threshold
-            )
-
-            # Format results
-            search_results = []
-            for item in results:
-                search_results.append(SearchResult(
-                    id=item.get('image_id'),
-                    content=item.get('metadata', {}).get('image_url', ''),
-                    similarity_score=item.get('similarity_score', 0.0),
-                    metadata=item.get('metadata', {}),
-                    embedding_type="color",
-                    source_type="image"
-                ))
-
-            return search_results
-
-        except Exception as e:
-            self.logger.error(f"Color search failed: {e}")
-            return []
+        """Color palette search — see `_search_aspect`."""
+        return await self._search_aspect("color", query, filters, workspace_id)
 
     async def _search_texture(
         self,
         query: str,
         filters: Optional[Dict[str, Any]] = None,
-        workspace_id: Optional[str] = None
+        workspace_id: Optional[str] = None,
     ) -> List[SearchResult]:
-        """
-        Texture pattern search using specialized texture CLIP embeddings.
-
-        Searches images by texture similarity.
-        """
-        try:
-            from app.services.embeddings.vecs_service import get_vecs_service
-            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-
-            # Generate texture embedding from query
-            embeddings_service = RealEmbeddingsService()
-
-            # If query is text, generate visual embedding from text description
-            embedding_result = await embeddings_service.generate_visual_embedding(query)
-            if not embedding_result.get("success"):
-                self.logger.warning("Failed to generate texture embedding")
-                return []
-
-            query_embedding = embedding_result.get("embedding", [])
-
-            # Search VECS texture collection
-            vecs_service = get_vecs_service()
-            results = await vecs_service.search_specialized_embeddings(
-                embedding_type='texture',
-                query_embedding=query_embedding,
-                limit=self.config.max_results,
-                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
-                min_similarity=self.config.similarity_threshold
-            )
-
-            # Format results
-            search_results = []
-            for item in results:
-                search_results.append(SearchResult(
-                    id=item.get('image_id'),
-                    content=item.get('metadata', {}).get('image_url', ''),
-                    similarity_score=item.get('similarity_score', 0.0),
-                    metadata=item.get('metadata', {}),
-                    embedding_type="texture",
-                    source_type="image"
-                ))
-
-            return search_results
-
-        except Exception as e:
-            self.logger.error(f"Texture search failed: {e}")
-            return []
+        """Texture pattern search — see `_search_aspect`."""
+        return await self._search_aspect("texture", query, filters, workspace_id)
 
     async def _search_style(
         self,
         query: str,
         filters: Optional[Dict[str, Any]] = None,
-        workspace_id: Optional[str] = None
+        workspace_id: Optional[str] = None,
     ) -> List[SearchResult]:
-        """
-        Design style search using specialized style CLIP embeddings.
-
-        Searches images by design style similarity.
-        """
-        try:
-            from app.services.embeddings.vecs_service import get_vecs_service
-            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-
-            # Generate style embedding from query
-            embeddings_service = RealEmbeddingsService()
-
-            # If query is text, generate visual embedding from text description
-            embedding_result = await embeddings_service.generate_visual_embedding(query)
-            if not embedding_result.get("success"):
-                self.logger.warning("Failed to generate style embedding")
-                return []
-
-            query_embedding = embedding_result.get("embedding", [])
-
-            # Search VECS style collection
-            vecs_service = get_vecs_service()
-            results = await vecs_service.search_specialized_embeddings(
-                embedding_type='style',
-                query_embedding=query_embedding,
-                limit=self.config.max_results,
-                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
-                min_similarity=self.config.similarity_threshold
-            )
-
-            # Format results
-            search_results = []
-            for item in results:
-                search_results.append(SearchResult(
-                    id=item.get('image_id'),
-                    content=item.get('metadata', {}).get('image_url', ''),
-                    similarity_score=item.get('similarity_score', 0.0),
-                    metadata=item.get('metadata', {}),
-                    embedding_type="style",
-                    source_type="image"
-                ))
-
-            return search_results
-
-        except Exception as e:
-            self.logger.error(f"Style search failed: {e}")
-            return []
+        """Design style search — see `_search_aspect`."""
+        return await self._search_aspect("style", query, filters, workspace_id)
 
     async def _search_material_type(
         self,
         query: str,
         filters: Optional[Dict[str, Any]] = None,
-        workspace_id: Optional[str] = None
+        workspace_id: Optional[str] = None,
     ) -> List[SearchResult]:
-        """
-        Material type search using specialized material CLIP embeddings.
-
-        Searches images by material type similarity.
-        """
-        try:
-            from app.services.embeddings.vecs_service import get_vecs_service
-            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-
-            # Generate material embedding from query
-            embeddings_service = RealEmbeddingsService()
-
-            # If query is text, generate visual embedding from text description
-            embedding_result = await embeddings_service.generate_visual_embedding(query)
-            if not embedding_result.get("success"):
-                self.logger.warning("Failed to generate material embedding")
-                return []
-
-            query_embedding = embedding_result.get("embedding", [])
-
-            # Search VECS material collection
-            vecs_service = get_vecs_service()
-            results = await vecs_service.search_specialized_embeddings(
-                embedding_type='material',
-                query_embedding=query_embedding,
-                limit=self.config.max_results,
-                filters={"workspace_id": {"$eq": workspace_id}} if workspace_id else None,
-                min_similarity=self.config.similarity_threshold
-            )
-
-            # Format results
-            search_results = []
-            for item in results:
-                search_results.append(SearchResult(
-                    id=item.get('image_id'),
-                    content=item.get('metadata', {}).get('image_url', ''),
-                    similarity_score=item.get('similarity_score', 0.0),
-                    metadata=item.get('metadata', {}),
-                    embedding_type="material",
-                    source_type="image"
-                ))
-
-            return search_results
-
-        except Exception as e:
-            self.logger.error(f"Material type search failed: {e}")
-            return []
+        """Material type search — see `_search_aspect`."""
+        return await self._search_aspect("material", query, filters, workspace_id)
 
     async def _parse_query_with_qwen(self, query: str, system_prompt: str) -> Optional[Dict[str, Any]]:
         """
