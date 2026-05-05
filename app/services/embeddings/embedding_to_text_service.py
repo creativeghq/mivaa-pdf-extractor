@@ -70,8 +70,9 @@ class EmbeddingToTextService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with keys color_slig_768, texture_slig_768,
-                       material_slig_768, style_slig_768 (SLIG 768D — canonical)
+            embeddings: Dict carrying per-aspect embeddings under the v2 keys
+                color_aspect_1024 / texture_aspect_1024 / style_aspect_1024 /
+                material_aspect_1024 (1024D Voyage of VisionAnalysis text).
 
         Returns:
             Dict with extracted metadata and confidence scores
@@ -81,27 +82,32 @@ class EmbeddingToTextService:
             return {}
 
         try:
+            color_vec = embeddings.get("color_aspect_1024") or []
+            texture_vec = embeddings.get("texture_aspect_1024") or []
+            material_vec = embeddings.get("material_aspect_1024") or []
+            style_vec = embeddings.get("style_aspect_1024") or []
+
             # Build context for AI
             embedding_context = {
                 "image_id": image_id,
                 "embeddings": {
                     "color_embedding": {
-                        "dimension": len(embeddings.get("color_slig_768", [])),
-                        "sample": embeddings.get("color_slig_768", [])[:10] if embeddings.get("color_slig_768") else []
+                        "dimension": len(color_vec),
+                        "sample": color_vec[:10] if color_vec else [],
                     },
                     "texture_embedding": {
-                        "dimension": len(embeddings.get("texture_slig_768", [])),
-                        "sample": embeddings.get("texture_slig_768", [])[:10] if embeddings.get("texture_slig_768") else []
+                        "dimension": len(texture_vec),
+                        "sample": texture_vec[:10] if texture_vec else [],
                     },
                     "material_embedding": {
-                        "dimension": len(embeddings.get("material_slig_768", [])),
-                        "sample": embeddings.get("material_slig_768", [])[:10] if embeddings.get("material_slig_768") else []
+                        "dimension": len(material_vec),
+                        "sample": material_vec[:10] if material_vec else [],
                     },
                     "style_embedding": {
-                        "dimension": len(embeddings.get("style_slig_768", [])),
-                        "sample": embeddings.get("style_slig_768", [])[:10] if embeddings.get("style_slig_768") else []
-                    }
-                }
+                        "dimension": len(style_vec),
+                        "sample": style_vec[:10] if style_vec else [],
+                    },
+                },
             }
 
             # Build full prompt

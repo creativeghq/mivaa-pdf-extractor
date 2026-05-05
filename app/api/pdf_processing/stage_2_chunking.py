@@ -347,6 +347,18 @@ async def get_layout_regions(
         return regions_by_page
 
     except Exception as e:
-        logger.error(f"   ❌ Failed to fetch layout regions: {e}")
+        # Empty dict and DB-query-failure used to be indistinguishable to
+        # the caller (both fell through to text-based chunking); the only
+        # signal was an ERROR log that often got missed. Capture to Sentry
+        # so operators can react to layout-aware chunking degradation.
+        logger.error(
+            f"   ❌ Failed to fetch layout regions for product {product_id} "
+            f"(falling through to text-based chunking): {e}"
+        )
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_exception(e)
+        except Exception:
+            pass
         return {}
 

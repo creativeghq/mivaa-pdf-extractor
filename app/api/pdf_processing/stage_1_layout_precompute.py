@@ -261,12 +261,14 @@ async def precompute_document_layout(
         )
         return summary
 
-    # 2. Resume-safe: skip pages already in cache, BUT NOT pages whose cached
-    #    row is marked `cache_status='ocr_failed'`. Previously a transient
-    #    Chandra failure would persist an empty `layout_elements: []` row that
-    #    the resume check treated as "cached, skip forever", silently
-    #    suppressing OCR for that page on every subsequent run (audit fix #6).
-    #    Filtering by cache_status here lets re-runs retry failed pages.
+    # 2. Resume-safe: skip pages already in cache EXCEPT for transient-failure
+    #    rows that should retry on next run. The audit fix #6 originally
+    #    excluded only `ocr_failed`; `page_failed` (outer-exception path,
+    #    written at line ~478 below) was documented as "will be retried" but
+    #    the resume-skip filter never excluded it, so any transient render /
+    #    YOLO error permanently skipped that page. Both transient markers
+    #    must be excluded.
+    _RETRY_CACHE_STATUSES = {"ocr_failed", "page_failed"}
     existing_pages: Set[int] = set()
     try:
         resp = (
@@ -277,7 +279,7 @@ async def precompute_document_layout(
         )
         for row in (resp.data or []):
             meta = row.get("analysis_metadata") or {}
-            if meta.get("cache_status") == "ocr_failed":
+            if meta.get("cache_status") in _RETRY_CACHE_STATUSES:
                 # Allow retry on next run.
                 continue
             existing_pages.add(row["page_number"])

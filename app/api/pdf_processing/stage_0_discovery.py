@@ -628,6 +628,50 @@ async def process_stage_0_discovery(
                     # Cache so a duplicate name later in the same loop also
                     # collapses (defensive — Stage 0 dedupes already).
                     existing_by_name[lookup_key] = product_db_id
+
+                    # Audit fix #15 reader half: create_single_product surfaces
+                    # `embedding_failed=True` when Voyage retries are exhausted
+                    # or the row landed with text_embedding_1024=NULL. Persist
+                    # a marker on the row's metadata so a backfill cron can
+                    # target these products — without this the flag is
+                    # discarded and the product is invisible to vector search
+                    # forever, with no signal to recover it.
+                    if product_creation_result.get('embedding_failed'):
+                        logger.error(
+                            f"   ❌ [{i}/{len(catalog.products)}] Product {product.name} "
+                            f"(DB ID: {product_db_id}) created with embedding_failed=True — "
+                            f"text_embedding_1024 is NULL; flagged for backfill"
+                        )
+                        try:
+                            existing_meta_resp = supabase.client.table('products')\
+                                .select('metadata')\
+                                .eq('id', product_db_id)\
+                                .maybe_single()\
+                                .execute()
+                            existing_meta = (existing_meta_resp.data or {}).get('metadata') or {}
+                            existing_meta['embedding_failure'] = {
+                                'failed_at': datetime.utcnow().isoformat(),
+                                'stage': 'stage_0_discovery',
+                                'reason': 'voyage_retries_exhausted_or_dim_mismatch',
+                                'document_id': document_id,
+                                'job_id': job_id,
+                            }
+                            supabase.client.table('products')\
+                                .update({'metadata': existing_meta})\
+                                .eq('id', product_db_id)\
+                                .execute()
+                        except Exception as mark_err:
+                            logger.warning(
+                                f"   ⚠️ Could not mark product {product_db_id} as "
+                                f"embedding-failed (non-fatal): {mark_err}"
+                            )
+                        try:
+                            sentry_sdk.capture_message(
+                                f"Product embedding failed: {product.name} ({product_db_id})",
+                                level="error",
+                            )
+                        except Exception:
+                            pass
                     logger.info(f"   ✅ [{i}/{len(catalog.products)}] Created product: {product.name} (DB ID: {product_db_id})")
 
                 # 3. Update product_progress with DB ID

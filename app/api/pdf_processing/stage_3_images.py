@@ -418,6 +418,15 @@ async def process_product_images(
         )
     except Exception as e:
         logger.error(f"   ❌ Image classification failed: {type(e).__name__}: {str(e)}")
+        # Clear the slow-op marker so it doesn't leak into the next stage.
+        # The outer per-product wrapper (process_single_product) catches this
+        # raise and clears too, but a direct caller (admin endpoint, test
+        # harness) would leave the marker set and trip auto-recovery.
+        if tracker is not None:
+            try:
+                await tracker.clear_slow_operation()
+            except Exception:
+                pass
         raise
 
     non_material_count = len(non_material_images)

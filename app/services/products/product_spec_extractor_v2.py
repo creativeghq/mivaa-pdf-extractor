@@ -520,10 +520,17 @@ def _tier_b_opus(
     pdf_path: str,
     page_indices: List[int],
     product_name: str,
+    *,
+    job_id: Optional[str] = None,
+    product_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fallback: delegate to the existing product_spec_vision_extractor
     but with the Claude Opus model override. Returns the same nested-metadata
-    shape. Only runs when Tier A coverage is below threshold."""
+    shape. Only runs when Tier A coverage is below threshold.
+
+    `job_id` + `product_id` are forwarded so the Anthropic spend gets
+    attributed to the right product in `ai_usage_logs`.
+    """
     # Import locally to avoid a cyclic/test-time dependency
     from app.services.products import product_spec_vision_extractor as psve
 
@@ -536,6 +543,8 @@ def _tier_b_opus(
             pdf_path=pdf_path,
             product_page_range=[idx + 1 for idx in page_indices],  # 1-indexed input
             product_name=product_name,
+            job_id=job_id,
+            product_id=product_id,
         )
     except Exception as e:
         logger.warning(
@@ -684,7 +693,13 @@ async def extract_product_spec(
                     f"{log_prefix}: tier_a partial ({tier_a_count} fields), "
                     f"running tier_b for missing packing + variants/grout"
                 )
-            tier_b_result = _tier_b_opus(pdf_path, page_indices, product_name)
+            tier_b_result = _tier_b_opus(
+                pdf_path,
+                page_indices,
+                product_name,
+                job_id=job_id,
+                product_id=product_id,
+            )
             if tier_b_result:
                 source_tiers.append("claude_opus_vision")
                 merged = _merge_specs(merged, tier_b_result)

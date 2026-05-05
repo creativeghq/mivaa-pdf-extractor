@@ -254,6 +254,9 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
         # Uses the same SQL function the auto-recovery cron calls, then
         # forces status back to 'processing' (the helper sets it to 'pending'
         # but we have everything we need to run it right now).
+        # Audit fix (this PR): the second UPDATE that flips pending→processing
+        # is now conditional on status='pending' so a parallel cron tick that
+        # already claimed (and dispatched) this job doesn't double-dispatch.
         try:
             claimed = supabase_client.client.rpc(
                 'mark_pdf_job_for_recovery',
@@ -265,11 +268,21 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
 
             from app.schemas.jobs import JobStatus as _JS_recovery
             now_iso = datetime.utcnow().isoformat()
-            supabase_client.client.table('background_jobs').update({
+            promote_result = supabase_client.client.table('background_jobs').update({
                 'status': _JS_recovery.PROCESSING.value,
                 'last_heartbeat': now_iso,
                 'updated_at': now_iso,
-            }).eq('id', job_id).execute()
+            }).eq('id', job_id).eq('status', 'pending').execute()
+
+            if not promote_result.data:
+                # Some other path (auto-recovery cron's /resume call) already
+                # promoted this job to 'processing' between our mark and
+                # promote. Skip dispatch — they're already running it.
+                logger.info(
+                    f"   ⏭️  {job_id}: pending→processing promote was no-op "
+                    f"(another path picked it up); skipping dispatch"
+                )
+                continue
 
             try:
                 supabase_client.client.rpc('append_recovery_history', {
@@ -1292,12 +1305,65 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
     This endpoint allows manual recovery of stuck or failed jobs.
     The job will resume from the last successful checkpoint.
+
+    Audit fix (this PR): re-entrancy guard. Two cron ticks (or a cron tick +
+    a manual operator restart) can both POST /resume for the same job_id
+    within seconds. Without an atomic claim, both would download the PDF and
+    dispatch process_document_with_discovery, producing two orchestrators on
+    the same row — which silently double-creates products + chunks and
+    double-bills HF endpoint replicas. We claim the job by flipping
+    status pending|interrupted → processing in the FIRST line of work; if
+    the conditional UPDATE returns 0 rows, another caller already claimed it
+    and we 409 out without dispatching.
     """
     try:
+        # Atomic claim — must run before any expensive work (file download,
+        # checkpoint verification). The .eq("status", "pending|interrupted")
+        # filter ensures only one of N concurrent callers wins; the rest
+        # fall through to the 409 path below.
+        supabase_client = get_supabase_client()
+        nowiso = datetime.utcnow().isoformat()
+        claim_result = supabase_client.client.table('background_jobs').update({
+            'status': 'processing',
+            'last_heartbeat': nowiso,
+            'updated_at': nowiso,
+        }).eq('id', job_id).in_('status', ['pending', 'interrupted']).execute()
+
+        if not claim_result.data:
+            # Either job already 'processing' (someone else claimed it), or
+            # status='completed'/'failed' (no recovery needed), or row missing.
+            # 409 is correct because the operation isn't an error — another
+            # caller is running it. The cron path treats !ok as a soft fail
+            # and reverts pending→interrupted, so this is idempotent.
+            row_check = supabase_client.client.table('background_jobs').select('id, status').eq('id', job_id).execute()
+            if not row_check.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found"
+                )
+            existing_status = row_check.data[0].get('status')
+            logger.info(f"Resume rejected for {job_id}: status='{existing_status}' (already in flight or terminal)")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Job {job_id} is in status '{existing_status}' — cannot resume (another caller may have claimed it)"
+            )
+
         # Get last checkpoint
         last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
 
         if not last_checkpoint:
+            # We claimed the row but there's no checkpoint to resume from.
+            # Revert the claim so the row's status doesn't stay 'processing'
+            # with no orchestrator. The auto-recovery cron will then
+            # eventually fail-out the job via fail_exhausted_pdf_jobs once
+            # the stuck threshold elapses.
+            try:
+                supabase_client.client.table('background_jobs').update({
+                    'status': 'interrupted',
+                    'interrupted_at': datetime.utcnow().isoformat(),
+                }).eq('id', job_id).execute()
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No checkpoint found for job {job_id}"
@@ -1309,13 +1375,21 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         can_resume = await checkpoint_recovery_service.verify_checkpoint_data(job_id, resume_stage)
 
         if not can_resume:
+            try:
+                supabase_client.client.table('background_jobs').update({
+                    'status': 'interrupted',
+                    'interrupted_at': datetime.utcnow().isoformat(),
+                }).eq('id', job_id).execute()
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Checkpoint data verification failed for stage {resume_stage}"
             )
 
-        # Get job details from database
-        supabase_client = get_supabase_client()
+        # Get full job details from database (claim_result.data[0] is also valid
+        # but a fresh read avoids any chance of stale fields between the claim
+        # update and the rest of this handler).
         job_result = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
 
         if not job_result.data or len(job_result.data) == 0:
@@ -1327,21 +1401,16 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         job_data = job_result.data[0]
         document_id = job_data['document_id']
 
-        # Mark job for restart
-        supabase_client.client.table('background_jobs').update({
-            "status": "processing",
-            "error": None,
-            "interrupted_at": None,
-            "started_at": datetime.utcnow().isoformat(),
-            "metadata": {
-                **job_data.get('metadata', {}),
-                "restart_from_stage": resume_stage.value,
-                "restart_reason": "manual_restart",
-                "restart_at": datetime.utcnow().isoformat()
-            }
-        }).eq('id', job_id).execute()
-
-        logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
+        # NOTE: status='processing' is intentionally NOT flipped here. The
+        # previous ordering set the flag BEFORE the download / temp-file
+        # write, so transient Storage 5xx or /tmp-full errors left the row
+        # at status='processing' with no orchestrator running. Auto-recovery
+        # cron then back-offs (waiting for stuck-threshold) instead of
+        # immediately reclaiming. We flip the status atomically with the
+        # background_tasks.add_task at the bottom of the try block, so
+        # any failure in the download path leaves the job at its prior
+        # status ('failed' / 'interrupted') and the operator sees the
+        # actual error.
 
         # Re-trigger the processing pipeline; process_document_with_discovery resumes from the checkpoint.
 
@@ -1476,12 +1545,61 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 test_single_product=test_single_product
             )
 
-            logger.info(f"✅ Background task triggered for job {job_id} (type: {job_type})")
+            # Status is already 'processing' from the atomic claim at the top
+            # of this handler. We just need to record the restart context
+            # (clear `error`, stamp `started_at`, append restart metadata).
+            # Audit fix (this PR): use merge_background_job_metadata RPC for
+            # the metadata write so we don't read-modify-write — concurrent
+            # heartbeat / stage_history updates were racing with this overwrite.
+            supabase_client.client.table('background_jobs').update({
+                "error": None,
+                "interrupted_at": None,
+                "started_at": datetime.utcnow().isoformat(),
+                "updated_at": datetime.utcnow().isoformat(),
+            }).eq('id', job_id).execute()
+            try:
+                supabase_client.client.rpc(
+                    'merge_background_job_metadata',
+                    {
+                        'p_job_id': job_id,
+                        'p_metadata': {
+                            "restart_from_stage": resume_stage.value,
+                            "restart_reason": "manual_restart",
+                            "restart_at": datetime.utcnow().isoformat(),
+                        },
+                    },
+                ).execute()
+            except Exception as e:
+                logger.warning(f"merge_background_job_metadata failed for {job_id}: {e}")
+
+            logger.info(f"✅ Job {job_id} marked for restart from {resume_stage} and background task triggered (type: {job_type})")
 
         except HTTPException:
+            # Audit fix (this PR): the atomic claim above flipped status to
+            # 'processing'. If the file-download path raises, no orchestrator
+            # is running but the row says we're processing — auto-recovery
+            # waits the full stuck threshold before reclaiming. Revert the
+            # claim so the cron sees an 'interrupted' row immediately.
+            try:
+                supabase_client.client.table('background_jobs').update({
+                    'status': 'interrupted',
+                    'interrupted_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
+                }).eq('id', job_id).eq('status', 'processing').execute()
+            except Exception:
+                pass
             raise
         except Exception as e:
             logger.error(f"Failed to download file for restart: {e}", exc_info=True)
+            try:
+                supabase_client.client.table('background_jobs').update({
+                    'status': 'interrupted',
+                    'interrupted_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
+                    'error': f"Resume download failed: {str(e)[:1000]}",
+                }).eq('id', job_id).eq('status', 'processing').execute()
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to download file for restart: {str(e)}"
@@ -2140,22 +2258,32 @@ async def get_embeddings(
             'visual', 'slig', 'color', 'texture', 'style', 'material', 'understanding'
         )
         if wants_image:
+            # Aspect collections post-2026-05-04 are 1024D Voyage embeddings of
+            # VisionAnalysis text; provenance columns on document_images carry
+            # the model + schema_version that produced each row's vector.
             image_result = supabase_client.client.table('document_images').select(
-                'id, image_url, has_slig_embedding, has_color_slig, has_texture_slig, '
-                'has_style_slig, has_material_slig, has_understanding_embedding'
+                'id, image_url, '
+                'has_slig_embedding, has_color_slig, has_texture_slig, '
+                'has_style_slig, has_material_slig, has_understanding_embedding, '
+                'color_aspect_embedding_model, color_aspect_schema_version, '
+                'texture_aspect_embedding_model, texture_aspect_schema_version, '
+                'style_aspect_embedding_model, style_aspect_schema_version, '
+                'material_aspect_embedding_model, material_aspect_schema_version'
             ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
 
-            flag_to_meta = {
-                'has_slig_embedding':         ('visual_slig_768',        768,  'siglip2',            'visual'),
-                'has_color_slig':             ('color_slig_768',         768,  'siglip2',            'color'),
-                'has_texture_slig':           ('texture_slig_768',       768,  'siglip2',            'texture'),
-                'has_style_slig':             ('style_slig_768',         768,  'siglip2',            'style'),
-                'has_material_slig':          ('material_slig_768',      768,  'siglip2',            'material'),
-                'has_understanding_embedding':('understanding_1024',     1024, 'voyage-4',           'understanding'),
+            aspect_rows = {
+                'has_color_slig':    ('color_aspect_1024',    'color'),
+                'has_texture_slig':  ('texture_aspect_1024',  'texture'),
+                'has_style_slig':    ('style_aspect_1024',    'style'),
+                'has_material_slig': ('material_aspect_1024', 'material'),
+            }
+            non_aspect_rows = {
+                'has_slig_embedding':         ('visual_slig_768',     768,  'siglip2',  'visual'),
+                'has_understanding_embedding':('understanding_1024',  1024, 'voyage-4', 'understanding'),
             }
 
             for img in (image_result.data or []):
-                for flag, (label, dim, model, type_alias) in flag_to_meta.items():
+                for flag, (label, dim, model, type_alias) in non_aspect_rows.items():
                     if not img.get(flag):
                         continue
                     if embedding_type and embedding_type != type_alias and embedding_type not in ('visual', 'slig'):
@@ -2169,6 +2297,26 @@ async def get_embeddings(
                         'model': model,
                         'present': True,
                         'storage': f"vecs.image_{type_alias if type_alias != 'visual' else 'slig'}_embeddings",
+                    })
+                    embedding_stats[label] = embedding_stats.get(label, 0) + 1
+
+                for flag, (label, type_alias) in aspect_rows.items():
+                    if not img.get(flag):
+                        continue
+                    if embedding_type and embedding_type != type_alias and embedding_type not in ('visual', 'slig'):
+                        continue
+                    prov_model = img.get(f'{type_alias}_aspect_embedding_model') or 'voyage-3'
+                    prov_schema = img.get(f'{type_alias}_aspect_schema_version')
+                    embeddings.append({
+                        'id': f"{img['id']}_{type_alias}",
+                        'entity_id': img['id'],
+                        'entity_type': 'image',
+                        'embedding_type': label,
+                        'dimension': 1024,
+                        'model': prov_model,
+                        'schema_version': prov_schema,
+                        'present': True,
+                        'storage': f"vecs.image_{type_alias}_embeddings",
                     })
                     embedding_stats[label] = embedding_stats.get(label, 0) + 1
 
@@ -3548,6 +3696,19 @@ async def process_document_with_discovery(
                 if tracker:
                     tracker.current_step = "Catalog-wide icon extraction"
                     await tracker.update_heartbeat()
+                    # This pre-pass can take 30-60+ minutes on large catalogs
+                    # (job 051e1dda timed out here). Mark it as a known slow
+                    # operation so auto-recovery cron's stuck-job detector
+                    # doesn't false-positive while it runs. Always cleared in
+                    # the finally block, even on exception, so a failed icon
+                    # pass doesn't poison the next stage's auto-recovery.
+                    try:
+                        await tracker.set_slow_operation(
+                            operation="stage_3_images:process_catalog_wide_icons",
+                            expected_max_seconds=3600,
+                        )
+                    except Exception as _slow_err:
+                        logger.debug(f"   set_slow_operation failed (non-fatal): {_slow_err}")
 
                 catalog_icon_stats = await process_catalog_wide_icons(
                     file_content=file_content,
@@ -3574,6 +3735,14 @@ async def process_document_with_discovery(
                     sentry_sdk.capture_exception(cat_icons_err)
                 except Exception:
                     pass
+            finally:
+                # Always clear the slow-op marker so it doesn't leak into the
+                # next stage and poison auto-recovery.
+                if tracker:
+                    try:
+                        await tracker.clear_slow_operation()
+                    except Exception:
+                        pass
 
         # 🧪 TEST MODE: Process only first product if test_single_product=True
         if test_single_product:

@@ -1129,12 +1129,22 @@ async def regenerate_image_embeddings(
                     )
                     embeddings_generated += 1
 
-                # Save specialized embeddings (SLIG 768D, keys color_slig_768/.../material_slig_768)
-                specialized_embeddings = {}
-                for emb_type in ['color_slig_768', 'texture_slig_768', 'style_slig_768', 'material_slig_768']:
-                    if embeddings.get(emb_type):
-                        key = emb_type.replace('_slig_768', '')
-                        specialized_embeddings[key] = embeddings.get(emb_type)
+                # Save per-aspect embeddings. v2 keys only:
+                #   color_aspect_1024 / texture_aspect_1024 / ...  (Voyage 1024D
+                #   from VisionAnalysis text)
+                # vecs_service.upsert_specialized_embeddings persists provenance
+                # columns alongside the boolean has_*_slig flags.
+                specialized_embeddings: Dict[str, List[float]] = {}
+                aspect_emb_model: Optional[str] = None
+                aspect_schema_version: Optional[int] = None
+                meta_versions = embedding_result.get('metadata', {}).get('model_versions', {})
+                meta_schemas = embedding_result.get('metadata', {}).get('schema_versions', {})
+                for aspect in ('color', 'texture', 'style', 'material'):
+                    vec = embeddings.get(f"{aspect}_aspect_1024")
+                    if vec:
+                        specialized_embeddings[aspect] = vec
+                        aspect_emb_model = aspect_emb_model or meta_versions.get('specialized_aspect') or 'voyage-3'
+                        aspect_schema_version = aspect_schema_version or meta_schemas.get('specialized_aspect')
 
                 if specialized_embeddings:
                     await vecs_service.upsert_specialized_embeddings(
@@ -1143,7 +1153,9 @@ async def regenerate_image_embeddings(
                         metadata={
                             'document_id': image.get('document_id'),
                             'page_number': image.get('page_number', 1)
-                        }
+                        },
+                        embedding_model=aspect_emb_model,
+                        schema_version=aspect_schema_version,
                     )
                     embeddings_generated += len(specialized_embeddings)
 

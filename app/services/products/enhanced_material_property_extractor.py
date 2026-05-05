@@ -168,6 +168,7 @@ class EnhancedMaterialPropertyExtractor:
         product_name: str = "",
         document_context: str = "",
         job_id: str = None,
+        product_id: Optional[str] = None,
     ) -> PropertyExtractionResult:
         """
         Extract all material properties in a single LLM call.
@@ -194,7 +195,9 @@ class EnhancedMaterialPropertyExtractor:
             user_content = user_content[:12000] + "\n...[truncated]"
 
         # Try Claude Haiku first
-        properties = await self._extract_with_claude(user_content, job_id)
+        properties = await self._extract_with_claude(
+            user_content, job_id, product_id=product_id,
+        )
         method = "claude_haiku"
 
         # Fallback to rule-based if Claude fails
@@ -242,49 +245,42 @@ class EnhancedMaterialPropertyExtractor:
         )
 
     async def _extract_with_claude(
-        self, user_content: str, job_id: str = None
+        self,
+        user_content: str,
+        job_id: str = None,
+        product_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Single Claude Haiku call to extract all property categories."""
+        """Single Claude Haiku call to extract all property categories.
+
+        Routes through `tracked_claude_call_async` so the call is logged to
+        `ai_usage_logs` with `job_id` + `product_id` for per-product cost
+        attribution. Previously bypassed AICallLogger via raw client.messages.create
+        — this hid all property-extraction spend from the dashboard and broke
+        the per-product cost rollup at job completion.
+        """
         try:
-            from app.services.core.ai_client_service import get_ai_client_service
-            from app.services.core.ai_call_logger import AICallLogger
+            from app.services.core.claude_helper import tracked_claude_call_async
 
-            ai_service = get_ai_client_service()
-            client = ai_service.anthropic
-            ai_logger = AICallLogger()
-
-            start = time.time()
-
-            response = client.messages.create(
+            response = await tracked_claude_call_async(
+                task="material_property_extraction",
                 model="claude-haiku-4-5",
                 max_tokens=2048,
                 system=self.system_prompt,
                 messages=[{"role": "user", "content": user_content}],
+                confidence_score=0.8,
+                confidence_breakdown={
+                    "model_confidence": 0.85,
+                    "completeness": 0.80,
+                },
+                job_id=job_id,
+                workspace_id=self.workspace_id,
+                product_id=product_id,
             )
 
             text = response.content[0].text if response.content else ""
-            latency_ms = int((time.time() - start) * 1000)
 
             # Parse JSON from response
-            parsed = self._parse_json_response(text)
-
-            if parsed is not None:
-                # Log success
-                await ai_logger.log_claude_call(
-                    task="material_property_extraction",
-                    model="claude-haiku-4-5",
-                    response=response,
-                    latency_ms=latency_ms,
-                    confidence_score=0.8,
-                    confidence_breakdown={
-                        "model_confidence": 0.85,
-                        "completeness": 0.80,
-                    },
-                    action="use_ai_result",
-                    job_id=job_id,
-                )
-
-            return parsed
+            return self._parse_json_response(text)
 
         except Exception as e:
             logger.warning(f"Claude property extraction failed: {e}")
@@ -408,6 +404,7 @@ async def extract_functional_properties(
     document_context: str = "",
     job_id: str = None,
     workspace_id: str = None,
+    product_id: Optional[str] = None,
 ) -> PropertyExtractionResult:
     """
     Convenience function for stage_4_products.py integration.
@@ -432,4 +429,5 @@ async def extract_functional_properties(
         product_name=product_name,
         document_context=document_context,
         job_id=job_id,
+        product_id=product_id,
     )

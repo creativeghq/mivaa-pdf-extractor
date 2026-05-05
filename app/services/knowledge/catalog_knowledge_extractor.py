@@ -148,7 +148,17 @@ def _pages_to_scan(pdf_path: str) -> List[int]:
     return list(range(start, total))
 
 
-def _call_claude_vision_knowledge(png_bytes: bytes) -> Optional[Dict[str, Any]]:
+def _call_claude_vision_knowledge(
+    png_bytes: bytes,
+    *,
+    job_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Vision call for tail-page knowledge extraction. `job_id` + `workspace_id`
+    are forwarded so per-job cost attribution lands correctly in `ai_usage_logs`
+    — these calls are document-scoped (apply to the whole catalog, not a single
+    product), so we don't pass `product_id`.
+    """
     if not ANTHROPIC_API_KEY:
         logger.error("catalog_knowledge_extractor: ANTHROPIC_API_KEY not set")
         return None
@@ -169,6 +179,8 @@ def _call_claude_vision_knowledge(png_bytes: bytes) -> Optional[Dict[str, Any]]:
                     {"type": "text", "text": KNOWLEDGE_PROMPT},
                 ],
             }],
+            job_id=job_id,
+            workspace_id=workspace_id,
         )
     except Exception as e:
         report_anthropic_failure(e, service="catalog_knowledge_extractor")
@@ -224,6 +236,7 @@ async def extract_catalog_knowledge_from_pdf(
     product_ids: List[str],
     supabase: Any,
     logger_instance: Optional[logging.Logger] = None,
+    job_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Extract catalog-wide knowledge content and create kb_docs + attachments.
 
@@ -298,7 +311,9 @@ async def extract_catalog_knowledge_from_pdf(
             stats["errors"].append(f"render_{idx}: {e}")
             continue
 
-        data = _call_claude_vision_knowledge(png)
+        data = _call_claude_vision_knowledge(
+            png, job_id=job_id, workspace_id=workspace_id,
+        )
         if not data:
             continue
 
@@ -394,7 +409,11 @@ async def extract_catalog_knowledge_from_pdf(
             except Exception as emb_err:
                 log.warning(f"   ⚠️ embedding failed for {title}: {emb_err}")
 
-        # Attach to every product in the document
+        # Attach to every product in the document. Use upsert so re-runs
+        # (idempotent kb_doc upsert returns the same doc_id, which would
+        # otherwise 23505-fail on the existing attachments) don't poison
+        # the stats. Falls back to plain insert + tolerated error on
+        # systems where the unique index isn't in place yet.
         attach_rows = [
             {
                 "workspace_id": workspace_id,
@@ -405,11 +424,20 @@ async def extract_catalog_knowledge_from_pdf(
             for pid in product_ids
         ]
         try:
-            supabase.client.table("kb_doc_attachments").insert(attach_rows).execute()
+            supabase.client.table("kb_doc_attachments") \
+                .upsert(attach_rows, on_conflict="document_id,product_id") \
+                .execute()
             stats["attachments_created"] += len(attach_rows)
         except Exception as e:
-            log.warning(f"   ❌ kb_doc_attachments insert failed: {e}")
-            stats["errors"].append(f"attach_{idx}: {e}")
+            log.warning(
+                f"   ⚠️ kb_doc_attachments upsert failed ({e}); trying plain insert"
+            )
+            try:
+                supabase.client.table("kb_doc_attachments").insert(attach_rows).execute()
+                stats["attachments_created"] += len(attach_rows)
+            except Exception as e2:
+                log.warning(f"   ❌ kb_doc_attachments insert failed: {e2}")
+                stats["errors"].append(f"attach_{idx}: {e2}")
 
         log.info(
             f"   ✅ Created catalog KB doc '{title}' ({page_type}) "

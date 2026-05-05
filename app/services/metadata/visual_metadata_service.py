@@ -37,7 +37,9 @@ class VisualMetadataService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with specialized embeddings (color_slig_768, texture_slig_768, style_slig_768, material_slig_768)
+            embeddings: Dict with v2 per-aspect embeddings (color_aspect_1024,
+                texture_aspect_1024, style_aspect_1024, material_aspect_1024) —
+                Voyage 1024D embeddings of VisionAnalysis text.
 
         Returns:
             Dict with extracted visual metadata or None if failed
@@ -117,7 +119,7 @@ class VisualMetadataService:
 
         Args:
             image_id: Image UUID
-            embeddings: Dict with specialized embeddings
+            embeddings: Dict with v2 per-aspect embeddings (color_aspect_1024 etc.)
 
         Returns:
             Dict with success status and metadata

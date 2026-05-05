@@ -1493,17 +1493,23 @@ class ImageProcessingService:
                             await asyncio.sleep(2 ** retry_count)
                         continue
 
-                # Save specialized embeddings (SLIG 768D, emitted by real_embeddings_service
-                # under the keys color_slig_768 / texture_slig_768 / style_slig_768 / material_slig_768).
+                # Save per-aspect embeddings emitted by real_embeddings_service.
+                # v2 keys only: color_aspect_1024 / texture_aspect_1024 /
+                # style_aspect_1024 / material_aspect_1024 (Voyage 1024D from
+                # VisionAnalysis text). vecs_service.upsert_specialized_embeddings
+                # auto-detects dim and writes the matching provenance columns
+                # on document_images.
                 specialized_embeddings = {}
-                if embeddings.get('color_slig_768'):
-                    specialized_embeddings['color'] = embeddings.get('color_slig_768')
-                if embeddings.get('texture_slig_768'):
-                    specialized_embeddings['texture'] = embeddings.get('texture_slig_768')
-                if embeddings.get('style_slig_768'):
-                    specialized_embeddings['style'] = embeddings.get('style_slig_768')
-                if embeddings.get('material_slig_768'):
-                    specialized_embeddings['material'] = embeddings.get('material_slig_768')
+                aspect_emb_model: Optional[str] = None
+                aspect_schema_version: Optional[int] = None
+                meta_versions = embedding_result.get('metadata', {}).get('model_versions', {})
+                meta_schemas = embedding_result.get('metadata', {}).get('schema_versions', {})
+                for aspect in ('color', 'texture', 'style', 'material'):
+                    vec = embeddings.get(f"{aspect}_aspect_1024")
+                    if vec:
+                        specialized_embeddings[aspect] = vec
+                        aspect_emb_model = aspect_emb_model or meta_versions.get('specialized_aspect') or 'voyage-3'
+                        aspect_schema_version = aspect_schema_version or meta_schemas.get('specialized_aspect')
 
                 # Save understanding embedding to VECS if present (1024D from Voyage AI).
                 # Pass embedding_model + schema_version so the row is provenance-tagged
@@ -1547,7 +1553,9 @@ class ImageProcessingService:
                         metadata={
                             'document_id': document_id,
                             'page_number': img_data.get('page_number', 1)
-                        }
+                        },
+                        embedding_model=aspect_emb_model,
+                        schema_version=aspect_schema_version,
                     )
 
                     # ✨ Stage 3.5 - Convert visual embeddings to text metadata
@@ -1557,16 +1565,12 @@ class ImageProcessingService:
                         logger.info(f"   🎨 Stage 3.5: Converting visual embeddings to text metadata for {image_id}")
                         visual_metadata_service = VisualMetadataService(workspace_id=workspace_id)
 
-                        # Prepare embeddings for conversion (SLIG 768D — canonical schema).
-                        embeddings_for_conversion = {}
-                        if embeddings.get('color_slig_768'):
-                            embeddings_for_conversion['color_slig_768'] = embeddings.get('color_slig_768')
-                        if embeddings.get('texture_slig_768'):
-                            embeddings_for_conversion['texture_slig_768'] = embeddings.get('texture_slig_768')
-                        if embeddings.get('material_slig_768'):
-                            embeddings_for_conversion['material_slig_768'] = embeddings.get('material_slig_768')
-                        if embeddings.get('style_slig_768'):
-                            embeddings_for_conversion['style_slig_768'] = embeddings.get('style_slig_768')
+                        # v2 keys only — color_aspect_1024 etc. (1024D Voyage).
+                        embeddings_for_conversion: Dict[str, List[float]] = {}
+                        for aspect in ('color', 'texture', 'material', 'style'):
+                            key = f"{aspect}_aspect_1024"
+                            if embeddings.get(key):
+                                embeddings_for_conversion[key] = embeddings[key]
 
                         if embeddings_for_conversion:
                             visual_metadata_result = await visual_metadata_service.process_image_visual_metadata(
@@ -1579,7 +1583,7 @@ class ImageProcessingService:
                             else:
                                 logger.warning(f"   ⚠️ Visual metadata extraction failed: {visual_metadata_result.get('error')}")
                         else:
-                            logger.debug(f"   ℹ️ No SigLIP embeddings available for visual metadata extraction")
+                            logger.debug(f"   ℹ️ No aspect embeddings available for visual metadata extraction")
 
                     except Exception as visual_meta_error:
                         logger.warning(f"   ⚠️ Visual metadata extraction failed (non-critical): {visual_meta_error}")

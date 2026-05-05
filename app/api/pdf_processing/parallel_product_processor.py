@@ -470,6 +470,27 @@ async def _process_products_sequential(
                 'error': str(e)
             })
             logger_instance.error(f"❌ Failed to process product {product.name}: {e}", exc_info=True)
+
+            # Mirror the parallel path's mark_product_failed + clear_slow_operation
+            # cleanup. Without this, asyncio.wait_for cancels process_single_product
+            # externally so its own try/except never runs, and the row sits at
+            # status='processing' forever; any slow-op marker the cancelled task
+            # left behind also persists and trips auto-recovery on the next job.
+            _product_id = f"product_{product_index}_{product.name.replace(' ', '_')}"
+            try:
+                await product_tracker.mark_product_failed(
+                    product_id=_product_id,
+                    error_message=str(e),
+                    error_stage=ProductStage.FAILED,
+                )
+            except Exception as mark_err:
+                logger_instance.error(
+                    f"   ❌ ALSO failed to mark product {_product_id} as failed in DB: {mark_err}"
+                )
+            try:
+                await tracker.clear_slow_operation()
+            except Exception:
+                pass
             continue
 
     # Link images to chunks once per document — document-level operation, runs after all products

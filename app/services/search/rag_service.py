@@ -662,9 +662,23 @@ class RAGService:
                 embedding_types = ['color', 'texture', 'style', 'material']
                 search_tasks = []
 
+                # The 4 aspect collections are 1024D Voyage embeddings of
+                # per-aspect text from VisionAnalysis (always-on post-Phase-10).
+                # Query must live in the same space — we use the 1024D Voyage
+                # understanding embedding. Sending a 768D SLIG visual would
+                # silently dim-mismatch and return [] from all 4 collections.
+                aspect_query = understanding_embedding
+
+                if not aspect_query:
+                    self.logger.warning(
+                        "⚠️ Aspect search skipped — no understanding query embedding "
+                        f"(has_visual={bool(visual_embedding)}, has_text={bool(text_embedding)})"
+                    )
+                    embedding_types = []
+
                 for emb_type in embedding_types:
                     task = self.vecs_service.search_specialized_embeddings(
-                        query_embedding=visual_embedding,
+                        query_embedding=aspect_query,
                         embedding_type=emb_type,
                         limit=top_k * 3,
                         workspace_id=workspace_id,

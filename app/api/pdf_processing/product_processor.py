@@ -7,7 +7,7 @@ Includes checkpoint creation for recovery and visibility.
 
 import gc
 import logging
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, List, Optional, Set
 from datetime import datetime
 
 from app.schemas.product_progress import (
@@ -519,6 +519,27 @@ async def process_single_product(
             await tracker.update_heartbeat()
 
         from app.api.pdf_processing.stage_3_images import process_product_images
+
+        # Safe defaults — handles the edge case where skip_images=True but
+        # product_db_id is missing (Stage 0 didn't write the DB row): neither
+        # the resume block nor the fresh-process block runs, and the
+        # downstream `if images_failed_count:` would UnboundLocalError into
+        # the bare except.
+        images_processed = 0
+        clip_embeddings = 0
+        vector_stats: Dict[str, Any] = {}
+        failed_images_list: List[Any] = []
+        images_failed_count = 0
+        image_result: Dict[str, Any] = {
+            'images_processed': 0,
+            'clip_embeddings_generated': 0,
+            'vector_stats': {},
+            'failed_images': [],
+            'images_material': 0,
+            'images_icon_candidates': 0,
+            'images_non_material': 0,
+            'skipped': True,
+        }
 
         if skip_images and product_db_id:
             try:

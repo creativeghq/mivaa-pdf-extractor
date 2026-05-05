@@ -206,13 +206,12 @@ class ProgressTracker:
                 'updated_at': datetime.utcnow().isoformat()
             }
 
-            self._supabase.client.table('background_jobs')\
-                .update(job_update)\
-                .eq('id', self.job_id)\
-                .execute()
-
-            # 2. Append stage event to background_jobs.stage_history
-            #    (single source of truth for the audit log).
+            # The audit log append runs FIRST so a crash between the two
+            # writes can't leave the metadata/progress moved forward with
+            # no corresponding stage_history entry. The progress write
+            # below is naturally idempotent (next sync overwrites), so
+            # ordering the audit log first is the safer atomicity stance
+            # without requiring a custom combined-write RPC.
             if stage:
                 try:
                     self._supabase.client.rpc(
@@ -241,6 +240,11 @@ class ProgressTracker:
                     ).execute()
                 except Exception as hist_err:
                     logger.warning(f"stage_history append failed: {hist_err}")
+
+            self._supabase.client.table('background_jobs')\
+                .update(job_update)\
+                .eq('id', self.job_id)\
+                .execute()
 
             # 3. Update job_storage (in-memory)
             if self.job_storage and self.job_id in self.job_storage:
@@ -844,7 +848,15 @@ class ProgressTracker:
                             'warnings': self.warnings
                         },
                         'failed_at': datetime.utcnow().isoformat(),
-                        'updated_at': datetime.utcnow().isoformat()
+                        'updated_at': datetime.utcnow().isoformat(),
+                        # Audit fix (this PR): mirror complete_job — clear the
+                        # in-flight slow-op marker on terminal failure so a
+                        # future cron tick that's reading current_slow_operation
+                        # for any reason doesn't see a stale "fresh" timestamp
+                        # belonging to a dead job. complete_job already clears
+                        # this; fail_job was not, leaving the marker live on
+                        # failed rows.
+                        'current_slow_operation': None,
                     })\
                     .eq('id', self.job_id)\
                     .execute()
@@ -908,6 +920,19 @@ class ProgressTracker:
 
         except Exception as e:
             logger.error(f"❌ Failed to mark job as failed: {e}")
+
+        # Mirror complete_job: deregister BEFORE scale-to-zero so the
+        # active-job check sees this job as done. Without this, failed
+        # jobs stayed in endpoint_controller._active_jobs forever; every
+        # subsequent successful job's scale_all_to_zero saw count > 0
+        # and skipped the scale-down — HF endpoints kept billing until
+        # process restart. Direct money leak.
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            if self.job_id:
+                endpoint_controller.register_job_done(self.job_id)
+        except Exception:
+            pass
 
         await _scale_endpoints_to_zero_safe(reason=f"job_failed_{self.job_id}")
 
