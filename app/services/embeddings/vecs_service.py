@@ -1023,12 +1023,17 @@ class VecsService:
             )
             collection.delete(ids=[image_id])
 
+            # Aspect collections are 1024D Voyage post-Phase-10 (was 768D
+            # SLIG-blend pre-2026-05-04). The vecs library looks up
+            # collections by name (the dim arg is ignored on lookup), so
+            # functionally either value works — but the operator-facing log
+            # warning would mislead if the dim were stale.
             for col_name, dim in [
                 ("image_understanding_embeddings", 1024),
-                ("image_color_embeddings", 768),
-                ("image_texture_embeddings", 768),
-                ("image_style_embeddings", 768),
-                ("image_material_embeddings", 768),
+                ("image_color_embeddings", 1024),
+                ("image_texture_embeddings", 1024),
+                ("image_style_embeddings", 1024),
+                ("image_material_embeddings", 1024),
             ]:
                 try:
                     col = self.get_or_create_collection(name=col_name, dimension=dim)
@@ -1083,12 +1088,14 @@ class VecsService:
             if image_ids:
                 collection.delete(ids=image_ids)
 
+                # Aspect collections are 1024D Voyage post-Phase-10. See
+                # delete_image_embedding above for the same comment.
                 for col_name, dim in [
                     ("image_understanding_embeddings", 1024),
-                    ("image_color_embeddings", 768),
-                    ("image_texture_embeddings", 768),
-                    ("image_style_embeddings", 768),
-                    ("image_material_embeddings", 768),
+                    ("image_color_embeddings", 1024),
+                    ("image_texture_embeddings", 1024),
+                    ("image_style_embeddings", 1024),
+                    ("image_material_embeddings", 1024),
                 ]:
                     try:
                         col = self.get_or_create_collection(name=col_name, dimension=dim)

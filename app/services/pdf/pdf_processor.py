@@ -2752,21 +2752,55 @@ class PDFProcessor:
                     )
 
                     if ocr_result_list:
-                        # Combine all extracted text from the image
-                        extracted_text = " ".join([result.text for result in ocr_result_list])
-                        avg_confidence = sum([result.confidence for result in ocr_result_list]) / len(ocr_result_list) if ocr_result_list else 0.0
+                        # Filter out Chandra-failed results explicitly. Failed
+                        # results carry method='chandra_failed' + text='' but
+                        # are still present in the list — joining them would
+                        # count a failed OCR pass as a "successful region with
+                        # empty text" and mark the image as having no text
+                        # (rather than as having failed and needing retry).
+                        successful_results = [
+                            r for r in ocr_result_list
+                            if getattr(r, 'method', None) != 'chandra_failed'
+                        ]
+                        failed_count = len(ocr_result_list) - len(successful_results)
 
-                        combined_ocr_text += extracted_text + "\n"
-                        ocr_results.append({
-                            'image_path': image_path,
-                            'text': extracted_text,
-                            'confidence': avg_confidence,
-                            'language': ocr_languages[0] if ocr_languages else 'en',
-                            'regions_detected': len(ocr_result_list),
-                            'ai_classification': ocr_decision
-                        })
-                        
-                        self.logger.info(f"  ✅ OCR extracted {len(ocr_result_list)} text regions from image {idx+1}")
+                        if successful_results:
+                            extracted_text = " ".join([r.text for r in successful_results])
+                            avg_confidence = sum([r.confidence for r in successful_results]) / len(successful_results)
+
+                            combined_ocr_text += extracted_text + "\n"
+                            ocr_results.append({
+                                'image_path': image_path,
+                                'text': extracted_text,
+                                'confidence': avg_confidence,
+                                'language': ocr_languages[0] if ocr_languages else 'en',
+                                'regions_detected': len(successful_results),
+                                'ocr_failed_regions': failed_count,
+                                'ai_classification': ocr_decision
+                            })
+                            self.logger.info(
+                                f"  ✅ OCR extracted {len(successful_results)} text regions "
+                                f"from image {idx+1}"
+                                + (f" ({failed_count} regions failed)" if failed_count else "")
+                            )
+                        else:
+                            # All regions failed — surface as ocr_failed marker,
+                            # NOT as "no text found." Empty text + failure are
+                            # different signals to downstream consumers.
+                            self.logger.warning(
+                                f"  ⚠️ OCR failed for all {len(ocr_result_list)} regions "
+                                f"in image {idx+1} (all chandra_failed)"
+                            )
+                            ocr_results.append({
+                                'image_path': image_path,
+                                'text': '',
+                                'confidence': 0.0,
+                                'language': 'unknown',
+                                'ocr_failed': True,
+                                'ocr_failed_regions': failed_count,
+                                'error': 'all_regions_chandra_failed',
+                                'ai_classification': ocr_decision
+                            })
                     else:
                         self.logger.info(f"  ℹ️  No text found in image {idx+1}")
 

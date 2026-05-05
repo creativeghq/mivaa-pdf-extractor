@@ -1327,21 +1327,16 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         job_data = job_result.data[0]
         document_id = job_data['document_id']
 
-        # Mark job for restart
-        supabase_client.client.table('background_jobs').update({
-            "status": "processing",
-            "error": None,
-            "interrupted_at": None,
-            "started_at": datetime.utcnow().isoformat(),
-            "metadata": {
-                **job_data.get('metadata', {}),
-                "restart_from_stage": resume_stage.value,
-                "restart_reason": "manual_restart",
-                "restart_at": datetime.utcnow().isoformat()
-            }
-        }).eq('id', job_id).execute()
-
-        logger.info(f"✅ Job {job_id} marked for restart from {resume_stage}")
+        # NOTE: status='processing' is intentionally NOT flipped here. The
+        # previous ordering set the flag BEFORE the download / temp-file
+        # write, so transient Storage 5xx or /tmp-full errors left the row
+        # at status='processing' with no orchestrator running. Auto-recovery
+        # cron then back-offs (waiting for stuck-threshold) instead of
+        # immediately reclaiming. We flip the status atomically with the
+        # background_tasks.add_task at the bottom of the try block, so
+        # any failure in the download path leaves the job at its prior
+        # status ('failed' / 'interrupted') and the operator sees the
+        # actual error.
 
         # Re-trigger the processing pipeline; process_document_with_discovery resumes from the checkpoint.
 
@@ -1476,7 +1471,24 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 test_single_product=test_single_product
             )
 
-            logger.info(f"✅ Background task triggered for job {job_id} (type: {job_type})")
+            # NOW flip the status — the background task is queued and the
+            # download succeeded. If anything above raised we never get
+            # here and the row stays at its prior status (no orphan
+            # 'processing' rows for auto-recovery to puzzle over).
+            supabase_client.client.table('background_jobs').update({
+                "status": "processing",
+                "error": None,
+                "interrupted_at": None,
+                "started_at": datetime.utcnow().isoformat(),
+                "metadata": {
+                    **job_data.get('metadata', {}),
+                    "restart_from_stage": resume_stage.value,
+                    "restart_reason": "manual_restart",
+                    "restart_at": datetime.utcnow().isoformat()
+                }
+            }).eq('id', job_id).execute()
+
+            logger.info(f"✅ Job {job_id} marked for restart from {resume_stage} and background task triggered (type: {job_type})")
 
         except HTTPException:
             raise
@@ -3578,6 +3590,19 @@ async def process_document_with_discovery(
                 if tracker:
                     tracker.current_step = "Catalog-wide icon extraction"
                     await tracker.update_heartbeat()
+                    # This pre-pass can take 30-60+ minutes on large catalogs
+                    # (job 051e1dda timed out here). Mark it as a known slow
+                    # operation so auto-recovery cron's stuck-job detector
+                    # doesn't false-positive while it runs. Always cleared in
+                    # the finally block, even on exception, so a failed icon
+                    # pass doesn't poison the next stage's auto-recovery.
+                    try:
+                        await tracker.set_slow_operation(
+                            operation="stage_3_images:process_catalog_wide_icons",
+                            expected_max_seconds=3600,
+                        )
+                    except Exception as _slow_err:
+                        logger.debug(f"   set_slow_operation failed (non-fatal): {_slow_err}")
 
                 catalog_icon_stats = await process_catalog_wide_icons(
                     file_content=file_content,
@@ -3604,6 +3629,14 @@ async def process_document_with_discovery(
                     sentry_sdk.capture_exception(cat_icons_err)
                 except Exception:
                     pass
+            finally:
+                # Always clear the slow-op marker so it doesn't leak into the
+                # next stage and poison auto-recovery.
+                if tracker:
+                    try:
+                        await tracker.clear_slow_operation()
+                    except Exception:
+                        pass
 
         # 🧪 TEST MODE: Process only first product if test_single_product=True
         if test_single_product:

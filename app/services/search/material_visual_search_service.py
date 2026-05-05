@@ -477,9 +477,12 @@ class MaterialVisualSearchService:
                 },
                 analytics={
                     "search_performance": {
-                        "total_candidates": len(mock_results),
-                        "filtered_results": len(mock_results),
-                        "avg_confidence": sum(r.confidence_score for r in mock_results) / len(mock_results)
+                        "total_candidates": len(search_results),
+                        "filtered_results": len(search_results),
+                        "avg_confidence": (
+                            sum(r.confidence_score for r in search_results) / len(search_results)
+                            if search_results else 0.0
+                        ),
                     }
                 }
             )
@@ -554,46 +557,41 @@ class MaterialVisualSearchService:
                     query_embedding = await slig_client.get_text_embedding(request.query_text)
                     logger.info(f"✅ Generated text CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
 
-                    # Per-aspect query embeddings: 1024D Voyage of the user's
+                    # Per-aspect query embedding: 1024D Voyage of the user's
                     # text — same model and embedding space as the aspect
                     # collection rows. allow_openai_fallback=False so an
                     # OpenAI fallback can never produce a query vector that
                     # would return nonsense similarity against Voyage rows.
+                    #
+                    # We embed the user's query ONCE and share it across all
+                    # 4 aspect collections. The 4 collections rank against
+                    # different per-aspect row text (color text vs texture
+                    # text vs style text vs material text), so per-aspect
+                    # signal still comes from the row side. Doing 4 identical
+                    # Voyage calls (the previous behavior) wasted ~$0.0003
+                    # per search and produced byte-identical query vectors.
                     try:
                         from app.services.embeddings.real_embeddings_service import (
                             RealEmbeddingsService,
                         )
                         voyage_svc = RealEmbeddingsService()
-                        color_emb, texture_emb, style_emb, material_emb = await asyncio.gather(
-                            voyage_svc._generate_text_embedding(
-                                text=request.query_text, input_type="query",
-                                allow_openai_fallback=False,
-                            ),
-                            voyage_svc._generate_text_embedding(
-                                text=request.query_text, input_type="query",
-                                allow_openai_fallback=False,
-                            ),
-                            voyage_svc._generate_text_embedding(
-                                text=request.query_text, input_type="query",
-                                allow_openai_fallback=False,
-                            ),
-                            voyage_svc._generate_text_embedding(
-                                text=request.query_text, input_type="query",
-                                allow_openai_fallback=False,
-                            ),
-                            return_exceptions=True,
+                        aspect_query_emb = await voyage_svc._generate_text_embedding(
+                            text=request.query_text,
+                            input_type="query",
+                            allow_openai_fallback=False,
                         )
                         specialized_embeddings = {
-                            'color': color_emb if not isinstance(color_emb, Exception) else None,
-                            'texture': texture_emb if not isinstance(texture_emb, Exception) else None,
-                            'style': style_emb if not isinstance(style_emb, Exception) else None,
-                            'material': material_emb if not isinstance(material_emb, Exception) else None,
+                            'color': aspect_query_emb,
+                            'texture': aspect_query_emb,
+                            'style': aspect_query_emb,
+                            'material': aspect_query_emb,
                         }
                         logger.info(
-                            "✅ Generated specialized aspect query embeddings via Voyage (1024D × 4)"
+                            "✅ Generated aspect query embedding via Voyage (1024D, "
+                            "shared across 4 aspect collections)"
                         )
                     except Exception as spec_err:
-                        logger.warning(f"⚠️ Failed to generate aspect query embeddings: {spec_err}")
+                        logger.warning(f"⚠️ Failed to generate aspect query embedding: {spec_err}")
                         specialized_embeddings = None
                 else:
                     logger.error("❌ SLIG client not available for text embedding generation")
@@ -623,18 +621,23 @@ class MaterialVisualSearchService:
                 # if we know which documents belong to the workspace
                 pass
 
-            # Generate understanding query embedding for spec-based search
+            # Generate understanding query embedding for spec-based search.
+            # MaterialSearchRequest exposes `query_text` (not `query`); the prior
+            # `request.query` reference returned the empty string for every
+            # search via the hasattr fallback, which embedded a constant
+            # placeholder vector at 0.20-0.25 weight in every result.
             understanding_query_embedding = None
-            try:
-                from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-                understanding_service = RealEmbeddingsService()
-                understanding_result = await understanding_service.generate_understanding_query_embedding(
-                    query=request.query if hasattr(request, 'query') and request.query else ""
-                )
-                if understanding_result.get("success"):
-                    understanding_query_embedding = understanding_result.get("embedding")
-            except Exception as understanding_err:
-                logger.warning(f"⚠️ Understanding query embedding failed (non-critical): {understanding_err}")
+            if request.query_text:
+                try:
+                    from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+                    understanding_service = RealEmbeddingsService()
+                    understanding_result = await understanding_service.generate_understanding_query_embedding(
+                        query=request.query_text
+                    )
+                    if understanding_result.get("success"):
+                        understanding_query_embedding = understanding_result.get("embedding")
+                except Exception as understanding_err:
+                    logger.warning(f"⚠️ Understanding query embedding failed (non-critical): {understanding_err}")
 
             # Use multi-collection search for true multi-vector scoring
             # Queries all 6 VECS collections in parallel and combines scores

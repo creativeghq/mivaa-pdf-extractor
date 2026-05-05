@@ -754,12 +754,18 @@ class UnifiedSearchService:
             results = []
             if response.data:
                 for item in response.data:
+                    # SearchResult dataclass uses similarity_score / source_type /
+                    # embedding_type — `score=` and `source=` were rejected as
+                    # unexpected kwargs and the broad except below silently
+                    # returned []. Every keyword-FTS search has been dead since
+                    # this dataclass was finalized.
                     results.append(SearchResult(
                         id=item.get('id'),
                         content=item.get('content', ''),
-                        score=float(item.get('rank', 0.5)),
+                        similarity_score=float(item.get('rank', 0.5)),
                         metadata=item.get('metadata', {}),
-                        source='keyword_fts',
+                        embedding_type='keyword_fts',
+                        source_type='chunk',
                     ))
             return results
 
@@ -938,11 +944,16 @@ class UnifiedSearchService:
         """Material type search — see `_search_aspect`."""
         return await self._search_aspect("material", query, filters, workspace_id)
 
-    async def _parse_query_with_qwen(self, query: str, system_prompt: str) -> Optional[Dict[str, Any]]:
+    async def _parse_query_with_haiku(self, query: str, system_prompt: str) -> Optional[Dict[str, Any]]:
         """
         Parse a search query into structured filters using Anthropic Claude
         Haiku 4.5 (fast, cheap, structured-output friendly). Returns the
         parsed dict or raises on failure (caller falls back to GPT-4o-mini).
+
+        Renamed from `_parse_query_with_qwen` post-2026-05-01 — Qwen was
+        removed from the platform but this method retained the legacy
+        name + log strings, which were misleading to operators reading
+        the search-side logs.
         """
         import json
         import os
@@ -1069,12 +1080,14 @@ IMPORTANT RULES:
 
 Return ONLY valid JSON. Use null for missing fields."""
 
-            # Primary: try Qwen (zero marginal cost when endpoint already running)
+            # Primary: Anthropic Haiku 4.5 (cheap, structured-output friendly).
+            # The variable retains its name for compatibility with downstream
+            # logs / cache writes, but the actual model is `claude-haiku-4-5`.
             parsed_data = None
-            model_used = "qwen"
+            model_used = "claude-haiku-4-5"
             try:
-                parsed_data = await self._parse_query_with_qwen(query, system_prompt)
-                self.logger.debug(f"🤖 Query parsed with Qwen")
+                parsed_data = await self._parse_query_with_haiku(query, system_prompt)
+                self.logger.debug(f"🤖 Query parsed with Haiku 4.5")
             except Exception as qwen_err:
                 self.logger.debug(f"Qwen unavailable ({qwen_err}), falling back to Claude Haiku")
 

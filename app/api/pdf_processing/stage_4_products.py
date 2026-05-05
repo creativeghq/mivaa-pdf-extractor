@@ -848,7 +848,16 @@ async def _merge_icon_metadata_into_product(
         return rollup
 
     except Exception as e:
-        logger.warning(f"   ⚠️ Failed to merge icon metadata into product: {e}")
+        # Empty dict on exception is shape-identical to "no icons present" —
+        # caller can't distinguish DB read failure from a clean zero. Bump
+        # the log level and capture to Sentry so silent DB issues here
+        # don't get filed as "no spec icons" in the rollup.
+        logger.error(f"   ❌ Failed to merge icon metadata into product: {e}", exc_info=True)
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_exception(e)
+        except Exception:
+            pass
         return {}
 
 

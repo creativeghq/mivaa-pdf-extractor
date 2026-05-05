@@ -685,11 +685,36 @@ class DataImportService:
                 emb_result = await emb_svc.generate_text_embedding(' | '.join(emb_parts))
                 text_emb = emb_result.get('embedding') if emb_result.get('success') else None
                 if text_emb:
-                    emb_str = '[' + ','.join(str(x) for x in text_emb) + ']'
-                    await self.db.table('products').update(
-                        {'text_embedding_1024': emb_str}
-                    ).eq('id', product_id).execute()
-                    logger.info(f"   🧠 Generated text_embedding_1024 for {product_name}")
+                    if len(text_emb) != 1024:
+                        # Defense-in-depth dim check (mirrors stage_4_products):
+                        # OpenAI fallback could in theory return a wrong-dim
+                        # vector; refusing to store keeps the column from
+                        # holding mixed-dim rows that break vector search.
+                        logger.error(
+                            f"   ❌ XML import embedding for {product_name} returned "
+                            f"wrong dim ({len(text_emb)}D, expected 1024D). Refusing to store."
+                        )
+                    else:
+                        # Persist provenance (model + schema_version) alongside
+                        # the vector so the admin UI / backfill cron can detect
+                        # Voyage→OpenAI fallback drift and target stale-schema
+                        # rows. Without these fields the rows are invisible to
+                        # the standard backfill cron — XML-imported products
+                        # silently age out of the v2 schema window.
+                        emb_str = '[' + ','.join(str(x) for x in text_emb) + ']'
+                        emb_model = emb_result.get('model') if isinstance(emb_result, dict) else None
+                        update_payload: Dict[str, Any] = {
+                            'text_embedding_1024': emb_str,
+                            'text_embedding_schema_version': 1,
+                        }
+                        if emb_model:
+                            update_payload['text_embedding_1024_model'] = emb_model
+                        await self.db.table('products').update(update_payload)\
+                            .eq('id', product_id).execute()
+                        logger.info(
+                            f"   🧠 Generated text_embedding_1024 for {product_name} "
+                            f"(model={emb_model or 'voyage-4'})"
+                        )
             except Exception as emb_err:
                 logger.warning(f"   ⚠️ Product embedding failed (non-blocking): {emb_err}")
 
