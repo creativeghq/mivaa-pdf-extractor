@@ -235,8 +235,19 @@ def _detect_media_type(image_bytes: bytes) -> str:
     return "image/png"
 
 
-def _call_claude(image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
-    """Single vision call, returns parsed JSON or None on failure."""
+def _call_claude(
+    image_bytes: bytes,
+    prompt: str,
+    *,
+    job_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Single vision call, returns parsed JSON or None on failure.
+
+    `job_id` is forwarded so the catalog-wide legend Claude spend lands
+    on the right job's cost rollup. Catalog legends are document-scoped,
+    not product-scoped — `product_id` would be ambiguous.
+    """
     if not ANTHROPIC_API_KEY:
         logger.error("catalog_legend_extractor_v2: ANTHROPIC_API_KEY not set")
         return None
@@ -257,6 +268,8 @@ def _call_claude(image_bytes: bytes, prompt: str) -> Optional[Dict[str, Any]]:
                     {"type": "text", "text": prompt},
                 ],
             }],
+            job_id=job_id,
+            workspace_id=workspace_id,
         )
     except Exception as e:
         report_anthropic_failure(e, service="catalog_legend_extractor_v2")
@@ -400,11 +413,17 @@ async def extract_catalog_legends(
     # ── Extract each legend page ───────────────────────────────────────
     extracted_legends: Dict[str, Any] = {}
     all_certifications: List[str] = []
-    total_pages = sum(len(v) for v in legend_pages_by_type.values()) or 1
+    # Defense against malformed catalog_layout (legend_pages must be a dict
+    # of list[int]). If a value is None / int / str we'd hit TypeError on
+    # len() and abort the entire extraction silently — instead, coerce.
+    total_pages = sum(
+        len(v) if isinstance(v, list) else 0
+        for v in legend_pages_by_type.values()
+    ) or 1
     processed = 0
 
     for legend_type, page_indices in legend_pages_by_type.items():
-        if not page_indices:
+        if not page_indices or not isinstance(page_indices, list):
             continue
 
         prompt = PROMPTS_BY_TYPE.get(legend_type)
@@ -434,7 +453,9 @@ async def extract_catalog_legends(
                 best_type = None
                 best_score = 0
                 for t, p in PROMPTS_BY_TYPE.items():
-                    r = _call_claude(image_bytes, p)
+                    r = _call_claude(
+                        image_bytes, p, job_id=job_id, workspace_id=workspace_id,
+                    )
                     if r and isinstance(r, dict):
                         score = sum(1 for v in r.values() if v not in (None, [], "", {}))
                         if score > best_score:
@@ -448,7 +469,9 @@ async def extract_catalog_legends(
                     result = None
                     resolved_type = None
             else:
-                result = _call_claude(image_bytes, prompt)
+                result = _call_claude(
+                    image_bytes, prompt, job_id=job_id, workspace_id=workspace_id,
+                )
                 resolved_type = legend_type
 
             if not result or not resolved_type:
@@ -603,17 +626,33 @@ async def extract_catalog_legends(
                             }
                             for pid in product_ids
                         ]
+                        # Use upsert with on_conflict so re-running with
+                        # force=True (or recovering from a partial-failure
+                        # run where kb_doc was upserted with the same id)
+                        # doesn't 23505-fail on the already-linked rows.
+                        # Mirrors the AutoKBDocumentService pattern.
                         try:
                             (
                                 supabase.client.table("kb_doc_attachments")
-                                .insert(attach_rows)
+                                .upsert(attach_rows, on_conflict="document_id,product_id")
                                 .execute()
                             )
                         except Exception as e:
                             logger.warning(
-                                f"[{job_id or '-'}] kb_doc_attachments insert failed: {e}"
+                                f"[{job_id or '-'}] kb_doc_attachments upsert failed, "
+                                f"falling back to insert with duplicate-tolerant errors: {e}"
                             )
-                            stats["errors"].append(f"attach_{doc_id}: {e}")
+                            try:
+                                (
+                                    supabase.client.table("kb_doc_attachments")
+                                    .insert(attach_rows)
+                                    .execute()
+                                )
+                            except Exception as e2:
+                                logger.warning(
+                                    f"[{job_id or '-'}] kb_doc_attachments insert failed: {e2}"
+                                )
+                                stats["errors"].append(f"attach_{doc_id}: {e2}")
             except Exception as e:
                 logger.warning(
                     f"[{job_id or '-'}] kb_docs insert failed for {resolved_type}: {e}"

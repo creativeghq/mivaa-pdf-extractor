@@ -100,6 +100,10 @@ def _is_likely_english(text: str) -> bool:
 def write_product_description_from_chunks(
     product_name: str,
     chunks: List[Any],
+    *,
+    job_id: Optional[str] = None,
+    product_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> Optional[str]:
     """Generate a clean English product description from chunks.
 
@@ -169,6 +173,9 @@ def write_product_description_from_chunks(
                     chunks_text=chunks_text,
                 ),
             }],
+            job_id=job_id,
+            product_id=product_id,
+            workspace_id=workspace_id,
         )
     except Exception as e:
         report_anthropic_failure(

@@ -16,7 +16,17 @@ from typing import Dict, Any, List, Optional
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
 
 # ── Category → default unit mapping (mirrors material_categories.default_unit) ─
+#
+# Two-layer resolution:
+#   1. Coarse "upload categories" (10 buckets, matches the
+#      material_categories table on the DB and the upload-form selector)
+#   2. Fine-grained vocab values from MATERIAL_CATEGORY_VOCAB. Stage 4.7's
+#      auto-classifier writes these (e.g. 'porcelain_tile', 'sofa') so the
+#      coarse-only map silently fell through to 'pcs' for every product.
+#      Adding the fine-grained map below restores correct sqm units for
+#      tile/wood/wall-paint products.
 _CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
+    # Coarse buckets
     'tiles': 'sqm',
     'wood': 'sqm',
     'decor': 'pcs',
@@ -29,16 +39,48 @@ _CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
     'lighting': 'pcs',
 }
 
+# Fine-grained vocab → unit mapping. Mirrors MATERIAL_CATEGORY_VOCAB.
+_FINE_CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
+    # Tiles → sqm
+    'floor_tile': 'sqm', 'wall_tile': 'sqm', 'bathroom_tile': 'sqm',
+    'shower_tile': 'sqm', 'porcelain_tile': 'sqm', 'ceramic_tile': 'sqm',
+    # Wood / flooring → sqm
+    'wood_flooring': 'sqm', 'laminate': 'sqm', 'vinyl_flooring': 'sqm',
+    'carpet': 'sqm', 'hardwood': 'sqm', 'engineered_wood': 'sqm',
+    'parquet': 'sqm',
+    # Paint / wall decor → sqm (paintable surface) or pcs (panel/wallpaper roll)
+    'wall_paint': 'sqm', 'wallpaper': 'sqm', 'decorative_plaster': 'sqm',
+    'wall_panel': 'pcs', 'wall_coating': 'sqm',
+    # General materials (slabs/sheets) → sqm; specific stones in linear/sqm
+    'countertop': 'sqm', 'kitchen_worktop': 'sqm', 'stone_slab': 'sqm',
+    'metal_panel': 'sqm', 'glass_panel': 'sqm', 'concrete': 'sqm',
+    'terrazzo': 'sqm', 'quartz': 'sqm',
+    # Furniture / decor / sanitary / kitchen / heating / lighting → pcs
+    # (everything not enumerated above defaults to 'pcs' via the fallback)
+}
+
 
 def _resolve_default_unit(material_category: Optional[str]) -> str:
-    """Resolve default unit from material category. Falls back to 'pcs'."""
+    """Resolve default unit from material category.
+
+    Resolution order:
+      1. Exact match against the fine-grained MATERIAL_CATEGORY_VOCAB map
+         (e.g. 'porcelain_tile' → 'sqm').
+      2. Exact match against the coarse upload-bucket map ('tiles' → 'sqm').
+      3. Fuzzy substring match against the coarse map (catches mid-pipeline
+         normalizations that strip the suffix).
+      4. Fallback to 'pcs'.
+    """
     if not material_category:
         return 'pcs'
     cat = material_category.lower().strip()
-    # Direct match
+    # 1. Fine-grained vocab match — most specific wins
+    if cat in _FINE_CATEGORY_DEFAULT_UNITS:
+        return _FINE_CATEGORY_DEFAULT_UNITS[cat]
+    # 2. Coarse bucket exact match
     if cat in _CATEGORY_DEFAULT_UNITS:
         return _CATEGORY_DEFAULT_UNITS[cat]
-    # Fuzzy match: check if category contains a known key
+    # 3. Fuzzy match against coarse buckets
     for key, unit in _CATEGORY_DEFAULT_UNITS.items():
         if key in cat or cat in key:
             return unit
@@ -174,16 +216,28 @@ MATERIAL_CATEGORY_VOCAB = {
 ZONE_INTENT_VOCAB = {"surface", "full_object", "upholstery", "sub_element"}
 
 
-async def _classify_product(name: str, description: str, existing_category: str) -> Dict[str, str]:
+async def _classify_product(
+    name: str,
+    description: str,
+    existing_category: str,
+    *,
+    job_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    product_id: Optional[str] = None,
+) -> Dict[str, str]:
     """
     Call Claude Haiku to assign material_category + zone_intent from controlled vocabulary.
     Returns dict with keys 'material_category' and 'zone_intent', or empty dict on failure.
+
+    Routes through tracked_claude_call_async so per-product Anthropic spend
+    is logged to ai_usage_logs with the right job_id / product_id /
+    workspace_id — previously bypassed via raw httpx.
     """
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
     if not api_key:
         return {}
 
-    import httpx, json as _json
+    import json as _json
 
     prompt = f"""Classify this interior material/furniture product into the controlled vocabularies below.
 
@@ -214,29 +268,24 @@ zone_intent (pick exactly one):
 Respond with exactly: {{"material_category": "...", "zone_intent": "..."}}"""
 
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-haiku-4-5",
-                    "max_tokens": 64,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            resp.raise_for_status()
-            text = resp.json()["content"][0]["text"].strip()
-            data = _json.loads(text)
-            result = {}
-            if data.get("material_category") in MATERIAL_CATEGORY_VOCAB:
-                result["material_category"] = data["material_category"]
-            if data.get("zone_intent") in ZONE_INTENT_VOCAB:
-                result["zone_intent"] = data["zone_intent"]
-            return result
+        from app.services.core.claude_helper import tracked_claude_call_async
+        resp = await tracked_claude_call_async(
+            task="product_classification",
+            model="claude-haiku-4-5",
+            max_tokens=64,
+            messages=[{"role": "user", "content": prompt}],
+            job_id=job_id,
+            workspace_id=workspace_id,
+            product_id=product_id,
+        )
+        text = (resp.content[0].text if resp.content else "").strip()
+        data = _json.loads(text)
+        result = {}
+        if data.get("material_category") in MATERIAL_CATEGORY_VOCAB:
+            result["material_category"] = data["material_category"]
+        if data.get("zone_intent") in ZONE_INTENT_VOCAB:
+            result["zone_intent"] = data["zone_intent"]
+        return result
     except Exception as e:
         logging.getLogger(__name__).warning(f"Product classification failed: {e}")
         return {}
@@ -348,9 +397,28 @@ async def create_single_product(
     # are the most authoritative source for technical specs (R-rating, PEI,
     # fire rating, frost resistance) because they come from canonical icons
     # in the catalog — write them last to override AI text guesses.
+    #
+    # `_unknown_field_counts` is an audit-only sentinel produced by
+    # `_merge_icon_metadata_into_product` (see audit fix #42). It must NOT
+    # leak onto the product row — it would be picked up by the embedding text
+    # builder below (which iterates known_spec_fields rigorously, but the
+    # row-level metadata dict is also scanned by the frontend / search /
+    # propagation paths). Strip sentinel keys before merging and stash the
+    # audit data under a private prefix on the product instead.
     if icon_rollup:
+        unknown_counts = icon_rollup.pop('_unknown_field_counts', None)
         for spec_field, spec_value in icon_rollup.items():
+            if spec_field.startswith('_'):
+                # Defense-in-depth: never write any underscore-prefixed
+                # sentinel from the icon rollup as a top-level spec field.
+                continue
             metadata[spec_field] = spec_value
+        if unknown_counts:
+            audit_block = metadata.get('_icon_rollup_audit') or {}
+            if not isinstance(audit_block, dict):
+                audit_block = {}
+            audit_block['unknown_field_counts'] = unknown_counts
+            metadata['_icon_rollup_audit'] = audit_block
         logger.info(
             f"   🔖 Merged {len(icon_rollup)} icon-extracted spec fields onto product"
         )
@@ -399,6 +467,8 @@ async def create_single_product(
                 name=product.name,
                 description=metadata.get("description", "") or ai_metadata.get("description", ""),
                 existing_category=raw_cat or "",
+                job_id=job_id,
+                workspace_id=workspace_id,
             )
             if needs_category and classified.get("material_category"):
                 metadata["material_category"] = classified["material_category"]
@@ -1986,6 +2056,11 @@ async def enrich_products_from_chunks_and_vision(
             product_to_image_pages = {}
 
         # ── Per-product enrichment ────────────────────────────────────────
+        # Each per-stage call is locally try/except-wrapped so a sub-stage
+        # failure can't escape the loop. The merge + DB-write block at the
+        # bottom is the one path still capable of raising — protected by an
+        # outer try/except below so one bad product can't strand the rest.
+        stats.setdefault("per_product_failures", 0)
         for product in products:
             product_id = product["id"]
             product_name = product.get("name") or "(unnamed)"
@@ -2166,6 +2241,14 @@ async def enrich_products_from_chunks_and_vision(
             if spec_vision_candidates:
                 extraction_meta = dict(new_metadata.get("_extraction_metadata") or {})
                 for key, value in spec_vision_candidates.items():
+                    # Drop sentinel/audit keys (e.g. `_source_tiers` is popped
+                    # earlier on the success path but `_error` stays on the
+                    # failure path; both are extractor-internal, not product
+                    # spec fields). Without this guard `_error` would be
+                    # written as a top-level metadata key and surfaced on the
+                    # frontend product detail view.
+                    if isinstance(key, str) and key.startswith("_"):
+                        continue
                     if isinstance(value, dict):
                         # nested container — merge each child if missing
                         container = dict(new_metadata.get(key) or {})
@@ -2201,6 +2284,9 @@ async def enrich_products_from_chunks_and_vision(
                     new_description = write_product_description_from_chunks(
                         product_name=product_name,
                         chunks=product_chunks,
+                        job_id=job_id,
+                        product_id=product_id,
+                        workspace_id=product.get("workspace_id"),
                     )
                     if new_description:
                         stats["description_writes"] += 1
@@ -2225,6 +2311,7 @@ async def enrich_products_from_chunks_and_vision(
                         product_name=product_name,
                         job_id=job_id,
                         workspace_id=product.get("workspace_id"),
+                        product_id=product_id,
                     )
                     if prop_result.coverage_pct > 0:
                         new_metadata["functional_metadata"] = prop_result.properties
@@ -2254,10 +2341,29 @@ async def enrich_products_from_chunks_and_vision(
             if new_description:
                 update_payload["description"] = new_description
 
-            supabase.client.table("products") \
-                .update(update_payload) \
-                .eq("id", product_id) \
-                .execute()
+            # Wrap the DB write so a transient Postgres / network error on
+            # one product doesn't propagate out and silently strand every
+            # subsequent product in this loop. The error is logged + counted
+            # so an operator can see exactly how many products this affected.
+            try:
+                supabase.client.table("products") \
+                    .update(update_payload) \
+                    .eq("id", product_id) \
+                    .execute()
+            except Exception as db_err:
+                stats["per_product_failures"] += 1
+                logger.error(
+                    f"   ❌ Enrichment DB write failed for '{product_name}' "
+                    f"(product_id={product_id}): {db_err}"
+                )
+                try:
+                    sentry_sdk.capture_exception(db_err)
+                except Exception:
+                    pass
+                # Skip downstream KB regen for this product — its metadata
+                # is in-memory but not persisted, so the AutoKBDocumentService
+                # call below would write KB docs against stale data.
+                continue
 
             stats["products_updated"] += 1
             stats["fields_filled"].update(filled)
@@ -2349,6 +2455,7 @@ async def enrich_products_from_chunks_and_vision(
                             product_ids=all_product_ids,
                             supabase=supabase,
                             logger_instance=logger,
+                            job_id=job_id,
                         )
                         stats["catalog_kb_docs_created"] = kb_cat_stats.get("docs_created", 0)
                         stats["kb_attachments_created"] += kb_cat_stats.get("attachments_created", 0)

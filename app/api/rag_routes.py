@@ -254,6 +254,9 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
         # Uses the same SQL function the auto-recovery cron calls, then
         # forces status back to 'processing' (the helper sets it to 'pending'
         # but we have everything we need to run it right now).
+        # Audit fix (this PR): the second UPDATE that flips pending→processing
+        # is now conditional on status='pending' so a parallel cron tick that
+        # already claimed (and dispatched) this job doesn't double-dispatch.
         try:
             claimed = supabase_client.client.rpc(
                 'mark_pdf_job_for_recovery',
@@ -265,11 +268,21 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
 
             from app.schemas.jobs import JobStatus as _JS_recovery
             now_iso = datetime.utcnow().isoformat()
-            supabase_client.client.table('background_jobs').update({
+            promote_result = supabase_client.client.table('background_jobs').update({
                 'status': _JS_recovery.PROCESSING.value,
                 'last_heartbeat': now_iso,
                 'updated_at': now_iso,
-            }).eq('id', job_id).execute()
+            }).eq('id', job_id).eq('status', 'pending').execute()
+
+            if not promote_result.data:
+                # Some other path (auto-recovery cron's /resume call) already
+                # promoted this job to 'processing' between our mark and
+                # promote. Skip dispatch — they're already running it.
+                logger.info(
+                    f"   ⏭️  {job_id}: pending→processing promote was no-op "
+                    f"(another path picked it up); skipping dispatch"
+                )
+                continue
 
             try:
                 supabase_client.client.rpc('append_recovery_history', {
@@ -1292,12 +1305,65 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
     This endpoint allows manual recovery of stuck or failed jobs.
     The job will resume from the last successful checkpoint.
+
+    Audit fix (this PR): re-entrancy guard. Two cron ticks (or a cron tick +
+    a manual operator restart) can both POST /resume for the same job_id
+    within seconds. Without an atomic claim, both would download the PDF and
+    dispatch process_document_with_discovery, producing two orchestrators on
+    the same row — which silently double-creates products + chunks and
+    double-bills HF endpoint replicas. We claim the job by flipping
+    status pending|interrupted → processing in the FIRST line of work; if
+    the conditional UPDATE returns 0 rows, another caller already claimed it
+    and we 409 out without dispatching.
     """
     try:
+        # Atomic claim — must run before any expensive work (file download,
+        # checkpoint verification). The .eq("status", "pending|interrupted")
+        # filter ensures only one of N concurrent callers wins; the rest
+        # fall through to the 409 path below.
+        supabase_client = get_supabase_client()
+        nowiso = datetime.utcnow().isoformat()
+        claim_result = supabase_client.client.table('background_jobs').update({
+            'status': 'processing',
+            'last_heartbeat': nowiso,
+            'updated_at': nowiso,
+        }).eq('id', job_id).in_('status', ['pending', 'interrupted']).execute()
+
+        if not claim_result.data:
+            # Either job already 'processing' (someone else claimed it), or
+            # status='completed'/'failed' (no recovery needed), or row missing.
+            # 409 is correct because the operation isn't an error — another
+            # caller is running it. The cron path treats !ok as a soft fail
+            # and reverts pending→interrupted, so this is idempotent.
+            row_check = supabase_client.client.table('background_jobs').select('id, status').eq('id', job_id).execute()
+            if not row_check.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found"
+                )
+            existing_status = row_check.data[0].get('status')
+            logger.info(f"Resume rejected for {job_id}: status='{existing_status}' (already in flight or terminal)")
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Job {job_id} is in status '{existing_status}' — cannot resume (another caller may have claimed it)"
+            )
+
         # Get last checkpoint
         last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
 
         if not last_checkpoint:
+            # We claimed the row but there's no checkpoint to resume from.
+            # Revert the claim so the row's status doesn't stay 'processing'
+            # with no orchestrator. The auto-recovery cron will then
+            # eventually fail-out the job via fail_exhausted_pdf_jobs once
+            # the stuck threshold elapses.
+            try:
+                supabase_client.client.table('background_jobs').update({
+                    'status': 'interrupted',
+                    'interrupted_at': datetime.utcnow().isoformat(),
+                }).eq('id', job_id).execute()
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No checkpoint found for job {job_id}"
@@ -1309,13 +1375,21 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         can_resume = await checkpoint_recovery_service.verify_checkpoint_data(job_id, resume_stage)
 
         if not can_resume:
+            try:
+                supabase_client.client.table('background_jobs').update({
+                    'status': 'interrupted',
+                    'interrupted_at': datetime.utcnow().isoformat(),
+                }).eq('id', job_id).execute()
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Checkpoint data verification failed for stage {resume_stage}"
             )
 
-        # Get job details from database
-        supabase_client = get_supabase_client()
+        # Get full job details from database (claim_result.data[0] is also valid
+        # but a fresh read avoids any chance of stale fields between the claim
+        # update and the rest of this handler).
         job_result = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
 
         if not job_result.data or len(job_result.data) == 0:
@@ -1471,29 +1545,61 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 test_single_product=test_single_product
             )
 
-            # NOW flip the status — the background task is queued and the
-            # download succeeded. If anything above raised we never get
-            # here and the row stays at its prior status (no orphan
-            # 'processing' rows for auto-recovery to puzzle over).
+            # Status is already 'processing' from the atomic claim at the top
+            # of this handler. We just need to record the restart context
+            # (clear `error`, stamp `started_at`, append restart metadata).
+            # Audit fix (this PR): use merge_background_job_metadata RPC for
+            # the metadata write so we don't read-modify-write — concurrent
+            # heartbeat / stage_history updates were racing with this overwrite.
             supabase_client.client.table('background_jobs').update({
-                "status": "processing",
                 "error": None,
                 "interrupted_at": None,
                 "started_at": datetime.utcnow().isoformat(),
-                "metadata": {
-                    **job_data.get('metadata', {}),
-                    "restart_from_stage": resume_stage.value,
-                    "restart_reason": "manual_restart",
-                    "restart_at": datetime.utcnow().isoformat()
-                }
+                "updated_at": datetime.utcnow().isoformat(),
             }).eq('id', job_id).execute()
+            try:
+                supabase_client.client.rpc(
+                    'merge_background_job_metadata',
+                    {
+                        'p_job_id': job_id,
+                        'p_metadata': {
+                            "restart_from_stage": resume_stage.value,
+                            "restart_reason": "manual_restart",
+                            "restart_at": datetime.utcnow().isoformat(),
+                        },
+                    },
+                ).execute()
+            except Exception as e:
+                logger.warning(f"merge_background_job_metadata failed for {job_id}: {e}")
 
             logger.info(f"✅ Job {job_id} marked for restart from {resume_stage} and background task triggered (type: {job_type})")
 
         except HTTPException:
+            # Audit fix (this PR): the atomic claim above flipped status to
+            # 'processing'. If the file-download path raises, no orchestrator
+            # is running but the row says we're processing — auto-recovery
+            # waits the full stuck threshold before reclaiming. Revert the
+            # claim so the cron sees an 'interrupted' row immediately.
+            try:
+                supabase_client.client.table('background_jobs').update({
+                    'status': 'interrupted',
+                    'interrupted_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
+                }).eq('id', job_id).eq('status', 'processing').execute()
+            except Exception:
+                pass
             raise
         except Exception as e:
             logger.error(f"Failed to download file for restart: {e}", exc_info=True)
+            try:
+                supabase_client.client.table('background_jobs').update({
+                    'status': 'interrupted',
+                    'interrupted_at': datetime.utcnow().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
+                    'error': f"Resume download failed: {str(e)[:1000]}",
+                }).eq('id', job_id).eq('status', 'processing').execute()
+            except Exception:
+                pass
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to download file for restart: {str(e)}"

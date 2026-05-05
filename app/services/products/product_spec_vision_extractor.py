@@ -316,8 +316,20 @@ def _detect_image_media_type(image_bytes: bytes) -> str:
     return "image/png"  # fallback
 
 
-def _call_claude_vision(png_bytes: bytes, prompt: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Single Claude Vision call, returns parsed JSON dict or None on failure."""
+def _call_claude_vision(
+    png_bytes: bytes,
+    prompt: Optional[str] = None,
+    *,
+    job_id: Optional[str] = None,
+    product_id: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Single Claude Vision call, returns parsed JSON dict or None on failure.
+
+    `job_id` + `product_id` are forwarded to `tracked_claude_call` so per-
+    product cost attribution lands in `ai_usage_logs.product_id` (audit
+    fix: previously every Stage 4.7 spec-vision call landed without
+    product_id and showed up as orphan spend on the cost dashboard).
+    """
     if prompt is None:
         prompt = SPEC_PROMPT
     if not ANTHROPIC_API_KEY:
@@ -344,6 +356,8 @@ def _call_claude_vision(png_bytes: bytes, prompt: Optional[str] = None) -> Optio
                     {"type": "text", "text": prompt},
                 ],
             }],
+            job_id=job_id,
+            product_id=product_id,
         )
     except Exception as e:
         report_anthropic_failure(e, service="product_spec_vision_extractor")
@@ -540,6 +554,9 @@ def extract_specs_from_pdf_pages(
     pdf_path: str,
     product_page_range: List[int],
     product_name: Optional[str] = None,
+    *,
+    job_id: Optional[str] = None,
+    product_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Extract ceramic-tile specifications from a product's PDF spec pages.
 
@@ -589,7 +606,12 @@ def extract_specs_from_pdf_pages(
             continue
 
         try:
-            data = _call_claude_vision(image_bytes, prompt=product_aware_prompt)
+            data = _call_claude_vision(
+                image_bytes,
+                prompt=product_aware_prompt,
+                job_id=job_id,
+                product_id=product_id,
+            )
         except Exception as e:
             logger.warning(f"   ⚠️ Claude Vision call failed for page {idx}: {e}")
             continue

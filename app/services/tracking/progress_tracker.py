@@ -848,7 +848,15 @@ class ProgressTracker:
                             'warnings': self.warnings
                         },
                         'failed_at': datetime.utcnow().isoformat(),
-                        'updated_at': datetime.utcnow().isoformat()
+                        'updated_at': datetime.utcnow().isoformat(),
+                        # Audit fix (this PR): mirror complete_job — clear the
+                        # in-flight slow-op marker on terminal failure so a
+                        # future cron tick that's reading current_slow_operation
+                        # for any reason doesn't see a stale "fresh" timestamp
+                        # belonging to a dead job. complete_job already clears
+                        # this; fail_job was not, leaving the marker live on
+                        # failed rows.
+                        'current_slow_operation': None,
                     })\
                     .eq('id', self.job_id)\
                     .execute()
