@@ -670,6 +670,12 @@ class TrackedQueriesService:
             # accuracy. Otherwise tier-skip + cheap-sonar engage based on
             # known retailer count.
             force_full_discovery=bool(force) or is_first_refresh,
+            # Class #5 cost attribution: forwarding these IDs makes every
+            # ai_usage_logs row produced inside the discovery pipeline
+            # tagged with the subject + product so per-tracked-query and
+            # per-product cost dashboards work.
+            tracked_query_id=tracking_id,
+            product_id=tq.get("product_id"),
         )
 
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1193,17 +1199,25 @@ class TrackedQueriesService:
         return self._apply_exclusion_filter(tracking_id, rows)
 
     async def due_for_refresh(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Used by the cron. Returns active queries whose `next_check_at` is
-        in the past (volatility-based cadence — set by the SQL helper after
-        each refresh). Rows that predate the cadence column have
-        next_check_at backfilled by the migration; new rows get it set on
-        first refresh.
+        """Used by the cron-refresh admin escape-hatch endpoint. Returns
+        INTERNAL-flow active queries whose `next_check_at` is in the past
+        (volatility-based cadence — set by the SQL helper after each refresh).
+
+        Rows that predate the cadence column have next_check_at backfilled
+        by the migration; new rows get it set on first refresh.
+
+        Class #4 + money-leak guard: filter on `api_key_id IS NULL` so
+        external API consumers (`api_key_id NOT NULL`) are NEVER refreshed
+        by our cron path. Per CLAUDE.md / Price Monitoring v3, external
+        partners pay per call and control their own cadence — unsolicited
+        refreshes here would surprise per-call billing.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
         candidates = (
             self.supabase.client.table("tracked_queries")
             .select("id, last_refreshed_at, refresh_interval_hours, next_check_at")
             .eq("is_active", True)
+            .is_("api_key_id", "null")
             .or_(f"next_check_at.is.null,next_check_at.lt.{now_iso}")
             .order("next_check_at", desc=False)
             .limit(max(1, min(limit, 500)))

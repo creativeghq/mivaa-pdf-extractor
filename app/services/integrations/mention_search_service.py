@@ -558,11 +558,18 @@ class MentionSearchService:
         try:
             import json as _json
             data = _json.loads(text)
-        except Exception:
+        except Exception as je:
+            # Class #2: malformed JSON from Perplexity is NOT a success — we
+            # paid for the call but got nothing parseable. Log as failure so
+            # ai_usage_logs.metadata.success=False and the partner billing
+            # layer can choose to refund (the upstream caller already billed
+            # the partner for this refresh; the cost log shouldn't pretend
+            # the discovery worked).
             log_perplexity_call(
                 attribution=attribution, model=model,
                 input_tokens=in_tok, output_tokens=out_tok, hits_returned=0,
-                latency_ms=latency_ms, success=True,
+                latency_ms=latency_ms, success=False,
+                error_message=f"json_parse: {je}",
             )
             return {"hits": [], "credits": 1}
 

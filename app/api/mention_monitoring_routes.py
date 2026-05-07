@@ -405,10 +405,19 @@ async def probe_product_llm(
         "aliases": existing.get("aliases") or [],
         "brand": existing.get("brand_name"),
     })
+    # Class #5: tag every external call inside this probe matrix with the
+    # tracked_mention_id + product_id so per-subject cost dashboards work.
+    from app.services.integrations.mention_cost_logger import CostAttribution as _CA
+    probe_attribution = _CA(
+        user_id=str(user.id),
+        tracked_mention_id=existing["id"],
+        product_id=existing.get("product_id"),
+    )
     res = await get_llm_mention_probe_service().probe(
         tracked_mention_id=existing["id"],
         facets=facets,
         models=(body.models if body else None),
+        attribution=probe_attribution,
     )
     # After probe, check for visibility-shift alerts
     try:
@@ -596,10 +605,17 @@ async def probe_tracked_llm(
         "aliases": row.get("aliases") or [],
         "brand": row.get("brand_name"),
     })
+    from app.services.integrations.mention_cost_logger import CostAttribution as _CA
+    probe_attribution = _CA(
+        user_id=str(user.id),
+        tracked_mention_id=tracked_mention_id,
+        product_id=row.get("product_id"),
+    )
     res = await get_llm_mention_probe_service().probe(
         tracked_mention_id=tracked_mention_id,
         facets=facets,
         models=(body.models if body else None),
+        attribution=probe_attribution,
     )
     return {"success": True, "data": res}
 
@@ -853,6 +869,7 @@ async def cron_probe_llm(
     svc = get_tracked_mentions_service()
     probe = get_llm_mention_probe_service()
     processed = succeeded = failed = 0
+    from app.services.integrations.mention_cost_logger import CostAttribution as _CA
     for row in due:
         tm_id = row["id"]
         try:
@@ -862,7 +879,14 @@ async def cron_probe_llm(
                 "aliases": full.get("aliases") or [],
                 "brand": full.get("brand_name"),
             })
-            await probe.probe(tracked_mention_id=tm_id, facets=facets)
+            cron_attr = _CA(
+                user_id=full.get("user_id"),
+                workspace_id=full.get("workspace_id"),
+                tracked_mention_id=tm_id,
+                product_id=full.get("product_id"),
+                api_key_id=full.get("api_key_id"),
+            )
+            await probe.probe(tracked_mention_id=tm_id, facets=facets, attribution=cron_attr)
             succeeded += 1
         except Exception as e:
             failed += 1

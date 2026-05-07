@@ -221,6 +221,7 @@ class MentionAlertDispatcher:
             credits_total = 0
             for channel in channels:
                 cost = CHANNEL_CREDIT_COST.get(channel, 0)
+                charged_for_channel = 0
                 if cost > 0:
                     if not self._charge_credits(
                         user_id=cand.user_id, amount=cost,
@@ -228,12 +229,21 @@ class MentionAlertDispatcher:
                     ):
                         skipped.append(f"{channel}_no_credits")
                         continue
+                    charged_for_channel = cost
                     credits_total += cost
                 ok = self._send_channel(channel, cand)
                 if ok:
                     fired.append(channel)
                 else:
                     skipped.append(f"{channel}_send_failed")
+                    # Class #3: refund channel cost when send failed — user
+                    # paid for an alert that didn't reach them.
+                    if charged_for_channel > 0:
+                        self._refund_credits(
+                            user_id=cand.user_id, amount=charged_for_channel,
+                            operation_type=f"mention_alert.{cand.alert_type}.{channel}.refund",
+                        )
+                        credits_total -= charged_for_channel
             if fired:
                 sent_count += 1
             try:
@@ -403,6 +413,21 @@ class MentionAlertDispatcher:
         except Exception as e:
             logger.info(f"mention-alerts: credit charge skipped: {e}")
             return False
+
+    def _refund_credits(self, *, user_id: str, amount: int, operation_type: str) -> None:
+        """Best-effort refund. Used when a channel was charged but its send
+        failed — Class #3 guard so users aren't billed for missed delivery.
+        """
+        if amount <= 0 or not user_id:
+            return
+        try:
+            self.supabase.client.rpc("credit_user_credits", {
+                "p_user_id": user_id,
+                "p_amount": amount,
+                "p_operation_type": operation_type,
+            }).execute()
+        except Exception as e:
+            logger.info(f"mention-alerts: refund failed (non-fatal): {e}")
 
     # ───── Helpers ─────
 

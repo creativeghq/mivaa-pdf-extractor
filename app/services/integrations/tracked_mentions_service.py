@@ -387,8 +387,15 @@ class TrackedMentionsService:
                 tracked_mention_id, run_id=run_id, credits=result.credits_used,
                 hits_count=0, sentiment_avg=None, top_outlets=[], errors=result.errors,
             )
+            # Distinguish "ran clean and found nothing" from "every source errored"
+            # — when ALL enabled sources failed, return a non-success status so the
+            # partner-billing layer refunds the debited credits and the caller sees
+            # the failure mode. Class #2: empty + errored != success.
+            sources_run = len(result.by_source or {}) + len(result.errors or {})
+            all_failed = bool(result.errors) and not result.by_source
+            status = "errored" if all_failed and sources_run > 0 else "refreshed"
             return {
-                "status": "refreshed",
+                "status": status,
                 "credits_used": result.credits_used,
                 "hits_count": 0,
                 "by_source": result.by_source,
@@ -486,12 +493,19 @@ class TrackedMentionsService:
         # Anomaly detection: sentiment outlier vs trailing 7d
         rows_to_insert = self._stamp_anomalies(tracked_mention_id, rows_to_insert)
 
+        # Track whether the persist step actually wrote rows. If insert fails,
+        # we must NOT fire alerts on rows that were never durably persisted —
+        # the user would get woken up at 3am by a "new outlet" notification
+        # whose underlying data isn't queryable from any read endpoint.
+        # Class #2 + Class #8: persistence failure must propagate.
+        history_persisted = False
         if rows_to_insert:
             try:
                 # Insert in chunks to avoid payload limits
                 for i in range(0, len(rows_to_insert), 50):
                     chunk = rows_to_insert[i:i + 50]
                     self.supabase.client.table("mention_history").insert(chunk).execute()
+                history_persisted = True
             except Exception as e:
                 logger.error(f"mention_history insert failed: {e}")
 
@@ -514,19 +528,22 @@ class TrackedMentionsService:
         except Exception as e:
             logger.warning(f"update_tracked_mention_cadence failed: {e}")
 
-        # Alerts (best-effort)
-        try:
-            from app.modules.mention_monitoring_notifications.service import (
-                get_mention_alert_dispatcher,
-            )
-            dispatcher = get_mention_alert_dispatcher()
-            candidates = dispatcher.detect_after_refresh(
-                tracked_mention_id=tracked_mention_id,
-                new_rows=rows_to_insert,
-            )
-            dispatcher.dispatch(candidates)
-        except Exception as e:
-            logger.warning(f"mention alert dispatch failed: {e}")
+        # Alerts (best-effort) — only fire when the underlying rows actually
+        # reached the DB. Otherwise the bell would point at orphan data the
+        # UI can't show.
+        if history_persisted:
+            try:
+                from app.modules.mention_monitoring_notifications.service import (
+                    get_mention_alert_dispatcher,
+                )
+                dispatcher = get_mention_alert_dispatcher()
+                candidates = dispatcher.detect_after_refresh(
+                    tracked_mention_id=tracked_mention_id,
+                    new_rows=rows_to_insert,
+                )
+                dispatcher.dispatch(candidates)
+            except Exception as e:
+                logger.warning(f"mention alert dispatch failed: {e}")
 
         # Roll up per-refresh cost (Layer C). Sums every ai_usage_logs row
         # tagged with refresh_run_id into last_refresh_billed_usd, and bumps
