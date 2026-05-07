@@ -284,6 +284,8 @@ class PerplexityPriceSearchService:
         promoted_urls: Optional[Dict[str, str]] = None,
         skip_verification_urls: Optional[List[str]] = None,
         force_full_discovery: bool = False,
+        tracked_query_id: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> PriceSearchResult:
         """
         Run one Sonar search for the given product. Returns PriceSearchResult
@@ -346,6 +348,8 @@ class PerplexityPriceSearchService:
                 preferred_retailer_domains, user_id, workspace_id,
                 known_retailer_domains=known_retailer_domains,
                 model_override="sonar" if use_cheap_sonar else None,
+                tracked_query_id=tracked_query_id,
+                product_id=product_id,
             )
         )
         # Over-fetch DataForSEO (up to 30 merchants) — the Shopping feed
@@ -703,6 +707,8 @@ class PerplexityPriceSearchService:
         workspace_id: Optional[str],
         known_retailer_domains: Optional[List[str]] = None,
         model_override: Optional[str] = None,
+        tracked_query_id: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> "PriceSearchResult":
         system_prompt, user_prompt = self._build_messages(
             product_name, dimensions, country_code, limit, known_retailer_domains,
@@ -770,10 +776,21 @@ class PerplexityPriceSearchService:
         # responses; the API is still evolving so we fall back to a heuristic.
         search_requests = int(usage.get("num_search_queries") or usage.get("search_queries") or 1)
 
+        # Cost calc honors the actual model used. Class #5: previously every
+        # call was billed at SONAR_PRO rates even when model_override='sonar'
+        # made the cheaper model do the work, overstating raw_cost_usd by ~3×.
+        if model_name == "sonar":
+            input_per_1k = 0.001
+            output_per_1k = 0.001
+            search_per_call = SONAR_SEARCH_PER_CALL / 2
+        else:
+            input_per_1k = SONAR_PRO_INPUT_PER_1K
+            output_per_1k = SONAR_PRO_OUTPUT_PER_1K
+            search_per_call = SONAR_SEARCH_PER_CALL
         cost_usd = (
-            (input_tokens / 1000) * SONAR_PRO_INPUT_PER_1K
-            + (output_tokens / 1000) * SONAR_PRO_OUTPUT_PER_1K
-            + search_requests * SONAR_SEARCH_PER_CALL
+            (input_tokens / 1000) * input_per_1k
+            + (output_tokens / 1000) * output_per_1k
+            + search_requests * search_per_call
         )
         platform_credits = int(round(cost_usd * 100))
 
@@ -788,6 +805,9 @@ class PerplexityPriceSearchService:
             latency_ms=latency_ms,
             product_name=product_name,
             hits_count=len(hits),
+            model_name=model_name,
+            tracked_query_id=tracked_query_id,
+            product_id=product_id,
         )
 
         return PriceSearchResult(
@@ -1089,6 +1109,11 @@ class PerplexityPriceSearchService:
                         "5. Any visible color/finish/size/material attributes — small dict, lowercase values."
                     ),
                     use_javascript_render=False,
+                    # Class #5: tag the Firecrawl call's ai_usage_logs row
+                    # with the price-monitoring module so per-module spend
+                    # rollups capture verification cost.
+                    module_slug="price-monitoring",
+                    source_tag="price_verification",
                 )
             except Exception as e:
                 logger.debug(f"Firecrawl verify crashed for {hit.product_url}: {e}")
@@ -1456,29 +1481,51 @@ class PerplexityPriceSearchService:
         latency_ms: int,
         product_name: str,
         hits_count: int,
+        model_name: str = MODEL,
+        tracked_query_id: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> None:
-        """Insert into ai_usage_logs. Same columns as the Claude path."""
+        """Insert into ai_usage_logs.
+
+        Class #5 (cost attribution gap): previously this row carried no
+        module_slug / tracked_query_id / product_id, so per-subject cost
+        rollups couldn't see Perplexity spend. The model_name was also
+        hardcoded `sonar-pro` even when the actual call ran on cheaper
+        `sonar` (model_override path), corrupting per-model spend dashboards.
+        """
+        # Compute the true input/output costs at the actual model's rates.
+        if model_name == "sonar":
+            in_per_1k = 0.001
+            out_per_1k = 0.001
+        else:
+            in_per_1k = SONAR_PRO_INPUT_PER_1K
+            out_per_1k = SONAR_PRO_OUTPUT_PER_1K
         try:
+            metadata: Dict[str, Any] = {
+                "api_provider": "perplexity",
+                "tool": model_name,
+                "search_requests": search_requests,
+                "product_name": product_name,
+                "hits_count": hits_count,
+                "latency_ms": latency_ms,
+            }
+            if tracked_query_id:
+                metadata["tracked_query_id"] = tracked_query_id
             self.supabase.client.table("ai_usage_logs").insert(
                 {
                     "user_id": user_id,
                     "workspace_id": workspace_id,
                     "operation_type": "price_search",
-                    "model_name": MODEL,
+                    "model_name": model_name,
+                    "module_slug": "price-monitoring",
+                    "product_id": product_id,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
-                    "input_cost_usd": round((input_tokens / 1000) * SONAR_PRO_INPUT_PER_1K, 6),
-                    "output_cost_usd": round((output_tokens / 1000) * SONAR_PRO_OUTPUT_PER_1K, 6),
+                    "input_cost_usd": round((input_tokens / 1000) * in_per_1k, 6),
+                    "output_cost_usd": round((output_tokens / 1000) * out_per_1k, 6),
                     "billed_cost_usd": round(cost_usd, 6),
                     "credits_debited": platform_credits,
-                    "metadata": {
-                        "api_provider": "perplexity",
-                        "tool": "sonar-pro",
-                        "search_requests": search_requests,
-                        "product_name": product_name,
-                        "hits_count": hits_count,
-                        "latency_ms": latency_ms,
-                    },
+                    "metadata": metadata,
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 }
             ).execute()

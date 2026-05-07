@@ -118,38 +118,32 @@ def find_recipe(url: str) -> Optional[Dict[str, Any]]:
 
 
 def record_success(recipe_id: str) -> None:
+    """Bump success_count + recompute confidence on a recipe.
+
+    Uses parameterized table.update to avoid the previous `exec_sql` path —
+    that interpolated `recipe_id` into a SQL string literal, which is an
+    injection vector even though `recipe_id` is normally a UUID. Removing
+    the unsafe path eliminates the pattern outright (no future caller can
+    repurpose this code path with attacker-influenced input).
+    """
     sb = get_supabase_client().client
     try:
-        sb.rpc(
-            "exec_sql",
-            {"sql": (
-                "UPDATE retailer_extraction_recipes "
-                "SET success_count = success_count + 1, "
-                "    confidence = LEAST(1.0, success_count::float / GREATEST(success_count + failure_count, 1)), "
-                "    last_validated_at = now(), "
-                "    updated_at = now() "
-                f"WHERE id = '{recipe_id}'"
-            )},
-        ).execute()
-    except Exception:
-        # exec_sql RPC may not exist; fall back to direct update
-        try:
-            row = (
-                sb.table("retailer_extraction_recipes").select("success_count, failure_count")
-                .eq("id", recipe_id).maybe_single().execute()
-            )
-            r = (row.data if row else None) or {}
-            sc = int(r.get("success_count") or 0) + 1
-            fc = int(r.get("failure_count") or 0)
-            conf = sc / max(sc + fc, 1)
-            sb.table("retailer_extraction_recipes").update({
-                "success_count": sc,
-                "confidence": conf,
-                "last_validated_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", recipe_id).execute()
-        except Exception as e:
-            logger.debug(f"recipe success record failed: {e}")
+        row = (
+            sb.table("retailer_extraction_recipes").select("success_count, failure_count")
+            .eq("id", recipe_id).maybe_single().execute()
+        )
+        r = (row.data if row else None) or {}
+        sc = int(r.get("success_count") or 0) + 1
+        fc = int(r.get("failure_count") or 0)
+        conf = sc / max(sc + fc, 1)
+        sb.table("retailer_extraction_recipes").update({
+            "success_count": sc,
+            "confidence": conf,
+            "last_validated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", recipe_id).execute()
+    except Exception as e:
+        logger.debug(f"recipe success record failed: {e}")
 
 
 def record_failure(recipe_id: str, reason: str) -> None:

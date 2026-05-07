@@ -364,6 +364,7 @@ class PriceAlertDispatcher:
 
             for channel in channels:
                 cost = CHANNEL_CREDIT_COST.get(channel, 0)
+                charged_for_channel = 0
                 if cost > 0:
                     if not self._charge_credits(
                         user_id=cand.user_id,
@@ -372,6 +373,7 @@ class PriceAlertDispatcher:
                     ):
                         skipped.append(f"{channel}_no_credits")
                         continue
+                    charged_for_channel = cost
                     credits_total += cost
 
                 ok = self._send_channel(channel, cand)
@@ -379,6 +381,17 @@ class PriceAlertDispatcher:
                     fired.append(channel)
                 else:
                     skipped.append(f"{channel}_send_failed")
+                    # Refund credits debited for a channel whose send failed —
+                    # the user paid for an alert that didn't reach them.
+                    # Class #3: charge → send → no refund leaves users billed
+                    # for failed delivery.
+                    if charged_for_channel > 0:
+                        self._refund_credits(
+                            user_id=cand.user_id,
+                            amount=charged_for_channel,
+                            operation_type=f"price_alert.{cand.alert_type}.{channel}.refund",
+                        )
+                        credits_total -= charged_for_channel
 
             if fired:
                 sent_count += 1
@@ -583,6 +596,22 @@ class PriceAlertDispatcher:
         except Exception as e:
             logger.info(f"price-alerts: credit charge skipped (likely insufficient): {e}")
             return False
+
+    def _refund_credits(self, *, user_id: str, amount: int, operation_type: str) -> None:
+        """Best-effort refund via credit_user_credits RPC. Never raises.
+        Used when a channel was charged but its send failed — the user paid
+        for an alert that never reached them.
+        """
+        if amount <= 0 or not user_id:
+            return
+        try:
+            self.supabase.client.rpc("credit_user_credits", {
+                "p_user_id": user_id,
+                "p_amount": amount,
+                "p_operation_type": operation_type,
+            }).execute()
+        except Exception as e:
+            logger.info(f"price-alerts: refund failed (non-fatal): {e}")
 
     # ───── Subject lookups ─────
 

@@ -153,6 +153,31 @@ def _require_admin(user: User) -> None:
         raise HTTPException(status_code=403, detail="admin role required")
 
 
+def _enforce_tracked_query_owner(
+    tq: Optional[Dict[str, Any]],
+    *,
+    user_id: str,
+    sb=None,
+) -> None:
+    """Class #13 guard: confirm the calling user owns this tracked_query
+    before exposing its data. Falls back to admin override.
+
+    Service-role DB access bypasses RLS, so the routes themselves are the
+    only line of defense. Without this, any authed user can pass an
+    arbitrary product_id and read another tenant's price-monitoring data
+    as long as they can guess/discover the UUID.
+    """
+    if not tq:
+        return
+    sb = sb or get_supabase_client().client
+    owner = str(tq.get("user_id") or "")
+    if owner == str(user_id):
+        return
+    if _is_admin(sb, str(user_id)):
+        return
+    raise HTTPException(status_code=403, detail="not the owner of this tracked_query")
+
+
 def _resolve_product_context(sb, product_id: str) -> Dict[str, Any]:
     """Fetch product name/manufacturer/dimensions for find_or_create."""
     prod = (
@@ -351,6 +376,7 @@ async def untrack_product(
     tq = await service.find_for_product(product_id)
     if not tq:
         raise HTTPException(status_code=404, detail="product is not enrolled in monitoring")
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     ok = await service.deactivate(tq["id"])
     return {"success": ok, "message": "monitoring stopped" if ok else "failed to stop"}
 
@@ -366,6 +392,7 @@ async def get_product_monitoring(
 ):
     service = get_tracked_queries_service()
     tq = await service.find_for_product(product_id)
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     return {"success": True, "data": tq}
 
 
@@ -412,6 +439,11 @@ async def refresh_product(
     # Force refresh requires admin (matches the old /discover semantics).
     if body.force_refresh:
         _require_admin(user)
+    else:
+        # Non-admin caller: must own the tracked_query for this product.
+        # Class #13 — without this, any authed user could trigger paid
+        # refreshes on someone else's monitored product.
+        _enforce_tracked_query_owner(tq, user_id=str(user.id))
     # Toggle verify_prices on the row in case the caller wants to flip it.
     if body.verify_prices != bool(tq.get("verify_prices", True)):
         await service.update(tq["id"], verify_prices=body.verify_prices)
@@ -433,6 +465,7 @@ async def get_product_sources(
     tq = await service.find_for_product(product_id)
     if not tq:
         return {"success": True, "data": {"results": [], "family_results": []}}
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     split = await service.latest_results_split(tq["id"])
     return {"success": True, "data": {**split, "tracked_query_id": tq["id"]}}
 
@@ -451,6 +484,7 @@ async def get_product_history(
     tq = await service.find_for_product(product_id)
     if not tq:
         return {"success": True, "history": [], "count": 0}
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     rows = await service.history(tq["id"], limit=limit)
     return {"success": True, "history": rows, "count": len(rows)}
 
@@ -477,6 +511,7 @@ async def exclude_product_result(
     tq = await service.find_for_product(product_id)
     if not tq:
         raise HTTPException(status_code=404, detail="product is not enrolled in monitoring")
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     row = await service.add_exclusion(
         tq["id"],
         url=body.url,
@@ -505,6 +540,7 @@ async def include_product_result(
     tq = await service.find_for_product(product_id)
     if not tq:
         return {"success": True, "product_id": product_id, "removed_count": 0}
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     removed = await service.remove_exclusion(
         tq["id"], url=body.url, domain=_normalize_domain(body.domain),
     )
@@ -524,6 +560,7 @@ async def list_product_exclusions(
     tq = await service.find_for_product(product_id)
     if not tq:
         return []
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     rows = await service.list_exclusions(tq["id"])
     return [
         ProductExclusionRow(
@@ -557,6 +594,7 @@ async def verify_product_sources(
             "results": [],
             "message": "Product is not enrolled in monitoring.",
         }
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     return await service.reverify(tq["id"], urls=body.urls)
 
 

@@ -356,7 +356,11 @@ async def refresh_tracking(
                        operation_type="mention_monitoring.refresh")
         raise
 
-    if outcome.get("status") in ("throttled", "inactive", "not_found", "error"):
+    # Refund on any non-success outcome — the work didn't deliver usable data:
+    #   throttled / inactive / not_found → no work happened
+    #   error                             → the refresh raised before persist
+    #   errored                           → every enabled discovery source failed
+    if outcome.get("status") in ("throttled", "inactive", "not_found", "error", "errored"):
         refund_credits(user_id=ctx.user_id or "", amount=cost,
                        operation_type="mention_monitoring.refresh")
     else:
@@ -437,9 +441,19 @@ async def probe_llm(
     if not debit_credits(user_id=ctx.user_id or "", amount=cost,
                          operation_type="mention_monitoring.probe_llm"):
         raise HTTPException(status_code=402, detail="insufficient credits")
+    # Class #5: pass attribution so every Haiku/OpenAI/Gemini/Sonar call
+    # inside the probe matrix is tagged with tracked_mention_id + api_key_id
+    # in ai_usage_logs.metadata. Without this, per-subject cost rollups
+    # show $0 for probe operations even though they spent real money.
+    from app.services.integrations.mention_cost_logger import CostAttribution as _CA
+    probe_attribution = _CA(
+        user_id=ctx.user_id, workspace_id=ctx.workspace_id,
+        tracked_mention_id=tracking_id, api_key_id=ctx.api_key_id,
+    )
     try:
         result = await get_llm_mention_probe_service().probe(
             tracked_mention_id=tracking_id, facets=facets,
+            attribution=probe_attribution,
         )
     except Exception:
         refund_credits(user_id=ctx.user_id or "", amount=cost,
