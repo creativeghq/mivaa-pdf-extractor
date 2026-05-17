@@ -34,21 +34,23 @@ import httpx
 
 
 def _is_valid_vision_analysis_schema(vision_analysis: Any) -> bool:
-    """Reject malformed Qwen vision_analysis payloads (audit fix #33).
+    """Reject malformed vision_analysis payloads before embedding.
 
     Without this, error envelopes like {"error": "OOM", "message": "..."} would
-    survive the dict-extraction in `_vision_analysis_to_text`, produce an
-    almost-empty text payload, and Voyage would happily return a degenerate
-    embedding that matches every search query.
+    feed into the embedding pipeline, produce an almost-empty text payload,
+    and Voyage would return a degenerate embedding that matches every query.
+
+    Quick structural check only — the strict Pydantic schema enforcement
+    happens later via `vision_analysis_from_legacy_dict` + `VisionAnalysis`.
     """
     if not isinstance(vision_analysis, dict):
         return False
     # An error envelope is the most common failure shape.
     if 'error' in vision_analysis and 'material_type' not in vision_analysis:
         return False
-    # Require at least one of the expected describing fields. The schema is
-    # forgiving — Qwen sometimes drops keys — but if NONE of these are present
-    # the payload can't yield meaningful descriptive text.
+    # Require at least one of the canonical describing fields. The legacy
+    # rows pre-2026-05-01 sometimes dropped keys — we accept those but reject
+    # payloads with NONE of these present.
     expected_any = ('material_type', 'category', 'colors', 'textures',
                     'finish', 'surface_pattern', 'description')
     return any(k in vision_analysis for k in expected_any)
@@ -516,115 +518,6 @@ class RealEmbeddingsService:
         except Exception as e:
             self.logger.error(f"❌ Understanding embedding generation failed: {e}")
             return None
-
-    def _vision_analysis_to_text(
-        self,
-        vision_analysis: Dict[str, Any],
-        material_properties: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """
-        Convert Claude Opus 4.7 vision_analysis JSON into descriptive text for embedding.
-
-        Extracts all structured fields and combines into a searchable text representation.
-
-        Args:
-            vision_analysis: Claude vision_analysis JSON (schema-locked via Anthropic tool use)
-            material_properties: Optional additional material properties
-
-        Returns:
-            Descriptive text string for embedding
-        """
-        parts = []
-
-        # Material type
-        material_type = vision_analysis.get('material_type') or vision_analysis.get('type')
-        if material_type:
-            parts.append(f"Material: {material_type}.")
-
-        # Category / subcategory
-        category = vision_analysis.get('category')
-        subcategory = vision_analysis.get('subcategory')
-        if category:
-            cat_str = f"Category: {category}"
-            if subcategory:
-                cat_str += f", {subcategory}"
-            parts.append(cat_str + ".")
-
-        # Colors
-        colors = vision_analysis.get('colors') or vision_analysis.get('color_palette') or vision_analysis.get('dominant_colors')
-        if colors:
-            if isinstance(colors, list):
-                parts.append(f"Colors: {', '.join(str(c) for c in colors)}.")
-            elif isinstance(colors, dict):
-                color_items = [f"{k}: {v}" for k, v in colors.items()]
-                parts.append(f"Colors: {', '.join(color_items)}.")
-            else:
-                parts.append(f"Colors: {colors}.")
-
-        # Textures
-        textures = vision_analysis.get('textures') or vision_analysis.get('texture') or vision_analysis.get('surface_texture')
-        if textures:
-            if isinstance(textures, list):
-                parts.append(f"Textures: {', '.join(str(t) for t in textures)}.")
-            else:
-                parts.append(f"Texture: {textures}.")
-
-        # Finish
-        finish = vision_analysis.get('finish') or vision_analysis.get('surface_finish')
-        if finish:
-            parts.append(f"Finish: {finish}.")
-
-        # Pattern
-        pattern = vision_analysis.get('pattern') or vision_analysis.get('pattern_type')
-        if pattern:
-            parts.append(f"Pattern: {pattern}.")
-
-        # Description
-        description = vision_analysis.get('description') or vision_analysis.get('visual_description')
-        if description:
-            parts.append(f"Description: {description}.")
-
-        # Applications / usage
-        applications = vision_analysis.get('applications') or vision_analysis.get('suitable_for') or vision_analysis.get('usage')
-        if applications:
-            if isinstance(applications, list):
-                parts.append(f"Applications: {', '.join(str(a) for a in applications)}.")
-            else:
-                parts.append(f"Applications: {applications}.")
-
-        # Dimensions / size
-        dimensions = vision_analysis.get('dimensions') or vision_analysis.get('size')
-        if dimensions:
-            parts.append(f"Dimensions: {dimensions}.")
-
-        # Properties (from vision_analysis)
-        properties = vision_analysis.get('properties') or vision_analysis.get('characteristics')
-        if properties:
-            if isinstance(properties, dict):
-                prop_items = [f"{k}: {v}" for k, v in properties.items() if v]
-                if prop_items:
-                    parts.append(f"Properties: {', '.join(prop_items)}.")
-            elif isinstance(properties, list):
-                parts.append(f"Properties: {', '.join(str(p) for p in properties)}.")
-
-        # OCR text detected in image
-        ocr_text = vision_analysis.get('ocr_text') or vision_analysis.get('detected_text') or vision_analysis.get('text_content')
-        if ocr_text:
-            if isinstance(ocr_text, list):
-                parts.append(f"Text detected: {' '.join(ocr_text)}.")
-            else:
-                parts.append(f"Text detected: {ocr_text}.")
-
-        # Additional material_properties if provided
-        if material_properties:
-            mp_parts = []
-            for key, value in material_properties.items():
-                if value and key not in ('id', 'created_at', 'updated_at', 'document_id', 'image_id'):
-                    mp_parts.append(f"{key}: {value}")
-            if mp_parts:
-                parts.append(f"Material properties: {', '.join(mp_parts)}.")
-
-        return " ".join(parts)
 
     async def generate_understanding_query_embedding(
         self,

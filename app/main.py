@@ -2011,6 +2011,7 @@ from app.api.job_health_routes import router as job_health_router
 from app.api.knowledge_base import router as knowledge_base_router
 from app.api.category_prototypes import router as category_prototypes_router
 from app.api.internal_routes import router as internal_router
+from app.api.catalog_routes import router as catalog_internal_router
 from app.api.prompt_templates import router as prompt_templates_router
 from app.api.admin_restart_routes import router as admin_restart_router
 from app.api.user_feedback import router as user_feedback_router
@@ -2022,6 +2023,9 @@ from app.api.price_lookup_routes import router as price_lookup_router
 from app.api.tracked_queries_routes import router as tracked_queries_router
 from app.api.mention_monitoring_routes import router as mention_monitoring_router
 from app.api.mention_tracking_routes import router as mention_tracking_router
+from app.api.job_research_routes import router as job_research_router
+from app.api.job_tracking_routes import router as job_tracking_router
+from app.api.seo_agent_routes import router as seo_agent_router
 from app.api.websocket_routes import router as websocket_router
 from app.api.logs_routes import router as logs_router
 from app.api.admin_linking import router as admin_linking_router
@@ -2054,6 +2058,7 @@ app.include_router(job_health_router)  # NEW: Job health monitoring (heartbeat, 
 app.include_router(knowledge_base_router)  # NEW: Knowledge Base & Documentation System
 app.include_router(category_prototypes_router)  # NEW: Category prototype management for material validation
 app.include_router(internal_router)  # NEW: Internal modular endpoints for PDF processing pipeline stages
+app.include_router(catalog_internal_router)  # NEW: Catalog rasterization helper (PDF page → PNG) for presentation_catalogs
 app.include_router(prompt_templates_router)  # NEW: Customizable AI prompt templates for different industries
 app.include_router(admin_restart_router)  # NEW: Admin restart protection with job awareness
 app.include_router(user_feedback_router)  # NEW: User feedback with AI sentiment analysis (aspect-based, trends)
@@ -2064,6 +2069,9 @@ app.include_router(price_lookup_router)  # NEW: Public POST /api/v1/prices/looku
 app.include_router(tracked_queries_router)  # NEW: Public /api/v1/prices/track/* — external price tracking (CRUD + refresh)
 app.include_router(mention_monitoring_router)  # NEW: Mention monitoring (DataForSEO News + Perplexity + RSS + LLM probes) — internal flow (session JWT)
 app.include_router(mention_tracking_router)    # NEW: Public /api/v1/mentions/track/* — external mention tracking (api_keys Bearer auth)
+app.include_router(job_research_router)        # NEW: Job research — DataForSEO Jobs + Perplexity Sonar + Firecrawl careers, daily consolidated email digest
+app.include_router(job_tracking_router)        # NEW: Public /api/v1/jobs/track/* — external job-search tracking (api_keys Bearer auth)
+app.include_router(seo_agent_router)           # NEW: SEO agent toolkit dispatcher — internal-only (x-cron-secret), routes to DataForSEOUnifiedClient
 app.include_router(websocket_router)  # NEW: WebSocket endpoint for real-time updates (job progress, system health)
 app.include_router(logs_router)  # NEW: System logs API (fetch, filter, clear logs from database)
 app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual chunk-product linking for debugging)

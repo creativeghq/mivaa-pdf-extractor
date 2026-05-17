@@ -1624,15 +1624,66 @@ def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:
     return candidates
 
 
+def _case_fold_key(s: str) -> str:
+    """Normalization key for case-insensitive grouping in Counter()."""
+    return s.strip().lower()
+
+
+def _most_common_pretty(values: List[str]) -> Optional[str]:
+    """Return the most-common value (case-insensitive), preserving the most
+    common ORIGINAL case. Returns None on empty input.
+
+    Resolves a long-standing bug where the rollup `.lower()`-ed everything
+    before write, so frontend always saw "matte" / "glossy" never "Matte".
+    """
+    if not values:
+        return None
+    from collections import Counter
+    # Group by case-folded key; among the values sharing each key, pick the
+    # representative that appeared most often in original form.
+    groups: Dict[str, List[str]] = {}
+    for v in values:
+        groups.setdefault(_case_fold_key(v), []).append(v.strip())
+    fold_counts = Counter(_case_fold_key(v) for v in values)
+    winning_fold, _ = fold_counts.most_common(1)[0]
+    # Among the originals that shared the winning fold, pick the most-frequent.
+    repr_counts = Counter(groups[winning_fold])
+    winner, _ = repr_counts.most_common(1)[0]
+    return winner
+
+
+def _dedupe_pretty(values: List[str], cap: int) -> List[str]:
+    """Case-insensitive union; preserve order by frequency, original case."""
+    if not values:
+        return []
+    from collections import Counter
+    fold_counts = Counter(_case_fold_key(v) for v in values)
+    repr_by_fold: Dict[str, str] = {}
+    for v in values:
+        k = _case_fold_key(v)
+        if k not in repr_by_fold:
+            repr_by_fold[k] = v.strip()
+    return [repr_by_fold[k] for k, _ in fold_counts.most_common(cap)]
+
+
 def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Pure function: majority-vote rollup of per-image vision_analysis into
     product-level fields.
+
+    Reads the schema-locked field names from
+    `app.models.vision_analysis.VisionAnalysis`. Older legacy keys
+    (`pattern` / `texture` / `design_style` / `material_subtype` /
+    `primary_color_hex` / `color_palette`) are still accepted as fallbacks
+    for pre-2026-05-01 data still in the DB.
 
     Args:
         vision_rows: List of dicts, each containing a vision_analysis JSON blob.
 
     Returns:
-        Candidate fields: material_category, finish, appearance_colors.
+        Candidate fields including: material_category, finish, design_style,
+        pattern (+ patterns list), texture (+ textures list), appearance_colors,
+        applications, category, subcategory, description, detected_text,
+        vision_confidence.
     """
     if not vision_rows:
         return {}
@@ -1640,116 +1691,157 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
     from collections import Counter
 
     material_types: List[str] = []
-    material_subtypes: List[str] = []
     finishes: List[str] = []
-    patterns: List[str] = []
-    textures: List[str] = []
-    design_styles: List[str] = []
+    surface_patterns: List[str] = []
+    all_textures: List[str] = []
+    styles: List[str] = []
     all_colors: List[str] = []
     all_applications: List[str] = []
-    primary_hex_codes: List[str] = []
+    categories: List[str] = []
+    subcategories: List[str] = []
+    descriptions: List[str] = []
+    all_detected_text: List[str] = []
+    confidences: List[float] = []
 
     for row in vision_rows:
         va = row.get("vision_analysis") or {}
         if not isinstance(va, dict):
             continue
 
+        # Required field
         mt = va.get("material_type")
         if isinstance(mt, str) and mt.strip():
-            material_types.append(mt.strip().lower())
+            material_types.append(mt.strip())
 
-        mst = va.get("material_subtype")
-        if isinstance(mst, str) and mst.strip():
-            material_subtypes.append(mst.strip().lower())
+        # Schema field: category
+        cat = va.get("category")
+        if isinstance(cat, str) and cat.strip():
+            categories.append(cat.strip())
 
+        # Schema field: subcategory (also accept legacy material_subtype)
+        sub = va.get("subcategory") or va.get("material_subtype")
+        if isinstance(sub, str) and sub.strip():
+            subcategories.append(sub.strip())
+
+        # Schema field: finish (string, single keyword)
         finish = va.get("finish")
         if isinstance(finish, str) and finish.strip():
-            finishes.append(finish.strip().lower())
+            finishes.append(finish.strip())
 
-        pattern = va.get("pattern")
-        if isinstance(pattern, str) and pattern.strip():
-            patterns.append(pattern.strip())
+        # Schema field: surface_pattern (singular). Legacy: pattern.
+        sp = va.get("surface_pattern") or va.get("pattern")
+        if isinstance(sp, str) and sp.strip():
+            surface_patterns.append(sp.strip())
 
-        texture = va.get("texture")
-        if isinstance(texture, str) and texture.strip():
-            textures.append(texture.strip())
+        # Schema field: textures (list). Legacy: texture (string).
+        textures = va.get("textures")
+        if isinstance(textures, list):
+            for t in textures:
+                if isinstance(t, str) and t.strip():
+                    all_textures.append(t.strip())
+        elif isinstance(textures, str) and textures.strip():
+            all_textures.append(textures.strip())
+        legacy_tex = va.get("texture")
+        if isinstance(legacy_tex, str) and legacy_tex.strip():
+            all_textures.append(legacy_tex.strip())
 
-        style = va.get("design_style")
+        # Schema field: style. Legacy: design_style.
+        style = va.get("style") or va.get("design_style")
         if isinstance(style, str) and style.strip():
-            design_styles.append(style.strip().lower())
+            styles.append(style.strip())
 
-        palette = va.get("color_palette") or va.get("colors") or []
+        # Schema field: colors. Legacy: color_palette.
+        palette = va.get("colors") or va.get("color_palette") or []
         if isinstance(palette, list):
             for c in palette:
                 if isinstance(c, str) and c.strip():
-                    all_colors.append(c.strip().lower())
+                    all_colors.append(c.strip())
 
+        # Schema field: applications.
         apps = va.get("applications") or []
         if isinstance(apps, list):
             for a in apps:
                 if isinstance(a, str) and a.strip():
-                    all_applications.append(a.strip().lower())
+                    all_applications.append(a.strip())
 
-        hx = va.get("primary_color_hex")
-        if isinstance(hx, str) and hx.strip().startswith("#"):
-            primary_hex_codes.append(hx.strip().upper())
+        # Schema field: description (one-sentence visual description).
+        desc = va.get("description")
+        if isinstance(desc, str) and desc.strip():
+            descriptions.append(desc.strip())
+
+        # Schema field: detected_text (OCR-style list).
+        dt = va.get("detected_text")
+        if isinstance(dt, list):
+            for t in dt:
+                if isinstance(t, str) and t.strip():
+                    all_detected_text.append(t.strip())
+
+        # Schema field: confidence (0.0-1.0).
+        conf = va.get("confidence")
+        if isinstance(conf, (int, float)) and 0.0 <= float(conf) <= 1.0:
+            confidences.append(float(conf))
 
     candidates: Dict[str, Any] = {}
 
+    # Material category — uses the controlled-vocab normalizer (lowercases
+    # internally because the vocab is lowercase slugs like 'porcelain_tile').
     if material_types:
-        most_common_mt, _count = Counter(material_types).most_common(1)[0]
+        most_common_mt, _count = Counter(m.lower() for m in material_types).most_common(1)[0]
         normalized = _normalize_material_category(most_common_mt)
         if normalized:
             candidates["material_category"] = normalized
 
-    if material_subtypes:
-        # Pick the most specific one (longest description)
-        unique_subtypes = list({s: True for s in material_subtypes}.keys())
-        candidates["material_subtype"] = max(unique_subtypes, key=len)
+    # High-level vision category ("flooring", "wall covering")
+    cat_winner = _most_common_pretty(categories)
+    if cat_winner:
+        candidates["category"] = cat_winner
 
-    if finishes:
-        most_common_finish, _count = Counter(finishes).most_common(1)[0]
-        candidates["finish"] = most_common_finish
+    # Subcategory — written as `material_subtype` for modal consumption
+    # (existing UI consumer reads materialPropsData.material_subtype).
+    sub_winner = _most_common_pretty(subcategories)
+    if sub_winner:
+        candidates["material_subtype"] = sub_winner
+        candidates["subcategory"] = sub_winner
 
-    if patterns:
-        # Primary (singular) pattern — the most descriptive entry, kept for
-        # backwards compatibility with older UI consumers.
-        candidates["pattern"] = max(set(patterns), key=len)
-        # Aggregated list of all unique patterns seen across variants —
-        # rendered as a chip list in the product detail modal's Appearance
-        # section. Dedupe case-insensitively, preserve order by frequency.
-        pattern_counts = Counter(patterns)
-        unique_patterns: List[str] = []
-        seen_pattern_norms: set = set()
-        for p, _ in pattern_counts.most_common():
-            norm = p.strip().lower()
-            if norm and norm not in seen_pattern_norms:
-                seen_pattern_norms.add(norm)
-                unique_patterns.append(p.strip())
-        if unique_patterns:
-            candidates["patterns"] = unique_patterns[:20]  # cap
+    # Finish — preserve original case ("Matte" stays "Matte").
+    finish_winner = _most_common_pretty(finishes)
+    if finish_winner:
+        candidates["finish"] = finish_winner
 
-    if textures:
-        candidates["texture"] = max(set(textures), key=len)
+    # Surface pattern — singular, plus dedupe-cap chip list.
+    if surface_patterns:
+        candidates["pattern"] = _most_common_pretty(surface_patterns)
+        candidates["patterns"] = _dedupe_pretty(surface_patterns, cap=20)
 
-    if design_styles:
-        most_common_style, _count = Counter(design_styles).most_common(1)[0]
-        candidates["design_style"] = most_common_style
+    # Textures — singular best + plural list.
+    if all_textures:
+        candidates["texture"] = _most_common_pretty(all_textures)
+        candidates["textures"] = _dedupe_pretty(all_textures, cap=10)
+
+    # Style — schema field. Also write legacy `design_style` key so the
+    # existing modal read (designData.design_style) keeps working.
+    style_winner = _most_common_pretty(styles)
+    if style_winner:
+        candidates["design_style"] = style_winner
+        candidates["style"] = style_winner
 
     if all_colors:
-        # Union, deduped, preserving most common order
-        color_counts = Counter(all_colors)
-        unique_colors = [c for c, _ in color_counts.most_common()]
-        candidates["appearance_colors"] = unique_colors[:20]  # cap at 20
+        candidates["appearance_colors"] = _dedupe_pretty(all_colors, cap=20)
 
     if all_applications:
-        app_counts = Counter(all_applications)
-        candidates["applications"] = [a for a, _ in app_counts.most_common()][:10]
+        candidates["applications"] = _dedupe_pretty(all_applications, cap=10)
 
-    if primary_hex_codes:
-        # Pick the most frequent hex (product-level primary color)
-        most_common_hex, _count = Counter(primary_hex_codes).most_common(1)[0]
-        candidates["primary_color_hex"] = most_common_hex
+    if descriptions:
+        # Pick the most-descriptive (longest) — descriptions are typically unique
+        # per image; majority vote rarely converges. Length is the best signal.
+        candidates["vision_description"] = max(descriptions, key=len)
+
+    if all_detected_text:
+        candidates["detected_text"] = _dedupe_pretty(all_detected_text, cap=20)
+
+    if confidences:
+        # Mean confidence across the product's images.
+        candidates["vision_confidence"] = round(sum(confidences) / len(confidences), 3)
 
     return candidates
 
@@ -1841,9 +1933,17 @@ def _merge_enriched_fields_into_metadata(
     fill_if_empty("pattern", vision_candidates.get("pattern"), "vision_rollup", container="appearance")
     fill_if_empty("patterns", vision_candidates.get("patterns"), "vision_rollup", container="appearance")
     fill_if_empty("texture", vision_candidates.get("texture"), "vision_rollup", container="appearance")
+    fill_if_empty("textures", vision_candidates.get("textures"), "vision_rollup", container="appearance")
     fill_if_empty("design_style", vision_candidates.get("design_style"), "vision_rollup", container="design")
+    fill_if_empty("style", vision_candidates.get("style"), "vision_rollup", container="design")
     fill_if_empty("applications", vision_candidates.get("applications"), "vision_rollup")
-    fill_if_empty("primary_color_hex", vision_candidates.get("primary_color_hex"), "vision_rollup", container="appearance")
+    # New schema-aligned propagation (post-2026-05-04 — was orphaned in the
+    # legacy rollup that read fields the schema doesn't emit).
+    fill_if_empty("category", vision_candidates.get("category"), "vision_rollup", container="appearance")
+    fill_if_empty("subcategory", vision_candidates.get("subcategory"), "vision_rollup", container="appearance")
+    fill_if_empty("vision_description", vision_candidates.get("vision_description"), "vision_rollup", container="appearance")
+    fill_if_empty("detected_text", vision_candidates.get("detected_text"), "vision_rollup", container="appearance")
+    fill_if_empty("vision_confidence", vision_candidates.get("vision_confidence"), "vision_rollup")
 
     vision_colors = vision_candidates.get("appearance_colors")
     if vision_colors:

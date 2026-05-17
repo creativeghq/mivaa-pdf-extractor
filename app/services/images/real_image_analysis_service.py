@@ -655,14 +655,19 @@ class RealImageAnalysisService:
             "confidence": 0.0
         }
 
-        # Extract from vision model analysis
+        # Extract from vision model analysis. The VisionAnalysis schema
+        # (app.models.vision_analysis) emits `finish`, `surface_pattern`,
+        # `composition` at the TOP level — not nested under a `properties`
+        # field. Pre-2026-05-04 code mistakenly looked them up at
+        # `analysis.properties.<field>` and got null on every read.
         if vision_result.get("success") and vision_result.get("analysis"):
             analysis = vision_result["analysis"]
             properties["color"] = analysis.get("colors", [None])[0] if analysis.get("colors") else None
             properties["texture"] = analysis.get("textures", [None])[0] if analysis.get("textures") else None
-            properties["composition"] = analysis.get("properties", {}).get("composition")
-            properties["finish"] = analysis.get("properties", {}).get("finish")
-            properties["pattern"] = analysis.get("properties", {}).get("pattern")
+            properties["finish"] = analysis.get("finish") or analysis.get("properties", {}).get("finish")
+            properties["pattern"] = analysis.get("surface_pattern") or analysis.get("pattern") or analysis.get("properties", {}).get("pattern")
+            # `composition` isn't on the canonical schema; legacy nested location only.
+            properties["composition"] = analysis.get("composition") or analysis.get("properties", {}).get("composition")
             properties["confidence"] = analysis.get("confidence", 0.0)
 
         # Enhance with Claude validation
@@ -690,6 +695,8 @@ class RealImageAnalysisService:
         Extract material properties from vision model analysis ONLY.
 
         This is the method for vision-only processing (no Claude).
+        Reads the canonical VisionAnalysis schema (top-level fields), with
+        a legacy `properties.<field>` fallback for old payloads still in DB.
         """
         properties = {
             "color": None,
@@ -700,25 +707,104 @@ class RealImageAnalysisService:
             "confidence": 0.0
         }
 
-        # Extract from vision model analysis
+        def _read_props(src: Dict[str, Any]) -> None:
+            properties["color"] = src.get("colors", [None])[0] if src.get("colors") else None
+            properties["texture"] = src.get("textures", [None])[0] if src.get("textures") else None
+            properties["finish"] = src.get("finish") or src.get("properties", {}).get("finish")
+            properties["pattern"] = src.get("surface_pattern") or src.get("pattern") or src.get("properties", {}).get("pattern")
+            properties["composition"] = src.get("composition") or src.get("properties", {}).get("composition")
+            properties["confidence"] = src.get("confidence", 0.0)
+
         if vision_result.get("success") and vision_result.get("analysis"):
-            analysis = vision_result["analysis"]
-            properties["color"] = analysis.get("colors", [None])[0] if analysis.get("colors") else None
-            properties["texture"] = analysis.get("textures", [None])[0] if analysis.get("textures") else None
-            properties["composition"] = analysis.get("properties", {}).get("composition")
-            properties["finish"] = analysis.get("properties", {}).get("finish")
-            properties["pattern"] = analysis.get("properties", {}).get("pattern")
-            properties["confidence"] = analysis.get("confidence", 0.0)
+            _read_props(vision_result["analysis"])
         elif "error" not in vision_result:
-            # If vision model succeeded but no analysis field, try direct access
-            properties["color"] = vision_result.get("colors", [None])[0] if vision_result.get("colors") else None
-            properties["texture"] = vision_result.get("textures", [None])[0] if vision_result.get("textures") else None
-            properties["composition"] = vision_result.get("properties", {}).get("composition")
-            properties["finish"] = vision_result.get("properties", {}).get("finish")
-            properties["pattern"] = vision_result.get("properties", {}).get("pattern")
-            properties["confidence"] = vision_result.get("confidence", 0.0)
+            # Vision model succeeded but no analysis envelope — try direct access.
+            _read_props(vision_result)
 
         return properties
+
+    @staticmethod
+    def _read_vision_confidence(vision_result: Dict[str, Any]) -> float:
+        """Confidence lives at either vision_result.confidence (vision-only path)
+        or vision_result.analysis.confidence (legacy hybrid path)."""
+        analysis = vision_result.get("analysis") if isinstance(vision_result.get("analysis"), dict) else {}
+        conf = analysis.get("confidence") or vision_result.get("confidence") or 0.0
+        try:
+            return max(0.0, min(1.0, float(conf)))
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _calculate_quality_score_unified(
+        self,
+        vision_result: Dict[str, Any],
+        material_properties: Dict[str, Any],
+        slig_embedding: Optional[List[float]] = None,
+        claude_result: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """Unified quality score for both the vision-only path
+        (`analyze_image_from_base64`) and the legacy hybrid path
+        (`analyze_image`).
+
+        Weights are chosen so the vision-only score (no Claude validation,
+        no SLIG check) and the hybrid score remain comparable — both top out
+        at 1.0 and bottom at 0.0, both penalize missing fields equally.
+
+        Components (all included; zeros are skipped from the denominator):
+
+          - Vision confidence (always counted, weight 0.40)
+          - Claude validation overall_quality (only if success, weight 0.30)
+          - Material properties completeness — fraction of the 6 expected
+            keys (color/finish/pattern/texture/composition/confidence) that
+            are non-empty (always counted, weight 0.20)
+          - SLIG embedding validity — at least 10% non-zero values
+            (only if embedding provided, weight 0.10)
+
+        Result is a normalized weighted average. Returns 0.5 when nothing
+        was scored (preserves prior behavior).
+        """
+        score = 0.0
+        weight = 0.0
+
+        # Vision confidence — always part of the score.
+        if vision_result.get("success") or "error" not in vision_result:
+            vc = self._read_vision_confidence(vision_result)
+            if vc > 0.0:
+                score += vc * 0.40
+                weight += 0.40
+
+        # Claude validation — only when present + successful.
+        if claude_result and claude_result.get("success"):
+            qa = claude_result.get("validation", {}).get("quality_assessment") or {}
+            oq = qa.get("overall_quality") or 0.0
+            try:
+                oq = max(0.0, min(1.0, float(oq)))
+            except (TypeError, ValueError):
+                oq = 0.0
+            if oq > 0.0:
+                score += oq * 0.30
+                weight += 0.30
+
+        # Material properties completeness.
+        if material_properties:
+            expected_keys = ("color", "finish", "pattern", "texture", "composition", "confidence")
+            filled = sum(
+                1 for k in expected_keys
+                if material_properties.get(k) not in (None, 0, 0.0, "", [])
+            )
+            properties_score = filled / float(len(expected_keys))
+            score += properties_score * 0.20
+            weight += 0.20
+
+        # SLIG embedding validity (only when an embedding was actually computed).
+        if slig_embedding and len(slig_embedding) > 0:
+            non_zero = sum(1 for v in slig_embedding if abs(float(v)) > 0.001)
+            if non_zero > len(slig_embedding) * 0.10:
+                score += 1.0 * 0.10
+                weight += 0.10
+
+        if weight > 0:
+            return min(1.0, score / weight)
+        return 0.5
 
     def _calculate_vision_quality_score(
         self,
@@ -726,55 +812,13 @@ class RealImageAnalysisService:
         slig_embedding: List[float],
         material_properties: Dict[str, Any]
     ) -> float:
-        """
-        Calculate quality score based on vision model analysis ONLY.
-
-        NEW SCORING (Vision-only):
-        - Vision model confidence: 60% weight
-        - Material properties completeness: 30% weight
-        - SLIG embedding validity: 10% weight
-
-        Returns:
-            Quality score between 0.0 and 1.0
-        """
-        score = 0.0
-        weight_count = 0
-
-        # Vision model confidence (60% weight)
-        if vision_result.get("success"):
-            vision_conf = vision_result.get("analysis", {}).get("confidence", 0.0)
-            if vision_conf == 0.0:
-                # Try direct access
-                vision_conf = vision_result.get("confidence", 0.0)
-            score += vision_conf * 0.6
-            weight_count += 0.6
-        elif "error" not in vision_result:
-            # If no explicit success field, try to get confidence directly
-            vision_conf = vision_result.get("confidence", 0.0)
-            if vision_conf > 0:
-                score += vision_conf * 0.6
-                weight_count += 0.6
-
-        # Material properties completeness (30% weight)
-        if material_properties:
-            properties_filled = sum(1 for v in material_properties.values() if v is not None and v != 0.0)
-            properties_score = properties_filled / 6.0  # 6 properties total
-            score += properties_score * 0.3
-            weight_count += 0.3
-
-        # SLIG embedding validity (10% weight)
-        if slig_embedding and len(slig_embedding) > 0:
-            # Check if embedding is not all zeros
-            non_zero_count = sum(1 for v in slig_embedding if abs(v) > 0.001)
-            if non_zero_count > len(slig_embedding) * 0.1:  # At least 10% non-zero
-                score += 1.0 * 0.1
-                weight_count += 0.1
-
-        # Normalize score
-        if weight_count > 0:
-            return min(1.0, score / weight_count)
-
-        return 0.5  # Default score if no data available
+        """Vision-only score — delegates to the unified scorer with no Claude input."""
+        return self._calculate_quality_score_unified(
+            vision_result=vision_result,
+            material_properties=material_properties,
+            slig_embedding=slig_embedding,
+            claude_result=None,
+        )
 
     def _calculate_quality_score(
         self,
@@ -783,35 +827,13 @@ class RealImageAnalysisService:
         slig_embedding: List[float],
         material_properties: Dict[str, Any]
     ) -> float:
-        """Calculate real quality score based on analysis results"""
-        score = 0.0
-        weight_count = 0
-
-        # Vision model confidence (40% weight)
-        if vision_result.get("success"):
-            vision_conf = vision_result.get("analysis", {}).get("confidence", 0.0)
-            score += vision_conf * 0.4
-            weight_count += 0.4
-
-        # Claude quality assessment (40% weight)
-        if claude_result.get("success"):
-            quality_assessment = claude_result.get("validation", {}).get("quality_assessment", {})
-            overall_quality = quality_assessment.get("overall_quality", 0.0)
-            score += overall_quality * 0.4
-            weight_count += 0.4
-
-        # Material properties completeness (20% weight)
-        if material_properties:
-            properties_filled = sum(1 for v in material_properties.values() if v is not None and v != 0.0)
-            properties_score = properties_filled / 6.0  # 6 properties total
-            score += properties_score * 0.2
-            weight_count += 0.2
-
-        # Normalize score
-        if weight_count > 0:
-            return min(1.0, score / weight_count)
-
-        return 0.5
+        """Hybrid score (vision + Claude validation) — delegates to the unified scorer."""
+        return self._calculate_quality_score_unified(
+            vision_result=vision_result,
+            material_properties=material_properties,
+            slig_embedding=slig_embedding,
+            claude_result=claude_result,
+        )
 
     def _calculate_confidence(
         self,

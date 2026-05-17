@@ -37,6 +37,8 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
+from pydantic import ValidationError
+
 from app.models.vision_analysis import (
     SCHEMA_VERSION,
     VisionAnalysis,
@@ -77,7 +79,7 @@ def _is_aspect_stale(row: Dict[str, Any], aspect: str) -> bool:
     return False
 
 
-def _coerce_vision_analysis(va_raw: Any) -> Optional[VisionAnalysis]:
+def _coerce_vision_analysis(va_raw: Any, image_id: Optional[str] = None) -> Optional[VisionAnalysis]:
     """Parse cached VisionAnalysis JSON into the strict Pydantic model.
 
     Tolerates three shapes seen in production:
@@ -85,6 +87,12 @@ def _coerce_vision_analysis(va_raw: Any) -> Optional[VisionAnalysis]:
       - dict matching the strict schema (post-2026-05-01 ingestion)
       - legacy free-form dict from older rows (handled by
         `vision_analysis_from_legacy_dict`)
+
+    When validation fails, the *specific* failure reason is logged so
+    operators can distinguish "schema drift" from "missing required field"
+    from "error envelope from upstream". Without this logging the backfill
+    silently treats every malformed row as "skipped" with no actionable
+    signal.
     """
     if va_raw is None:
         return None
@@ -93,8 +101,24 @@ def _coerce_vision_analysis(va_raw: Any) -> Optional[VisionAnalysis]:
     if isinstance(va_raw, dict):
         try:
             return VisionAnalysis(**va_raw)
-        except Exception:
-            return vision_analysis_from_legacy_dict(va_raw)
+        except ValidationError as e:
+            # Schema-strict path failed — try the legacy coercer next.
+            legacy = vision_analysis_from_legacy_dict(va_raw)
+            if legacy is None:
+                # Both strict + legacy failed → log so an operator can see.
+                error_summary = "; ".join(
+                    f"{'.'.join(str(x) for x in err.get('loc', ()))}={err.get('type')}"
+                    for err in e.errors()[:3]
+                )
+                logger.warning(
+                    f"⚠️ VisionAnalysis validation failed for image {image_id or '<unknown>'}: "
+                    f"{error_summary} (keys={list(va_raw.keys())[:8]})"
+                )
+            return legacy
+    logger.warning(
+        f"⚠️ Unexpected vision_analysis shape (type={type(va_raw).__name__}) "
+        f"for image {image_id or '<unknown>'}"
+    )
     return None
 
 
@@ -164,7 +188,7 @@ async def _generate_aspects_for_row(
     colors[]) that aspect is omitted from the returned dict but the others
     still get embedded.
     """
-    va = _coerce_vision_analysis(row.get("vision_analysis"))
+    va = _coerce_vision_analysis(row.get("vision_analysis"), image_id=row.get("id"))
     if va is None:
         return None
 
@@ -364,7 +388,7 @@ async def rerun_aspect_embeddings_for_image(
     if not row:
         return {"ok": False, "error": "image_not_found", "image_id": image_id}
 
-    va = _coerce_vision_analysis(row.get("vision_analysis"))
+    va = _coerce_vision_analysis(row.get("vision_analysis"), image_id=image_id)
     if va is None:
         return {
             "ok": False,
