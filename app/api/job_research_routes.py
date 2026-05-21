@@ -36,6 +36,7 @@ from app.dependencies import get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
 from app.modules.job_research_notifications.service import get_job_digest_dispatcher
 from app.services.integrations.job_research_service import get_job_research_service
+from app.services.integrations.job_sites_kb_sync import sync_one_site_type as _sync_kb
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,27 @@ class ListingActionRequest(BaseModel):
 class ClassifierCorrectionRequest(BaseModel):
     corrected_relevance: str = Field(..., description="match | tangential | mismatch")
     reason: Optional[str] = Field(None, description="Optional free-text the user types into the prompt")
+
+
+# ─── job_research_sites (operator-curated job-board list) ────────────────
+
+class JobSiteCreateRequest(BaseModel):
+    site_type: str = Field(..., description="perplexity_domain | rss_feed_default | careers_page_default")
+    url_or_domain: str = Field(..., min_length=1, max_length=400)
+    display_name: Optional[str] = None
+    country_code: Optional[str] = Field(None, max_length=3)
+    category: Optional[str] = Field(None, max_length=40)
+    is_enabled: bool = True
+    notes: Optional[str] = None
+
+
+class JobSiteUpdateRequest(BaseModel):
+    url_or_domain: Optional[str] = None
+    display_name: Optional[str] = None
+    country_code: Optional[str] = None
+    category: Optional[str] = None
+    is_enabled: Optional[bool] = None
+    notes: Optional[str] = None
 
 
 # ─── CRUD ────────────────────────────────────────────────────────────────
@@ -361,6 +383,89 @@ def _verify_cron_secret(x_cron_secret: Optional[str] = Header(default=None)) -> 
         raise HTTPException(status_code=500, detail="CRON_SECRET not configured")
     if x_cron_secret != expected:
         raise HTTPException(status_code=403, detail="Invalid x-cron-secret")
+
+
+# ─── Sites configuration (operator-curated list of job-board sites) ──────
+# These endpoints back the hidden admin page at /admin/knowledge-base/job-sources.
+# RLS on `job_research_sites` enforces admin-only writes; reads are open to any
+# authenticated user.
+
+@router.get("/sites")
+async def list_job_sites(
+    site_type: Optional[str] = Query(None, description="Filter by site_type"),
+    user: User = Depends(get_current_user),
+):
+    svc = get_job_research_service()
+    q = svc.sb.table("job_research_sites").select("*").order("site_type").order("url_or_domain")
+    if site_type:
+        q = q.eq("site_type", site_type)
+    return {"sites": q.execute().data or []}
+
+
+@router.post("/sites")
+async def create_job_site(
+    body: JobSiteCreateRequest,
+    user: User = Depends(get_current_user),
+):
+    if body.site_type not in ("perplexity_domain", "rss_feed_default", "careers_page_default"):
+        raise HTTPException(status_code=400, detail="invalid site_type")
+    svc = get_job_research_service()
+    try:
+        res = svc.sb.table("job_research_sites").insert({
+            "site_type": body.site_type,
+            "url_or_domain": body.url_or_domain.strip().lower() if body.site_type == "perplexity_domain" else body.url_or_domain.strip(),
+            "display_name": body.display_name,
+            "country_code": (body.country_code or "").upper() or None,
+            "category": body.category,
+            "is_enabled": body.is_enabled,
+            "notes": body.notes,
+            "created_by": str(user.id),
+        }).execute()
+    except Exception as e:
+        msg = str(e)
+        if "duplicate" in msg.lower() or "unique" in msg.lower():
+            raise HTTPException(status_code=409, detail="site already exists for this site_type")
+        raise HTTPException(status_code=500, detail=msg[:200])
+    _sync_kb(body.site_type)  # mirror into the 'Job Sources' KB category
+    return {"site": (res.data or [{}])[0]}
+
+
+@router.put("/sites/{site_id}")
+async def update_job_site(
+    site_id: str,
+    body: JobSiteUpdateRequest,
+    user: User = Depends(get_current_user),
+):
+    patch = body.model_dump(exclude_none=True)
+    if not patch:
+        return {"site": None, "no_op": True}
+    svc = get_job_research_service()
+    if "country_code" in patch and patch["country_code"]:
+        patch["country_code"] = patch["country_code"].upper()
+    res = svc.sb.table("job_research_sites").update(patch).eq("id", site_id).execute()
+    row = (res.data or [None])[0]
+    if not row:
+        raise HTTPException(status_code=404, detail="site not found or no permission (admin-only writes)")
+    if row.get("site_type"):
+        _sync_kb(row["site_type"])
+    return {"site": row}
+
+
+@router.delete("/sites/{site_id}")
+async def delete_job_site(
+    site_id: str,
+    user: User = Depends(get_current_user),
+):
+    svc = get_job_research_service()
+    # Read first so we know which site_type to re-sync after deletion
+    pre = svc.sb.table("job_research_sites").select("site_type").eq("id", site_id).maybe_single().execute()
+    pre_row = (pre.data if pre else None) or {}
+    res = svc.sb.table("job_research_sites").delete().eq("id", site_id).execute()
+    if not (res.data or []):
+        raise HTTPException(status_code=404, detail="site not found or no permission (admin-only writes)")
+    if pre_row.get("site_type"):
+        _sync_kb(pre_row["site_type"])
+    return {"ok": True}
 
 
 @router.post("/cron-refresh")

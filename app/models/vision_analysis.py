@@ -144,7 +144,16 @@ VISION_ANALYSIS_TOOL: Dict[str, Any] = {
         "once. The output is deterministically serialised and embedded by "
         "Voyage AI for the catalog's understanding-search dimension, so "
         "field consistency matters more than expressive freedom — when in "
-        "doubt prefer the canonical material vocabulary."
+        "doubt prefer the canonical material vocabulary.\n\n"
+        "LANGUAGE RULE: Return every descriptive attribute value in lowercase "
+        "English (material_type, category, subcategory, colors, textures, "
+        "finish, surface_pattern, applications, style, description). If the "
+        "source image contains text in another language (e.g. Greek 'Λευκό', "
+        "Italian 'bianco', German 'Weiß'), translate to English ('white'). "
+        "Preserve VERBATIM in detected_text only: brand names, model numbers, "
+        "SKUs, socket codes (E27/GU10/G9/G13), IP ratings (IP20/IP44/IP65), "
+        "wattages, dimensions, voltages, certifications. Never invent a value "
+        "for an attribute the image doesn't actually show."
     ),
     "input_schema": VisionAnalysis.anthropic_tool_input_schema(),
 }

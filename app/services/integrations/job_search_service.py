@@ -244,6 +244,9 @@ def _to_int(v: Any) -> Optional[int]:
 
 _PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
 
+# Hardcoded fallback used only if the DB-side `job_research_sites` table is
+# unreachable or empty. The authoritative list lives in the DB and is editable
+# at /admin/knowledge-base/job-sources.
 _DEFAULT_JOB_DOMAINS = [
     "linkedin.com",
     "indeed.com",
@@ -256,6 +259,29 @@ _DEFAULT_JOB_DOMAINS = [
     "dice.com",
     "monster.com",
 ]
+
+
+def _load_perplexity_domains_from_db() -> List[str]:
+    """Load the operator-curated Perplexity domain filter from job_research_sites.
+    Returns the hardcoded fallback if the DB read fails or returns nothing."""
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        sb = get_supabase_client().client
+        res = (
+            sb.table("job_research_sites")
+            .select("url_or_domain")
+            .eq("site_type", "perplexity_domain")
+            .eq("is_enabled", True)
+            .execute()
+        )
+        rows = res.data or []
+        domains = [(r.get("url_or_domain") or "").strip().lower() for r in rows if r.get("url_or_domain")]
+        domains = [d for d in domains if d]
+        if domains:
+            return domains
+    except Exception as e:
+        logger.warning(f"job-search: load DB perplexity domains failed (using fallback): {e}")
+    return list(_DEFAULT_JOB_DOMAINS)
 
 _JOB_LISTING_SCHEMA = {
     "type": "object",
@@ -321,7 +347,10 @@ async def search_via_perplexity(
         f"prefer the company's own posting where available. Posted within the last 30 days."
     )
 
-    domains = list(_DEFAULT_JOB_DOMAINS)
+    # v0.4: load the operator-curated list from job_research_sites (editable in the
+    # hidden admin page at /admin/knowledge-base/job-sources). Falls back to the
+    # hardcoded constant if the DB read fails or returns nothing.
+    domains = _load_perplexity_domains_from_db()
     if extra_domains:
         for d in extra_domains:
             if d and d not in domains:

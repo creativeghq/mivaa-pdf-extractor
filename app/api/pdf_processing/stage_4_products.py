@@ -14,6 +14,7 @@ import sentry_sdk
 from typing import Dict, Any, List, Optional
 
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
+from app.services.facets import canonicalize_product_attributes
 
 # ── Category → default unit mapping (mirrors material_categories.default_unit) ─
 #
@@ -507,12 +508,29 @@ async def create_single_product(
     if not metadata.get('unit'):
         metadata['unit'] = _resolve_default_unit(metadata.get('material_category'))
 
+    # ── Auto-canonicalize descriptive facets (multilingual auto-merge) ────
+    # Whitelisted facet values (color, material, finish, style, …) flow
+    # through L1 string-normalize + L2 Voyage cosine cluster vs
+    # facet_canonical_values. Greek/German/Italian raw values auto-collapse
+    # to canonical English. Identifiers, numerics, codes are skipped.
+    # Failures degrade silently — product insert is never blocked by this.
+    canonical = await canonicalize_product_attributes(
+        supabase, metadata, source='pdf_stage_4',
+    )
+    if canonical.resolutions:
+        logger.info(
+            f"   🏷️  Canonicalized {len(canonical.resolutions)} facet values "
+            f"across {len(canonical.attributes)} facets"
+        )
+
     product_data = {
         'source_document_id': document_id,
         'workspace_id': workspace_id,
         'name': product.name,
         'description': description,
         'metadata': metadata,
+        'attributes': canonical.attributes,
+        'attributes_raw': canonical.attributes_raw,
         'source_type': 'pdf_processing',
         'source_job_id': job_id
     }
