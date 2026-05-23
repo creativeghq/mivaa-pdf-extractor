@@ -214,7 +214,8 @@ class EndpointController:
         to `minimum=1`. That prevents the pipeline from handing out slots that
         would just pile up against a broken endpoint — calls will either
         succeed slowly or fail fast into their application-level fallback
-        (e.g. EasyOCR for Chandra).
+        (e.g. PyMuPDF text-only path when Chandra is unavailable —
+        EasyOCR/Pytesseract were removed 2026-05-01).
 
         Args:
             job_id: for logging correlation.

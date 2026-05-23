@@ -528,13 +528,17 @@ async def create_single_product(
     except _asyncio.TimeoutError:
         logger.warning(
             f"   ⏱️ Facet canonicalization exceeded 30s for {product.name} — "
-            f"degrading to empty canonical attributes (raw preserved). "
-            f"Voyage/HF outage suspected."
+            f"degrading to empty canonical attributes. Voyage/HF outage suspected."
         )
+        # CORRECTION: attributes_raw is typed `Dict[str, List[str]]` (facet ->
+        # raw values seen). Splatting `metadata.items()` produces arbitrary
+        # scalars/lists/dicts that break downstream consumers. Use the
+        # empty-dict pattern matching the canonicalizer's own exception
+        # handler at facet_canonicalizer.py:466 (and its early-return at L114).
         from app.services.facets import CanonicalizedAttributes
         canonical = CanonicalizedAttributes(
             attributes={},
-            attributes_raw={k: v for k, v in metadata.items() if v is not None},
+            attributes_raw={},
             resolutions=[],
         )
     if canonical.resolutions:

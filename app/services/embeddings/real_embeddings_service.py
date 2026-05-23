@@ -665,6 +665,13 @@ class RealEmbeddingsService:
                     )
 
                     self.logger.info(f"✅ Generated {len(embeddings)} Voyage AI embeddings in batch ({voyage_dimensions}D, {input_type})")
+                    # Stamp the actual provider so downstream provenance writes
+                    # (e.g. document_chunks.embedding_model in rag_service.py)
+                    # don't lie. Without this, the chunk provenance fix from
+                    # 2026-05-23 round-3 was reading stale state from the LAST
+                    # single-text call and tagging OpenAI-fallback vectors as
+                    # "voyage-3.5". Drift detection blind spot — fixed post-round-3.
+                    self._last_provider = self.voyage_model or "voyage-4"
                     return embeddings
                 else:
                     error_body = response.text
@@ -760,6 +767,9 @@ class RealEmbeddingsService:
                     )
 
                     self.logger.info(f"✅ Generated {len(embeddings)} OpenAI embeddings in batch ({dimensions}D)")
+                    # Provenance: stamp OpenAI fallback so callers' embedding_model
+                    # writes reflect the real provider.
+                    self._last_provider = "openai-text-embedding-3-small"
                     return embeddings
                 else:
                     error_text = response.text[:500]  # Limit error text

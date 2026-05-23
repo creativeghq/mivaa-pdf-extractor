@@ -504,82 +504,13 @@ class SupabaseClient:
             logger.error(f"❌ Failed to save image {image_index} to database: {e}")
             return None
 
-    async def save_pdf_processing_result(self, result, original_filename: str = None, file_url: str = None) -> str:
-        """
-        Save PDF processing result to the database.
-
-        Args:
-            result: PDFProcessingResult object
-            original_filename: Original filename of the PDF
-            file_url: URL of the processed PDF
-
-        Returns:
-            ID of the saved record
-        """
-        try:
-            # Get user_id from result metadata or use system user as fallback
-            # User ID should be passed from the upload endpoint via result.metadata
-            user_id = None
-            if hasattr(result, 'metadata') and isinstance(result.metadata, dict):
-                user_id = result.metadata.get('user_id')
-
-            # Fallback to system user if no user_id provided
-            if not user_id:
-                user_id = "00000000-0000-0000-0000-000000000000"  # System user
-                logger.warning("No user_id found in result metadata, using system user")
-
-            # Prepare data for insertion
-            insert_data = {
-                'user_id': user_id,  # Required field
-                'original_filename': original_filename or f"{result.document_id}.pdf",
-                'file_url': file_url or f"https://example.com/{result.document_id}.pdf",  # Required field
-                'processing_status': 'completed',
-                'processing_started_at': 'now()',
-                'processing_completed_at': 'now()',
-                'processing_time_ms': int(result.processing_time * 1000) if result.processing_time else 0,
-                'total_pages': result.page_count or 0,
-                'total_tiles_extracted': len(result.extracted_images) if result.extracted_images else 0,
-                'materials_identified_count': 0,  # Will be updated by material recognition
-                'confidence_score_avg': 0.95,  # Default confidence
-                'ocr_text_content': result.ocr_text or "",
-                'ocr_confidence_avg': 0.90,  # Default OCR confidence
-                'ocr_language_detected': 'en',
-                'extracted_images': result.extracted_images or [],
-                'multimodal_enabled': getattr(result, 'multimodal_enabled', False),
-                'python_processor_version': '1.0.0',
-                'layout_analysis_version': '1.0.0',
-                'document_structure': {
-                    'word_count': result.word_count or 0,
-                    'character_count': result.character_count or 0,
-                    'markdown_content': result.markdown_content or ""
-                },
-                'image_analysis_results': getattr(result, 'ocr_results', {}),
-                'multimodal_metadata': result.metadata or {}
-            }
-
-            logger.info(f"💾 Attempting to save PDF processing result to database")
-            logger.info(f"   Document ID: {result.document_id}")
-            logger.info(f"   Filename: {insert_data['original_filename']}")
-            logger.info(f"   Pages: {insert_data['total_pages']}")
-            logger.info(f"   Images: {insert_data['total_tiles_extracted']}")
-
-            # Insert into database
-            response = self._client.table('pdf_processing_results').insert(insert_data).execute()
-
-            if response.data:
-                record_id = response.data[0]['id']
-                logger.info(f"✅ PDF processing result saved with ID: {record_id}")
-                return record_id
-            else:
-                logger.error(f"❌ No data returned from insert operation")
-                logger.error(f"   Response: {response}")
-                raise Exception("No data returned from insert operation")
-
-        except Exception as e:
-            logger.error(f"❌ Failed to save PDF processing result: {str(e)}")
-            logger.error(f"   Error type: {type(e).__name__}")
-            logger.error(f"   Insert data keys: {list(insert_data.keys()) if 'insert_data' in locals() else 'N/A'}")
-            raise
+    # save_pdf_processing_result removed 2026-05-23 — zero callers (verified
+    # via grep). It also persisted a fake `https://example.com/{id}.pdf` URL
+    # into `pdf_processing_results.file_url` when called without an explicit
+    # value, contradicting the "never persist file_url" rule. The
+    # pdf_processing_results table still exists but is now write-orphan; if
+    # ever needed, prefer reading from background_jobs + document_chunks +
+    # document_images directly.
 
     async def save_knowledge_base_entries(self, document_id: str, chunks: list, images: list) -> dict:
         """

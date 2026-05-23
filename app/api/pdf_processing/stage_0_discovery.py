@@ -614,36 +614,42 @@ async def process_stage_0_discovery(
 
     # Telemetry (2026-05-23): emit Stage 0 "completed" + clear slow_op marker.
     # See "in_progress" emit + set_slow_operation above for context.
-    if tracker is not None and locals().get('_stage_0_slow_op_set'):
+    # IMPORTANT: only emit when we actually ran discovery this call. The
+    # cached-catalog path (catalog loaded from background_jobs.metadata) did
+    # NOT emit "in_progress" and did NOT set _stage_0_slow_op_set, so emitting
+    # "completed" would create an orphan event in stage_history every resume.
+    _did_run_discovery_this_call = locals().get('_stage_0_slow_op_set', False)
+    if tracker is not None and _did_run_discovery_this_call:
         try:
             await tracker.clear_slow_operation(
                 operation=f"stage_0_discovery:{page_count}_pages"
             )
         except Exception as _clear_err:
             logger.debug(f"   tracker.clear_slow_operation failed (non-fatal): {_clear_err}")
-    try:
-        supabase.client.rpc(
-            'append_stage_history',
-            {
-                'p_job_id': job_id,
-                'p_event': {
-                    'stage': 'stage_0_discovery',
-                    'status': 'completed',
-                    'data': {
-                        'products_discovered': products_discovered,
-                        'certificates_discovered': certificates_discovered,
-                        'logos_discovered': logos_discovered,
-                        'specifications_discovered': specifications_discovered,
-                        'total_entities': total_entities,
-                        'duration_ms': int(discovery_time_ms),
-                        'model_used': catalog.model_used,
+    if _did_run_discovery_this_call:
+        try:
+            supabase.client.rpc(
+                'append_stage_history',
+                {
+                    'p_job_id': job_id,
+                    'p_event': {
+                        'stage': 'stage_0_discovery',
+                        'status': 'completed',
+                        'data': {
+                            'products_discovered': products_discovered,
+                            'certificates_discovered': certificates_discovered,
+                            'logos_discovered': logos_discovered,
+                            'specifications_discovered': specifications_discovered,
+                            'total_entities': total_entities,
+                            'duration_ms': int(discovery_time_ms),
+                            'model_used': catalog.model_used,
+                        },
+                        'completed_at': datetime.utcnow().isoformat(),
                     },
-                    'completed_at': datetime.utcnow().isoformat(),
-                },
-            }
-        ).execute()
-    except Exception as _hist_err:
-        logger.debug(f"   append_stage_history completed failed (non-fatal): {_hist_err}")
+                }
+            ).execute()
+        except Exception as _hist_err:
+            logger.debug(f"   append_stage_history completed failed (non-fatal): {_hist_err}")
 
     # ✅ CREATE PRODUCTS IN DATABASE IMMEDIATELY AFTER DISCOVERY
     # This creates the actual product records so all subsequent stages just update them

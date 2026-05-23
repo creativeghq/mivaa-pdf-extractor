@@ -605,12 +605,29 @@ async def upload_document(
     workspace_context = Depends(get_workspace_context),
 ):
     """
-    **🎯 CONSOLIDATED UPLOAD ENDPOINT - Single Entry Point for All Upload Scenarios**
+    **🎯 CONSOLIDATED UPLOAD ENDPOINT — Single Entry Point**
 
-    This endpoint replaces:
-    - `/api/documents/process` (simple extraction)
-    - `/api/documents/process-url` (URL processing)
-    - `/api/documents/upload` (old unified upload)
+    ## 🔐 Authentication (added 2026-05-23)
+
+    Requires a valid JWT in `Authorization: Bearer <token>`. The form-supplied
+    `workspace_id` is reconciled against the caller's JWT-derived workspace:
+    if it doesn't match (and isn't the platform default), the request returns
+    HTTP 403. Anonymous uploads are no longer accepted.
+
+    For uploads via the Supabase MIVAA gateway: the gateway forwards your JWT
+    transparently. Pass your session token to `mivaa-gateway`; do NOT pass
+    the platform service key from the frontend.
+
+    ## 📤 File handoff (private bucket)
+
+    `pdf-documents` is a private bucket. The frontend must:
+      1. Upload the file to `{user_id}/{timestamp}-{filename}` in `pdf-documents`.
+      2. Mint a short-lived signed URL via `supabase.storage.from('pdf-documents').createSignedUrl(path, 3600)`.
+      3. POST the SIGNED URL to this endpoint via the `file_url` form field
+         (or attach the multipart `file` directly).
+    NEVER pass `getPublicUrl()` on `pdf-documents` — that returns a 403 URL.
+    The backend persists `storage_bucket` + `storage_object_path` (not `file_url`)
+    so resume can re-mint a fresh signed URL via service role.
 
     ## 🎨 Category-Based Extraction
 
@@ -621,28 +638,36 @@ async def upload_document(
     - `categories="specifications"` - Extract only specifications
     - `categories="products,certificates"` - Extract multiple categories
     - `categories="all"` - Extract everything (default - comprehensive deep analysis)
-    - `categories="extract_only"` - Just extract text/images, no categorization
-
-    **Processing:** All uploads use deep processing mode with:
-    - Complete AI analysis with all models
-    - Image embeddings (CLIP)
-    - Advanced product enrichment
-    - Quality validation
-    - Full RAG pipeline
+    - `categories="extract_only"` - **STAGE 1.5 ONLY mode**: runs document
+      layout precompute and then completes. NO discovery, NO products, NO
+      chunks, NO embeddings, NO quality. Cannot be combined with other
+      categories (returns 400). Use when you want raw layout extraction
+      without paying for the full pipeline.
 
     ## 🌐 URL Processing
 
     Upload from URL instead of file:
-    - Set `file_url="https://example.com/catalog.pdf"`
+    - Set `file_url="<signed-url-on-pdf-documents>"`
     - Leave `file` parameter empty
-    - System downloads and processes automatically
+    - System downloads and processes immediately
 
-    ## 🤖 AI Model Selection
+    ## 🤖 Discovery Model
 
-    Choose discovery model:
-    - `discovery_model="claude"` - Claude Opus 4.7 (best quality, default)
-    - `discovery_model="gpt"` - GPT-5 (fast, good quality)
-    - `discovery_model="haiku"` - Claude Haiku 4.5 (fastest, lower cost)
+    Stage 0 product discovery is currently **text-based** regardless of the
+    `discovery_model` choice. The model parameter selects which Claude model
+    handles the JSON discovery prompt; it does NOT send page images.
+    Catalogs with product names rendered as part of page images
+    (custom display fonts, logos) will silently miss those products —
+    this is a known limitation, not a bug. See CLAUDE.md "Where vision
+    actually runs" for the full breakdown.
+
+    Choose:
+    - `discovery_model="claude-vision"` - Claude Opus 4.7 (default)
+    - `discovery_model="claude-haiku-vision"` - Claude Haiku 4.5 (cheaper, fast)
+    - `discovery_model="gpt-vision"` - GPT-4o
+
+    Real vision DOES run at Stage 3 per-image material analysis (Claude Opus
+    4.7 with Anthropic `tool_use` + the `VISION_ANALYSIS_TOOL` schema lock).
 
     ## 💬 Agent Prompts
 
@@ -3667,8 +3692,13 @@ async def process_document_with_discovery(
                 )
                 # Merge metadata BEFORE complete_job so the reason is durable
                 # even if complete_job's own metadata writes happen first.
+                # CORRECTION (post-round-3): the in-scope variable name is
+                # `supabase`, not `supabase_client` — the latter is undefined
+                # inside this function and was NameError'ing every RPC call,
+                # which the outer try/except silently swallowed. Same fix
+                # applied to the stage_history RPC + fallback write below.
                 try:
-                    supabase_client.client.rpc(
+                    supabase.client.rpc(
                         'merge_background_job_metadata',
                         {
                             'p_job_id': job_id,
@@ -3685,7 +3715,7 @@ async def process_document_with_discovery(
                 # why the job ended — append_stage_history caps at 100 entries
                 # so this is the LAST one operators see for the job.
                 try:
-                    supabase_client.client.rpc(
+                    supabase.client.rpc(
                         'append_stage_history',
                         {
                             'p_job_id': job_id,
@@ -3724,7 +3754,7 @@ async def process_document_with_discovery(
                 # Don't let bookkeeping failure leave the job at 'processing'.
                 # Best-effort direct write so the job is marked terminal.
                 try:
-                    supabase_client.client.table('background_jobs').update({
+                    supabase.client.table('background_jobs').update({
                         'status': 'completed',
                         'progress': 100,
                         'completed_at': datetime.utcnow().isoformat(),

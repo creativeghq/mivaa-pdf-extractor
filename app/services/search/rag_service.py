@@ -372,6 +372,13 @@ class RAGService:
                     try:
                         self.logger.info(f"   🔄 Generating embeddings for batch {batch_num}/{total_batches} ({len(batch_texts)} chunks)...")
 
+                        # Reset _last_provider so the post-batch stamp reflects
+                        # THIS call's provider, not the previous one. Critical
+                        # for the chunk embedding_model provenance write below.
+                        try:
+                            self.embeddings_service._last_provider = None
+                        except Exception:
+                            pass
                         # Use batch embedding generation (Voyage AI or OpenAI)
                         embedding_vectors = await self.embeddings_service.generate_batch_embeddings(
                             texts=batch_texts,

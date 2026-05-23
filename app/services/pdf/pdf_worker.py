@@ -599,7 +599,8 @@ def extract_text_with_ocr_pages_standalone(
                 if merged_regions_out is not None:
                     merged_regions_out[page_num + 1] = merged
             else:
-                # Legacy path: ocr_service runs full pipeline (Chandra -> EasyOCR -> Tesseract).
+                # Legacy path: ocr_service runs Chandra v2 single-tier OCR.
+                # Pytesseract + EasyOCR were removed 2026-05-01.
                 results = ocr_service.extract_text_from_image(img)
                 page_text = " ".join(
                     [r.text.strip() for r in results if r.text.strip() and r.confidence > 0.3]

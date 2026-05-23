@@ -112,8 +112,13 @@ class ProgressTracker:
     _db_sync_enabled: bool = field(default=True, init=False)
 
     # Heartbeat monitoring
-    _heartbeat_task: Optional[Any] = field(default=None, init=False, repr=False)
-    _heartbeat_running: bool = field(default=False, init=False)
+    # Note (2026-05-23 round-3 cleanup): the asyncio-based heartbeat loop
+    # (start_heartbeat / stop_heartbeat / _heartbeat_task / _heartbeat_running)
+    # was deleted. JobHeartbeat (services/tracking/job_heartbeat.py) is now
+    # the sole liveness mechanism — runs in a thread so it survives blocked
+    # event loops. `update_heartbeat()` below is retained as a one-shot tick
+    # for callers that want to refresh `last_heartbeat` synchronously during
+    # long sync work (product_processor, product_discovery_service).
     last_heartbeat: Optional[datetime] = None
     last_db_sync: Optional[datetime] = None
     MIN_SYNC_INTERVAL: float = 2.0  # Minimum seconds between database syncs (reduced from 5.0 for more responsive updates)
@@ -633,8 +638,9 @@ class ProgressTracker:
 
         self.current_stage = ProcessingStage.COMPLETED
 
-        # Stop heartbeat when job completes (audit fix #44 — definitive shutdown signal).
-        await self.stop_heartbeat()
+        # Note: the asyncio heartbeat loop was deleted 2026-05-23. JobHeartbeat
+        # thread is the active liveness signal — it stops on its own when its
+        # async-with context exits.
 
         # Audit fix #17: compute final total_ai_cost_usd from ai_usage_logs.
         # Previously this column was never written → cost-per-job was uncomputable
@@ -786,8 +792,9 @@ class ProgressTracker:
         self.current_stage = ProcessingStage.FAILED
         error_message = str(error)
 
-        # Stop heartbeat when job fails
-        await self.stop_heartbeat()
+        # Note: the asyncio heartbeat loop was deleted 2026-05-23. JobHeartbeat
+        # thread is the active liveness signal — it stops on its own when its
+        # async-with context exits in the caller's finally block.
 
         # 🚨 SENTRY ALERT: Send crash alert for job failure
         if SENTRY_AVAILABLE:
@@ -955,44 +962,10 @@ class ProgressTracker:
 
         await _scale_endpoints_to_zero_safe(reason=f"job_failed_{self.job_id}")
 
-    async def start_heartbeat(self, interval_seconds: int = 30):
-        """
-        Start sending heartbeat signals every interval_seconds to prove job is alive.
-
-        This allows the job monitor to detect crashes within 2 missed heartbeats (60s)
-        instead of waiting for the full stuck_job_timeout (5min).
-
-        Args:
-            interval_seconds: How often to send heartbeat (default: 30s)
-        """
-        if self._heartbeat_running:
-            logger.warning(f"Heartbeat already running for job {self.job_id}")
-            return
-
-        self._heartbeat_running = True
-        logger.info(f"🫀 Starting heartbeat for job {self.job_id} (interval: {interval_seconds}s)")
-
-        async def heartbeat_loop():
-            """Background task that sends heartbeat signals"""
-            import asyncio
-
-            while self._heartbeat_running:
-                try:
-                    await self.update_heartbeat()
-                    await asyncio.sleep(interval_seconds)
-                except asyncio.CancelledError:
-                    logger.info(f"🫀 Heartbeat cancelled for job {self.job_id}")
-                    break
-                except Exception as e:
-                    logger.error(f"❌ Heartbeat error for job {self.job_id}: {e}")
-                    await asyncio.sleep(interval_seconds)  # Continue despite errors
-
-        # Start heartbeat task
-        import asyncio
-        self._heartbeat_task = asyncio.create_task(heartbeat_loop())
-        self._heartbeat_task.add_done_callback(lambda t: logger.error(
-            f"❌ Heartbeat task failed for job {self.job_id}: {t.exception()}", exc_info=t.exception()
-        ) if not t.cancelled() and t.exception() else None)
+    # Note (2026-05-23): start_heartbeat / stop_heartbeat removed. The
+    # JobHeartbeat thread (services/tracking/job_heartbeat.py) is now the
+    # canonical liveness mechanism. update_heartbeat() below is the
+    # one-shot tick used by long sync stages.
 
     async def check_if_cancelled(self) -> bool:
         """
@@ -1042,8 +1015,9 @@ class ProgressTracker:
                 if response.data and len(response.data) > 0:
                     status = response.data[0].get('status')
                     if status == 'cancelled':
-                        logger.warning(f"🛑 Job {self.job_id} has been cancelled - stopping heartbeat")
-                        await self.stop_heartbeat()
+                        logger.warning(f"🛑 Job {self.job_id} has been cancelled")
+                        # JobHeartbeat thread will notice via its own status
+                        # check on the next tick — no need to coordinate here.
                         raise asyncio.CancelledError(f"Job {self.job_id} was cancelled")
 
                 # Update heartbeat
@@ -1151,24 +1125,6 @@ class ProgressTracker:
                 .execute()
         except Exception as e:
             logger.warning(f"⚠️ Failed to clear current_slow_operation for {self.job_id}: {e}")
-
-    async def stop_heartbeat(self):
-        """Stop the heartbeat monitoring task"""
-        if not self._heartbeat_running:
-            return
-
-        self._heartbeat_running = False
-
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except (asyncio.CancelledError, Exception):
-                pass  # Ignore cancellation errors
-            self._heartbeat_task = None
-
-        logger.info(f"🫀 Heartbeat stopped for job {self.job_id}")
-
 
 class ProgressTrackingService:
     """Service for managing multiple progress trackers."""
