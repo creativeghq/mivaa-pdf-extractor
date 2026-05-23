@@ -1,6 +1,9 @@
 # MIVAA PDF Extractor Dependencies
-# Cloud-only architecture - all ML inference via HuggingFace endpoints (SLIG, Qwen, OCR, YOLO)
-# OCR: Chandra v2 cloud endpoint only — retry-with-jitter (3 attempts at temp 0/0.1/0.2)
+# Cloud-only architecture — all ML inference via HuggingFace endpoints (SLIG, YOLO, Chandra)
+# Vision is Anthropic-only (Claude Opus 4.7 via SDK >= 0.42, with Anthropic tool_use
+# schema-locked output via emit_vision_analysis tool). Qwen endpoint retired 2026-05-01.
+# OCR: Chandra v2 cloud endpoint only — retry-with-jitter (3 attempts at temps 0.0/0.4/0.8,
+# widened from 0.0/0.1/0.2 on 2026-05-03 to break sticky-prose state on graphic-heavy pages)
 # replaces the previous broken pytesseract/easyocr fallbacks (removed 2026-05-01).
 
 # Core FastAPI and server dependencies

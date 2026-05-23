@@ -430,7 +430,15 @@ jobs:
           pip install --no-deps httpx==0.27.0
           pip install --no-deps requests==2.31.0
           pip install --no-deps openai==1.51.0
-          pip install --no-deps anthropic==0.23.1
+          # anthropic SDK: bumped from 0.23.1 → 0.42.0 (2026-05-23). The old
+          # pin was beta-era and didn't accept `tools` on `messages.create()`,
+          # which silently broke (a) the job_classifier / job_keyword services
+          # (already worked around via raw httpx) AND (b) the round-3 Stage 3
+          # vision_analysis tool_use fix (no workaround — every image's
+          # vision_analysis would return None on prod). Bumping the SDK fixes
+          # the second case and lets the first case revert its workaround
+          # (left in place for now — working code).
+          pip install --no-deps anthropic==0.42.0
 
           # Step 4: Computer vision with exact versions
           echo 'Step 4: Installing computer vision...'
@@ -903,17 +911,18 @@ jobs:
           Environment=VISUAL_EMBEDDING_MODE=${{ secrets.VISUAL_EMBEDDING_MODE }}
           Environment=VISUAL_EMBEDDING_PRIMARY_MODEL=${{ secrets.VISUAL_EMBEDDING_PRIMARY_MODEL }}
           Environment=VISUAL_EMBEDDING_DIMENSIONS=${{ secrets.VISUAL_EMBEDDING_DIMENSIONS }}
-          # Qwen / YOLO / Chandra endpoint identity. Each of the four HF
-          # inference endpoints can be renamed/replaced without a code
-          # change — populate the GH secret instead. Empty secrets fall
-          # back to the field default in app/config.py via
-          # _coerce_empty_string_to_default. After all of these are set
-          # in GH, delete the legacy drop-in at
-          # /etc/systemd/system/mivaa-pdf-extractor.service.d/qwen-endpoint.conf.
-          Environment=QWEN_ENDPOINT_URL=${{ secrets.QWEN_ENDPOINT_URL }}
-          Environment=QWEN_ENDPOINT_NAME=${{ secrets.QWEN_ENDPOINT_NAME }}
-          Environment=QWEN_NAMESPACE=${{ secrets.QWEN_NAMESPACE }}
-          Environment=QWEN_MODEL=${{ secrets.QWEN_MODEL }}
+          # YOLO / Chandra endpoint identity. Each HF inference endpoint can be
+          # renamed/replaced without a code change — populate the GH secret
+          # instead. Empty secrets fall back to the field default in
+          # app/config.py via _coerce_empty_string_to_default. After all of
+          # these are set in GH, delete the legacy drop-in at
+          # /etc/systemd/system/mivaa-pdf-extractor.service.d/qwen-endpoint.conf
+          # (the drop-in name is historical — Qwen was retired 2026-05-01).
+          #
+          # QWEN_* env vars removed 2026-05-23: Qwen endpoint was retired
+          # 2026-05-01 (all vision → Claude Opus 4.7). Settings.qwen_* fields
+          # are deleted; the env vars no longer have any consumer. You may
+          # also delete the QWEN_* secrets from GitHub Actions when convenient.
           Environment=YOLO_ENDPOINT_URL=${{ secrets.YOLO_ENDPOINT_URL }}
           Environment=YOLO_ENDPOINT_NAME=${{ secrets.YOLO_ENDPOINT_NAME }}
           Environment=YOLO_NAMESPACE=${{ secrets.YOLO_NAMESPACE }}
