@@ -570,10 +570,32 @@ class JobResearchService:
                 return outcome
 
             deduped = dedupe_hits(hits)
+            # v0.4.6: URL-only dedup within the run. The content_hash dedup above
+            # works on (canonical_url + title + company), so a single job returned
+            # by both the primary Perplexity call and a variation call with
+            # slightly different title/company can slip through (e.g. the Close
+            # WeWorkRemotely job appearing twice with title "Senior Software
+            # Engineer – Backend / Python" and "...USA Only (100% Remote)").
+            # Force canonical_url uniqueness within a run.
+            _seen_urls: set = set()
+            url_unique: List[JobHit] = []
+            for h in deduped:
+                key = (h.canonical_url or h.url or "").lower()
+                if key and key in _seen_urls:
+                    continue
+                if key:
+                    _seen_urls.add(key)
+                url_unique.append(h)
+            deduped = url_unique
+
             excl = self._load_exclusions(tracked_job_id)
             deduped = [h for h in deduped if not _is_excluded(h, excl, excluded_companies)]
             existing_hashes = self._existing_content_hashes(tracked_job_id, [h.content_hash for h in deduped])
             candidates = [h for h in deduped if h.content_hash not in existing_hashes]
+            # v0.4.6: also reject if the canonical_url already exists in DB for
+            # this tracked_job (regardless of content_hash). Belt-and-suspenders.
+            _existing_urls = self._existing_canonical_urls(tracked_job_id, [h.canonical_url for h in candidates])
+            candidates = [h for h in candidates if (h.canonical_url or "").lower() not in _existing_urls]
 
             bookkeeping.append_log(
                 run_id=agent_run_id, level="info",
@@ -770,6 +792,28 @@ class JobResearchService:
                 or []
             )
             return {r["content_hash"] for r in rows}
+        except Exception:
+            return set()
+
+    def _existing_canonical_urls(self, tracked_job_id: str, urls: List[str]) -> set:
+        """v0.4.6: returns the set of canonical_url values already persisted for
+        this tracked_job, lowercased for case-insensitive matching. Used as a
+        secondary dedup pass beyond content_hash so a job that surfaces with
+        slightly different title/company across runs doesn't re-persist."""
+        urls = [u for u in (urls or []) if u]
+        if not urls:
+            return set()
+        try:
+            rows = (
+                self.sb.table("job_listings")
+                .select("canonical_url")
+                .eq("tracked_job_id", tracked_job_id)
+                .in_("canonical_url", urls)
+                .execute()
+                .data
+                or []
+            )
+            return {(r.get("canonical_url") or "").lower() for r in rows if r.get("canonical_url")}
         except Exception:
             return set()
 
