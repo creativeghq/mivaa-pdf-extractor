@@ -20,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -66,6 +67,16 @@ def _normalize(text: str) -> str:
     return (text or "").lower()
 
 
+def _tokens(s: str) -> set:
+    """Split a string into lowercase tokens of length >=2. Used by rule_shortcut
+    so we don't require literal word-order substring matches (e.g. so that the
+    keyword 'python developer' matches a job titled 'Senior Backend Engineer
+    (Python)' through the token 'python' alone)."""
+    if not s:
+        return set()
+    return {t for t in re.split(r"[^a-z0-9+#]+", s.lower()) if t and len(t) > 1}
+
+
 def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
     """Deterministic verdict before Haiku. Returns (relevance, note) or None."""
     blob = " ".join(filter(None, [
@@ -96,16 +107,36 @@ def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
             # not certain — let Haiku decide
             pass
 
-    # at least one keyword token in title or description → likely match
-    keyword_hits = sum(1 for k in facets.keywords if k and _normalize(k) in blob)
-    if keyword_hits == 0:
-        return ("mismatch", "no keyword found in title/description")
+    # v0.3.5: TOKEN-based match instead of substring. The previous implementation
+    # required the FULL keyword string to appear verbatim in the blob, which broke
+    # for multi-word keywords like 'python developer' against real titles like
+    # 'Senior Backend Engineer (Python)'. Now: tokenize all keywords + the blob,
+    # and require at least one shared distinctive token.
+    blob_tokens = _tokens(blob)
+    keyword_tokens: set = set()
+    for k in (facets.keywords or []):
+        keyword_tokens |= _tokens(k)
+    # Stoplist of generic role-words that shouldn't, on their own, count as a
+    # keyword hit — otherwise EVERY "engineer" or "developer" listing matches.
+    _STOPLIST = {
+        "developer", "engineer", "engineering", "manager", "lead", "senior",
+        "junior", "staff", "principal", "architect", "specialist", "associate",
+        "the", "and", "for", "with", "remote", "full", "part", "time", "any",
+    }
+    distinctive_keyword_tokens = keyword_tokens - _STOPLIST
+    distinctive_overlap = distinctive_keyword_tokens & blob_tokens
 
-    # All keywords appear AND title clearly matches → fast-path to match
-    if keyword_hits == len(facets.keywords):
-        first_kw_in_title = any(_normalize(k) in title_norm for k in facets.keywords if k)
-        if first_kw_in_title:
-            return ("match", "all keywords + title hit")
+    if distinctive_keyword_tokens and not distinctive_overlap:
+        # No distinctive token from any keyword in the blob — almost certainly
+        # not what the user wants. Fast-drop without spending Haiku credits.
+        return ("mismatch", "no distinctive keyword tokens in title/description")
+
+    # Fast-path match: at least one distinctive keyword token in the TITLE
+    # AND every required token (after stoplist removal) is somewhere in the blob.
+    if distinctive_overlap:
+        title_tokens = _tokens(hit.title or "")
+        if distinctive_keyword_tokens & title_tokens:
+            return ("match", f"keyword token(s) hit title: {sorted(distinctive_keyword_tokens & title_tokens)[:3]}")
 
     return None  # ambiguous → Haiku
 
