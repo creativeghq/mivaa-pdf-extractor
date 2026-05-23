@@ -621,16 +621,25 @@ class JobResearchService:
 
             persisted = 0
             if rows_to_insert:
-                try:
-                    ins = self.sb.table("job_listings").upsert(
-                        rows_to_insert,
-                        on_conflict="tracked_job_id,content_hash",
-                        ignore_duplicates=True,
-                    ).execute()
-                    persisted = len(ins.data or [])
-                except Exception as e:
-                    logger.warning(f"job-refresh insert: {e}")
-                    bookkeeping.append_log(run_id=agent_run_id, level="error", message=f"Persist failed: {str(e)[:120]}")
+                # v0.4.2: switched from upsert(ignore_duplicates=True) to plain insert().
+                # supabase-py 2.3.0 with ignore_duplicates returns empty .data AND
+                # silently doesn't insert (the Prefer header interaction is broken).
+                # We've already pre-filtered against _existing_content_hashes(), so
+                # the (tracked_job_id, content_hash) UNIQUE constraint is a safety
+                # net. Insert one-at-a-time so a single dup doesn't kill the batch.
+                for row in rows_to_insert:
+                    try:
+                        ins = self.sb.table("job_listings").insert(row).execute()
+                        if ins.data:
+                            persisted += len(ins.data)
+                    except Exception as e:
+                        # Unique-violation = a parallel/recent refresh already grabbed
+                        # this content_hash. That's fine, skip silently.
+                        emsg = str(e).lower()
+                        if "duplicate" in emsg or "unique" in emsg or "23505" in emsg:
+                            continue
+                        logger.warning(f"job-refresh insert (one row): {str(e)[:200]}")
+                        bookkeeping.append_log(run_id=agent_run_id, level="warning", message=f"Persist row failed: {str(e)[:120]}")
 
             bookkeeping.append_log(
                 run_id=agent_run_id, level="info",
