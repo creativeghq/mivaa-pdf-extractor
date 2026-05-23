@@ -191,7 +191,13 @@ async def search_via_dataforseo_jobs(
         logger.info("job-search: DATAFORSEO_BASE64 not configured — skipping google_jobs")
         return []
 
-    keyword_str = " ".join(keywords)
+    # v0.3.7: DataForSEO Google Jobs interprets the keyword field as a literal
+    # search phrase, so joining 13 expanded keywords with spaces produces a
+    # 100+ char query that matches nothing. Use ONLY the user's primary
+    # keyword (first in the list); rely on Google's own synonym matching for
+    # nearby titles.
+    primary_keyword = (keywords[0] if keywords else "").strip()
+    keyword_str = primary_keyword
     if remote_only and "remote" not in keyword_str.lower():
         keyword_str = f"{keyword_str} remote"
 
@@ -389,11 +395,21 @@ async def search_via_perplexity(
         logger.info("job-search: PERPLEXITY_API_KEY not configured — skipping perplexity")
         return []
 
-    keyword_str = " OR ".join(f'"{k}"' for k in keywords)
+    # v0.3.7: Sonar handles long OR-lists poorly. Cap at the user's primary 3
+    # keywords (originals + a couple expansions). The classifier downstream
+    # accepts the broader keyword set, but the DISCOVERY query stays tight.
+    top_keywords = keywords[:3] if len(keywords) > 3 else keywords
+    keyword_str = " OR ".join(f'"{k}"' for k in top_keywords)
     excl_kw = " ".join(f"NOT {k}" for k in (excluded_keywords or []))
     excl_co = " ".join(f"NOT {c}" for c in (excluded_companies or []))
-    location_clause = f"in {location}" if location else ""
-    remote_clause = "Remote-only roles." if remote_only else ""
+    # v0.3.7: don't emit "in remote" — Sonar tries to parse it as a place. The
+    # remote_clause below carries the remote constraint separately.
+    raw_loc = (location or "").strip().lower()
+    location_clause = (
+        f"in {location}" if location and raw_loc not in {"remote", "anywhere", "worldwide", "global", "any"}
+        else ""
+    )
+    remote_clause = "Remote-only roles (work-from-anywhere)." if remote_only else ""
     seniority_clause = f"Seniority: {seniority}." if seniority and seniority != "any" else ""
 
     # v0.3.6: rewritten prompt. Previous version returned aggregator SERPs
