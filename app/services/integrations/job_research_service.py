@@ -48,8 +48,9 @@ from app.services.integrations.job_classifier_service import (
 from app.services.integrations.job_keyword_expansion_service import expand_keywords
 from app.services.integrations.job_salary_normalizer import normalize_listing_in_place
 from app.services.integrations.job_search_service import (
-    JobHit, dedupe_hits, search_via_dataforseo_jobs,
-    search_via_firecrawl_careers, search_via_perplexity, search_via_rss_feeds,
+    JobHit, build_query_variations, dedupe_hits, search_via_dataforseo_jobs,
+    search_via_dataforseo_serp, search_via_firecrawl_careers,
+    search_via_perplexity, search_via_rss_feeds,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,7 +147,7 @@ class JobResearchService:
             "salary_currency": salary_currency or "USD",
             "excluded_companies": excluded_companies or [],
             "preferred_companies": preferred_companies or [],
-            "sources_enabled": sources_enabled or {"google_jobs": True, "perplexity": True, "careers_pages": False},
+            "sources_enabled": sources_enabled or {"google_jobs": True, "google_serp": True, "perplexity": True, "careers_pages": False, "rss_feeds": False},
             "careers_page_urls": careers_page_urls or [],
             "digest_hour_utc": max(0, min(23, int(digest_hour_utc))),
             "digest_day_of_week": digest_day_of_week,
@@ -174,11 +175,15 @@ class JobResearchService:
                 attribution=attribution,
             )
             expanded = expansion.get("expanded") or []
+            # v0.4: also persist Haiku-generated query_phrasings (used by refresh fan-out)
+            query_phrasings = expansion.get("query_phrasings") or []
             self.sb.table("tracked_jobs").update({
                 "expanded_keywords": expanded,
+                "query_phrasings": query_phrasings,
                 "last_keywords_expanded_at": _iso(_utcnow()),
             }).eq("id", tracked_job_id).execute()
             created["expanded_keywords"] = expanded
+            created["query_phrasings"] = query_phrasings
             created["_keyword_expansion"] = expansion
         except Exception as e:
             logger.warning(f"job-research create: keyword expansion failed (non-fatal): {e}")
@@ -235,11 +240,18 @@ class JobResearchService:
             attribution=attribution,
         )
         expanded = expansion.get("expanded") or []
+        query_phrasings = expansion.get("query_phrasings") or []
         self.sb.table("tracked_jobs").update({
             "expanded_keywords": expanded,
+            "query_phrasings": query_phrasings,
             "last_keywords_expanded_at": _iso(_utcnow()),
         }).eq("id", tracked_job_id).execute()
-        return {"expanded": expanded, "rejected": expansion.get("rejected") or [], "raw": expansion.get("raw") or {}}
+        return {
+            "expanded": expanded,
+            "query_phrasings": query_phrasings,
+            "rejected": expansion.get("rejected") or [],
+            "raw": expansion.get("raw") or {},
+        }
 
     def get(self, tracked_job_id: str, *, owner_user_id: Optional[str] = None,
             api_key_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -438,10 +450,23 @@ class JobResearchService:
         excluded_companies = list(tj.get("excluded_companies") or [])
         preferred_companies = list(tj.get("preferred_companies") or [])
 
+        # v0.4: query-shape variations — DB-persisted (from Haiku) ∪ default templates.
+        primary_keyword = keywords[0] if keywords else (all_search_terms[0] if all_search_terms else "")
+        haiku_phrasings = list(tj.get("query_phrasings") or [])
+        default_phrasings = build_query_variations(primary_keyword, location, remote_only)
+        # Dedupe (case-insensitive) — Haiku takes priority since the user paid for it.
+        seen_q: set = set()
+        all_query_variations: List[str] = []
+        for q in haiku_phrasings + default_phrasings:
+            ql = (q or "").strip().lower()
+            if ql and ql not in seen_q:
+                seen_q.add(ql)
+                all_query_variations.append(q.strip())
+
         bookkeeping.append_log(
             run_id=agent_run_id, level="info",
-            message=f"Refresh started — {len(all_search_terms)} search term(s)",
-            data={"keywords": keywords, "expanded": expanded, "force": force},
+            message=f"Refresh started — {len(all_search_terms)} search term(s), {len(all_query_variations)} query variations",
+            data={"keywords": keywords, "expanded_count": len(expanded), "query_variations_count": len(all_query_variations), "force": force},
         )
 
         try:
@@ -457,6 +482,15 @@ class JobResearchService:
                     employment_type=tj.get("employment_type") or None,
                     attribution=attribution,
                     limit=30,
+                ))
+            # v0.4: google_serp — general Google web SERP, fanned out across query variations
+            if sources_enabled.get("google_serp", True) and all_query_variations:
+                sources_called.append("google_serp")
+                tasks.append(search_via_dataforseo_serp(
+                    queries=all_query_variations[:5],
+                    country_code=country_code,
+                    attribution=attribution,
+                    limit_per_query=10,
                 ))
             if sources_enabled.get("perplexity", True):
                 sources_called.append("perplexity")

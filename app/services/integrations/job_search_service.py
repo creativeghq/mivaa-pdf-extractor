@@ -304,6 +304,142 @@ def _to_int(v: Any) -> Optional[int]:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# Source 5 (v0.4) — DataForSEO general Google web SERP
+#
+# Why this exists: `search_via_dataforseo_jobs` only hits Google's STRUCTURED
+# Jobs index (pages with Schema.org JobPosting markup). For niche queries,
+# Google Jobs is sparse. The general web SERP catches Lever / Greenhouse /
+# Workable / SmartRecruiters / company-blog career announcements that Google
+# indexes as regular pages but doesn't always promote into Google Jobs.
+#
+# Same DataForSEO auth, similar cost (~$0.0006/req).
+# ────────────────────────────────────────────────────────────────────────────
+
+async def search_via_dataforseo_serp(
+    *,
+    queries: List[str],
+    country_code: Optional[str],
+    attribution: costs.CostAttribution,
+    limit_per_query: int = 10,
+) -> List[JobHit]:
+    """Fan out general Google web search across query variations. Returns JobHits.
+    The SERP-URL filter still drops obvious aggregator pages; classifier filters
+    the rest downstream."""
+    auth = _dfs_auth_header()
+    if not auth or not queries:
+        return []
+
+    _COUNTRY_DEFAULT_LOCATION = {
+        "US": "United States", "GB": "London,England,United Kingdom",
+        "DE": "Germany", "FR": "France", "ES": "Spain", "IT": "Italy",
+        "NL": "Netherlands", "CA": "Canada", "AU": "Australia",
+        "GR": "Greece", "PL": "Poland", "SE": "Sweden",
+    }
+    location_name = _COUNTRY_DEFAULT_LOCATION.get((country_code or "US").upper(), "United States")
+
+    async def _one(query: str) -> List[JobHit]:
+        started = time.time()
+        out: List[JobHit] = []
+        err: Optional[str] = None
+        success = True
+        try:
+            body = [{
+                "keyword": query,
+                "language_code": "en",
+                "location_name": location_name,
+                "depth": min(max(limit_per_query, 10), 30),
+            }]
+            if country_code:
+                body[0]["location_country_code"] = country_code.upper()
+            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
+                resp = await client.post(
+                    f"{_DATAFORSEO_BASE}/serp/google/organic/live/advanced",
+                    headers={"Authorization": auth, "Content-Type": "application/json"},
+                    json=body,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            for task in ((data or {}).get("tasks") or []):
+                for result in (task.get("result") or []):
+                    for item in (result.get("items") or []):
+                        if (item.get("type") or "").lower() not in ("organic", "organic_serp", "featured_snippet"):
+                            continue
+                        url = item.get("url") or ""
+                        if not url or not url.startswith(("http://", "https://")):
+                            continue
+                        # Drop aggregator SERP / category landing pages — same filter as Perplexity.
+                        if _is_aggregator_serp_url(url):
+                            continue
+                        canonical = canonicalize_url(url)
+                        title = item.get("title")
+                        # SERP items have a domain; that's the closest proxy to company
+                        host = domain_of(url)
+                        company = host.split(".")[0].title() if host else None
+                        if company and company.lower() in _AGGREGATOR_COMPANY_NAMES:
+                            # e.g. drop indeed.com / glassdoor.com results that slipped past the URL filter
+                            continue
+                        out.append(JobHit(
+                            url=url,
+                            canonical_url=canonical,
+                            content_hash=content_hash(canonical, title, company),
+                            title=title,
+                            company=company,
+                            company_domain=host,
+                            description_excerpt=(item.get("description") or "")[:500] or None,
+                            source="google_serp",
+                            raw_payload={"serp_query": query[:120]},
+                        ))
+        except Exception as e:
+            success = False
+            err = str(e)[:200]
+            logger.warning(f"job-search dataforseo-serp ({query[:60]}): {err}")
+
+        costs.log_external_call(
+            operation_type="job_research.discovery.dataforseo_serp",
+            model_name="dataforseo-google-organic",
+            raw_cost_usd=costs.DATAFORSEO_JOBS_PER_CALL,  # same rate as the Jobs endpoint
+            attribution=attribution,
+            latency_ms=int((time.time() - started) * 1000),
+            extra_metadata={"query": query[:120], "location": location_name, "hits_returned": len(out)},
+            success=success,
+            error_message=err,
+        )
+        return out
+
+    # Run all variations in parallel; flatten + return.
+    batches = await asyncio.gather(*[_one(q) for q in queries[:5]], return_exceptions=False)
+    flat: List[JobHit] = []
+    for b in batches:
+        flat.extend(b)
+    return flat
+
+
+def build_query_variations(primary_keyword: str, location: Optional[str], remote_only: bool) -> List[str]:
+    """Return a list of query-shape variations for the user's primary keyword.
+    Used by the SERP source and (optionally) Perplexity to broaden recall.
+
+    These are SEARCH PHRASE templates, not title variants. Title variants live
+    in tracked_jobs.expanded_keywords (used by the classifier). Query phrasings
+    optionally come from Haiku via the keyword-expansion service and merge with
+    these defaults."""
+    base = (primary_keyword or "").strip()
+    if not base:
+        return []
+    where = (location or "").strip()
+    where_part = ""
+    if where and where.lower() not in {"remote", "anywhere", "worldwide", "global", "any"}:
+        where_part = f" {where}"
+    remote_suffix = " remote" if remote_only else ""
+    return [
+        f"{base}{remote_suffix} jobs{where_part}",
+        f"{base} careers page{where_part}",
+        f"{base}{remote_suffix} hiring{where_part}",
+        f"{base}{remote_suffix} job opening{where_part}",
+        f"{base}{remote_suffix} apply{where_part}",
+    ]
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Source 2 — Perplexity Sonar with job-board domain filter + JSON schema
 # ────────────────────────────────────────────────────────────────────────────
 

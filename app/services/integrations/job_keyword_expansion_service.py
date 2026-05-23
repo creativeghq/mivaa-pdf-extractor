@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 _EXPAND_TOOL = {
     "name": "submit_expanded_keywords",
-    "description": "Return job-search keyword variants the user likely also wants to match.",
+    "description": "Return job-search keyword variants AND search-query phrasings the engine should also try.",
     "input_schema": {
         "type": "object",
         "properties": {
@@ -51,6 +51,20 @@ _EXPAND_TOOL = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Common abbreviations or industry shorthand (e.g. 'PM' for product manager). Up to 4.",
+            },
+            "query_phrasings": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "v0.4: SEARCH-PHRASE templates (full queries the engine fans out across), "
+                    "DISTINCT from title variants above. For 'senior product manager' good "
+                    "phrasings: 'senior product manager hiring 2026', "
+                    "'product manager job opening senior', 'senior PM careers page', "
+                    "'principal product manager role open'. Each phrasing becomes its own "
+                    "Google SERP / Perplexity call. Up to 5. Aim for variety in WORD ORDER, "
+                    "use of synonyms ('opening', 'role', 'hiring', 'careers'), and time hints."
+                ),
+                "default": [],
             },
             "rejected_terms": {
                 "type": "array",
@@ -177,5 +191,19 @@ async def expand_keywords(
             expanded.append(t)
 
     rejected = [(r or "").strip() for r in (raw.get("rejected_terms") or []) if r]
+    # v0.4: query phrasings (full search-phrase templates) — dedupe + clean
+    query_phrasings_seen: set = set()
+    query_phrasings: list = []
+    for p in (raw.get("query_phrasings") or []):
+        t = (p or "").strip()
+        if not t or t.lower() in query_phrasings_seen:
+            continue
+        query_phrasings_seen.add(t.lower())
+        query_phrasings.append(t)
 
-    return {"expanded": expanded[:18], "rejected": rejected, "raw": raw}
+    return {
+        "expanded": expanded[:18],
+        "rejected": rejected,
+        "query_phrasings": query_phrasings[:5],
+        "raw": raw,
+    }
