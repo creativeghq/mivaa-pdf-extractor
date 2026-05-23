@@ -121,6 +121,13 @@ _SERP_URL_PATTERNS = [
     # WeWorkRemotely category landing pages (postings live under /remote-jobs/<id>-…)
     re.compile(r"weworkremotely\.com/categories/", re.I),
     re.compile(r"weworkremotely\.com/remote-jobs/?$", re.I),
+    # v0.4.3: ZipRecruiter category pages (price-prefixed slug + city suffix)
+    re.compile(r"ziprecruiter\.com/Jobs/[^/]+/-in-", re.I),
+    re.compile(r"ziprecruiter\.com/c/[^/]+/Jobs", re.I),
+    # v0.4.3: Dice search URLs (same q- pattern as Indeed)
+    re.compile(r"dice\.com/(jobs/q-|jobs/?\?)", re.I),
+    # v0.4.3: Monster search URLs
+    re.compile(r"monster\.[a-z.]+/jobs/(search|q-)", re.I),
     # Generic "search results" hints
     re.compile(r"[?&]q=", re.I),
     re.compile(r"/search[?/]", re.I),
@@ -229,6 +236,13 @@ def _looks_like_category_title(title: Optional[str]) -> bool:
         return True
     # 5. "Apply Now" CTA at end — usually a category page
     if re.search(r"\bapply\s+now\b\s*$", t, re.I):
+        return True
+    # 6. v0.4.3: ZipRecruiter-shaped titles: "$<price> <Role> Jobs in <Place>"
+    #    e.g. "$116k-$175k Senior Python Developer Jobs in Houston, TX"
+    if re.search(r"\bjobs?\s+in\s+[A-Z][a-zA-Z]+(\s*,\s*[A-Z]{2,})?", t):
+        return True
+    # 7. v0.4.3: Salary-band-prefixed titles ("$Xk-$Yk ...") almost always category
+    if re.match(r"^\s*\$\d", t):
         return True
     return False
 
