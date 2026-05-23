@@ -202,6 +202,47 @@ def _is_category_page_url(url: str) -> bool:
         return False
 
 
+_PLACEHOLDER_COMPANY_PATTERNS = re.compile(
+    r"^\s*(acme|companyxyz|example|sample|placeholder|fictional|fake|"
+    r"company\s*[a-z]?|your\s+company|test\s*co|demo\s*co|"
+    r"\[?company\s*name\]?|\[?employer\]?|n/?a|tbd|unknown|undisclosed)"
+    r"(\s|\.|,|$|inc|llc|co|ltd)",
+    re.I,
+)
+_SEQUENTIAL_ID_RE = re.compile(r"(\d{4,})")
+_PALINDROMIC_ID_RE = re.compile(r"\b(\d{6,})\b")
+
+
+def _is_placeholder_company(name: Optional[str]) -> bool:
+    """v0.4.4: Reject Sonar-fabricated placeholder company names."""
+    if not name:
+        return False
+    return bool(_PLACEHOLDER_COMPANY_PATTERNS.match(name.strip()))
+
+
+def _looks_hallucinated_url(url: str) -> bool:
+    """v0.4.4: Reject Sonar-fabricated URLs whose numeric IDs are obviously
+    not real: sequential (1234567890, 0987654321), palindromic, or very short
+    consecutive runs (123, 12345). Real job-board IDs are large random ints."""
+    if not url:
+        return False
+    for m in _PALINDROMIC_ID_RE.finditer(url):
+        digits = m.group(1)
+        # Sequential ascending: 1234567890, 123456789
+        if digits == "".join(str((int(digits[0]) + i) % 10) for i in range(len(digits))):
+            return True
+        # Sequential descending: 0987654321
+        if digits == "".join(str((int(digits[0]) - i) % 10) for i in range(len(digits))):
+            return True
+        # Palindrome
+        if len(digits) >= 6 and digits == digits[::-1]:
+            return True
+        # All same digit
+        if len(set(digits)) == 1:
+            return True
+    return False
+
+
 def _looks_like_category_title(title: Optional[str]) -> bool:
     """Title-shape heuristic for aggregator/category pages. Catches:
       - "25 Python jobs in Developer / Engineer"
@@ -658,36 +699,41 @@ async def search_via_perplexity(
     remote_clause = "Remote-only roles (work-from-anywhere)." if remote_only else ""
     seniority_clause = f"Seniority: {seniority}." if seniority and seniority != "any" else ""
 
-    # v0.3.6: rewritten prompt. Previous version returned aggregator SERPs
-    # ("indeed.com/q-senior-python-developer-jobs.html") instead of actual postings.
-    # New version explicitly forbids search/landing pages and demands a URL that
-    # resolves to a single specific job with title + company + apply CTA.
+    # v0.4.4 — anti-hallucination overhaul. Sonar-pro will FABRICATE postings to
+    # fill a structured JSON array when it can't find enough real ones (e.g.
+    # company='Acme Inc.', palindromic Glassdoor IDs, sequential WeWorkRemotely
+    # IDs 12345/12346/12347). Three counter-measures applied:
+    #   1. Cap limit aggressively (5 not 15) — less pressure to invent
+    #   2. Explicit anti-hallucination directive + permission for empty results
+    #   3. Post-call hallucination detector (see _looks_like_hallucinated_hit)
+    capped_limit = min(limit, 5)
     user_prompt = (
         f"Find INDIVIDUAL JOB POSTINGS for: {keyword_str} {location_clause}. "
         f"{remote_clause} {seniority_clause} "
         f"Exclude: {excl_kw} {excl_co}. "
         f"\n\n"
-        f"CRITICAL — each result must be a SPECIFIC JOB AD, not a listing page:\n"
-        f"  ✅ ACCEPT: a URL that opens to ONE position, with a job title at the top, "
-        f"a hiring company name, and an 'Apply' button or application form. "
-        f"Examples of acceptable URL patterns: "
-        f"linkedin.com/jobs/view/<numeric_id>, "
-        f"indeed.com/viewjob?jk=<hash>, "
-        f"glassdoor.com/job-listing/<slug>-JV_<hash>.htm, "
-        f"<company>.com/careers/<job-slug>, "
-        f"<company>.greenhouse.io/jobs/<numeric_id>, "
-        f"<company>.lever.co/<job-id>, "
-        f"weworkremotely.com/remote-jobs/<numeric_id>-<slug>.\n"
-        f"  ❌ REJECT (do NOT return these): search results pages "
-        f"(indeed.com/q-…-jobs.html, glassdoor.com/Job/…-SRCH_…htm, linkedin.com/jobs/search), "
-        f"category landing pages, 'X jobs in Y' aggregator pages, "
-        f"company careers index pages without a specific role, "
-        f"or any URL whose path contains 'search', 'q-', 'SRCH', or '/jobs.html'.\n"
-        f"  Test before including: does the URL resolve to ONE job with an apply button? "
-        f"If it lists multiple jobs, REJECT it.\n\n"
-        f"Return up to {limit} distinct postings as JSON. Posted within the last 30 days. "
-        f"Set `company` to the actual hiring employer (e.g. 'Stripe', 'Anthropic'), "
-        f"NOT the aggregator site (NEVER 'Indeed' or 'Glassdoor' as the company)."
+        f"⚠️ CRITICAL ANTI-HALLUCINATION RULES — DO NOT VIOLATE:\n"
+        f"  - ONLY return URLs you have ACTUALLY found through search. NEVER guess, infer,\n"
+        f"    or invent a URL/job-ID/company-name that you have not verified.\n"
+        f"  - If you find fewer than {capped_limit} verifiable postings, RETURN FEWER.\n"
+        f"    An empty `listings` array IS ACCEPTABLE. Quality over quantity.\n"
+        f"  - NEVER use placeholder company names like 'Acme Inc.', 'CompanyXYZ',\n"
+        f"    'Example Co.', 'Sample Corp', '[Company Name]', or any obvious placeholder.\n"
+        f"    If you don't know the company, leave the field blank rather than inventing one.\n"
+        f"  - NEVER fabricate sequential or palindromic numeric IDs in URLs. Real IDs are\n"
+        f"    typically large random-looking integers or hashes.\n"
+        f"\n"
+        f"URL FILTER — each result must be a SPECIFIC JOB AD, not a listing page:\n"
+        f"  ✅ ACCEPT: URLs that resolve to ONE position with title + company + apply CTA.\n"
+        f"     Examples: linkedin.com/jobs/view/<id>, indeed.com/viewjob?jk=<hash>,\n"
+        f"     glassdoor.com/job-listing/<slug>-JV_<id>.htm, <co>.greenhouse.io/jobs/<id>,\n"
+        f"     <co>.lever.co/<job-id>, weworkremotely.com/remote-jobs/<id>-<slug>.\n"
+        f"  ❌ REJECT: search-results pages, /q- paths, /search paths, /SRCH paths,\n"
+        f"     category landing pages, 'X jobs in Y' aggregator pages.\n"
+        f"\n"
+        f"Return UP TO {capped_limit} verified postings as JSON, posted within the last 30 days. "
+        f"Set `company` to the actual hiring employer (NEVER 'Indeed'/'Glassdoor' or a placeholder); "
+        f"leave blank if unknown."
     )
 
     # v0.4: load the operator-curated list from job_research_sites (editable in the
@@ -756,12 +802,21 @@ async def search_via_perplexity(
             if _looks_like_category_title(title):
                 logger.info(f"job-search perplexity: dropping category-shaped title: {(title or '')[:80]}")
                 continue
+            # v0.4.4: hallucination check — Sonar fabricates URLs with sequential
+            # or palindromic IDs when asked to fill a structured listings array.
+            if _looks_hallucinated_url(url):
+                logger.warning(f"job-search perplexity: dropping likely-hallucinated URL (sequential/palindromic ID): {url[:120]}")
+                continue
             canonical = canonicalize_url(url)
             company = item.get("company")
             # v0.3.6: also reject when the "company" is one of the aggregators
             # (Indeed / Glassdoor / LinkedIn / Monster as the company means it's a SERP)
             if company and company.strip().lower() in _AGGREGATOR_COMPANY_NAMES:
                 logger.info(f"job-search perplexity: dropping result where company='{company}' (aggregator masquerading as employer)")
+                continue
+            # v0.4.4: drop fabricated placeholder companies ('Acme Inc.', 'CompanyXYZ', etc.)
+            if _is_placeholder_company(company):
+                logger.warning(f"job-search perplexity: dropping placeholder company '{company}' (likely hallucination)")
                 continue
             hits.append(JobHit(
                 url=url,
