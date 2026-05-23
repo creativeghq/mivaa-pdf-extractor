@@ -3,6 +3,15 @@ name: 🚀 MIVAA Deployment (Default)
 on:
   push:
     branches: [ "main", "production" ]
+    # Skip pushes that only touch docs/markdown — they can't affect runtime
+    # behavior of the Python service. Anything not matched by paths-ignore
+    # still triggers the workflow, including any file under app/, scripts/,
+    # configs, requirements.txt, .python-version, and this workflow itself.
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
   workflow_dispatch:
     inputs:
       deployment_reason:
@@ -10,6 +19,11 @@ on:
         required: false
         default: 'Manual deployment using standard pipeline'
         type: string
+      force_full_deploy:
+        description: 'Force pip install + venv verification + systemd regeneration (ignore the deps-unchanged shortcut)'
+        required: false
+        default: false
+        type: boolean
 
 # Fix D: serialize MIVAA deploys. A second push cancels itself in the queue
 # instead of running in parallel and double-restarting the systemd unit
@@ -27,6 +41,9 @@ jobs:
       # 1. Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # paths-filter needs the previous commit to diff against on push events.
+          fetch-depth: 2
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
@@ -39,6 +56,8 @@ jobs:
           PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
           DATAFORSEO_LOGIN: ${{ secrets.DATAFORSEO_LOGIN }}
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
+          TURNSTILE_SITE_KEY: ${{ secrets.TURNSTILE_SITE_KEY }}
+          TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
           HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
           HUGGING_FACE_ACCESS_TOKEN: ${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
@@ -58,6 +77,64 @@ jobs:
         uses: webfactory/ssh-agent@v0.9.0
         with:
           ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      # 2.5. Detect what kind of change this push contains. The output is used
+      # later to skip the 10-minute pip-install + verify steps when nothing
+      # that affects the venv has changed (i.e. typical app/** code-only push).
+      #
+      # `deps` covers everything that changes the venv:
+      #   - requirements.txt / requirements-dev.txt (Python dep list)
+      #   - .python-version (Python interpreter)
+      #   - this workflow file (since exact versions are pinned in the pip
+      #     install step here, not in requirements.txt — see deploy.yml:343+)
+      #
+      # `unit` covers anything that changes the systemd unit file definition,
+      # which is also embedded in this workflow at line ~739.
+      #
+      # On workflow_dispatch with force_full_deploy=true, both are forced on.
+      - name: 🧭 Detect changed areas
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            deps:
+              - 'requirements.txt'
+              - 'requirements-dev.txt'
+              - '.python-version'
+              - '.github/workflows/deploy.yml'
+            unit:
+              - '.github/workflows/deploy.yml'
+
+      - name: 🧮 Resolve gate flags
+        id: gate
+        run: |
+          set -euo pipefail
+          FORCE='${{ github.event.inputs.force_full_deploy }}'
+          DEPS='${{ steps.changes.outputs.deps }}'
+          UNIT='${{ steps.changes.outputs.unit }}'
+
+          # workflow_dispatch with force_full_deploy=true overrides the filter.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$FORCE" = "true" ]; then
+            DEPS=true
+            UNIT=true
+          fi
+
+          DEPS="${DEPS:-false}"
+          UNIT="${UNIT:-false}"
+
+          echo "install_deps=$DEPS" >> "$GITHUB_OUTPUT"
+          echo "rewrite_unit=$UNIT" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "📊 Gate decisions:"
+          echo "  • install_deps (pip install + venv verify) = $DEPS"
+          echo "  • rewrite_unit (regenerate systemd unit)   = $UNIT"
+          if [ "$DEPS" != "true" ]; then
+            echo "⏩ Fast-path: skipping pip install + venv verify (~10-15 min saved)"
+          fi
+          if [ "$UNIT" != "true" ]; then
+            echo "⏩ Fast-path: skipping systemd unit regeneration"
+          fi
 
       # 3. Deployment Overview & Summary
       - name: 📋 Deployment Overview & Summary
@@ -318,7 +395,11 @@ jobs:
           "
 
       # 4.2. Install Python packages
+      # Gated on the deps-changed filter: skipped when no dep-affecting file
+      # (requirements.txt, .python-version, this workflow) changed. This step
+      # is the dominant cost of the deploy (~10-15 min).
       - name: 📦 Install Python packages
+        if: steps.gate.outputs.install_deps == 'true'
         run: |
           ssh -o StrictHostKeyChecking=no root@157.245.166.19 "
           cd /var/www/mivaa-pdf-extractor
@@ -408,7 +489,11 @@ jobs:
           "
 
       # 4.3. Verify package installations
+      # Same gate as the install step — verifying packages we didn't reinstall
+      # is wasted work. If the previous deploy passed verification and deps
+      # are unchanged, the venv hasn't moved.
       - name: ✅ Verify package installations
+        if: steps.gate.outputs.install_deps == 'true'
         run: |
           ssh -o StrictHostKeyChecking=no root@157.245.166.19 "
           cd /var/www/mivaa-pdf-extractor
@@ -736,7 +821,13 @@ jobs:
 
 
       # 4.6. Create/Update systemd service file
+      # Gated on whether this workflow file changed (the unit definition is
+      # embedded below). Skipping this step on app-code-only pushes means
+      # secret-rotation changes won't reach the service until a deploy that
+      # also touches the unit — use `workflow_dispatch → force_full_deploy=true`
+      # to push fresh secrets without a code change.
       - name: 🔧 Create/Update systemd service file
+        if: steps.gate.outputs.rewrite_unit == 'true'
         run: |
           echo "🔧 Creating/updating systemd service file..."
           ssh -o StrictHostKeyChecking=no root@157.245.166.19 'sudo tee /etc/systemd/system/mivaa-pdf-extractor.service > /dev/null' << 'SERVICE_EOF'
@@ -789,6 +880,8 @@ jobs:
           Environment=DATAFORSEO_LOGIN=${{ secrets.DATAFORSEO_LOGIN }}
           Environment=DATAFORSEO_PASSWORD=${{ secrets.DATAFORSEO_PASSWORD }}
           Environment=DATAFORSEO_BASE64=${{ secrets.DATAFORSEO_BASE64 }}
+          Environment=TURNSTILE_SITE_KEY=${{ secrets.TURNSTILE_SITE_KEY }}
+          Environment=TURNSTILE_SECRET_KEY=${{ secrets.TURNSTILE_SECRET_KEY }}
           # Mention Monitoring (2026-05-03) — YouTube + Gemini for the
           # LLM-probe matrix. Both optional: empty values cause the
           # corresponding source to silently no-op. News (DataForSEO),
