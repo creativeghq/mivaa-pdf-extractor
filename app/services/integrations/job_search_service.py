@@ -107,6 +107,45 @@ def domain_of(url: str) -> str:
         return ""
 
 
+# v0.3.6: SERP / aggregator URL patterns. Belt-and-suspenders against Perplexity
+# occasionally returning category pages instead of individual postings.
+_SERP_URL_PATTERNS = [
+    # Indeed search results: /q-<keyword>-jobs.html, /jobs?q=…
+    re.compile(r"indeed\.[a-z.]+/(q-|jobs\?|cmp/|companies/)", re.I),
+    # Glassdoor SERP / index pages
+    re.compile(r"glassdoor\.[a-z.]+/Job/", re.I),
+    re.compile(r"glassdoor\.[a-z.]+/Search/", re.I),
+    # LinkedIn job SEARCH (real postings live under /jobs/view/<id> instead)
+    re.compile(r"linkedin\.com/jobs/search", re.I),
+    re.compile(r"linkedin\.com/jobs/?$", re.I),
+    # WeWorkRemotely category landing pages (postings live under /remote-jobs/<id>-…)
+    re.compile(r"weworkremotely\.com/categories/", re.I),
+    re.compile(r"weworkremotely\.com/remote-jobs/?$", re.I),
+    # Generic "search results" hints
+    re.compile(r"[?&]q=", re.I),
+    re.compile(r"/search[?/]", re.I),
+    re.compile(r"-SRCH_", re.I),
+]
+
+_AGGREGATOR_COMPANY_NAMES = {
+    "indeed", "glassdoor", "linkedin", "monster", "ziprecruiter", "dice",
+    "wellfound", "angellist", "stack overflow", "stackoverflow",
+    "weworkremotely", "we work remotely", "remoteok", "remote ok",
+    "google", "google jobs",
+}
+
+
+def _is_aggregator_serp_url(url: str) -> bool:
+    """Returns True if the URL is obviously a search-results / category landing /
+    aggregator-index page rather than an individual job posting."""
+    if not url:
+        return False
+    for pat in _SERP_URL_PATTERNS:
+        if pat.search(url):
+            return True
+    return False
+
+
 def content_hash(canonical_url: str, title: Optional[str], company: Optional[str]) -> str:
     h = hashlib.sha1()
     h.update((canonical_url or "").encode("utf-8"))
@@ -156,10 +195,25 @@ async def search_via_dataforseo_jobs(
     if remote_only and "remote" not in keyword_str.lower():
         keyword_str = f"{keyword_str} remote"
 
+    # v0.3.6: DataForSEO requires a real geographic location_name (city / region /
+    # country); "remote" or empty silently returns 0 hits. Map the user's location
+    # to a real fallback. Prefer country_code as a city-resolution hint.
+    _COUNTRY_DEFAULT_LOCATION = {
+        "US": "United States", "GB": "London,England,United Kingdom", "UK": "London,England,United Kingdom",
+        "DE": "Germany", "FR": "France", "ES": "Spain", "IT": "Italy",
+        "NL": "Netherlands", "CA": "Canada", "AU": "Australia",
+        "GR": "Greece", "PL": "Poland", "SE": "Sweden", "DK": "Denmark",
+    }
+    raw_loc = (location or "").strip().lower()
+    if not location or raw_loc in {"remote", "anywhere", "worldwide", "global", "any"}:
+        resolved_location = _COUNTRY_DEFAULT_LOCATION.get((country_code or "US").upper(), "United States")
+    else:
+        resolved_location = location
+
     body = [{
         "keyword": keyword_str,
         "language_code": "en",
-        "location_name": location or "United States",
+        "location_name": resolved_location,
         "depth": min(max(limit, 10), 100),
     }]
     if country_code:
@@ -342,14 +396,36 @@ async def search_via_perplexity(
     remote_clause = "Remote-only roles." if remote_only else ""
     seniority_clause = f"Seniority: {seniority}." if seniority and seniority != "any" else ""
 
+    # v0.3.6: rewritten prompt. Previous version returned aggregator SERPs
+    # ("indeed.com/q-senior-python-developer-jobs.html") instead of actual postings.
+    # New version explicitly forbids search/landing pages and demands a URL that
+    # resolves to a single specific job with title + company + apply CTA.
     user_prompt = (
-        f"Find currently-open job listings matching: {keyword_str} {location_clause}. "
+        f"Find INDIVIDUAL JOB POSTINGS for: {keyword_str} {location_clause}. "
         f"{remote_clause} {seniority_clause} "
         f"Exclude: {excl_kw} {excl_co}. "
-        f"Return up to {limit} distinct postings as JSON. "
-        f"Each must have a working application URL, exact job title, and hiring company. "
-        f"Skip aggregator pages (Indeed listing pages without direct application URL); "
-        f"prefer the company's own posting where available. Posted within the last 30 days."
+        f"\n\n"
+        f"CRITICAL — each result must be a SPECIFIC JOB AD, not a listing page:\n"
+        f"  ✅ ACCEPT: a URL that opens to ONE position, with a job title at the top, "
+        f"a hiring company name, and an 'Apply' button or application form. "
+        f"Examples of acceptable URL patterns: "
+        f"linkedin.com/jobs/view/<numeric_id>, "
+        f"indeed.com/viewjob?jk=<hash>, "
+        f"glassdoor.com/job-listing/<slug>-JV_<hash>.htm, "
+        f"<company>.com/careers/<job-slug>, "
+        f"<company>.greenhouse.io/jobs/<numeric_id>, "
+        f"<company>.lever.co/<job-id>, "
+        f"weworkremotely.com/remote-jobs/<numeric_id>-<slug>.\n"
+        f"  ❌ REJECT (do NOT return these): search results pages "
+        f"(indeed.com/q-…-jobs.html, glassdoor.com/Job/…-SRCH_…htm, linkedin.com/jobs/search), "
+        f"category landing pages, 'X jobs in Y' aggregator pages, "
+        f"company careers index pages without a specific role, "
+        f"or any URL whose path contains 'search', 'q-', 'SRCH', or '/jobs.html'.\n"
+        f"  Test before including: does the URL resolve to ONE job with an apply button? "
+        f"If it lists multiple jobs, REJECT it.\n\n"
+        f"Return up to {limit} distinct postings as JSON. Posted within the last 30 days. "
+        f"Set `company` to the actual hiring employer (e.g. 'Stripe', 'Anthropic'), "
+        f"NOT the aggregator site (NEVER 'Indeed' or 'Glassdoor' as the company)."
     )
 
     # v0.4: load the operator-curated list from job_research_sites (editable in the
@@ -410,9 +486,19 @@ async def search_via_perplexity(
             url = (item.get("url") or "").strip()
             if not url or not url.startswith(("http://", "https://")):
                 continue
+            # v0.3.6: defensive post-filter for obvious SERP/aggregator URLs.
+            # Perplexity sometimes returns these despite the prompt; we drop them.
+            if _is_aggregator_serp_url(url):
+                logger.info(f"job-search perplexity: dropping aggregator/SERP url: {url[:120]}")
+                continue
             canonical = canonicalize_url(url)
             title = item.get("title")
             company = item.get("company")
+            # v0.3.6: also reject when the "company" is one of the aggregators
+            # (Indeed / Glassdoor / LinkedIn / Monster as the company means it's a SERP)
+            if company and company.strip().lower() in _AGGREGATOR_COMPANY_NAMES:
+                logger.info(f"job-search perplexity: dropping result where company='{company}' (aggregator masquerading as employer)")
+                continue
             hits.append(JobHit(
                 url=url,
                 canonical_url=canonical,
