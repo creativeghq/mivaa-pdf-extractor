@@ -35,6 +35,7 @@ from app.services.images.image_processing_service import ImageProcessingService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
+from app.services.facets import canonicalize_product_attributes
 import sentry_sdk
 
 # Category → default unit mapping (mirrors material_categories.default_unit)
@@ -646,6 +647,28 @@ class DataImportService:
                 except Exception as lookup_err:
                     logger.warning(f"   ⚠️ SKU lookup failed for {external_sku}: {lookup_err}")
 
+            # ── Auto-canonicalize descriptive facets (XML supplier feeds) ────
+            # XML has no LLM upstream, so this path relies entirely on the
+            # canonicalizer's L0.5 (Haiku pretranslate) + L2 (Voyage cosine).
+            # Multilingual raw values from supplier feeds (Greek/Italian/German)
+            # auto-collapse to English canonicals here. Passing existing_id
+            # enables diff-before-canonicalize so re-imports skip already-seen
+            # values without re-paying translation/embedding cost.
+            try:
+                canonical = await canonicalize_product_attributes(
+                    self.db, product_metadata, source='xml_import',
+                    product_id=existing_id if existing_id else None,
+                )
+                product_record['attributes'] = canonical.attributes
+                product_record['attributes_raw'] = canonical.attributes_raw
+                if canonical.resolutions:
+                    logger.info(
+                        f"   🏷️  XML canonicalized {len(canonical.resolutions)} facet values "
+                        f"across {len(canonical.attributes)} facets"
+                    )
+            except Exception as canon_err:
+                logger.warning(f"   ⚠️ Canonicalization failed (XML), continuing: {canon_err}")
+
             if existing_id:
                 # Update in place; refresh updated_at, preserve created_at
                 update_payload = {k: v for k, v in product_record.items() if k != 'created_at'}
@@ -996,10 +1019,19 @@ class DataImportService:
                         f"⚠️ Chunk {chunk_id} has empty content. Skipping embedding."
                     )
                     continue
-                embedding = await self.embedding_service.generate_text_embedding(content)
-                if embedding:
+                # generate_text_embedding returns {success, embedding, model} —
+                # unpack the embedding vector; writing the dict into halfvec is
+                # the bug fixed 2026-05-23.
+                emb_result = await self.embedding_service.generate_text_embedding(content)
+                emb_vec = emb_result.get('embedding') if isinstance(emb_result, dict) else None
+                if emb_result and emb_result.get('success') and emb_vec:
+                    from datetime import datetime as _dt
                     await self.db.table('document_chunks').update({
-                        'text_embedding': embedding
+                        'text_embedding': emb_vec,
+                        'embedding_model': emb_result.get('model') or 'voyage-3.5',
+                        'embedding_dimension': len(emb_vec),
+                        'embedding_generated_at': _dt.utcnow().isoformat(),
+                        'has_text_embedding': True,
                     }).eq('id', chunk_id).execute()
                     logger.info(f"✅ Generated text embedding for chunk {chunk_id}")
             except Exception as e:
@@ -1128,9 +1160,13 @@ class DataImportService:
                 except Exception as hist_err:
                     logger.warning(f"XML stage_history append failed: {hist_err}")
 
-                # Update background_jobs scalar fields
+                # Update background_jobs scalar fields. CORRECTION (2026-05-23):
+                # the column is `progress`, not `progress_percent`. PostgREST
+                # silently dropped the unknown column → XML jobs' progress was
+                # never updated in background_jobs. The stage_history append
+                # above is the only thing that worked.
                 await self.db.table('background_jobs').update({
-                    'progress_percent': progress_percent,
+                    'progress': progress_percent,
                     'last_heartbeat': now,
                 }).eq('id', background_job_id).execute()
 

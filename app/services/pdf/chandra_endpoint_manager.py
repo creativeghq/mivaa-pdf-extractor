@@ -169,8 +169,17 @@ class ChandraEndpointManager:
             endpoint.fetch()
 
             if endpoint.status == "running":
-                logger.info("✅ Chandra endpoint already running")
-                return True
+                # Don't blindly trust HF's "running" — the container can be up
+                # while inference is broken (model unloaded, OOM, wedged). Cheap
+                # /health probe catches this.
+                if self._test_inference():
+                    logger.info("✅ Chandra endpoint running and healthy")
+                    return True
+                logger.warning(
+                    "⚠️ Chandra endpoint reports running but /health probe failed — re-warming"
+                )
+                self.warmup_completed = False
+                return self.warmup()
 
             # Handle "initializing" state - poll until ready
             if endpoint.status == "initializing":

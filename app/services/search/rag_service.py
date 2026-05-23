@@ -396,12 +396,32 @@ class RAGService:
 
                             # Use UPDATE per row, not UPSERT — UPSERT falls back to INSERT on
                             # missing IDs and trips the NOT NULL `content` constraint.
+                            # Provenance (2026-05-23): stamp embedding_model +
+                            # embedding_dimension + embedding_generated_at on every chunk
+                            # so Voyage→OpenAI drift is detectable on chunk rows the
+                            # same way it is on image rows. Pulls the actual provider
+                            # that returned the vector via _last_provider (set inside
+                            # generate_batch_embeddings); falls back to the configured
+                            # voyage_model name.
+                            from datetime import datetime as _dt
+                            _emb_model = (
+                                getattr(self.embeddings_service, '_last_provider', None)
+                                or getattr(self.embeddings_service, 'voyage_model', None)
+                                or 'voyage-3.5'
+                            )
+                            _emb_now = _dt.utcnow().isoformat()
                             if updates:
                                 embeddings_stored = 0
                                 for update in updates:
                                     try:
                                         self.supabase_client.client.table('document_chunks')\
-                                            .update({'text_embedding': update['text_embedding'], 'has_text_embedding': True})\
+                                            .update({
+                                                'text_embedding': update['text_embedding'],
+                                                'has_text_embedding': True,
+                                                'embedding_model': _emb_model,
+                                                'embedding_dimension': len(update['text_embedding']) if update['text_embedding'] else 1024,
+                                                'embedding_generated_at': _emb_now,
+                                            })\
                                             .eq('id', update['id'])\
                                             .execute()
                                         embeddings_stored += 1
@@ -421,8 +441,20 @@ class RAGService:
                             try:
                                 embedding = await self.embeddings_service.generate_embedding(text, dimensions=1024)
                                 if embedding:
+                                    from datetime import datetime as _dt
+                                    _emb_model = (
+                                        getattr(self.embeddings_service, '_last_provider', None)
+                                        or getattr(self.embeddings_service, 'voyage_model', None)
+                                        or 'voyage-3.5'
+                                    )
                                     self.supabase_client.client.table('document_chunks')\
-                                        .update({'text_embedding': embedding, 'has_text_embedding': True})\
+                                        .update({
+                                            'text_embedding': embedding,
+                                            'has_text_embedding': True,
+                                            'embedding_model': _emb_model,
+                                            'embedding_dimension': len(embedding),
+                                            'embedding_generated_at': _dt.utcnow().isoformat(),
+                                        })\
                                         .eq('id', chunk_id)\
                                         .execute()
                                     embeddings_stored += 1

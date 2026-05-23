@@ -47,6 +47,7 @@ from app.schemas.api_responses import (
     CheckpointListResponse, RelevancyListResponse, StatsResponse,
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
+from app.dependencies import get_current_user, get_workspace_context
 
 logger = logging.getLogger(__name__)
 
@@ -595,7 +596,13 @@ async def upload_document(
     workspace_id: str = Form(
         "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
         description="Workspace ID"
-    )
+    ),
+    # Auth (added 2026-05-23). The route was previously anonymous, allowing
+    # any caller to spend Anthropic/HF/Voyage budget. We now require a valid
+    # JWT and derive the workspace from JWT claims — the form-supplied
+    # `workspace_id` is treated as a hint and rejected when it doesn't match
+    # the caller's workspace membership.
+    workspace_context = Depends(get_workspace_context),
 ):
     """
     **🎯 CONSOLIDATED UPLOAD ENDPOINT - Single Entry Point for All Upload Scenarios**
@@ -780,6 +787,26 @@ async def upload_document(
             # Don't block uploads if the draining check itself errors
             pass
 
+        # Workspace integrity check: the JWT-derived workspace from
+        # workspace_context.workspace_id is authoritative. The form-supplied
+        # `workspace_id` must either match it, or be left at the platform
+        # default (which we replace with the JWT-derived value). This closes
+        # the cross-workspace data-leak hole flagged in the 2026-05-23 audit.
+        _PLATFORM_DEFAULT_WS = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
+        _jwt_ws = str(workspace_context.workspace_id)
+        if workspace_id == _PLATFORM_DEFAULT_WS:
+            # Caller didn't override — bind to their actual workspace.
+            workspace_id = _jwt_ws
+        elif workspace_id != _jwt_ws:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"workspace_id '{workspace_id}' does not match the authenticated "
+                    f"caller's workspace ('{_jwt_ws}'). Submit a workspace_id you "
+                    f"are a member of, or omit it to use your default."
+                ),
+            )
+
         # Validate input: either file or file_url must be provided
         if not file and not file_url:
             raise HTTPException(
@@ -803,12 +830,43 @@ async def upload_document(
                     detail=f"Invalid category '{cat}'. Valid categories: {', '.join(valid_categories)}"
                 )
 
+        # `extract_only` mode: skip discovery + Stage 4 (products) and only run
+        # text/image extraction (Stages 1.5, 2, 3). Previously this was accepted
+        # by validation but never branched on — the orchestrator ran the full
+        # pipeline over an empty extract_categories list and produced nothing.
+        # The 2026-05-23 audit flagged this as dead code; we now reject mixing
+        # extract_only with other categories and route it through a leaner path.
+        extract_only_mode = False
+        if 'extract_only' in category_list:
+            if len(category_list) > 1:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "'extract_only' cannot be combined with other categories — "
+                        "it disables discovery. Submit it alone or remove it."
+                    ),
+                )
+            extract_only_mode = True
+            # The downstream orchestrator reads `category_list`; keeping it as
+            # ['extract_only'] is the explicit signal to skip Stage 0 discovery.
+
         # Expand 'all' to all categories
         # When 'all' is specified, we want FULL extraction, not focused extraction
         use_focused_extraction = True
         if 'all' in category_list:
             category_list = ['products', 'certificates', 'logos', 'specifications']
             use_focused_extraction = False  # Process ALL pages, not just category pages
+
+        # The `focused_extraction` flag has not been wired through Stages 1/2/3/4
+        # — only Stage 5 quality reads it. Until we actually plumb it into the
+        # per-stage page filters, log the gap honestly instead of pretending
+        # focused mode is doing something it isn't.
+        if use_focused_extraction:
+            logger.info(
+                f"📋 focused_extraction=True for categories={category_list} — "
+                f"NOTE: currently only Stage 5 honors this flag; Stages 1-4 still "
+                f"process all pages."
+            )
 
         # Handle file upload or URL download
         file_content = None
@@ -985,7 +1043,10 @@ async def upload_document(
                     "discovery_model": discovery_model,
                     "prompt_enhancement_enabled": enable_prompt_enhancement,
                     "agent_prompt": agent_prompt,
-                    "file_url": file_url
+                    # NOTE: do NOT persist file_url here. It is a short-lived
+                    # signed URL on a private bucket and will 403 the moment
+                    # the token expires. Resume reads (storage_bucket,
+                    # storage_object_path) and re-signs via service role.
                 },
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
@@ -1041,7 +1102,8 @@ async def upload_document(
                     "discovery_model": discovery_model,
                     "prompt_enhancement_enabled": enable_prompt_enhancement,
                     "agent_prompt": agent_prompt,
-                    "file_url": file_url,
+                    # NOTE: do NOT persist file_url here — see documents.metadata
+                    # comment above. Resume uses storage_bucket/storage_object_path.
                     "test_single_product": test_single_product  # 🧪 TEST MODE flag
                 },
                 "created_at": datetime.utcnow().isoformat(),
@@ -1076,7 +1138,8 @@ async def upload_document(
             workspace_id=workspace_id,
             agent_prompt=agent_prompt,
             enable_prompt_enhancement=enable_prompt_enhancement,
-            test_single_product=test_single_product  # 🧪 TEST MODE flag
+            test_single_product=test_single_product,  # 🧪 TEST MODE flag
+            extract_only_mode=extract_only_mode  # NEW: skip Stage 0 + downstream
         )
         logger.info(f"✅ Background processing task started for job {job_id}")
 
@@ -1428,38 +1491,49 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             file_path = doc_data.get('file_path')
             filename = doc_data.get('filename', 'document.pdf')
             metadata = doc_data.get('metadata', {})
+            storage_bucket = doc_data.get('storage_bucket')
+            storage_object_path = doc_data.get('storage_object_path')
 
-            # If file_path points at a local temp file (gone after pod restart), fall back to metadata.file_url.
+            # If file_path points at a local temp file (gone after pod restart),
+            # fall back to canonical (storage_bucket, storage_object_path). The
+            # previously-persisted metadata.file_url is intentionally NOT read
+            # here — it was a short-lived signed URL and would have expired by
+            # the time auto-recovery runs.
             if file_path and file_path.startswith('/tmp/'):
-                file_url = metadata.get('file_url')
-                if file_url:
-                    logger.info(f"⚠️ file_path is local temp file ({file_path}), using file_url from metadata: {file_url}")
-                    file_path = file_url
+                if storage_bucket and storage_object_path:
+                    logger.info(
+                        f"⚠️ file_path is local temp file ({file_path}); "
+                        f"resolving from storage bucket={storage_bucket} path={storage_object_path}"
+                    )
+                    file_path = None  # force the storage-download branch below
                 else:
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Document {document_id} has local temp file_path but no file_url in metadata"
+                        detail=f"Document {document_id} has local temp file_path but no storage_bucket/storage_object_path. Cannot resume."
                     )
 
-            if not file_path:
+            if not file_path and not (storage_bucket and storage_object_path):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Document {document_id} has no file_path"
+                    detail=f"Document {document_id} has no file_path or storage location"
                 )
 
             # Download file from storage or URL
-            logger.info(f"📥 Downloading file from: {file_path}")
+            logger.info(f"📥 Downloading file: bucket={storage_bucket} path={storage_object_path} fallback={file_path}")
 
-            # Check if file_path is a full URL (starts with http:// or https://)
-            if file_path.startswith('http://') or file_path.startswith('https://'):
-                # Download from URL with extended timeout for large PDFs
-                async with httpx.AsyncClient(timeout=60.0) as client:  # 60 second timeout for large files
+            if storage_bucket and storage_object_path:
+                # Service-role download from the canonical storage location.
+                # Bypasses signed-URL TTLs entirely.
+                file_response = supabase_client.client.storage.from_(storage_bucket).download(storage_object_path)
+            elif file_path and (file_path.startswith('http://') or file_path.startswith('https://')):
+                # Legacy URL-based path (pre-storage_object_path migration).
+                async with httpx.AsyncClient(timeout=60.0) as client:
                     response = await client.get(file_path)
                     response.raise_for_status()
                     file_response = response.content
                     logger.info(f"✅ Downloaded file from URL: {len(file_response)} bytes")
             else:
-                # Download from Supabase storage
+                # Legacy: file_path encodes "{bucket}/{key}"
                 bucket_name = file_path.split('/')[0] if '/' in file_path else 'pdf-documents'
                 storage_path = '/'.join(file_path.split('/')[1:]) if '/' in file_path else file_path
                 file_response = supabase_client.client.storage.from_(bucket_name).download(storage_path)
@@ -1624,12 +1698,58 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
 
 @router.post("/documents/job/{job_id}/resume", response_model=StatusResponse)
-async def resume_job(job_id: str, background_tasks: BackgroundTasks):
+async def resume_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    workspace_context = Depends(get_workspace_context),
+):
     """
     Resume a job from its last checkpoint (alias for restart).
 
-    This endpoint is the same as /jobs/{job_id}/restart but with a more intuitive name.
+    Auth: requires a JWT. The caller's workspace must own the job — anyone
+    able to guess a job UUID could otherwise re-spawn the orchestrator and
+    double-bill HF/Anthropic. The auto-recovery cron path uses a separate
+    cron-secret header (see `x-cron-secret` accept logic below) to bypass
+    the JWT check for legitimate automated recovery.
     """
+    # Cron bypass: if the call carries a valid x-cron-secret header, skip the
+    # workspace ownership check. This is the only path the supabase
+    # `auto-recovery-cron` edge function uses.
+    import os as _os
+    cron_secret_header = (request.headers.get("x-cron-secret") or "").strip()
+    expected_cron_secret = (_os.getenv("CRON_SECRET") or "").strip()
+    is_cron_call = bool(expected_cron_secret) and cron_secret_header == expected_cron_secret
+
+    if not is_cron_call:
+        # Enforce workspace ownership.
+        try:
+            supabase_client = get_supabase_client()
+            job_row = supabase_client.client.table('background_jobs') \
+                .select('workspace_id') \
+                .eq('id', job_id) \
+                .single().execute()
+            if not job_row.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Job {job_id} not found",
+                )
+            job_ws = str(job_row.data.get('workspace_id') or '')
+            if job_ws and job_ws != str(workspace_context.workspace_id):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You are not a member of the workspace that owns this job.",
+                )
+        except HTTPException:
+            raise
+        except Exception as ownership_err:
+            # Don't let a DB hiccup turn into a silent bypass.
+            logger.error(f"resume_job: ownership check raised: {ownership_err}", exc_info=True)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not verify job ownership; refusing resume.",
+            )
+
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
@@ -2629,7 +2749,8 @@ async def process_document_with_discovery(
     workspace_id: str = None,
     agent_prompt: Optional[str] = None,
     enable_prompt_enhancement: bool = True,
-    test_single_product: bool = False  # 🧪 TEST MODE: Process only first product
+    test_single_product: bool = False,  # 🧪 TEST MODE: Process only first product
+    extract_only_mode: bool = False  # 2026-05-23: skip discovery + downstream, run extract-only
 ):
     """
     Background task to process document with intelligent product discovery.
@@ -3384,10 +3505,13 @@ async def process_document_with_discovery(
         await tracker.start_processing()
         logger.info(f"✅ [BACKGROUND TASK] Processing started")
 
-        logger.info(f"🔧 [BACKGROUND TASK] Starting heartbeat (30s interval)...")
-        # 🫀 Start heartbeat monitoring (30s interval, 2min crash detection)
-        await tracker.start_heartbeat(interval_seconds=30)
-        logger.info(f"✅ [BACKGROUND TASK] Heartbeat started")
+        # 🫀 Heartbeat: the JobHeartbeat thread (entered above via async-with)
+        # is the canonical heartbeat — it survives blocked event loops, which
+        # is the whole reason it exists. The asyncio-based
+        # `tracker.start_heartbeat` was a second mechanism that wrote to the
+        # SAME row (4 selects/min per job for liveness), and was fragile on
+        # long sync work. Removed 2026-05-23 per round-3 audit.
+        logger.info(f"🫀 [BACKGROUND TASK] JobHeartbeat thread is the active liveness signal")
 
         logger.info(f"🔧 [BACKGROUND TASK] Starting progress monitor...")
         # 📊 Start detailed progress monitoring (reports every 60s to logs + Sentry)
@@ -3416,6 +3540,60 @@ async def process_document_with_discovery(
         )
         logger.info(f"✅ [BACKGROUND TASK] INITIALIZED checkpoint created for job {job_id}")
         logger.info(f"   📄 PDF path saved: {file_path}")
+
+        # ============================================================================
+        # EXTRACT-ONLY MODE: skip discovery + Stages 1.5/2/3/4/4.5/4.6/4.7/5
+        # ============================================================================
+        # When the upload route receives categories='extract_only', the caller
+        # wants raw text/image extraction without any AI categorization. The
+        # rest of the pipeline (discovery, products, embeddings, quality) is
+        # skipped — Stage 1.5 is still run because layout precompute is a
+        # prerequisite for any downstream search use, even without products.
+        if extract_only_mode:
+            logger.info(
+                f"📄 [EXTRACT-ONLY MODE] Skipping discovery + product pipeline. "
+                f"Running Stage 1.5 layout precompute only, then completing."
+            )
+            try:
+                from app.api.pdf_processing.stage_1_layout_precompute import precompute_document_layout
+                _layout_summary = await precompute_document_layout(
+                    document_id=document_id,
+                    pdf_path=file_path,
+                    supabase=get_supabase_client(),
+                    logger=logger,
+                    job_id=job_id,
+                    tracker=tracker,
+                )
+                logger.info(f"✅ [EXTRACT-ONLY MODE] Stage 1.5 complete: {_layout_summary}")
+                # Mark complete via the documented tracker signatures.
+                await tracker.update_progress(
+                    progress_percentage=100,
+                    details={
+                        'current_step': 'Extract-only mode complete',
+                        'completion_reason': 'extract_only_mode',
+                    },
+                )
+                try:
+                    get_supabase_client().client.rpc(
+                        'merge_background_job_metadata',
+                        {
+                            'p_job_id': job_id,
+                            'p_metadata': {
+                                'completion_reason': 'extract_only_mode',
+                                'layout_summary': _layout_summary,
+                            },
+                        }
+                    ).execute()
+                except Exception:
+                    pass
+                await tracker.complete_job(result={
+                    'mode': 'extract_only',
+                    'layout_summary': _layout_summary,
+                })
+            except Exception as eo_err:
+                logger.error(f"❌ extract-only mode failed: {eo_err}", exc_info=True)
+                await tracker.fail_job(error=eo_err)
+            return
 
         # ============================================================================
         # STAGE 0: PRODUCT DISCOVERY (MODULAR)
@@ -3451,6 +3629,110 @@ async def process_document_with_discovery(
         page_count = stage_0_result["page_count"]
         file_size_mb = stage_0_result["file_size_mb"]
         temp_pdf_path = stage_0_result["temp_pdf_path"]
+
+        # ============================================================================
+        # ZERO-ENTITIES EARLY EXIT
+        # ============================================================================
+        # If Stage 0 discovered no products AND no other entities in the requested
+        # categories, downstream stages have nothing to operate on. Running them
+        # anyway pays full HF / Voyage / Anthropic cost for empty output. This is
+        # the explicit short-circuit the round-2 audit flagged as missing.
+        _products_n        = len(catalog.products)
+        _certificates_n    = len(catalog.certificates) if "certificates"    in extract_categories else 0
+        _logos_n           = len(catalog.logos)        if "logos"           in extract_categories else 0
+        _specifications_n  = len(catalog.specifications) if "specifications" in extract_categories else 0
+        _total_entities    = _products_n + _certificates_n + _logos_n + _specifications_n
+
+        if _total_entities == 0:
+            logger.warning(
+                f"⚠️  [STAGE 0] Discovery returned ZERO entities for categories "
+                f"{extract_categories}. Likely causes: (a) PDF text layer is empty "
+                f"(scanned-only catalog — discovery is text-based, won't find "
+                f"image-baked product names), (b) LLM JSON parsing failed and all "
+                f"items were filtered, (c) catalog actually contains nothing in the "
+                f"requested categories. Short-circuiting downstream stages."
+            )
+            # Mark the job complete with an explicit reason rather than racing
+            # through Stages 1.5/2/3/4 over an empty set. Use the documented
+            # tracker signatures: update_progress(progress_percentage, details),
+            # complete_job(result). Merge metadata via the RPC so existing
+            # keys (filename, discovery_model, cost summaries) aren't clobbered.
+            try:
+                await tracker.update_progress(
+                    progress_percentage=100,
+                    details={
+                        'current_step': 'No entities discovered — short-circuiting downstream stages',
+                        'completion_reason': 'zero_entities_discovered',
+                    },
+                )
+                # Merge metadata BEFORE complete_job so the reason is durable
+                # even if complete_job's own metadata writes happen first.
+                try:
+                    supabase_client.client.rpc(
+                        'merge_background_job_metadata',
+                        {
+                            'p_job_id': job_id,
+                            'p_metadata': {
+                                'completion_reason': 'zero_entities_discovered',
+                                'extract_categories': extract_categories,
+                                'zero_entities_at': datetime.utcnow().isoformat(),
+                            },
+                        }
+                    ).execute()
+                except Exception as _merge_err:
+                    logger.debug(f"merge_background_job_metadata failed (non-fatal): {_merge_err}")
+                # Emit a discrete stage_history event so the audit log shows
+                # why the job ended — append_stage_history caps at 100 entries
+                # so this is the LAST one operators see for the job.
+                try:
+                    supabase_client.client.rpc(
+                        'append_stage_history',
+                        {
+                            'p_job_id': job_id,
+                            'p_event': {
+                                'stage': 'stage_0_discovery',
+                                'status': 'completed_no_entities',
+                                'data': {
+                                    'reason': 'zero_entities_discovered',
+                                    'categories': extract_categories,
+                                    'products_discovered': _products_n,
+                                    'certificates_discovered': _certificates_n,
+                                    'logos_discovered': _logos_n,
+                                    'specifications_discovered': _specifications_n,
+                                },
+                                'completed_at': datetime.utcnow().isoformat(),
+                            },
+                        }
+                    ).execute()
+                except Exception as _hist_err:
+                    logger.debug(f"append_stage_history failed (non-fatal): {_hist_err}")
+                # Terminal: complete_job(result) — the result dict surfaces in
+                # /full-status.core.result_data and the admin UI.
+                await tracker.complete_job(result={
+                    'reason': 'zero_entities_discovered',
+                    'categories': extract_categories,
+                    'products_discovered': _products_n,
+                    'certificates_discovered': _certificates_n,
+                    'logos_discovered': _logos_n,
+                    'specifications_discovered': _specifications_n,
+                })
+            except Exception as _early_exit_err:
+                logger.error(
+                    f"❌ Zero-entities early-exit bookkeeping failed: {_early_exit_err}",
+                    exc_info=True,
+                )
+                # Don't let bookkeeping failure leave the job at 'processing'.
+                # Best-effort direct write so the job is marked terminal.
+                try:
+                    supabase_client.client.table('background_jobs').update({
+                        'status': 'completed',
+                        'progress': 100,
+                        'completed_at': datetime.utcnow().isoformat(),
+                        'updated_at': datetime.utcnow().isoformat(),
+                    }).eq('id', job_id).execute()
+                except Exception:
+                    pass
+            return  # don't run downstream stages
 
         # ============================================================================
         # PRODUCT-CENTRIC PIPELINE: Process each product individually
@@ -3540,6 +3822,7 @@ async def process_document_with_discovery(
                         logger=logger,
                         total_physical_pages_hint=_physical_pages_hint,
                         job_id=job_id,
+                        tracker=tracker,  # nest-safe slow_op stack
                     )
                     if _test_page_range:
                         _precompute_kwargs['only_physical_pages'] = _test_page_range
@@ -3988,12 +4271,38 @@ async def process_document_with_discovery(
         # ── Factory enrichment trigger (async, non-blocking) ─────────────────
         try:
             from app.api.pdf_processing.stage_4_products import _trigger_factory_enrichment
-            all_product_ids = [p['id'] for p in (
+            # Filter to products that actually completed processing — running
+            # enrichment over a product whose Stage 2 (chunks) or Stage 3 (images)
+            # failed means feeding garbage to Voyage. The 2026-05-23 audit
+            # surfaced this orphan-enrichment risk.
+            _ok_products_resp = (
                 supabase.client.table('products')
                 .select('id')
                 .eq('source_document_id', document_id)
                 .execute()
-            ).data or []]
+            )
+            all_product_ids = [p['id'] for p in (_ok_products_resp.data or [])]
+            # Exclude products whose product_processing_status is 'failed'.
+            if all_product_ids:
+                try:
+                    _failed_resp = (
+                        supabase.client.table('product_processing_status')
+                        .select('product_id, status')
+                        .in_('product_id', all_product_ids)
+                        .eq('status', 'failed')
+                        .execute()
+                    )
+                    _failed_ids = {row['product_id'] for row in (_failed_resp.data or []) if row.get('product_id')}
+                    if _failed_ids:
+                        before = len(all_product_ids)
+                        all_product_ids = [pid for pid in all_product_ids if pid not in _failed_ids]
+                        logger.info(
+                            f"Factory enrichment: excluded {before - len(all_product_ids)} "
+                            f"failed product(s); processing {len(all_product_ids)} successful ones"
+                        )
+                except Exception as _filter_err:
+                    logger.debug(f"product_processing_status filter failed (non-fatal): {_filter_err}")
+
             if all_product_ids:
                 # Do NOT re-import asyncio in this function — asyncio is module-scoped (line 20).
                 # A local `import asyncio` rebinds it function-scoped and breaks the warm-up
@@ -4184,17 +4493,55 @@ async def process_document_with_discovery(
         except Exception as status_error:
             logger.warning(f"   ⚠️ Failed to update document status to failed: {status_error}")
 
-        # Rollback products created during discovery if processing failed
-        # This prevents orphan products in the database
+        # Rollback products created during discovery — but ONLY when this is the
+        # terminal failure (no more recovery attempts left). Previously this ran
+        # on every exception, so the next auto-recovery dispatch had to
+        # re-discover and re-create every product from scratch, and products
+        # that did succeed before the failure got duplicated. The 2026-05-23
+        # audit flagged this. Gate on attempt count: only nuke when we're past
+        # the max-recovery threshold.
         try:
             from app.services.utilities.cleanup_service import CleanupService
-            cleanup_service = CleanupService()
-            rollback_stats = await cleanup_service.rollback_discovered_products(
-                document_id=document_id,
-                product_db_ids=None,  # Delete all products for this document
-                supabase_client=None  # Will get from singleton
-            )
-            logger.info(f"🔄 Product rollback completed: {rollback_stats}")
+            from app.config import get_settings as _gs
+
+            # Look up the job's recovery attempt count + threshold.
+            # CORRECTION (2026-05-23 round-3): the Settings field is
+            # `job_max_recovery_attempts` (not `auto_recovery_max_attempts`)
+            # and the column is `recovery_attempts` (not `attempts`).
+            # The earlier names were guessed wrong; getattr/select silently
+            # returned defaults, defeating the env override.
+            _max_attempts = int(getattr(_gs(), 'job_max_recovery_attempts', 3) or 3)
+            _job_attempt = 0
+            try:
+                _supabase = get_supabase_client()
+                _job_row = _supabase.client.table('background_jobs') \
+                    .select('recovery_attempts, recovery_history') \
+                    .eq('id', job_id).single().execute()
+                if _job_row.data:
+                    _job_attempt = int(_job_row.data.get('recovery_attempts') or 0)
+                    # Some versions track attempts via recovery_history length;
+                    # take the max so we never undershoot.
+                    _rh = _job_row.data.get('recovery_history') or []
+                    _job_attempt = max(_job_attempt, len(_rh) if isinstance(_rh, list) else 0)
+            except Exception:
+                pass
+
+            if _job_attempt >= _max_attempts:
+                cleanup_service = CleanupService()
+                rollback_stats = await cleanup_service.rollback_discovered_products(
+                    document_id=document_id,
+                    product_db_ids=None,  # Delete all products for this document
+                    supabase_client=None
+                )
+                logger.info(
+                    f"🔄 Terminal failure (attempt {_job_attempt}/{_max_attempts}) — "
+                    f"product rollback completed: {rollback_stats}"
+                )
+            else:
+                logger.info(
+                    f"⏭️  Resumable failure (attempt {_job_attempt}/{_max_attempts}) — "
+                    f"preserving products for recovery"
+                )
         except Exception as rollback_error:
             logger.error(f"⚠️ Product rollback failed: {rollback_error}")
             sentry_sdk.capture_exception(rollback_error)

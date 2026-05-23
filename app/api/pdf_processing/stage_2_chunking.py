@@ -59,6 +59,7 @@ async def process_product_chunking(
     # STEP 1: Load Layout Regions (for layout-aware chunking)
     # ========================================================================
     layout_regions_by_page = {}
+    chunking_strategy = "no_layout_regions"  # default — plain text chunking
 
     # Priority 1 (preferred): Stage 1.5 document-level cache.
     # Stage 1.5 runs YOLO + bbox-text merge once per page upfront and
@@ -69,16 +70,64 @@ async def process_product_chunking(
     if config.get('enable_layout_aware_chunking', True):
         try:
             from app.api.pdf_processing.stage_1_layout_precompute import (
-                get_layout_from_document_cache,
+                get_layout_from_document_cache_with_status,
             )
-            cached = await get_layout_from_document_cache(
+            # Use the _with_status variant so we can distinguish "no row"
+            # from "row exists but cache_status=ocr_failed/page_failed"
+            # (which Stage 1.5's resume-skip will retry on the next job run).
+            # The plain get_layout_from_document_cache silently drops failed
+            # rows — meaning the chunker fell back to text-based chunking
+            # without anyone knowing layout was actually broken for the page.
+            cached_with_status = await get_layout_from_document_cache_with_status(
                 document_id=document_id,
                 physical_pages=physical_pages,
                 supabase=supabase,
                 logger=logger,
             )
+            cached = {p: v['regions'] for p, v in cached_with_status.items() if v['regions']}
+            # Surface failed-page telemetry: count rows with failure cache_status
+            # so they appear in pipeline_strategy_metrics (operators can see
+            # how often Stage 1.5 broke on this document, and the chunker's
+            # fallback rate).
+            _failed_statuses = {'ocr_failed', 'page_failed'}
+            _failed_pages = [
+                p for p, v in cached_with_status.items()
+                if v.get('cache_status') in _failed_statuses
+            ]
+            if _failed_pages:
+                logger.warning(
+                    f"   ⚠️ Stage 1.5 cache has {len(_failed_pages)} page(s) marked "
+                    f"failed ({', '.join(map(str, _failed_pages))}); chunker falling "
+                    f"back to text-based for these pages until Stage 1.5 retries"
+                )
+                # Emit a stage_history event so the admin UI shows the
+                # fallback explicitly. Without this, "Stage 1.5 incomplete,
+                # Stage 2 falling back to text" was log-only — operators had
+                # no visibility from /full-status.
+                try:
+                    from datetime import datetime as _dt
+                    supabase.client.rpc(
+                        'append_stage_history',
+                        {
+                            'p_job_id': job_id,
+                            'p_event': {
+                                'stage': 'stage_2_chunking',
+                                'status': 'fallback_text_based',
+                                'data': {
+                                    'product_id': product_id,
+                                    'product_name': getattr(product, 'name', None),
+                                    'stage_1_5_failed_pages': _failed_pages,
+                                    'reason': 'stage_1_5_failed_pages — fell back to text-based chunking',
+                                },
+                                'occurred_at': _dt.utcnow().isoformat(),
+                            },
+                        }
+                    ).execute()
+                except Exception as _hist_err:
+                    logger.debug(f"   append_stage_history (fallback) failed: {_hist_err}")
             if cached:
                 layout_regions_by_page = cached
+                chunking_strategy = "stage_1_5_cache"
         except Exception as cache_err:
             logger.debug(f"   document layout cache read failed (non-fatal): {cache_err}")
 
@@ -93,6 +142,8 @@ async def process_product_chunking(
             # Convert to dict if it's a Pydantic model
             region_dict = region.dict() if hasattr(region, 'dict') else region
             layout_regions_by_page[page_num].append(region_dict)
+        if layout_regions_by_page:
+            chunking_strategy = "caller_provided_regions"
 
     # Priority 3: Per-product DB regions (older code path that wrote
     # `product_layout_regions` rows during Stage 4 of a prior job).
@@ -103,6 +154,36 @@ async def process_product_chunking(
             supabase=supabase,
             logger=logger
         )
+        if layout_regions_by_page:
+            chunking_strategy = "product_layout_regions_cache"
+
+    # Telemetry: record which chunking strategy actually fired for this product.
+    # `pipeline_strategy_metrics` is the per-stage distribution log the 2026-05-01
+    # audit added — best-effort write, never blocks chunking on a metrics row.
+    try:
+        # Compute failed-page count from the cache_status pass above so the
+        # metric captures Stage 1.5 health for this product.
+        _failed_n = 0
+        try:
+            _failed_n = len(_failed_pages)  # defined when cache read ran
+        except NameError:
+            _failed_n = 0
+        supabase.client.table('pipeline_strategy_metrics').insert({
+            'job_id': job_id,
+            'document_id': document_id,
+            'product_id': product_id,
+            'page_number': None,  # product-level metric, not page-level
+            'metric_kind': 'chunking_strategy',
+            'metric_value': chunking_strategy,
+            'notes': {
+                'pages_with_regions': len(layout_regions_by_page),
+                'total_pages': len(physical_pages),
+                'stage_1_5_failed_pages': _failed_n,
+                'product_name': getattr(product, 'name', None),
+            },
+        }).execute()
+    except Exception as metrics_err:
+        logger.debug(f"   pipeline_strategy_metrics insert failed (non-fatal): {metrics_err}")
 
     # ========================================================================
     # STEP 2: Create Chunks (existing logic)
@@ -233,7 +314,18 @@ async def process_product_chunking(
             )
         except Exception as e:
             # Classification is non-fatal — chunks remain usable without it.
+            # Mark every chunk as failed so re-classification jobs can pick
+            # them up. Without this, the failure is invisible — chunks stay
+            # at `chunk_type_status='pending'` indistinguishable from
+            # not-yet-classified.
             logger.warning(f"   ⚠️ Chunk classification failed for {product.name}: {e}")
+            try:
+                supabase.client.table('document_chunks') \
+                    .update({'chunk_type_status': 'failed'}) \
+                    .in_('id', chunk_ids) \
+                    .execute()
+            except Exception as _mark_err:
+                logger.debug(f"      failed to mark chunks as failed: {_mark_err}")
 
     return {
         'chunks_created': chunks_created,
@@ -295,12 +387,26 @@ async def _classify_and_update_chunks(
                     'chunk_type': cls.chunk_type.value,
                     'chunk_type_confidence': cls.confidence,
                     'chunk_type_metadata': cls.metadata or None,
+                    # 2026-05-23: flip status to 'classified' so operators can
+                    # distinguish "Sonnet returned 'unclassified' as the verdict"
+                    # from "Sonnet crashed mid-batch and the column is at default".
+                    # The failure branch below stamps 'failed'.
+                    'chunk_type_status': 'classified',
                 }) \
                 .eq('id', row['id']) \
                 .execute()
             updates_made += 1
         except Exception as e:
             logger.debug(f"      Failed to update classification for chunk {row['id']}: {e}")
+            # Mark this chunk's classification as failed so it's visible to
+            # backfill / re-classification jobs (not just buried in logs).
+            try:
+                supabase.client.table('document_chunks') \
+                    .update({'chunk_type_status': 'failed'}) \
+                    .eq('id', row['id']) \
+                    .execute()
+            except Exception:
+                pass
 
     logger.info(f"   ✅ Classified {updates_made}/{len(rows)} chunks")
 

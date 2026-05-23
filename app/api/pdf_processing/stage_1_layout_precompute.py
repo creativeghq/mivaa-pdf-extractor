@@ -200,6 +200,7 @@ async def precompute_document_layout(
     total_physical_pages_hint: Optional[int] = None,
     job_id: Optional[str] = None,
     only_physical_pages: Optional[List[int]] = None,
+    tracker: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Run YOLO + bbox-text merge for every uncached physical page; persist.
 
@@ -333,6 +334,52 @@ async def precompute_document_layout(
         f"📐 [STAGE 1.5] Precomputing layout for {len(pages_to_process)} physical page(s); "
         f"{len(existing_pages)} already cached, {total_physical} total"
     )
+
+    # Register this stage as a long-running op so the auto-recovery cron's
+    # stuck-job detector doesn't false-positive on large catalogs. Layout
+    # precompute on 200+ page documents routinely runs past the default
+    # stuck-threshold (5 min) — without this flag the cron would re-dispatch
+    # the job mid-stage and Stage 1.5 would start over from the resume point.
+    # Budget: 30s/page (worst case with Chandra retries), floor 300s.
+    #
+    # When a `tracker` is provided, we use its stack-based set_slow_operation
+    # which is nest-safe vs Stage 3's parallel per-product markers. Without a
+    # tracker (e.g. backfill scripts), fall back to a direct UPDATE — the
+    # collision risk only exists when Stage 3 is concurrent, which doesn't
+    # happen on the backfill path.
+    _slow_op_key = f'stage_1_5_layout_precompute:{len(pages_to_process)}_pages'
+    _slow_op_budget = max(300, len(pages_to_process) * 30)
+    _stage_1_5_slow_op_set = False
+    if tracker is not None:
+        try:
+            await tracker.set_slow_operation(
+                operation=_slow_op_key,
+                expected_max_seconds=_slow_op_budget,
+            )
+            _stage_1_5_slow_op_set = True
+        except Exception as _slow_err:
+            logger.debug(f"   tracker.set_slow_operation failed (non-fatal): {_slow_err}")
+    elif job_id:
+        try:
+            slow_op_payload = {
+                'current_slow_operation': {
+                    'operation': _slow_op_key,
+                    'started_at': datetime.utcnow().isoformat(),
+                    'expected_max_seconds': _slow_op_budget,
+                },
+                'updated_at': datetime.utcnow().isoformat(),
+            }
+            # supabase-py is sync; run the update in a thread so we don't block
+            # the event loop while the YOLO/Chandra fan-out runs.
+            await asyncio.to_thread(
+                lambda: supabase.client.table('background_jobs')
+                    .update(slow_op_payload)
+                    .eq('id', job_id)
+                    .execute()
+            )
+            _stage_1_5_slow_op_set = True
+        except Exception as _slow_err:
+            logger.debug(f"   set_slow_operation (fallback) failed (non-fatal): {_slow_err}")
 
     # 3. Resolve the YOLO detector + Chandra OCR fallback once, then
     #    iterate physical pages serially. Serial iteration keeps memory
@@ -552,6 +599,30 @@ async def precompute_document_layout(
             doc.close()
         except Exception:
             pass
+        # Always clear the slow-op marker once Stage 1.5 finishes — even on
+        # exception — so the next stage can set its own marker without colliding
+        # and so auto-recovery doesn't keep suppressing recovery on a stalled job.
+        # Use the stack-based clear (keyed on the operation we pushed) when a
+        # tracker is available; fall back to direct UPDATE otherwise.
+        if _stage_1_5_slow_op_set:
+            if tracker is not None:
+                try:
+                    await tracker.clear_slow_operation(operation=_slow_op_key)
+                except Exception as _clear_err:
+                    logger.debug(f"   tracker.clear_slow_operation failed (non-fatal): {_clear_err}")
+            elif job_id:
+                try:
+                    await asyncio.to_thread(
+                        lambda: supabase.client.table('background_jobs')
+                            .update({
+                                'current_slow_operation': None,
+                                'updated_at': datetime.utcnow().isoformat(),
+                            })
+                            .eq('id', job_id)
+                            .execute()
+                    )
+                except Exception as _clear_err:
+                    logger.debug(f"   clear_slow_operation (fallback) failed (non-fatal): {_clear_err}")
 
     summary["pages_processed"] = len(pages_to_process)
     summary["pages_persisted"] = persisted

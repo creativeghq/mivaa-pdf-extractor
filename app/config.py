@@ -334,8 +334,12 @@ class Settings(BaseSettings):
         default=0.6,
         env="OCR_CONFIDENCE_THRESHOLD"
     )
+    # Chandra v2 is the only OCR engine. Pytesseract + EasyOCR were removed
+    # in the 2026-05-01 audit (pytesseract had been broken in prod for months,
+    # EasyOCR couldn't carry bbox metadata). This field is retained for
+    # downstream consumers of get_ocr_config() but only accepts "chandra".
     ocr_engine: str = Field(
-        default="easyocr",
+        default="chandra",
         env="OCR_ENGINE"
     )
     ocr_gpu_enabled: bool = Field(
@@ -553,12 +557,12 @@ class Settings(BaseSettings):
     chandra_enabled: bool = Field(
         default=True,
         env="CHANDRA_ENABLED",
-        description="Enable Chandra OCR fallback when EasyOCR confidence is low"
+        description="Enable Chandra v2 OCR (the only supported OCR engine)"
     )
     chandra_confidence_threshold: float = Field(
         default=0.7,
         env="CHANDRA_CONFIDENCE_THRESHOLD",
-        description="EasyOCR confidence threshold - use Chandra if below this value"
+        description="Minimum confidence threshold for Chandra OCR results"
     )
     chandra_auto_pause_timeout: int = Field(
         default=300,  # Increased from 60s to prevent re-warmup during jobs
@@ -878,8 +882,8 @@ class Settings(BaseSettings):
     @field_validator("ocr_engine")
     @classmethod
     def validate_ocr_engine(cls, v):
-        """Validate OCR engine selection."""
-        valid_engines = ["easyocr", "pytesseract", "both"]
+        """Validate OCR engine selection. Chandra is the only supported engine."""
+        valid_engines = ["chandra"]
         if v.lower() not in valid_engines:
             raise ValueError(f"OCR engine must be one of: {valid_engines}")
         return v.lower()

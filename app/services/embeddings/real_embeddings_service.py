@@ -358,7 +358,11 @@ class RealEmbeddingsService:
                 return {
                     "success": True,
                     "embedding": embedding,
-                    "model": self._last_provider or (self.voyage_model or "voyage-4"),
+                    # Report the ACTUAL provider returned by the embed call,
+                    # not the configured default. _last_provider is stamped to
+                    # the exact model that produced the vector — voyage-3.5,
+                    # voyage-4, or openai-text-embedding-3-small on fallback.
+                    "model": self._last_provider or self.voyage_model or "voyage-3.5",
                 }
             return {"success": False, "error": "Text embedding generation returned None"}
         except Exception as e:
@@ -495,6 +499,7 @@ class RealEmbeddingsService:
             # Embed via Voyage AI with input_type="document". Audit gap B:
             # disable OpenAI fallback for this specific path so we never mix
             # embedding spaces in image_understanding_embeddings.
+            self._last_provider = None  # reset so we can read the actual provider
             embedding = await self._generate_text_embedding(
                 text=text,
                 input_type="document",
@@ -509,9 +514,15 @@ class RealEmbeddingsService:
                 f"✅ Understanding embedding generated ({len(embedding)}D, "
                 f"schema_v{SCHEMA_VERSION})"
             )
+            # Provenance accuracy: report the ACTUAL provider that returned the
+            # vector (`self._last_provider` is stamped by _generate_text_embedding
+            # to the actual model used — voyage-3, voyage-3.5, voyage-4, etc.).
+            # Previously this hardcoded "voyage-4" regardless, which lied when
+            # Settings.voyage_model was set to a different version. The
+            # 2026-05-23 audit caught this drift-detection blind spot.
             return {
                 "embedding": embedding,
-                "embedding_model": self.voyage_model or "voyage-4",
+                "embedding_model": self._last_provider or self.voyage_model or "voyage-3.5",
                 "schema_version": SCHEMA_VERSION,
             }
 

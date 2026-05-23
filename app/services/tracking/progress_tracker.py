@@ -921,6 +921,25 @@ class ProgressTracker:
         except Exception as e:
             logger.error(f"❌ Failed to mark job as failed: {e}")
 
+        # Release the temp PDF resource registered at upload time. When
+        # fail_job is called from a path OTHER than the orchestrator's
+        # outer finally (e.g. checkpoint_recovery_service._mark_job_failed
+        # or job_monitor_service), the orchestrator's release_resource never
+        # runs and the temp PDF orphans on /tmp until the host reboots.
+        # The 2026-05-23 audit surfaced this leak.
+        try:
+            from app.utils.resource_manager import get_resource_manager
+            if self.document_id:
+                resource_manager = get_resource_manager()
+                await resource_manager.release_resource(
+                    f"temp_pdf_{self.document_id}",
+                    self.job_id,
+                )
+        except Exception as _rel_err:
+            logger.debug(
+                f"   release_resource on fail_job failed (non-fatal): {_rel_err}"
+            )
+
         # Mirror complete_job: deregister BEFORE scale-to-zero so the
         # active-job check sees this job as done. Without this, failed
         # jobs stayed in endpoint_controller._active_jobs forever; every
@@ -1055,19 +1074,37 @@ class ProgressTracker:
         false-positive "stuck job" recovery while a legitimate slow op
         is in flight (per the post-2026-05-01 pipeline convention).
 
+        Nest-safe: in parallel mode, multiple products may each enter Stage 3
+        concurrently. Each set_slow_operation call appends a marker to an
+        in-memory stack; the DB sees the most-recent marker. Clear pops the
+        matching key from the stack and writes the next-most-recent (or NULL).
+        This closes the per-job-not-per-product collision flagged in the
+        2026-05-23 audit — product B's clear() no longer wipes product A's
+        active marker.
+
         Always paired with `clear_slow_operation()` once the op completes
         or fails.
         """
         if not (self._db_sync_enabled and self._supabase):
             return
+        # Initialize lazily so we don't fight __init__ signature changes.
+        if not hasattr(self, '_slow_op_stack'):
+            self._slow_op_stack: List[Dict[str, Any]] = []
+        if not hasattr(self, '_slow_op_lock'):
+            self._slow_op_lock = asyncio.Lock()
+
+        marker = {
+            'operation': operation,
+            'started_at': datetime.utcnow().isoformat(),
+            'expected_max_seconds': int(expected_max_seconds),
+        }
+        async with self._slow_op_lock:
+            self._slow_op_stack.append(marker)
+            current = self._slow_op_stack[-1]
         try:
             self._supabase.client.table('background_jobs')\
                 .update({
-                    'current_slow_operation': {
-                        'operation': operation,
-                        'started_at': datetime.utcnow().isoformat(),
-                        'expected_max_seconds': int(expected_max_seconds),
-                    },
+                    'current_slow_operation': current,
                     'updated_at': datetime.utcnow().isoformat(),
                 })\
                 .eq('id', self.job_id)\
@@ -1075,14 +1112,39 @@ class ProgressTracker:
         except Exception as e:
             logger.warning(f"⚠️ Failed to set current_slow_operation for {self.job_id}: {e}")
 
-    async def clear_slow_operation(self) -> None:
-        """Clear the in-flight slow-op marker."""
+    async def clear_slow_operation(self, operation: Optional[str] = None) -> None:
+        """Clear the in-flight slow-op marker.
+
+        If `operation` is provided, only the matching stack entry is removed.
+        Otherwise the most-recent entry is popped (legacy call sites without
+        the operation kwarg).
+
+        After removal, the DB field reflects the next-most-recent marker on
+        the stack (so a longer-running parallel sibling stays protected),
+        or NULL when the stack is empty.
+        """
         if not (self._db_sync_enabled and self._supabase):
             return
+        if not hasattr(self, '_slow_op_stack'):
+            self._slow_op_stack = []
+        if not hasattr(self, '_slow_op_lock'):
+            self._slow_op_lock = asyncio.Lock()
+
+        async with self._slow_op_lock:
+            if operation is not None:
+                # Remove the first matching entry from the right (most recent).
+                for i in range(len(self._slow_op_stack) - 1, -1, -1):
+                    if self._slow_op_stack[i].get('operation') == operation:
+                        del self._slow_op_stack[i]
+                        break
+            elif self._slow_op_stack:
+                self._slow_op_stack.pop()
+            next_marker = self._slow_op_stack[-1] if self._slow_op_stack else None
+
         try:
             self._supabase.client.table('background_jobs')\
                 .update({
-                    'current_slow_operation': None,
+                    'current_slow_operation': next_marker,  # None or the next marker
                     'updated_at': datetime.utcnow().isoformat(),
                 })\
                 .eq('id', self.job_id)\

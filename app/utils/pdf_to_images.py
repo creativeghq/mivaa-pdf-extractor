@@ -197,7 +197,23 @@ def analyze_pdf_layout(pdf_path: str, progress_callback: Optional[Callable[[int,
         # Determine layout type based on aspect ratio
         # Portrait/square: aspect < 1.2 (single page)
         # Landscape: aspect > 1.4 (spread - two pages)
-        # In-between (1.2-1.4): treat as single to be safe
+        # In-between (1.2-1.4): treat as single to be safe.
+        #
+        # The 1.2-1.4 band is ambiguous — landscape catalogs printed at
+        # 4:3-ish aspect (1.33) silently fall into "single" and lose their
+        # right-half products to the left-half. We can't reliably split
+        # without more signals (image-rect distribution, text-column
+        # detection), so we still default to SINGLE — but at WARNING level
+        # so operators can hand-inspect the catalog before discovery routes
+        # all content to the left-half product.
+        if 1.2 <= aspect_ratio <= 1.4:
+            logger.warning(
+                f"   ⚠️ PDF page {pdf_page_idx + 1} aspect={aspect_ratio:.2f} is in the "
+                f"ambiguous landscape band (1.2-1.4). Treating as SINGLE page — if this is "
+                f"actually a 2-page spread catalog, right-half product will be misrouted "
+                f"to the left product. Re-export the catalog at portrait (single-page) or "
+                f"a wider aspect (>1.4) to fix."
+            )
 
         if aspect_ratio > 1.4:
             # This is a spread page (two physical pages)

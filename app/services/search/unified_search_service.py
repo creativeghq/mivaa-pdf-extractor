@@ -1172,30 +1172,69 @@ Return ONLY valid JSON. Use null for missing fields."""
 
             visual_query = " ".join(visual_parts) if visual_parts else query
 
-            # Build filters dictionary (remove null values and visual_query)
-            # Comprehensive mapping from AI output fields to actual database metadata fields
+            # Build filters dictionary (remove null values and visual_query).
+            #
+            # field_mapping targets `products.attributes.*` for descriptive facets
+            # (color, material, finish, style, application, room, material_category)
+            # — these are the canonical English values written by every ingest
+            # path (PDF Stage 4, XML supplier feeds, web scrape, background agents).
+            # Other fields (designer, collection, factory, dimensions) stay in
+            # metadata because they're identifiers, not canonicalizable facets.
             field_mapping = {
-                # Appearance (nested in appearance object)
-                "colors": "appearance.colors",
-                "finish": "appearance.finish",
+                # Canonicalized facets — target attributes.*
+                "colors": "attributes.color",
+                "finish": "attributes.finish",
+                "application": "attributes.application",
+                "style": "attributes.style",
+                "material_type": "attributes.material_category",
+                # Non-canonical fields stay in metadata (identifiers / freeform)
                 "pattern": "appearance.pattern",
-                # Application (nested in application object)
-                "application": "application.recommended_use",
-                # Design (nested in design object)
-                "style": "design.aesthetic_style",
                 "designer": "design.designers",
                 "collection": "design.collection",
-                # Material properties (nested in material_properties object)
                 "properties": "material_properties",
-                # Top-level fields (no mapping needed, but listed for clarity)
                 "factory": "factory_name",
                 "dimensions": "dimensions",
-                # Category - only if explicitly stated
+            }
+
+            # Which parsed_data fields go through query-side canonicalization
+            # (each value gets normalized + alias-resolved against facet_canonical_values)
+            CANONICALIZABLE_QUERY_FIELDS = {
+                "colors": "color",
+                "finish": "finish",
+                "application": "application",
+                "style": "style",
                 "material_type": "material_category",
             }
 
             # Fields that are metadata about parsing, not actual filters
             skip_fields = {"is_product_name", "product_name", "visual_query", "material_type_explicit"}
+
+            # ── Query-side canonicalization ──────────────────────────────────
+            # Translate user-typed values (any language) → canonical English so
+            # the filter matches what the ingest pipelines wrote to attributes.
+            # No embedding cost — alias lookup only.
+            try:
+                from app.services.facets import resolve_query_term  # noqa: WPS433
+                for parsed_key, facet_key in CANONICALIZABLE_QUERY_FIELDS.items():
+                    val = parsed_data.get(parsed_key)
+                    if val is None or val == "" or val == []:
+                        continue
+                    if isinstance(val, list):
+                        translated = []
+                        for v in val:
+                            if not isinstance(v, str) or not v.strip():
+                                continue
+                            c = await resolve_query_term(self.supabase, facet_key, v)
+                            if c:
+                                translated.append(c)
+                        if translated:
+                            parsed_data[parsed_key] = translated
+                    elif isinstance(val, str):
+                        c = await resolve_query_term(self.supabase, facet_key, val)
+                        if c:
+                            parsed_data[parsed_key] = c
+            except Exception as canon_err:
+                self.logger.debug(f"Query-side canonicalization skipped: {canon_err}")
 
             filters = {}
             for key, value in parsed_data.items():

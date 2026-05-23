@@ -1139,13 +1139,21 @@ class ImageProcessingService:
         job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Fallback path: call Claude Opus 4.7 with the same prompt when
-        Qwen has failed. Claude is more reliable for strict JSON output
-        and acts as a safety net so we don't lose the understanding
-        embedding for an image just because Qwen had a bad day.
+        Material analysis via Claude Opus 4.7 + Anthropic tool_use.
+
+        Schema is locked at the API layer via `tools=[VISION_ANALYSIS_TOOL]` +
+        `tool_choice={'type':'tool','name':...}`. The model is forced to emit a
+        tool_use block whose `input` JSON matches the `VisionAnalysis` schema —
+        no regex repair, no JSON-parse fallback. Malformed inputs (Claude
+        ignoring the tool, returning text instead) surface as an explicit None
+        return and propagate to the embedding path which then skips Voyage.
+
+        Post 2026-05-01 (Qwen removal), this is the only vision path. The
+        function name is retained to avoid churn across call sites.
         """
         try:
             from app.services.core.ai_client_service import get_ai_client_service
+            from app.models.vision_analysis import VISION_ANALYSIS_TOOL
 
             if not self.material_analyzer_prompt:
                 return None
@@ -1182,47 +1190,60 @@ class ImageProcessingService:
             ]
 
             from app.config import get_settings as _get_settings_validation
-            kwargs = {
-                "model": _get_settings_validation().anthropic_model_validation,
-                "max_tokens": 1024,
-                "messages": [{"role": "user", "content": content}],
-            }
-            if self.material_analyzer_system_prompt:
-                kwargs["system"] = self.material_analyzer_system_prompt
+            model_to_use = _get_settings_validation().anthropic_model_validation
 
-            # Wrap into helper signature; helper rebuilds the api kwargs internally
+            # Force schema-locked output. tool_choice with `name` makes the model
+            # MUST emit a tool_use block matching VISION_ANALYSIS_TOOL.input_schema.
             from app.services.core.claude_helper import tracked_claude_call_async
             response = await tracked_claude_call_async(
-                task="image_material_analysis_fallback",
-                model=kwargs["model"],
-                max_tokens=kwargs["max_tokens"],
-                messages=kwargs["messages"],
-                system=kwargs.get("system"),
+                task="image_material_analysis_tool_use",
+                model=model_to_use,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": content}],
+                system=self.material_analyzer_system_prompt or None,
                 job_id=job_id,
                 product_id=product_id,
                 image_id=image_id,
+                extra_kwargs={
+                    "tools": [VISION_ANALYSIS_TOOL],
+                    "tool_choice": {"type": "tool", "name": VISION_ANALYSIS_TOOL["name"]},
+                },
             )
 
-            # Anthropic SDK returns a list of content blocks; concatenate
-            # any text blocks.
-            text_parts: List[str] = []
+            # Find the tool_use block. With tool_choice={type:tool,name:...} the
+            # API guarantees exactly one tool_use block matching the schema —
+            # but defensive parsing in case Anthropic ever stops honoring that.
+            tool_input: Optional[Dict[str, Any]] = None
             for block in response.content:
-                block_type = getattr(block, 'type', None)
-                if block_type == 'text':
-                    text_parts.append(getattr(block, 'text', '') or '')
-            raw = ''.join(text_parts).strip()
-            if not raw:
-                logger.warning(
-                    f"   ⚠️ Claude fallback returned empty material analysis for {image_id}"
-                )
-                return None
+                if getattr(block, 'type', None) == 'tool_use':
+                    candidate = getattr(block, 'input', None)
+                    if isinstance(candidate, dict):
+                        tool_input = candidate
+                        break
 
-            parsed = self._parse_vision_analysis_json(raw, image_id)
-            return self._validate_vision_analysis(parsed, image_id, source=VisionProvider.CLAUDE_FALLBACK.value)
+            if tool_input is None:
+                # Backward-compat: Claude returned text instead of a tool_use
+                # (very rare with tool_choice, but observed when token budget
+                # is too tight for the schema). Fall back to text-block parse.
+                text_parts: List[str] = []
+                for block in response.content:
+                    if getattr(block, 'type', None) == 'text':
+                        text_parts.append(getattr(block, 'text', '') or '')
+                raw = ''.join(text_parts).strip()
+                if not raw:
+                    logger.warning(
+                        f"   ⚠️ Claude returned neither tool_use nor text for {image_id}"
+                    )
+                    return None
+                tool_input = self._parse_vision_analysis_json(raw, image_id) or {}
+
+            return self._validate_vision_analysis(
+                tool_input, image_id, source=VisionProvider.CLAUDE_FALLBACK.value
+            )
 
         except Exception as e:
             logger.warning(
-                f"   ⚠️ Claude fallback for material analysis failed for {image_id}: {e}",
+                f"   ⚠️ Claude vision_analysis (tool_use) failed for {image_id}: {e}",
                 exc_info=True,
             )
             return None

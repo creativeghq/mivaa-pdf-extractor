@@ -200,7 +200,15 @@ async def process_products_parallel(
                     timeout=per_product_timeout,
                 )
 
-                # Update shared metrics
+                # Update shared metrics. The lock protects ONLY the in-memory
+                # dict mutations + the snapshot we pass to the tracker — DB
+                # round-trips (update_database_stats with sync_to_db=True and
+                # update_progress) run OUTSIDE the lock to avoid serializing
+                # parallel completions on a single Supabase call. The 2026-05-23
+                # audit flagged the original lock-across-DB-call as a throughput
+                # floor of ~4 × DB-latency per batch of 4 concurrent products.
+                _stats_snapshot: Optional[Dict[str, Any]] = None
+                _progress_snapshot: Optional[Dict[str, Any]] = None
                 async with update_lock:
                     if product_result.success:
                         metrics['completed'] += 1
@@ -208,28 +216,43 @@ async def process_products_parallel(
                         metrics['images'] += product_result.images_processed
                         metrics['relationships'] += product_result.relationships_created
                         metrics['clip_embeddings'] += product_result.clip_embeddings_generated
-
-                        # Update tracker. ProgressTracker.update_database_stats() expects `images_extracted`.
-                        await tracker.update_database_stats(
-                            chunks_created=product_result.chunks_created,
-                            images_extracted=product_result.images_processed,
-                            clip_embeddings=product_result.clip_embeddings_generated,
-                            products_created=1,
-                            sync_to_db=True
-                        )
+                        _stats_snapshot = {
+                            'chunks_created': product_result.chunks_created,
+                            'images_extracted': product_result.images_processed,
+                            'clip_embeddings': product_result.clip_embeddings_generated,
+                            'products_created': 1,
+                        }
                         logger_instance.info(f"✅ Product {product_index}/{total_products} completed: {product.name}")
                     else:
                         metrics['failed'] += 1
                         logger_instance.error(f"❌ Product {product_index}/{total_products} failed: {product.name}")
 
-                    # Update progress
                     total_done = metrics['completed'] + metrics['failed']
-                    overall_progress = int((total_done / total_products) * 70) + 15
-                    await tracker.update_progress(overall_progress, {
-                        "current_step": f"Processed {total_done}/{total_products} products",
-                        "products_completed": metrics['completed'],
-                        "products_failed": metrics['failed']
-                    })
+                    _progress_snapshot = {
+                        'progress': int((total_done / total_products) * 70) + 15,
+                        'current_step': f"Processed {total_done}/{total_products} products",
+                        'products_completed': metrics['completed'],
+                        'products_failed': metrics['failed'],
+                    }
+
+                # DB writes — outside the lock.
+                if _stats_snapshot is not None:
+                    await tracker.update_database_stats(
+                        chunks_created=_stats_snapshot['chunks_created'],
+                        images_extracted=_stats_snapshot['images_extracted'],
+                        clip_embeddings=_stats_snapshot['clip_embeddings'],
+                        products_created=_stats_snapshot['products_created'],
+                        sync_to_db=True,
+                    )
+                if _progress_snapshot is not None:
+                    await tracker.update_progress(
+                        _progress_snapshot['progress'],
+                        {
+                            'current_step': _progress_snapshot['current_step'],
+                            'products_completed': _progress_snapshot['products_completed'],
+                            'products_failed': _progress_snapshot['products_failed'],
+                        },
+                    )
 
                 return product_result
 

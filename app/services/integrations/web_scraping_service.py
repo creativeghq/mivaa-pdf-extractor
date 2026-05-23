@@ -29,6 +29,7 @@ from app.utils.circuit_breaker import claude_breaker, gpt_breaker, CircuitBreake
 from app.utils.timeout_guard import with_timeout, TimeoutError, TimeoutConstants
 from app.services.tracking.web_scraping_stages import WebScrapingStage, get_web_scraping_progress
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
+from app.services.facets import canonicalize_product_attributes
 from app.schemas.jobs import JobStatus
 import re
 
@@ -770,12 +771,34 @@ class WebScrapingService:
                     if factory_obj.get('factory_group_name'):
                         base_meta['factory_group_name'] = factory_obj['factory_group_name']
 
+                # ── Auto-canonicalize descriptive facets (web scrape) ────────
+                # Upstream Haiku product-discovery prompt projects values to
+                # English (L0). This call provides L0.5+L1+L2 belt-and-suspenders
+                # for any value that slipped through.
+                canonical_attrs: dict = {}
+                canonical_raw: dict = {}
+                try:
+                    canonical = await canonicalize_product_attributes(
+                        self.db, base_meta, source='web_scrape',
+                    )
+                    canonical_attrs = canonical.attributes
+                    canonical_raw = canonical.attributes_raw
+                    if canonical.resolutions:
+                        self.logger.info(
+                            f"   🏷️  Scrape canonicalized {len(canonical.resolutions)} facet values "
+                            f"across {len(canonical_attrs)} facets"
+                        )
+                except Exception as canon_err:
+                    self.logger.warning(f"   ⚠️ Canonicalization failed (scrape), continuing: {canon_err}")
+
                 # Prepare product data
                 product_data = {
                     "workspace_id": workspace_id,
                     "name": product.name,
                     "description": product.description or "",
                     "metadata": base_meta,
+                    "attributes": canonical_attrs,
+                    "attributes_raw": canonical_raw,
                     "source_type": "web_scraping",
                     "source_job_id": job_id,
                     "import_batch_id": f"scraping_{session_id}",
@@ -968,10 +991,18 @@ class WebScrapingService:
                 if not content:
                     continue
 
-                embedding = await self.embedding_service.generate_text_embedding(content)
-                if embedding:
+                # generate_text_embedding returns {success, embedding, model} —
+                # unpack the embedding vector explicitly; writing the dict into
+                # halfvec was a long-standing latent bug (fixed 2026-05-23).
+                emb_result = await self.embedding_service.generate_text_embedding(content)
+                emb_vec = emb_result.get('embedding') if isinstance(emb_result, dict) else None
+                if emb_result and emb_result.get('success') and emb_vec:
+                    from datetime import datetime as _dt
                     await self.db.table('document_chunks').update({
-                        'text_embedding': embedding,
+                        'text_embedding': emb_vec,
+                        'embedding_model': emb_result.get('model') or 'voyage-3.5',
+                        'embedding_dimension': len(emb_vec),
+                        'embedding_generated_at': _dt.utcnow().isoformat(),
                         'has_text_embedding': True,
                     }).eq('id', chunk_id).execute()
                     embedded += 1

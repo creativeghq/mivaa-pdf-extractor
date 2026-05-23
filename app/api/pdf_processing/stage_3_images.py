@@ -370,7 +370,7 @@ async def process_product_images(
         logger.warning(f"      3. YOLO endpoint returned errors")
         if tracker is not None:
             try:
-                await tracker.clear_slow_operation()
+                await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
             except Exception:
                 pass
         return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0, 'clip_embeddings_generated': 0}
@@ -424,7 +424,7 @@ async def process_product_images(
         # harness) would leave the marker set and trip auto-recovery.
         if tracker is not None:
             try:
-                await tracker.clear_slow_operation()
+                await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
             except Exception:
                 pass
         raise
@@ -593,7 +593,7 @@ async def process_product_images(
 
     if tracker is not None:
         try:
-            await tracker.clear_slow_operation()
+            await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
         except Exception:
             pass
 
@@ -685,18 +685,33 @@ async def _run_phase_3_ocr_for_product(
             or ""
         ).upper()
 
-        # Apply text-bearing filter.
-        # Strategy: skip ONLY when we have positive evidence the image isn't
-        # text-bearing. Otherwise OCR — Chandra v2 returns empty blocks for
-        # pure photos so the cost of OCRing a photo is one Chandra call that
-        # produces no rows. Better than missing a spec sheet.
+        # Apply text-bearing filter (CLAUDE.md "Phase 3 OCR" spec):
+        #   yolo_crop  + region ∈ {TABLE, TEXT, TITLE, CAPTION}        → OCR
+        #   yolo_crop  + region ∈ {IMAGE, FIGURE, PHOTO}               → SKIP (photo)
+        #   yolo_crop  + region unknown / other                        → OCR (conservative)
+        #   embedded   + metadata.text_detected is True                → OCR
+        #   embedded   + metadata.text_detected is False               → SKIP (embedded_no_text_detected)
+        #   embedded   + text_detected missing                          → OCR (conservative)
+        #   full_render                                                → SKIP (dup of Stage 1.5)
+        # Rationale: Chandra calls aren't free. Stage 1.5 already covered
+        # full_render pages and YOLO's IMAGE-class crops are explicitly
+        # classified as non-text, so OCRing them was burning Chandra calls.
+        text_bearing_regions = {"TABLE", "TEXT", "TITLE", "CAPTION"}
+        photo_regions        = {"IMAGE", "FIGURE", "PHOTO"}
+
         skipped_reason: Optional[str] = None
         if extraction_layer == "full_render":
             skipped_reason = "full_render_dup_of_stage_1_5"
-        elif region_type in ("IMAGE", "FIGURE", "PHOTO"):
-            # YOLO explicitly classified as non-text — skip.
-            skipped_reason = "photo_not_text_bearing"
-        # else: OCR it (embedded images, yolo_crop of unknown/text regions, etc.)
+        elif extraction_layer == "yolo_crop":
+            if region_type in photo_regions:
+                skipped_reason = "photo_not_text_bearing"
+            # else (TABLE/TEXT/TITLE/CAPTION + unknown) → OCR
+        elif extraction_layer == "embedded":
+            text_detected = metadata.get("text_detected")
+            # Explicit False = skip. None/missing = OCR (conservative).
+            if text_detected is False:
+                skipped_reason = "embedded_no_text_detected"
+        # else: extraction_layer is something we don't recognize — default to OCR.
 
         if skipped_reason is not None:
             counts["ocr_skipped"] += 1

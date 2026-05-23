@@ -3,12 +3,15 @@ OCR Service for multi-modal text extraction from images.
 
 Single-tier: Chandra v2 cloud endpoint only (HuggingFace, GPU, structured bbox-JSON).
 
-Pytesseract was removed 2026-05-01 — it had been silently broken on production
-(TESSDATA_PREFIX unset, no en.traineddata installed) and even when "working" it
-produced bbox-less text that was indistinguishable to layout-merge from
-UNCLASSIFIED orphans, silently degrading layout-aware chunking. Chandra v2 now
-has retry-with-jitter (3 attempts, temps 0.0/0.1/0.2) which raises the success
-rate to >95% and eliminates the need for a fallback.
+Pytesseract + EasyOCR were removed 2026-05-01 — pytesseract had been silently
+broken on production (TESSDATA_PREFIX unset, no en.traineddata installed) and
+even when "working" it produced bbox-less text that was indistinguishable to
+layout-merge from UNCLASSIFIED orphans, silently degrading layout-aware
+chunking. Chandra v2 retry-with-jitter (3 attempts, temps 0.0/0.4/0.8 — widened
+from the original 0.0/0.1/0.2 spread on 2026-05-03 because the narrow range
+left the model stuck in sticky-prose state through all three retries on
+graphic-heavy pages) raises the success rate past 90% and eliminates the need
+for a fallback engine.
 """
 
 import asyncio
@@ -182,9 +185,9 @@ class OCRService:
     """
     OCR Service providing text extraction from images.
 
-    Two-tier chain:
-    1. Chandra v2 cloud endpoint (high quality, GPU, structured bbox-JSON)
-    2. Pytesseract (local, deterministic, last-resort fallback)
+    Single-tier: Chandra v2 cloud endpoint only (high quality, GPU, structured
+    bbox-JSON). Pytesseract + EasyOCR were removed 2026-05-01; failure is
+    surfaced explicitly via OCRResult.method='chandra_failed'.
     """
 
     def __init__(self, config: Optional[OCRConfig] = None):
@@ -233,9 +236,9 @@ class OCRService:
         self._initialized = True
 
     def initialize(self) -> None:
-        """Initialize OCR service. Chandra is ready from __init__; Tesseract is built-in."""
+        """Initialize OCR service. Chandra is ready from __init__."""
         self._initialized = True
-        logger.info("OCR Service initialized (Chandra primary, Tesseract fallback)")
+        logger.info("OCR Service initialized (Chandra v2 single-tier)")
     
 
     def _call_chandra(

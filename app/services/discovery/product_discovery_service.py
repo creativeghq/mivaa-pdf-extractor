@@ -943,6 +943,70 @@ class ProductDiscoveryService:
             f"Claude product discovery failed after {len(attempts)} attempts: {last_error}"
         ) from last_error
     
+    def _validate_discovery_item(
+        self,
+        item: Dict[str, Any],
+        kind: str,
+        total_pages: int,
+    ) -> Optional[str]:
+        """Return None if item is acceptable, else a reason string explaining why it's dropped.
+
+        Discovery from Claude is free-form JSON + regex repair (no tool_use), so
+        malformed items can slip through. This is the validation boundary
+        between "model output" and "downstream pipeline state" — anything that
+        passes here is trusted to have the minimum fields needed for routing.
+        """
+        if not isinstance(item, dict):
+            return f"not a dict: {type(item).__name__}"
+        name = item.get("name")
+        if not name or not isinstance(name, str) or not name.strip():
+            return "missing or empty 'name'"
+        # page_range OR start_page is required to route the item to its pages.
+        page_range = item.get("page_range")
+        start_page = item.get("start_page")
+        if not page_range and not start_page and kind == "products":
+            # Products without page info will be filled by downstream vision
+            # detection — accept but warn.
+            self.logger.warning(
+                f"   ⚠️ Discovery {kind}: '{name}' has no page_range / start_page — "
+                f"will rely on vision detection (may be misrouted)"
+            )
+        # If both are present, basic sanity: page_range entries within total_pages.
+        if page_range and isinstance(page_range, list):
+            bad = [p for p in page_range
+                   if not isinstance(p, int) or p < 1 or p > total_pages]
+            if bad:
+                return f"page_range out of bounds (1..{total_pages}): {bad}"
+        return None
+
+    def _filter_validated_items(
+        self,
+        items: List[Any],
+        kind: str,
+        total_pages: int,
+    ) -> List[Dict[str, Any]]:
+        """Filter an LLM-returned list, dropping malformed entries with logs."""
+        if not isinstance(items, list):
+            self.logger.warning(
+                f"   ⚠️ Discovery {kind}: expected list, got {type(items).__name__} — treating as empty"
+            )
+            return []
+        kept: List[Dict[str, Any]] = []
+        for item in items:
+            reason = self._validate_discovery_item(item, kind, total_pages)
+            if reason is None:
+                kept.append(item)
+            else:
+                preview = (item.get("name") if isinstance(item, dict) else str(item))[:50]
+                self.logger.warning(
+                    f"   🚫 Discovery {kind}: dropped item '{preview}' — {reason}"
+                )
+        if len(kept) < len(items):
+            self.logger.info(
+                f"   📋 Discovery {kind} validation: kept {len(kept)}/{len(items)}"
+            )
+        return kept
+
     def _parse_discovery_results(
         self,
         result: Dict[str, Any],
@@ -953,7 +1017,10 @@ class ProductDiscoveryService:
 
         # Parse products (Claude returns product names + metadata, NO page_range - that's detected separately)
         products = []
-        for p in result.get("products", []):
+        validated_products = self._filter_validated_items(
+            result.get("products", []), "products", total_pages
+        )
+        for p in validated_products:
             # Extract metadata (new architecture - products + metadata inseparable)
             metadata = p.get("metadata", {})
 
@@ -1009,7 +1076,7 @@ class ProductDiscoveryService:
 
         # Parse certificates
         certificates = []
-        for c in result.get("certificates", []):
+        for c in self._filter_validated_items(result.get("certificates", []), "certificates", total_pages):
             certificate = CertificateInfo(
                 name=c.get("name", "Unknown"),
                 page_range=c.get("page_range", []),
@@ -1024,7 +1091,7 @@ class ProductDiscoveryService:
 
         # Parse logos
         logos = []
-        for l in result.get("logos", []):
+        for l in self._filter_validated_items(result.get("logos", []), "logos", total_pages):
             logo = LogoInfo(
                 name=l.get("name", "Unknown"),
                 page_range=l.get("page_range", []),
@@ -1036,7 +1103,7 @@ class ProductDiscoveryService:
 
         # Parse specifications
         specifications = []
-        for s in result.get("specifications", []):
+        for s in self._filter_validated_items(result.get("specifications", []), "specifications", total_pages):
             spec = SpecificationInfo(
                 name=s.get("name", "Unknown"),
                 page_range=s.get("page_range", []),

@@ -32,7 +32,11 @@ CANONICALIZABLE_FACETS: set[str] = {
     "fiber",
     "upholstery",
     "ip_rating",
-    "tags",
+    # `tags` intentionally excluded — material-tagger-agent writes free-form tags
+    # that should NOT be funneled through canonical clustering (would collapse
+    # distinct stylistic descriptors like "vintage" / "retro" / "throwback" that
+    # belong as separate filterable values). Add here only if tag de-duplication
+    # becomes a real product need.
 }
 
 NON_CANONICAL_FACETS: set[str] = {

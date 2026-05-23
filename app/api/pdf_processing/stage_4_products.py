@@ -514,9 +514,29 @@ async def create_single_product(
     # facet_canonical_values. Greek/German/Italian raw values auto-collapse
     # to canonical English. Identifiers, numerics, codes are skipped.
     # Failures degrade silently — product insert is never blocked by this.
-    canonical = await canonicalize_product_attributes(
-        supabase, metadata, source='pdf_stage_4',
-    )
+    #
+    # 30s timeout (2026-05-23): Voyage embedding calls can hang on rate-limit
+    # or network blip. Without a wait_for, the product insert would block
+    # indefinitely behind canonicalization. We degrade to empty attributes
+    # (preserving attributes_raw) on timeout — same contract as a Voyage error.
+    import asyncio as _asyncio
+    try:
+        canonical = await _asyncio.wait_for(
+            canonicalize_product_attributes(supabase, metadata, source='pdf_stage_4'),
+            timeout=30.0,
+        )
+    except _asyncio.TimeoutError:
+        logger.warning(
+            f"   ⏱️ Facet canonicalization exceeded 30s for {product.name} — "
+            f"degrading to empty canonical attributes (raw preserved). "
+            f"Voyage/HF outage suspected."
+        )
+        from app.services.facets import CanonicalizedAttributes
+        canonical = CanonicalizedAttributes(
+            attributes={},
+            attributes_raw={k: v for k, v in metadata.items() if v is not None},
+            resolutions=[],
+        )
     if canonical.resolutions:
         logger.info(
             f"   🏷️  Canonicalized {len(canonical.resolutions)} facet values "

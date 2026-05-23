@@ -419,6 +419,18 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Failed to start endpoint auto-scaler: {e}", exc_info=True)
         app.state.endpoint_auto_scaler = None
 
+    # /tmp janitor: sweep PDF temp files left orphan by prior SIGKILL / OOM
+    # crashes. Runs once per process start; the ResourceManager handles the
+    # live-process case. See resource_manager.sweep_orphan_temp_pdfs for the
+    # patterns matched.
+    try:
+        from app.utils.resource_manager import sweep_orphan_temp_pdfs
+        sweep_stats = sweep_orphan_temp_pdfs()
+        if sweep_stats.get("deleted"):
+            logger.info(f"🧹 Startup /tmp janitor: {sweep_stats}")
+    except Exception as janitor_err:
+        logger.warning(f"   /tmp janitor failed at startup (non-fatal): {janitor_err}")
+
     yield
 
     # Shutdown
@@ -1993,7 +2005,7 @@ from app.api.search import router as search_router
 from app.api.images import router as images_router
 from app.api.admin import router as admin_router
 from app.api.rag_routes import router as rag_router
-from app.api.documents import upload_router, query_router, management_router  # NEW: Refactored upload, query, and management routes
+from app.api.documents import query_router, management_router  # NEW: Refactored query and management routes (upload_router removed 2026-05-23 — was dead-code duplicate of rag_routes.py upload handler)
 from app.api.anthropic_routes import router as anthropic_router
 from app.api.products import router as products_router
 from app.api.document_entities import router as document_entities_router
@@ -2026,9 +2038,11 @@ from app.api.mention_tracking_routes import router as mention_tracking_router
 from app.api.job_research_routes import router as job_research_router
 from app.api.job_tracking_routes import router as job_tracking_router
 from app.api.seo_agent_routes import router as seo_agent_router
+from app.api.public_tools_routes import router as public_tools_router
 from app.api.websocket_routes import router as websocket_router
 from app.api.logs_routes import router as logs_router
 from app.api.admin_linking import router as admin_linking_router
+from app.api.facet_routes import router as facet_router
 from app.api.sam_routes import router as sam_router
 from app.api.agent_routes import router as agent_router
 
@@ -2037,7 +2051,8 @@ app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
 app.include_router(rag_router)
-app.include_router(upload_router, prefix="/api/rag")  # NEW: Refactored upload routes (mounted at /api/rag/documents/upload)
+# upload_router removed 2026-05-23 — was unreachable duplicate of rag_router's
+# `/documents/upload` handler (FastAPI keeps the first-registered route).
 app.include_router(query_router, prefix="/api/rag")  # NEW: Refactored query routes (mounted at /api/rag/documents/query, /search, /chat)
 app.include_router(management_router, prefix="/api/rag")  # NEW: Refactored management routes (job status, content, AI tracking)
 app.include_router(anthropic_router)
@@ -2072,9 +2087,11 @@ app.include_router(mention_tracking_router)    # NEW: Public /api/v1/mentions/tr
 app.include_router(job_research_router)        # NEW: Job research — DataForSEO Jobs + Perplexity Sonar + Firecrawl careers, daily consolidated email digest
 app.include_router(job_tracking_router)        # NEW: Public /api/v1/jobs/track/* — external job-search tracking (api_keys Bearer auth)
 app.include_router(seo_agent_router)           # NEW: SEO agent toolkit dispatcher — internal-only (x-cron-secret), routes to DataForSEOUnifiedClient
+app.include_router(public_tools_router)        # NEW: Public /tools page backend — captcha-gated, 2 scans/day/IP, no auth required
 app.include_router(websocket_router)  # NEW: WebSocket endpoint for real-time updates (job progress, system health)
 app.include_router(logs_router)  # NEW: System logs API (fetch, filter, clear logs from database)
 app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual chunk-product linking for debugging)
+app.include_router(facet_router)  # NEW: Admin facet canonicalization (POST /api/admin/facets/canonicalize + observability)
 app.include_router(sam_router)   # SAM mask generation for material inpainting
 app.include_router(agent_router)  # Background agents — long-running task delegation
 

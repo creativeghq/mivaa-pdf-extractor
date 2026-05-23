@@ -4,6 +4,11 @@ from app.services.facets.facet_canonicalizer import (
     FacetResolution,
     canonicalize_product_attributes,
     normalize_string,
+    resolve_query_term,
+)
+from app.services.facets.facet_translator import (
+    is_ascii_english,
+    translate_facet_values,
 )
 from app.services.facets.facet_whitelist import (
     CANONICALIZABLE_FACETS,
@@ -17,6 +22,9 @@ __all__ = [
     "FacetResolution",
     "canonicalize_product_attributes",
     "normalize_string",
+    "resolve_query_term",
+    "is_ascii_english",
+    "translate_facet_values",
     "CANONICALIZABLE_FACETS",
     "NON_CANONICAL_FACETS",
     "is_canonicalizable",

@@ -638,7 +638,7 @@ class PDFProcessor:
             bool: True if multimodal processing is recommended
 
         Note:
-            OCR uses 3-phase intelligent filtering (OpenCV → CLIP → EasyOCR),
+            OCR uses 3-phase intelligent filtering (OpenCV → CLIP → Chandra v2),
             so enabling multimodal doesn't mean all images get OCR.
             Only images with text patterns AND technical content get full OCR.
         """
@@ -2346,7 +2346,7 @@ class PDFProcessor:
         This is Phase 1 of the OCR filtering pipeline. It uses simple computer vision
         techniques to detect text-like patterns without running expensive OCR.
 
-        Speed: ~0.1 seconds per image (300x faster than EasyOCR)
+        Speed: ~0.1 seconds per image (avoids a Chandra v2 call per image)
 
         Args:
             image_path: Path to the image file
@@ -2705,11 +2705,11 @@ class PDFProcessor:
                 f"({len(images_skipped)} skipped: {len(opencv_skipped)} no text, {len(clip_skipped)} decorative)"
             )
             
-            # PHASE 3: OCR — Chandra first via ocr_service.extract_text_from_image,
-            # Tesseract on fallback. (No EasyOCR — its 600 MB PyTorch CPU load
-            # induced memory stalls.)
+            # PHASE 3: OCR — Chandra v2 only via ocr_service.extract_text_from_image.
+            # Pytesseract + EasyOCR were removed 2026-05-01; Chandra retry-with-jitter
+            # carries the >90% success rate without a local fallback.
             self.logger.info(
-                f"📝 Phase 3: Running OCR (Chandra→Tesseract chain) "
+                f"📝 Phase 3: Running OCR (Chandra v2) "
                 f"on {len(images_to_process)} filtered images"
             )
             

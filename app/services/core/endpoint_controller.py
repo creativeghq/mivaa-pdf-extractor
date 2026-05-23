@@ -273,11 +273,31 @@ class EndpointController:
             gate.force_minimum()
             return False
 
-        # Fast path: a prior warmup() already succeeded → no need to re-probe.
+        # Fast path: a prior warmup() succeeded — but the flag is in-memory and
+        # outlives the underlying endpoint state. Re-probe before trusting:
+        # HF could have scaled to zero between jobs, the container could be
+        # wedged, or the process could have restarted with a stale flag. The
+        # 2026-05-01 audit fix was specifically about closing this regression.
         if getattr(manager, 'warmup_completed', False):
-            self._warmed[key] = True
-            logger.debug("   ↪️  %s already warmed up — skipping re-probe", key)
-            return True
+            try:
+                probe_ok = await asyncio.to_thread(manager._test_inference)
+            except Exception as probe_err:
+                logger.debug("   %s _test_inference raised %s — re-warming", key, probe_err)
+                probe_ok = False
+            if probe_ok:
+                self._warmed[key] = True
+                logger.debug("   ↪️  %s already warmed up (probe OK) — skipping re-warmup", key)
+                return True
+            logger.warning(
+                "   ⚠️ %s warmup_completed=True but live probe failed — re-warming",
+                key,
+            )
+            try:
+                setattr(manager, 'warmup_completed', False)
+            except Exception:
+                pass
+            self._warmed[key] = False
+            # fall through to the status peek + warmup logic below
 
         # Pre-check: ask HF for the endpoint's actual status. If it's not
         # running (paused, failed, scaledToZero, deploying), don't burn the

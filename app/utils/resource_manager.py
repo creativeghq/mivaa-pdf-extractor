@@ -218,3 +218,72 @@ def get_resource_manager() -> ResourceManager:
     return _resource_manager
 
 
+def sweep_orphan_temp_pdfs(
+    tmp_dir: str = "/tmp",
+    max_age_hours: int = 12,
+) -> Dict[str, int]:
+    """Disk-level janitor for orphan PDF temp files left by crashes.
+
+    The ResourceManager only knows about resources from the currently-running
+    process. On SIGKILL / OOM kill, the in-memory state is lost and any temp
+    PDF that was registered orphans on the host's /tmp filesystem with no
+    cleanup. Across many incidents this fills the partition.
+
+    This sweep:
+      1. Scans `tmp_dir` for files matching the PDF temp patterns we know
+         the orchestrator creates (`tmp*.pdf` from NamedTemporaryFile +
+         the per-document subdirs `pdf_processor_*`).
+      2. Filters to files / dirs older than `max_age_hours` (default 12h —
+         well past the per-product timeout, so we never touch live work).
+      3. Deletes them. Honours errors silently (don't crash startup over a
+         file we can't unlink).
+
+    Called from `lifespan()` at startup so each fresh process inherits a
+    clean /tmp. Safe to call multiple times.
+
+    Returns counts: `{scanned, deleted, errors, skipped_recent}`.
+    """
+    import os as _os
+    import shutil as _shutil
+    import time as _time
+
+    stats = {"scanned": 0, "deleted": 0, "errors": 0, "skipped_recent": 0}
+    if not _os.path.isdir(tmp_dir):
+        return stats
+    cutoff = _time.time() - (max_age_hours * 3600)
+
+    try:
+        for name in _os.listdir(tmp_dir):
+            full = _os.path.join(tmp_dir, name)
+            # Match the patterns the orchestrator + NamedTemporaryFile produce.
+            is_pdf_temp_file = name.startswith("tmp") and name.endswith(".pdf")
+            is_pdf_temp_dir = name.startswith("pdf_processor_")
+            if not (is_pdf_temp_file or is_pdf_temp_dir):
+                continue
+            stats["scanned"] += 1
+            try:
+                mtime = _os.path.getmtime(full)
+            except OSError:
+                stats["errors"] += 1
+                continue
+            if mtime > cutoff:
+                stats["skipped_recent"] += 1
+                continue
+            try:
+                if _os.path.isdir(full):
+                    _shutil.rmtree(full, ignore_errors=True)
+                else:
+                    _os.unlink(full)
+                stats["deleted"] += 1
+                logger.info(f"🧹 [janitor] Removed orphan PDF temp: {full}")
+            except Exception as e:
+                stats["errors"] += 1
+                logger.debug(f"   janitor: failed to remove {full}: {e}")
+    except Exception as outer_err:
+        logger.warning(f"   janitor: scan of {tmp_dir} failed: {outer_err}")
+
+    if stats["deleted"] or stats["errors"]:
+        logger.info(f"🧹 [janitor] /tmp PDF sweep: {stats}")
+    return stats
+
+

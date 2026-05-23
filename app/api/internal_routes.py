@@ -1560,14 +1560,23 @@ async def regenerate_text_embeddings(
                     skipped += 1
                     continue
 
-                embedding = await embedding_service.generate_text_embedding(content)
-                if embedding:
+                # generate_text_embedding returns {success, embedding, model} —
+                # do NOT write the dict into the halfvec column.
+                emb_result = await embedding_service.generate_text_embedding(content)
+                emb_vec = emb_result.get('embedding') if isinstance(emb_result, dict) else None
+                if emb_result and emb_result.get('success') and emb_vec:
+                    from datetime import datetime as _dt
                     supabase.client.table('document_chunks').update({
-                        'text_embedding': embedding
+                        'text_embedding': emb_vec,
+                        'embedding_model': emb_result.get('model') or 'voyage-3.5',
+                        'embedding_dimension': len(emb_vec),
+                        'embedding_generated_at': _dt.utcnow().isoformat(),
+                        'has_text_embedding': True,
                     }).eq('id', chunk['id']).execute()
                     embeddings_generated += 1
                 else:
-                    errors.append(f"No embedding returned for chunk {chunk['id']}")
+                    err = (emb_result or {}).get('error') if isinstance(emb_result, dict) else 'no embedding'
+                    errors.append(f"No embedding returned for chunk {chunk['id']}: {err}")
 
                 chunks_processed += 1
 

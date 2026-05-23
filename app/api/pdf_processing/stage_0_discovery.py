@@ -257,12 +257,27 @@ async def process_stage_0_discovery(
         # it here. The cache key includes pdf file_size so a re-uploaded PDF
         # doesn't trigger a stale hit.
         catalog = None
+        # SHA-256 the file content so the cache key is content-addressed.
+        # Previous key (file_size only) hit stale cache on a truncated re-export
+        # that happened to land at the same byte count. The 2026-05-23 audit
+        # flagged this as a re-upload-collision risk.
+        import hashlib as _hashlib
+        _file_sha256 = _hashlib.sha256(file_content).hexdigest()
         try:
             cache_resp = supabase.client.table('background_jobs') \
                 .select('metadata') \
                 .eq('id', job_id).single().execute()
             cached = ((cache_resp.data or {}).get('metadata') or {}).get('catalog_cache')
-            if cached and cached.get('file_size') == len(file_content):
+            # Hash-based match takes priority. Fall back to file_size for
+            # legacy cache rows that pre-date the hash (still safer than
+            # bypassing the cache entirely on every resume).
+            _hash_match = bool(cached and cached.get('file_sha256') == _file_sha256)
+            _legacy_size_match = bool(
+                cached
+                and cached.get('file_sha256') is None
+                and cached.get('file_size') == len(file_content)
+            )
+            if _hash_match or _legacy_size_match:
                 # ProductCatalog lives next to the discovery service, not
                 # under app.schemas (the previous import path crashed silently
                 # via the outer except, so the cache was effectively dead).
@@ -311,6 +326,42 @@ async def process_stage_0_discovery(
             logger.info(f"   🤖 Model: {normalized_model}")
             logger.info(f"   ⏱️  Timeout: {discovery_timeout:.0f}s")
 
+            # Telemetry (2026-05-23): emit stage_history "in_progress" so the
+            # admin UI can show "Stage 0: discovering products" instead of
+            # falling back to the previous stage name (warmup_completed) for
+            # the duration of the 1-5min run. Also register a slow_op marker
+            # so auto-recovery doesn't false-positive on large catalogs.
+            _stage_0_slow_op_set = False
+            if tracker is not None:
+                try:
+                    await tracker.set_slow_operation(
+                        operation=f"stage_0_discovery:{page_count}_pages",
+                        expected_max_seconds=max(300, int(discovery_timeout)),
+                    )
+                    _stage_0_slow_op_set = True
+                except Exception as _slow_err:
+                    logger.debug(f"   tracker.set_slow_operation failed (non-fatal): {_slow_err}")
+            try:
+                supabase.client.rpc(
+                    'append_stage_history',
+                    {
+                        'p_job_id': job_id,
+                        'p_event': {
+                            'stage': 'stage_0_discovery',
+                            'status': 'in_progress',
+                            'data': {
+                                'page_count': page_count,
+                                'categories': extract_categories,
+                                'discovery_model': normalized_model,
+                                'timeout_seconds': int(discovery_timeout),
+                            },
+                            'started_at': datetime.utcnow().isoformat(),
+                        },
+                    }
+                ).execute()
+            except Exception as _hist_err:
+                logger.debug(f"   append_stage_history failed (non-fatal): {_hist_err}")
+
             try:
                 catalog = await discovery_breaker.call(
                     lambda: with_timeout(
@@ -353,6 +404,7 @@ async def process_stage_0_discovery(
                                 'catalog_cache': {
                                     'cached_at': datetime.utcnow().isoformat(),
                                     'file_size': len(file_content),
+                                    'file_sha256': _file_sha256,
                                     'catalog': catalog_dict,
                                 }
                             },
@@ -374,6 +426,33 @@ async def process_stage_0_discovery(
     except Exception as discovery_error:
         # Capture exception in Sentry
         sentry_sdk.capture_exception(discovery_error)
+        # Telemetry: emit Stage 0 "failed" event + clear slow_op before
+        # re-raising so the audit log shows where the job died.
+        if tracker is not None and locals().get('_stage_0_slow_op_set'):
+            try:
+                await tracker.clear_slow_operation(
+                    operation=f"stage_0_discovery:{page_count}_pages"
+                )
+            except Exception:
+                pass
+        try:
+            supabase.client.rpc(
+                'append_stage_history',
+                {
+                    'p_job_id': job_id,
+                    'p_event': {
+                        'stage': 'stage_0_discovery',
+                        'status': 'failed',
+                        'data': {
+                            'error': str(discovery_error)[:1000],
+                            'error_type': type(discovery_error).__name__,
+                        },
+                        'failed_at': datetime.utcnow().isoformat(),
+                    },
+                }
+            ).execute()
+        except Exception:
+            pass
         # Re-raise discovery errors to be handled by outer exception handler
         raise discovery_error
 
@@ -533,6 +612,39 @@ async def process_stage_0_discovery(
     )
     logger.info(f"✅ Created PRODUCTS_DETECTED checkpoint for job {job_id}")
 
+    # Telemetry (2026-05-23): emit Stage 0 "completed" + clear slow_op marker.
+    # See "in_progress" emit + set_slow_operation above for context.
+    if tracker is not None and locals().get('_stage_0_slow_op_set'):
+        try:
+            await tracker.clear_slow_operation(
+                operation=f"stage_0_discovery:{page_count}_pages"
+            )
+        except Exception as _clear_err:
+            logger.debug(f"   tracker.clear_slow_operation failed (non-fatal): {_clear_err}")
+    try:
+        supabase.client.rpc(
+            'append_stage_history',
+            {
+                'p_job_id': job_id,
+                'p_event': {
+                    'stage': 'stage_0_discovery',
+                    'status': 'completed',
+                    'data': {
+                        'products_discovered': products_discovered,
+                        'certificates_discovered': certificates_discovered,
+                        'logos_discovered': logos_discovered,
+                        'specifications_discovered': specifications_discovered,
+                        'total_entities': total_entities,
+                        'duration_ms': int(discovery_time_ms),
+                        'model_used': catalog.model_used,
+                    },
+                    'completed_at': datetime.utcnow().isoformat(),
+                },
+            }
+        ).execute()
+    except Exception as _hist_err:
+        logger.debug(f"   append_stage_history completed failed (non-fatal): {_hist_err}")
+
     # ✅ CREATE PRODUCTS IN DATABASE IMMEDIATELY AFTER DISCOVERY
     # This creates the actual product records so all subsequent stages just update them
     if catalog.products:
@@ -561,18 +673,36 @@ async def process_stage_0_discovery(
         # 11 distinct products after one resume, 33 after two, etc).
         # Look up existing products for this document and reuse their IDs
         # instead of inserting duplicates.
+        #
+        # CORRECTION (2026-05-23): the key was `lowercased(name)` only, which
+        # collapsed two real products both called e.g. "Standard" (common
+        # dimension/finish label) to one row. The key is now
+        # `(lowercased(name), first_page)` — page_range disambiguates legitimate
+        # repeats. Falls back to name-only when page_range is absent so legacy
+        # rows still dedupe.
+        def _idem_key(name: str, page_range) -> str:
+            nm = (name or '').strip().lower()
+            try:
+                first_page = int(page_range[0]) if page_range else None
+            except (TypeError, IndexError, ValueError):
+                first_page = None
+            return f"{nm}::{first_page}" if first_page is not None else nm
+
         existing_by_name: Dict[str, str] = {}
         try:
             existing_resp = supabase.client.table('products') \
-                .select('id, name') \
+                .select('id, name, metadata') \
                 .eq('source_document_id', document_id) \
                 .execute()
             for row in (existing_resp.data or []):
-                # If duplicates already exist for some name, prefer the first
-                # (lowest UUID by lexical sort) — deterministic.
-                nm = (row.get('name') or '').strip().lower()
-                if nm and nm not in existing_by_name:
-                    existing_by_name[nm] = row['id']
+                meta = row.get('metadata') or {}
+                # Stage 0 stamps page_range into metadata at create time
+                # (stage_4_products.create_single_product reads page_range from the
+                # ProductInfo dataclass). Read it back here for stable keying.
+                pr = meta.get('page_range') or meta.get('product_pages') or []
+                key = _idem_key(row.get('name') or '', pr)
+                if key and key not in existing_by_name:
+                    existing_by_name[key] = row['id']
             if existing_by_name:
                 logger.info(
                     f"♻️  Stage 0 idempotency: found {len(existing_by_name)} "
@@ -602,7 +732,7 @@ async def process_stage_0_discovery(
 
                 # 2. Create product in database — OR reuse existing one from
                 #    a previous attempt if this is an auto-resume.
-                lookup_key = (product.name or '').strip().lower()
+                lookup_key = _idem_key(product.name, product.page_range)
                 existing_id = existing_by_name.get(lookup_key)
                 if existing_id:
                     product_db_id = existing_id

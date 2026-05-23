@@ -922,21 +922,35 @@ class VecsService:
             has_understanding = bool(understanding_query_embedding and understanding_results)
             specialized_count = len(specialized_types_to_run)
 
-            # Weights are normalized over the dimensions actually queried,
-            # so omitting (say) color doesn't dilute the remaining vectors.
-            base_weights: Dict[str, float] = {'visual': 0.25}
+            # Weights for image-only search across VECS collections. Chosen to
+            # match the image-relevant subset of the documented unified_search
+            # profile (CLAUDE.md → "Search Weight Configurations"):
+            #
+            #     unified_search:
+            #       text 0.15  visual 0.15  understanding 0.20
+            #       color/texture/style/material 0.125 each = 0.50 total
+            #
+            # search_all_collections is image-only (no text channel), so the
+            # 0.15 text weight is folded into visual → 0.30. Understanding +
+            # 4 specialized stay at their documented shares.
+            #
+            # When understanding or specialized aren't queried, weights are
+            # renormalized so the present dimensions still sum to 1.0 —
+            # omitting (say) color doesn't dilute the remaining vectors.
+            base_weights: Dict[str, float] = {'visual': 0.30}
             if has_understanding:
                 base_weights['understanding'] = 0.20
             if specialized_count > 0:
-                # Distribute remaining mass across present specialized types.
-                remaining = 1.0 - sum(base_weights.values())
-                per_specialized = remaining / specialized_count
+                # 0.50 spread across the queried specialized types (each
+                # full-set member gets 0.125; if some are missing the share
+                # is redistributed evenly).
+                per_specialized = 0.50 / specialized_count
                 for emb_type in specialized_types_to_run:
                     base_weights[emb_type] = per_specialized
-            else:
-                # Re-normalize so visual + understanding sum to 1.0.
-                total = sum(base_weights.values()) or 1.0
-                base_weights = {k: v / total for k, v in base_weights.items()}
+            # Renormalize so the final weights sum to 1.0 regardless of which
+            # dimensions were queried.
+            _w_total = sum(base_weights.values()) or 1.0
+            base_weights = {k: v / _w_total for k, v in base_weights.items()}
 
             combined_results = []
             for image_id in all_image_ids:

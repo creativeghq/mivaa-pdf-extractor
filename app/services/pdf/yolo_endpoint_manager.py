@@ -152,8 +152,15 @@ class YoloEndpointManager:
             endpoint.fetch()
 
             if endpoint.status == "running":
-                logger.info("✅ YOLO endpoint already running")
-                return True
+                # Probe before trusting — see chandra_endpoint_manager for rationale.
+                if self._test_inference():
+                    logger.info("✅ YOLO endpoint running and healthy")
+                    return True
+                logger.warning(
+                    "⚠️ YOLO endpoint reports running but /health probe failed — re-warming"
+                )
+                self.warmup_completed = False
+                return self.warmup()
 
             # Handle "initializing" state - poll until ready
             if endpoint.status == "initializing":

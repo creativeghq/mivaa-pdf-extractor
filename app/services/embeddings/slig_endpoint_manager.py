@@ -145,8 +145,17 @@ class SLIGEndpointManager:
             endpoint.fetch()
 
             if endpoint.status == "running":
-                logger.info("✅ SLIG endpoint already running")
-                return True
+                # Probe before trusting — see chandra_endpoint_manager for rationale.
+                # SLIG's _test_inference fires a tiny image-embedding request,
+                # which is the actual hot path so it confirms inference health.
+                if self._test_inference():
+                    logger.info("✅ SLIG endpoint running and healthy")
+                    return True
+                logger.warning(
+                    "⚠️ SLIG endpoint reports running but inference probe failed — re-warming"
+                )
+                self.warmup_completed = False
+                return self.warmup()
 
             # Handle "initializing" state - poll until ready
             if endpoint.status == "initializing":
