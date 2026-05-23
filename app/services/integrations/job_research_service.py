@@ -493,8 +493,13 @@ class JobResearchService:
                     limit_per_query=10,
                 ))
             if sources_enabled.get("perplexity", True):
-                sources_called.append("perplexity")
-                model = "sonar-pro" if (force_full_discovery or not tj.get("last_refreshed_at")) else "sonar"
+                # v0.4.5: fan out Perplexity across query phrasings instead of one call.
+                # Primary call uses sonar-pro on the original keyword set (best for
+                # the user's intent); up to 3 variation calls use cheap sonar with one
+                # Haiku-generated phrasing each. anti-hallucination guard catches any
+                # fakes; content_hash dedupes overlap.
+                model_primary = "sonar-pro" if (force_full_discovery or not tj.get("last_refreshed_at")) else "sonar"
+                sources_called.append("perplexity_primary")
                 tasks.append(search_via_perplexity(
                     keywords=all_search_terms,
                     location=location,
@@ -503,9 +508,22 @@ class JobResearchService:
                     excluded_keywords=excluded_keywords,
                     excluded_companies=excluded_companies,
                     attribution=attribution,
-                    model=model,
-                    limit=15,
+                    model=model_primary,
+                    limit=7,
                 ))
+                for i, phrasing in enumerate(all_query_variations[:3] if all_query_variations else []):
+                    sources_called.append(f"perplexity_var_{i+1}")
+                    tasks.append(search_via_perplexity(
+                        keywords=[phrasing],  # single-element → keyword_str becomes the phrasing
+                        location=location,
+                        remote_only=remote_only,
+                        seniority=seniority,
+                        excluded_keywords=excluded_keywords,
+                        excluded_companies=excluded_companies,
+                        attribution=attribution,
+                        model="sonar",
+                        limit=5,
+                    ))
             if sources_enabled.get("careers_pages", False):
                 sources_called.append("careers_pages")
                 tasks.append(search_via_firecrawl_careers(

@@ -706,7 +706,10 @@ async def search_via_perplexity(
     #   1. Cap limit aggressively (5 not 15) — less pressure to invent
     #   2. Explicit anti-hallucination directive + permission for empty results
     #   3. Post-call hallucination detector (see _looks_like_hallucinated_hit)
-    capped_limit = min(limit, 5)
+    # v0.4.5: bump cap 5→7. The anti-hallucination guards (placeholder companies,
+    # sequential/palindromic IDs) catch fabricated entries; more headroom lets
+    # Sonar surface 2-3 real listings per call instead of stopping at 1-2.
+    capped_limit = min(limit, 7)
     user_prompt = (
         f"Find INDIVIDUAL JOB POSTINGS for: {keyword_str} {location_clause}. "
         f"{remote_clause} {seniority_clause} "
