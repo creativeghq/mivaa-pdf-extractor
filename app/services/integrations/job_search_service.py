@@ -146,6 +146,93 @@ def _is_aggregator_serp_url(url: str) -> bool:
     return False
 
 
+# v0.4.1 — broader category-page detection. Catches the long-tail of niche
+# aggregators (Arc, Built-In, Turing, Crossover, RemoteRocketship, etc.) that
+# the explicit-domain patterns above don't enumerate.
+def _is_category_page_url(url: str) -> bool:
+    """Heuristic: True if the URL is a category / topic-landing / job-board
+    INDEX page (lists many jobs) vs an individual job posting (one specific
+    role with apply CTA). Strategy:
+      1. POSITIVE signal first — if the path has a 4+ digit number ANYWHERE,
+         it's almost certainly a job ID → NOT a category. Same for ?jk=<hash>
+         and known patterns like /viewjob, /job-listing.
+      2. Otherwise check for explicit category indicators (/jobs/category/,
+         path ending in /jobs or /jobs/?, /X-jobs path suffix).
+      3. Otherwise: short slug-only last segment with no digits and looks like
+         a topic word (e.g. /python, /remote-senior-python-developer, /jobs/python)
+         → category.
+    """
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        path = (p.path or "").rstrip("/").lower()
+        # ── Strong positives — real job IDs / known posting patterns
+        if re.search(r"/\d{4,}(/|$|-)", path):
+            return False
+        if "?jk=" in url.lower() or "viewjob" in path or "job-listing" in path:
+            return False
+        if "/jobs/view/" in path or "/job/view/" in path:
+            return False
+        # ── Strong negatives — explicit category / index page indicators
+        if re.search(r"/jobs?/(category|categories|search|board)/", path):
+            return True
+        if re.fullmatch(r"/jobs?", path):
+            return True
+        # path ends in /<word>-jobs or /<word>-job (e.g. /python-jobs, /remote-python-jobs)
+        if re.search(r"/[a-z][a-z0-9-]*-jobs?/?$", path):
+            return True
+        # ── Last-segment heuristic for short topic slugs
+        last_seg = path.rsplit("/", 1)[-1] if "/" in path else path
+        if last_seg and len(last_seg) < 35 and not re.search(r"\d", last_seg):
+            # Looks like a topic/category slug (e.g. "python", "developer-engineer",
+            # "remote-senior-python-developer") — short, no digits, only [a-z0-9-]
+            if re.fullmatch(r"[a-z][a-z0-9-]*", last_seg):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _looks_like_category_title(title: Optional[str]) -> bool:
+    """Title-shape heuristic for aggregator/category pages. Catches:
+      - "25 Python jobs in Developer / Engineer"
+      - "Python Job Board"
+      - "Best Remote Python Jobs in NYC, NY 2026"
+      - "Top Remote Python Jobs in San Francisco Bay Area, CA"
+      - "Remote Python Jobs (May 2026)"
+      - "Python Jobs" (bare plural)
+    Does NOT catch real job titles like:
+      - "Senior Software Engineer - Backend/Python - USA Only (100% Remote)"
+      - "Principal Backend Engineer AI (Python) in Remote"
+      - "Drupal with Python Developer (Senior)"
+    """
+    if not title:
+        return False
+    t = title.strip()
+    # 1. Starts with a digit count: "25 Python jobs", "754 senior python developer Jobs"
+    if re.match(r"^\d+\s+.{1,60}\bjobs?\b", t, re.I):
+        return True
+    # 2. "Job Board" / "Jobs Board"
+    if re.search(r"\bjobs?\s+board\b", t, re.I):
+        return True
+    # 3. "Best/Top ... Jobs ..." (Built-In / Crossover style category pages)
+    if re.match(r"^(best|top)\s+.{1,80}\bjobs?\b", t, re.I):
+        return True
+    # 4. Short plural-jobs title (Remote Python Jobs / Python Jobs / Remote Python Developer Jobs)
+    cleaned = re.sub(r"\([^)]*\)", "", t).strip()  # strip parentheticals like "(May 2026)"
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    words = cleaned.split()
+    # Ends in plural "Jobs" and the title is short enough to be a category landing
+    if len(words) <= 6 and re.search(r"\bjobs?\b\s*$", cleaned, re.I):
+        return True
+    # 5. "Apply Now" CTA at end — usually a category page
+    if re.search(r"\bapply\s+now\b\s*$", t, re.I):
+        return True
+    return False
+
+
 def content_hash(canonical_url: str, title: Optional[str], company: Optional[str]) -> str:
     h = hashlib.sha1()
     h.update((canonical_url or "").encode("utf-8"))
@@ -367,23 +454,32 @@ async def search_via_dataforseo_serp(
                         url = item.get("url") or ""
                         if not url or not url.startswith(("http://", "https://")):
                             continue
-                        # Drop aggregator SERP / category landing pages — same filter as Perplexity.
-                        if _is_aggregator_serp_url(url):
+                        title = item.get("title")
+                        # v0.4.1: aggressive category-page filtering. SERP results come
+                        # from anywhere on the web, so most niche aggregator landing
+                        # pages will slip through unless we filter URL-shape AND
+                        # title-shape. Anything that looks like a topic-index page,
+                        # "Best X Jobs in Y", "N python jobs", "Python Job Board",
+                        # etc. gets dropped here BEFORE persistence.
+                        if _is_aggregator_serp_url(url) or _is_category_page_url(url):
+                            continue
+                        if _looks_like_category_title(title):
                             continue
                         canonical = canonicalize_url(url)
-                        title = item.get("title")
-                        # SERP items have a domain; that's the closest proxy to company
                         host = domain_of(url)
-                        company = host.split(".")[0].title() if host else None
-                        if company and company.lower() in _AGGREGATOR_COMPANY_NAMES:
-                            # e.g. drop indeed.com / glassdoor.com results that slipped past the URL filter
-                            continue
+                        # v0.4.1: NEVER set company from the host for google_serp hits.
+                        # The host is the aggregator (arc.dev, weworkremotely.com,
+                        # careers-cotiviti.icims.com); the actual employer must be
+                        # extracted from the title or description by the classifier
+                        # downstream. Leaving company=None forces honest attribution
+                        # rather than misleading "Arc" / "Cotiviti" / "Weworkremotely"
+                        # labels.
                         out.append(JobHit(
                             url=url,
                             canonical_url=canonical,
-                            content_hash=content_hash(canonical, title, company),
+                            content_hash=content_hash(canonical, title, None),
                             title=title,
-                            company=company,
+                            company=None,
                             company_domain=host,
                             description_excerpt=(item.get("description") or "")[:500] or None,
                             source="google_serp",
@@ -638,13 +734,15 @@ async def search_via_perplexity(
             url = (item.get("url") or "").strip()
             if not url or not url.startswith(("http://", "https://")):
                 continue
-            # v0.3.6: defensive post-filter for obvious SERP/aggregator URLs.
-            # Perplexity sometimes returns these despite the prompt; we drop them.
-            if _is_aggregator_serp_url(url):
-                logger.info(f"job-search perplexity: dropping aggregator/SERP url: {url[:120]}")
+            title = item.get("title")
+            # v0.3.6 + v0.4.1: post-filter for SERP / aggregator / category pages.
+            if _is_aggregator_serp_url(url) or _is_category_page_url(url):
+                logger.info(f"job-search perplexity: dropping category/SERP url: {url[:120]}")
+                continue
+            if _looks_like_category_title(title):
+                logger.info(f"job-search perplexity: dropping category-shaped title: {(title or '')[:80]}")
                 continue
             canonical = canonicalize_url(url)
-            title = item.get("title")
             company = item.get("company")
             # v0.3.6: also reject when the "company" is one of the aggregators
             # (Indeed / Glassdoor / LinkedIn / Monster as the company means it's a SERP)
