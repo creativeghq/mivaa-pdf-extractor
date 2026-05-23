@@ -491,14 +491,14 @@ async def _upload_to_storage(client: httpx.AsyncClient, image_url: str, job_id: 
 
     content_type = dl_resp.headers.get("content-type", "image/webp")
     ext = "png" if "png" in content_type else "jpg"
-    path = f"generation-edits/{job_id}/{int(datetime.utcnow().timestamp() * 1000)}.{ext}"
+    path = f"product-crops/{job_id}/{int(datetime.utcnow().timestamp() * 1000)}.{ext}"
 
     supabase = get_supabase_client()
-    supabase.storage.from_("product-images").upload(
+    supabase.storage.from_("generation-images").upload(
         path,
         dl_resp.content,
         file_options={"content-type": content_type, "upsert": "true"},
     )
 
-    url_data = supabase.storage.from_("product-images").get_public_url(path)
+    url_data = supabase.storage.from_("generation-images").get_public_url(path)
     return url_data

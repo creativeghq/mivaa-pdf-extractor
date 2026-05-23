@@ -34,11 +34,13 @@ TABLES_TO_MONITOR = [
     'background_jobs'
 ]
 
-# Storage buckets to monitor
+# Storage buckets to monitor — post-consolidation 5 anchors (2026-05-23)
 BUCKETS_TO_MONITOR = [
-    'pdf-tiles',
     'pdf-documents',
-    'material-images'
+    'pdf-tiles',
+    'generation-images',
+    'quote-templates',
+    'moodboard-sheet-references',
 ]
 
 # Supabase Free Tier Limits

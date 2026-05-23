@@ -3,10 +3,10 @@ Catalog rasterization helper for the presentation_catalogs flow.
 
 Single endpoint: POST /api/internal/catalog/rasterize-pdf-page
 
-Renders one page of an admin-uploaded source PDF (stored in the
-`catalog-sources` Supabase Storage bucket) to PNG, optionally cropped to a
-normalized [0..1] bounding box, and uploads the result to
-`catalog-extracted-images/<source_pdf_id>/page-<n>[-<bbox-hash>].png`.
+Renders one page of an admin-uploaded source PDF (stored under the
+`catalog-source/` prefix in the `pdf-documents` Supabase Storage bucket) to
+PNG, optionally cropped to a normalized [0..1] bounding box, and uploads the
+result to `pdf-tiles/catalog-extracted/<source_pdf_id>/page-<n>[-<bbox-hash>].png`.
 
 Used by the catalog-extract / catalog-translate edge functions to give every
 extracted material a real image lifted from the source PDF, instead of leaving
@@ -64,7 +64,7 @@ class RasterizeRequest(BaseModel):
     dpi: int = Field(200, ge=72, le=400, description="Render DPI. Higher = sharper but heavier.")
     target_path: Optional[str] = Field(
         None,
-        description="Override storage path under catalog-extracted-images. Default is auto-derived.",
+        description="Override storage path under pdf-tiles/catalog-extracted/. Default is auto-derived.",
     )
     signed_url_ttl_seconds: int = Field(60 * 60 * 24 * 7)  # 7 days
 
@@ -104,7 +104,7 @@ async def rasterize_pdf_page(payload: RasterizeRequest, request: Request) -> Ras
     storage_path = pdf_row.data["storage_path"]
 
     try:
-        pdf_bytes = supabase.client.storage.from_("catalog-sources").download(storage_path)
+        pdf_bytes = supabase.client.storage.from_("pdf-documents").download(storage_path)
     except Exception as e:
         logger.exception("[catalog/rasterize] download failed")
         raise HTTPException(status_code=500, detail=f"download failed: {e}")
@@ -151,25 +151,25 @@ async def rasterize_pdf_page(payload: RasterizeRequest, request: Request) -> Ras
             width, height = pix.width, pix.height
 
         target = payload.target_path or (
-            f"{payload.source_pdf_id}/page-{payload.page_no:04d}-{_bbox_hash(payload.bbox)}.png"
+            f"catalog-extracted/{payload.source_pdf_id}/page-{payload.page_no:04d}-{_bbox_hash(payload.bbox)}.png"
         )
 
         try:
-            supabase.client.storage.from_("catalog-extracted-images").upload(
+            supabase.client.storage.from_("pdf-tiles").upload(
                 target,
                 png_bytes,
                 {"content-type": "image/png", "upsert": "true"},
             )
         except Exception:
             try:
-                supabase.client.storage.from_("catalog-extracted-images").update(
+                supabase.client.storage.from_("pdf-tiles").update(
                     target, png_bytes, {"content-type": "image/png"},
                 )
             except Exception as e:
                 logger.exception("[catalog/rasterize] upload failed")
                 raise HTTPException(status_code=500, detail=f"upload failed: {e}")
 
-        signed = supabase.client.storage.from_("catalog-extracted-images").create_signed_url(
+        signed = supabase.client.storage.from_("pdf-tiles").create_signed_url(
             target, payload.signed_url_ttl_seconds
         )
         signed_url = (signed or {}).get("signedURL") or (signed or {}).get("signed_url")

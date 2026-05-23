@@ -5711,6 +5711,7 @@ async def search_knowledge_base(
                             "match_threshold": 0.5,
                             "match_count": request.top_k * 2,  # fetch extra, will post-filter
                             "allowed_access_levels": allowed_access_levels,
+                            "include_private": caller == "admin",
                         }
                         if request.category_id:
                             rpc_args["match_category_id"] = request.category_id

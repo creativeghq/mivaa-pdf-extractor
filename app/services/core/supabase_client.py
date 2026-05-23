@@ -450,7 +450,7 @@ class SupabaseClient:
                     # consumer reading from metadata sees the same value.
                     'extraction_layer': extraction_layer_val,
                     'storage_uploaded': image_info.get('storage_uploaded', False),
-                    'storage_bucket': image_info.get('storage_bucket', 'material-images'),
+                    'storage_bucket': image_info.get('storage_bucket', 'pdf-tiles'),
                     'storage_path': image_info.get('storage_path'),
                     'width': image_info.get('width'),
                     'height': image_info.get('height'),
@@ -978,15 +978,15 @@ class SupabaseClient:
         Used to delete non-material images after AI classification.
 
         Args:
-            storage_path: Storage path (e.g., 'material-images/doc_id/image.jpg')
+            storage_path: Storage path (e.g., 'pdf-tiles/doc_id/image.jpg')
 
         Returns:
             True if deleted successfully, False otherwise
         """
         try:
             # Extract bucket name from storage path
-            # Format: 'material-images/doc_id/image.jpg'
-            bucket_name = 'material-images'
+            # Format: 'pdf-tiles/doc_id/image.jpg'
+            bucket_name = 'pdf-tiles'
 
             # Remove bucket name from path if present
             if storage_path.startswith(f'{bucket_name}/'):

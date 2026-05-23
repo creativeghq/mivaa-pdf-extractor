@@ -21,7 +21,12 @@ import os
 import time
 from typing import List, Optional
 
+import httpx
+
 from app.services.integrations import job_cost_logger as costs
+
+_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+_ANTHROPIC_VERSION = "2023-06-01"
 
 logger = logging.getLogger(__name__)
 
@@ -104,13 +109,6 @@ async def expand_keywords(
         logger.info("job-keyword-expansion: ANTHROPIC_API_KEY missing — skipping")
         return {"expanded": [], "rejected": [], "raw": {}}
 
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        logger.warning("job-keyword-expansion: anthropic SDK missing — skipping")
-        return {"expanded": [], "rejected": [], "raw": {}}
-
-    client = AsyncAnthropic(api_key=api_key)
     started = time.time()
     in_tok = 0
     out_tok = 0
@@ -118,19 +116,33 @@ async def expand_keywords(
     err: Optional[str] = None
     raw: dict = {}
 
+    # Call Anthropic /v1/messages HTTP API directly to avoid SDK version drama.
+    # The deployed anthropic-python is pinned to 0.23.1 (beta-era tool-use path);
+    # the HTTP API has had stable tool_use since 2024-06 and doesn't care about
+    # our SDK version.
+    payload = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 600,
+        "tools": [_EXPAND_TOOL],
+        "tool_choice": {"type": "tool", "name": "submit_expanded_keywords"},
+        "messages": [{"role": "user", "content": _build_user_prompt(label, keywords, location, seniority, excluded_keywords)}],
+    }
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": _ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
     try:
-        resp = await client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            tools=[_EXPAND_TOOL],
-            tool_choice={"type": "tool", "name": "submit_expanded_keywords"},
-            messages=[{"role": "user", "content": _build_user_prompt(label, keywords, location, seniority, excluded_keywords)}],
-        )
-        in_tok = int(getattr(resp.usage, "input_tokens", 0) or 0)
-        out_tok = int(getattr(resp.usage, "output_tokens", 0) or 0)
-        for block in resp.content:
-            if getattr(block, "type", None) == "tool_use" and block.name == "submit_expanded_keywords":
-                raw = block.input or {}
+        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
+            resp = await client.post(_ANTHROPIC_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        usage = data.get("usage") or {}
+        in_tok = int(usage.get("input_tokens") or 0)
+        out_tok = int(usage.get("output_tokens") or 0)
+        for block in (data.get("content") or []):
+            if block.get("type") == "tool_use" and block.get("name") == "submit_expanded_keywords":
+                raw = block.get("input") or {}
                 break
     except Exception as e:
         success = False

@@ -620,6 +620,12 @@ class SearchKBRequest(BaseModel):
                     "Default False preserves admin management search behavior — "
                     "agent-facing search should pass True explicitly."
     )
+    is_admin_caller: bool = Field(
+        default=False,
+        description="When true, 'private' visibility docs are included in results. "
+                    "Set this only when the calling user is an admin / super_admin. "
+                    "Default False matches the safe behavior for end-user agent calls."
+    )
     match_threshold: float = Field(default=0.5, description="Minimum similarity for semantic search", ge=0.0, le=1.0)
 
 
@@ -745,6 +751,7 @@ async def search_kb_documents(
                 'match_threshold': request.match_threshold,
                 'match_count': request.limit,
                 'require_published': request.require_published,
+                'include_private': request.is_admin_caller,
             }
             if request.allowed_access_levels:
                 rpc_args['allowed_access_levels'] = request.allowed_access_levels
@@ -766,6 +773,7 @@ async def search_kb_documents(
                 'search_workspace_id': request.workspace_id,
                 'search_type': request.search_type,
                 'result_limit': request.limit,
+                'include_private': request.is_admin_caller,
             }
             if request.allowed_access_levels:
                 rpc_args['allowed_access_levels'] = request.allowed_access_levels

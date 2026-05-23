@@ -173,8 +173,10 @@ async def search_via_dataforseo_jobs(
     hits: List[JobHit] = []
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
+            # DataForSEO Google Jobs endpoint: /v3/serp/google/jobs/live/advanced
+            # (the path uses /google/jobs/, NOT /google_jobs/ — common confusion)
             resp = await client.post(
-                f"{_DATAFORSEO_BASE}/serp/google_jobs/live/advanced",
+                f"{_DATAFORSEO_BASE}/serp/google/jobs/live/advanced",
                 headers={"Authorization": auth, "Content-Type": "application/json"},
                 json=body,
             )
@@ -185,7 +187,10 @@ async def search_via_dataforseo_jobs(
         for task in tasks:
             for result in (task.get("result") or []):
                 for item in (result.get("items") or []):
-                    if (item.get("type") or "").lower() != "google_jobs_serp":
+                    # DataForSEO returns `type` either as 'google_jobs_serp' (older) or
+                    # 'jobs_element' (current). Accept both for forward compat.
+                    item_type = (item.get("type") or "").lower()
+                    if item_type not in ("google_jobs_serp", "jobs_element"):
                         continue
                     url = (item.get("apply_link") or {}).get("link") or item.get("url") or ""
                     if not url:

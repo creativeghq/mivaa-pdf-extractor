@@ -24,11 +24,16 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
+
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations import job_cost_logger as costs
 from app.services.integrations.job_search_service import JobHit
 
 logger = logging.getLogger(__name__)
+
+_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+_ANTHROPIC_VERSION = "2023-06-01"
 
 
 @dataclass
@@ -294,72 +299,75 @@ async def classify_batch(
             out[i] = {"relevance": "unverifiable", "relevance_score": 0.0, "match_note": "classifier disabled", "classifier_cached": False}
         return out
 
-    # 2. Batched Haiku tool-use
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        logger.warning("job-classifier: anthropic SDK not installed — falling back to unverifiable")
-        for i in to_call:
-            out[i] = {"relevance": "unverifiable", "relevance_score": 0.0, "match_note": "anthropic SDK missing", "classifier_cached": False}
-        return out
-
-    client = AsyncAnthropic(api_key=api_key)
+    # 2. Batched Haiku tool-use via HTTP API (bypasses SDK version drama —
+    #    deployed anthropic-python is pinned to 0.23.1 (beta-era), HTTP API has
+    #    had stable tool_use since 2024-06).
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": _ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
     BATCH = 25
     # v0.3: load few-shot corrections once per refresh (not per batch).
     corrections = _load_recent_corrections(getattr(attribution, "tracked_job_id", None))
-    for chunk_start in range(0, len(to_call), BATCH):
-        chunk_indices = to_call[chunk_start:chunk_start + BATCH]
-        batch_hits = [hits[i] for i in chunk_indices]
-        started = time.time()
-        in_tok = 0
-        out_tok = 0
-        success = True
-        err: Optional[str] = None
-        try:
-            resp = await client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=2000,
-                tools=[_CLASSIFY_TOOL],
-                tool_choice={"type": "tool", "name": "submit_classifications"},
-                messages=[{"role": "user", "content": _build_user_prompt(facets, batch_hits, corrections)}],
-            )
-            in_tok = int(getattr(resp.usage, "input_tokens", 0) or 0)
-            out_tok = int(getattr(resp.usage, "output_tokens", 0) or 0)
-            verdicts: List[Dict[str, Any]] = []
-            for block in resp.content:
-                if getattr(block, "type", None) == "tool_use" and block.name == "submit_classifications":
-                    verdicts = (block.input or {}).get("verdicts", []) or []
-                    break
-            by_idx = {int(v.get("index", -1)): v for v in verdicts}
-            for local_idx, global_idx in enumerate(chunk_indices):
-                v = by_idx.get(local_idx)
-                if not v:
-                    out[global_idx] = {"relevance": "unverifiable", "relevance_score": 0.0, "match_note": "no verdict returned", "classifier_cached": False}
-                    continue
-                verdict = {
-                    "relevance": v.get("relevance") or "unverifiable",
-                    "relevance_score": float(v.get("relevance_score") or 0.0),
-                    "match_note": (v.get("match_note") or "")[:240] or None,
-                    "classifier_cached": False,
+    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as http:
+        for chunk_start in range(0, len(to_call), BATCH):
+            chunk_indices = to_call[chunk_start:chunk_start + BATCH]
+            batch_hits = [hits[i] for i in chunk_indices]
+            started = time.time()
+            in_tok = 0
+            out_tok = 0
+            success = True
+            err: Optional[str] = None
+            try:
+                payload = {
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 2000,
+                    "tools": [_CLASSIFY_TOOL],
+                    "tool_choice": {"type": "tool", "name": "submit_classifications"},
+                    "messages": [{"role": "user", "content": _build_user_prompt(facets, batch_hits, corrections)}],
                 }
-                out[global_idx] = verdict
-                _put_cached(hits[global_idx].content_hash, facets_hash, verdict)
-        except Exception as e:
-            success = False
-            err = str(e)[:200]
-            logger.warning(f"job-classifier haiku batch failed: {err}")
-            for global_idx in chunk_indices:
-                out[global_idx] = {"relevance": "unverifiable", "relevance_score": 0.0, "match_note": f"classifier error: {err}", "classifier_cached": False}
+                resp = await http.post(_ANTHROPIC_URL, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                usage = data.get("usage") or {}
+                in_tok = int(usage.get("input_tokens") or 0)
+                out_tok = int(usage.get("output_tokens") or 0)
+                verdicts: List[Dict[str, Any]] = []
+                for block in (data.get("content") or []):
+                    if block.get("type") == "tool_use" and block.get("name") == "submit_classifications":
+                        verdicts = (block.get("input") or {}).get("verdicts", []) or []
+                        break
+                by_idx = {int(v.get("index", -1)): v for v in verdicts}
+                for local_idx, global_idx in enumerate(chunk_indices):
+                    v = by_idx.get(local_idx)
+                    if not v:
+                        out[global_idx] = {"relevance": "unverifiable", "relevance_score": 0.0, "match_note": "no verdict returned", "classifier_cached": False}
+                        continue
+                    verdict = {
+                        "relevance": v.get("relevance") or "unverifiable",
+                        "relevance_score": float(v.get("relevance_score") or 0.0),
+                        "match_note": (v.get("match_note") or "")[:240] or None,
+                        "classifier_cached": False,
+                    }
+                    out[global_idx] = verdict
+                    _put_cached(hits[global_idx].content_hash, facets_hash, verdict)
+            except Exception as e:
+                success = False
+                err = str(e)[:200]
+                logger.warning(f"job-classifier haiku batch failed: {err}")
+                for global_idx in chunk_indices:
+                    out[global_idx] = {"relevance": "unverifiable", "relevance_score": 0.0, "match_note": f"classifier error: {err}", "classifier_cached": False}
 
-        costs.log_haiku_call(
-            attribution=attribution,
-            operation="classifier",
-            input_tokens=in_tok,
-            output_tokens=out_tok,
-            latency_ms=int((time.time() - started) * 1000),
-            success=success,
-            error_message=err,
-        )
+            costs.log_haiku_call(
+                attribution=attribution,
+                operation="classifier",
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                latency_ms=int((time.time() - started) * 1000),
+                success=success,
+                error_message=err,
+            )
 
     # Defensive fill
     for i, v in enumerate(out):
