@@ -22,7 +22,6 @@ from datetime import datetime
 import json
 import os
 
-import anthropic
 import openai
 
 from app.services.core.ai_call_logger import AICallLogger

@@ -45,7 +45,6 @@ from dataclasses import dataclass
 from datetime import datetime
 import os
 
-import anthropic
 import openai
 from PIL import Image
 import io

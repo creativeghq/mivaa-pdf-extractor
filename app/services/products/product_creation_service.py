@@ -1208,11 +1208,8 @@ class ProductCreationService:
             Enriched product data or None if validation fails
         """
         try:
-            from app.config import get_settings
-            import anthropic
-
-            settings = get_settings()
-            client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+            from app.services.core.ai_client_service import get_ai_client_service
+            client = get_ai_client_service().anthropic
 
             chunk = candidate['chunk']
             content = chunk.get('content', '')

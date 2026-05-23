@@ -15,7 +15,7 @@ from datetime import datetime
 import re
 import json
 
-from anthropic import Anthropic
+from app.services.core.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,9 @@ class SentimentAnalysisService:
     """Service for analyzing user feedback sentiment using Claude"""
 
     def __init__(self, anthropic_api_key: str):
-        self.anthropic_client = Anthropic(api_key=anthropic_api_key)
+        # `anthropic_api_key` arg retained for back-compat; the shim reads
+        # the key from Settings, so the arg is no longer used.
+        self.anthropic_client = get_ai_client_service().anthropic
         self.aspects = ["quality", "appearance", "durability", "value", "usability"]
     
     async def analyze_feedback(

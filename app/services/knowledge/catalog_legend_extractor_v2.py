@@ -50,7 +50,6 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-import anthropic
 import fitz  # PyMuPDF
 import sentry_sdk
 from PIL import Image

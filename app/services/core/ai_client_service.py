@@ -12,8 +12,7 @@ configuration across the application.
 """
 
 import logging
-from typing import Optional, TYPE_CHECKING
-from anthropic import Anthropic, AsyncAnthropic
+from typing import Any, Dict, Optional, TYPE_CHECKING
 import openai
 import httpx
 
@@ -24,6 +23,76 @@ from app.config import get_settings
 from .ai_call_logger import AICallLogger
 
 logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Anthropic SDK shims (2026-05-23 — SDK removed, standardized on httpx)
+#
+# The `anthropic-sdk-python` package was removed as a dependency. Older call
+# sites use `client.messages.create(**kwargs)`; these shims preserve that API
+# by proxying to `claude_helper._call_anthropic_async / _sync`. Returns a
+# `ClaudeResponse` shaped identically to the SDK's Message object, so
+# `.content[i].type/.text/.input`, `.usage.input_tokens`, `.model`, etc.
+# work unchanged.
+#
+# New code should call `tracked_claude_call_async` directly. The shims exist
+# to make this migration zero-touch for the dozen-ish existing call sites.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _AnthropicMessagesAsync:
+    """Async `.messages.create(...)` proxy."""
+    async def create(self, **kwargs: Any) -> Any:
+        from app.services.core.claude_helper import _call_anthropic_async
+        # SDK accepts `model`, `max_tokens`, `messages`, `temperature`,
+        # `system`, `tools`, `tool_choice` as kwargs. _call_anthropic_async
+        # has the same signature with `**extra` for arbitrary additions.
+        model = kwargs.pop("model")
+        messages = kwargs.pop("messages")
+        max_tokens = kwargs.pop("max_tokens", 4096)
+        temperature = kwargs.pop("temperature", 0.0)
+        system = kwargs.pop("system", None)
+        return await _call_anthropic_async(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            **kwargs,
+        )
+
+
+class _AnthropicMessagesSync:
+    """Sync `.messages.create(...)` proxy."""
+    def create(self, **kwargs: Any) -> Any:
+        from app.services.core.claude_helper import _call_anthropic_sync
+        model = kwargs.pop("model")
+        messages = kwargs.pop("messages")
+        max_tokens = kwargs.pop("max_tokens", 4096)
+        temperature = kwargs.pop("temperature", 0.0)
+        system = kwargs.pop("system", None)
+        return _call_anthropic_sync(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            **kwargs,
+        )
+
+
+class _AnthropicShimAsync:
+    """Async shim mirroring `anthropic.AsyncAnthropic` surface."""
+    def __init__(self, api_key: Optional[str] = None, **_ignored: Any):
+        # api_key is read from settings by claude_helper at call time, so we
+        # accept (and ignore) the constructor arg for SDK API parity.
+        self.messages = _AnthropicMessagesAsync()
+
+
+class _AnthropicShimSync:
+    """Sync shim mirroring `anthropic.Anthropic` surface."""
+    def __init__(self, api_key: Optional[str] = None, **_ignored: Any):
+        self.messages = _AnthropicMessagesSync()
 
 
 class AIClientService:
@@ -51,9 +120,10 @@ class AIClientService:
         self.settings = get_settings()
         self.ai_logger = AICallLogger()
         
-        # Client instances (initialized lazily)
-        self._anthropic_client: Optional[Anthropic] = None
-        self._anthropic_async_client: Optional[AsyncAnthropic] = None
+        # Client instances (initialized lazily). Anthropic uses shim classes
+        # backed by httpx — no SDK dependency. See module docstring.
+        self._anthropic_client: Optional[_AnthropicShimSync] = None
+        self._anthropic_async_client: Optional[_AnthropicShimAsync] = None
         self._openai_client: Optional[openai.OpenAI] = None
         self._openai_async_client: Optional[openai.AsyncOpenAI] = None
         self._httpx_client: Optional[httpx.AsyncClient] = None
@@ -62,35 +132,23 @@ class AIClientService:
         logger.info("✅ AIClientService initialized (singleton)")
     
     @property
-    def anthropic(self) -> Anthropic:
-        """Get synchronous Anthropic client (lazy initialization)."""
+    def anthropic(self) -> _AnthropicShimSync:
+        """Get sync Anthropic shim. `.messages.create(...)` proxies to httpx."""
         if self._anthropic_client is None:
             if not self.settings.anthropic_api_key:
                 raise ValueError("ANTHROPIC_API_KEY not configured")
-            
-            self._anthropic_client = Anthropic(
-                api_key=self.settings.anthropic_api_key,
-                timeout=self.settings.anthropic_timeout,
-                max_retries=3
-            )
-            logger.info("✅ Anthropic sync client initialized")
-        
+            self._anthropic_client = _AnthropicShimSync(api_key=self.settings.anthropic_api_key)
+            logger.info("✅ Anthropic sync shim initialized (httpx-backed)")
         return self._anthropic_client
-    
+
     @property
-    def anthropic_async(self) -> AsyncAnthropic:
-        """Get asynchronous Anthropic client (lazy initialization)."""
+    def anthropic_async(self) -> _AnthropicShimAsync:
+        """Get async Anthropic shim. `.messages.create(...)` proxies to httpx."""
         if self._anthropic_async_client is None:
             if not self.settings.anthropic_api_key:
                 raise ValueError("ANTHROPIC_API_KEY not configured")
-            
-            self._anthropic_async_client = AsyncAnthropic(
-                api_key=self.settings.anthropic_api_key,
-                timeout=self.settings.anthropic_timeout,
-                max_retries=3
-            )
-            logger.info("✅ Anthropic async client initialized")
-        
+            self._anthropic_async_client = _AnthropicShimAsync(api_key=self.settings.anthropic_api_key)
+            logger.info("✅ Anthropic async shim initialized (httpx-backed)")
         return self._anthropic_async_client
     
     @property

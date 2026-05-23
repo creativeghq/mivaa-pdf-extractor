@@ -30,7 +30,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import anthropic
 import fitz  # PyMuPDF
 from PIL import Image
 

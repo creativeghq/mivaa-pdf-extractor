@@ -21,8 +21,6 @@ import os
 import re
 from typing import Any, List, Optional
 
-import anthropic
-
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
 
 logger = logging.getLogger(__name__)

@@ -18,7 +18,6 @@ from typing import Optional, Tuple, Dict, List, Any
 from dataclasses import dataclass
 from functools import lru_cache
 import numpy as np
-from anthropic import AsyncAnthropic
 import openai
 
 from app.config import get_settings

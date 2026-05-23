@@ -41,7 +41,6 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import anthropic
 import fitz  # PyMuPDF
 from PIL import Image
 

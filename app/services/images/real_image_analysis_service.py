@@ -23,7 +23,6 @@ import os
 import httpx
 from PIL import Image
 import io
-import anthropic
 
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.supabase_client import SupabaseClient, get_supabase_client

@@ -430,15 +430,10 @@ jobs:
           pip install --no-deps httpx==0.27.0
           pip install --no-deps requests==2.31.0
           pip install --no-deps openai==1.51.0
-          # anthropic SDK: bumped from 0.23.1 → 0.42.0 (2026-05-23). The old
-          # pin was beta-era and didn't accept `tools` on `messages.create()`,
-          # which silently broke (a) the job_classifier / job_keyword services
-          # (already worked around via raw httpx) AND (b) the round-3 Stage 3
-          # vision_analysis tool_use fix (no workaround — every image's
-          # vision_analysis would return None on prod). Bumping the SDK fixes
-          # the second case and lets the first case revert its workaround
-          # (left in place for now — working code).
-          pip install --no-deps anthropic==0.42.0
+          # anthropic SDK dropped 2026-05-23 — standardized on httpx.
+          # The shim in ai_client_service._AnthropicShim* + claude_helper
+          # _call_anthropic_async/sync provides `.messages.create()` API
+          # parity without the SDK pin trap. No more "SDK too old for tools".
 
           # Step 4: Computer vision with exact versions
           echo 'Step 4: Installing computer vision...'

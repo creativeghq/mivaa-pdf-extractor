@@ -19,9 +19,9 @@ from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
 from ..services.core.ai_call_logger import AICallLogger
+from ..services.core.ai_client_service import get_ai_client_service
 from ..schemas.api_responses import DataResponse
 from ..config import get_settings
-import anthropic
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -32,8 +32,9 @@ router = APIRouter(prefix="/api/v1/anthropic", tags=["Anthropic Claude"])
 # Get settings
 settings = get_settings()
 
-# Initialize Anthropic client
-anthropic_client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+# Anthropic client — httpx-backed shim from the central AI client service
+# (2026-05-23: SDK dropped, standardized on httpx).
+anthropic_client = get_ai_client_service().anthropic
 
 
 # ============================================================================

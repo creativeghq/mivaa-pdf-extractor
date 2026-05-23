@@ -10,10 +10,10 @@ import os
 import json
 import re
 from typing import Dict, List, Any, Optional
-import anthropic
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.core.ai_call_logger import AICallLogger
+from app.services.core.ai_client_service import get_ai_client_service
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
 
 logger = logging.getLogger(__name__)
@@ -116,7 +116,7 @@ class EmbeddingToTextService:
             # Call AI with timing
             import time
             start_time = time.time()
-            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            client = get_ai_client_service().anthropic
             response = client.messages.create(
                 model="claude-opus-4-7",
                 max_tokens=2048,

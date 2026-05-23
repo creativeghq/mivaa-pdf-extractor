@@ -16,7 +16,6 @@ import asyncio
 import json
 from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
-import anthropic
 import os
 
 logger = logging.getLogger(__name__)
@@ -28,6 +27,9 @@ from app.services.embeddings.real_embeddings_service import RealEmbeddingsServic
 
 # Import real quality scoring service (Step 5)
 from app.services.ai_validation.real_quality_scoring_service import RealQualityScoringService
+
+# Anthropic shim (httpx-backed, no SDK dependency)
+from app.services.core.ai_client_service import get_ai_client_service
 
 
 class ProductEnrichmentService:
@@ -52,7 +54,7 @@ class ProductEnrichmentService:
         self.supabase = supabase_client
         self.logger = logger
         self.quality_scoring_service = RealQualityScoringService(supabase_client)  # Step 5
-        self.anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY) if ANTHROPIC_API_KEY else None
+        self.anthropic_client = get_ai_client_service().anthropic if ANTHROPIC_API_KEY else None
     
     async def enrich_product(
         self,

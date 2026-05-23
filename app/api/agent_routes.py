@@ -17,11 +17,11 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import anthropic
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Header
 from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.core.ai_client_service import get_ai_client_service
 from app.schemas.api_responses import AgentCatalogResponse, DataResponse
 
 logger = logging.getLogger(__name__)
@@ -246,7 +246,8 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
 
     _log(supabase, req.run_id, "info", f"Found {len(products)} products to enrich")
 
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    # httpx-backed shim — same .messages.create API as the SDK had.
+    client = get_ai_client_service().anthropic
     system = req.system_prompt or (
         "You are a material product specialist. "
         "For each product, return JSON: {\"description\":\"...\",\"keywords\":[...],\"material_category\":\"...\"}. "
@@ -326,7 +327,7 @@ async def handle_material_tagger(req: AgentRunRequest, supabase) -> Dict[str, An
         return {"output": {"tagged": 0, "message": "No products to tag"},
                 "input_tokens": 0, "output_tokens": 0}
 
-    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    client = get_ai_client_service().anthropic
     system = req.system_prompt or (
         "You are a material classification expert. "
         "Return JSON: {\"material_type\":\"...\",\"color\":\"...\",\"finish\":\"...\",\"application\":\"...\",\"tags\":[...]}. "
