@@ -1,25 +1,19 @@
 """
 Public Tools API — backs the `/tools` lead-gen page.
 
-No auth required (Authorization header is optional — when present, the user's
-quota is keyed on user_id instead of ip_address so they're not penalized for
-sharing an IP). Every request must carry a valid Cloudflare Turnstile token.
+Authentication is optional but changes the billing model:
 
-Two endpoints, both stateless (do NOT write to tracked_queries / tracked_mentions):
+  • Anonymous (no Authorization header) — 2 free scans / day per IP, captcha-
+    gated, cache-shielded.
+  • Authenticated (Bearer JWT) — debits `SCAN_CREDIT_COST` credits per scan
+    from `user_credits.balance`, no daily cap, captcha still required.
+    Cache hits do NOT debit. Failed/no-result scans are refunded.
 
-  POST /api/v1/public/price-scan
-       Body: {turnstile_token, product_name, manufacturer?, dimensions?, country_code?}
-       Returns: PublicPriceScanResponse
+Endpoints (all stateless — do NOT write to tracked_queries / tracked_mentions):
 
-  POST /api/v1/public/mention-scan
-       Body: {turnstile_token, subject_label, aliases?, country_code?}
-       Returns: PublicMentionScanResponse
-
-  GET  /api/v1/public/quota
-       Returns: PublicQuotaResponse — { used, remaining, limit, reset_at, turnstile_site_key }
-
-Quota model: 2 total scans/day per IP (or per user_id if signed in), combined
-across both scan types. Cache hits do NOT consume quota.
+  POST /api/v1/public/price-scan       — turnstile_token + product_name(+facets)
+  POST /api/v1/public/mention-scan     — turnstile_token + subject_label
+  GET  /api/v1/public/quota            — quota + balance + turnstile_site_key
 """
 
 from __future__ import annotations
@@ -53,6 +47,11 @@ from app.services.integrations.public_lookup_service import (
 from app.services.integrations.turnstile_verifier import verify_token
 
 logger = logging.getLogger(__name__)
+
+# Credits debited per authenticated scan. Mirrors the partner-API operation
+# cost (price/mention refresh = 5 credits in CLAUDE.md). Anonymous visitors
+# pay nothing — they hit the 2/day cap instead.
+SCAN_CREDIT_COST = 5
 
 router = APIRouter(
     prefix="/api/v1/public",
@@ -138,12 +137,17 @@ class PublicMentionScanResponse(BaseModel):
 
 
 class PublicQuotaResponse(BaseModel):
+    # Anonymous billing surface (still populated for signed-in users so the
+    # frontend can show "X free scans converted into Y credits" if it wants):
     used: int
     remaining: int
     limit: int
     reset_at: str
     turnstile_site_key: Optional[str] = None
     is_authenticated: bool = False
+    # Signed-in billing surface — Null for anonymous callers.
+    credits_balance: Optional[int] = None
+    credits_per_scan: int = 0
 
 
 PublicPriceScanResponse.model_rebuild()
@@ -185,7 +189,51 @@ def _resolve_user_id(request: Request) -> Optional[str]:
     return None
 
 
-def _quota_to_response(q: QuotaStatus, *, is_authenticated: bool) -> PublicQuotaResponse:
+def _read_credit_balance(user_id: str) -> Optional[int]:
+    """Return the user's credit balance, or None if no row exists."""
+    sb = get_supabase_client().client
+    try:
+        resp = (
+            sb.table("user_credits")
+            .select("balance")
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+        )
+        if resp and resp.data:
+            return int(resp.data.get("balance") or 0)
+    except Exception as e:
+        logger.warning(f"public-tools: credit balance read failed for {user_id}: {e}")
+    return 0
+
+
+def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: str) -> tuple[bool, Optional[int], Optional[str]]:
+    """Call the debit_user_credits RPC. Returns (success, new_balance, error)."""
+    sb = get_supabase_client().client
+    try:
+        resp = sb.rpc("debit_user_credits", {
+            "p_user_id": user_id,
+            "p_amount": SCAN_CREDIT_COST,
+            "p_operation_type": operation_type,
+            "p_description": f"Public {scan_type} scan",
+            "p_metadata": {"query_hash": qhash, "scan_type": scan_type},
+        }).execute()
+        row = (resp.data or [None])[0]
+        if not row:
+            return False, None, "no_response"
+        success = bool(row.get("success"))
+        return success, (int(row["new_balance"]) if row.get("new_balance") is not None else None), row.get("error_message")
+    except Exception as e:
+        logger.warning(f"public-tools: debit_user_credits failed: {e}")
+        return False, None, str(e)[:200]
+
+
+def _quota_to_response(
+    q: QuotaStatus,
+    *,
+    is_authenticated: bool,
+    credits_balance: Optional[int] = None,
+) -> PublicQuotaResponse:
     site_key = resolve_secret("TURNSTILE_SITE_KEY").value
     return PublicQuotaResponse(
         used=q.used,
@@ -194,6 +242,8 @@ def _quota_to_response(q: QuotaStatus, *, is_authenticated: bool) -> PublicQuota
         reset_at=q.reset_at.astimezone(timezone.utc).isoformat(),
         turnstile_site_key=site_key,
         is_authenticated=is_authenticated,
+        credits_balance=credits_balance,
+        credits_per_scan=SCAN_CREDIT_COST if is_authenticated else 0,
     )
 
 
@@ -229,7 +279,8 @@ async def get_quota(request: Request) -> PublicQuotaResponse:
     user_id = _resolve_user_id(request)
     ip = _extract_ip(request) if not user_id else None
     q = check_quota(ip_address=ip, user_id=user_id)
-    return _quota_to_response(q, is_authenticated=bool(user_id))
+    balance = _read_credit_balance(user_id) if user_id else None
+    return _quota_to_response(q, is_authenticated=bool(user_id), credits_balance=balance)
 
 
 @router.post(
@@ -263,23 +314,43 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
         )
 
     # 2. Quota check
+    #    Anonymous → 2/day cap. Authenticated → must have ≥ SCAN_CREDIT_COST credits.
     q = check_quota(ip_address=ip, user_id=user_id)
-    if not q.allowed:
-        log_scan(
-            scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-            user_agent=user_agent,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "message": "Daily scan quota reached.",
-                "quota": _quota_to_response(q, is_authenticated=bool(user_id)).model_dump(mode="json"),
-            },
-        )
+    balance_before = _read_credit_balance(user_id) if user_id else None
+    if user_id:
+        # Authenticated path: skip the 2/day cap, gate on credits.
+        if (balance_before or 0) < SCAN_CREDIT_COST:
+            log_scan(
+                scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                error_message="insufficient_credits", user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "message": "Insufficient credits.",
+                    "quota": _quota_to_response(q, is_authenticated=True, credits_balance=balance_before).model_dump(mode="json"),
+                },
+            )
+    else:
+        # Anonymous path: 2/day cap
+        if not q.allowed:
+            log_scan(
+                scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "message": "Daily scan quota reached.",
+                    "quota": _quota_to_response(q, is_authenticated=False).model_dump(mode="json"),
+                },
+            )
 
-    # 3. Cache lookup — identical query within 24h serves from cache (no quota burn, no upstream spend)
+    # 3. Cache lookup — identical query within 24h serves from cache (no quota burn, no debit, no upstream spend)
     cached = read_cache(scan_type="price", qhash=qhash)
     if cached:
         log_scan(
@@ -289,7 +360,9 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
             user_agent=user_agent,
         )
         cached["from_cache"] = True
-        cached["quota"] = _quota_to_response(q, is_authenticated=bool(user_id)).model_dump(mode="json")
+        cached["quota"] = _quota_to_response(
+            q, is_authenticated=bool(user_id), credits_balance=balance_before
+        ).model_dump(mode="json")
         return PublicPriceScanResponse(**cached)
 
     # 4. Fresh scan
@@ -332,13 +405,15 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
             outcome="failed", error_message=(result.error or "")[:500],
             user_agent=user_agent,
         )
-        # Still count quota burn — the upstream did spend money even on failure
+        # Failure → no credit debit for authenticated users; anonymous quota
+        # already burned at the log_scan above only counts success rows, so
+        # failure is implicitly free for them too.
         q_after = check_quota(ip_address=ip, user_id=user_id)
         return PublicPriceScanResponse(
             success=False, query=query_text, country_code=body.country_code,
             results=[], stats=PublicMarketStats(count=0, verified_count=0),
             from_cache=False, error=result.error or "scan failed",
-            quota=_quota_to_response(q_after, is_authenticated=bool(user_id)),
+            quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_before),
         )
 
     # 5. Format response
@@ -376,10 +451,19 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
         latency_ms=result.latency_ms, outcome="success", user_agent=user_agent,
     )
 
+    # Debit credits AFTER successful scan (authenticated users only).
+    balance_after = balance_before
+    if user_id:
+        debited, new_balance, _err = _debit_credits(
+            user_id, operation_type="public_price_scan", qhash=qhash, scan_type="price",
+        )
+        if debited and new_balance is not None:
+            balance_after = new_balance
+
     q_after = check_quota(ip_address=ip, user_id=user_id)
     return PublicPriceScanResponse(
         **response_payload,
-        quota=_quota_to_response(q_after, is_authenticated=bool(user_id)),
+        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_after),
     )
 
 
@@ -413,20 +497,37 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
         )
 
     q = check_quota(ip_address=ip, user_id=user_id)
-    if not q.allowed:
-        log_scan(
-            scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-            user_agent=user_agent,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "message": "Daily scan quota reached.",
-                "quota": _quota_to_response(q, is_authenticated=bool(user_id)).model_dump(mode="json"),
-            },
-        )
+    balance_before = _read_credit_balance(user_id) if user_id else None
+    if user_id:
+        if (balance_before or 0) < SCAN_CREDIT_COST:
+            log_scan(
+                scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                error_message="insufficient_credits", user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "message": "Insufficient credits.",
+                    "quota": _quota_to_response(q, is_authenticated=True, credits_balance=balance_before).model_dump(mode="json"),
+                },
+            )
+    else:
+        if not q.allowed:
+            log_scan(
+                scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "message": "Daily scan quota reached.",
+                    "quota": _quota_to_response(q, is_authenticated=False).model_dump(mode="json"),
+                },
+            )
 
     cached = read_cache(scan_type="mention", qhash=qhash)
     if cached:
@@ -437,7 +538,9 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
             user_agent=user_agent,
         )
         cached["from_cache"] = True
-        cached["quota"] = _quota_to_response(q, is_authenticated=bool(user_id)).model_dump(mode="json")
+        cached["quota"] = _quota_to_response(
+            q, is_authenticated=bool(user_id), credits_balance=balance_before
+        ).model_dump(mode="json")
         return PublicMentionScanResponse(**cached)
 
     # Build facets deterministically — no LLM call, no Anthropic dependency
@@ -520,8 +623,16 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
         latency_ms=result.latency_ms, outcome="success", user_agent=user_agent,
     )
 
+    balance_after = balance_before
+    if user_id:
+        debited, new_balance, _err = _debit_credits(
+            user_id, operation_type="public_mention_scan", qhash=qhash, scan_type="mention",
+        )
+        if debited and new_balance is not None:
+            balance_after = new_balance
+
     q_after = check_quota(ip_address=ip, user_id=user_id)
     return PublicMentionScanResponse(
         **response_payload,
-        quota=_quota_to_response(q_after, is_authenticated=bool(user_id)),
+        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_after),
     )
