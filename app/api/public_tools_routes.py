@@ -48,10 +48,10 @@ from app.services.integrations.turnstile_verifier import verify_token
 
 logger = logging.getLogger(__name__)
 
-# Credits debited per authenticated scan. Mirrors the partner-API operation
-# cost (price/mention refresh = 5 credits in CLAUDE.md). Anonymous visitors
-# pay nothing — they hit the 2/day cap instead.
-SCAN_CREDIT_COST = 5
+# Credits debited per authenticated scan. Mirrors the anonymous free-tier cap
+# (2 scans/day) so users see one consistent number across both modes.
+# Anonymous visitors pay nothing — they hit the 2/day cap instead.
+SCAN_CREDIT_COST = 2
 
 router = APIRouter(
     prefix="/api/v1/public",
