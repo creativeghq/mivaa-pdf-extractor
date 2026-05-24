@@ -78,7 +78,7 @@ async def scrape_idealo_search(
         result = await firecrawl.scrape(
             url=url,
             extraction_model=IdealoSearchResult,
-            user_id=user_id or "system",
+            user_id=user_id,
             workspace_id=workspace_id,
             extraction_prompt=_EXTRACTION_PROMPT,
             use_javascript_render=True,  # Idealo result rendering is JS-driven

@@ -505,7 +505,7 @@ class AICallLogger:
 
     async def log_firecrawl_call(
         self,
-        user_id: str,
+        user_id: Optional[str],
         workspace_id: Optional[str],
         operation_type: str,
         credits_used: int,

@@ -1097,7 +1097,7 @@ class PerplexityPriceSearchService:
                 result = await firecrawl.scrape(
                     url=hit.product_url,
                     extraction_model=PriceExtraction,
-                    user_id=user_id or "system",
+                    user_id=user_id,
                     workspace_id=workspace_id,
                     extraction_prompt=(
                         f"Extract the following from this {hit.retailer_name} product page:\n"

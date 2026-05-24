@@ -83,7 +83,7 @@ class FirecrawlClient:
         self,
         url: str,
         extraction_model: Type[T],
-        user_id: str,
+        user_id: Optional[str],
         workspace_id: Optional[str] = None,
         extraction_prompt: Optional[str] = None,
         use_javascript_render: bool = False,
@@ -270,7 +270,7 @@ class FirecrawlClient:
     async def _log_call(
         self,
         *,
-        user_id: str,
+        user_id: Optional[str],
         workspace_id: Optional[str],
         url: str,
         credits_used: int,
