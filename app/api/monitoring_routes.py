@@ -28,7 +28,6 @@ TABLES_TO_MONITOR = [
     'documents',
     'document_chunks',
     'document_images',
-    'embeddings',
     'products',
     'materials_catalog',
     'background_jobs'

@@ -135,15 +135,24 @@ async def get_job_health_dashboard() -> Dict[str, Any]:
 async def get_stuck_jobs() -> Dict[str, Any]:
     """Get all currently stuck jobs with analysis."""
     try:
-        # Use stuck job analyzer service
-        analysis = await stuck_job_analyzer.analyze_stuck_jobs()
-        
+        supabase = get_supabase_client()
+        cutoff = (datetime.utcnow() - timedelta(minutes=30)).isoformat()
+        result = (
+            supabase.client.table("background_jobs")
+            .select("id")
+            .eq("status", "processing")
+            .lt("updated_at", cutoff)
+            .order("updated_at", desc=False)
+            .execute()
+        )
+        rows = result.data or []
+        analyses = [await stuck_job_analyzer.analyze_stuck_job(r["id"]) for r in rows]
         return {
-            "status": "success",
-            "timestamp": datetime.utcnow().isoformat(),
-            "stuck_jobs": analysis
+            "success": True,
+            "stuck_jobs": analyses,
+            "count": len(analyses),
         }
-    
+
     except Exception as e:
         logger.error(f"Failed to get stuck jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))

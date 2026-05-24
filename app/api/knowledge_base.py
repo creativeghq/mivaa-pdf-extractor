@@ -7,6 +7,7 @@ including CRUD operations, embedding generation, PDF text extraction, and semant
 
 import logging
 from typing import Dict, Any, Optional, List
+from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends, status, UploadFile, File
 from pydantic import BaseModel, Field
 from datetime import datetime
@@ -18,6 +19,16 @@ from app.schemas.api_responses import KBHealthResponse
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/kb", tags=["Knowledge Base"])
+
+
+def _require_uuid(doc_id: str) -> None:
+    """Reject non-UUID path segments before they reach the DB and trigger a
+    Postgres 22P02 error. Stale frontends sometimes hit `/documents/from-pdf`
+    (the POST path) with GET; treat that as a 404 instead of a 500."""
+    try:
+        UUID(doc_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Document not found")
 
 
 # ============================================================================
@@ -241,6 +252,7 @@ async def get_kb_document(
     supabase_client: SupabaseClient = Depends()
 ) -> KBDocResponse:
     """Get a knowledge base document by ID."""
+    _require_uuid(doc_id)
     try:
         result = supabase_client.client.table("kb_docs").select("*").eq("id", doc_id).execute()
         
@@ -266,6 +278,7 @@ async def update_kb_document(
     supabase_client: SupabaseClient = Depends()
 ) -> KBDocResponse:
     """Update a knowledge base document."""
+    _require_uuid(doc_id)
     try:
         # Get current document
         current = supabase_client.client.table("kb_docs").select("*").eq("id", doc_id).execute()
@@ -359,6 +372,7 @@ async def delete_kb_document(
     supabase_client: SupabaseClient = Depends()
 ) -> None:
     """Delete a knowledge base document."""
+    _require_uuid(doc_id)
     try:
         supabase_client.client.table("kb_docs").delete().eq("id", doc_id).execute()
     except Exception as e:
@@ -558,6 +572,7 @@ async def get_document_attachments(
     supabase_client: SupabaseClient = Depends()
 ) -> List[AttachmentResponse]:
     """Get all product attachments for a document."""
+    _require_uuid(doc_id)
     try:
         result = supabase_client.client.table("kb_doc_attachments").select("*").eq("document_id", doc_id).execute()
 
