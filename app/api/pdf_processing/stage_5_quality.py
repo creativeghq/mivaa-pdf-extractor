@@ -24,7 +24,6 @@ async def process_stage_5_quality(
     physical_pages: List[int],  # 1-based physical pages
     products_created: int,
     images_processed: int,
-    focused_extraction: bool,
     quality_validation_model: str,
     start_time: datetime,
     tracker: Any,
@@ -49,7 +48,6 @@ async def process_stage_5_quality(
         physical_pages: List of physical page numbers (1-based) that were processed
         products_created: Number of products created
         images_processed: Number of images processed
-        focused_extraction: Whether focused extraction was enabled
         start_time: Processing start time
         tracker: Job progress tracker
         checkpoint_recovery_service: Checkpoint service
@@ -102,7 +100,6 @@ async def process_stage_5_quality(
         "chunks_created": tracker.chunks_created,
         "images_processed": images_processed,
         "claude_validations": validation_results.get('validated', 0),
-        "focused_extraction": focused_extraction,
         "pages_processed": len(physical_pages),
         "pages_skipped": len([p for p in range(1, tracker.total_pages + 1) if p not in physical_pages]),
         "confidence_score": catalog.confidence_score
@@ -123,7 +120,6 @@ async def process_stage_5_quality(
         metadata={
             "processing_time": (datetime.utcnow() - start_time).total_seconds(),
             "confidence_score": catalog.confidence_score,
-            "focused_extraction": focused_extraction,
             "pages_processed": len(physical_pages)
         }
     )

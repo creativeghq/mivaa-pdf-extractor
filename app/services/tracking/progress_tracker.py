@@ -660,6 +660,31 @@ class ProgressTracker:
             except Exception as cost_err:
                 logger.warning(f"   ⚠️ Could not aggregate total_ai_cost_usd: {cost_err}")
 
+        # Stage 3 vision_analysis coverage rollup (2026-05-24). Job-level
+        # health signal — answers "did vision work for this PDF?" without
+        # operators having to drill into per-image data. Reads
+        # has_understanding_embedding (presence of Voyage embedding) and
+        # vision_analysis_failed (explicit failure marker). Best-effort.
+        vision_coverage: Optional[Dict[str, Any]] = None
+        if self._db_sync_enabled and self._supabase and self.document_id:
+            try:
+                img_resp = self._supabase.client.table('document_images') \
+                    .select('id, has_understanding_embedding, vision_analysis_failed') \
+                    .eq('document_id', self.document_id).execute()
+                rows = img_resp.data or []
+                total = len(rows)
+                if total > 0:
+                    succeeded = sum(1 for r in rows if r.get('has_understanding_embedding'))
+                    failed = sum(1 for r in rows if r.get('vision_analysis_failed'))
+                    vision_coverage = {
+                        'total_images': total,
+                        'understanding_embedded': succeeded,
+                        'vision_failed': failed,
+                        'coverage_pct': round(succeeded * 100.0 / total, 2),
+                    }
+            except Exception as vc_err:
+                logger.warning(f"   ⚠️ Could not aggregate vision_analysis_coverage: {vc_err}")
+
         try:
             update_payload = {
                 'status': JobStatus.COMPLETED.value,
@@ -675,6 +700,7 @@ class ProgressTracker:
                     'products_created': self.products_created,
                     'errors_count': len(self.errors),
                     'warnings_count': len(self.warnings),
+                    'vision_analysis_coverage': vision_coverage,
                     'result': result
                 },
                 'completed_at': datetime.utcnow().isoformat(),

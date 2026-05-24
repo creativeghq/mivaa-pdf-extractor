@@ -306,7 +306,6 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
         categories = meta.get('categories') or ['products']
         if isinstance(categories, str):
             categories = [c.strip() for c in categories.split(',')]
-        focused = 'all' not in categories
 
         try:
             asyncio.create_task(
@@ -319,7 +318,6 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
                     description=meta.get('description'),
                     document_tags=meta.get('tags') or [],
                     discovery_model=meta.get('discovery_model') or 'claude-vision',
-                    focused_extraction=focused,
                     extract_categories=categories,
                     chunk_size=meta.get('chunk_size') or 1000,
                     chunk_overlap=meta.get('chunk_overlap') or 200,
@@ -875,23 +873,13 @@ async def upload_document(
             # The downstream orchestrator reads `category_list`; keeping it as
             # ['extract_only'] is the explicit signal to skip Stage 0 discovery.
 
-        # Expand 'all' to all categories
-        # When 'all' is specified, we want FULL extraction, not focused extraction
-        use_focused_extraction = True
+        # Expand 'all' to all categories.
+        # (The `focused_extraction` flag was removed 2026-05-24 — it was only
+        # ever read by Stage 5 metadata and never gated any actual processing.
+        # Page filtering already happens at Stage 0 discovery via
+        # `extract_categories`, which scopes downstream work.)
         if 'all' in category_list:
             category_list = ['products', 'certificates', 'logos', 'specifications']
-            use_focused_extraction = False  # Process ALL pages, not just category pages
-
-        # The `focused_extraction` flag has not been wired through Stages 1/2/3/4
-        # — only Stage 5 quality reads it. Until we actually plumb it into the
-        # per-stage page filters, log the gap honestly instead of pretending
-        # focused mode is doing something it isn't.
-        if use_focused_extraction:
-            logger.info(
-                f"📋 focused_extraction=True for categories={category_list} — "
-                f"NOTE: currently only Stage 5 honors this flag; Stages 1-4 still "
-                f"process all pages."
-            )
 
         # Handle file upload or URL download
         file_content = None
@@ -1156,7 +1144,6 @@ async def upload_document(
             description=description,
             document_tags=document_tags,
             discovery_model=discovery_model,
-            focused_extraction=use_focused_extraction,  # Use focused extraction based on categories
             extract_categories=category_list,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -1619,10 +1606,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             agent_prompt = job_metadata.get('agent_prompt')
             test_single_product = job_metadata.get('test_single_product', False)
 
-            # Determine focused extraction based on categories
-            use_focused_extraction = 'all' not in categories
-
-            logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}, test_mode={test_single_product}")
+            logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, test_mode={test_single_product}")
 
             background_tasks.add_task(
                 run_async_in_background(process_document_with_discovery),
@@ -1635,7 +1619,6 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 description=doc_data.get('description'),
                 document_tags=doc_data.get('tags', []),
                 discovery_model=discovery_model,
-                focused_extraction=use_focused_extraction,
                 extract_categories=categories,
                 chunk_size=1000,
                 chunk_overlap=200,
@@ -1824,7 +1807,7 @@ async def reprocess_document(
 
         # Find the latest job to preserve user-specified discovery options
         jobs_resp = supabase.client.table("background_jobs") \
-            .select("id, discovery_model, focused_extraction, extract_categories, metadata") \
+            .select("id, discovery_model, extract_categories, metadata") \
             .eq("document_id", document_id) \
             .order("created_at", desc=True) \
             .limit(1) \
@@ -1832,7 +1815,6 @@ async def reprocess_document(
         prev_job = (jobs_resp.data or [{}])[0] if jobs_resp.data else {}
 
         discovery_model = prev_job.get("discovery_model") or "claude-opus-4-7"
-        focused_extraction = prev_job.get("focused_extraction", True)
         extract_categories = prev_job.get("extract_categories") or []
 
         # ── 2. Resolve PDF on disk ─────────────────────────────────────
@@ -1927,7 +1909,6 @@ async def reprocess_document(
             "progress": 0,
             "filename": filename,
             "discovery_model": discovery_model,
-            "focused_extraction": focused_extraction,
             "extract_categories": extract_categories,
             "metadata": {
                 "reprocess_of": prev_job.get("id"),
@@ -1947,7 +1928,6 @@ async def reprocess_document(
             description=doc_metadata.get("description") or "",
             document_tags=doc_metadata.get("tags") or [],
             discovery_model=discovery_model,
-            focused_extraction=focused_extraction,
             extract_categories=extract_categories,
             chunk_size=1000,
             chunk_overlap=200,
@@ -2767,7 +2747,6 @@ async def process_document_with_discovery(
     description: Optional[str],
     document_tags: List[str],
     discovery_model: str,
-    focused_extraction: bool,
     extract_categories: List[str],
     chunk_size: int,
     chunk_overlap: int,
@@ -2799,8 +2778,6 @@ async def process_document_with_discovery(
     - Clearer checkpointing (per-product state)
 
     Args:
-        focused_extraction: If True (default), only process pages/images from extract_categories.
-                          If False, process entire PDF.
         extract_categories: List of categories to extract (e.g., ['products'], ['certificates', 'logos']).
                           Categories: 'products', 'certificates', 'logos', 'specifications', 'all'
     """
@@ -2831,7 +2808,6 @@ async def process_document_with_discovery(
     logger.info(f"📋 Job ID: {job_id}")
     logger.info(f"📄 Document ID: {document_id}")
     logger.info(f"🤖 Discovery Model: {discovery_model.upper()}")
-    logger.info(f"🎯 Focused Extraction: {'ENABLED' if focused_extraction else 'DISABLED (Full PDF)'}")
     logger.info(f"📦 Extract Categories: {', '.join(extract_categories).upper()}")
 
     # Open a Sentry transaction for the whole job; per-stage spans nest
@@ -2841,7 +2817,6 @@ async def process_document_with_discovery(
         scope.set_tag("job_id", job_id)
         scope.set_tag("document_id", document_id)
         scope.set_tag("discovery_model", discovery_model)
-        scope.set_tag("focused_extraction", focused_extraction)
         scope.set_context("job_config", {
             "extract_categories": extract_categories,
             "chunk_size": chunk_size
@@ -2850,7 +2825,6 @@ async def process_document_with_discovery(
         scope.set_context("job_details", {
             "filename": filename,
             "discovery_model": discovery_model,
-            "focused_extraction": focused_extraction,
             "extract_categories": extract_categories,
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
@@ -3560,7 +3534,6 @@ async def process_document_with_discovery(
                 "description": description,
                 "tags": document_tags,
                 "discovery_model": discovery_model,
-                "focused_extraction": focused_extraction
             }
         )
         logger.info(f"✅ [BACKGROUND TASK] INITIALIZED checkpoint created for job {job_id}")
@@ -3927,7 +3900,6 @@ async def process_document_with_discovery(
             'chunk_overlap': chunk_overlap,
             'image_analysis_model': image_analysis_model,
             'discovery_model': discovery_model,
-            'focused_extraction': focused_extraction,
             'extract_categories': extract_categories,
             'material_category': material_category  # For image categorization
         }
@@ -4382,7 +4354,6 @@ async def process_document_with_discovery(
                 physical_pages=list(all_physical_pages),
                 products_created=products_created,
                 images_processed=images_saved_count,
-                focused_extraction=focused_extraction,
                 quality_validation_model=quality_validation_model,
                 start_time=start_time,
                 tracker=tracker,

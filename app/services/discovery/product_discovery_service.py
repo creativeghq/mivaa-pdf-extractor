@@ -639,6 +639,54 @@ class ProductDiscoveryService:
                 catalog.pdf_page_widths = {p.pdf_page_num: p.width for p in layout_analysis.pages}
 
             self.logger.info(f"✅ STAGE 0A complete: Found {len(catalog.products)} products")
+
+            # ============================================================
+            # STAGE 0B-VISION RETRY: text-mode found zero products
+            # ============================================================
+            # Catalogs whose product names live inside images (rasterized
+            # logotype banners, design-book layouts) extract no usable text,
+            # so Stage 0A returns 0 products. Without this fallback the whole
+            # pipeline succeeds with `products_discovered=0` and nothing
+            # downstream runs. Render the first ~10 physical pages, hand them
+            # to Claude vision with the same discovery prompt, and merge any
+            # products it sees into the catalog before Stage 0B continues.
+            # Bounded retry — one shot, capped at 10 pages, never reruns.
+            if not catalog.products and pdf_path and "products" in categories:
+                try:
+                    self.logger.warning(
+                        "⚠️ Text discovery returned 0 products — attempting vision retry "
+                        "for image-baked product names"
+                    )
+                    vision_catalog = await self._vision_retry_discovery(
+                        pdf_path=pdf_path,
+                        total_pages=total_physical_pages,
+                        categories=categories,
+                        agent_prompt=agent_prompt,
+                        workspace_id=workspace_id,
+                        enable_prompt_enhancement=enable_prompt_enhancement,
+                        job_id=job_id,
+                        max_pages=10,
+                    )
+                    if vision_catalog and vision_catalog.products:
+                        self.logger.info(
+                            f"✅ Vision retry recovered {len(vision_catalog.products)} products "
+                            f"(was 0 from text discovery)"
+                        )
+                        # Merge vision-discovered products into the catalog.
+                        catalog.products = vision_catalog.products
+                        catalog.confidence_score = max(
+                            catalog.confidence_score or 0.0,
+                            vision_catalog.confidence_score or 0.7,
+                        )
+                    else:
+                        self.logger.warning(
+                            "   Vision retry also found 0 products — likely a non-product PDF"
+                        )
+                except Exception as vision_retry_err:
+                    self.logger.error(
+                        f"   ⚠️ Vision retry failed (non-fatal): {vision_retry_err}"
+                    )
+
             # Update progress: Stage 0A complete (discovery scan) = 5%
             if self.tracker:
                 self.tracker.manual_progress_override = 5
@@ -688,6 +736,162 @@ class ProductDiscoveryService:
             self.logger.error(f"❌ Product discovery failed: {e}")
             raise
     
+    async def _vision_retry_discovery(
+        self,
+        pdf_path: str,
+        total_pages: int,
+        categories: List[str],
+        agent_prompt: Optional[str],
+        workspace_id: str,
+        enable_prompt_enhancement: bool,
+        job_id: Optional[str],
+        max_pages: int = 10,
+    ) -> Optional["ProductCatalog"]:
+        """
+        Vision fallback for catalogs with image-baked product names.
+
+        Renders the first `max_pages` physical pages to JPEG, sends them as
+        image content blocks to Claude with the discovery prompt, parses the
+        JSON response, and returns a minimal ProductCatalog with the
+        discovered products. Returns None on any failure — caller treats
+        this as best-effort.
+
+        Single-shot. Never retried. Capped at 10 pages so the bill is
+        bounded (~$0.10 worst case with Opus, ~$0.01 with Haiku 4.5).
+        """
+        from app.utils.pdf_to_images import PDFToImagesConverter
+
+        # Render first N pages. PDFToImagesConverter is sync; offload to
+        # executor so the event loop isn't blocked during PDF rasterization.
+        converter = PDFToImagesConverter(dpi=200, max_dimension=1600)
+        loop = asyncio.get_event_loop()
+        try:
+            rendered = await loop.run_in_executor(
+                None,
+                lambda: converter.convert_pdf_to_images(
+                    pdf_path=pdf_path,
+                    max_pages=min(max_pages, total_pages),
+                    start_page=0,
+                ),
+            )
+        except Exception as render_err:
+            self.logger.error(f"   vision retry: PDF→image conversion failed: {render_err}")
+            return None
+
+        if not rendered:
+            self.logger.warning("   vision retry: no pages rendered, aborting")
+            return None
+
+        self.logger.info(
+            f"   vision retry: rendered {len(rendered)} pages, calling Claude vision"
+        )
+
+        # Reuse the same discovery prompt (text path) — placeholders for
+        # {pdf_text} get an empty string since we're sending images instead.
+        try:
+            prompt = await self._build_discovery_prompt(
+                pdf_text="",  # vision mode — pages travel as image blocks
+                total_pages=total_pages,
+                categories=categories,
+                agent_prompt=agent_prompt or "Identify all distinct products visible in these catalog pages.",
+                workspace_id=workspace_id,
+                enable_prompt_enhancement=enable_prompt_enhancement,
+            )
+        except Exception as prompt_err:
+            self.logger.error(f"   vision retry: prompt build failed: {prompt_err}")
+            return None
+
+        # Build Anthropic content blocks: prompt text + N image blocks.
+        content_blocks: List[Dict[str, Any]] = [{"type": "text", "text": prompt}]
+        for page_num, b64 in rendered:
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": b64,
+                },
+            })
+
+        # Call Claude. Use Haiku 4.5 directly — vision retry is best-effort
+        # and we cap cost. Opus would be 12× the price for a path that may
+        # never succeed (truly non-product PDFs).
+        from app.config import get_settings as _get_settings_disc
+        model_to_use = "claude-haiku-4-5"
+        start_time = datetime.now()
+        try:
+            ai_service = get_ai_client_service()
+            client = ai_service.anthropic
+            response = client.messages.create(
+                model=model_to_use,
+                max_tokens=8000,
+                messages=[{"role": "user", "content": content_blocks}],
+            )
+            raw = response.content[0].text.strip()
+
+            # Strip code fences if present (same shape as text-path response).
+            if "```json" in raw:
+                js = raw.find("```json") + 7
+                je = raw.find("```", js)
+                raw = raw[js:je].strip()
+            elif "```" in raw:
+                js = raw.find("```") + 3
+                je = raw.find("```", js)
+                raw = raw[js:je].strip()
+
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError:
+                result = json.loads(self._repair_json(raw))
+
+            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            try:
+                await self.ai_logger.log_claude_call(
+                    task="product_discovery_vision_retry",
+                    model=model_to_use,
+                    response=response,
+                    latency_ms=latency_ms,
+                    confidence_score=result.get("confidence_score", 0.7),
+                    confidence_breakdown={},
+                    action="vision_fallback",
+                    job_id=job_id,
+                )
+            except Exception:
+                pass
+
+            raw_products = result.get("products", []) or []
+            valid_products = self._filter_validated_items(
+                raw_products, "products", total_pages
+            )
+
+            if not valid_products:
+                return None
+
+            products: List[ProductInfo] = []
+            for item in valid_products:
+                try:
+                    products.append(ProductInfo(
+                        name=str(item.get("name", "")).strip(),
+                        page_range=item.get("page_range") or [],
+                        description=item.get("description"),
+                        confidence=float(item.get("confidence", 0.7)),
+                        metadata=item.get("metadata") or {},
+                    ))
+                except Exception as item_err:
+                    self.logger.warning(
+                        f"   vision retry: skipping malformed product item: {item_err}"
+                    )
+                    continue
+
+            return ProductCatalog(
+                products=products,
+                confidence_score=float(result.get("confidence_score", 0.7)),
+            )
+
+        except Exception as call_err:
+            self.logger.error(f"   vision retry: Claude call failed: {call_err}")
+            return None
+
     async def _build_discovery_prompt(
         self,
         pdf_text: str,

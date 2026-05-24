@@ -1131,6 +1131,37 @@ class ImageProcessingService:
         return vision_analysis
 
 
+    def _stamp_vision_analysis_outcome(
+        self, image_id: str, failed: bool
+    ) -> None:
+        """Update document_images.vision_analysis_* flags + attempts counter.
+
+        Best-effort: never raises. Called from every exit point of
+        `_try_claude_material_analysis` so operators can query exactly which
+        images failed Stage 3 vision_analysis (P2 observability gap fixed
+        2026-05-24).
+        """
+        try:
+            from app.services.core.supabase_client import get_supabase_client
+            from datetime import datetime as _dt
+            sb = get_supabase_client().client
+            # Read attempts so we can increment atomically (no RPC for this).
+            current = sb.table("document_images") \
+                .select("vision_analysis_attempts") \
+                .eq("id", image_id).single().execute()
+            attempts = int(((current.data or {}).get("vision_analysis_attempts") or 0)) + 1
+            payload: Dict[str, Any] = {
+                "vision_analysis_attempts": attempts,
+                "vision_analysis_failed": failed,
+            }
+            if failed:
+                payload["vision_analysis_failed_at"] = _dt.utcnow().isoformat()
+            else:
+                payload["vision_analysis_failed_at"] = None
+            sb.table("document_images").update(payload).eq("id", image_id).execute()
+        except Exception as e:
+            logger.debug(f"   _stamp_vision_analysis_outcome({image_id}) failed (non-fatal): {e}")
+
     async def _try_claude_material_analysis(
         self,
         image_base64: str,
@@ -1148,6 +1179,9 @@ class ImageProcessingService:
         ignoring the tool, returning text instead) surface as an explicit None
         return and propagate to the embedding path which then skips Voyage.
 
+        Every exit point stamps document_images.vision_analysis_failed +
+        vision_analysis_attempts so per-image failures are queryable.
+
         Post 2026-05-01 (Qwen removal), this is the only vision path. The
         function name is retained to avoid churn across call sites.
         """
@@ -1164,6 +1198,7 @@ class ImageProcessingService:
                     f"   ⚠️ Anthropic client not available — cannot run Claude fallback "
                     f"for material analysis of {image_id}"
                 )
+                self._stamp_vision_analysis_outcome(image_id, failed=True)
                 return None
 
             # Sniff the real media type from the first 16 decoded bytes — Claude rejects
@@ -1234,18 +1269,24 @@ class ImageProcessingService:
                     logger.warning(
                         f"   ⚠️ Claude returned neither tool_use nor text for {image_id}"
                     )
+                    self._stamp_vision_analysis_outcome(image_id, failed=True)
                     return None
                 tool_input = self._parse_vision_analysis_json(raw, image_id) or {}
 
-            return self._validate_vision_analysis(
+            validated = self._validate_vision_analysis(
                 tool_input, image_id, source=VisionProvider.CLAUDE_FALLBACK.value
             )
+            # Pydantic validation may have rejected the payload (returns None).
+            # Stamp success/failure based on whether we got usable output.
+            self._stamp_vision_analysis_outcome(image_id, failed=(validated is None))
+            return validated
 
         except Exception as e:
             logger.warning(
                 f"   ⚠️ Claude vision_analysis (tool_use) failed for {image_id}: {e}",
                 exc_info=True,
             )
+            self._stamp_vision_analysis_outcome(image_id, failed=True)
             return None
 
     async def _analyze_material_image(

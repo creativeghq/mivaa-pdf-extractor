@@ -386,10 +386,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             agent_prompt = job_metadata.get('agent_prompt')
             test_single_product = job_metadata.get('test_single_product', False)
 
-            # Determine focused extraction based on categories
-            use_focused_extraction = 'all' not in categories
-
-            logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, focused={use_focused_extraction}")
+            logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}")
 
             background_tasks.add_task(
                 run_async_in_background(process_document_with_discovery),
@@ -402,7 +399,6 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 description=doc_data.get('description'),
                 document_tags=doc_data.get('tags', []),
                 discovery_model=discovery_model,
-                focused_extraction=use_focused_extraction,
                 extract_categories=categories,
                 chunk_size=1000,
                 chunk_overlap=200,
