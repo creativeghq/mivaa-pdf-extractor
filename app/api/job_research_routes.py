@@ -430,6 +430,78 @@ async def create_job_site(
     return {"site": (res.data or [{}])[0]}
 
 
+class JobSitesBulkCreateRequest(BaseModel):
+    site_type: str = Field(..., description="perplexity_domain | rss_feed_default | careers_page_default")
+    urls: List[str] = Field(..., min_length=1, max_length=200, description="One URL or domain per item. Newline-split happens on the frontend; backend takes the array.")
+    country_code: Optional[str] = Field(None, max_length=3)
+    category: Optional[str] = Field(None, max_length=40)
+    notes: Optional[str] = None
+
+
+@router.post("/sites/bulk")
+async def create_job_sites_bulk(
+    body: JobSitesBulkCreateRequest,
+    user: User = Depends(get_current_user),
+):
+    """v0.5: bulk-insert multiple sites at once into the platform-wide default list.
+    Skips entries that already exist (idempotent). Syncs the KB doc ONCE at the
+    end instead of per-row for efficiency. Returns counts of created/skipped/failed."""
+    if body.site_type not in ("perplexity_domain", "rss_feed_default", "careers_page_default"):
+        raise HTTPException(status_code=400, detail="invalid site_type")
+    svc = get_job_research_service()
+    cleaned: List[str] = []
+    seen: set = set()
+    for raw in body.urls:
+        u = (raw or "").strip()
+        if body.site_type == "perplexity_domain":
+            u = u.lower()
+        if not u:
+            continue
+        key = u.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(u)
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="No valid URLs / domains after trimming and dedup")
+
+    created = 0
+    skipped = 0
+    failed: List[Dict[str, Any]] = []
+    for u in cleaned:
+        try:
+            svc.sb.table("job_research_sites").insert({
+                "site_type": body.site_type,
+                "url_or_domain": u,
+                "country_code": (body.country_code or "").upper() or None,
+                "category": body.category,
+                "notes": body.notes,
+                "is_enabled": True,
+                "created_by": str(user.id),
+            }).execute()
+            created += 1
+        except Exception as e:
+            msg = str(e).lower()
+            if "duplicate" in msg or "unique" in msg or "23505" in msg:
+                skipped += 1
+            else:
+                failed.append({"url_or_domain": u, "error": str(e)[:200]})
+
+    # Sync the KB doc ONCE at the end (not per row)
+    try:
+        _sync_kb(body.site_type)
+    except Exception as e:
+        logger.warning(f"bulk-add: kb sync at end failed: {e}")
+
+    return {
+        "site_type": body.site_type,
+        "requested": len(cleaned),
+        "created": created,
+        "skipped": skipped,
+        "failed": failed,
+    }
+
+
 @router.put("/sites/{site_id}")
 async def update_job_site(
     site_id: str,
