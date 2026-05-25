@@ -82,9 +82,12 @@ def _render_consolidated(all_sites: List[Dict[str, Any]]) -> str:
     en_counts = {st: sum(1 for s in by_type.get(st, []) if s.get("is_enabled")) for st, _, _ in SECTIONS}
     header = (
         f"# {DOC_TITLE}\n\n"
-        f"_Operator-curated list of where the job-research engine looks. Managed via the KAI agent "
-        f"(`manage_job_sites` tool). Per-tracked_job overrides "
-        f"(`tracked_jobs.careers_page_urls` / `rss_feed_urls`) take precedence over the defaults below._\n\n"
+        f"_Operator-curated list of where the job-research engine looks._\n\n"
+        f"**▸ To add / remove / toggle sites: open [/admin/knowledge-base/job-sources](/admin/knowledge-base/job-sources)** "
+        f"— the dedicated management page (admin-only writes, hidden from public KB).\n\n"
+        f"You can also manage via the KAI agent (`manage_job_sites` tool — say "
+        f"\"add kariera.gr to the search\" / \"which job boards do you search?\"). "
+        f"Per-tracked_job overrides (`tracked_jobs.careers_page_urls` / `rss_feed_urls`) take precedence over the defaults below.\n\n"
         f"Current totals: "
         f"**{en_counts['perplexity_domain']}** Perplexity domains · "
         f"**{en_counts['rss_feed_default']}** RSS feeds · "
