@@ -472,7 +472,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     "exp": int((datetime.now(timezone.utc) + timedelta(hours=24)).timestamp())
                 }
 
-            logger.warning(f"Invalid API key: {api_key}")
+            logger.warning(f"Invalid API key: {api_key[:8]}...{api_key[-4:] if len(api_key) > 12 else '****'}")
             return None
 
         except Exception as e:
