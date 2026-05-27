@@ -1252,12 +1252,6 @@ class RealEmbeddingsService:
             self.logger.error(f"SLIG embedding generation failed: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
-            # Close image on error if we created it
-            if not image_was_provided and pil_image and hasattr(pil_image, 'close'):
-                try:
-                    pil_image.close()
-                except Exception:
-                    pass
 
         return None, None
 

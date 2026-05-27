@@ -1118,16 +1118,22 @@ class DataImportService:
 
             now = datetime.utcnow().isoformat()
 
-            # Update data_import_jobs (scalar fields + metadata overwrite — no race here)
             await self.db.table('data_import_jobs').update({
                 'processed_products': processed,
                 'failed_products': failed,
                 'last_heartbeat': now,
-                'metadata': {
-                    'current_stage': stage,
-                    'progress_percentage': progress_percent
-                }
             }).eq('id', job_id).execute()
+
+            try:
+                await self.db.rpc('merge_background_job_metadata', {
+                    'p_job_id': job_id,
+                    'p_metadata': {
+                        'current_stage': stage,
+                        'progress_percentage': progress_percent,
+                    }
+                }).execute()
+            except Exception:
+                pass
 
             # Look up background_job_id
             job_response = await self.db.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()

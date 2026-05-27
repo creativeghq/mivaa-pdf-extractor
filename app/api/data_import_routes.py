@@ -133,7 +133,7 @@ async def get_import_job_status(job_id: str) -> ImportJobStatus:
         supabase = supabase_wrapper.client
         
         # Get job from database
-        response = supabase.client.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
+        response = supabase.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
@@ -205,7 +205,7 @@ async def get_import_history(
         supabase = supabase_wrapper.client
         
         # Build query
-        query = supabase.client.table('data_import_jobs').select('*', count='exact').eq('workspace_id', workspace_id)
+        query = supabase.table('data_import_jobs').select('*', count='exact').eq('workspace_id', workspace_id)
         
         # Apply filters
         if status:

@@ -771,7 +771,7 @@ class VecsService:
                 else:
                     image_id, distance = result_tuple
                     metadata = None
-                similarity_score = 1.0 / (1.0 + distance)
+                similarity_score = 1.0 - distance
 
                 result = {
                     "image_id": image_id,
@@ -1097,7 +1097,7 @@ class VecsService:
                 include_metadata=False
             )
 
-            image_ids = [image_id for image_id, _, _ in results]
+            image_ids = [r[0] if isinstance(r, (list, tuple)) else r for r in results]
 
             if image_ids:
                 collection.delete(ids=image_ids)
