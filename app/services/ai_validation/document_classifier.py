@@ -177,16 +177,15 @@ Example: PRODUCT|0.85"""
             # Log AI call
             if self.ai_logger and job_id:
                 usage = response_data.get("usage", {}) or {}
-                await self.ai_logger.log_ai_call({
-                    "job_id": job_id,
-                    "task": "document_classification_stage1",
-                    "model": "claude-haiku-4-5",
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "latency_ms": latency_ms,
-                    "confidence_score": confidence,
-                    "response_data": {"category": category, "confidence": confidence},
-                })
+                await self.ai_logger.log_ai_call(
+                    task="document_classification_stage1",
+                    model="claude-haiku-4-5",
+                    input_tokens=usage.get("input_tokens", 0),
+                    output_tokens=usage.get("output_tokens", 0),
+                    latency_ms=latency_ms,
+                    confidence_score=confidence,
+                    job_id=job_id,
+                )
             
             logger.info(
                 f"✅ Fast classification: {category} (confidence: {confidence:.2f}, "

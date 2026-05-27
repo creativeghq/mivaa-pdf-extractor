@@ -15,6 +15,7 @@ from app.services.search.duplicate_detection_service import DuplicateDetectionSe
 from app.services.products.product_merge_service import ProductMergeService
 from app.schemas.api_responses import DuplicateDetectionResponse, StatusResponse, MergeResponse, MergeHistoryResponse
 from app.dependencies import get_supabase_client
+from app.middleware.jwt_auth import get_current_workspace_context, WorkspaceContext
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,8 @@ def get_merge_service(
 @router.post("/detect", responses={200: {"model": DuplicateDetectionResponse}})
 async def detect_duplicates_for_product(
     request: DetectDuplicatesRequest,
-    service: DuplicateDetectionService = Depends(get_duplicate_service)
+    service: DuplicateDetectionService = Depends(get_duplicate_service),
+    workspace: WorkspaceContext = Depends(get_current_workspace_context),
 ):
     """
     Detect potential duplicates for a specific product.
@@ -146,7 +148,8 @@ async def detect_duplicates_for_product(
 @router.post("/batch-detect", responses={200: {"model": DuplicateDetectionResponse}})
 async def batch_detect_duplicates(
     request: BatchDetectRequest,
-    service: DuplicateDetectionService = Depends(get_duplicate_service)
+    service: DuplicateDetectionService = Depends(get_duplicate_service),
+    workspace: WorkspaceContext = Depends(get_current_workspace_context),
 ):
     """
     Scan entire workspace for duplicate products.
@@ -258,7 +261,8 @@ async def update_duplicate_status(
 @router.post("/merge", responses={200: {"model": MergeResponse}})
 async def merge_products(
     request: MergeProductsRequest,
-    service: ProductMergeService = Depends(get_merge_service)
+    service: ProductMergeService = Depends(get_merge_service),
+    workspace: WorkspaceContext = Depends(get_current_workspace_context),
 ):
     """
     Merge duplicate products into a single product.
