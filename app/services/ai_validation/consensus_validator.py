@@ -161,58 +161,54 @@ class ConsensusValidator:
     
     def _calculate_agreement(self, results: List[Dict[str, Any]]) -> float:
         """
-        Calculate agreement score between model results.
-        
-        Args:
-            results: List of model results
-            
-        Returns:
-            Agreement score (0.0-1.0)
+        Calculate agreement by comparing extracted VALUES across models,
+        not just confidence scores. Uses normalized string comparison on
+        the key extracted fields (name, category, description, price).
         """
         if len(results) < 2:
             return 0.0
-        
-        # Extract key values from results
-        # This is task-specific - for now, use confidence scores
-        confidences = []
-        for r in results:
-            conf = r["result"].get("confidence_score", 0.5)
-            confidences.append(conf)
-        
-        # Calculate variance in confidences
-        # Low variance = high agreement
-        if not confidences:
-            return 0.5
-        
-        mean_conf = sum(confidences) / len(confidences)
-        variance = sum((c - mean_conf) ** 2 for c in confidences) / len(confidences)
-        
-        # Convert variance to agreement score
-        # variance of 0 = agreement of 1.0
-        # variance of 0.25 = agreement of 0.0
-        agreement = max(0.0, 1.0 - (variance * 4))
-        
-        return agreement
+
+        def _extract_key(r: Dict[str, Any]) -> str:
+            res = r.get("result", {})
+            parts = []
+            for k in ("name", "product_name", "category", "material_type", "description"):
+                v = res.get(k)
+                if v:
+                    parts.append(str(v).strip().lower())
+            return " | ".join(parts) if parts else str(res.get("confidence_score", ""))
+
+        keys = [_extract_key(r) for r in results]
+
+        pair_scores = []
+        for i in range(len(keys)):
+            for j in range(i + 1, len(keys)):
+                if keys[i] == keys[j]:
+                    pair_scores.append(1.0)
+                else:
+                    common = set(keys[i].split()) & set(keys[j].split())
+                    total = set(keys[i].split()) | set(keys[j].split())
+                    pair_scores.append(len(common) / max(len(total), 1))
+
+        return sum(pair_scores) / max(len(pair_scores), 1)
     
     def _majority_vote(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Select result using majority vote.
-        
-        Args:
-            results: List of model results
-            
-        Returns:
-            Winning result
-        """
-        # For now, return result with highest confidence
-        # In production, this would compare actual extracted values
-        
-        best_result = max(
-            results,
-            key=lambda r: r["result"].get("confidence_score", 0.0)
-        )
-        
-        return best_result["result"]
+        """Pick the result whose key extracted fields match the most other results."""
+        def _key(r: Dict[str, Any]) -> str:
+            res = r.get("result", {})
+            return " ".join(
+                str(res.get(k, "")).strip().lower()
+                for k in ("name", "product_name", "category", "material_type")
+                if res.get(k)
+            )
+
+        keys = [_key(r) for r in results]
+        from collections import Counter
+        counts = Counter(keys)
+        best_key = counts.most_common(1)[0][0] if counts else ""
+        for i, k in enumerate(keys):
+            if k == best_key:
+                return results[i]["result"]
+        return max(results, key=lambda r: r["result"].get("confidence_score", 0.0))["result"]
     
     def _weighted_vote(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """

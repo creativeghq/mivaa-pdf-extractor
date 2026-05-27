@@ -118,7 +118,10 @@ class EscalationEngine:
                         f"✅ Result accepted with {quality_level} quality "
                         f"(confidence: {confidence_score:.2f})"
                     )
-                    
+
+                    if escalation_count > 0:
+                        self.escalation_stats["successful_escalations"] += 1
+
                     return {
                         "success": True,
                         "result": result,
@@ -129,7 +132,7 @@ class EscalationEngine:
                         "attempts_history": attempts_history,
                         "total_latency_ms": sum(a["latency_ms"] for a in attempts_history),
                     }
-                
+
                 # Result is not acceptable, check if we should escalate
                 if ConfidenceThresholds.should_escalate(task_type, confidence_score):
                     # Try to escalate

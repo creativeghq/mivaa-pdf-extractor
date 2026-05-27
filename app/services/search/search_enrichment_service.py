@@ -110,10 +110,10 @@ class SearchEnrichmentService:
                         # Extract individual scores (fallback to similarity_score if not available)
                         visual_sim = merged_scores.get('visual', image_result.get('similarity_score', 0.0))
                         understanding_sim = merged_scores.get('understanding', 0.0)
-                        color_sim = merged_scores.get('color', visual_sim * 0.8)
-                        texture_sim = merged_scores.get('texture', visual_sim * 0.8)
-                        style_sim = merged_scores.get('style', visual_sim * 0.8)
-                        material_sim = merged_scores.get('material', visual_sim * 0.8)
+                        color_sim = merged_scores.get('color', 0.0)
+                        texture_sim = merged_scores.get('texture', 0.0)
+                        style_sim = merged_scores.get('style', 0.0)
+                        material_sim = merged_scores.get('material', 0.0)
 
                         # Combined score: weighted average of ALL embedding types + product relevance
                         combined_score = (

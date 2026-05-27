@@ -612,7 +612,13 @@ class UnifiedSearchService:
                         results_by_id[result.id].metadata['embedding_sources'].append(name)
                         results_by_id[result.id].metadata['embedding_scores'][name] = result.similarity_score
 
-            # Sort by combined score
+            weight_map = dict(zip(strategy_names, weights))
+            for result in results_by_id.values():
+                sources = result.metadata.get('embedding_sources', [])
+                active_weight = sum(weight_map.get(s, 0) for s in sources)
+                if active_weight > 0:
+                    result.similarity_score /= active_weight
+
             sorted_results = sorted(
                 results_by_id.values(),
                 key=lambda x: x.similarity_score,

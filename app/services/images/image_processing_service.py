@@ -1395,17 +1395,20 @@ class ImageProcessingService:
                 # (ai_classification is already in img_data from classify_images).
                 # extraction_layer is read from img_data inside save_single_image
                 # — no need to pass it explicitly.
-                image_id = await self.supabase_client.save_single_image(
-                    image_info=img_data,
-                    document_id=document_id,
-                    workspace_id=workspace_id,
-                    image_index=idx,
-                    category='product',  # Fallback category if material_category not provided
-                    bbox=img_data.get('bbox'),
-                    detection_confidence=img_data.get('detection_confidence'),
-                    product_name=img_data.get('product_name'),
-                    material_category=material_category  # Pass material_category for proper categorization
-                )
+                if not img_data.get('id'):
+                    image_id = await self.supabase_client.save_single_image(
+                        image_info=img_data,
+                        document_id=document_id,
+                        workspace_id=workspace_id,
+                        image_index=idx,
+                        category='product',
+                        bbox=img_data.get('bbox'),
+                        detection_confidence=img_data.get('detection_confidence'),
+                        product_name=img_data.get('product_name'),
+                        material_category=material_category
+                    )
+                else:
+                    image_id = img_data['id']
 
                 if not image_id:
                     last_error = "Failed to save image to database"
