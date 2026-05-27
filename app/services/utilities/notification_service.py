@@ -55,26 +55,14 @@ class NotificationService:
             
             result = self.supabase.client.table('notifications').insert(notification_data).execute()
             
-            # Call notification dispatcher Edge Function
-            # This will handle actual delivery via email, push, webhook
-            try:
-                edge_result = self.supabase.client.functions.invoke(
-                    'notification-dispatcher',
-                    {
-                        'action': 'send',
-                        'user_id': user_id,
-                        'notification_type': notification_type,
-                        'title': title,
-                        'message': message,
-                        'data': data,
-                        'channels': channels
-                    }
-                )
-                logger.info(f"✅ Notification sent to user {user_id}: {title}")
-                return {'success': True, 'notification_id': result.data[0]['id']}
-            except Exception as edge_error:
-                logger.warning(f"⚠️ Edge function failed, notification logged but not delivered: {edge_error}")
-                return {'success': False, 'notification_id': result.data[0]['id'], 'error': str(edge_error)}
+            # Bell notification is delivered via the DB insert above (the frontend
+            # reads from the notifications table). Push delivery via the
+            # notification-dispatcher edge function is not yet wired — the
+            # dispatcher accepts 'send-push' (with subscriptions) and
+            # 'send-webhook' (with webhook endpoints), but this service doesn't
+            # have the user's push subscriptions to pass. Tracked as a follow-up.
+            logger.info(f"✅ Notification saved for user {user_id}: {title}")
+            return {'success': True, 'notification_id': result.data[0]['id']}
                 
         except Exception as e:
             logger.error(f"❌ Failed to send notification: {e}")

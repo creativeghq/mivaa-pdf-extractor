@@ -1227,6 +1227,7 @@ async def legacy_stop(
     tq = await service.find_for_product(product_id)
     if not tq:
         return {"success": True, "message": "not enrolled"}
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     await service.deactivate(tq["id"])
     return {"success": True, "message": "monitoring stopped"}
 
@@ -1262,6 +1263,7 @@ async def legacy_check_now(
             force=True,
         )
         return {"success": True, "message": "first refresh complete", "data": tq}
+    _enforce_tracked_query_owner(tq, user_id=str(user.id))
     outcome = await service.refresh(tq["id"], force=True)
     return {"success": outcome.get("status") == "refreshed", "message": outcome.get("status"), "data": outcome}
 
