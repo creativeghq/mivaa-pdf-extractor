@@ -112,7 +112,11 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/analyze/multimodal",
             "/api/query/multimodal",
             "/api/interior",        # Interior design — called by edge function (no user JWT)
-            "/api/rag",             # RAG search — called by edge function (no user JWT)
+            "/api/rag",             # RAG endpoints — called by edge functions with service-role JWT
+                                    # (aud="service_role", NOT "authenticated"). Cannot narrow this
+                                    # prefix until _validate_supabase_jwt accepts aud="service_role".
+                                    # Routes like /api/rag/documents/upload have their own
+                                    # Depends(get_workspace_context) route-level auth as defense-in-depth.
             "/api/v1/prices/lookup",  # Public price lookup — route-level api_keys-table auth
             "/api/v1/prices/track",   # Public price tracking (external projects) — route-level api_keys-table auth
             "/api/v1/modules",        # Feature modules — route-level Supabase-token auth + admin role check
