@@ -463,17 +463,18 @@ class DataImportService:
         Returns:
             Normalized product data
         """
-        normalized = {}
+        # The xml-import-orchestrator already maps XML tag names → target field
+        # names before sending to this endpoint. Start with the product data
+        # as-is (target-keyed), then apply fallbacks below.
+        normalized = {k: v for k, v in product.items() if k != 'metadata'}
 
-        # Apply field mappings
+        # If field_mappings are still raw XML→target and the product still has
+        # XML-keyed fields (direct-to-Python callers bypassing the orchestrator),
+        # apply the mapping on top.
         for xml_field, target_field in field_mappings.items():
-            if xml_field in product:
+            if xml_field in product and target_field not in normalized:
                 normalized[target_field] = product[xml_field]
 
-        # Defensive aliasing — fold any manufacturer/brand/supplier fields the
-        # caller may have passed through into the canonical factory_name.
-        # The xml-import-orchestrator edge function already maps these, but
-        # callers can POST directly to /api/import/process bypassing it.
         normalize_factory_keys(normalized)
 
         # Ensure required fields exist

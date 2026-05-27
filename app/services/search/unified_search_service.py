@@ -455,8 +455,8 @@ class UnifiedSearchService:
                     chunk_embedding = item.get('text_embedding')
                     if chunk_embedding:
                         chunk_vec = np.array(chunk_embedding)
-                        # Cosine similarity = 1 - cosine distance
-                        similarity = 1 - np.dot(query_vec, chunk_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(chunk_vec))
+                        norm_product = np.linalg.norm(query_vec) * np.linalg.norm(chunk_vec)
+                        similarity = float(np.dot(query_vec, chunk_vec) / norm_product) if norm_product > 0 else 0.0
 
                         # Filter by threshold
                         if similarity >= self.config.similarity_threshold:

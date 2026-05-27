@@ -376,19 +376,23 @@ class CheckpointRecoveryService:
                 await self._mark_job_failed(job_id, "Stuck without valid checkpoint")
                 return False
             
-            # Mark job as pending for restart
+            # Mark job as pending for restart — merge metadata so we don't
+            # clobber existing progress counters (pages_completed, etc.)
             self.supabase_client.client.table(self.jobs_table)\
                 .update({
                     "status": "pending",
-                    "metadata": {
-                        "restart_from_stage": last_stage.value,
-                        "restart_reason": "auto_recovery_stuck_job",
-                        "restart_at": datetime.utcnow().isoformat()
-                    },
                     "updated_at": datetime.utcnow().isoformat()
                 })\
                 .eq("id", job_id)\
                 .execute()
+            self.supabase_client.client.rpc("merge_background_job_metadata", {
+                "p_job_id": job_id,
+                "p_metadata": {
+                    "restart_from_stage": last_stage.value,
+                    "restart_reason": "auto_recovery_stuck_job",
+                    "restart_at": datetime.utcnow().isoformat()
+                }
+            }).execute()
             
             logger.info(f"🔄 Marked {job_id} for restart from {last_stage.value}")
             return True
@@ -594,7 +598,7 @@ class CheckpointRecoveryService:
             return 0
     
     async def _mark_job_failed(self, job_id: str, reason: str):
-        """Mark a job as failed"""
+        """Mark a job as failed and deregister from endpoint controller."""
         try:
             self.supabase_client.client.table(self.jobs_table)\
                 .update({
@@ -607,6 +611,18 @@ class CheckpointRecoveryService:
                 .execute()
         except Exception as e:
             logger.error(f"Failed to mark job as failed: {e}")
+
+        try:
+            from app.services.core.endpoint_controller import endpoint_controller
+            endpoint_controller.register_job_done(job_id)
+        except Exception:
+            pass
+
+        try:
+            from app.services.tracking.progress_tracker import _scale_endpoints_to_zero_safe
+            await _scale_endpoints_to_zero_safe(reason=f"checkpoint_job_failed_{job_id}")
+        except Exception as e:
+            logger.warning(f"scale_all_to_zero after _mark_job_failed raised: {e}")
 
 
 # Global instance
