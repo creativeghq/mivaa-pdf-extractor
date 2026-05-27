@@ -230,7 +230,7 @@ async def get_ai_metrics_summary(
             start_time = datetime(2020, 1, 1)  # Far past
         
         # Query ai_call_logs table
-        query = supabase.client.table("ai_call_logs").select("*")
+        query = supabase.client.table("ai_usage_logs").select("*")
         
         if time_period != "all":
             query = query.gte("timestamp", start_time.isoformat())
