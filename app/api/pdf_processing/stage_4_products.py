@@ -767,10 +767,10 @@ async def _fetch_visual_metadata_for_product(
             logger.debug(f"   ℹ️ No images for product {product_name}, skipping visual metadata")
             return {}
 
-        # Fetch images for this product
         images_response = supabase.client.table('document_images') \
             .select('id, metadata') \
             .eq('document_id', document_id) \
+            .in_('page_number', image_indices) \
             .execute()
 
         if not images_response.data:

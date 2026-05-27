@@ -145,8 +145,14 @@ class ProgressTracker:
                 status="pending"
             )
 
-    @async_retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
     async def _sync_to_database(self, stage: Optional[str] = None, force: bool = False):
+        try:
+            await self._sync_to_database_inner(stage=stage, force=force)
+        except Exception as e:
+            logger.warning(f"⚠️ Progress sync failed after retries: {e}")
+
+    @async_retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
+    async def _sync_to_database_inner(self, stage: Optional[str] = None, force: bool = False):
         """
         Sync progress to database (background_jobs + job_progress tables).
 
@@ -274,7 +280,7 @@ class ProgressTracker:
             self.last_db_sync = datetime.utcnow()
         except Exception as e:
             logger.error(f"❌ Failed to sync progress to database: {e}")
-            # Don't raise - progress sync failures shouldn't block processing
+            raise
 
     async def start_processing(self):
         """Mark processing as started."""
