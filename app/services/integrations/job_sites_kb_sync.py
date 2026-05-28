@@ -26,11 +26,14 @@ DOC_SLUG = "job-research-sites"
 
 SECTIONS = [
     ("perplexity_domain", "Perplexity domain filter",
-     "Pinned via Sonar `search_domain_filter`. Capped at 10 by the upstream API; extras truncate alphabetically."),
+     "Pinned via Sonar `search_domain_filter`. Capped at 10 by the upstream API; extras truncate alphabetically. "
+     "Sonar searches the open web restricted to these hosts — best for job-board aggregators (LinkedIn, Indeed, WWR, etc.)."),
     ("rss_feed_default", "Default RSS feeds",
-     "Suggested to new tracked_jobs when `sources_enabled.rss_feeds: true`."),
+     "Polled directly via httpx + XML parsing on every refresh (UNIONed with each tracked_job's own `rss_feed_urls`). "
+     "Each entry must be a real RSS 2.0 or Atom 1.0 feed URL (often ending in `/feed`, `.rss`, `.atom`, `?format=rss`)."),
     ("careers_page_default", "Default career pages",
-     "Suggested to new tracked_jobs when `sources_enabled.careers_pages: true`."),
+     "Scraped via Firecrawl on every refresh (UNIONed with each tracked_job's own `careers_page_urls`). "
+     "Use for company-specific careers pages where you want every open role — Firecrawl handles JS-rendered listings."),
 ]
 
 
@@ -82,13 +85,17 @@ def _render_consolidated(all_sites: List[Dict[str, Any]]) -> str:
     en_counts = {st: sum(1 for s in by_type.get(st, []) if s.get("is_enabled")) for st, _, _ in SECTIONS}
     header = (
         f"# {DOC_TITLE}\n\n"
-        f"_Operator-curated list of where the job-research engine looks._\n\n"
+        f"_Operator-curated list of where the job-research engine looks. Three sub-lists, "
+        f"each driving a different upstream engine — all three are live on every refresh._\n\n"
         f"**▸ To add resources: open this document in the KB admin, then switch to the "
-        f"\"Manage resources\" tab** at the top. Three sub-lists: Perplexity domain filter, "
-        f"Default RSS feeds, Default career pages. Add one at a time or bulk-paste many.\n\n"
+        f"\"Manage resources\" tab** at the top. Add one at a time or bulk-paste many.\n\n"
         f"You can also manage via the KAI agent — say \"add kariera.gr to the search\" or "
-        f"\"which job boards do you search?\". Per-tracked_job overrides "
-        f"(`tracked_jobs.careers_page_urls` / `rss_feed_urls`) take precedence over the defaults below.\n\n"
+        f"\"which job boards do you search?\".\n\n"
+        f"**Why three lists?** Each maps to a different upstream engine:\n"
+        f"- **Perplexity domains** → Sonar's `search_domain_filter` (LLM-driven web search, restricted to these hosts).\n"
+        f"- **RSS feeds** → direct XML poll via httpx (gives per-item dates + canonical links — Perplexity can't).\n"
+        f"- **Career pages** → Firecrawl scrape with schema-guided extraction (handles JS-rendered job lists — Perplexity can't).\n\n"
+        f"Per-tracked_job entries (`tracked_jobs.careers_page_urls` / `rss_feed_urls`) are UNIONed with these defaults — they don't replace them.\n\n"
         f"Current totals: "
         f"**{en_counts['perplexity_domain']}** Perplexity domains · "
         f"**{en_counts['rss_feed_default']}** RSS feeds · "

@@ -67,7 +67,8 @@ class CreateTrackedJobRequest(BaseModel):
     excluded_companies: Optional[List[str]] = None
     preferred_companies: Optional[List[str]] = None
     sources_enabled: Optional[Dict[str, bool]] = None
-    careers_page_urls: Optional[List[str]] = None
+    careers_page_urls: Optional[List[str]] = Field(None, description="Per-tracked_job careers pages. UNIONed with operator-curated global defaults (job_research_sites WHERE site_type='careers_page_default') at refresh time.")
+    rss_feed_urls: Optional[List[str]] = Field(None, description="Per-tracked_job RSS/Atom feeds. UNIONed with operator-curated global defaults (job_research_sites WHERE site_type='rss_feed_default') at refresh time.")
     digest_hour_utc: int = Field(7, ge=0, le=23)
     digest_day_of_week: Optional[int] = Field(None, ge=0, le=6, description="0=Sunday..6=Saturday. NULL = daily.")
     alert_channels: Optional[List[str]] = None
@@ -92,6 +93,7 @@ class UpdateTrackedJobRequest(BaseModel):
     preferred_companies: Optional[List[str]] = None
     sources_enabled: Optional[Dict[str, bool]] = None
     careers_page_urls: Optional[List[str]] = None
+    rss_feed_urls: Optional[List[str]] = None
     digest_enabled: Optional[bool] = None
     digest_hour_utc: Optional[int] = Field(None, ge=0, le=23)
     digest_day_of_week: Optional[int] = Field(None, ge=0, le=6)

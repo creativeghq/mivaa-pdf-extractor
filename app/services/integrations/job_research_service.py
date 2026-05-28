@@ -107,6 +107,7 @@ class JobResearchService:
         preferred_companies: Optional[List[str]] = None,
         sources_enabled: Optional[Dict[str, bool]] = None,
         careers_page_urls: Optional[List[str]] = None,
+        rss_feed_urls: Optional[List[str]] = None,
         digest_hour_utc: int = 7,
         digest_day_of_week: Optional[int] = None,
         alert_channels: Optional[List[str]] = None,
@@ -131,6 +132,21 @@ class JobResearchService:
         clean_keywords = [k.strip() for k in keywords if k and k.strip()]
         clean_excluded = [k.strip() for k in (excluded_keywords or []) if k and k.strip()]
 
+        # Auto-enable rss_feeds / careers_pages source toggles when the operator
+        # has curated global defaults — otherwise the global lists are dead
+        # weight (the engine reads them but the toggle gates the call).
+        # User-supplied sources_enabled still wins outright.
+        from app.services.integrations.job_search_service import load_site_defaults_from_db
+        rss_defaults_present = bool(load_site_defaults_from_db("rss_feed_default"))
+        careers_defaults_present = bool(load_site_defaults_from_db("careers_page_default"))
+        effective_sources = sources_enabled or {
+            "google_jobs": True,
+            "google_serp": True,
+            "perplexity": True,
+            "careers_pages": careers_defaults_present,
+            "rss_feeds": rss_defaults_present,
+        }
+
         row = {
             "user_id": owner_user_id,
             "api_key_id": api_key_id,
@@ -147,8 +163,9 @@ class JobResearchService:
             "salary_currency": salary_currency or "USD",
             "excluded_companies": excluded_companies or [],
             "preferred_companies": preferred_companies or [],
-            "sources_enabled": sources_enabled or {"google_jobs": True, "google_serp": True, "perplexity": True, "careers_pages": False, "rss_feeds": False},
+            "sources_enabled": effective_sources,
             "careers_page_urls": careers_page_urls or [],
+            "rss_feed_urls": rss_feed_urls or [],
             "digest_hour_utc": max(0, min(23, int(digest_hour_utc))),
             "digest_day_of_week": digest_day_of_week,
             "alert_channels": alert_channels or ["bell", "email"],
@@ -279,7 +296,7 @@ class JobResearchService:
         ALLOWED = {
             "label", "keywords", "excluded_keywords", "location", "country_code",
             "remote_only", "seniority", "employment_type", "salary_min", "salary_currency",
-            "excluded_companies", "preferred_companies", "sources_enabled", "careers_page_urls",
+            "excluded_companies", "preferred_companies", "sources_enabled", "careers_page_urls", "rss_feed_urls",
             "digest_enabled", "digest_hour_utc", "alert_channels", "alert_webhook_url",
             "refresh_interval_hours", "auto_expand_keywords", "is_active",
         }
@@ -525,18 +542,43 @@ class JobResearchService:
                         limit=5,
                     ))
             if sources_enabled.get("careers_pages", False):
-                sources_called.append("careers_pages")
-                tasks.append(search_via_firecrawl_careers(
-                    careers_urls=list(tj.get("careers_page_urls") or []),
-                    company_hint=None,
-                    attribution=attribution,
-                ))
+                # UNION per-tracked URLs with operator-curated global defaults from
+                # job_research_sites (site_type='careers_page_default'). De-dup,
+                # preserve per-tracked first so user overrides take precedence on tie.
+                from app.services.integrations.job_search_service import load_site_defaults_from_db
+                per_tracked = [u for u in (tj.get("careers_page_urls") or []) if u]
+                globals_ = load_site_defaults_from_db("careers_page_default")
+                merged_careers: List[str] = []
+                seen = set()
+                for u in per_tracked + globals_:
+                    key = u.strip().lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        merged_careers.append(u.strip())
+                if merged_careers:
+                    sources_called.append("careers_pages")
+                    tasks.append(search_via_firecrawl_careers(
+                        careers_urls=merged_careers,
+                        company_hint=None,
+                        attribution=attribution,
+                    ))
             if sources_enabled.get("rss_feeds", False):
-                sources_called.append("rss_feeds")
-                tasks.append(search_via_rss_feeds(
-                    feed_urls=list(tj.get("rss_feed_urls") or []),
-                    attribution=attribution,
-                ))
+                from app.services.integrations.job_search_service import load_site_defaults_from_db
+                per_tracked = [u for u in (tj.get("rss_feed_urls") or []) if u]
+                globals_ = load_site_defaults_from_db("rss_feed_default")
+                merged_rss: List[str] = []
+                seen = set()
+                for u in per_tracked + globals_:
+                    key = u.strip().lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        merged_rss.append(u.strip())
+                if merged_rss:
+                    sources_called.append("rss_feeds")
+                    tasks.append(search_via_rss_feeds(
+                        feed_urls=merged_rss,
+                        attribution=attribution,
+                    ))
 
             if not tasks:
                 bookkeeping.append_log(run_id=agent_run_id, level="warning", message="No sources enabled — skipping")

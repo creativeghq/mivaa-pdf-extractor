@@ -635,6 +635,28 @@ def _load_perplexity_domains_from_db() -> List[str]:
         logger.warning(f"job-search: load DB perplexity domains failed (using fallback): {e}")
     return list(_DEFAULT_JOB_DOMAINS)
 
+
+def load_site_defaults_from_db(site_type: str) -> List[str]:
+    """Load the operator-curated URL list for a given site_type from job_research_sites.
+    Used by the refresh pipeline to UNION per-tracked_job URLs with global defaults.
+    Returns [] if the DB read fails or the list is empty (so the engine cleanly skips)."""
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        sb = get_supabase_client().client
+        res = (
+            sb.table("job_research_sites")
+            .select("url_or_domain")
+            .eq("site_type", site_type)
+            .eq("is_enabled", True)
+            .execute()
+        )
+        rows = res.data or []
+        urls = [(r.get("url_or_domain") or "").strip() for r in rows if r.get("url_or_domain")]
+        return [u for u in urls if u]
+    except Exception as e:
+        logger.warning(f"job-search: load DB defaults for {site_type} failed: {e}")
+        return []
+
 _JOB_LISTING_SCHEMA = {
     "type": "object",
     "properties": {
