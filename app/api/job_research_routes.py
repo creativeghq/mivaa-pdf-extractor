@@ -438,6 +438,22 @@ class JobSitesBulkCreateRequest(BaseModel):
     notes: Optional[str] = None
 
 
+@router.post("/sites/_resync")
+async def resync_job_sites_kb_doc(
+    user: User = Depends(get_current_user),
+):
+    """v0.5.1: trigger the KB doc resync. Called by the frontend after it does
+    a direct-Supabase CRUD on `job_research_sites`. Cheap (~50ms — one DB
+    SELECT + one kb_docs UPDATE). Returns the sections that were touched."""
+    try:
+        from app.services.integrations.job_sites_kb_sync import sync_all
+        result = sync_all()
+        return {"ok": True, "result": result}
+    except Exception as e:
+        logger.warning(f"sites _resync failed (non-fatal): {e}")
+        return {"ok": False, "error": str(e)[:200]}
+
+
 @router.post("/sites/bulk")
 async def create_job_sites_bulk(
     body: JobSitesBulkCreateRequest,
