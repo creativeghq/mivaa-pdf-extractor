@@ -2045,6 +2045,7 @@ from app.api.admin_linking import router as admin_linking_router
 from app.api.facet_routes import router as facet_router
 from app.api.sam_routes import router as sam_router
 from app.api.agent_routes import router as agent_router
+from app.api.project_tracking_routes import router as project_tracking_router
 
 app.include_router(health_router)  # Health check endpoints (must be first for monitoring)
 app.include_router(search_router)
@@ -2094,6 +2095,7 @@ app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual ch
 app.include_router(facet_router)  # NEW: Admin facet canonicalization (POST /api/admin/facets/canonicalize + observability)
 app.include_router(sam_router)   # SAM mask generation for material inpainting
 app.include_router(agent_router)  # Background agents — long-running task delegation
+app.include_router(project_tracking_router)  # NEW: Public /api/v1/projects/* — external Project Workspace API (api_keys Bearer auth)
 
 # Module system: control endpoint (cache invalidation) + auto-discovered per-module routers
 from app.api.modules_control import router as modules_control_router  # noqa: E402
