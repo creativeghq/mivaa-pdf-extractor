@@ -2887,6 +2887,14 @@ async def process_document_with_discovery(
     logger.info(f"✅ [BACKGROUND TASK] File read successfully: {file_size} bytes ({file_size / (1024*1024):.1f} MB)")
     logger.info("=" * 80)
 
+    # Stable catalog-cache key — hash the ORIGINAL uploaded PDF bytes, BEFORE
+    # page numbering. The numbered PDF's bytes are not deterministic across runs,
+    # so keying Stage 0's catalog cache on them caused a miss (and full ~$0.20
+    # re-discovery) on every resume. Captured here while file_content is still
+    # the original upload.
+    import hashlib as _hashlib_orig
+    original_pdf_sha256 = _hashlib_orig.sha256(file_content).hexdigest()
+
     # ============================================================================
     # PRE-PROCESSING: ADD PAGE NUMBERS TO PDF
     # ============================================================================
@@ -3621,6 +3629,7 @@ async def process_document_with_discovery(
                 logger=logger,
                 temp_pdf_path=file_path,
                 test_single_product=test_single_product,
+                catalog_cache_key=original_pdf_sha256,
             )
 
         catalog = stage_0_result["catalog"]
@@ -4142,8 +4151,30 @@ async def process_document_with_discovery(
             except Exception:
                 pass
 
-        # Update tracker with final counts
+        # Hard failure gate: if EVERY product failed, the document produced no
+        # usable output. Proceeding to Stage 5 + complete_job here would mark the
+        # job green/100% and mask total data loss with no retry. Raise so the
+        # outer handler (except @ ~4430) runs fail_job + flips the document out
+        # of 'processing'. (The anomaly check above only fires when products
+        # SUCCEEDED but produced zero chunks — it does NOT cover all-failed.)
+        if total_products > 0 and products_completed == 0:
+            raise RuntimeError(
+                f"All {total_products} product(s) failed in the product-centric "
+                f"pipeline (products_failed={products_failed}) — failing job {job_id} "
+                f"instead of completing with zero output."
+            )
+
+        # Update tracker with final counts. These are the AUTHORITATIVE
+        # per-job totals — set them from the parallel_result aggregates (each
+        # summed once from per-product results) so the persisted job row is
+        # correct regardless of any transient over-count or concurrent-write
+        # race in the in-memory counters during processing.
         tracker.chunks_created = total_chunks_created
+        tracker.images_extracted = total_images_processed
+        tracker.clip_embeddings_generated = total_clip_embeddings
+        tracker.image_embeddings_generated = total_clip_embeddings
+        tracker.products_created = products_completed
+        tracker.relations_created = total_relationships_created
         products_created = products_completed
         images_saved_count = total_images_processed
         linking_results = {"relationships_created": total_relationships_created}

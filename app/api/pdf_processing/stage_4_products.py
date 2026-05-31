@@ -279,8 +279,14 @@ Respond with exactly: {{"material_category": "...", "zone_intent": "..."}}"""
             workspace_id=workspace_id,
             product_id=product_id,
         )
-        text = (resp.content[0].text if resp.content else "").strip()
-        data = _json.loads(text)
+        raw = (resp.content[0].text if resp.content else "").strip()
+        # The model sometimes wraps the JSON in a ```json … ``` fence — strip it
+        # before parsing so a cosmetic wrapper doesn't fail the whole classify.
+        if raw.startswith("```"):
+            raw = raw.strip("`").strip()
+            if raw[:4].lower() == "json":
+                raw = raw[4:].strip()
+        data = _json.loads(raw)
         result = {}
         if data.get("material_category") in MATERIAL_CATEGORY_VOCAB:
             result["material_category"] = data["material_category"]
@@ -288,7 +294,18 @@ Respond with exactly: {{"material_category": "...", "zone_intent": "..."}}"""
             result["zone_intent"] = data["zone_intent"]
         return result
     except Exception as e:
-        logging.getLogger(__name__).warning(f"Product classification failed: {e}")
+        # A classification failure leaves the product uncategorized (wrong
+        # default unit + broken facets), so surface it loudly rather than at
+        # warning — this is a wholesale failure (parse / API), not "the model
+        # legitimately couldn't classify" (which returns a valid-but-empty dict).
+        logging.getLogger(__name__).error(
+            f"Product classification failed for product {product_id}: {e}"
+        )
+        try:
+            import sentry_sdk
+            sentry_sdk.capture_exception(e)
+        except Exception:
+            pass
         return {}
 
 

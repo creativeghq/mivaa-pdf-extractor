@@ -463,11 +463,16 @@ class DataImportService:
         Returns:
             Normalized product data
         """
+        # The product dict here is ALREADY canonical — the edge-function
+        # orchestrator resolved every field_mappings entry (raw XML tag →
+        # canonical target) and stored the finished product_data in
+        # data_import_job_products. Re-applying field_mappings here was dead
+        # (its keys are raw XML tags, absent from the canonical dict) and a
+        # latent corruption vector when a raw tag happened to equal a canonical
+        # key (it would overwrite the orchestrator's resolved + manual-value
+        # fallback). field_mappings is retained in the signature for callers /
+        # back-compat but is intentionally no longer re-applied.
         normalized = {k: v for k, v in product.items() if k != 'metadata'}
-
-        for xml_field, target_field in field_mappings.items():
-            if xml_field in product and target_field not in normalized:
-                normalized[target_field] = product[xml_field]
 
         normalize_factory_keys(normalized)
 
@@ -580,10 +585,12 @@ class DataImportService:
                 "factory_name": product_data.get('factory_name'),
                 "factory_group_name": product_data.get('factory_group_name'),
                 "color": product_data.get('color'),
+                "colors": product_data.get('colors'),
                 "designer": product_data.get('designer'),
                 "collection": product_data.get('collection'),
                 "finish": product_data.get('finish'),
                 "material": product_data.get('material'),
+                "size": product_data.get('size'),
                 **inner_meta,
             }
             if factory_obj:
@@ -592,13 +599,17 @@ class DataImportService:
             # Build product record for database
             product_record = {
                 "name": product_name,
-                "description": product_data.get('description', '')[:200],
-                "long_description": product_data.get('description', '')[:5000],
+                # `or ''` guards against a JSON-null description (.get(...,'')
+                # only defaults a MISSING key; an explicit null returns None and
+                # None[:200] raises TypeError, failing an otherwise-valid product).
+                "description": (product_data.get('description') or '')[:200],
+                "long_description": (product_data.get('description') or '')[:5000],
                 "workspace_id": workspace_id,
                 "properties": {
                     # Non-content / display fields only
                     "price": product_data.get('price'),
                     "dimensions": product_data.get('dimensions'),
+                    "size": product_data.get('size'),
                     "import_source": "xml_import",
                     "import_job_id": job_id,
                     "auto_generated": True,
@@ -693,7 +704,7 @@ class DataImportService:
                 desc = product_data.get('description', '')
                 if desc:
                     emb_parts.append(desc[:500])
-                for key in ('factory_name', 'factory_group_name', 'designer', 'material_category', 'collection', 'color', 'finish', 'material'):
+                for key in ('factory_name', 'factory_group_name', 'designer', 'material_category', 'collection', 'color', 'colors', 'finish', 'material', 'size'):
                     val = product_data.get(key) or product_metadata.get(key)
                     if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a', ''):
                         emb_parts.append(val.replace('_', ' '))

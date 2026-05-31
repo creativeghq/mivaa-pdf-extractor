@@ -40,7 +40,8 @@ async def process_stage_0_discovery(
     checkpoint_recovery_service: Any,
     logger: Any,
     temp_pdf_path: Optional[str] = None,  # Optional existing temp path
-    test_single_product: bool = False  # 🧪 TEST MODE: Process only first product
+    test_single_product: bool = False,  # 🧪 TEST MODE: Process only first product
+    catalog_cache_key: Optional[str] = None  # Stable cache key (see below)
 ) -> Dict[str, Any]:
     """
     Stage 0: Product Discovery
@@ -262,7 +263,12 @@ async def process_stage_0_discovery(
         # that happened to land at the same byte count. The 2026-05-23 audit
         # flagged this as a re-upload-collision risk.
         import hashlib as _hashlib
-        _file_sha256 = _hashlib.sha256(file_content).hexdigest()
+        # Prefer the caller-supplied stable key (hash of the ORIGINAL uploaded
+        # PDF). The `file_content` here is the page-NUMBERED PDF, whose bytes are
+        # not guaranteed deterministic across runs (PDF object order / embedded
+        # timestamps), so hashing it produced a different key on every resume →
+        # guaranteed cache miss → full re-discovery (~$0.20) re-run each time.
+        _file_sha256 = catalog_cache_key or _hashlib.sha256(file_content).hexdigest()
         try:
             cache_resp = supabase.client.table('background_jobs') \
                 .select('metadata') \

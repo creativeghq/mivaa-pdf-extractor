@@ -139,14 +139,33 @@ class WebScrapingService:
         elif status == "failed":
             self.logger.error(f"[{job_id}] Stage: {stage.value} | Status: failed | Error: {error}")
 
-        # Update background_jobs with current stage and progress
+        # Persist progress + stage transition to background_jobs.
+        # NOTE: background_jobs has NO `current_stage` column — writing it makes
+        # PostgREST reject the whole update (so progress never advanced either).
+        # The stage label belongs in stage_history (append_stage_history), the
+        # same pattern update_job_progress uses.
         try:
             progress = get_web_scraping_progress(stage)
             await self.db.table('background_jobs').update({
-                'current_stage': stage.value,
                 'progress': progress,
+                'last_heartbeat': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
             }).eq('id', job_id).execute()
+
+            try:
+                await self.db.rpc('append_stage_history', {
+                    'p_job_id': job_id,
+                    'p_event': {
+                        'stage': stage.value,
+                        'status': status,
+                        'progress': progress,
+                        'completed_at': datetime.utcnow().isoformat(),
+                        'data': {'items': items, 'duration_ms': duration_ms, 'error': error},
+                        'source': 'web_scraping',
+                    },
+                }).execute()
+            except Exception as shadow_err:
+                self.logger.debug(f"scraping _log_stage stage_history shadow-write skipped: {shadow_err}")
         except Exception as e:
             self.logger.warning(f"Failed to update job stage: {e}")
 
@@ -726,6 +745,30 @@ class WebScrapingService:
         """
         created_products = []
 
+        # ── Idempotency: purge any products from a PRIOR run of this session ──
+        # The /session/{id}/retry route allows re-processing a completed session,
+        # and Firecrawl can re-deliver crawl.completed. Without this, every retry
+        # double-inserts the full product set (+ chunks/images/embeddings) and
+        # re-pays AI spend. Delete prior products for this session first so a
+        # retry REPLACES rather than duplicates. Keyed on import_batch_id
+        # (`scraping_{session_id}`) — a real column stamped on every product below.
+        import_batch_id = f"scraping_{session_id}"
+        try:
+            existing = await self.db.table("products") \
+                .select("id") \
+                .eq("import_batch_id", import_batch_id) \
+                .execute()
+            if existing.data:
+                stale_ids = [r["id"] for r in existing.data]
+                await self.db.table("products").delete() \
+                    .eq("import_batch_id", import_batch_id).execute()
+                self.logger.info(
+                    f"   ♻️ Idempotency: purged {len(stale_ids)} product(s) from a "
+                    f"prior run of session {session_id} before re-insert"
+                )
+        except Exception as purge_err:
+            self.logger.warning(f"   ⚠️ Idempotency purge failed (continuing): {purge_err}")
+
         # ── Build catalog-level factory defaults ─────────────────────────────
         catalog_factory_defaults = {}
         if getattr(catalog, 'catalog_factory', None):
@@ -791,6 +834,13 @@ class WebScrapingService:
                 except Exception as canon_err:
                     self.logger.warning(f"   ⚠️ Canonicalization failed (scrape), continuing: {canon_err}")
 
+                # Session linkage lives in metadata + import_batch_id. The
+                # products table has NO scrape_session_id / source_url /
+                # source_reference columns — writing them made the INSERT fail
+                # outright (PGRST204), so no scraped product was ever persisted.
+                base_meta['scrape_session_id'] = session_id
+                base_meta['source_url'] = source_url
+
                 # Prepare product data
                 product_data = {
                     "workspace_id": workspace_id,
@@ -802,9 +852,6 @@ class WebScrapingService:
                     "source_type": "web_scraping",
                     "source_job_id": job_id,
                     "import_batch_id": f"scraping_{session_id}",
-                    "scrape_session_id": session_id,
-                    "source_url": source_url,
-                    "source_reference": session_id,
                     "confidence_score": product.confidence,
                     "created_at": datetime.utcnow().isoformat(),
                     "updated_at": datetime.utcnow().isoformat()
@@ -1356,23 +1403,22 @@ class WebScrapingService:
             if categories is None:
                 categories = ["products"]
 
-            # Create background job record
+            # Create background job record.
+            # NOTE: background_jobs has NO `payload` or `priority` columns —
+            # including them makes the INSERT fail outright (the row is never
+            # created and create_background_job raises). Everything that isn't a
+            # real column lives under `metadata`.
             job_data = {
                 'id': job_id,
                 'job_type': 'web_scraping_processing',
                 'status': JobStatus.PENDING.value,
                 'progress': 0,
-                'priority': priority,
-                'payload': {
-                    'session_id': session_id,
-                    'workspace_id': workspace_id,
-                    'categories': categories,
-                    'model': self.model
-                },
                 'metadata': {
                     'session_id': session_id,
                     'workspace_id': workspace_id,
-                    'categories': categories
+                    'categories': categories,
+                    'priority': priority,
+                    'model': self.model,
                 },
                 'created_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()

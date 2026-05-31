@@ -216,12 +216,12 @@ async def process_products_parallel(
                         metrics['images'] += product_result.images_processed
                         metrics['relationships'] += product_result.relationships_created
                         metrics['clip_embeddings'] += product_result.clip_embeddings_generated
-                        _stats_snapshot = {
-                            'chunks_created': product_result.chunks_created,
-                            'images_extracted': product_result.images_processed,
-                            'clip_embeddings': product_result.clip_embeddings_generated,
-                            'products_created': 1,
-                        }
+                        # Only products_created is rolled up here. chunks/images/
+                        # clip_embeddings are already added to the tracker INSIDE
+                        # process_single_product (Stage 2 + Stage 3). Re-adding
+                        # them here double-counted every chunk/image/embedding in
+                        # the job-row totals.
+                        _stats_snapshot = {'products_created': 1}
                         logger_instance.info(f"✅ Product {product_index}/{total_products} completed: {product.name}")
                     else:
                         metrics['failed'] += 1
@@ -238,9 +238,6 @@ async def process_products_parallel(
                 # DB writes — outside the lock.
                 if _stats_snapshot is not None:
                     await tracker.update_database_stats(
-                        chunks_created=_stats_snapshot['chunks_created'],
-                        images_extracted=_stats_snapshot['images_extracted'],
-                        clip_embeddings=_stats_snapshot['clip_embeddings'],
                         products_created=_stats_snapshot['products_created'],
                         sync_to_db=True,
                     )
@@ -460,11 +457,10 @@ async def _process_products_sequential(
                 result.total_relationships_created += product_result.relationships_created
                 result.total_clip_embeddings += product_result.clip_embeddings_generated
 
-                # ProgressTracker.update_database_stats() expects `images_extracted`.
+                # Only products_created is rolled up here — chunks/images/
+                # clip_embeddings are already counted inside process_single_product
+                # (Stage 2 + Stage 3). Re-adding them double-counted the totals.
                 await tracker.update_database_stats(
-                    chunks_created=product_result.chunks_created,
-                    images_extracted=product_result.images_processed,
-                    clip_embeddings=product_result.clip_embeddings_generated,
                     products_created=1,
                     sync_to_db=True
                 )

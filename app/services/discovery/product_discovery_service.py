@@ -2039,6 +2039,12 @@ class ProductDiscoveryService:
         BATCH_SIZE = 100000  # 100K chars per batch
         MIN_CHARS_BEFORE_EARLY_STOP = 200000  # Process at least 200K chars before allowing early stop
         CONSECUTIVE_EMPTY_BATCHES_TO_STOP = 2  # Require 2 consecutive empty batches
+        # Hard ceiling. The early-stop above terminates normal catalogs cheaply
+        # (2 empty batches). This cap only bites when products keep appearing past
+        # MAX_BATCHES*BATCH_SIZE chars — i.e. a genuinely huge feed — in which case
+        # we would otherwise SILENTLY drop every product past the cutoff. Raised
+        # from 10 (1M) to 50 (5M) and made loud so truncation is visible, not silent.
+        MAX_BATCHES = 50  # 5M chars
 
         all_products = []
         all_certificates = []
@@ -2104,9 +2110,23 @@ class ProductDiscoveryService:
                 self.logger.info(f"   🛑 EARLY STOP: {consecutive_empty_batches} consecutive empty batches after {chars_processed:,} chars, stopping discovery")
                 break
 
-            # Safety limit: Max 10 batches (1M chars)
-            if batch_num >= 10:
-                self.logger.warning(f"   ⚠️ Reached max batch limit (10 batches = 1M chars), stopping")
+            # Safety ceiling. If we hit this WHILE still finding products, the
+            # remaining text is being dropped — surface it loudly (ERROR + Sentry)
+            # instead of a silent warning, because it means incomplete coverage.
+            if batch_num >= MAX_BATCHES and offset < len(pdf_text):
+                truncated_chars = len(pdf_text) - offset
+                warn_msg = (
+                    f"Product discovery hit MAX_BATCHES ({MAX_BATCHES} = "
+                    f"{MAX_BATCHES * BATCH_SIZE:,} chars) with {truncated_chars:,} chars "
+                    f"of source text UNPROCESSED (job_id={job_id}). Products in the "
+                    f"remaining text were NOT discovered — coverage is incomplete."
+                )
+                self.logger.error(f"   🛑 {warn_msg}")
+                try:
+                    import sentry_sdk
+                    sentry_sdk.capture_message(warn_msg, level="error")
+                except Exception:
+                    pass
                 break
 
         # Create final catalog
