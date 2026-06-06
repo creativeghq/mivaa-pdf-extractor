@@ -174,7 +174,18 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             workspace_context = await self._extract_workspace_context(claims)
             if not workspace_context:
                 return self._forbidden_response("Invalid workspace context")
-            
+
+            # #194: honor an explicit X-Workspace-Id header (the app's active workspace),
+            # but ONLY when the user is actually a member of it — otherwise keep the
+            # token/default. No header → behaviour unchanged (backward compatible).
+            try:
+                requested_ws = request.headers.get("X-Workspace-Id")
+                if requested_ws and str(requested_ws) != str(workspace_context.workspace_id):
+                    if await self._validate_workspace_access(str(claims.get("sub")), str(requested_ws)):
+                        workspace_context.workspace_id = str(requested_ws)
+            except Exception as e:
+                logger.warning(f"X-Workspace-Id override skipped: {e}")
+
             # Add authentication context to request state (ensure all values are JSON serializable)
             request.state.auth_user_id = str(claims.get("sub"))
             request.state.workspace_id = str(workspace_context.workspace_id)
