@@ -14,6 +14,9 @@ from pydantic import BaseModel, Field
 from app.services.products.product_creation_service import ProductCreationService
 from app.services.core.supabase_client import SupabaseClient
 from app.schemas.api_responses import ServiceHealthResponse
+from app.services.integrations.data_import_service import DataImportService
+from app.dependencies import get_workspace_context
+from app.middleware.jwt_auth import WorkspaceContext
 
 logger = logging.getLogger(__name__)
 
@@ -444,6 +447,112 @@ async def batch_categorize_products(request: BatchCategorizeRequest) -> BatchCat
     except Exception as e:
         logger.error(f"Batch categorization failed: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Dealer / supplier "Add Product" (#174) — manual single-product create
+# ============================================================================
+
+class ManualImageRef(BaseModel):
+    """An image the dealer already uploaded to storage (generation-images)."""
+    storage_url: str
+    storage_path: Optional[str] = None
+    filename: Optional[str] = None
+    content_type: Optional[str] = None
+
+
+class ManualProductRequest(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    material_category: Optional[str] = None
+    supply_mode: str = Field(default="platform_sold")
+    price: Optional[float] = None
+    currency: str = "EUR"
+    unit: Optional[str] = None
+    dimensions: Optional[str] = None
+    external_sku: Optional[str] = None
+    # Dynamic descriptive facets (color, finish, material, available_colors, …) — free
+    # form; canonicalized + embedded by the shared core just like catalog ingestion.
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    images: List[ManualImageRef] = Field(default_factory=list)
+
+
+@router.post("/create-manual")
+async def create_manual_product(
+    request: ManualProductRequest,
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+) -> Dict[str, Any]:
+    """
+    Dealer/supplier "Add Product" — creates ONE product in the caller's workspace via the
+    SAME ingest core as XML import (facet canonicalization → Voyage text_embedding_1024 →
+    full image suite). Attributed to the dealer through factory_name = their business name.
+    Price + supply_mode seed the marketplace cascade (product_prices on the dealer's row).
+    """
+    svc = DataImportService()
+    ws = ctx.workspace_id
+
+    # Attribute the product to the dealer through the existing factory meta field.
+    factory_name = None
+    try:
+        fs = svc.supabase.table('finance_settings').select('business_name') \
+            .eq('workspace_id', ws).limit(1).execute()
+        if fs and fs.data:
+            factory_name = fs.data[0].get('business_name')
+    except Exception:
+        factory_name = None
+
+    meta = dict(request.metadata or {})
+    if request.unit:
+        meta['unit'] = request.unit
+
+    payload: Dict[str, Any] = {
+        'name': request.name,
+        'description': request.description or '',
+        'material_category': request.material_category,
+        'factory_name': factory_name,
+        'factory_group_name': factory_name,
+        'price': request.price,
+        'dimensions': request.dimensions,
+        'size': meta.get('size'),
+        'external_sku': request.external_sku,
+        'metadata': meta,
+    }
+    # Promote common descriptive facets the core reads explicitly at top level.
+    for k in ('color', 'colors', 'designer', 'collection', 'finish', 'material'):
+        if k in meta:
+            payload[k] = meta[k]
+    if request.images:
+        payload['downloaded_images'] = [
+            {'success': True, 'storage_url': im.storage_url, 'storage_path': im.storage_path,
+             'filename': im.filename, 'content_type': im.content_type, 'index': i}
+            for i, im in enumerate(request.images)
+        ]
+
+    try:
+        product_id = await svc.create_product_from_payload(ws, payload, source='dealer_manual')
+    except Exception as e:
+        logger.error(f"create_manual_product failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    if not product_id:
+        raise HTTPException(status_code=500, detail="Product creation failed")
+
+    # supply_mode flag + cascade base price on the dealer's own product_prices row.
+    try:
+        svc.supabase.table('products').update({'supply_mode': request.supply_mode}) \
+            .eq('id', product_id).execute()
+    except Exception as e:
+        logger.warning(f"supply_mode set failed for {product_id}: {e}")
+    if request.price is not None:
+        try:
+            svc.supabase.table('product_prices').upsert({
+                'workspace_id': ws, 'product_id': product_id,
+                'list_price': request.price, 'currency': request.currency,
+                'unit': request.unit,
+            }, on_conflict='workspace_id,product_id').execute()
+        except Exception as e:
+            logger.warning(f"product_prices upsert failed for {product_id}: {e}")
+
+    return {'success': True, 'product_id': product_id}
 
 
 @router.get("/health", response_model=ServiceHealthResponse)

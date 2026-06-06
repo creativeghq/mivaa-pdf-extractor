@@ -535,18 +535,31 @@ class DataImportService:
         workspace_id: str,
         product_data: Dict[str, Any]
     ) -> None:
+        """Thin XML-import adapter over the shared single-product create core."""
+        await self.create_product_from_payload(
+            workspace_id, product_data, source='xml_import', job_id=job_id,
+        )
+
+    async def create_product_from_payload(
+        self,
+        workspace_id: str,
+        product_data: Dict[str, Any],
+        *,
+        source: str = 'xml_import',
+        job_id: Optional[str] = None,
+        status: str = 'draft',
+    ) -> Optional[str]:
         """
-        Create product directly in database (XML imports don't need full PDF pipeline).
+        Shared single-product create core — the ONE place that turns a structured
+        payload into a searchable product row: canonical metadata → facet
+        canonicalization → Voyage text_embedding_1024 → image linking → optional
+        chunking. Called by the XML importer and the dealer "Add Product" flow (and,
+        as a follow-up, PDF Stage 4) so the embedding/canonicalization standard never
+        drifts across ingest paths.
 
-        For XML imports, we create products directly with:
-        - Product metadata from field mappings
-        - Downloaded images linked to product
-        - Text content for chunking/embeddings (async)
-
-        Args:
-            job_id: Import job ID
-            workspace_id: Workspace ID
-            product_data: Normalized product data
+        source: provenance tag ('xml_import' | 'dealer_manual' | …) — drives the
+                extracted_from / source_type / created_from_type / import_* fields.
+        Returns the created/updated product id (or None on failure).
         """
         try:
             product_name = product_data.get('name', 'Unknown Product')
@@ -575,7 +588,7 @@ class DataImportService:
 
             mat_cat = product_data.get('material_category')
             product_metadata = {
-                "extracted_from": "xml_import",
+                "extracted_from": source,
                 "import_job_id": job_id,
                 "extraction_date": datetime.utcnow().isoformat(),
                 "workspace_id": workspace_id,
@@ -610,22 +623,22 @@ class DataImportService:
                     "price": product_data.get('price'),
                     "dimensions": product_data.get('dimensions'),
                     "size": product_data.get('size'),
-                    "import_source": "xml_import",
+                    "import_source": source,
                     "import_job_id": job_id,
                     "auto_generated": True,
                     "generation_timestamp": datetime.utcnow().isoformat()
                 },
                 "metadata": product_metadata,
-                "status": "draft",
-                "created_from_type": "xml_import",
+                "status": status,
+                "created_from_type": source,
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }
 
             # Add source tracking fields
-            product_record['source_type'] = 'xml_import'
+            product_record['source_type'] = source
             product_record['source_job_id'] = job_id
-            product_record['import_batch_id'] = f"xml_{job_id}"
+            product_record['import_batch_id'] = f"{source}_{job_id}" if job_id else source
 
             # SKU-based dedup: if the XML provides a product_id/sku, treat
             # (workspace_id, external_sku) as the unique key. Re-imports of the
@@ -662,7 +675,7 @@ class DataImportService:
             # values without re-paying translation/embedding cost.
             try:
                 canonical = await canonicalize_product_attributes(
-                    self.db, product_metadata, source='xml_import',
+                    self.db, product_metadata, source=source,
                     product_id=existing_id if existing_id else None,
                 )
                 product_record['attributes'] = canonical.attributes
@@ -756,6 +769,8 @@ class DataImportService:
             # This happens in background - product is already created
             if product_data.get('description'):
                 await self._queue_text_processing(product_id, product_data, workspace_id, job_id)
+
+            return product_id
 
         except Exception as e:
             logger.error(f"❌ Failed to create product {product_data.get('name')}: {e}")
