@@ -7,6 +7,7 @@ including the two-stage classification system for creating products from PDF chu
 
 import logging
 import asyncio
+from datetime import datetime
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -475,6 +476,21 @@ class ManualProductRequest(BaseModel):
     # form; canonicalized + embedded by the shared core just like catalog ingestion.
     metadata: Dict[str, Any] = Field(default_factory=dict)
     images: List[ManualImageRef] = Field(default_factory=list)
+    # Optional first-class product fields carried by the admin product modal. The shared
+    # ingest core doesn't model these, so they're applied as a post-create passthrough
+    # update (below) — keeps the embedding/canonicalization core untouched while letting
+    # the manual modal stop doing a bare, un-embedded insert.
+    long_description: Optional[str] = None
+    status: Optional[str] = None
+    cost: Optional[float] = None
+    cost_currency: Optional[str] = None
+    category: Optional[str] = None
+    properties: Optional[Dict[str, Any]] = None
+    specifications: Optional[Dict[str, Any]] = None
+    # Provenance tag → created_from_type / source_type. Defaults to 'dealer_manual'
+    # (marketplace dealer add); the admin KB modal passes 'manual' so its products
+    # keep the same created_from_type label they had before this path was embedded.
+    source: Optional[str] = None
 
 
 @router.post("/create-manual")
@@ -529,12 +545,45 @@ async def create_manual_product(
         ]
 
     try:
-        product_id = await svc.create_product_from_payload(ws, payload, source='dealer_manual')
+        product_id = await svc.create_product_from_payload(
+            ws, payload, source=request.source or 'dealer_manual',
+            status=request.status or 'draft',
+        )
     except Exception as e:
         logger.error(f"create_manual_product failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
     if not product_id:
         raise HTTPException(status_code=500, detail="Product creation failed")
+
+    # Passthrough for first-class fields the admin product modal carries that the shared
+    # ingest core doesn't model. Applied as one update so the embedding/canonicalization
+    # core stays a single chokepoint. properties is MERGED (core seeds import-provenance
+    # keys we don't want to clobber); the rest are set when provided.
+    passthrough: Dict[str, Any] = {}
+    if request.category is not None:
+        passthrough['category'] = request.category
+    if request.long_description is not None:
+        passthrough['long_description'] = request.long_description
+    if request.cost is not None:
+        passthrough['cost'] = request.cost
+        passthrough['cost_currency'] = request.cost_currency or 'EUR'
+        passthrough['cost_source'] = 'manual'
+        passthrough['cost_updated_at'] = datetime.utcnow().isoformat()
+    if request.specifications:
+        passthrough['specifications'] = request.specifications
+    if request.properties:
+        try:
+            cur = svc.supabase.table('products').select('properties') \
+                .eq('id', product_id).limit(1).execute()
+            base = (cur.data[0].get('properties') if cur and cur.data else None) or {}
+        except Exception:
+            base = {}
+        passthrough['properties'] = {**base, **request.properties}
+    if passthrough:
+        try:
+            svc.supabase.table('products').update(passthrough).eq('id', product_id).execute()
+        except Exception as e:
+            logger.warning(f"manual product passthrough update failed for {product_id}: {e}")
 
     # supply_mode flag + cascade base price on the dealer's own product_prices row.
     try:
