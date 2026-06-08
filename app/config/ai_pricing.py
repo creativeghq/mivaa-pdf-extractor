@@ -294,19 +294,12 @@ class AIPricingConfig:
     # ==========================================================================
 
     EXTERNAL_SERVICE_PRICING = {
-        "twilio-sms": {
-            "cost_per_unit": Decimal("0.0079"),
-            "unit": "message",
-            "last_verified": "2026-02-14",
-            "source": "https://www.twilio.com/en-us/sms/pricing/us",
-            "note": "US domestic SMS, varies by country"
-        },
-        "twilio-whatsapp": {
+        "zernio-whatsapp": {
             "cost_per_unit": Decimal("0.005"),
             "unit": "message",
-            "last_verified": "2026-02-14",
-            "source": "https://www.twilio.com/en-us/whatsapp/pricing",
-            "note": "WhatsApp utility conversation, varies by template type"
+            "last_verified": "2026-06-08",
+            "source": "https://zernio.com/whatsapp",
+            "note": "WhatsApp conversation, Meta pass-through pricing via Zernio (varies by template category/country)"
         },
         "apollo-enrich": {
             "cost_per_unit": Decimal("0.05"),

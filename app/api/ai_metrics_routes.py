@@ -397,7 +397,7 @@ async def get_ai_metrics_summary(
 @router.get(
     "/external-service-usage",
     summary="Get external service usage and credit consumption",
-    description="Returns usage, cost, and credit data for external services (Twilio, Apollo, Hunter, ZeroBounce, Firecrawl) from ai_usage_logs.",
+    description="Returns usage, cost, and credit data for external services (Zernio WhatsApp, Apollo, Hunter, ZeroBounce, Firecrawl) from ai_usage_logs.",
 )
 async def get_external_service_usage(
     time_period: str = Query("24h", description="Time period: 1h, 24h, 7d, 30d, all"),
@@ -421,7 +421,7 @@ async def get_external_service_usage(
         # column on ai_usage_logs — it lives inside `metadata` JSONB written
         # by AICallLogger. Filter post-hoc in Python after pulling the
         # metadata column.
-        ext_providers = {'twilio', 'apollo', 'hunter', 'zerobounce', 'firecrawl'}
+        ext_providers = {'zernio', 'apollo', 'hunter', 'zerobounce', 'firecrawl'}
 
         query = supabase.client.table("ai_usage_logs").select(
             "id, user_id, operation_type, model_name, "
