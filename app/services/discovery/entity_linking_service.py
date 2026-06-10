@@ -90,7 +90,16 @@ class EntityLinkingService:
 
             if not images_response.data:
                 self.logger.warning(f"No images found for document {document_id}")
-                return 0
+                # Must match the stats-dict shape — callers subscript the
+                # result ('linked_count' etc.); returning a bare 0 here made
+                # image-less documents blow up the whole linking pass.
+                return {
+                    'linked_count': 0,
+                    'total_images': 0,
+                    'vision_guided_links': 0,
+                    'fallback_links': 0,
+                    'vision_stats': {}
+                }
 
             # Get all products with page ranges
             products_response = self.supabase.client.table('products')\

@@ -104,20 +104,34 @@ class EndpointController:
         # scale_all_to_zero queries DB-side for current 'processing' jobs as
         # the source of truth (in-memory count would be lost across worker
         # restarts), but in-memory is the fast path.
+        #
+        # SINGLE-POD CONSTRAINT: this registry is in-process memory. With one
+        # MIVAA pod (current deployment) that's correct; if the backend ever
+        # runs >1 worker process, each process has its own set and
+        # scale-to-zero coordination silently breaks — the DB-side count in
+        # _get_active_job_count is the only cross-process signal. Move this
+        # to a DB/Redis registry before scaling out.
+        #
+        # threading.Lock (not asyncio.Lock): these methods are sync and are
+        # called from both sync and async contexts. The original asyncio.Lock
+        # was created but never acquired (incomplete audit fix #19).
+        import threading
         self._active_jobs: set = set()
-        self._active_jobs_lock = asyncio.Lock()
+        self._active_jobs_lock = threading.Lock()
 
     def register_job_start(self, job_id: str) -> None:
         """Register a job as active. Suppresses scale-to-zero from other jobs."""
         try:
-            self._active_jobs.add(job_id)
+            with self._active_jobs_lock:
+                self._active_jobs.add(job_id)
         except Exception:
             pass
 
     def register_job_done(self, job_id: str) -> None:
         """Unregister a job. The next scale-to-zero call may now proceed."""
         try:
-            self._active_jobs.discard(job_id)
+            with self._active_jobs_lock:
+                self._active_jobs.discard(job_id)
         except Exception:
             pass
 
@@ -129,7 +143,8 @@ class EndpointController:
         fall back to in-memory only. In-memory may undercount across worker
         restarts but never overcounts.
         """
-        in_mem = len(self._active_jobs)
+        with self._active_jobs_lock:
+            in_mem = len(self._active_jobs)
         try:
             from app.services.core.supabase_client import get_supabase_client
             sb = get_supabase_client()
@@ -141,7 +156,7 @@ class EndpointController:
                 .gte("last_heartbeat", cutoff).execute()
             db_count = int(resp.count or 0)
             # Subtract one if we're called from inside the only active job.
-            return max(in_mem, db_count - len(self._active_jobs))
+            return max(in_mem, db_count - in_mem)
         except Exception:
             return in_mem
 

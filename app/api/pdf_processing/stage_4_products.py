@@ -340,6 +340,13 @@ async def create_single_product(
     """
     logger.info(f"🏭 Creating product in database: {product.name}")
 
+    # Fail-closed default (audit gap C): if the embedding block never runs,
+    # the product has no text_embedding_1024 and MUST surface as failed so
+    # the orchestrator marks it for re-embedding. The previous
+    # `'embedding_failed' in locals()` guard at the return silently mapped
+    # "never attempted" to success.
+    embedding_failed = True
+
     def is_not_found(val):
         if not val:
             return True
@@ -543,19 +550,22 @@ async def create_single_product(
             timeout=30.0,
         )
     except _asyncio.TimeoutError:
-        logger.warning(
+        logger.error(
             f"   ⏱️ Facet canonicalization exceeded 30s for {product.name} — "
-            f"degrading to empty canonical attributes. Voyage/HF outage suspected."
+            f"degrading to empty canonical attributes (raw values preserved). "
+            f"Voyage/HF outage suspected."
         )
-        # CORRECTION: attributes_raw is typed `Dict[str, List[str]]` (facet ->
-        # raw values seen). Splatting `metadata.items()` produces arbitrary
-        # scalars/lists/dicts that break downstream consumers. Use the
-        # empty-dict pattern matching the canonicalizer's own exception
-        # handler at facet_canonicalizer.py:466 (and its early-return at L114).
+        # Degrade to empty CANONICAL attributes but keep the lossless raw map:
+        # attributes_raw is the replay contract — with it, a later
+        # re-canonicalization pass can rebuild attributes without re-ingesting;
+        # without it the product is permanently unfacetable.
+        # collect_raw_attributes applies the same whitelist as the
+        # canonicalizer and returns the proper Dict[str, List[str]] shape.
         from app.services.facets import CanonicalizedAttributes
+        from app.services.facets.facet_canonicalizer import collect_raw_attributes
         canonical = CanonicalizedAttributes(
             attributes={},
-            attributes_raw={},
+            attributes_raw=collect_raw_attributes(metadata),
             resolutions=[],
         )
     if canonical.resolutions:
@@ -754,7 +764,7 @@ async def create_single_product(
                 f"   ⚠️ Immediate image-product association failed (Stage 4.7 will retry): {assoc_err}"
             )
 
-        return {'product_id': product_id, 'embedding_failed': embedding_failed if 'embedding_failed' in locals() else False}
+        return {'product_id': product_id, 'embedding_failed': embedding_failed}
     else:
         raise Exception(f"Failed to create product {product.name} in database")
 

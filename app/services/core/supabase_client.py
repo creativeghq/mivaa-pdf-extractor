@@ -464,7 +464,11 @@ class SupabaseClient:
                         'confidence': ai_classification.get('confidence'),
                         'reason': ai_classification.get('reason'),
                         'model': ai_classification.get('model'),
-                        'classification': ai_classification.get('classification')
+                        'classification': ai_classification.get('classification'),
+                        # Quarantine marker — set when the classifier API
+                        # failed and the image was persisted WITHOUT
+                        # embeddings. Re-classification backfills target this.
+                        'classification_pending': ai_classification.get('classification_pending', False)
                     } if ai_classification else None,
                     # Store vision-guided metadata
                     'vision_guided': {

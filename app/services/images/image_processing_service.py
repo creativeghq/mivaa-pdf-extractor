@@ -678,17 +678,25 @@ class ImageProcessingService:
                     failed_count += 1
                     continue
 
-                # On classification failure, default to "material" so we don't lose images
-                # to transient API errors.
+                # On classification failure, QUARANTINE instead of fail-open.
+                # The old behavior treated API errors as is_material=True so
+                # during any Anthropic outage every logo/header/border got
+                # full SLIG + Voyage embeddings and permanently polluted
+                # visual search. Now: keep the image in the pipeline so its
+                # document_images row IS persisted (dropping it would mean
+                # total loss with no retry), but mark classification_pending
+                # — the save path skips vision analysis + embeddings for
+                # quarantined images, and a re-classification backfill can
+                # target metadata->ai_classification->>classification_pending.
                 if 'error' in classification or '_failed' in classification.get('model', '') or '_empty_response' in classification.get('model', ''):
                     logger.warning(f"   ⚠️ Classification uncertain for {img_data.get('filename')}: {classification.get('reason')}")
-                    logger.warning(f"   → Treating as MATERIAL (safe default) to ensure CLIP embeddings are generated")
-                    # Override classification to treat as material with low confidence
+                    logger.warning(f"   → Quarantining (classification_pending) — persisted WITHOUT embeddings, eligible for re-classification")
                     img_data['ai_classification'] = {
-                        'is_material': True,
-                        'confidence': 0.3,  # Low confidence to indicate uncertainty
-                        'reason': f"Fallback: {classification.get('reason', 'Classification failed')}",
-                        'model': 'fallback_material',
+                        'is_material': True,  # keep in material bucket so the row persists
+                        'classification_pending': True,
+                        'confidence': 0.0,
+                        'reason': f"Quarantined: {classification.get('reason', 'Classification failed')}",
+                        'model': 'classification_pending',
                         'original_error': classification.get('reason', 'Unknown')
                     }
                     material_images.append(img_data)
@@ -1419,6 +1427,27 @@ class ImageProcessingService:
 
                 img_data['id'] = image_id
                 logger.info(f"   ✅ Saved image {idx + 1}/{total} to DB: {image_id}")
+
+                # Quarantined images (classifier API failed) are persisted but
+                # get NO vision analysis / embeddings — an unclassified image
+                # may be a logo or page border, and embedding it would pollute
+                # visual search. The classification_pending marker in the row's
+                # metadata makes it targetable by a re-classification backfill.
+                if (img_data.get('ai_classification') or {}).get('classification_pending'):
+                    logger.info(
+                        f"   ⏸️ Image {idx + 1}/{total} is classification_pending "
+                        f"(quarantined) — skipping vision analysis + embeddings"
+                    )
+                    return (True, False, "classification_pending", {
+                        'image_id': image_id,
+                        'visual_slig': False,
+                        'color_slig': False,
+                        'texture_slig': False,
+                        'style_slig': False,
+                        'material_slig': False,
+                        'understanding': False,
+                        'vision_analysis_source': VisionProvider.SKIPPED.value,
+                    })
 
                 # Generate CLIP embeddings
                 image_path = img_data.get('path')

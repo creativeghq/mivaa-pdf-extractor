@@ -442,6 +442,32 @@ async def resolve_query_term(
     return norm
 
 
+def collect_raw_attributes(raw_metadata: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Build the attributes_raw map from metadata WITHOUT any embedding/RPC.
+
+    Pure-local fallback for ingest paths when canonicalization times out or
+    errors: products.attributes_raw is the lossless contract that lets a later
+    re-canonicalization pass replay — losing it means the product is
+    permanently unfacetable without a full re-ingest. Mirrors
+    FacetCanonicalizer._collect_pending's whitelist rules.
+    """
+    raw_map: Dict[str, List[str]] = {}
+    for key, value in raw_metadata.items():
+        if not is_canonicalizable(key) or value is None:
+            continue
+        raw_values = value if isinstance(value, list) else [value]
+        for rv in raw_values:
+            if rv is None:
+                continue
+            raw_str = str(rv).strip()
+            if not raw_str:
+                continue
+            bucket = raw_map.setdefault(key, [])
+            if raw_str not in bucket:
+                bucket.append(raw_str)
+    return raw_map
+
+
 async def canonicalize_product_attributes(
     supabase: Any,
     raw_metadata: Dict[str, Any],
@@ -451,8 +477,9 @@ async def canonicalize_product_attributes(
     embedding_service: Optional[Any] = None,
 ) -> CanonicalizedAttributes:
     """One-shot helper for ingest paths. Instantiates RealEmbeddingsService if
-    one wasn't supplied. Failures degrade gracefully — returns an empty result
-    rather than blocking the product insert."""
+    one wasn't supplied. Failures degrade gracefully — returns a result with
+    empty canonical attributes but the LOSSLESS raw map preserved, so a later
+    re-canonicalization pass can replay without re-ingesting."""
     try:
         if embedding_service is None:
             from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
@@ -462,5 +489,9 @@ async def canonicalize_product_attributes(
             raw_metadata, source=source, product_id=product_id,
         )
     except Exception as e:
-        logger.warning(f"canonicalize_product_attributes failed (source={source}): {e}")
-        return CanonicalizedAttributes(attributes={}, attributes_raw={}, resolutions=[])
+        logger.error(f"canonicalize_product_attributes failed (source={source}): {e}")
+        return CanonicalizedAttributes(
+            attributes={},
+            attributes_raw=collect_raw_attributes(raw_metadata),
+            resolutions=[],
+        )

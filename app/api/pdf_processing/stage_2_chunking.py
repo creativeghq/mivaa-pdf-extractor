@@ -225,8 +225,21 @@ async def process_product_chunking(
                 layout_analysis = analyze_pdf_layout(used_temp_path)
 
             total_chars = 0
+            failed_pages: list = []
             for phys_page in chunkable_pages_sorted:
-                page_text, _ = get_physical_page_text(doc, layout_analysis, phys_page)
+                # Isolate per-page failures — previously a single corrupt/
+                # malformed page threw to the outer except, which zeroed
+                # page_chunks_data and silently lost the product's ENTIRE
+                # text even though every other page extracted fine.
+                try:
+                    page_text, _ = get_physical_page_text(doc, layout_analysis, phys_page)
+                except Exception as page_err:
+                    failed_pages.append(phys_page)
+                    logger.warning(
+                        f"   ⚠️ Text extraction failed for physical page {phys_page} "
+                        f"— skipping page, continuing with the rest: {page_err}"
+                    )
+                    continue
                 if not page_text or not page_text.strip():
                     continue
                 # chunk_pages() expects 0-indexed page metadata; it converts back
@@ -238,6 +251,11 @@ async def process_product_chunking(
                 total_chars += len(page_text)
 
             doc.close()
+            if failed_pages:
+                logger.error(
+                    f"   ❌ {len(failed_pages)} page(s) failed text extraction and were "
+                    f"skipped: {failed_pages}"
+                )
             logger.info(f"   ✅ Extracted {total_chars} characters across {len(page_chunks_data)} non-empty pages")
         finally:
             if created_temp and used_temp_path and os.path.exists(used_temp_path):

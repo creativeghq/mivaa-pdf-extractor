@@ -537,10 +537,18 @@ async def _load_cached_layout_regions(
         for elem in elements:
             try:
                 region_type = elem.get('region_type', 'TEXT')
-                # UNCLASSIFIED is an internal merge-service marker for
-                # orphan text fragments; downstream YOLO consumers only
-                # know the canonical 5 types. Skip orphans here.
-                if region_type not in ("TEXT", "IMAGE", "TABLE", "TITLE", "CAPTION"):
+                # UNCLASSIFIED is the merge-service marker for orphan OCR
+                # fragments that didn't spatially match any YOLO region —
+                # created precisely so their text is never lost. Downstream
+                # consumers only know the canonical 5 types, so surface the
+                # orphans as TEXT (they carry text_content + bbox) instead
+                # of dropping them, which silently lost that text on every
+                # cache read. Anything else unknown is still skipped.
+                if region_type == "UNCLASSIFIED":
+                    if not (elem.get('text_content') or '').strip():
+                        continue
+                    region_type = "TEXT"
+                elif region_type not in ("TEXT", "IMAGE", "TABLE", "TITLE", "CAPTION"):
                     continue
                 bbox_dict = elem.get('bbox') or {}
                 width = float(bbox_dict.get('width', 1)) or 1.0

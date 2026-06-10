@@ -8,7 +8,10 @@ Author: Material Kai Vision Platform
 Created: 2025-10-27
 """
 
+import hashlib
 import logging
+import threading
+from collections import OrderedDict, deque
 from typing import Dict, Any, Optional
 from datetime import datetime
 from decimal import Decimal
@@ -20,6 +23,21 @@ from app.utils.retry_helper import async_retry_with_backoff
 from app.utils.json_encoder import json_dumps
 
 logger = logging.getLogger(__name__)
+
+# In-process idempotency guard. The @async_retry_with_backoff decorator on
+# log_ai_call re-runs the WHOLE method when the insert .execute() times out
+# client-side — but the row may have committed server-side, double-counting
+# the cost in both ai_call_logs and ai_usage_logs. Keys are recorded only
+# after a confirmed-successful insert, so a genuine failure still retries.
+_recent_log_keys: "OrderedDict[str, None]" = OrderedDict()
+_RECENT_LOG_KEYS_MAX = 512
+
+# Dead-letter buffer for ai_usage_logs mirror rows that failed both insert
+# attempts. Flushed opportunistically on the next successful log call so a
+# transient DB blip no longer permanently loses billing rows. Bounded — a
+# sustained outage drops the oldest rows rather than growing unbounded.
+_dead_letter_usage_rows: deque = deque(maxlen=200)
+_dead_letter_lock = threading.Lock()
 
 
 class AICallLogger:
@@ -88,6 +106,18 @@ class AICallLogger:
             bool: True if logged successfully, False otherwise
         """
         try:
+            # Idempotency guard: skip if this exact call was already logged by
+            # an earlier attempt of the retry decorator (insert committed
+            # server-side but the response timed out client-side).
+            idem_key = hashlib.sha1(
+                f"{task}|{model}|{job_id}|{input_tokens}|{output_tokens}|{latency_ms}|{cost}".encode()
+            ).hexdigest()
+            if idem_key in _recent_log_keys:
+                self.logger.info(
+                    f"↩️ Skipping duplicate AI-call log (retry of committed insert): {task}/{model}"
+                )
+                return True
+
             log_entry = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "job_id": job_id,
@@ -105,11 +135,17 @@ class AICallLogger:
                 "response_data": json_dumps(response_data) if response_data else None,  # Use custom encoder
                 "error_message": error_message
             }
-            
+
             # Insert into database
             result = self.supabase.client.table("ai_call_logs").insert(log_entry).execute()
             
             if result.data:
+                # Record idempotency key only AFTER confirmed success, so a
+                # genuinely failed insert still retries via the decorator.
+                _recent_log_keys[idem_key] = None
+                while len(_recent_log_keys) > _RECENT_LOG_KEYS_MAX:
+                    _recent_log_keys.popitem(last=False)
+
                 self.logger.info(
                     f"✅ AI call logged: {task} | {model} | "
                     f"confidence={confidence_score:.2f} | action={action} | "
@@ -155,11 +191,18 @@ class AICallLogger:
                         last_mirror_err = usage_err
                         mirror_attempt += 1
                 if last_mirror_err is not None:
+                    # Buffer for retry instead of permanently dropping the
+                    # billing row — flushed by _flush_dead_letter_rows on the
+                    # next successful log call.
+                    with _dead_letter_lock:
+                        _dead_letter_usage_rows.append(usage_entry)
                     self.logger.error(
-                        f"❌ COST DATA LOST: ai_usage_logs mirror failed 2x for "
+                        f"❌ ai_usage_logs mirror failed 2x for "
                         f"{task}/{model} cost=${cost:.4f}: {last_mirror_err}. "
-                        f"This row will not appear in user-facing cost reports."
+                        f"Row buffered for retry ({len(_dead_letter_usage_rows)} pending)."
                     )
+                else:
+                    self._flush_dead_letter_rows()
 
                 return True
             else:
@@ -171,6 +214,36 @@ class AICallLogger:
             # Don't fail the main operation if logging fails
             return False
     
+    def _flush_dead_letter_rows(self) -> None:
+        """Retry buffered ai_usage_logs rows that failed their original insert.
+
+        Called opportunistically after each successful mirror insert (the DB
+        is demonstrably reachable at that moment). Each row gets one attempt;
+        rows that fail again go back to the front of the buffer. Best-effort —
+        never raises.
+        """
+        try:
+            with _dead_letter_lock:
+                if not _dead_letter_usage_rows:
+                    return
+                pending = list(_dead_letter_usage_rows)
+                _dead_letter_usage_rows.clear()
+            flushed = 0
+            for row in pending:
+                try:
+                    self.supabase.client.table("ai_usage_logs").insert(row).execute()
+                    flushed += 1
+                except Exception:
+                    with _dead_letter_lock:
+                        _dead_letter_usage_rows.append(row)
+            if flushed:
+                self.logger.info(
+                    f"✅ Flushed {flushed}/{len(pending)} buffered ai_usage_logs row(s) "
+                    f"from the cost dead-letter buffer"
+                )
+        except Exception as flush_err:
+            self.logger.warning(f"⚠️ Cost dead-letter flush failed: {flush_err}")
+
     async def log_claude_call(
         self,
         task: str,

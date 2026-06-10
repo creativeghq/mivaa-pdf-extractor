@@ -167,8 +167,33 @@ class EndpointHealthChecker:
 
                     response_time_ms = (time.time() - start_time) * 1000
 
-                    # Accept 200 or 404 (endpoint exists but no /health route)
-                    if response.status_code in [200, 404]:
+                    # 404 alone is NOT proof of health — a paused endpoint,
+                    # revoked token, or wrong URL also 404s on every route.
+                    # When /health doesn't exist, confirm liveness with a
+                    # minimal POST to the base URL: a live custom handler
+                    # answers 200/400/422 (it routed the request), while a
+                    # paused/missing endpoint 404s on POST too.
+                    confirmed = response.status_code == 200
+                    if response.status_code == 404 and not confirmed:
+                        try:
+                            probe = await client.post(
+                                endpoint_url.rstrip('/'),
+                                headers={
+                                    "Authorization": f"Bearer {token}",
+                                    "Content-Type": "application/json",
+                                },
+                                json={"inputs": ""},
+                            )
+                            confirmed = probe.status_code in (200, 400, 422)
+                            if not confirmed:
+                                logger.warning(
+                                    f"⚠️ YOLO /health 404 and POST probe returned "
+                                    f"{probe.status_code} — endpoint paused or URL/token wrong"
+                                )
+                        except Exception as probe_err:
+                            logger.warning(f"⚠️ YOLO 404-confirmation probe failed: {probe_err}")
+
+                    if confirmed:
                         result = HealthCheckResult(
                             endpoint_name="yolo",
                             status=EndpointStatus.HEALTHY,

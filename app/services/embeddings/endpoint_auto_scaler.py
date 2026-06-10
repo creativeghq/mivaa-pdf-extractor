@@ -280,10 +280,10 @@ class EndpointAutoScaler:
             # idle. We only move the ceiling.
             endpoint.update(min_replica=0, max_replica=new_max)
 
-            # Track the effective cap, not the actual replica count — HF
-            # decides actual replicas based on load.
+            # Track the effective cap only — HF decides actual replicas based
+            # on load, so _current_replicas is NOT updated here (the previous
+            # self-assignment was a no-op left over from a refactor).
             self._endpoint_configs[endpoint_name]['max_replica'] = new_max
-            self._current_replicas[endpoint_name] = self._current_replicas.get(endpoint_name, 0)
             logger.info(f"✅ {endpoint_name} cap now {new_max}, min=0 (scale-to-zero preserved)")
             return True
 

@@ -270,14 +270,26 @@ async def process_single_product(
         skip_per_product_yolo = False
         try:
             from app.api.pdf_processing.stage_1_layout_precompute import (
-                get_layout_from_document_cache,
+                get_layout_from_document_cache_with_status,
             )
-            cached = await get_layout_from_document_cache(
+            # Status-aware reader: the plain wrapper drops cached rows with
+            # empty regions, so a legitimately blank page
+            # (cache_status='empty_page') looked like a cache miss and forced
+            # a per-product YOLO re-run for the entire product. A page counts
+            # as covered when Stage 1.5 reached a terminal result for it —
+            # success / yolo_only / empty_page. Retryable failures
+            # (ocr_failed / page_failed) do NOT count as covered.
+            _COVERED_STATUSES = {"success", "yolo_only", "empty_page"}
+            cached_status = await get_layout_from_document_cache_with_status(
                 document_id=document_id,
                 physical_pages=physical_pages,
                 supabase=supabase,
                 logger=logger_instance,
             )
+            cached = {
+                p: v for p, v in (cached_status or {}).items()
+                if v.get("regions") or v.get("cache_status") in _COVERED_STATUSES
+            }
             if cached and all(p in cached for p in physical_pages):
                 logger_instance.info(
                     f"   ⏭️  Doc-level Stage 1.5 cache covers all {len(physical_pages)} "

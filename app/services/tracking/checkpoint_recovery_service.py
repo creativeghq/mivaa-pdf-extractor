@@ -225,18 +225,24 @@ class CheckpointRecoveryService:
                 )
                 # Fall back to legacy two-call pattern so we don't lose the
                 # checkpoint entirely if the new RPC isn't deployed yet.
+                # ORDER MATTERS: append history FIRST, then update
+                # last_checkpoint. A crash between the calls then leaves a
+                # history entry with a slightly stale checkpoint (harmless —
+                # recovery reads the latest history entry), instead of a
+                # checkpoint with no corresponding audit entry, which is the
+                # exact divergence the atomic RPC was built to eliminate.
                 try:
-                    self.supabase_client.client.table(self.jobs_table)\
-                        .update({
-                            "last_checkpoint": {"stage": stage.value, "metadata": metadata or {}, "created_at": now_iso},
-                            "updated_at": now_iso,
-                        }).eq("id", job_id).execute()
                     self.supabase_client.client.rpc(
                         'append_stage_history',
                         {'p_job_id': job_id, 'p_event': {'stage': stage.value, 'status': 'completed',
                                                           'completed_at': now_iso, 'data': data,
                                                           'metadata': metadata or {}}},
                     ).execute()
+                    self.supabase_client.client.table(self.jobs_table)\
+                        .update({
+                            "last_checkpoint": {"stage": stage.value, "metadata": metadata or {}, "created_at": now_iso},
+                            "updated_at": now_iso,
+                        }).eq("id", job_id).execute()
                 except Exception as fallback_err:
                     logger.error(f"Legacy fallback also failed: {fallback_err}")
 
