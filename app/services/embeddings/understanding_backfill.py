@@ -42,13 +42,15 @@ async def _fetch_stale_images(
     Stale = (no embedding) OR (schema_version < current SCHEMA_VERSION) OR
     (embedding_model is not 'voyage-4' — i.e. served by OpenAI fallback).
     """
+    from app.services.embeddings.classification_backfill import is_quarantined
+
     client = get_supabase_client().client
     query = (
         client.table("document_images")
         .select(
             "id, image_url, has_understanding_embedding, "
             "understanding_embedding_model, understanding_schema_version, "
-            "document_id, workspace_id, page_number"
+            "document_id, workspace_id, page_number, metadata"
         )
         .order("id")
         .limit(limit)
@@ -60,6 +62,11 @@ async def _fetch_stale_images(
     rows = response.data or []
     stale = []
     for row in rows:
+        # Quarantined rows (classification_pending) intentionally have NO
+        # embeddings — embedding them here would defeat the quarantine.
+        # The classification backfill re-classifies them first.
+        if is_quarantined(row):
+            continue
         if not row.get("has_understanding_embedding"):
             stale.append(row)
             continue

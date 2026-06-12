@@ -1733,6 +1733,49 @@ async def backfill_understanding_embeddings_endpoint(
     return JSONResponse(content=summary)
 
 
+class ClassificationBackfillRequest(BaseModel):
+    """Request body for the quarantined-image classification backfill.
+
+    Defaults are deliberately small — each material verdict triggers a
+    full Opus vision analysis + SLIG + Voyage embedding pass, so this is
+    the most expensive of the three backfills per image.
+    """
+    batch_size: int = 10
+    max_images: int = 100
+    workspace_id: Optional[str] = None
+
+
+@router.post("/admin/images/classification-backfill")
+async def classification_backfill_endpoint(
+    request: ClassificationBackfillRequest,
+    user: User = Depends(require_admin),
+):
+    """Re-classify quarantined images and embed the confirmed materials.
+
+    Targets document_images with metadata.ai_classification.
+    classification_pending=true — rows persisted WITHOUT embeddings when
+    the classifier API failed during Stage 3 (so an unverified
+    logo/header can't pollute visual search). Per image: re-classify →
+    clear the marker → non-materials stay embedding-free; confirmed
+    materials get the full set (visual SLIG + understanding + 4 aspects).
+
+    A failed re-classification keeps the marker so the next run retries.
+    Bounded by `batch_size` / `max_images`; safe to call repeatedly.
+    Returns scanned/material/non_material/embedded/skipped/failed counts.
+    """
+    from app.services.embeddings.classification_backfill import (
+        backfill_pending_classifications,
+    )
+
+    summary = await backfill_pending_classifications(
+        batch_size=request.batch_size,
+        max_images=request.max_images,
+        workspace_id=request.workspace_id,
+    )
+    logger.info(f"📊 Classification backfill summary: {summary}")
+    return JSONResponse(content=summary)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Per-aspect embedding backfill + per-image rebuild + inspector
 # (post-2026-05-04 — see app.services.embeddings.aspect_backfill)

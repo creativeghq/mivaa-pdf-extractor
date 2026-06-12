@@ -154,7 +154,7 @@ async def _fetch_stale_aspect_images(
         client.table("document_images")
         .select(
             "id, image_url, document_id, workspace_id, page_number, "
-            "vision_analysis, "
+            "vision_analysis, metadata, "
             "has_color_slig, has_texture_slig, has_style_slig, has_material_slig, "
             "color_aspect_embedding_model, color_aspect_schema_version, "
             "texture_aspect_embedding_model, texture_aspect_schema_version, "
@@ -173,7 +173,13 @@ async def _fetch_stale_aspect_images(
 
     response = await asyncio.to_thread(query.execute)
     rows = response.data or []
-    stale = [r for r in rows if any(_is_aspect_stale(r, a) for a in ASPECT_NAMES)]
+    # Quarantined rows (classification_pending) intentionally have NO
+    # embeddings — the classification backfill re-classifies them first.
+    from app.services.embeddings.classification_backfill import is_quarantined
+    stale = [
+        r for r in rows
+        if not is_quarantined(r) and any(_is_aspect_stale(r, a) for a in ASPECT_NAMES)
+    ]
     return stale
 
 
