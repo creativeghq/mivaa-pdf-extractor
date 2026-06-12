@@ -6101,6 +6101,10 @@ async def search_knowledge_base(
                             "allowed_access_levels": allowed_access_levels,
                             "include_private": caller == "admin",
                         }
+                        # Per-agent allow-list: only agent callers filter by identity.
+                        # Admin/public callers pass no agent_id, so allowed_agents is ignored.
+                        if caller != "admin" and request.agent_id:
+                            rpc_args["match_agent_id"] = request.agent_id
                         if request.category_id:
                             rpc_args["match_category_id"] = request.category_id
                         if request.category_slug:
