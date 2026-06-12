@@ -5809,6 +5809,15 @@ class KnowledgeBaseSearchRequest(BaseModel):
         default="agent",
         description="Caller context: 'admin' (all levels), 'agent' (agent+public), 'public' (public only)"
     )
+    agent_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Identity of the querying agent (e.g. 'kai', 'interior-designer', "
+            "'demo', or a background-agent type). When set on an agent caller, "
+            "kb_docs with a non-empty allowed_agents list are returned only if "
+            "this agent_id is in that list. Ignored for 'admin' callers."
+        )
+    )
     category_id: Optional[str] = Field(
         default=None,
         description="Restrict kb_docs search to a single category UUID"
@@ -6102,6 +6111,23 @@ async def search_knowledge_base(
                         kb_response = supabase.client.rpc("kb_match_docs", rpc_args).execute()
 
                         if kb_response.data:
+                            # Per-doc agent allow-list enforcement. Non-admin caller
+                            # with an agent_id: fetch allowed_agents for the matched
+                            # docs and skip any whose (non-empty) allow-list excludes
+                            # this agent. Admin bypasses. kb_match_docs doesn't return
+                            # allowed_agents, so we look them up in one extra query.
+                            doc_allowed_agents: Dict[str, Any] = {}
+                            if caller != "admin" and request.agent_id:
+                                match_ids = [d.get("id") for d in kb_response.data if d.get("id")]
+                                if match_ids:
+                                    aa_resp = supabase.client.table("kb_docs").select(
+                                        "id, allowed_agents"
+                                    ).in_("id", match_ids).execute()
+                                    doc_allowed_agents = {
+                                        r["id"]: r.get("allowed_agents")
+                                        for r in (aa_resp.data or [])
+                                    }
+
                             kb_count = 0
                             for doc in kb_response.data:
                                 cat_id = doc.get("category_id")
@@ -6112,6 +6138,11 @@ async def search_knowledge_base(
                                     and cat_id not in accessible_category_ids
                                 ):
                                     continue
+                                # Agent allow-list: non-empty list that excludes this agent ⇒ skip.
+                                if caller != "admin" and request.agent_id:
+                                    allow = doc_allowed_agents.get(doc.get("id"))
+                                    if allow and request.agent_id not in allow:
+                                        continue
                                 results["chunks"].append({
                                     "id": doc.get("id"),
                                     "content": (doc.get("content") or "")[:800],

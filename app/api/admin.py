@@ -1733,6 +1733,60 @@ async def backfill_understanding_embeddings_endpoint(
     return JSONResponse(content=summary)
 
 
+class TextEmbeddingBackfillRequest(BaseModel):
+    """Request body for the product/chunk text-embedding backfill.
+
+    `product_ids` switches to targeted mode: re-embeds exactly those
+    products (used by the products-list retry button) and skips the
+    chunk pass. Without it, scans for products with NULL
+    text_embedding_1024 and chunks with has_text_embedding false/NULL.
+    """
+    max_products: int = 100
+    max_chunks: int = 500
+    batch_size: int = 50
+    workspace_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
+    include_products: bool = True
+    include_chunks: bool = True
+
+
+@router.post("/admin/text-embeddings/backfill")
+async def text_embedding_backfill_endpoint(
+    request: TextEmbeddingBackfillRequest,
+    user: User = Depends(require_admin),
+):
+    """Re-embed products and chunks whose text embedding never landed.
+
+    Products: targets `text_embedding_1024 IS NULL` (the
+    metadata.embedding_failure marker stamped by Stage 0 previously had
+    no consumer — these products were invisible to product-level vector
+    search forever). Embedding text is built by the SAME
+    build_product_embedding_text used inline by Stage 4.
+
+    Chunks: targets `has_text_embedding` false/NULL (batch embedding
+    failed mid-import) with the same batch-Voyage + provenance wiring
+    as the inline path.
+
+    Bounded; safe to call repeatedly. Returns per-target
+    scanned/embedded/failed counts.
+    """
+    from app.services.embeddings.text_embedding_backfill import (
+        backfill_text_embeddings,
+    )
+
+    summary = await backfill_text_embeddings(
+        max_products=request.max_products,
+        max_chunks=request.max_chunks,
+        batch_size=request.batch_size,
+        workspace_id=request.workspace_id,
+        product_ids=request.product_ids,
+        include_products=request.include_products,
+        include_chunks=request.include_chunks,
+    )
+    logger.info(f"📊 Text-embedding backfill summary: {summary}")
+    return JSONResponse(content=summary)
+
+
 class ClassificationBackfillRequest(BaseModel):
     """Request body for the quarantined-image classification backfill.
 

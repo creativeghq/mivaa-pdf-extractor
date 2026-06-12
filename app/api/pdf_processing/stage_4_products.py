@@ -616,52 +616,15 @@ async def create_single_product(
         # Builds a rich text from name + description + key metadata fields,
         # then embeds with Voyage AI (1024D) — same model as document_chunks.
         try:
-            embedding_text_parts = [product.name or '']
-            if description:
-                embedding_text_parts.append(description)
-            # Include searchable metadata in the embedding text.
-            # Use canonical factory_name / factory_group_name only — manufacturer
-            # alias is normalized away upstream by normalize_factory_keys().
-            for key in ('factory_name', 'factory_group_name', 'designer', 'material_category', 'zone_intent'):
-                val = metadata.get(key)
-                if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
-                    embedding_text_parts.append(val.replace('_', ' '))
-            colors = metadata.get('available_colors')
-            if isinstance(colors, list):
-                embedding_text_parts.extend(colors)
-
-            # Walk every known spec field from material_metadata_fields and append
-            # non-null values to the embedding text. A search like
-            # "porcelain tile R10 PEI IV frost resistant" matches a product whose
-            # spec icons have been extracted (rolled up from icon_metadata above).
-            # The loop runs over the canonical taxonomy so adding a new spec to
-            # material_metadata_fields automatically flows it into embeddings.
-            _embedded_spec_fields_so_far = {
-                'factory_name', 'factory_group_name', 'designer',
-                'material_category', 'zone_intent',
-            }
-            for spec_field in known_spec_fields:
-                if spec_field in _embedded_spec_fields_so_far:
-                    continue  # already appended above
-                val = metadata.get(spec_field)
-                if val is None or val == '' or val == []:
-                    continue
-                # Render the value to text — handle scalars, lists, and bools.
-                if isinstance(val, bool):
-                    if val:
-                        embedding_text_parts.append(spec_field.replace('_', ' '))
-                elif isinstance(val, (str, int, float)):
-                    text_val = str(val).strip()
-                    if text_val and text_val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
-                        embedding_text_parts.append(f"{spec_field.replace('_', ' ')}: {text_val}")
-                elif isinstance(val, list) and val:
-                    items = [str(v).strip() for v in val if v not in (None, '', [])]
-                    if items:
-                        embedding_text_parts.append(
-                            f"{spec_field.replace('_', ' ')}: {', '.join(items)}"
-                        )
-
-            embedding_text = ' | '.join(embedding_text_parts)
+            # Shared with the product-embedding backfill — keep the text
+            # construction identical so backfilled vectors live in the same
+            # semantic space as inline-generated ones.
+            embedding_text = build_product_embedding_text(
+                name=product.name,
+                description=description,
+                metadata=metadata,
+                known_spec_fields=known_spec_fields,
+            )
 
             from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
             embeddings_svc = RealEmbeddingsService()
@@ -853,6 +816,67 @@ def _normalize_icon_field_name(field_name: str) -> str:
     if not field_name:
         return field_name
     return ICON_FIELD_NAME_NORMALIZATION.get(field_name.strip(), field_name.strip())
+
+
+def build_product_embedding_text(
+    name: Optional[str],
+    description: Optional[str],
+    metadata: Dict[str, Any],
+    known_spec_fields: List[str],
+) -> str:
+    """Build the canonical product embedding text from name + description +
+    searchable metadata + spec fields.
+
+    Single source of truth shared by Stage 4 inline generation AND the
+    product-embedding backfill — both must produce byte-identical text for
+    the same inputs so backfilled vectors live in the same semantic space.
+    """
+    embedding_text_parts = [name or '']
+    if description:
+        embedding_text_parts.append(description)
+    # Include searchable metadata in the embedding text.
+    # Use canonical factory_name / factory_group_name only — manufacturer
+    # alias is normalized away upstream by normalize_factory_keys().
+    for key in ('factory_name', 'factory_group_name', 'designer', 'material_category', 'zone_intent'):
+        val = metadata.get(key)
+        if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
+            embedding_text_parts.append(val.replace('_', ' '))
+    colors = metadata.get('available_colors')
+    if isinstance(colors, list):
+        embedding_text_parts.extend(colors)
+
+    # Walk every known spec field from material_metadata_fields and append
+    # non-null values to the embedding text. A search like
+    # "porcelain tile R10 PEI IV frost resistant" matches a product whose
+    # spec icons have been extracted (rolled up from icon_metadata).
+    # The loop runs over the canonical taxonomy so adding a new spec to
+    # material_metadata_fields automatically flows it into embeddings.
+    _embedded_spec_fields_so_far = {
+        'factory_name', 'factory_group_name', 'designer',
+        'material_category', 'zone_intent',
+    }
+    for spec_field in known_spec_fields:
+        if spec_field in _embedded_spec_fields_so_far:
+            continue  # already appended above
+        val = metadata.get(spec_field)
+        if val is None or val == '' or val == []:
+            continue
+        # Render the value to text — handle scalars, lists, and bools.
+        if isinstance(val, bool):
+            if val:
+                embedding_text_parts.append(spec_field.replace('_', ' '))
+        elif isinstance(val, (str, int, float)):
+            text_val = str(val).strip()
+            if text_val and text_val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
+                embedding_text_parts.append(f"{spec_field.replace('_', ' ')}: {text_val}")
+        elif isinstance(val, list) and val:
+            items = [str(v).strip() for v in val if v not in (None, '', [])]
+            if items:
+                embedding_text_parts.append(
+                    f"{spec_field.replace('_', ' ')}: {', '.join(items)}"
+                )
+
+    return ' | '.join(embedding_text_parts)
 
 
 async def _fetch_known_spec_fields(
