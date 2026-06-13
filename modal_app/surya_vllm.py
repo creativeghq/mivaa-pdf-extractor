@@ -57,14 +57,20 @@ MAX_CONTAINERS = int(os.environ.get("SURYA_MAX_CONTAINERS", "4"))
 MAX_CONCURRENT = int(os.environ.get("SURYA_MAX_CONCURRENT", "16"))
 # Pin to the vLLM version Surya-2 is tested against (datalab's bench uses 0.20.1).
 VLLM_VERSION = os.environ.get("SURYA_VLLM_VERSION", "0.20.1")
+CUDA_TAG = os.environ.get("SURYA_CUDA_TAG", "12.8.1-devel-ubuntu22.04")
 MAX_MODEL_LEN = os.environ.get("SURYA_MAX_MODEL_LEN", "16384")
 GPU_MEM_UTIL = os.environ.get("SURYA_GPU_MEM_UTIL", "0.90")
 
-# Use the official vLLM OpenAI server image (ships vLLM + the openai server).
-# `.entrypoint([])` drops the upstream entrypoint so we run our own `vllm serve`.
+# Modal's documented vLLM recipe: a CUDA *devel* base (provides nvcc for vLLM's
+# runtime cpp_extension compile) + a clean standalone Python via add_python, then
+# pip-install vLLM into it. We deliberately do NOT reuse the prebuilt
+# `vllm/vllm-openai` image — add_python there overwrites the image's own Python
+# and breaks vLLM's deps, and without add_python Modal can't detect its Python.
 vllm_image = (
-    modal.Image.from_registry(f"vllm/vllm-openai:v{VLLM_VERSION}")
+    modal.Image.from_registry(f"nvidia/cuda:{CUDA_TAG}", add_python="3.12")
     .entrypoint([])
+    .uv_pip_install(f"vllm=={VLLM_VERSION}", "huggingface_hub[hf_transfer]")
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
 )
 
 # Persist weights + the vLLM compile cache across cold starts (download once).

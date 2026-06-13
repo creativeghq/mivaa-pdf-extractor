@@ -597,14 +597,14 @@ class Settings(BaseSettings):
     #   "huggingface" → HF Inference Endpoint (SDK resume / scale-to-zero)
     #   "modal"       → Modal-hosted vLLM (autoscaling owned by Modal)
     surya_provider: str = Field(
-        default="huggingface",
+        default="modal",
         env="SURYA_PROVIDER",
-        description="Which GPU host serves Surya: 'huggingface' | 'modal'"
+        description="Which GPU host serves Surya: 'modal' (default) | 'huggingface'. HF kept as a fallback — flip to 'huggingface' to use the HF Inference Endpoint instead."
     )
     surya_modal_url: str = Field(
-        default="",
+        default="https://basilakis--surya-vllm-serve.modal.run",
         env="SURYA_MODAL_URL",
-        description="Modal web endpoint base URL (the URL `modal deploy` prints). Required when SURYA_PROVIDER=modal."
+        description="Modal web endpoint base URL (the URL `modal deploy` prints). Default = the deployed surya-vllm app. Used when SURYA_PROVIDER=modal."
     )
     surya_modal_api_key: str = Field(
         default="",
