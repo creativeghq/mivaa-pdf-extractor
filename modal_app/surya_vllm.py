@@ -69,8 +69,7 @@ GPU_MEM_UTIL = os.environ.get("SURYA_GPU_MEM_UTIL", "0.90")
 vllm_image = (
     modal.Image.from_registry(f"nvidia/cuda:{CUDA_TAG}", add_python="3.12")
     .entrypoint([])
-    .uv_pip_install(f"vllm=={VLLM_VERSION}", "huggingface_hub[hf_transfer]")
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .uv_pip_install(f"vllm=={VLLM_VERSION}")
 )
 
 # Persist weights + the vLLM compile cache across cold starts (download once).
