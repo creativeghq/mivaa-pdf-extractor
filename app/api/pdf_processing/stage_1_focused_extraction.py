@@ -519,9 +519,9 @@ async def _load_cached_layout_regions(
     rows = response.data or []
     cached: Dict[int, List[Any]] = {}
     for row in rows:
-        if row.get('processing_version') != 'yolo+chandra-v2':
-            # Only honour cache rows produced by the new pipeline; older
-            # rows are markdown-analysis stubs from product_creation_service.
+        if row.get('processing_version') != 'surya-2':
+            # Only honour cache rows produced by the Surya structural pass;
+            # older rows (markdown-analysis stubs, pre-Surya layout) are skipped.
             continue
         page_1_based_in_cache = int(row['page_number'])
         # Cache uses 1-based sheet numbering - translate to physical page.

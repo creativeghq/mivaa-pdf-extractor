@@ -56,15 +56,13 @@ def _resolve_hf_endpoint_names() -> Dict[str, str]:
         from app.config import get_settings
         s = get_settings()
         return {
-            "slig":    s.slig_endpoint_name,
-            "yolo":    s.yolo_endpoint_name,
-            "chandra": s.chandra_endpoint_name,
+            "slig":  s.slig_endpoint_name,
+            "surya": s.surya_endpoint_name,
         }
     except Exception:
         return {
-            "slig":    "mh-slig",
-            "yolo":    "mh-yolo",
-            "chandra": "chandra-ocr-2",
+            "slig":  "mh-slig",
+            "surya": "surya",
         }
 
 
@@ -86,14 +84,11 @@ class EndpointController:
         # Tuning rationale:
         #   - SLIG (mh-slig): lightweight text-guided embeddings, fast responses.
         #     16 concurrent is fine; failures here usually mean network, not load.
-        #   - YOLO (mh-yolo): layout detection, ~2-5s per page, single-page calls.
-        #     12 concurrent is fine; HF replica typically handles 2-3 RPS.
-        #   - Chandra (mh-chandra): OCR, highly variable latency depending on
-        #     image complexity. 8 concurrent max; 1 minimum. Most runs, it's
-        #     disabled — the controller force_minimum()s if the manager is None.
-        self.slig    = AdaptiveConcurrency(name="slig",    initial=8, minimum=2, maximum=16, failure_threshold=3, success_threshold=15)
-        self.yolo    = AdaptiveConcurrency(name="yolo",    initial=6, minimum=2, maximum=12, failure_threshold=3, success_threshold=15)
-        self.chandra = AdaptiveConcurrency(name="chandra", initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
+        #   - Surya (surya): the structural-pass backbone — layout + OCR + figure
+        #     boxes in one call, ~30-90s on dense pages. Heavier than SLIG; cap at
+        #     8 concurrent, 1 minimum. Replaced the YOLO + Chandra split.
+        self.slig  = AdaptiveConcurrency(name="slig",  initial=8, minimum=2, maximum=16, failure_threshold=3, success_threshold=15)
+        self.surya = AdaptiveConcurrency(name="surya", initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
 
         # Track warm state per endpoint so warm_all is idempotent.
         self._warmed: Dict[str, bool] = {k: False for k in VALID_ENDPOINT_KEYS}
@@ -218,7 +213,7 @@ class EndpointController:
     # ────────────────────────────────────────────────────────────────────
 
     async def warm_all(self, job_id: str) -> Dict[str, bool]:
-        """Warm up all 4 HF endpoints in parallel.
+        """Warm up all HF endpoints (SLIG + Surya) in parallel.
 
         Each endpoint manager's `warmup()` method is sync (it uses `requests`,
         not httpx); we run them in threads so they can overlap without blocking
@@ -227,10 +222,7 @@ class EndpointController:
         Any endpoint whose warmup fails (manager missing, URL empty, all resume
         attempts failed, warmup probe timeout) has its concurrency gate forced
         to `minimum=1`. That prevents the pipeline from handing out slots that
-        would just pile up against a broken endpoint — calls will either
-        succeed slowly or fail fast into their application-level fallback
-        (e.g. PyMuPDF text-only path when Chandra is unavailable —
-        EasyOCR/Pytesseract were removed 2026-05-01).
+        would just pile up against a broken endpoint.
 
         Args:
             job_id: for logging correlation.
@@ -244,14 +236,19 @@ class EndpointController:
             # Serialize access to the auto-scaler's status so we can cooperate.
             auto_scaler = self._get_auto_scaler()
 
-            tasks = [
-                self._warm_one("slig",    endpoint_registry.get_slig_manager(),    job_id),
-                self._warm_one("yolo",    endpoint_registry.get_yolo_manager(),    job_id),
-                self._warm_one("chandra", endpoint_registry.get_chandra_manager(), job_id),
+            warm_specs = [
+                ("slig",  endpoint_registry.get_slig_manager()),
+                ("surya", endpoint_registry.get_surya_manager()),
             ]
-            results = await asyncio.gather(*tasks, return_exceptions=False)
+            results = await asyncio.gather(
+                *[self._warm_one(key, mgr, job_id) for key, mgr in warm_specs],
+                return_exceptions=False,
+            )
 
-            outcome = dict(zip(VALID_ENDPOINT_KEYS, results))
+            # Pair results back to their keys by position (VALID_ENDPOINT_KEYS is
+            # an unordered frozenset — zipping it with the ordered results list
+            # would mislabel outcomes).
+            outcome = {key: res for (key, _), res in zip(warm_specs, results)}
             healthy = [k for k, v in outcome.items() if v]
             degraded = [k for k, v in outcome.items() if not v]
 
@@ -563,9 +560,8 @@ class EndpointController:
             config_getters = {}
 
         manager_getters = {
-            "slig":    endpoint_registry.get_slig_manager,
-            "yolo":    endpoint_registry.get_yolo_manager,
-            "chandra": endpoint_registry.get_chandra_manager,
+            "slig":  endpoint_registry.get_slig_manager,
+            "surya": endpoint_registry.get_surya_manager,
         }
 
         outcome: Dict[str, bool] = {}
@@ -686,12 +682,11 @@ class EndpointController:
     # ────────────────────────────────────────────────────────────────────
 
     def stats(self) -> Dict[str, Any]:
-        """Single snapshot of the 3 gates for progress reports + logs."""
+        """Single snapshot of the gates for progress reports + logs."""
         return {
-            "slig":    self.slig.stats(),
-            "yolo":    self.yolo.stats(),
-            "chandra": self.chandra.stats(),
-            "warmed":  dict(self._warmed),
+            "slig":   self.slig.stats(),
+            "surya":  self.surya.stats(),
+            "warmed": dict(self._warmed),
         }
 
     def log_stats(self, prefix: str = "🎛️  EndpointController") -> None:

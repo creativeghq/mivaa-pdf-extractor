@@ -63,11 +63,13 @@ class EndpointRegistry:
         self._slig_manager = None
         self._yolo_manager = None
         self._chandra_manager = None
+        self._surya_manager = None
 
         # Track warmup status
         self._slig_warmed_up = False
         self._yolo_warmed_up = False
         self._chandra_warmed_up = False
+        self._surya_warmed_up = False
 
         # Track health check status
         self._health_validated = False
@@ -168,42 +170,54 @@ class EndpointRegistry:
                 logger.error(f"❌ Failed to create SLIG manager: {e}")
                 return None
 
-    def get_yolo_manager(self, force_new: bool = False) -> Optional[Any]:
+    def get_surya_manager(self, force_new: bool = False) -> Optional[Any]:
         """
-        Get or create the singleton YOLO endpoint manager.
+        Get or create the singleton Surya-2 structural-pass manager.
+
+        Surya is the pipeline's layout+OCR backbone (one call returns layout
+        regions + OCR text + figure boxes), replacing YOLO + Chandra + merge.
 
         Returns:
-            YoloEndpointManager instance or None if configuration is missing.
+            SuryaEndpointManager instance or None if not configured/enabled.
         """
         with self._client_lock:
-            if self._yolo_manager is not None and not force_new:
-                logger.debug("♻️ Reusing existing YOLO manager (singleton)")
-                return self._yolo_manager
+            if self._surya_manager is not None and not force_new:
+                logger.debug("♻️ Reusing existing Surya manager (singleton)")
+                return self._surya_manager
 
             try:
                 from app.config import get_settings
-                from app.services.pdf.yolo_endpoint_manager import YoloEndpointManager
+                from app.services.pdf.surya_endpoint_manager import SuryaEndpointManager
 
                 settings = get_settings()
-                yolo_config = settings.get_yolo_config()
+                surya_config = settings.get_surya_config()
 
-                if not yolo_config.get("enabled", False):
-                    logger.warning("⚠️ YOLO endpoint not enabled")
+                if not surya_config.get("enabled", False):
+                    logger.warning("⚠️ Surya endpoint not enabled")
+                    return None
+                if not surya_config.get("endpoint_url"):
+                    logger.warning("⚠️ Surya endpoint not configured")
                     return None
 
-                self._yolo_manager = YoloEndpointManager(
-                    endpoint_url=yolo_config["endpoint_url"],
-                    hf_token=yolo_config.get("hf_token", ""),
-                    endpoint_name=yolo_config.get("endpoint_name"),
-                    namespace=yolo_config.get("namespace"),
-                    enabled=True
+                self._surya_manager = SuryaEndpointManager(
+                    endpoint_url=surya_config["endpoint_url"],
+                    hf_token=surya_config.get("hf_token", ""),
+                    endpoint_name=surya_config.get("endpoint_name"),
+                    namespace=surya_config.get("namespace"),
+                    model_name=surya_config.get("model_name", "surya-ocr-2"),
+                    inference_timeout=surya_config.get("inference_timeout", 180),
+                    warmup_timeout=surya_config.get("warmup_timeout", 300),
+                    max_resume_retries=surya_config.get("max_resume_retries", 3),
+                    max_tokens=surya_config.get("max_tokens", 8000),
+                    max_image_pixels=surya_config.get("max_image_pixels", 2_000_000),
+                    enabled=True,
                 )
 
-                logger.info("✅ YOLO manager created (singleton)")
-                return self._yolo_manager
+                logger.info("✅ Surya manager created (singleton)")
+                return self._surya_manager
 
             except Exception as e:
-                logger.error(f"❌ Failed to create YOLO manager: {e}")
+                logger.error(f"❌ Failed to create Surya manager: {e}")
                 return None
 
     def set_slig_client(self, client: Any):
@@ -261,6 +275,12 @@ class EndpointRegistry:
                 registered_count += 1
                 logger.info("📌 Registered pre-warmed Chandra manager")
 
+            if 'surya' in endpoint_managers:
+                self._surya_manager = endpoint_managers['surya']
+                self._surya_warmed_up = True
+                registered_count += 1
+                logger.info("📌 Registered pre-warmed Surya manager")
+
             logger.info(f"📊 Total endpoint managers registered: {registered_count}")
 
     def clear_all(self):
@@ -274,9 +294,11 @@ class EndpointRegistry:
             self._slig_manager = None
             self._yolo_manager = None
             self._chandra_manager = None
+            self._surya_manager = None
             self._slig_warmed_up = False
             self._yolo_warmed_up = False
             self._chandra_warmed_up = False
+            self._surya_warmed_up = False
             self._health_validated = False
             self._health_results = {}
             self._active_jobs = []
@@ -293,6 +315,8 @@ class EndpointRegistry:
             "yolo_warmed_up": self._yolo_warmed_up,
             "chandra_manager_active": self._chandra_manager is not None,
             "chandra_warmed_up": self._chandra_warmed_up,
+            "surya_manager_active": self._surya_manager is not None,
+            "surya_warmed_up": self._surya_warmed_up,
             "health_validated": self._health_validated,
             "active_jobs": len(self._active_jobs),
             "is_processing": self.is_processing()

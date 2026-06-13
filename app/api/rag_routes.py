@@ -3109,134 +3109,63 @@ async def process_document_with_discovery(
                 warmup_results["failed"].append({"endpoint": "slig", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup SLIG endpoint: {e}")
 
-        async def warmup_yolo():
+        async def warmup_surya():
             try:
-                from app.services.pdf.yolo_endpoint_manager import YoloEndpointManager
-                yolo_config = settings.get_yolo_config()
-                if yolo_config.get("enabled", False):
-                    manager = YoloEndpointManager(
-                        endpoint_url=yolo_config["endpoint_url"],
-                        hf_token=yolo_config.get("hf_token", ""),
-                        endpoint_name=yolo_config.get("endpoint_name"),
-                        namespace=yolo_config.get("namespace"),
-                        enabled=True
+                from app.services.pdf.surya_endpoint_manager import SuryaEndpointManager
+                surya_config = settings.get_surya_config()
+                if surya_config.get("enabled", False) and surya_config.get("endpoint_url"):
+                    manager = SuryaEndpointManager(
+                        endpoint_url=surya_config["endpoint_url"],
+                        hf_token=surya_config.get("hf_token", ""),
+                        endpoint_name=surya_config.get("endpoint_name"),
+                        namespace=surya_config.get("namespace"),
+                        model_name=surya_config.get("model_name", "surya-ocr-2"),
+                        inference_timeout=surya_config.get("inference_timeout", 180),
+                        warmup_timeout=surya_config.get("warmup_timeout", 300),
+                        max_resume_retries=surya_config.get("max_resume_retries", 3),
+                        max_tokens=surya_config.get("max_tokens", 8000),
+                        max_image_pixels=surya_config.get("max_image_pixels", 2_000_000),
+                        enabled=True,
                     )
-                    endpoint_managers['yolo'] = manager
+                    endpoint_managers['surya'] = manager
 
-                    # Check if already running (use thread pool for blocking call)
-                    def check_yolo_status():
+                    def check_surya_status():
                         endpoint = manager._get_endpoint()
                         if endpoint:
                             endpoint.fetch()
                             return endpoint.status
                         return None
-                    
-                    status = await asyncio.to_thread(check_yolo_status)
-                    if status == "running":
-                        # Audit fix #4 + #5: health-probe + URL refresh.
-                        if hasattr(manager, '_refresh_url_from_endpoint'):
-                            await asyncio.to_thread(manager._refresh_url_from_endpoint)
-                        probe_ok = await asyncio.to_thread(manager._test_inference) if hasattr(manager, '_test_inference') else True
-                        if probe_ok:
-                            logger.info(f"   ✅ YOLO endpoint running + health probe OK, skipping warmup")
-                            warmup_results["skipped"].append("yolo")
-                            return
-                        logger.warning("   ⚠️ YOLO endpoint status=running but health probe FAILED — running full warmup")
 
-                    # Run blocking resume and warmup in thread pool
-                    def resume_and_warmup_yolo():
+                    status = await asyncio.to_thread(check_surya_status)
+                    if status == "running":
+                        await asyncio.to_thread(manager._resolve_endpoint_url)
+                        probe_ok = await asyncio.to_thread(manager._test_inference)
+                        if probe_ok:
+                            logger.info("   ✅ Surya endpoint running + health probe OK, skipping warmup")
+                            warmup_results["skipped"].append("surya")
+                            return
+                        logger.warning("   ⚠️ Surya endpoint status=running but health probe FAILED — running full warmup")
+
+                    def resume_and_warmup_surya():
                         if manager.resume_if_needed():
                             return manager.warmup()
                         return False
-                    
-                    success = await asyncio.to_thread(resume_and_warmup_yolo)
+
+                    success = await asyncio.to_thread(resume_and_warmup_surya)
                     if success:
-                        warmup_results["success"].append("yolo")
-                        logger.info("   ✅ YOLO warmup complete")
-                else:
-                    warmup_results["skipped"].append("yolo")
-            except Exception as e:
-                from app.services.embeddings.hf_errors import HFBillingError
-                if isinstance(e, HFBillingError):
-                    raise
-                warmup_results["failed"].append({"endpoint": "yolo", "error": str(e)})
-                logger.warning(f"⚠️ Failed to warmup YOLO endpoint: {e}")
-
-        async def warmup_chandra():
-            try:
-                from app.services.pdf.chandra_endpoint_manager import ChandraEndpointManager
-                chandra_config = settings.get_chandra_config()
-                if chandra_config.get("enabled", False):
-                    manager = ChandraEndpointManager(
-                        endpoint_url=chandra_config["endpoint_url"],
-                        hf_token=chandra_config.get("hf_token", ""),
-                        endpoint_name=chandra_config.get("endpoint_name"),
-                        namespace=chandra_config.get("namespace"),
-                        enabled=True
-                    )
-                    endpoint_managers['chandra'] = manager
-
-                    # Check if already running (use thread pool for blocking call)
-                    def check_chandra_status():
-                        endpoint = manager._get_endpoint()
-                        if endpoint:
-                            endpoint.fetch()
-                            return endpoint.status
-                        return None
-                    
-                    status = await asyncio.to_thread(check_chandra_status)
-                    if status == "running":
-                        # Audit fix #4 + #5: Chandra has _test_inference (GET /health).
-                        if hasattr(manager, '_resolve_endpoint_url'):
-                            await asyncio.to_thread(manager._resolve_endpoint_url)
-                        probe_ok = await asyncio.to_thread(manager._test_inference) if hasattr(manager, '_test_inference') else True
-                        if probe_ok:
-                            logger.info(f"   ✅ Chandra endpoint running + health probe OK, skipping warmup")
-                            warmup_results["skipped"].append("chandra")
-                            return
-                        logger.warning("   ⚠️ Chandra endpoint status=running but health probe FAILED — running full warmup")
-
-                    # P2-4: poll Chandra instead of blind sleep(60). Same
-                    # pattern the other endpoints use — finish as soon as
-                    # the model responds, don't keep paying for idle time.
-                    def resume_and_warmup_chandra():
-                        if manager.resume_if_needed():
-                            # ChandraEndpointManager exposes warmup() in newer
-                            # versions; fall back to a short polling loop
-                            # against /health if not.
-                            warmup_method = getattr(manager, 'warmup', None)
-                            if callable(warmup_method):
-                                return warmup_method()
-                            # Bounded poll fallback (max 60s, exits early)
-                            import time as _time
-                            deadline = _time.time() + 60
-                            while _time.time() < deadline:
-                                ep = manager._get_endpoint() if hasattr(manager, '_get_endpoint') else None
-                                if ep:
-                                    try:
-                                        ep.fetch()
-                                        if getattr(ep, 'status', None) == 'running':
-                                            return True
-                                    except Exception:
-                                        pass
-                                _time.sleep(3)
-                            return False
-
-                    success = await asyncio.to_thread(resume_and_warmup_chandra)
-                    if success:
-                        warmup_results["success"].append("chandra")
-                        logger.info("   ✅ Chandra warmup complete")
+                        warmup_results["success"].append("surya")
+                        logger.info("   ✅ Surya warmup complete")
                     else:
-                        warmup_results["failed"].append({"endpoint": "chandra", "error": "warmup polling timed out"})
-                        logger.warning("   ⚠️ Chandra warmup polling timed out (will retry on first use)")
+                        warmup_results["failed"].append({"endpoint": "surya", "error": "warmup timed out"})
+                        logger.warning("   ⚠️ Surya warmup timed out (will retry on first use)")
                 else:
-                    warmup_results["skipped"].append("chandra")
+                    warmup_results["skipped"].append("surya")
             except Exception as e:
                 from app.services.embeddings.hf_errors import HFBillingError
                 if isinstance(e, HFBillingError):
                     raise
-                warmup_results["failed"].append({"endpoint": "chandra", "error": str(e)})
-                logger.warning(f"⚠️ Failed to warmup Chandra endpoint: {e}")
+                warmup_results["failed"].append({"endpoint": "surya", "error": str(e)})
+                logger.warning(f"⚠️ Failed to warmup Surya endpoint: {e}")
 
         # Execute all warmups in parallel.
         # FAST-FAIL on HF billing errors: if any endpoint's resume returns
@@ -3247,8 +3176,7 @@ async def process_document_with_discovery(
         from app.services.embeddings.hf_errors import HFBillingError
         gather_results = await asyncio.gather(
             warmup_slig(),
-            warmup_yolo(),
-            warmup_chandra(),
+            warmup_surya(),
             return_exceptions=True,
         )
         billing_errors = [r for r in gather_results if isinstance(r, HFBillingError)]
@@ -3422,26 +3350,24 @@ async def process_document_with_discovery(
                 'url': _live_url_from_manager(endpoint_managers['slig'], slig_config['endpoint_url']),
                 'token': slig_config['hf_token']
             }
-        if 'yolo' in endpoint_managers:
-            yolo_config = settings.get_yolo_config()
-            endpoints_config['yolo'] = {
-                'url': _live_url_from_manager(endpoint_managers['yolo'], yolo_config['endpoint_url']),
-                'token': yolo_config.get('hf_token', '')
-            }
-        if 'chandra' in endpoint_managers:
-            chandra_config = settings.get_chandra_config()
-            endpoints_config['chandra'] = {
-                'url': _live_url_from_manager(endpoint_managers['chandra'], chandra_config['endpoint_url']),
-                'token': chandra_config.get('hf_token', '')
+        if 'surya' in endpoint_managers:
+            surya_config = settings.get_surya_config()
+            endpoints_config['surya'] = {
+                'url': _live_url_from_manager(endpoint_managers['surya'], surya_config['endpoint_url']),
+                'token': surya_config.get('hf_token', '')
             }
 
-        # SLIG is required for CLIP embeddings.
-        # Vision analysis + classification now run on Anthropic Claude Opus 4.7
-        # which has no warmup, so Qwen is no longer in this set.
-        # YOLO and Chandra are optional (layout detection enhancement).
+        # Both endpoints are required:
+        #   - SLIG for the per-image visual embeddings (CLIP-class).
+        #   - Surya for the structural pass — without it there is no layout,
+        #     no OCR text, and no figure crops, so the pipeline cannot produce
+        #     products. (Vision analysis + classification run on Anthropic
+        #     Claude, which has no warmup, so they are not in this set.)
         required_endpoints = []
         if 'slig' in endpoints_config:
             required_endpoints.append('slig')
+        if 'surya' in endpoints_config:
+            required_endpoints.append('surya')
 
         all_healthy, health_results = await health_checker.check_all_endpoints(
             endpoints_config=endpoints_config,
@@ -3600,6 +3526,49 @@ async def process_document_with_discovery(
                 logger.error(f"❌ extract-only mode failed: {eo_err}", exc_info=True)
                 await tracker.fail_job(error=eo_err)
             return
+
+        # ============================================================================
+        # STAGE 1: DOCUMENT-LEVEL STRUCTURAL PASS (Surya) — runs BEFORE discovery
+        # ============================================================================
+        # Structure-first architecture: Surya renders every physical page once
+        # and returns layout regions + OCR text + figure boxes, persisted to
+        # document_layout_analysis. Running it first means:
+        #   - discovery reads Surya's reading-order text (cleaner, multilingual,
+        #     layout-ordered) instead of raw page.get_text(),
+        #   - Stage 2 chunking reads the same cache,
+        #   - Stage 3 crops come from Surya's figure boxes (cache hit, no YOLO).
+        # One pass feeds the whole pipeline.
+        try:
+            _settings_for_precompute = get_settings()
+            if getattr(_settings_for_precompute, "layout_precompute_enabled", True):
+                from app.api.pdf_processing.stage_1_layout_precompute import (
+                    precompute_document_layout,
+                )
+                logger.info("=" * 80)
+                logger.info("📐 STAGE 1: DOCUMENT-LEVEL STRUCTURAL PASS (Surya)")
+                logger.info("=" * 80)
+                precompute_summary = await precompute_document_layout(
+                    document_id=document_id,
+                    pdf_path=file_path,
+                    supabase=get_supabase_client(),
+                    logger=logger,
+                    job_id=job_id,
+                    tracker=tracker,  # nest-safe slow_op stack
+                )
+                job_storage[job_id]["metadata"] = {
+                    **job_storage[job_id].get("metadata", {}),
+                    "layout_precompute": precompute_summary,
+                }
+            else:
+                logger.info("⏭️  [STAGE 1] Skipped (LAYOUT_PRECOMPUTE_ENABLED=False)")
+        except Exception as precompute_err:
+            # Best-effort: discovery falls back to PyMuPDF text, chunker to its
+            # text path. Surya is a required endpoint, so a hard outage would
+            # already have failed the job at health validation.
+            logger.warning(
+                f"⚠️ [STAGE 1] structural pass failed: {precompute_err}",
+                exc_info=True,
+            )
 
         # ============================================================================
         # STAGE 0: PRODUCT DISCOVERY (MODULAR)
@@ -3777,84 +3746,9 @@ async def process_document_with_discovery(
         except Exception as scale_up_err:
             logger.debug(f"Proactive scale-up skipped (non-fatal): {scale_up_err}")
 
-        # ========================================================================
-        # STAGE 1.5: DOCUMENT-LEVEL LAYOUT PRECOMPUTE
-        # ========================================================================
-        # Run YOLO + bbox-text merge ONCE per page upfront, persist merged
-        # regions (with text_content populated) to document_layout_analysis.
-        # Stage 2 (per-product chunking) reads from this cache instead of
-        # running YOLO/Chandra per-product. Result: chunks=0 disappears
-        # structurally (was the b7d70de1 root cause), plus we don't pay HF
-        # cost N times for the same page.
-        #
-        # Toggle via LAYOUT_PRECOMPUTE_ENABLED — when False, Stage 2 falls
-        # back to its text-based path (round-14 fix in unified_chunking_service).
-        try:
-            _settings_for_precompute = get_settings()
-            if getattr(_settings_for_precompute, "layout_precompute_enabled", True):
-                from app.api.pdf_processing.stage_1_layout_precompute import (
-                    precompute_document_layout,
-                )
-                supabase_pre = get_supabase_client()
-                # Stage 1.5 iterates PHYSICAL pages internally (1..N) via
-                # `analyze_pdf_layout(pdf_path).physical_to_pdf_map` so it
-                # respects spread layouts (one PDF sheet → 2 physical
-                # pages, rendered as left/right clips). The chunker reads
-                # results keyed by physical page, so the cache shape has
-                # to match. We pass an optional hint from `catalog.total_pages`
-                # but Stage 1.5 derives the authoritative count itself.
-                _precompute_pdf_path = temp_pdf_path if 'temp_pdf_path' in locals() else file_path
-                _physical_pages_hint = getattr(catalog, "total_pages", None)
-
-                # Test-mode page-range scoping (added 2026-05-03): when
-                # `test_single_product=True`, only precompute layout for the
-                # FIRST product's page range. The full-document precompute on
-                # a 140-page catalog burned ~5-6 min before the test product
-                # ever started (job 051e1dda). Single-product validation
-                # doesn't need every page cached — only the test product's.
-                _test_page_range: Optional[List[int]] = None
-                if test_single_product and getattr(catalog, 'products', None):
-                    first_prod = catalog.products[0]
-                    _test_page_range = sorted(set(getattr(first_prod, 'page_range', None) or []))
-                    if _test_page_range:
-                        logger.info(
-                            f"🧪 STAGE 1.5 TEST MODE: scoping precompute to first product's pages only — "
-                            f"{first_prod.name}: {_test_page_range[0]}..{_test_page_range[-1]} "
-                            f"({len(_test_page_range)} pages, vs full doc {_physical_pages_hint or '?'})"
-                        )
-
-                if _precompute_pdf_path:
-                    logger.info("=" * 80)
-                    logger.info("📐 STAGE 1.5: DOCUMENT-LEVEL LAYOUT PRECOMPUTE")
-                    logger.info("=" * 80)
-                    _precompute_kwargs = dict(
-                        document_id=document_id,
-                        pdf_path=_precompute_pdf_path,
-                        supabase=supabase_pre,
-                        logger=logger,
-                        total_physical_pages_hint=_physical_pages_hint,
-                        job_id=job_id,
-                        tracker=tracker,  # nest-safe slow_op stack
-                    )
-                    if _test_page_range:
-                        _precompute_kwargs['only_physical_pages'] = _test_page_range
-                    precompute_summary = await precompute_document_layout(**_precompute_kwargs)
-                    job_storage[job_id]["metadata"] = {
-                        **job_storage[job_id].get("metadata", {}),
-                        "layout_precompute": precompute_summary,
-                    }
-                else:
-                    logger.warning(
-                        "⚠️ [STAGE 1.5] Skipping precompute — no temp_pdf_path"
-                    )
-            else:
-                logger.info("⏭️  [STAGE 1.5] Skipped (LAYOUT_PRECOMPUTE_ENABLED=False)")
-        except Exception as precompute_err:
-            # Stage 1.5 is best-effort; chunker has a text-based fallback.
-            logger.warning(
-                f"⚠️ [STAGE 1.5] failed (chunker will fall back to text-based): {precompute_err}",
-                exc_info=True,
-            )
+        # NOTE: the document-level structural pass (Surya) now runs as STAGE 1
+        # BEFORE discovery (see above) — structure-first. It is no longer run
+        # here after discovery.
 
         # Initialize product progress tracker
         from app.services.tracking.product_progress_tracker import ProductProgressTracker

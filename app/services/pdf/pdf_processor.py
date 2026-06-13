@@ -802,7 +802,7 @@ class PDFProcessor:
         rows = response.data or []
         cached: Dict[int, Any] = {}
         for row in rows:
-            if row.get('processing_version') != 'yolo+chandra-v2':
+            if row.get('processing_version') != 'surya-2':
                 continue
             page_num = int(row['page_number'])
             elements = row.get('layout_elements') or []

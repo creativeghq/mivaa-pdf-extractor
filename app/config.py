@@ -588,6 +588,70 @@ class Settings(BaseSettings):
     )
 
     # ============================================================================
+    # Surya-2 — STRUCTURAL-PASS BACKBONE (layout + OCR + figure boxes, one call)
+    # ============================================================================
+    # One vision-language model that returns the page layout, OCR'd text, and
+    # figure boxes in a single /v1/chat/completions call. Replaces YOLO (region/
+    # figure boxes) + Chandra (text + boxes) + merge_layout (which bucketed
+    # Chandra text into YOLO boxes — Surya does that internally).
+    # ============================================================================
+    surya_enabled: bool = Field(
+        default=True,
+        env="SURYA_ENABLED",
+        description="Enable the Surya-2 structural pass (the pipeline's layout+OCR backbone)"
+    )
+    surya_endpoint_url: str = Field(
+        default="https://cgfkr643d2v3lf15.eu-west-1.aws.endpoints.huggingface.cloud",
+        env="SURYA_ENDPOINT_URL",
+        description="Surya-2 Inference Endpoint URL"
+    )
+    surya_endpoint_name: str = Field(
+        default="surya",
+        env="SURYA_ENDPOINT_NAME",
+        description="Surya-2 Inference Endpoint name (for pause/resume operations)"
+    )
+    surya_namespace: str = Field(
+        default="basiliskan",
+        env="SURYA_NAMESPACE",
+        description="HuggingFace namespace/username for Surya endpoint management"
+    )
+    surya_model_name: str = Field(
+        default="surya-ocr-2",
+        env="SURYA_MODEL_NAME",
+        description="Model id sent in the chat request; must match what the served endpoint advertises"
+    )
+    surya_inference_timeout: int = Field(
+        default=180,
+        env="SURYA_INFERENCE_TIMEOUT",
+        description="Per-call timeout (s). Full-page passes on dense pages can take 30-90s."
+    )
+    surya_warmup_timeout: int = Field(
+        default=300,
+        env="SURYA_WARMUP_TIMEOUT",
+        description="Max warmup time after a cold start (s)"
+    )
+    surya_max_resume_retries: int = Field(
+        default=3,
+        env="SURYA_MAX_RESUME_RETRIES",
+        description="Resume attempts on a paused/scaled-to-zero endpoint"
+    )
+    surya_max_tokens: int = Field(
+        default=8000,
+        env="SURYA_MAX_TOKENS",
+        description="Completion cap for the full-page HTML structural pass"
+    )
+    surya_max_image_pixels: int = Field(
+        default=2_000_000,
+        env="SURYA_MAX_IMAGE_PIXELS",
+        description="Page renders larger than this are downscaled before send (Surya input range ~2MP)"
+    )
+    surya_concurrency: int = Field(
+        default=8,
+        env="SURYA_CONCURRENCY",
+        description="Max concurrent Surya inference calls"
+    )
+
+    # ============================================================================
     # YOLO DocParser - PRIMARY EXTRACTION METHOD (Layer 2 of 4-Layer Cascade)
     # ============================================================================
     # YOLO is the recommended primary extraction method because:
@@ -1178,6 +1242,23 @@ class Settings(BaseSettings):
             "max_resume_retries": self.chandra_max_resume_retries,
             "resume_timeout": self.chandra_resume_timeout,
             "inference_timeout": self.chandra_inference_timeout,
+        }
+
+    def get_surya_config(self) -> Dict[str, Any]:
+        """Get Surya-2 structural-pass endpoint configuration."""
+        return {
+            "enabled": self.surya_enabled,
+            "endpoint_url": self.surya_endpoint_url,
+            "hf_token": self.huggingface_api_key,
+            "endpoint_name": self.surya_endpoint_name,
+            "namespace": self.surya_namespace,
+            "model_name": self.surya_model_name,
+            "inference_timeout": self.surya_inference_timeout,
+            "warmup_timeout": self.surya_warmup_timeout,
+            "max_resume_retries": self.surya_max_resume_retries,
+            "max_tokens": self.surya_max_tokens,
+            "max_image_pixels": self.surya_max_image_pixels,
+            "concurrency": self.surya_concurrency,
         }
 
     def get_image_processing_config(self) -> Dict[str, Any]:

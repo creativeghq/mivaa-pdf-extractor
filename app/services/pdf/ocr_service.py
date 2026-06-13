@@ -1,17 +1,11 @@
 """
-OCR Service for multi-modal text extraction from images.
+OCR Service for multi-modal text extraction from image crops.
 
-Single-tier: Chandra v2 cloud endpoint only (HuggingFace, GPU, structured bbox-JSON).
-
-Pytesseract + EasyOCR were removed 2026-05-01 — pytesseract had been silently
-broken on production (TESSDATA_PREFIX unset, no en.traineddata installed) and
-even when "working" it produced bbox-less text that was indistinguishable to
-layout-merge from UNCLASSIFIED orphans, silently degrading layout-aware
-chunking. Chandra v2 retry-with-jitter (3 attempts, temps 0.0/0.4/0.8 — widened
-from the original 0.0/0.1/0.2 spread on 2026-05-03 because the narrow range
-left the model stuck in sticky-prose state through all three retries on
-graphic-heavy pages) raises the success rate past 90% and eliminates the need
-for a fallback engine.
+Single-tier: the Surya-2 structural pass (the platform's layout+OCR backbone).
+Per-crop OCR runs Surya in full-page mode on the crop, which returns the crop's
+text plus per-block bboxes — used for icon-metadata positioning and per-image
+OCR labels. Surya replaced the previous Chandra-only OCR engine (and the earlier
+Pytesseract/EasyOCR tiers, removed 2026-05-01).
 """
 
 import asyncio
@@ -25,9 +19,9 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 from dataclasses import dataclass, field
 
-from app.services.pdf.chandra_endpoint_manager import (
-    ChandraEndpointManager,
-    ChandraResponseError,
+from app.services.pdf.surya_endpoint_manager import (
+    SuryaEndpointManager,
+    SuryaResponseError,
 )
 
 # Import endpoint registry for using warmed-up managers
@@ -54,16 +48,16 @@ class IconMetadata:
 class OCRResult:
     """Data class for OCR extraction results.
 
-    `blocks` carries the per-fragment bbox list from Chandra v2 (each entry is
-    {text, x, y, w, h} in image pixel coordinates). Consumers that need
-    bbox-aware processing (icon-metadata extraction, layout-merge fallback)
-    must read `blocks`, NOT the legacy single-`bbox` field.
+    `blocks` carries the per-block bbox list derived from Surya's structural
+    pass (each entry is {text, x, y, w, h} in image pixel coordinates).
+    Consumers that need bbox-aware processing (icon-metadata extraction) must
+    read `blocks`, NOT the legacy single-`bbox` field.
 
     `method` values:
-      - 'chandra'         — successful OCR
-      - 'chandra_failed'  — all retries exhausted; text is "" and blocks is []
-                            (explicit failure marker; downstream can distinguish
-                            from "page genuinely had no text")
+      - 'surya'         — successful OCR
+      - 'surya_failed'  — all retries exhausted; text is "" and blocks is []
+                          (explicit failure marker; downstream can distinguish
+                          from "crop genuinely had no text")
     """
     text: str
     confidence: float
@@ -71,27 +65,17 @@ class OCRResult:
     language: Optional[str] = None
     method: Optional[str] = None
     blocks: List[Dict[str, Any]] = field(default_factory=list)
-    attempts_made: int = 0  # populated by _call_chandra; useful for telemetry
+    attempts_made: int = 0  # populated by _call_surya; useful for telemetry
 
 
 @dataclass
 class OCRConfig:
-    """Configuration for OCR processing (Chandra v2 only)."""
+    """Configuration for OCR processing (Surya-2 backbone)."""
     languages: List[str] = None
     use_gpu: bool = False
     confidence_threshold: float = 0.5
     preprocessing_enabled: bool = True
-
-    # Chandra OCR Endpoint Settings
-    chandra_enabled: bool = True
-    chandra_endpoint_url: str = ""
-    chandra_hf_token: str = ""
-    chandra_endpoint_name: str = ""
-    chandra_namespace: str = ""
-    chandra_confidence_threshold: float = 0.7
-    chandra_auto_pause_timeout: int = 60
-    chandra_inference_timeout: int = 30
-    chandra_max_resume_retries: int = 3
+    surya_enabled: bool = True
 
     def __post_init__(self):
         if self.languages is None:
@@ -183,11 +167,10 @@ class ImagePreprocessor:
 
 class OCRService:
     """
-    OCR Service providing text extraction from images.
+    OCR Service providing per-crop text extraction.
 
-    Single-tier: Chandra v2 cloud endpoint only (high quality, GPU, structured
-    bbox-JSON). Pytesseract + EasyOCR were removed 2026-05-01; failure is
-    surfaced explicitly via OCRResult.method='chandra_failed'.
+    Single-tier: the warmed Surya-2 manager (the platform's layout+OCR
+    backbone). Failure is surfaced explicitly via OCRResult.method='surya_failed'.
     """
 
     def __init__(self, config: Optional[OCRConfig] = None):
@@ -201,47 +184,30 @@ class OCRService:
         self.preprocessor = ImagePreprocessor()
         self._initialized = False
 
-        # Initialize Chandra Endpoint Manager - prefer warmed-up manager from registry
-        self.chandra_manager: Optional[ChandraEndpointManager] = None
-        if self.config.chandra_enabled:
-            # Try registry first for warmed-up manager
-            if REGISTRY_AVAILABLE:
-                try:
-                    registry_manager = endpoint_registry.get_chandra_manager()
-                    if registry_manager is not None:
-                        self.chandra_manager = registry_manager
-                        logger.info("✅ Using warmed-up Chandra manager from registry")
-                except Exception as e:
-                    logger.debug(f"Registry Chandra manager not available: {e}")
-
-            # Fallback: Create new manager if registry not available
-            if self.chandra_manager is None and self.config.chandra_endpoint_url and self.config.chandra_hf_token:
-                try:
-                    self.chandra_manager = ChandraEndpointManager(
-                        endpoint_url=self.config.chandra_endpoint_url,
-                        hf_token=self.config.chandra_hf_token,
-                        endpoint_name=self.config.chandra_endpoint_name,
-                        namespace=self.config.chandra_namespace,
-                        auto_pause_timeout=self.config.chandra_auto_pause_timeout,
-                        inference_timeout=self.config.chandra_inference_timeout,
-                        max_resume_retries=self.config.chandra_max_resume_retries,
-                        enabled=self.config.chandra_enabled
-                    )
-                    logger.info("ℹ️ Created new Chandra manager (registry not available)")
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to initialize Chandra endpoint manager: {e}")
-                    self.chandra_manager = None
+        # Use the warmed-up Surya manager from the registry. The orchestrator
+        # warms + registers it before any product processing; lazy-create as a
+        # fallback for ad-hoc callers outside a job (get_surya_manager builds
+        # from settings.get_surya_config()).
+        self.surya_manager: Optional[SuryaEndpointManager] = None
+        if self.config.surya_enabled and REGISTRY_AVAILABLE:
+            try:
+                self.surya_manager = endpoint_registry.get_surya_manager()
+                if self.surya_manager is not None:
+                    logger.info("✅ Using Surya manager from registry for OCR")
+            except Exception as e:
+                logger.warning(f"⚠️ Surya manager unavailable for OCR: {e}")
+                self.surya_manager = None
 
         logger.info(f"OCR Service initialized with languages: {self.config.languages}")
         self._initialized = True
 
     def initialize(self) -> None:
-        """Initialize OCR service. Chandra is ready from __init__."""
+        """Initialize OCR service. Surya is ready from __init__."""
         self._initialized = True
-        logger.info("OCR Service initialized (Chandra v2 single-tier)")
+        logger.info("OCR Service initialized (Surya-2 backbone)")
     
 
-    def _call_chandra(
+    def _call_surya(
         self,
         image: np.ndarray,
         caller: str = "ad_hoc",
@@ -249,65 +215,67 @@ class OCRService:
         job_id: Optional[str] = None,
         document_id: Optional[str] = None,
     ) -> List[OCRResult]:
-        """Call Chandra v2 with retry-with-jitter.
+        """Run Surya's structural pass on a crop with retry-with-jitter.
 
         Returns:
-            - One OCRResult with method='chandra' on success (text + blocks populated)
-            - One OCRResult with method='chandra_failed' on retry-exhaustion
+            - One OCRResult with method='surya' on success (text + per-block
+              bboxes in pixel coords)
+            - One OCRResult with method='surya_failed' on retry-exhaustion
               (explicit failure marker — text="", blocks=[]; consumers must check
               method, NOT just emptiness, to distinguish failure from "no text")
 
-        Never raises. HTTP errors are caught and converted to chandra_failed
+        Never raises. HTTP errors are caught and converted to surya_failed
         results so callers don't need to wrap in try/except.
         """
-        if not self.chandra_manager:
+        if not self.surya_manager:
             return [OCRResult(
-                text="", confidence=0.0, method='chandra_failed', blocks=[],
+                text="", confidence=0.0, method='surya_failed', blocks=[],
                 attempts_made=0,
             )]
 
         if isinstance(image, np.ndarray):
+            h, w = image.shape[:2]
             pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
         else:
             pil_image = image
+            w, h = pil_image.size
 
         import time as _time
-        _chandra_start = _time.time()
+        _surya_start = _time.time()
         try:
-            chandra_result = self.chandra_manager.run_inference(
+            surya_result = self.surya_manager.run_structural_pass(
                 pil_image,
                 caller=caller,
-                image_id=image_id,
+                page_number=None,
                 job_id=job_id,
                 document_id=document_id,
             )
             from app.services.core.endpoint_controller import endpoint_controller
-            endpoint_controller.record_success("chandra")
-        except ChandraResponseError as parse_err:
-            # All retries exhausted — return explicit failure marker.
-            logger.warning(f"❌ Chandra OCR exhausted retries for {caller}: {parse_err}")
+            endpoint_controller.record_success("surya")
+        except SuryaResponseError as parse_err:
+            logger.warning(f"❌ Surya OCR exhausted retries for {caller}: {parse_err}")
             return [OCRResult(
-                text="", confidence=0.0, method='chandra_failed', blocks=[],
-                attempts_made=len(self.chandra_manager._RETRY_TEMPERATURES),
+                text="", confidence=0.0, method='surya_failed', blocks=[],
+                attempts_made=len(self.surya_manager._RETRY_TEMPERATURES),
             )]
-        except Exception as chandra_err:
+        except Exception as surya_err:
             from app.services.core.endpoint_controller import endpoint_controller
-            endpoint_controller.record_overload_exception("chandra", chandra_err)
-            logger.warning(f"❌ Chandra HTTP/endpoint error for {caller}: {chandra_err}")
+            endpoint_controller.record_overload_exception("surya", surya_err)
+            logger.warning(f"❌ Surya HTTP/endpoint error for {caller}: {surya_err}")
             return [OCRResult(
-                text="", confidence=0.0, method='chandra_failed', blocks=[],
+                text="", confidence=0.0, method='surya_failed', blocks=[],
                 attempts_made=0,
             )]
 
-        # Track GPU time-based cost (L4 endpoint, $0.80/hr) — sync-safe.
+        # Track GPU time-based cost — sync-safe.
         try:
             import asyncio as _asyncio
             from app.services.core.ai_call_logger import AICallLogger
-            _chandra_latency_ms = int((_time.time() - _chandra_start) * 1000)
+            _surya_latency_ms = int((_time.time() - _surya_start) * 1000)
             _log_coro = AICallLogger().log_time_based_call(
-                task="pdf_ocr_chandra",
-                model="chandra-ocr-2",
-                latency_ms=_chandra_latency_ms,
+                task="pdf_ocr_surya",
+                model="surya-ocr-2",
+                latency_ms=_surya_latency_ms,
                 confidence_score=0.85,
                 confidence_breakdown={},
             )
@@ -317,23 +285,39 @@ class OCRService:
             except RuntimeError:
                 _asyncio.run(_log_coro)
         except Exception as _log_err:
-            logger.debug(f"Chandra logging failed (non-fatal): {_log_err}")
+            logger.debug(f"Surya OCR logging failed (non-fatal): {_log_err}")
 
-        chandra_text = chandra_result.get('generated_text', '') or ''
-        blocks = chandra_result.get('blocks', []) or []
-        attempts_made = chandra_result.get('attempts_made', 1)
+        surya_text = surya_result.get('generated_text', '') or ''
+        surya_blocks = surya_result.get('blocks', []) or []
+        attempts_made = surya_result.get('attempts_made', 1)
 
-        if chandra_text.strip() or blocks:
+        # Convert Surya's 0..1 blocks → pixel {text, x, y, w, h} for the
+        # bbox-aware consumers (icon-metadata positioning).
+        blocks: List[Dict[str, Any]] = []
+        for b in surya_blocks:
+            btext = getattr(b, "text", "") or ""
+            if not btext.strip():
+                continue
+            x0, y0, x1, y1 = b.bbox
+            blocks.append({
+                "text": btext,
+                "x": int(x0 * w),
+                "y": int(y0 * h),
+                "w": int((x1 - x0) * w),
+                "h": int((y1 - y0) * h),
+            })
+
+        if surya_text.strip() or blocks:
             return [OCRResult(
-                text=chandra_text,
+                text=surya_text,
                 confidence=0.85,
-                method='chandra',
+                method='surya',
                 blocks=blocks,
                 attempts_made=attempts_made,
             )]
-        # Parsed successfully but the page genuinely has no text.
+        # Parsed successfully but the crop genuinely has no text.
         return [OCRResult(
-            text="", confidence=0.85, method='chandra', blocks=[],
+            text="", confidence=0.85, method='surya', blocks=[],
             attempts_made=attempts_made,
         )]
 
@@ -347,17 +331,17 @@ class OCRService:
         document_id: Optional[str] = None,
     ) -> List[OCRResult]:
         """
-        Extract text from image using Chandra v2 (single-tier, with retry).
+        Extract text from image using the Surya structural pass (with retry).
 
         Returns:
             List of OCRResult. Always non-empty:
-              - Success: one OCRResult with method='chandra', text + blocks
-              - Failure (retries exhausted): one OCRResult with method='chandra_failed'
-              - No-text (page parsed clean but has no text): one OCRResult with
-                method='chandra' and text="" / blocks=[]
+              - Success: one OCRResult with method='surya', text + blocks
+              - Failure (retries exhausted): one OCRResult with method='surya_failed'
+              - No-text (crop parsed clean but has no text): one OCRResult with
+                method='surya' and text="" / blocks=[]
 
-            Callers MUST check `result.method == 'chandra_failed'` to distinguish
-            real failure from "no text on page" — both have empty text.
+            Callers MUST check `result.method == 'surya_failed'` to distinguish
+            real failure from "no text on crop" — both have empty text.
         """
         image = self._load_image(image_input)
 
@@ -365,7 +349,7 @@ class OCRService:
             image = self.preprocessor.enhance_image(image)
             image = self.preprocessor.preprocess_for_ocr(image)
 
-        return self._call_chandra(
+        return self._call_surya(
             image, caller=caller, image_id=image_id,
             job_id=job_id, document_id=document_id,
         )
@@ -496,11 +480,11 @@ class OCRService:
         """
         status = {
             'initialized': self._initialized,
-            'chandra_available': self.chandra_manager is not None,
+            'surya_available': self.surya_manager is not None,
             'languages': self.config.languages,
             'gpu_enabled': self.config.use_gpu,
         }
-        status['healthy'] = status['chandra_available']
+        status['healthy'] = status['surya_available']
         return status
 
     async def extract_icon_metadata(
@@ -556,20 +540,17 @@ class OCRService:
                 False,  # use_preprocessing=False — we already preprocessed above
             )
 
-            # Filter out chandra_failed markers — they have no usable text.
+            # Filter out surya_failed markers — they have no usable text.
             ocr_results = [
                 r for r in (ocr_results or [])
-                if r.method != 'chandra_failed' and (r.text.strip() or r.blocks)
+                if r.method != 'surya_failed' and (r.text.strip() or r.blocks)
             ]
             if not ocr_results:
-                logger.warning("No text extracted from image (Chandra failed or page empty)")
+                logger.warning("No text extracted from image (Surya failed or crop empty)")
                 return []
 
-            # Build per-fragment OCR data from Chandra's bbox blocks.
-            # Previously we used `result.bbox` which was always None — Claude was
-            # asked to reason about icon positions with no positional info.
-            # Now we pass the per-fragment {text, x, y, w, h} list that Chandra
-            # actually produced (audit fix #22).
+            # Build per-fragment OCR data from Surya's per-block bboxes so the
+            # AI can reason about icon positions, not just raw text.
             ocr_data = []
             for result in ocr_results:
                 if result.blocks:
@@ -617,8 +598,6 @@ class OCRService:
                 # `json` a function-local and raise UnboundLocalError.
                 import json
                 import re
-                import anthropic
-                import os
 
                 # Build full prompt with OCR data
                 full_prompt = f"{prompt_template}\n\n**OCR Results:**\n\n```json\n{json.dumps(ocr_data, indent=2)}\n```\n\nAnalyze the OCR results and extract icon-based metadata. Return ONLY valid JSON."
@@ -672,19 +651,18 @@ class OCRService:
 
     def get_endpoint_stats(self) -> Dict[str, Any]:
         """
-        Get Chandra endpoint usage statistics.
+        Get Surya endpoint usage statistics.
 
         Returns:
             Dictionary with endpoint stats (uptime, calls, etc.)
         """
-        if self.chandra_manager:
+        if self.surya_manager:
             return {
                 'enabled': True,
-                'total_uptime': self.chandra_manager.total_uptime,
-                'inference_count': self.chandra_manager.inference_count,
-                'resume_count': self.chandra_manager.resume_count,
-                'pause_count': self.chandra_manager.pause_count,
-                'last_used': self.chandra_manager.last_used
+                'total_uptime': self.surya_manager.total_uptime,
+                'inference_count': self.surya_manager.inference_count,
+                'resume_count': self.surya_manager.resume_count,
+                'last_used': self.surya_manager.last_used,
             }
         return {'enabled': False}
 

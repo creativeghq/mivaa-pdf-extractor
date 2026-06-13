@@ -381,36 +381,28 @@ async def precompute_document_layout(
         except Exception as _slow_err:
             logger.debug(f"   set_slow_operation (fallback) failed (non-fatal): {_slow_err}")
 
-    # 3. Resolve the YOLO detector + Chandra OCR fallback once, then
-    #    iterate physical pages serially. Serial iteration keeps memory
-    #    flat (one rendered image at a time) and aligns naturally with
-    #    the module-level YOLO warmup lock — no parallel hot-storm.
-    from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
-    from app.services.pdf.layout_merge_service import merge_layout
-    from app.services.pdf.chandra_endpoint_manager import ChandraResponseError
+    # 3. Resolve the Surya structural-pass manager once, then iterate physical
+    #    pages serially. Serial iteration keeps memory flat (one rendered image
+    #    at a time). Surya returns layout regions + OCR text + figure boxes in a
+    #    single call, so there is no separate detector, OCR fallback, or merge.
+    from app.services.embeddings.endpoint_registry import endpoint_registry
+    from app.services.pdf.surya_blocks import blocks_to_layout_elements
+    from app.services.pdf.surya_endpoint_manager import SuryaResponseError
 
-    detector: Optional[YoloLayoutDetector] = None
-    try:
-        detector = YoloLayoutDetector()
-        if not getattr(detector, "enabled", False):
-            detector = None
-    except Exception as e:
-        logger.warning(f"   ⚠️ [STAGE 1.5] YOLO detector init failed: {e}")
-        detector = None
-
-    ocr_service = None
-    chandra_manager = None
-    try:
-        from app.services.pdf.ocr_service import get_ocr_service
-        ocr_service = get_ocr_service()
-        chandra_manager = getattr(ocr_service, "chandra_manager", None)
-    except Exception as e:
-        logger.debug(f"   Chandra fallback not available: {e}")
+    surya_manager = endpoint_registry.get_surya_manager()
+    if surya_manager is None:
+        logger.error("   ❌ [STAGE 1.5] Surya manager unavailable — cannot precompute layout")
+        _emit_stage_event(
+            supabase, job_id, "failed",
+            {**summary, "error": "surya_manager_unavailable",
+             "duration_ms": int((time.time() - started_at) * 1000)},
+            logger,
+        )
+        return summary
 
     extraction_paths: Dict[str, int] = {
-        "pymupdf_spans": 0,
-        "chandra_v2": 0,
-        "yolo_only": 0,
+        "surya": 0,
+        "surya_no_text": 0,
         "none": 0,
     }
     persisted = 0
@@ -420,102 +412,63 @@ async def precompute_document_layout(
         for physical_page in pages_to_process:
             pdf_idx, position = physical_to_pdf[physical_page]
             extraction_path = "none"
-            merged_regions: List[Any] = []
-            # cache_status semantics (audit fix #6, #24):
-            #   'success'      — text fragments + region structure both present
-            #   'yolo_only'    — YOLO regions present, no text (legitimate empty-text page)
-            #   'empty_page'   — neither YOLO regions nor text fragments
-            #   'ocr_failed'   — Chandra exhausted retries; row will be retried on next run
-            #   'page_failed'  — outer exception; row will be retried on next run
+            layout_elements_payload: List[Dict[str, Any]] = []
+            # cache_status semantics:
+            #   'success'        — blocks present, at least one carries OCR text
+            #   'surya_no_text'  — blocks present but none carry text (e.g. a
+            #                      full-bleed image page) — legitimate; cached
+            #   'empty_page'     — Surya returned no blocks for the page
+            #   'ocr_failed'     — Surya exhausted retries; row retried next run
+            #   'page_failed'    — outer exception (render etc.); retried next run
             cache_status = "empty_page"
 
             try:
                 # 3a. Render the relevant half (or full sheet) to a PIL image.
-                image, bound_rect = await asyncio.to_thread(
+                image, _bound_rect = await asyncio.to_thread(
                     _render_physical_page, doc, pdf_idx, position
                 )
+                page_w_px, page_h_px = image.size
 
-                # 3b. Run YOLO on the rendered image.
-                yolo_regions: List[Any] = []
-                if detector is not None:
-                    yolo_result = await detector.detect_from_image(
-                        image=image, page_num=physical_page
+                # 3b. One Surya structural pass → layout regions + OCR text +
+                #     figure boxes, in the rendered half-page's own pixel frame.
+                #     Replaces YOLO + PyMuPDF/Chandra text + merge_layout.
+                try:
+                    surya_result = await asyncio.to_thread(
+                        surya_manager.run_structural_pass,
+                        image,
+                        "stage_1_5_layout_precompute",   # caller
+                        physical_page,                   # page_number
+                        job_id,                          # job_id
+                        document_id,                     # document_id
                     )
-                    yolo_regions = list(yolo_result.regions)
-
-                # 3c. Get text fragments inside the same clip — PyMuPDF
-                #     spans first (free, born-digital), Chandra v2 OCR if
-                #     no spans landed in the clip (scanned page).
-                clip_rect = _clip_rect_for_position(doc[pdf_idx], position)
-                pdf_spans = await asyncio.to_thread(
-                    _pymupdf_spans_in_clip, doc[pdf_idx], clip_rect
-                )
-
-                fragments: List[Dict[str, Any]] = []
-                chandra_failed = False
-                if pdf_spans:
-                    fragments = pdf_spans
-                    extraction_path = "pymupdf_spans"
-                elif chandra_manager is not None:
-                    try:
-                        chandra_result = await asyncio.to_thread(
-                            chandra_manager.run_inference,
-                            image,
-                            None,                                 # parameters
-                            DEFAULT_OCR_PROMPT_FOR_STAGE_1_5,     # prompt
-                            "stage_1_5_layout_precompute",        # caller
-                            None,                                 # image_id (unused at page level)
-                            job_id,                               # job_id
-                            document_id,                          # document_id
+                    blocks = surya_result.get("blocks") or []
+                    layout_elements_payload = blocks_to_layout_elements(
+                        blocks, page_w_px, page_h_px, physical_page
+                    )
+                    if layout_elements_payload:
+                        has_text = any(
+                            (el.get("text_content") or "").strip()
+                            for el in layout_elements_payload
                         )
-                        chandra_blocks = chandra_result.get("blocks") or []
-                        if chandra_blocks:
-                            fragments = chandra_blocks
-                            extraction_path = "chandra_v2"
-                    except ChandraResponseError as cre:
-                        # All retries exhausted — mark cache_status='ocr_failed'
-                        # so the resume-skip filter excludes this row and a
-                        # future run will retry (audit fix #7).
-                        chandra_failed = True
-                        logger.warning(
-                            f"   ⚠️ [STAGE 1.5] Chandra exhausted retries on physical "
-                            f"page {physical_page}: {cre}"
-                        )
-                    except Exception as ce:
-                        chandra_failed = True
-                        logger.warning(
-                            f"   ⚠️ [STAGE 1.5] Chandra HTTP/endpoint error on physical "
-                            f"page {physical_page}: {ce}"
-                        )
-
-                # 3d. Page-size hint for merge_layout to scale
-                #     0..1-normalized YOLO regions into pixel space.
-                page_size_px = (
-                    float(bound_rect.width) * PDF_POINTS_TO_PIXEL_ZOOM,
-                    float(bound_rect.height) * PDF_POINTS_TO_PIXEL_ZOOM,
-                )
-
-                # 3e. Merge YOLO regions + text fragments.
-                merged_regions = merge_layout(
-                    yolo_regions, fragments, page_size=page_size_px
-                )
-
-                # Determine cache_status (audit fix #6, #24).
-                if chandra_failed:
+                        cache_status = "success" if has_text else "surya_no_text"
+                        extraction_path = "surya" if has_text else "surya_no_text"
+                    else:
+                        cache_status = "empty_page"
+                        extraction_path = "none"
+                except SuryaResponseError as sre:
+                    # Retries exhausted — mark 'ocr_failed' so the resume-skip
+                    # filter excludes this row and a future run retries it.
                     cache_status = "ocr_failed"
-                    if not merged_regions and yolo_regions:
-                        extraction_path = "yolo_only"
-                elif fragments and merged_regions:
-                    has_text = any(
-                        getattr(r, "text_content", "").strip()
-                        for r in merged_regions
+                    logger.warning(
+                        f"   ⚠️ [STAGE 1.5] Surya exhausted retries on physical "
+                        f"page {physical_page}: {sre}"
                     )
-                    cache_status = "success" if has_text else "yolo_only"
-                elif yolo_regions:
-                    cache_status = "yolo_only"
-                    extraction_path = "yolo_only"
-                else:
-                    cache_status = "empty_page"
+                except Exception as se:
+                    cache_status = "ocr_failed"
+                    logger.warning(
+                        f"   ⚠️ [STAGE 1.5] Surya HTTP/endpoint error on physical "
+                        f"page {physical_page}: {se}"
+                    )
 
                 # Free the render before persisting (cap RSS).
                 try:
@@ -537,23 +490,14 @@ async def precompute_document_layout(
             #     valid: they short-circuit a future re-run from doing the
             #     same useless work).
             try:
-                # Build layout_elements + reading_order in lock-step so the
-                # cache readers (pdf_processor._load_cached_layout_for_pages
-                # and stage_1_focused_extraction._load_cached_layout) get
-                # both fields. The 2026-04-30 refactor of Stage 1.5 lost
-                # `processing_version`, `reading_order`, and
-                # `structure_confidence` from the payload — which silently
-                # invalidated every cache lookup downstream because the
-                # readers gate on `processing_version == 'yolo+chandra-v2'`.
-                # Result: Stage 3 Layer 2 (YOLO crop) saw cache=empty and
-                # fell back to live YOLO, which got hammered by the
-                # per-product loop and produced ~0 images. Restoring the
-                # three fields here brings image extraction back to its
-                # pre-refactor behavior. See migration df751cb.
-                layout_elements_payload = (
-                    [r.to_dict() for r in merged_regions]
-                    if merged_regions else []
-                )
+                # layout_elements_payload was built above from the Surya blocks
+                # (it is [] on empty/failed pages — still persisted so a future
+                # run short-circuits instead of redoing the work). reading_order
+                # is derived in lock-step. The cache readers
+                # (pdf_processor._load_cached_layout_for_pages,
+                # stage_1_focused_extraction._load_cached_layout,
+                # stage_2_chunking.get_layout_from_document_cache_with_status)
+                # gate on `processing_version`; that gate now accepts 'surya-2'.
                 reading_order_payload = [
                     {
                         "index": idx,
@@ -569,17 +513,17 @@ async def precompute_document_layout(
                     "layout_elements": layout_elements_payload,
                     "reading_order": reading_order_payload,
                     "structure_confidence": 0.85,
-                    "processing_version": "yolo+chandra-v2",
+                    "processing_version": "surya-2",
                     "analysis_metadata": {
                         "stage_1_5": True,
                         "extraction_path": extraction_path,
                         "cache_status": cache_status,
                         "pdf_idx": pdf_idx,
                         "position": position,
-                        "region_count": len(merged_regions),
+                        "region_count": len(layout_elements_payload),
                         "has_text_content": any(
-                            getattr(r, "text_content", "").strip()
-                            for r in merged_regions
+                            (el.get("text_content") or "").strip()
+                            for el in layout_elements_payload
                         ),
                     },
                 }
@@ -638,6 +582,52 @@ async def precompute_document_layout(
         logger,
     )
     return summary
+
+
+def build_page_text_from_layout_cache(
+    document_id: str,
+    supabase: Any,
+    logger: logging.Logger,
+) -> Optional[str]:
+    """Build discovery's page-marked text from the Surya structural cache.
+
+    Structure-first: the Surya pass runs before discovery and persists each
+    page's reading-order text into ``document_layout_analysis``. This joins that
+    text into the same ``--- # Page N ---`` page-marked string discovery expects
+    (cleaner + multilingual + layout-ordered vs. raw ``page.get_text()``).
+
+    Returns ``None`` when no Surya rows exist for the document, so the caller
+    falls back to the PyMuPDF text path (robustness, not a parallel pipeline).
+    """
+    try:
+        resp = (
+            supabase.client.table("document_layout_analysis")
+            .select("page_number, layout_elements, processing_version")
+            .eq("document_id", document_id)
+            .execute()
+        )
+    except Exception as e:
+        logger.debug(f"   layout-cache text build skipped: {e}")
+        return None
+
+    rows = [r for r in (resp.data or []) if r.get("processing_version") == "surya-2"]
+    if not rows:
+        return None
+
+    rows.sort(key=lambda r: int(r["page_number"]))
+    parts: List[str] = []
+    for row in rows:
+        elements = row.get("layout_elements") or []
+        ordered = sorted(
+            (e for e in elements if (e.get("text_content") or "").strip()),
+            key=lambda e: (
+                e.get("reading_order") if e.get("reading_order") is not None else 1_000_000
+            ),
+        )
+        page_text = "\n".join((e.get("text_content") or "").strip() for e in ordered)
+        parts.append(f"\n\n--- # Page {int(row['page_number'])} ---\n\n{page_text}")
+
+    return "\n\n".join(parts) if parts else None
 
 
 async def get_layout_from_document_cache(
