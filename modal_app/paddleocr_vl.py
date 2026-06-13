@@ -79,6 +79,11 @@ app = modal.App("paddleocr-vl")
     min_containers=MIN_CONTAINERS,
     max_containers=MAX_CONTAINERS,
     timeout=600,
+    # Cold load (model load + paddle JIT warmup) can exceed Modal's default
+    # 600s init budget on slower workers → container killed + recycle loop
+    # ('initializing for too long: 600s'). Give init headroom; higher precedence
+    # than `timeout`. Scale-to-zero unchanged ($0 idle).
+    startup_timeout=1800,
     volumes={"/root/.paddlex": weights},
     secrets=[modal.Secret.from_name("paddleocr-api-key")],
 )
