@@ -301,7 +301,7 @@ class CreditsIntegrationService:
             user_id: User ID who initiated the operation
             workspace_id: Workspace ID (optional)
             operation_type: Type of operation (e.g., 'vision_analysis')
-            model_name: HuggingFace endpoint model name (e.g., 'slig-768d', 'yolo-docparser', 'chandra-ocr-v2')
+            model_name: HuggingFace endpoint model name (e.g., 'slig-768d', 'surya-ocr-2')
             inference_seconds: Time taken for inference in seconds
             job_id: Background job ID for cost aggregation (optional)
             metadata: Additional metadata to store

@@ -906,24 +906,19 @@ jobs:
           Environment=VISUAL_EMBEDDING_MODE=${{ secrets.VISUAL_EMBEDDING_MODE }}
           Environment=VISUAL_EMBEDDING_PRIMARY_MODEL=${{ secrets.VISUAL_EMBEDDING_PRIMARY_MODEL }}
           Environment=VISUAL_EMBEDDING_DIMENSIONS=${{ secrets.VISUAL_EMBEDDING_DIMENSIONS }}
-          # YOLO / Chandra endpoint identity. Each HF inference endpoint can be
-          # renamed/replaced without a code change — populate the GH secret
-          # instead. Empty secrets fall back to the field default in
-          # app/config.py via _coerce_empty_string_to_default. After all of
-          # these are set in GH, delete the legacy drop-in at
-          # /etc/systemd/system/mivaa-pdf-extractor.service.d/qwen-endpoint.conf
-          # (the drop-in name is historical — Qwen was retired 2026-05-01).
+          # Surya-2 structural-pass endpoint identity (the layout+OCR backbone).
+          # Replaced YOLO + Chandra (deleted 2026-06-13). Each HF inference
+          # endpoint can be renamed/replaced without a code change — populate
+          # the GH secret instead. Empty secrets fall back to the field default
+          # in app/config.py (defaults baked in: the eu-west-1 endpoint URL,
+          # name=surya, namespace=basiliskan, model=surya-ocr-2).
           #
-          # QWEN_* env vars removed 2026-05-23: Qwen endpoint was retired
-          # 2026-05-01 (all vision → Claude Opus 4.7). Settings.qwen_* fields
-          # are deleted; the env vars no longer have any consumer. You may
-          # also delete the QWEN_* secrets from GitHub Actions when convenient.
-          Environment=YOLO_ENDPOINT_URL=${{ secrets.YOLO_ENDPOINT_URL }}
-          Environment=YOLO_ENDPOINT_NAME=${{ secrets.YOLO_ENDPOINT_NAME }}
-          Environment=YOLO_NAMESPACE=${{ secrets.YOLO_NAMESPACE }}
-          Environment=CHANDRA_ENDPOINT_URL=${{ secrets.CHANDRA_ENDPOINT_URL }}
-          Environment=CHANDRA_ENDPOINT_NAME=${{ secrets.CHANDRA_ENDPOINT_NAME }}
-          Environment=CHANDRA_NAMESPACE=${{ secrets.CHANDRA_NAMESPACE }}
+          # The legacy YOLO_* / CHANDRA_* / QWEN_* secrets no longer have any
+          # consumer and may be deleted from GitHub Actions when convenient.
+          Environment=SURYA_ENDPOINT_URL=${{ secrets.SURYA_ENDPOINT_URL }}
+          Environment=SURYA_ENDPOINT_NAME=${{ secrets.SURYA_ENDPOINT_NAME }}
+          Environment=SURYA_NAMESPACE=${{ secrets.SURYA_NAMESPACE }}
+          Environment=SURYA_MODEL_NAME=${{ secrets.SURYA_MODEL_NAME }}
           # Pipeline runtime caps. MAX_CONCURRENT_PRODUCTS=1 is the only
           # verified-safe value on a 4 GB droplet (above 1 hits cgroup
           # MemoryHigh and OOM-killed on Apr 29). Override via GH secret
