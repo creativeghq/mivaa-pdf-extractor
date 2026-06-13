@@ -7,13 +7,15 @@ allocate a GPU for us. The MIVAA backend talks the **identical**
 `/v1/chat/completions` contract to either host, so moving Surya between them is a
 config switch (`SURYA_PROVIDER`), not a code change.
 
-| | HuggingFace | Modal |
+| | Modal (default) | HuggingFace (fallback) |
 |---|---|---|
-| Switch | `SURYA_PROVIDER=huggingface` (default) | `SURYA_PROVIDER=modal` |
-| Lifecycle | SDK resume / poll-for-GPU / scale-to-zero | Modal owns autoscaling |
-| Warmup (MIVAA side) | SDK resume + `/health` probe | `/health` probe (Modal auto-wakes) |
-| Scale-to-zero | explicit SDK call at job end | `scaledown_window` idle clock |
-| Cost when idle | $0 (scaled to zero) | $0 (container drained) |
+| Switch | `SURYA_PROVIDER=modal` (default) | `SURYA_PROVIDER=huggingface` |
+| Lifecycle | Modal owns autoscaling | SDK resume / poll-for-GPU / scale-to-zero |
+| Warmup (MIVAA side) | `/health` probe (Modal auto-wakes) | SDK resume + `/health` probe |
+| Scale-to-zero | `scaledown_window` idle clock | explicit SDK call at job end |
+| Cost when idle | $0 (container drained) | $0 (scaled to zero) |
+
+**Already deployed** (2026-06-13): app `surya-vllm` at `https://basilakis--surya-vllm-serve.modal.run`. The URL is baked as the `surya_modal_url` config default, so the only runtime secret you must set on MIVAA is `SURYA_MODAL_API_KEY`. The steps below are for a fresh deploy / redeploy.
 
 The MIVAA lifecycle code (`app/services/pdf/endpoint_providers.py`) implements
 both as `EndpointProvider`s; `SuryaEndpointManager` just delegates to whichever
@@ -52,15 +54,15 @@ That URL is **`SURYA_MODAL_URL`**. The `SURYA_VLLM_API_KEY` value you set in ste
 is **`SURYA_MODAL_API_KEY`**.
 
 ### 3. Point MIVAA at Modal
-Set these on the MIVAA server (GitHub Actions secrets → `deploy.yml` `Environment=`
-lines, or the platform `Settings → Keys` DB fallback):
+`SURYA_PROVIDER` defaults to `modal` and `SURYA_MODAL_URL` is baked to the deployed
+app, so the **only** secret you must add is the bearer key:
 ```
-SURYA_PROVIDER=modal
-SURYA_MODAL_URL=https://<your-workspace>--surya-vllm-serve.modal.run
 SURYA_MODAL_API_KEY=<the value from step 1>
 ```
-Redeploy MIVAA (or let autodeploy run). The next PDF job warms + drives Surya on
-Modal. To roll back to HuggingFace, set `SURYA_PROVIDER=huggingface`.
+(Optionally override `SURYA_PROVIDER` / `SURYA_MODAL_URL` / `SURYA_MODAL_MODEL_NAME`.)
+Add it as a GitHub Actions secret (→ `deploy.yml` `Environment=` line) or via the
+platform `Settings → Keys` DB fallback, then redeploy MIVAA. The next PDF job warms
++ drives Surya on Modal. To roll back to HuggingFace, set `SURYA_PROVIDER=huggingface`.
 
 ---
 

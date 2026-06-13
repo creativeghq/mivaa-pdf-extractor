@@ -921,10 +921,12 @@ jobs:
           Environment=SURYA_NAMESPACE=${{ secrets.SURYA_NAMESPACE }}
           Environment=SURYA_MODEL_NAME=${{ secrets.SURYA_MODEL_NAME }}
           # Provider switch — which GPU host serves Surya. Empty secret → code
-          # default ("huggingface"). Set SURYA_PROVIDER=modal + the two SURYA_MODAL_*
-          # values (from `modal deploy modal_app/surya_vllm.py`) to run Surya on
-          # Modal instead of HF. The inference contract is identical; only the host
-          # changes. See mivaa-pdf-extractor/modal_app/README.md.
+          # default, which is now "modal" (the deployed surya-vllm app; URL baked
+          # in config.py). The ONLY required secret for the Modal path is
+          # SURYA_MODAL_API_KEY (the vLLM --api-key / surya-vllm-api-key Modal
+          # secret value). To fall back to HuggingFace set SURYA_PROVIDER=huggingface.
+          # The inference contract is identical; only the host changes.
+          # See mivaa-pdf-extractor/modal_app/README.md.
           Environment=SURYA_PROVIDER=${{ secrets.SURYA_PROVIDER }}
           Environment=SURYA_MODAL_URL=${{ secrets.SURYA_MODAL_URL }}
           Environment=SURYA_MODAL_API_KEY=${{ secrets.SURYA_MODAL_API_KEY }}
