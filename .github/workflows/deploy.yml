@@ -848,6 +848,7 @@ jobs:
           Environment=SUPABASE_URL=${{ secrets.SUPABASE_URL }}
           Environment=SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}
           Environment=SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          Environment=SUPABASE_JWT_SECRET=${{ secrets.SUPABASE_JWT_SECRET }}
           Environment=SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}
           Environment=SUPABASE_PROJECT_ID=${{ secrets.SUPABASE_PROJECT_ID }}
           Environment=ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
