@@ -144,33 +144,19 @@ class AIPricingConfig:
         }
     }
 
-    # YOLO Document Layout Detection Model (L4 GPU)
-    YOLO_PRICING = {
-        "yolo-docparser": {
+    # Surya-2 Structural Pass — layout + OCR + figure boxes in one call (GPU).
+    # Replaced YOLO DocParser + Chandra OCR. Both old SLIG-class GPU endpoints.
+    SURYA_PRICING = {
+        "surya-ocr-2": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("0.80"),  # L4 GPU
+            "hourly_rate_usd": Decimal("0.80"),  # GPU endpoint (HF Inference)
             "gpu_type": "nvidia-l4",
-            "last_verified": "2026-01-23",
+            "last_verified": "2026-06-13",
             "source": "HuggingFace Inference Endpoint",
-            "full_name": "YOLO DocParser Layout Detection",
-            "note": "Document layout detection, structure analysis"
-        }
-    }
-
-    # Chandra OCR v2 Model (T4 GPU)
-    OCR_PRICING = {
-        "chandra-ocr-2": {
-            "input": Decimal("0.00"),
-            "output": Decimal("0.00"),
-            "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("0.50"),  # T4 GPU
-            "gpu_type": "nvidia-t4",
-            "last_verified": "2026-04-25",
-            "source": "HuggingFace Inference Endpoint",
-            "full_name": "Chandra OCR v2 (chandra-ocr-2.Q8_0.gguf)",
-            "note": "State-of-the-art OCR with structured bbox-JSON output"
+            "full_name": "Surya-2 Structural Pass (datalab-to/surya-ocr-2)",
+            "note": "Layout regions + OCR text + figure boxes in one call; replaced YOLO + Chandra"
         }
     }
 
@@ -348,8 +334,7 @@ class AIPricingConfig:
             **cls.VISION_PRICING,
             **cls.QWEN_PRICING,
             **cls.VISUAL_EMBEDDING_PRICING,
-            **cls.YOLO_PRICING,
-            **cls.OCR_PRICING,
+            **cls.SURYA_PRICING,
             **cls.REPLICATE_PRICING,
             **cls.FIRECRAWL_PRICING,
             **cls.EXTERNAL_SERVICE_PRICING,
@@ -517,7 +502,7 @@ class AIPricingConfig:
         Cost = inference_seconds × (hourly_rate / 3600)
 
         Args:
-            model: HuggingFace endpoint model name (e.g., 'slig-768d', 'yolo-docparser', 'chandra-ocr-v2')
+            model: HuggingFace endpoint model name (e.g., 'slig-768d', 'surya-ocr-2')
             inference_seconds: Time taken for inference in seconds
             include_markup: If True, applies 50% markup (default: True)
 
@@ -526,7 +511,7 @@ class AIPricingConfig:
         """
         # Find the model in any time-based pricing dictionary
         pricing = None
-        for pricing_dict in [cls.QWEN_PRICING, cls.VISUAL_EMBEDDING_PRICING, cls.YOLO_PRICING, cls.OCR_PRICING]:
+        for pricing_dict in [cls.QWEN_PRICING, cls.VISUAL_EMBEDDING_PRICING, cls.SURYA_PRICING]:
             if model in pricing_dict and pricing_dict[model].get("billing_type") == "time_based":
                 pricing = pricing_dict[model]
                 break
@@ -604,8 +589,7 @@ class AIPricingConfig:
         time_based_dicts = [
             cls.QWEN_PRICING,
             cls.VISUAL_EMBEDDING_PRICING,
-            cls.YOLO_PRICING,
-            cls.OCR_PRICING
+            cls.SURYA_PRICING,
         ]
         for pricing_dict in time_based_dicts:
             if model in pricing_dict:

@@ -1274,7 +1274,7 @@ async def reprocess_image_ocr(
     but the admin determines it should have OCR applied.
     
     Process:
-    1. Run Chandra v2 OCR on the image
+    1. Run Surya OCR on the image
     2. Update image.ocr_extracted_text and ocr_confidence_score
     3. Update related chunks with new OCR text
     4. Regenerate text embeddings for updated chunks
@@ -1329,8 +1329,8 @@ async def reprocess_image_ocr(
                 tmp_image_path = tmp_file.name
         
         try:
-            # Step 3: Run Chandra v2 OCR
-            logger.info("🔍 Running Chandra v2 OCR...")
+            # Step 3: Run Surya OCR
+            logger.info("🔍 Running Surya OCR...")
             ocr_results = ocr_service.extract_text_from_image(tmp_image_path)
             
             extracted_text = ' '.join([r.text for r in ocr_results])

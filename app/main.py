@@ -864,7 +864,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 ### AI Models
 1. **Voyage AI**: voyage-4 (1024D text embeddings), GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus 4.7 (deep enrichment)
-3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), YOLO DocParser, Chandra OCR — vision is on Anthropic Claude (post-Qwen-removal 2026-05-01).
+3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), Surya-2 (structural pass: layout + OCR + figure boxes) — vision is on Anthropic Claude.
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
 5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
 
@@ -1263,8 +1263,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
 
     ### HuggingFace Inference Endpoints
     - **SLIG (SigLIP2)** - Visual embeddings endpoint (auto-pause/resume)
-    - **YOLO DocParser** - Layout detection endpoint (auto-pause/resume)
-    - **Chandra OCR** - Advanced OCR endpoint (auto-pause/resume)
+    - **Surya-2** - Structural pass: layout + OCR + figure boxes (auto-pause/resume)
 
     ### Application Services
     - **RAG Service** - Lazy-loaded; vision via Anthropic Claude Opus 4.7 (memory optimized)
