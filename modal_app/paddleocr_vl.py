@@ -113,12 +113,24 @@ class PaddleService:
             # Older signature without a device kwarg — rely on set_device above.
             self.pipeline = PaddleOCRVL()
 
-        # NOTE: we deliberately do NOT run a warmup predict here. A warmup
-        # predict pays the paddle JIT cost (not cached across cold starts) and
-        # BLOCKS @modal.enter for ~60-90s, during which /health can't be served
-        # and probes pile up. Instead we let the model load (~10-30s), serve
-        # /health immediately, and the FIRST real /parse pays the one-time JIT.
-        print("✅ PaddleOCR-VL pipeline loaded (model on GPU; first /parse pays JIT)")
+        # Warmup predict: pays the paddle JIT at container startup so the FIRST
+        # real /parse is fast (~3s) instead of timing out the caller (~3 min cold
+        # JIT). This blocks @modal.enter ~60-90s, during which /health can't be
+        # served — but with max_inputs=16 the handful of queued probes clear
+        # instantly once startup finishes (the earlier /health pile-up was the
+        # max_inputs=1 bug, not this warmup).
+        try:
+            import numpy as np
+            from PIL import Image, ImageDraw
+            im = Image.new("RGB", (1000, 1400), "white")
+            ImageDraw.Draw(im).text((60, 80), "WARMUP 123 Λευκό", fill="black")
+            import time as _t
+            t0 = _t.time()
+            _ = list(self.pipeline.predict(np.array(im)[:, :, ::-1]))
+            print(f"✅ warmup predict ok in {_t.time()-t0:.1f}s")
+        except Exception as e:  # noqa: BLE001 - warmup is best-effort
+            print(f"warmup predict skipped: {e}")
+        print("✅ PaddleOCR-VL pipeline loaded (JIT warm)")
 
     def _parse_image(self, image_bytes: bytes):
         """Run the pipeline on one image; return (regions, width, height)."""
