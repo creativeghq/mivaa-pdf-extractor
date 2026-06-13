@@ -81,17 +81,10 @@ app = modal.App("paddleocr-vl")
     timeout=600,
     volumes={"/root/.paddlex": weights},
     secrets=[modal.Secret.from_name("paddleocr-api-key")],
-    # Memory snapshots: serialize the loaded model + JIT-warmed GPU state so cold
-    # starts RESTORE from the snapshot (Modal reports ~10x faster) instead of
-    # re-downloading + re-loading + re-JITting (~250s, which forced the warmup
-    # patient-probe + caused the /health pile-ups). GPU snapshot is experimental
-    # but required here because we JIT-warm the pipeline on the GPU.
-    enable_memory_snapshot=True,
-    experimental_options={"enable_gpu_snapshot": True},
 )
 @modal.concurrent(max_inputs=MAX_CONCURRENT)
 class PaddleService:
-    @modal.enter(snap=True)
+    @modal.enter()
     def load(self):
         """Load the full PaddleOCR-VL pipeline once per container (layout + VLM).
 
