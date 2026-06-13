@@ -109,6 +109,11 @@ def serve():
         "--port", str(VLLM_PORT),
         "--api-key", api_key,
         "--trust-remote-code",
+        # Surya-2 is a Qwen2-VL-based model, so vLLM offers a video modality and
+        # profiles a MAX-size video tensor at startup → OOMs the 24 GB GPU and
+        # crash-loops. We only ever send ONE still image, so cap mm to image-only;
+        # this skips the video profiling entirely.
+        "--limit-mm-per-prompt", '{"image": 1, "video": 0}',
         "--max-model-len", MAX_MODEL_LEN,
         "--gpu-memory-utilization", GPU_MEM_UTIL,
         # Skip torch.compile + CUDA-graph capture. On a 650M model the decode
