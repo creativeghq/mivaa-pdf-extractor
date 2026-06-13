@@ -48,6 +48,16 @@ class PaddleOCRResponseError(RuntimeError):
     """
 
 
+class PaddleOCRConfigError(RuntimeError):
+    """Raised on a NON-retryable endpoint error (401/403/404).
+
+    A wrong bearer key (401/403) or wrong URL (404) is a configuration problem,
+    not a transient one — retrying just multiplies doomed requests. The manager
+    raises this immediately (no retry) and Stage 1 aborts the whole job, so one
+    misconfiguration surfaces as a single fast failure instead of ~100 calls.
+    """
+
+
 class PaddleOCRManager:
     """Manages the PaddleOCR-VL structural pass over a Modal endpoint provider."""
 
@@ -197,13 +207,24 @@ class PaddleOCRManager:
                 payload = self._do_parse(image_bytes, mode="page")
             except requests.HTTPError as he:
                 last_error = he
+                status = getattr(getattr(he, "response", None), "status_code", None)
+                non_retryable = status in (401, 403, 404)
                 self._emit_metric(
                     caller=caller, page_number=page_number, image_id=None,
                     job_id=job_id, document_id=document_id, attempt_number=attempt_idx,
-                    outcome="failed_http_error", region_count=None, chars_count=None,
+                    outcome="failed_config_error" if non_retryable else "failed_http_error",
+                    region_count=None, chars_count=None,
                     failure_mode_head=str(he)[:200],
                     latency_ms=int((time.time() - start_time) * 1000),
                 )
+                if non_retryable:
+                    # 401/403 = wrong bearer key; 404 = wrong URL. Retrying is
+                    # pointless and floods the endpoint — fail fast so Stage 1
+                    # aborts the whole job instead of doing pages × _MAX_ATTEMPTS.
+                    raise PaddleOCRConfigError(
+                        f"PaddleOCR endpoint misconfigured (HTTP {status}) — check "
+                        f"PADDLEOCR_MODAL_API_KEY / PADDLEOCR_MODAL_URL. {str(he)[:160]}"
+                    ) from he
                 if attempt_idx < self._MAX_ATTEMPTS:
                     time.sleep(2 ** (attempt_idx - 1))
                     continue

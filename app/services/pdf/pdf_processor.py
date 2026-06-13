@@ -2713,15 +2713,15 @@ class PDFProcessor:
                     )
 
                     if ocr_result_list:
-                        # Filter out Chandra-failed results explicitly. Failed
-                        # results carry method='chandra_failed' + text='' but
+                        # Filter out PaddleOCR-failed results explicitly. Failed
+                        # results carry method='paddleocr_failed' + text='' but
                         # are still present in the list — joining them would
                         # count a failed OCR pass as a "successful region with
                         # empty text" and mark the image as having no text
                         # (rather than as having failed and needing retry).
                         successful_results = [
                             r for r in ocr_result_list
-                            if getattr(r, 'method', None) != 'chandra_failed'
+                            if getattr(r, 'method', None) != 'paddleocr_failed'
                         ]
                         failed_count = len(ocr_result_list) - len(successful_results)
 
@@ -2750,7 +2750,7 @@ class PDFProcessor:
                             # different signals to downstream consumers.
                             self.logger.warning(
                                 f"  ⚠️ OCR failed for all {len(ocr_result_list)} regions "
-                                f"in image {idx+1} (all chandra_failed)"
+                                f"in image {idx+1} (all paddleocr_failed)"
                             )
                             ocr_results.append({
                                 'image_path': image_path,
@@ -2759,7 +2759,7 @@ class PDFProcessor:
                                 'language': 'unknown',
                                 'ocr_failed': True,
                                 'ocr_failed_regions': failed_count,
-                                'error': 'all_regions_chandra_failed',
+                                'error': 'all_regions_paddleocr_failed',
                                 'ai_classification': ocr_decision
                             })
                     else:

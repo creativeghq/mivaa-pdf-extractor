@@ -142,162 +142,91 @@ class EndpointHealthChecker:
         self._health_results["slig"] = result
         return result
 
-    async def check_yolo_health(self, endpoint_url: str, token: str) -> HealthCheckResult:
+    async def check_paddleocr_health(self, endpoint_url: str, token: str) -> HealthCheckResult:
         """
-        Check YOLO endpoint health.
+        Check the PaddleOCR-VL (Modal) endpoint with a real inference probe.
+
+        This is the gate that catches a broken endpoint BEFORE Stage 1 starts
+        the per-page loop. It POSTs a tiny image to ``/parse`` (the actual
+        contract): a misconfigured key (401/403) or wrong URL (404) is
+        non-retryable and fails the gate immediately; 200 means the endpoint can
+        do inference. The image is tiny so the probe is fast even on a real page
+        backlog — throughput is enforced separately by the Stage 1 circuit breaker.
 
         Args:
-            endpoint_url: YOLO endpoint URL
-            token: HuggingFace API token
-
-        Returns:
-            HealthCheckResult with status and timing
+            endpoint_url: Modal /parse base URL (the manager appends /parse)
+            token: PaddleOCR Modal bearer (PADDLEOCR_MODAL_API_KEY)
         """
+        import base64
+        import io
+
         import httpx
+        from PIL import Image
+
+        # A tiny white image with a word — parses near-instantly once warm.
+        _buf = io.BytesIO()
+        Image.new("RGB", (96, 48), "white").save(_buf, format="PNG")
+        body = {"image_b64": base64.b64encode(_buf.getvalue()).decode(), "mode": "page"}
+        parse_url = endpoint_url.rstrip("/") + "/parse"
 
         for attempt in range(1, self.max_health_check_attempts + 1):
             start_time = time.time()
             try:
                 async with httpx.AsyncClient(timeout=self.health_check_timeout_seconds) as client:
-                    # YOLO health check - simple GET or minimal POST
-                    response = await client.get(
-                        f"{endpoint_url.rstrip('/')}/health",
-                        headers={"Authorization": f"Bearer {token}"}
+                    response = await client.post(
+                        parse_url,
+                        headers={
+                            "Authorization": f"Bearer {token}",
+                            "Content-Type": "application/json",
+                        },
+                        json=body,
                     )
-
                     response_time_ms = (time.time() - start_time) * 1000
 
-                    # 404 alone is NOT proof of health — a paused endpoint,
-                    # revoked token, or wrong URL also 404s on every route.
-                    # When /health doesn't exist, confirm liveness with a
-                    # minimal POST to the base URL: a live custom handler
-                    # answers 200/400/422 (it routed the request), while a
-                    # paused/missing endpoint 404s on POST too.
-                    confirmed = response.status_code == 200
-                    if response.status_code == 404 and not confirmed:
-                        try:
-                            probe = await client.post(
-                                endpoint_url.rstrip('/'),
-                                headers={
-                                    "Authorization": f"Bearer {token}",
-                                    "Content-Type": "application/json",
-                                },
-                                json={"inputs": ""},
-                            )
-                            confirmed = probe.status_code in (200, 400, 422)
-                            if not confirmed:
-                                logger.warning(
-                                    f"⚠️ YOLO /health 404 and POST probe returned "
-                                    f"{probe.status_code} — endpoint paused or URL/token wrong"
-                                )
-                        except Exception as probe_err:
-                            logger.warning(f"⚠️ YOLO 404-confirmation probe failed: {probe_err}")
-
-                    if confirmed:
+                    if response.status_code == 200:
                         result = HealthCheckResult(
-                            endpoint_name="yolo",
+                            endpoint_name="paddleocr",
                             status=EndpointStatus.HEALTHY,
                             response_time_ms=response_time_ms,
-                            attempts=attempt
+                            attempts=attempt,
                         )
-                        self._health_results["yolo"] = result
-                        logger.info(f"✅ YOLO health check passed (attempt {attempt}, {response_time_ms:.0f}ms)")
+                        self._health_results["paddleocr"] = result
+                        logger.info(f"✅ PaddleOCR health check passed (attempt {attempt}, {response_time_ms:.0f}ms)")
+                        return result
+                    elif response.status_code in (401, 403, 404):
+                        # Non-retryable config error — fail the gate immediately.
+                        result = HealthCheckResult(
+                            endpoint_name="paddleocr",
+                            status=EndpointStatus.UNHEALTHY,
+                            error_message=f"HTTP {response.status_code} (check PADDLEOCR_MODAL_API_KEY/URL)",
+                            attempts=attempt,
+                        )
+                        self._health_results["paddleocr"] = result
+                        logger.error(
+                            f"❌ PaddleOCR health check: HTTP {response.status_code} — "
+                            f"endpoint misconfigured (key/URL). Aborting (non-retryable)."
+                        )
                         return result
                     elif response.status_code == 503:
-                        logger.info(f"⏳ YOLO still warming up (attempt {attempt}/{self.max_health_check_attempts})")
+                        logger.info(f"⏳ PaddleOCR still warming up (attempt {attempt}/{self.max_health_check_attempts})")
                     else:
-                        logger.warning(f"⚠️ YOLO health check failed: HTTP {response.status_code}")
+                        logger.warning(f"⚠️ PaddleOCR health check failed: HTTP {response.status_code}")
 
             except httpx.TimeoutException:
-                logger.info(f"⏳ YOLO health check timeout (attempt {attempt}/{self.max_health_check_attempts})")
+                logger.info(f"⏳ PaddleOCR health check timeout (attempt {attempt}/{self.max_health_check_attempts}) — cold start")
             except Exception as e:
-                logger.warning(f"⚠️ YOLO health check error (attempt {attempt}): {e}")
+                logger.warning(f"⚠️ PaddleOCR health check error (attempt {attempt}): {e}")
 
             if attempt < self.max_health_check_attempts:
                 await asyncio.sleep(self.health_check_interval_seconds)
 
-        # All attempts failed
         result = HealthCheckResult(
-            endpoint_name="yolo",
+            endpoint_name="paddleocr",
             status=EndpointStatus.UNHEALTHY,
             error_message=f"Failed after {self.max_health_check_attempts} attempts",
-            attempts=self.max_health_check_attempts
+            attempts=self.max_health_check_attempts,
         )
-        self._health_results["yolo"] = result
-        return result
-
-    async def check_chandra_health(self, endpoint_url: str, token: str) -> HealthCheckResult:
-        """
-        Check Chandra OCR endpoint health.
-
-        Chandra is a HuggingFace Inference Endpoint that may be paused.
-        A 400 error during warmup indicates the model is loading.
-        We wait until we get a proper response (even an error response is fine).
-
-        Args:
-            endpoint_url: Chandra endpoint URL
-            token: HuggingFace API token
-
-        Returns:
-            HealthCheckResult with status and timing
-        """
-        import httpx
-
-        # Chandra is a llama.cpp server behind a HuggingFace Inference
-        # Endpoint. Probe its `/health` route (returns `{"status":"ok"}`
-        # with a 200 when the model is loaded). Don't POST a HF Inference
-        # payload to `/` — llama.cpp doesn't route that and every probe
-        # would 404 even on a healthy endpoint.
-        base = endpoint_url.rstrip('/')
-        if base.endswith('/health'):
-            health_url = base
-        else:
-            health_url = base + '/health'
-
-        for attempt in range(1, self.max_health_check_attempts + 1):
-            start_time = time.time()
-            try:
-                async with httpx.AsyncClient(timeout=self.health_check_timeout_seconds) as client:
-                    response = await client.get(
-                        health_url,
-                        headers={"Authorization": f"Bearer {token}"},
-                    )
-
-                    response_time_ms = (time.time() - start_time) * 1000
-
-                    # 200 = healthy (ok), 400/422 = running but rejected our
-                    # probe shape (still healthy — the endpoint is responding).
-                    if response.status_code in [200, 400, 422]:
-                        result = HealthCheckResult(
-                            endpoint_name="chandra",
-                            status=EndpointStatus.HEALTHY,
-                            response_time_ms=response_time_ms,
-                            attempts=attempt
-                        )
-                        self._health_results["chandra"] = result
-                        logger.info(f"✅ Chandra health check passed (attempt {attempt}, {response_time_ms:.0f}ms, HTTP {response.status_code})")
-                        return result
-                    elif response.status_code == 503:
-                        logger.info(f"⏳ Chandra still warming up (attempt {attempt}/{self.max_health_check_attempts})")
-                    else:
-                        logger.warning(f"⚠️ Chandra health check failed: HTTP {response.status_code}")
-
-            except httpx.TimeoutException:
-                logger.info(f"⏳ Chandra health check timeout (attempt {attempt}/{self.max_health_check_attempts})")
-            except Exception as e:
-                logger.warning(f"⚠️ Chandra health check error (attempt {attempt}): {e}")
-
-            if attempt < self.max_health_check_attempts:
-                await asyncio.sleep(self.health_check_interval_seconds)
-
-        # All attempts failed
-        result = HealthCheckResult(
-            endpoint_name="chandra",
-            status=EndpointStatus.UNHEALTHY,
-            error_message=f"Failed after {self.max_health_check_attempts} attempts",
-            attempts=self.max_health_check_attempts
-        )
-        self._health_results["chandra"] = result
+        self._health_results["paddleocr"] = result
         return result
 
     async def check_all_endpoints(
@@ -329,15 +258,10 @@ class EndpointHealthChecker:
             tasks.append(self.check_slig_health(cfg["url"], cfg["token"]))
             endpoint_names.append("slig")
 
-        if "yolo" in endpoints_config:
-            cfg = endpoints_config["yolo"]
-            tasks.append(self.check_yolo_health(cfg["url"], cfg["token"]))
-            endpoint_names.append("yolo")
-
-        if "chandra" in endpoints_config:
-            cfg = endpoints_config["chandra"]
-            tasks.append(self.check_chandra_health(cfg["url"], cfg["token"]))
-            endpoint_names.append("chandra")
+        if "paddleocr" in endpoints_config:
+            cfg = endpoints_config["paddleocr"]
+            tasks.append(self.check_paddleocr_health(cfg["url"], cfg["token"]))
+            endpoint_names.append("paddleocr")
 
         # Run all health checks in parallel
         if tasks:

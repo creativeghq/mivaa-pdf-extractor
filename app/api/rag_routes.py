@@ -3359,9 +3359,13 @@ async def process_document_with_discovery(
         # BLOCKING GATE - Stop processing if required endpoints are unhealthy
         # ============================================================================
         if not all_healthy:
+            # A required endpoint is "failed" if it's unhealthy OR was never
+            # checked (missing from results). The latter used to silently slip
+            # through and let the job march into Stage 1 against a dead endpoint.
             failed_endpoints = [
-                name for name, result in health_results.items()
-                if result.status.value != 'healthy' and name in required_endpoints
+                name for name in required_endpoints
+                if name not in health_results
+                or health_results[name].status.value != 'healthy'
             ]
 
             if failed_endpoints:

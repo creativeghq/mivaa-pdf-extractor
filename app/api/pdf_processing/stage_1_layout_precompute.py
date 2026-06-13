@@ -384,7 +384,10 @@ async def precompute_document_layout(
     #    single call, so there is no separate detector, OCR fallback, or merge.
     from app.services.embeddings.endpoint_registry import endpoint_registry
     from app.services.pdf.paddleocr_pipeline import regions_to_layout_elements
-    from app.services.pdf.paddleocr_endpoint_manager import PaddleOCRResponseError
+    from app.services.pdf.paddleocr_endpoint_manager import (
+        PaddleOCRResponseError,
+        PaddleOCRConfigError,
+    )
 
     paddleocr_manager = endpoint_registry.get_paddleocr_manager()
     if paddleocr_manager is None:
@@ -403,6 +406,12 @@ async def precompute_document_layout(
         "none": 0,
     }
     persisted = 0
+
+    # Circuit breaker: if the first pages all fail with HTTP/endpoint errors, the
+    # endpoint is down/misconfigured — abort the whole job instead of grinding
+    # every page × retries against a dead endpoint (that was the request-flood).
+    consecutive_http_failures = 0
+    CIRCUIT_BREAKER_THRESHOLD = 3
 
     doc = await asyncio.to_thread(fitz.open, pdf_path)
     try:
@@ -452,20 +461,59 @@ async def precompute_document_layout(
                     else:
                         cache_status = "empty_page"
                         extraction_path = "none"
+                    consecutive_http_failures = 0  # a real response — endpoint is up
+                except PaddleOCRConfigError as cfg_err:
+                    # NON-retryable (401/403/404) — the endpoint is misconfigured.
+                    # Abort the whole job immediately; no point processing more pages.
+                    try:
+                        image.close()
+                    except Exception:
+                        pass
+                    logger.error(
+                        f"   ❌ [STAGE 1.5] PaddleOCR endpoint misconfigured — aborting job: {cfg_err}"
+                    )
+                    _emit_stage_event(
+                        supabase, job_id, "failed",
+                        {**summary, "error": f"paddleocr_config_error: {cfg_err}",
+                         "duration_ms": int((time.time() - started_at) * 1000)},
+                        logger,
+                    )
+                    raise RuntimeError(f"PaddleOCR endpoint misconfigured: {cfg_err}") from cfg_err
                 except PaddleOCRResponseError as sre:
                     # Retries exhausted — mark 'ocr_failed' so the resume-skip
                     # filter excludes this row and a future run retries it.
                     cache_status = "ocr_failed"
+                    consecutive_http_failures += 1
                     logger.warning(
                         f"   ⚠️ [STAGE 1.5] PaddleOCR exhausted retries on physical "
                         f"page {physical_page}: {sre}"
                     )
                 except Exception as se:
                     cache_status = "ocr_failed"
+                    consecutive_http_failures += 1
                     logger.warning(
                         f"   ⚠️ [STAGE 1.5] PaddleOCR HTTP/endpoint error on physical "
                         f"page {physical_page}: {se}"
                     )
+
+                # Circuit breaker: too many consecutive failures = endpoint down.
+                if consecutive_http_failures >= CIRCUIT_BREAKER_THRESHOLD:
+                    try:
+                        image.close()
+                    except Exception:
+                        pass
+                    msg = (
+                        f"PaddleOCR endpoint failed {consecutive_http_failures} pages in a "
+                        f"row — aborting job (endpoint down/too slow). Last page {physical_page}."
+                    )
+                    logger.error(f"   ❌ [STAGE 1.5] {msg}")
+                    _emit_stage_event(
+                        supabase, job_id, "failed",
+                        {**summary, "error": f"paddleocr_circuit_breaker: {msg}",
+                         "duration_ms": int((time.time() - started_at) * 1000)},
+                        logger,
+                    )
+                    raise RuntimeError(msg)
 
                 # Free the render before persisting (cap RSS).
                 try:
