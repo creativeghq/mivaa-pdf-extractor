@@ -111,6 +111,12 @@ def serve():
         "--trust-remote-code",
         "--max-model-len", MAX_MODEL_LEN,
         "--gpu-memory-utilization", GPU_MEM_UTIL,
+        # Skip torch.compile + CUDA-graph capture. On a 650M model the decode
+        # speedup is small, but capturing 50+ graph sizes adds 3-5 min to every
+        # cold start — a bad trade under scale-to-zero. Eager keeps cold starts
+        # ~30-60s. Remove this (set SURYA_ENFORCE_EAGER=0) only if you pin
+        # min_containers=1 and want the last few % of decode throughput.
+        *(["--enforce-eager"] if os.environ.get("SURYA_ENFORCE_EAGER", "1") == "1" else []),
     ]
     print("🚀 starting:", " ".join(c for c in cmd if c != api_key))
     subprocess.Popen(cmd)
