@@ -45,7 +45,7 @@ class EndpointProvider(ABC):
         token: str = "",
         warmup_timeout: int = 300,
         health_path: str = "/health",
-        health_timeout: int = 15,
+        health_timeout: int = 280,
     ):
         self.label = label                      # short key for logs, e.g. "paddleocr"
         self._token = token or ""
@@ -164,7 +164,7 @@ class ModalEndpointProvider(EndpointProvider):
         token: str = "",
         label: str = "paddleocr",
         warmup_timeout: int = 300,
-        health_timeout: int = 15,
+        health_timeout: int = 280,
     ):
         super().__init__(
             label=label,
