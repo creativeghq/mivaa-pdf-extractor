@@ -1075,24 +1075,19 @@ class PDFProcessor:
             f"   ✅ [Job: {job_id}] Layer 1 complete: {len(embedded_images)} embedded images"
         )
 
-        # Layer 2: Try YOLO-guided extraction (if enabled and no embedded images)
-        if settings.yolo_enabled:
-            self.logger.info(f"   🎯 [Job: {job_id}] Layer 2: YOLO-guided extraction...")
-            yolo_images = await self._extract_batch_images_with_yolo(
-                pdf_path, image_dir, batch_pages, job_id, document_id
-            )
-
-            # Mark extraction layer
-            for img in yolo_images:
-                img['extraction_layer'] = 'yolo_crop'
-
-            all_images.extend(yolo_images)
-
-            self.logger.info(
-                f"   ✅ [Job: {job_id}] Layer 2 complete: {len(yolo_images)} YOLO-cropped images"
-            )
-        else:
-            self.logger.info(f"   ⚠️ [Job: {job_id}] Layer 2 skipped: YOLO disabled")
+        # Layer 2: crop IMAGE/FIGURE regions from the Surya structural cache.
+        self.logger.info(f"   🖼️ [Job: {job_id}] Layer 2: cropping from Surya layout cache...")
+        cropped_images = await self._extract_batch_images_with_yolo(
+            pdf_path, image_dir, batch_pages, job_id, document_id
+        )
+        # extraction_layer stays 'yolo_crop' — downstream (Phase-3 OCR filter,
+        # dedupe buckets) keys on this exact tag; the source is now Surya.
+        for img in cropped_images:
+            img['extraction_layer'] = 'yolo_crop'
+        all_images.extend(cropped_images)
+        self.logger.info(
+            f"   ✅ [Job: {job_id}] Layer 2 complete: {len(cropped_images)} cropped images"
+        )
 
         # Layer 3: Full page render is already handled in PyMuPDF method
         # (it renders full page if no embedded images found)
@@ -2571,22 +2566,8 @@ class PDFProcessor:
             Tuple of (combined_ocr_text, ocr_results_list)
         """
         try:
-            # Get Chandra settings from app config to enable OCR fallback
-            from app.config import get_settings
-            settings = get_settings()
-
-            ocr_service = get_ocr_service(OCRConfig(
-                languages=ocr_languages,
-                chandra_enabled=settings.chandra_enabled,
-                chandra_endpoint_url=settings.chandra_endpoint_url,
-                chandra_hf_token=settings.huggingface_api_key,
-                chandra_endpoint_name=settings.chandra_endpoint_name,
-                chandra_namespace=settings.chandra_namespace,
-                chandra_confidence_threshold=settings.chandra_confidence_threshold,
-                chandra_auto_pause_timeout=settings.chandra_auto_pause_timeout,
-                chandra_inference_timeout=settings.chandra_inference_timeout,
-                chandra_max_resume_retries=settings.chandra_max_resume_retries
-            ))
+            # OCR runs on the Surya backbone (manager resolved from the registry).
+            ocr_service = get_ocr_service(OCRConfig(languages=ocr_languages))
 
             combined_ocr_text = ""
             ocr_results = []

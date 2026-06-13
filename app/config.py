@@ -113,14 +113,6 @@ class Settings(BaseSettings):
         default=32, env="SLIG_CONCURRENCY",
         description="Max concurrent SLIG visual-embedding requests (base=8 × 4 replicas)"
     )
-    yolo_concurrency: int = Field(
-        default=48, env="YOLO_CONCURRENCY",
-        description="Max concurrent YOLO layout-detection requests (base=12 × 4 replicas)"
-    )
-    chandra_concurrency: int = Field(
-        default=32, env="CHANDRA_CONCURRENCY",
-        description="Max concurrent Chandra OCR requests (base=8 × 4 replicas)"
-    )
     voyage_concurrency: int = Field(
         default=16, env="VOYAGE_CONCURRENCY",
         description="Max concurrent Voyage AI text-embedding requests (external API)"
@@ -335,11 +327,11 @@ class Settings(BaseSettings):
         env="OCR_CONFIDENCE_THRESHOLD"
     )
     # Chandra v2 is the only OCR engine. Pytesseract + EasyOCR were removed
-    # in the 2026-05-01 audit (pytesseract had been broken in prod for months,
-    # EasyOCR couldn't carry bbox metadata). This field is retained for
-    # downstream consumers of get_ocr_config() but only accepts "chandra".
+    # in the 2026-05-01 audit. OCR now runs on the Surya structural-pass
+    # backbone; this field is retained for downstream consumers of
+    # get_ocr_config() but only accepts "surya".
     ocr_engine: str = Field(
-        default="chandra",
+        default="surya",
         env="OCR_ENGINE"
     )
     ocr_gpu_enabled: bool = Field(
@@ -535,59 +527,6 @@ class Settings(BaseSettings):
     )
 
     # ============================================================================
-    # Chandra OCR v2 (chandra-ocr-2) - HuggingFace Inference Endpoint
-    # ============================================================================
-    # State-of-the-art OCR with structured bbox-JSON output. Used as primary OCR
-    # for scanned PDFs and per-image text extraction.
-    chandra_endpoint_url: str = Field(
-        default="https://v75ni2jqufw1mtad.us-east-1.aws.endpoints.huggingface.cloud",
-        env="CHANDRA_ENDPOINT_URL",
-        description="Chandra OCR v2 Inference Endpoint URL"
-    )
-    chandra_endpoint_name: str = Field(
-        default="chandra-ocr-2",
-        env="CHANDRA_ENDPOINT_NAME",
-        description="Chandra OCR v2 Inference Endpoint name (for pause/resume operations)"
-    )
-    chandra_namespace: str = Field(
-        default="basiliskan",
-        env="CHANDRA_NAMESPACE",
-        description="HuggingFace namespace/username for endpoint management"
-    )
-    chandra_enabled: bool = Field(
-        default=True,
-        env="CHANDRA_ENABLED",
-        description="Enable Chandra v2 OCR (the only supported OCR engine)"
-    )
-    chandra_confidence_threshold: float = Field(
-        default=0.7,
-        env="CHANDRA_CONFIDENCE_THRESHOLD",
-        description="Minimum confidence threshold for Chandra OCR results"
-    )
-    chandra_auto_pause_timeout: int = Field(
-        default=300,  # Increased from 60s to prevent re-warmup during jobs
-        env="CHANDRA_AUTO_PAUSE_TIMEOUT",
-        description="Seconds of idle time before auto-pausing endpoint (to prevent billing)"
-    )
-    chandra_max_resume_retries: int = Field(
-        default=3,
-        env="CHANDRA_MAX_RESUME_RETRIES",
-        description="Maximum retry attempts for resuming endpoint"
-    )
-    chandra_resume_timeout: int = Field(
-        default=300,
-        env="CHANDRA_RESUME_TIMEOUT",
-        description="Timeout in seconds for endpoint resume operation"
-    )
-    chandra_inference_timeout: int = Field(
-        default=120,
-        env="CHANDRA_INFERENCE_TIMEOUT",
-        description="Timeout in seconds for OCR inference calls. Chandra on icon strips "
-        "can take 30-90s depending on image size; 30s was the old default and produced "
-        "spurious read-timeout failures on normal-size catalog icon crops."
-    )
-
-    # ============================================================================
     # Surya-2 — STRUCTURAL-PASS BACKBONE (layout + OCR + figure boxes, one call)
     # ============================================================================
     # One vision-language model that returns the page layout, OCR'd text, and
@@ -649,67 +588,6 @@ class Settings(BaseSettings):
         default=8,
         env="SURYA_CONCURRENCY",
         description="Max concurrent Surya inference calls"
-    )
-
-    # ============================================================================
-    # YOLO DocParser - PRIMARY EXTRACTION METHOD (Layer 2 of 4-Layer Cascade)
-    # ============================================================================
-    # YOLO is the recommended primary extraction method because:
-    # - 7x cheaper than Vision-Guided ($0.03 vs $0.20 per 30 pages)
-    # - 2x faster (8 sec vs 15 sec per 30 pages)
-    # - Universal coverage (works on all PDF types, not just catalogs)
-    # - Post-processing adds intelligence (classification, metadata, embeddings)
-    # - Auto-pause/resume for cost control (~$0.60/hour when running)
-    # ============================================================================
-    yolo_enabled: bool = Field(
-        default=True,  # PRIMARY extraction method - enabled by default
-        env="YOLO_ENABLED",
-        description="Enable YOLO DocParser for layout detection (PRIMARY extraction method)"
-    )
-    yolo_endpoint_url: str = Field(
-        default="https://f763mkb5o68lmwtu.us-east-1.aws.endpoints.huggingface.cloud",
-        env="YOLO_ENDPOINT_URL",
-        description="YOLO DocParser Inference Endpoint URL"
-    )
-    yolo_endpoint_name: str = Field(
-        default="mh-yolo",
-        env="YOLO_ENDPOINT_NAME",
-        description="YOLO DocParser Inference Endpoint name (for pause/resume operations)"
-    )
-    yolo_namespace: str = Field(
-        default="basiliskan",
-        env="YOLO_NAMESPACE",
-        description="HuggingFace namespace/username for YOLO endpoint management"
-    )
-    yolo_confidence_threshold: float = Field(
-        default=0.5,
-        env="YOLO_CONFIDENCE_THRESHOLD",
-        description="Minimum confidence threshold for layout region detection (0.0-1.0)"
-    )
-    yolo_auto_pause_timeout: int = Field(
-        default=300,  # Increased from 60s to prevent re-warmup during jobs
-        env="YOLO_AUTO_PAUSE_TIMEOUT",
-        description="Seconds of idle time before auto-pausing YOLO endpoint (to prevent billing)"
-    )
-    yolo_max_resume_retries: int = Field(
-        default=3,
-        env="YOLO_MAX_RESUME_RETRIES",
-        description="Maximum retry attempts for resuming YOLO endpoint"
-    )
-    yolo_resume_timeout: int = Field(
-        default=300,
-        env="YOLO_RESUME_TIMEOUT",
-        description="Timeout in seconds for YOLO endpoint resume operation"
-    )
-    yolo_inference_timeout: int = Field(
-        default=30,
-        env="YOLO_INFERENCE_TIMEOUT",
-        description="Timeout in seconds for YOLO layout detection inference calls"
-    )
-    yolo_warmup_timeout: int = Field(
-        default=300,  # Increased from 60s to prevent re-warmup during jobs
-        env="YOLO_WARMUP_TIMEOUT",
-        description="Warmup time in seconds for YOLO endpoint (required before first inference)"
     )
 
     # Voyage AI Settings (Text Embeddings - Primary Provider)
@@ -946,8 +824,8 @@ class Settings(BaseSettings):
     @field_validator("ocr_engine")
     @classmethod
     def validate_ocr_engine(cls, v):
-        """Validate OCR engine selection. Chandra is the only supported engine."""
-        valid_engines = ["chandra"]
+        """Validate OCR engine selection. Surya is the only supported engine."""
+        valid_engines = ["surya"]
         if v.lower() not in valid_engines:
             raise ValueError(f"OCR engine must be one of: {valid_engines}")
         return v.lower()
@@ -1155,13 +1033,11 @@ class Settings(BaseSettings):
 
     def create_ocr_config(self, languages: Optional[List[str]] = None):
         """
-        Create OCRConfig instance with Chandra endpoint settings.
+        Create an OCRConfig instance. OCR runs on the Surya backbone (the
+        manager is resolved from the endpoint registry inside OCRService).
 
         Args:
             languages: OCR languages (defaults to ['en'])
-
-        Returns:
-            OCRConfig instance with all settings from environment
         """
         from app.services.pdf.ocr_service import OCRConfig
 
@@ -1170,79 +1046,7 @@ class Settings(BaseSettings):
             use_gpu=self.ocr_gpu_enabled,
             confidence_threshold=self.ocr_confidence_threshold,
             preprocessing_enabled=self.ocr_preprocessing_enabled,
-            # Chandra endpoint settings
-            chandra_enabled=self.chandra_enabled,
-            chandra_endpoint_url=self.chandra_endpoint_url,
-            chandra_hf_token=self.huggingface_api_key,
-            chandra_endpoint_name=self.chandra_endpoint_name,
-            chandra_namespace=self.chandra_namespace,
-            chandra_confidence_threshold=self.chandra_confidence_threshold,
-            chandra_auto_pause_timeout=self.chandra_auto_pause_timeout,
-            chandra_inference_timeout=self.chandra_inference_timeout,
-            chandra_max_resume_retries=self.chandra_max_resume_retries
         )
-
-    def get_yolo_config(self) -> Dict[str, Any]:
-        """
-        Get YOLO DocParser layout detection configuration.
-
-        This provides all necessary configuration for YOLO layout detection
-        including endpoint settings, confidence thresholds, and pause/resume settings.
-        """
-        return {
-            "enabled": self.yolo_enabled,
-            "endpoint_url": self.yolo_endpoint_url,
-            "endpoint_name": self.yolo_endpoint_name,
-            "namespace": self.yolo_namespace,
-            "hf_token": self.huggingface_api_key,
-            "confidence_threshold": self.yolo_confidence_threshold,
-            "auto_pause_timeout": self.yolo_auto_pause_timeout,
-            "max_resume_retries": self.yolo_max_resume_retries,
-            "resume_timeout": self.yolo_resume_timeout,
-            "inference_timeout": self.yolo_inference_timeout,
-            "warmup_timeout": self.yolo_warmup_timeout,
-        }
-
-    def get_slig_config(self) -> Dict[str, Any]:
-        """
-        Get SLIG (SigLIP2) visual embedding configuration.
-
-        This provides all necessary configuration for SLIG visual embeddings
-        including endpoint URL, authentication, model settings, and retry logic.
-        """
-        return {
-            "enabled": self.slig_enabled,
-            "endpoint_url": self.slig_endpoint_url,
-            "endpoint_token": self.slig_endpoint_token or self.huggingface_api_key,
-            "hf_token": self.slig_endpoint_token or self.huggingface_api_key,
-            "endpoint_name": self.slig_endpoint_name,
-            "namespace": self.slig_namespace,
-            "model_name": self.slig_model_name,
-            "embedding_dimension": self.slig_embedding_dimension,
-            "timeout": self.slig_timeout,
-            "max_retries": self.slig_max_retries,
-            "retry_delay": self.slig_retry_delay,
-        }
-
-    def get_chandra_config(self) -> Dict[str, Any]:
-        """
-        Get Chandra OCR endpoint configuration.
-
-        This provides all necessary configuration for Chandra OCR processing
-        including endpoint settings, confidence thresholds, and pause/resume settings.
-        """
-        return {
-            "enabled": self.chandra_enabled,
-            "endpoint_url": self.chandra_endpoint_url,
-            "hf_token": self.huggingface_api_key,
-            "endpoint_name": self.chandra_endpoint_name,
-            "namespace": self.chandra_namespace,
-            "confidence_threshold": self.chandra_confidence_threshold,
-            "auto_pause_timeout": self.chandra_auto_pause_timeout,
-            "max_resume_retries": self.chandra_max_resume_retries,
-            "resume_timeout": self.chandra_resume_timeout,
-            "inference_timeout": self.chandra_inference_timeout,
-        }
 
     def get_surya_config(self) -> Dict[str, Any]:
         """Get Surya-2 structural-pass endpoint configuration."""

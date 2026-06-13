@@ -7,7 +7,7 @@ to ensure they are only initialized and warmed up once per job/process.
 This prevents:
 - Repeated endpoint warmups during product processing
 - Multiple SLIGClient instances being created
-- Unnecessary YOLO endpoint manager re-initializations
+- Unnecessary Surya endpoint manager re-initializations
 
 Usage:
     from app.services.embeddings.endpoint_registry import endpoint_registry
@@ -15,8 +15,8 @@ Usage:
     # Get or create SLIG client (singleton)
     slig_client = endpoint_registry.get_slig_client()
 
-    # Get or create YOLO manager (singleton)
-    yolo_manager = endpoint_registry.get_yolo_manager()
+    # Get or create Surya manager (singleton)
+    surya_manager = endpoint_registry.get_surya_manager()
 
     # Start processing (prevents auto-pause)
     endpoint_registry.start_processing(job_id)
@@ -61,14 +61,10 @@ class EndpointRegistry:
 
         self._slig_client = None
         self._slig_manager = None
-        self._yolo_manager = None
-        self._chandra_manager = None
         self._surya_manager = None
 
         # Track warmup status
         self._slig_warmed_up = False
-        self._yolo_warmed_up = False
-        self._chandra_warmed_up = False
         self._surya_warmed_up = False
 
         # Track health check status
@@ -231,18 +227,9 @@ class EndpointRegistry:
         self._slig_warmed_up = warmed_up
         logger.info(f"📌 SLIG warmup status: {warmed_up}")
 
-    def set_yolo_warmed_up(self, warmed_up: bool = True):
-        """Mark YOLO endpoint as warmed up."""
-        self._yolo_warmed_up = warmed_up
-        logger.info(f"📌 YOLO warmup status: {warmed_up}")
-
     def is_slig_warmed_up(self) -> bool:
         """Check if SLIG endpoint is warmed up."""
         return self._slig_warmed_up
-
-    def is_yolo_warmed_up(self) -> bool:
-        """Check if YOLO endpoint is warmed up."""
-        return self._yolo_warmed_up
 
     def register_endpoint_managers(self, endpoint_managers: Dict[str, Any]):
         """
@@ -252,7 +239,7 @@ class EndpointRegistry:
         the warmed-up managers with the processing pipeline.
 
         Args:
-            endpoint_managers: Dict with 'slig', 'yolo', 'chandra' keys
+            endpoint_managers: Dict with 'slig', 'surya' keys
         """
         with self._client_lock:
             registered_count = 0
@@ -262,18 +249,6 @@ class EndpointRegistry:
                 self._slig_warmed_up = True
                 registered_count += 1
                 logger.info("📌 Registered pre-warmed SLIG manager")
-
-            if 'yolo' in endpoint_managers:
-                self._yolo_manager = endpoint_managers['yolo']
-                self._yolo_warmed_up = True
-                registered_count += 1
-                logger.info("📌 Registered pre-warmed YOLO manager")
-
-            if 'chandra' in endpoint_managers:
-                self._chandra_manager = endpoint_managers['chandra']
-                self._chandra_warmed_up = True
-                registered_count += 1
-                logger.info("📌 Registered pre-warmed Chandra manager")
 
             if 'surya' in endpoint_managers:
                 self._surya_manager = endpoint_managers['surya']
@@ -292,12 +267,8 @@ class EndpointRegistry:
         with self._client_lock:
             self._slig_client = None
             self._slig_manager = None
-            self._yolo_manager = None
-            self._chandra_manager = None
             self._surya_manager = None
             self._slig_warmed_up = False
-            self._yolo_warmed_up = False
-            self._chandra_warmed_up = False
             self._surya_warmed_up = False
             self._health_validated = False
             self._health_results = {}
@@ -311,10 +282,6 @@ class EndpointRegistry:
             "slig_client_active": self._slig_client is not None,
             "slig_manager_active": self._slig_manager is not None,
             "slig_warmed_up": self._slig_warmed_up,
-            "yolo_manager_active": self._yolo_manager is not None,
-            "yolo_warmed_up": self._yolo_warmed_up,
-            "chandra_manager_active": self._chandra_manager is not None,
-            "chandra_warmed_up": self._chandra_warmed_up,
             "surya_manager_active": self._surya_manager is not None,
             "surya_warmed_up": self._surya_warmed_up,
             "health_validated": self._health_validated,
@@ -410,8 +377,7 @@ class EndpointRegistry:
         # Check at least one manager is available
         has_manager = (
             self._slig_manager is not None or
-            self._yolo_manager is not None or
-            self._chandra_manager is not None
+            self._surya_manager is not None
         )
 
         if not has_manager:
@@ -419,10 +385,6 @@ class EndpointRegistry:
             return False
 
         return True
-
-    def get_chandra_manager(self) -> Optional[Any]:
-        """Get the registered Chandra manager."""
-        return self._chandra_manager
 
 
 # Global singleton instance

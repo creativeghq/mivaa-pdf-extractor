@@ -67,8 +67,7 @@ class EndpointAutoScaler:
             _s = get_settings()
             self.managed_endpoints = [
                 _s.slig_endpoint_name,
-                _s.chandra_endpoint_name,
-                _s.yolo_endpoint_name,
+                _s.surya_endpoint_name,
             ]
         except Exception as _settings_err:
             logger.warning(
@@ -77,8 +76,7 @@ class EndpointAutoScaler:
             )
             self.managed_endpoints = [
                 "mh-slig",
-                "chandra-ocr-2",
-                "mh-yolo",
+                "surya",
             ]
         
         if not HF_HUB_AVAILABLE:

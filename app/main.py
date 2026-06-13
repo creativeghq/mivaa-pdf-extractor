@@ -1669,36 +1669,32 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             "message": str(e)
         }
 
-    # YOLO DocParser (Layout Detection Endpoint)
+    # Surya-2 Structural Pass (Layout + OCR Endpoint) — replaced YOLO + Chandra
     try:
         settings = get_settings()
-        if settings.yolo_enabled and settings.yolo_endpoint_url:
-            cache_key = "yolo_endpoint"
+        if settings.surya_enabled and settings.surya_endpoint_url:
+            cache_key = "surya_endpoint"
             current_time = time.time()
 
             if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
                 cached_status = _ai_health_cache[cache_key]["status"].copy()
                 cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
                 cached_status["cached"] = True
-                services_status["yolo_endpoint"] = cached_status
+                services_status["surya_endpoint"] = cached_status
             else:
-                # Check endpoint status
                 try:
                     import httpx
                     start_time = time.time()
-
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         response = await client.get(
-                            settings.yolo_endpoint_url.replace("/v2/models", ""),  # Health endpoint
+                            settings.surya_endpoint_url.rstrip("/") + "/health",
                             headers={"Authorization": f"Bearer {settings.huggingface_api_key}"}
                         )
-
                     latency_ms = int((time.time() - start_time) * 1000)
-
                     if response.status_code == 400 and "paused" in response.text.lower():
                         status_result = {
                             "status": "healthy",
-                            "message": "YOLO endpoint paused (cost-saving mode)",
+                            "message": "Surya endpoint paused (cost-saving mode)",
                             "latency_ms": latency_ms,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
@@ -1706,7 +1702,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     elif response.status_code in [200, 503]:
                         status_result = {
                             "status": "healthy",
-                            "message": "YOLO endpoint operational",
+                            "message": "Surya endpoint operational",
                             "latency_ms": latency_ms,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
@@ -1718,8 +1714,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
                         }
-
-                    services_status["yolo_endpoint"] = status_result
+                    services_status["surya_endpoint"] = status_result
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
                 except Exception as api_error:
@@ -1729,90 +1724,16 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False
                     }
-                    services_status["yolo_endpoint"] = status_result
+                    services_status["surya_endpoint"] = status_result
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
         else:
-            services_status["yolo_endpoint"] = {
+            services_status["surya_endpoint"] = {
                 "status": "disabled",
-                "message": "YOLO endpoint not configured or disabled"
+                "message": "Surya endpoint not configured or disabled"
             }
     except Exception as e:
-        services_status["yolo_endpoint"] = {
-            "status": "unknown",
-            "message": str(e)
-        }
-
-    # Chandra OCR (Advanced OCR Endpoint)
-    try:
-        settings = get_settings()
-        if settings.chandra_enabled and settings.chandra_endpoint_url:
-            cache_key = "chandra_endpoint"
-            current_time = time.time()
-
-            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
-                cached_status = _ai_health_cache[cache_key]["status"].copy()
-                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
-                cached_status["cached"] = True
-                services_status["chandra_endpoint"] = cached_status
-            else:
-                # Check endpoint status
-                try:
-                    import httpx
-                    start_time = time.time()
-
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        response = await client.get(
-                            settings.chandra_endpoint_url.replace("/v2/models", ""),
-                            headers={"Authorization": f"Bearer {settings.huggingface_api_key}"}
-                        )
-
-                    latency_ms = int((time.time() - start_time) * 1000)
-
-                    if response.status_code == 400 and "paused" in response.text.lower():
-                        status_result = {
-                            "status": "healthy",
-                            "message": "Chandra endpoint paused (cost-saving mode)",
-                            "latency_ms": latency_ms,
-                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                            "cached": False
-                        }
-                    elif response.status_code in [200, 503]:
-                        status_result = {
-                            "status": "healthy",
-                            "message": "Chandra endpoint operational",
-                            "latency_ms": latency_ms,
-                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                            "cached": False
-                        }
-                    else:
-                        status_result = {
-                            "status": "degraded",
-                            "message": f"HTTP {response.status_code}",
-                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                            "cached": False
-                        }
-
-                    services_status["chandra_endpoint"] = status_result
-                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
-                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
-                except Exception as api_error:
-                    status_result = {
-                        "status": "degraded",
-                        "message": f"Connection error: {str(api_error)[:100]}",
-                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                        "cached": False
-                    }
-                    services_status["chandra_endpoint"] = status_result
-                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
-                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
-        else:
-            services_status["chandra_endpoint"] = {
-                "status": "disabled",
-                "message": "Chandra endpoint not configured or disabled"
-            }
-    except Exception as e:
-        services_status["chandra_endpoint"] = {
+        services_status["surya_endpoint"] = {
             "status": "unknown",
             "message": str(e)
         }

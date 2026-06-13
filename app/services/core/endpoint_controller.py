@@ -436,9 +436,8 @@ class EndpointController:
             from app.config import get_settings
             settings = get_settings()
             config_getters = {
-                "slig":    settings.get_slig_config,
-                "yolo":    settings.get_yolo_config,
-                "chandra": settings.get_chandra_config,
+                "slig":  settings.get_slig_config,
+                "surya": settings.get_surya_config,
             }
         except Exception as e:
             logger.warning(
@@ -551,9 +550,8 @@ class EndpointController:
             from app.config import get_settings
             settings = get_settings()
             config_getters = {
-                "slig":    settings.get_slig_config,
-                "yolo":    settings.get_yolo_config,
-                "chandra": settings.get_chandra_config,
+                "slig":  settings.get_slig_config,
+                "surya": settings.get_surya_config,
             }
         except Exception as e:
             logger.warning("scale_all_to_zero(reason=%s): could not load settings for HF fallback: %s", reason, e)
