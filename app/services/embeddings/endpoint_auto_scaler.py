@@ -62,12 +62,13 @@ class EndpointAutoScaler:
         # All HuggingFace endpoints to manage. Resolved from Settings (or env
         # var overrides) so the user can rename endpoints on HF without
         # editing code.
+        # Only SLIG remains on HuggingFace; PaddleOCR-VL (the structural pass)
+        # runs on Modal, which owns its own autoscaling.
         try:
             from app.config import get_settings
             _s = get_settings()
             self.managed_endpoints = [
                 _s.slig_endpoint_name,
-                _s.surya_endpoint_name,
             ]
         except Exception as _settings_err:
             logger.warning(
@@ -76,7 +77,6 @@ class EndpointAutoScaler:
             )
             self.managed_endpoints = [
                 "mh-slig",
-                "surya",
             ]
         
         if not HF_HUB_AVAILABLE:

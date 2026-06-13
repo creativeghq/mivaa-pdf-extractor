@@ -57,12 +57,12 @@ def _resolve_hf_endpoint_names() -> Dict[str, str]:
         s = get_settings()
         return {
             "slig":  s.slig_endpoint_name,
-            "surya": s.surya_endpoint_name,
+            "paddleocr": "paddleocr-vl",  # Modal endpoint; HF-SDK ops are skipped via provider guard
         }
     except Exception:
         return {
             "slig":  "mh-slig",
-            "surya": "surya",
+            "paddleocr": "paddleocr-vl",
         }
 
 
@@ -84,11 +84,11 @@ class EndpointController:
         # Tuning rationale:
         #   - SLIG (mh-slig): lightweight text-guided embeddings, fast responses.
         #     16 concurrent is fine; failures here usually mean network, not load.
-        #   - Surya (surya): the structural-pass backbone — layout + OCR + figure
-        #     boxes in one call, ~30-90s on dense pages. Heavier than SLIG; cap at
-        #     8 concurrent, 1 minimum. Replaced the YOLO + Chandra split.
+        #   - PaddleOCR (paddleocr): the structural-pass backbone (Modal) — layout
+        #     + OCR + figure boxes per page, ~1-3s warm. Heavier than SLIG; cap at
+        #     8 concurrent, 1 minimum. Replaced Surya-2.
         self.slig  = AdaptiveConcurrency(name="slig",  initial=8, minimum=2, maximum=16, failure_threshold=3, success_threshold=15)
-        self.surya = AdaptiveConcurrency(name="surya", initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
+        self.paddleocr = AdaptiveConcurrency(name="paddleocr", initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
 
         # Track warm state per endpoint so warm_all is idempotent.
         self._warmed: Dict[str, bool] = {k: False for k in VALID_ENDPOINT_KEYS}
@@ -160,7 +160,7 @@ class EndpointController:
     # ────────────────────────────────────────────────────────────────────
 
     def get_gate(self, endpoint: str) -> AdaptiveConcurrency:
-        """Look up the concurrency gate by short name ('slig'/'yolo'/'chandra')."""
+        """Look up the concurrency gate by short name ('slig'/'paddleocr')."""
         if endpoint not in VALID_ENDPOINT_KEYS:
             raise ValueError(
                 f"Unknown endpoint key {endpoint!r}. Valid keys: {sorted(VALID_ENDPOINT_KEYS)}"
@@ -213,7 +213,7 @@ class EndpointController:
     # ────────────────────────────────────────────────────────────────────
 
     async def warm_all(self, job_id: str) -> Dict[str, bool]:
-        """Warm up all HF endpoints (SLIG + Surya) in parallel.
+        """Warm up the structural endpoints (SLIG + PaddleOCR) in parallel.
 
         Each endpoint manager's `warmup()` method is sync (it uses `requests`,
         not httpx); we run them in threads so they can overlap without blocking
@@ -238,7 +238,7 @@ class EndpointController:
 
             warm_specs = [
                 ("slig",  endpoint_registry.get_slig_manager()),
-                ("surya", endpoint_registry.get_surya_manager()),
+                ("paddleocr", endpoint_registry.get_paddleocr_manager()),
             ]
             results = await asyncio.gather(
                 *[self._warm_one(key, mgr, job_id) for key, mgr in warm_specs],
@@ -437,7 +437,7 @@ class EndpointController:
             settings = get_settings()
             config_getters = {
                 "slig":  settings.get_slig_config,
-                "surya": settings.get_surya_config,
+                "paddleocr": settings.get_paddleocr_config,
             }
         except Exception as e:
             logger.warning(
@@ -561,7 +561,7 @@ class EndpointController:
             settings = get_settings()
             config_getters = {
                 "slig":  settings.get_slig_config,
-                "surya": settings.get_surya_config,
+                "paddleocr": settings.get_paddleocr_config,
             }
         except Exception as e:
             logger.warning("scale_all_to_zero(reason=%s): could not load settings for HF fallback: %s", reason, e)
@@ -569,7 +569,7 @@ class EndpointController:
 
         manager_getters = {
             "slig":  endpoint_registry.get_slig_manager,
-            "surya": endpoint_registry.get_surya_manager,
+            "paddleocr": endpoint_registry.get_paddleocr_manager,
         }
 
         outcome: Dict[str, bool] = {}
@@ -699,7 +699,7 @@ class EndpointController:
         """Single snapshot of the gates for progress reports + logs."""
         return {
             "slig":   self.slig.stats(),
-            "surya":  self.surya.stats(),
+            "paddleocr":  self.paddleocr.stats(),
             "warmed": dict(self._warmed),
         }
 

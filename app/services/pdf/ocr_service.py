@@ -1,10 +1,10 @@
 """
 OCR Service for multi-modal text extraction from image crops.
 
-Single-tier: the Surya-2 structural pass (the platform's layout+OCR backbone).
-Per-crop OCR runs Surya in full-page mode on the crop, which returns the crop's
+Single-tier: the PaddleOCR-VL structural pass (the platform's layout+OCR backbone).
+Per-crop OCR runs PaddleOCR in full-page mode on the crop, which returns the crop's
 text plus per-block bboxes — used for icon-metadata positioning and per-image
-OCR labels. Surya replaced the previous Chandra-only OCR engine (and the earlier
+OCR labels. PaddleOCR replaced the previous Chandra-only OCR engine (and the earlier
 Pytesseract/EasyOCR tiers, removed 2026-05-01).
 """
 
@@ -19,9 +19,9 @@ import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 from dataclasses import dataclass, field
 
-from app.services.pdf.surya_endpoint_manager import (
-    SuryaEndpointManager,
-    SuryaResponseError,
+from app.services.pdf.paddleocr_endpoint_manager import (
+    PaddleOCRManager,
+    PaddleOCRResponseError,
 )
 
 # Import endpoint registry for using warmed-up managers
@@ -48,14 +48,14 @@ class IconMetadata:
 class OCRResult:
     """Data class for OCR extraction results.
 
-    `blocks` carries the per-block bbox list derived from Surya's structural
+    `blocks` carries the per-block bbox list derived from PaddleOCR's structural
     pass (each entry is {text, x, y, w, h} in image pixel coordinates).
     Consumers that need bbox-aware processing (icon-metadata extraction) must
     read `blocks`, NOT the legacy single-`bbox` field.
 
     `method` values:
-      - 'surya'         — successful OCR
-      - 'surya_failed'  — all retries exhausted; text is "" and blocks is []
+      - 'paddleocr'     — successful OCR
+      - 'paddleocr_failed'  — all retries exhausted; text is "" and blocks is []
                           (explicit failure marker; downstream can distinguish
                           from "crop genuinely had no text")
     """
@@ -65,17 +65,17 @@ class OCRResult:
     language: Optional[str] = None
     method: Optional[str] = None
     blocks: List[Dict[str, Any]] = field(default_factory=list)
-    attempts_made: int = 0  # populated by _call_surya; useful for telemetry
+    attempts_made: int = 0  # populated by _call_paddleocr; useful for telemetry
 
 
 @dataclass
 class OCRConfig:
-    """Configuration for OCR processing (Surya-2 backbone)."""
+    """Configuration for OCR processing (PaddleOCR-VL backbone)."""
     languages: List[str] = None
     use_gpu: bool = False
     confidence_threshold: float = 0.5
     preprocessing_enabled: bool = True
-    surya_enabled: bool = True
+    paddleocr_enabled: bool = True
 
     def __post_init__(self):
         if self.languages is None:
@@ -169,8 +169,8 @@ class OCRService:
     """
     OCR Service providing per-crop text extraction.
 
-    Single-tier: the warmed Surya-2 manager (the platform's layout+OCR
-    backbone). Failure is surfaced explicitly via OCRResult.method='surya_failed'.
+    Single-tier: the warmed PaddleOCR-VL manager (the platform's layout+OCR
+    backbone). Failure is surfaced explicitly via OCRResult.method='paddleocr_failed'.
     """
 
     def __init__(self, config: Optional[OCRConfig] = None):
@@ -184,30 +184,30 @@ class OCRService:
         self.preprocessor = ImagePreprocessor()
         self._initialized = False
 
-        # Use the warmed-up Surya manager from the registry. The orchestrator
+        # Use the warmed-up PaddleOCR manager from the registry. The orchestrator
         # warms + registers it before any product processing; lazy-create as a
-        # fallback for ad-hoc callers outside a job (get_surya_manager builds
-        # from settings.get_surya_config()).
-        self.surya_manager: Optional[SuryaEndpointManager] = None
-        if self.config.surya_enabled and REGISTRY_AVAILABLE:
+        # fallback for ad-hoc callers outside a job (get_paddleocr_manager builds
+        # from settings.get_paddleocr_config()).
+        self.paddleocr_manager: Optional[PaddleOCRManager] = None
+        if self.config.paddleocr_enabled and REGISTRY_AVAILABLE:
             try:
-                self.surya_manager = endpoint_registry.get_surya_manager()
-                if self.surya_manager is not None:
-                    logger.info("✅ Using Surya manager from registry for OCR")
+                self.paddleocr_manager = endpoint_registry.get_paddleocr_manager()
+                if self.paddleocr_manager is not None:
+                    logger.info("✅ Using PaddleOCR manager from registry for OCR")
             except Exception as e:
-                logger.warning(f"⚠️ Surya manager unavailable for OCR: {e}")
-                self.surya_manager = None
+                logger.warning(f"⚠️ PaddleOCR manager unavailable for OCR: {e}")
+                self.paddleocr_manager = None
 
         logger.info(f"OCR Service initialized with languages: {self.config.languages}")
         self._initialized = True
 
     def initialize(self) -> None:
-        """Initialize OCR service. Surya is ready from __init__."""
+        """Initialize OCR service. PaddleOCR is ready from __init__."""
         self._initialized = True
-        logger.info("OCR Service initialized (Surya-2 backbone)")
+        logger.info("OCR Service initialized (PaddleOCR-VL backbone)")
     
 
-    def _call_surya(
+    def _call_paddleocr(
         self,
         image: np.ndarray,
         caller: str = "ad_hoc",
@@ -215,21 +215,21 @@ class OCRService:
         job_id: Optional[str] = None,
         document_id: Optional[str] = None,
     ) -> List[OCRResult]:
-        """Run Surya's structural pass on a crop with retry-with-jitter.
+        """Run PaddleOCR's structural pass on a crop with retry-with-jitter.
 
         Returns:
-            - One OCRResult with method='surya' on success (text + per-block
+            - One OCRResult with method='paddleocr' on success (text + per-block
               bboxes in pixel coords)
-            - One OCRResult with method='surya_failed' on retry-exhaustion
+            - One OCRResult with method='paddleocr_failed' on retry-exhaustion
               (explicit failure marker — text="", blocks=[]; consumers must check
               method, NOT just emptiness, to distinguish failure from "no text")
 
-        Never raises. HTTP errors are caught and converted to surya_failed
+        Never raises. HTTP errors are caught and converted to paddleocr_failed
         results so callers don't need to wrap in try/except.
         """
-        if not self.surya_manager:
+        if not self.paddleocr_manager:
             return [OCRResult(
-                text="", confidence=0.0, method='surya_failed', blocks=[],
+                text="", confidence=0.0, method='paddleocr_failed', blocks=[],
                 attempts_made=0,
             )]
 
@@ -241,9 +241,9 @@ class OCRService:
             w, h = pil_image.size
 
         import time as _time
-        _surya_start = _time.time()
+        _paddle_start = _time.time()
         try:
-            surya_result = self.surya_manager.run_structural_pass(
+            paddle_result = self.paddleocr_manager.run_structural_pass(
                 pil_image,
                 caller=caller,
                 page_number=None,
@@ -251,19 +251,19 @@ class OCRService:
                 document_id=document_id,
             )
             from app.services.core.endpoint_controller import endpoint_controller
-            endpoint_controller.record_success("surya")
-        except SuryaResponseError as parse_err:
-            logger.warning(f"❌ Surya OCR exhausted retries for {caller}: {parse_err}")
+            endpoint_controller.record_success("paddleocr")
+        except PaddleOCRResponseError as parse_err:
+            logger.warning(f"❌ PaddleOCR OCR exhausted retries for {caller}: {parse_err}")
             return [OCRResult(
-                text="", confidence=0.0, method='surya_failed', blocks=[],
-                attempts_made=len(self.surya_manager._RETRY_TEMPERATURES),
+                text="", confidence=0.0, method='paddleocr_failed', blocks=[],
+                attempts_made=self.paddleocr_manager._MAX_ATTEMPTS,
             )]
-        except Exception as surya_err:
+        except Exception as paddle_err:
             from app.services.core.endpoint_controller import endpoint_controller
-            endpoint_controller.record_overload_exception("surya", surya_err)
-            logger.warning(f"❌ Surya HTTP/endpoint error for {caller}: {surya_err}")
+            endpoint_controller.record_overload_exception("paddleocr", paddle_err)
+            logger.warning(f"❌ PaddleOCR HTTP/endpoint error for {caller}: {paddle_err}")
             return [OCRResult(
-                text="", confidence=0.0, method='surya_failed', blocks=[],
+                text="", confidence=0.0, method='paddleocr_failed', blocks=[],
                 attempts_made=0,
             )]
 
@@ -271,11 +271,11 @@ class OCRService:
         try:
             import asyncio as _asyncio
             from app.services.core.ai_call_logger import AICallLogger
-            _surya_latency_ms = int((_time.time() - _surya_start) * 1000)
+            _paddle_latency_ms = int((_time.time() - _paddle_start) * 1000)
             _log_coro = AICallLogger().log_time_based_call(
-                task="pdf_ocr_surya",
-                model="surya-ocr-2",
-                latency_ms=_surya_latency_ms,
+                task="pdf_ocr_paddleocr",
+                model="paddleocr-vl",
+                latency_ms=_paddle_latency_ms,
                 confidence_score=0.85,
                 confidence_breakdown={},
             )
@@ -285,17 +285,17 @@ class OCRService:
             except RuntimeError:
                 _asyncio.run(_log_coro)
         except Exception as _log_err:
-            logger.debug(f"Surya OCR logging failed (non-fatal): {_log_err}")
+            logger.debug(f"PaddleOCR OCR logging failed (non-fatal): {_log_err}")
 
-        surya_text = surya_result.get('generated_text', '') or ''
-        surya_blocks = surya_result.get('blocks', []) or []
-        attempts_made = surya_result.get('attempts_made', 1)
+        paddle_text = paddle_result.get('generated_text', '') or ''
+        paddle_regions = paddle_result.get('regions', []) or []
+        attempts_made = paddle_result.get('attempts_made', 1)
 
-        # Convert Surya's 0..1 blocks → pixel {text, x, y, w, h} for the
+        # Convert PaddleOCR's 0..1 blocks → pixel {text, x, y, w, h} for the
         # bbox-aware consumers (icon-metadata positioning).
         blocks: List[Dict[str, Any]] = []
-        for b in surya_blocks:
-            btext = getattr(b, "text", "") or ""
+        for b in paddle_regions:
+            btext = getattr(b, "content", "") or ""
             if not btext.strip():
                 continue
             x0, y0, x1, y1 = b.bbox
@@ -307,17 +307,17 @@ class OCRService:
                 "h": int((y1 - y0) * h),
             })
 
-        if surya_text.strip() or blocks:
+        if paddle_text.strip() or blocks:
             return [OCRResult(
-                text=surya_text,
+                text=paddle_text,
                 confidence=0.85,
-                method='surya',
+                method='paddleocr',
                 blocks=blocks,
                 attempts_made=attempts_made,
             )]
         # Parsed successfully but the crop genuinely has no text.
         return [OCRResult(
-            text="", confidence=0.85, method='surya', blocks=[],
+            text="", confidence=0.85, method='paddleocr', blocks=[],
             attempts_made=attempts_made,
         )]
 
@@ -331,16 +331,16 @@ class OCRService:
         document_id: Optional[str] = None,
     ) -> List[OCRResult]:
         """
-        Extract text from image using the Surya structural pass (with retry).
+        Extract text from image using the PaddleOCR structural pass (with retry).
 
         Returns:
             List of OCRResult. Always non-empty:
-              - Success: one OCRResult with method='surya', text + blocks
-              - Failure (retries exhausted): one OCRResult with method='surya_failed'
+              - Success: one OCRResult with method='paddleocr', text + blocks
+              - Failure (retries exhausted): one OCRResult with method='paddleocr_failed'
               - No-text (crop parsed clean but has no text): one OCRResult with
-                method='surya' and text="" / blocks=[]
+                method='paddleocr' and text="" / blocks=[]
 
-            Callers MUST check `result.method == 'surya_failed'` to distinguish
+            Callers MUST check `result.method == 'paddleocr_failed'` to distinguish
             real failure from "no text on crop" — both have empty text.
         """
         image = self._load_image(image_input)
@@ -349,7 +349,7 @@ class OCRService:
             image = self.preprocessor.enhance_image(image)
             image = self.preprocessor.preprocess_for_ocr(image)
 
-        return self._call_surya(
+        return self._call_paddleocr(
             image, caller=caller, image_id=image_id,
             job_id=job_id, document_id=document_id,
         )
@@ -480,11 +480,11 @@ class OCRService:
         """
         status = {
             'initialized': self._initialized,
-            'surya_available': self.surya_manager is not None,
+            'paddleocr_available': self.paddleocr_manager is not None,
             'languages': self.config.languages,
             'gpu_enabled': self.config.use_gpu,
         }
-        status['healthy'] = status['surya_available']
+        status['healthy'] = status['paddleocr_available']
         return status
 
     async def extract_icon_metadata(
@@ -540,16 +540,16 @@ class OCRService:
                 False,  # use_preprocessing=False — we already preprocessed above
             )
 
-            # Filter out surya_failed markers — they have no usable text.
+            # Filter out paddleocr_failed markers — they have no usable text.
             ocr_results = [
                 r for r in (ocr_results or [])
-                if r.method != 'surya_failed' and (r.text.strip() or r.blocks)
+                if r.method != 'paddleocr_failed' and (r.text.strip() or r.blocks)
             ]
             if not ocr_results:
-                logger.warning("No text extracted from image (Surya failed or crop empty)")
+                logger.warning("No text extracted from image (PaddleOCR failed or crop empty)")
                 return []
 
-            # Build per-fragment OCR data from Surya's per-block bboxes so the
+            # Build per-fragment OCR data from PaddleOCR's per-block bboxes so the
             # AI can reason about icon positions, not just raw text.
             ocr_data = []
             for result in ocr_results:
@@ -651,18 +651,18 @@ class OCRService:
 
     def get_endpoint_stats(self) -> Dict[str, Any]:
         """
-        Get Surya endpoint usage statistics.
+        Get PaddleOCR endpoint usage statistics.
 
         Returns:
             Dictionary with endpoint stats (uptime, calls, etc.)
         """
-        if self.surya_manager:
+        if self.paddleocr_manager:
             return {
                 'enabled': True,
-                'total_uptime': self.surya_manager.total_uptime,
-                'inference_count': self.surya_manager.inference_count,
-                'resume_count': self.surya_manager.resume_count,
-                'last_used': self.surya_manager.last_used,
+                'total_uptime': self.paddleocr_manager.total_uptime,
+                'inference_count': self.paddleocr_manager.inference_count,
+                'resume_count': self.paddleocr_manager.resume_count,
+                'last_used': self.paddleocr_manager.last_used,
             }
         return {'enabled': False}
 

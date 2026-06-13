@@ -1,5 +1,5 @@
 """
-Stage 1: Document-level structural pass (Surya-2, physical-page-aware).
+Stage 1: Document-level structural pass (PaddleOCR-VL, physical-page-aware).
 
 The pipeline's layout+OCR backbone. Iterates **physical pages**
 1..total_physical_pages — the same numbering products and chunks use
@@ -8,20 +8,20 @@ throughout the rest of the pipeline. For each physical page:
 1. Look up `(pdf_idx, position)` from `PDFLayoutAnalysis.physical_to_pdf_map`.
    `position` is one of `single` / `full` / `left` / `right`. For spread
    layouts a single PDF sheet maps to 2 physical pages; we render only
-   the relevant half before sending to Surya.
+   the relevant half before sending to PaddleOCR.
 2. Render the half-page (or full sheet) to a PIL image at LAYOUT_RENDER_DPI.
-3. One Surya structural pass over that image → layout regions (label + bbox)
+3. One PaddleOCR structural pass over that image → layout regions (label + bbox)
    + OCR'd text + figure boxes, in a single /v1/chat/completions call.
    This replaced the previous YOLO (region boxes) + PyMuPDF/Chandra (text) +
-   merge_layout (bucketing) three-step flow — Surya does all of it internally.
-4. `blocks_to_layout_elements()` maps the Surya blocks onto the existing
+   merge_layout (bucketing) three-step flow — PaddleOCR does all of it internally.
+4. `regions_to_layout_elements()` maps the PaddleOCR regions onto the existing
    `layout_elements` schema (region_type + pixel bbox + text_content).
 5. Persist to `document_layout_analysis` keyed on
-   `(document_id, physical_page_number)`, `processing_version='surya-2'` —
+   `(document_id, physical_page_number)`, `processing_version='paddleocr-vl'` —
    the same key/shape Stage 0 discovery, Stage 2 chunking, and Stage 3 crops
    read later.
 
-This runs BEFORE discovery (structure-first): discovery reads Surya's
+This runs BEFORE discovery (structure-first): discovery reads PaddleOCR's
 reading-order text instead of raw page.get_text().
 
 Resume-safe: pages already in the cache are skipped (ocr_failed/page_failed
@@ -378,28 +378,28 @@ async def precompute_document_layout(
         except Exception as _slow_err:
             logger.debug(f"   set_slow_operation (fallback) failed (non-fatal): {_slow_err}")
 
-    # 3. Resolve the Surya structural-pass manager once, then iterate physical
+    # 3. Resolve the PaddleOCR structural-pass manager once, then iterate physical
     #    pages serially. Serial iteration keeps memory flat (one rendered image
-    #    at a time). Surya returns layout regions + OCR text + figure boxes in a
+    #    at a time). PaddleOCR returns layout regions + OCR text + figure boxes in a
     #    single call, so there is no separate detector, OCR fallback, or merge.
     from app.services.embeddings.endpoint_registry import endpoint_registry
-    from app.services.pdf.surya_blocks import blocks_to_layout_elements
-    from app.services.pdf.surya_endpoint_manager import SuryaResponseError
+    from app.services.pdf.paddleocr_pipeline import regions_to_layout_elements
+    from app.services.pdf.paddleocr_endpoint_manager import PaddleOCRResponseError
 
-    surya_manager = endpoint_registry.get_surya_manager()
-    if surya_manager is None:
-        logger.error("   ❌ [STAGE 1.5] Surya manager unavailable — cannot precompute layout")
+    paddleocr_manager = endpoint_registry.get_paddleocr_manager()
+    if paddleocr_manager is None:
+        logger.error("   ❌ [STAGE 1.5] PaddleOCR manager unavailable — cannot precompute layout")
         _emit_stage_event(
             supabase, job_id, "failed",
-            {**summary, "error": "surya_manager_unavailable",
+            {**summary, "error": "paddleocr_manager_unavailable",
              "duration_ms": int((time.time() - started_at) * 1000)},
             logger,
         )
         return summary
 
     extraction_paths: Dict[str, int] = {
-        "surya": 0,
-        "surya_no_text": 0,
+        "paddleocr": 0,
+        "paddleocr_no_text": 0,
         "none": 0,
     }
     persisted = 0
@@ -412,10 +412,10 @@ async def precompute_document_layout(
             layout_elements_payload: List[Dict[str, Any]] = []
             # cache_status semantics:
             #   'success'        — blocks present, at least one carries OCR text
-            #   'surya_no_text'  — blocks present but none carry text (e.g. a
+            #   'paddleocr_no_text'  — blocks present but none carry text (e.g. a
             #                      full-bleed image page) — legitimate; cached
-            #   'empty_page'     — Surya returned no blocks for the page
-            #   'ocr_failed'     — Surya exhausted retries; row retried next run
+            #   'empty_page'     — PaddleOCR returned no regions for the page
+            #   'ocr_failed'     — PaddleOCR exhausted retries; row retried next run
             #   'page_failed'    — outer exception (render etc.); retried next run
             cache_status = "empty_page"
 
@@ -426,44 +426,44 @@ async def precompute_document_layout(
                 )
                 page_w_px, page_h_px = image.size
 
-                # 3b. One Surya structural pass → layout regions + OCR text +
+                # 3b. One PaddleOCR structural pass → layout regions + OCR text +
                 #     figure boxes, in the rendered half-page's own pixel frame.
                 #     Replaces YOLO + PyMuPDF/Chandra text + merge_layout.
                 try:
-                    surya_result = await asyncio.to_thread(
-                        surya_manager.run_structural_pass,
+                    paddle_result = await asyncio.to_thread(
+                        paddleocr_manager.run_structural_pass,
                         image,
                         "stage_1_5_layout_precompute",   # caller
                         physical_page,                   # page_number
                         job_id,                          # job_id
                         document_id,                     # document_id
                     )
-                    blocks = surya_result.get("blocks") or []
-                    layout_elements_payload = blocks_to_layout_elements(
-                        blocks, page_w_px, page_h_px, physical_page
+                    regions = paddle_result.get("regions") or []
+                    layout_elements_payload = regions_to_layout_elements(
+                        regions, page_w_px, page_h_px, physical_page
                     )
                     if layout_elements_payload:
                         has_text = any(
                             (el.get("text_content") or "").strip()
                             for el in layout_elements_payload
                         )
-                        cache_status = "success" if has_text else "surya_no_text"
-                        extraction_path = "surya" if has_text else "surya_no_text"
+                        cache_status = "success" if has_text else "paddleocr_no_text"
+                        extraction_path = "paddleocr" if has_text else "paddleocr_no_text"
                     else:
                         cache_status = "empty_page"
                         extraction_path = "none"
-                except SuryaResponseError as sre:
+                except PaddleOCRResponseError as sre:
                     # Retries exhausted — mark 'ocr_failed' so the resume-skip
                     # filter excludes this row and a future run retries it.
                     cache_status = "ocr_failed"
                     logger.warning(
-                        f"   ⚠️ [STAGE 1.5] Surya exhausted retries on physical "
+                        f"   ⚠️ [STAGE 1.5] PaddleOCR exhausted retries on physical "
                         f"page {physical_page}: {sre}"
                     )
                 except Exception as se:
                     cache_status = "ocr_failed"
                     logger.warning(
-                        f"   ⚠️ [STAGE 1.5] Surya HTTP/endpoint error on physical "
+                        f"   ⚠️ [STAGE 1.5] PaddleOCR HTTP/endpoint error on physical "
                         f"page {physical_page}: {se}"
                     )
 
@@ -487,14 +487,14 @@ async def precompute_document_layout(
             #     valid: they short-circuit a future re-run from doing the
             #     same useless work).
             try:
-                # layout_elements_payload was built above from the Surya blocks
+                # layout_elements_payload was built above from the PaddleOCR regions
                 # (it is [] on empty/failed pages — still persisted so a future
                 # run short-circuits instead of redoing the work). reading_order
                 # is derived in lock-step. The cache readers
                 # (pdf_processor._load_cached_layout_for_pages,
                 # stage_1_focused_extraction._load_cached_layout,
                 # stage_2_chunking.get_layout_from_document_cache_with_status)
-                # gate on `processing_version`; that gate now accepts 'surya-2'.
+                # gate on `processing_version`; that gate now accepts 'paddleocr-vl'.
                 reading_order_payload = [
                     {
                         "index": idx,
@@ -510,7 +510,7 @@ async def precompute_document_layout(
                     "layout_elements": layout_elements_payload,
                     "reading_order": reading_order_payload,
                     "structure_confidence": 0.85,
-                    "processing_version": "surya-2",
+                    "processing_version": "paddleocr-vl",
                     "analysis_metadata": {
                         "stage_1_5": True,
                         "extraction_path": extraction_path,
@@ -586,14 +586,14 @@ def build_page_text_from_layout_cache(
     supabase: Any,
     logger: logging.Logger,
 ) -> Optional[str]:
-    """Build discovery's page-marked text from the Surya structural cache.
+    """Build discovery's page-marked text from the PaddleOCR structural cache.
 
-    Structure-first: the Surya pass runs before discovery and persists each
+    Structure-first: the PaddleOCR pass runs before discovery and persists each
     page's reading-order text into ``document_layout_analysis``. This joins that
     text into the same ``--- # Page N ---`` page-marked string discovery expects
     (cleaner + multilingual + layout-ordered vs. raw ``page.get_text()``).
 
-    Returns ``None`` when no Surya rows exist for the document, so the caller
+    Returns ``None`` when no PaddleOCR rows exist for the document, so the caller
     falls back to the PyMuPDF text path (robustness, not a parallel pipeline).
     """
     try:
@@ -607,7 +607,7 @@ def build_page_text_from_layout_cache(
         logger.debug(f"   layout-cache text build skipped: {e}")
         return None
 
-    rows = [r for r in (resp.data or []) if r.get("processing_version") == "surya-2"]
+    rows = [r for r in (resp.data or []) if r.get("processing_version") == "paddleocr-vl"]
     if not rows:
         return None
 

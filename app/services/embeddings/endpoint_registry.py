@@ -7,7 +7,7 @@ to ensure they are only initialized and warmed up once per job/process.
 This prevents:
 - Repeated endpoint warmups during product processing
 - Multiple SLIGClient instances being created
-- Unnecessary Surya endpoint manager re-initializations
+- Unnecessary PaddleOCR endpoint manager re-initializations
 
 Usage:
     from app.services.embeddings.endpoint_registry import endpoint_registry
@@ -15,8 +15,8 @@ Usage:
     # Get or create SLIG client (singleton)
     slig_client = endpoint_registry.get_slig_client()
 
-    # Get or create Surya manager (singleton)
-    surya_manager = endpoint_registry.get_surya_manager()
+    # Get or create PaddleOCR manager (singleton)
+    paddleocr_manager = endpoint_registry.get_paddleocr_manager()
 
     # Start processing (prevents auto-pause)
     endpoint_registry.start_processing(job_id)
@@ -61,11 +61,11 @@ class EndpointRegistry:
 
         self._slig_client = None
         self._slig_manager = None
-        self._surya_manager = None
+        self._paddleocr_manager = None
 
         # Track warmup status
         self._slig_warmed_up = False
-        self._surya_warmed_up = False
+        self._paddleocr_warmed_up = False
 
         # Track health check status
         self._health_validated = False
@@ -166,51 +166,42 @@ class EndpointRegistry:
                 logger.error(f"❌ Failed to create SLIG manager: {e}")
                 return None
 
-    def get_surya_manager(self, force_new: bool = False) -> Optional[Any]:
+    def get_paddleocr_manager(self, force_new: bool = False) -> Optional[Any]:
         """
-        Get or create the singleton Surya-2 structural-pass manager.
+        Get or create the singleton PaddleOCR-VL structural-pass manager.
 
-        Surya is the pipeline's layout+OCR backbone (one call returns layout
-        regions + OCR text + figure boxes), replacing YOLO + Chandra + merge.
+        PaddleOCR-VL is the pipeline's layout+OCR backbone (one /parse call per
+        page returns layout regions + OCR text + figure boxes), replacing Surya-2.
 
         Returns:
-            SuryaEndpointManager instance or None if not configured/enabled.
+            PaddleOCRManager instance or None if not configured/enabled.
         """
         with self._client_lock:
-            if self._surya_manager is not None and not force_new:
-                logger.debug("♻️ Reusing existing Surya manager (singleton)")
-                return self._surya_manager
+            if self._paddleocr_manager is not None and not force_new:
+                logger.debug("♻️ Reusing existing PaddleOCR manager (singleton)")
+                return self._paddleocr_manager
 
             try:
                 from app.config import get_settings
-                from app.services.pdf.surya_endpoint_manager import SuryaEndpointManager
+                from app.services.pdf.paddleocr_endpoint_manager import PaddleOCRManager
 
                 settings = get_settings()
-                surya_config = settings.get_surya_config()
+                paddle_config = settings.get_paddleocr_config()
 
-                if not surya_config.get("enabled", False):
-                    logger.warning("⚠️ Surya endpoint not enabled")
+                if not paddle_config.get("enabled", False):
+                    logger.warning("⚠️ PaddleOCR endpoint not enabled")
                     return None
-                if not surya_config.get("endpoint_url"):
-                    logger.warning(
-                        "⚠️ Surya endpoint not configured (provider=%s) — set %s",
-                        surya_config.get("provider"),
-                        "SURYA_MODAL_URL" if surya_config.get("provider") == "modal" else "SURYA_ENDPOINT_URL",
-                    )
+                if not paddle_config.get("endpoint_url"):
+                    logger.warning("⚠️ PaddleOCR endpoint not configured — set PADDLEOCR_MODAL_URL")
                     return None
 
-                # Provider-aware build (huggingface | modal). The factory inside
-                # from_config picks the lifecycle strategy from surya_config['provider'].
-                self._surya_manager = SuryaEndpointManager.from_config(surya_config)
+                self._paddleocr_manager = PaddleOCRManager.from_config(paddle_config)
 
-                logger.info(
-                    "✅ Surya manager created (singleton, provider=%s)",
-                    surya_config.get("provider"),
-                )
-                return self._surya_manager
+                logger.info("✅ PaddleOCR manager created (singleton, provider=modal)")
+                return self._paddleocr_manager
 
             except Exception as e:
-                logger.error(f"❌ Failed to create Surya manager: {e}")
+                logger.error(f"❌ Failed to create PaddleOCR manager: {e}")
                 return None
 
     def set_slig_client(self, client: Any):
@@ -236,7 +227,7 @@ class EndpointRegistry:
         the warmed-up managers with the processing pipeline.
 
         Args:
-            endpoint_managers: Dict with 'slig', 'surya' keys
+            endpoint_managers: Dict with 'slig', 'paddleocr' keys
         """
         with self._client_lock:
             registered_count = 0
@@ -247,11 +238,11 @@ class EndpointRegistry:
                 registered_count += 1
                 logger.info("📌 Registered pre-warmed SLIG manager")
 
-            if 'surya' in endpoint_managers:
-                self._surya_manager = endpoint_managers['surya']
-                self._surya_warmed_up = True
+            if 'paddleocr' in endpoint_managers:
+                self._paddleocr_manager = endpoint_managers['paddleocr']
+                self._paddleocr_warmed_up = True
                 registered_count += 1
-                logger.info("📌 Registered pre-warmed Surya manager")
+                logger.info("📌 Registered pre-warmed PaddleOCR manager")
 
             logger.info(f"📊 Total endpoint managers registered: {registered_count}")
 
@@ -264,9 +255,9 @@ class EndpointRegistry:
         with self._client_lock:
             self._slig_client = None
             self._slig_manager = None
-            self._surya_manager = None
+            self._paddleocr_manager = None
             self._slig_warmed_up = False
-            self._surya_warmed_up = False
+            self._paddleocr_warmed_up = False
             self._health_validated = False
             self._health_results = {}
             self._active_jobs = []
@@ -279,8 +270,8 @@ class EndpointRegistry:
             "slig_client_active": self._slig_client is not None,
             "slig_manager_active": self._slig_manager is not None,
             "slig_warmed_up": self._slig_warmed_up,
-            "surya_manager_active": self._surya_manager is not None,
-            "surya_warmed_up": self._surya_warmed_up,
+            "paddleocr_manager_active": self._paddleocr_manager is not None,
+            "paddleocr_warmed_up": self._paddleocr_warmed_up,
             "health_validated": self._health_validated,
             "active_jobs": len(self._active_jobs),
             "is_processing": self.is_processing()
@@ -374,7 +365,7 @@ class EndpointRegistry:
         # Check at least one manager is available
         has_manager = (
             self._slig_manager is not None or
-            self._surya_manager is not None
+            self._paddleocr_manager is not None
         )
 
         if not has_manager:

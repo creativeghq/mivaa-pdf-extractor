@@ -907,30 +907,18 @@ jobs:
           Environment=VISUAL_EMBEDDING_MODE=${{ secrets.VISUAL_EMBEDDING_MODE }}
           Environment=VISUAL_EMBEDDING_PRIMARY_MODEL=${{ secrets.VISUAL_EMBEDDING_PRIMARY_MODEL }}
           Environment=VISUAL_EMBEDDING_DIMENSIONS=${{ secrets.VISUAL_EMBEDDING_DIMENSIONS }}
-          # Surya-2 structural-pass endpoint identity (the layout+OCR backbone).
-          # Replaced YOLO + Chandra (deleted 2026-06-13). Each HF inference
-          # endpoint can be renamed/replaced without a code change — populate
-          # the GH secret instead. Empty secrets fall back to the field default
-          # in app/config.py (defaults baked in: the eu-west-1 endpoint URL,
-          # name=surya, namespace=basiliskan, model=surya-ocr-2).
-          #
-          # The legacy YOLO_* / CHANDRA_* / QWEN_* secrets no longer have any
-          # consumer and may be deleted from GitHub Actions when convenient.
-          Environment=SURYA_ENDPOINT_URL=${{ secrets.SURYA_ENDPOINT_URL }}
-          Environment=SURYA_ENDPOINT_NAME=${{ secrets.SURYA_ENDPOINT_NAME }}
-          Environment=SURYA_NAMESPACE=${{ secrets.SURYA_NAMESPACE }}
-          Environment=SURYA_MODEL_NAME=${{ secrets.SURYA_MODEL_NAME }}
-          # Provider switch — which GPU host serves Surya. Empty secret → code
-          # default, which is now "modal" (the deployed surya-vllm app; URL baked
-          # in config.py). The ONLY required secret for the Modal path is
-          # SURYA_MODAL_API_KEY (the vLLM --api-key / surya-vllm-api-key Modal
-          # secret value). To fall back to HuggingFace set SURYA_PROVIDER=huggingface.
-          # The inference contract is identical; only the host changes.
-          # See mivaa-pdf-extractor/modal_app/README.md.
-          Environment=SURYA_PROVIDER=${{ secrets.SURYA_PROVIDER }}
-          Environment=SURYA_MODAL_URL=${{ secrets.SURYA_MODAL_URL }}
-          Environment=SURYA_MODAL_API_KEY=${{ secrets.SURYA_MODAL_API_KEY }}
-          Environment=SURYA_MODAL_MODEL_NAME=${{ secrets.SURYA_MODAL_MODEL_NAME }}
+          # PaddleOCR-VL structural-pass endpoint (the layout+OCR backbone, on
+          # Modal). Replaced Surya-2 2026-06-13. The Modal URL is baked as the
+          # config.py default (the deployed paddleocr-vl app), so the ONLY
+          # required secret at runtime is PADDLEOCR_MODAL_API_KEY (value of the
+          # paddleocr-api-key Modal secret). The others fall back to code
+          # defaults when their GH secret is empty.
+          # Deploy/redeploy: mivaa-pdf-extractor/modal_app/paddleocr_vl.py
+          # (see modal_app/README.md). Legacy SURYA_*/YOLO_*/CHANDRA_*/QWEN_*
+          # secrets have no consumer and may be deleted from GitHub Actions.
+          Environment=PADDLEOCR_MODAL_API_KEY=${{ secrets.PADDLEOCR_MODAL_API_KEY }}
+          Environment=PADDLEOCR_MODAL_URL=${{ secrets.PADDLEOCR_MODAL_URL }}
+          Environment=PADDLEOCR_ENABLED=${{ secrets.PADDLEOCR_ENABLED }}
           # Pipeline runtime caps. MAX_CONCURRENT_PRODUCTS=1 is the only
           # verified-safe value on a 4 GB droplet (above 1 hits cgroup
           # MemoryHigh and OOM-killed on Apr 29). Override via GH secret

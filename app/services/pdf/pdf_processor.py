@@ -802,7 +802,7 @@ class PDFProcessor:
         rows = response.data or []
         cached: Dict[int, Any] = {}
         for row in rows:
-            if row.get('processing_version') != 'surya-2':
+            if row.get('processing_version') != 'paddleocr-vl':
                 continue
             page_num = int(row['page_number'])
             elements = row.get('layout_elements') or []
@@ -1075,13 +1075,13 @@ class PDFProcessor:
             f"   ✅ [Job: {job_id}] Layer 1 complete: {len(embedded_images)} embedded images"
         )
 
-        # Layer 2: crop IMAGE/FIGURE regions from the Surya structural cache.
-        self.logger.info(f"   🖼️ [Job: {job_id}] Layer 2: cropping from Surya layout cache...")
+        # Layer 2: crop IMAGE/FIGURE regions from the PaddleOCR structural cache.
+        self.logger.info(f"   🖼️ [Job: {job_id}] Layer 2: cropping from PaddleOCR layout cache...")
         cropped_images = await self._extract_batch_images_with_yolo(
             pdf_path, image_dir, batch_pages, job_id, document_id
         )
         # extraction_layer stays 'yolo_crop' — downstream (Phase-3 OCR filter,
-        # dedupe buckets) keys on this exact tag; the source is now Surya.
+        # dedupe buckets) keys on this exact tag; the source is now PaddleOCR.
         for img in cropped_images:
             img['extraction_layer'] = 'yolo_crop'
         all_images.extend(cropped_images)
@@ -1132,7 +1132,7 @@ class PDFProcessor:
         extracted_images = []
 
         try:
-            # Layout regions come from the Surya structural pass (Stage 1),
+            # Layout regions come from the PaddleOCR structural pass (Stage 1),
             # persisted to document_layout_analysis. We crop IMAGE/FIGURE
             # regions from that cache — there is no live detection here.
             cached_layout = await self._load_cached_layout_for_pages(
@@ -1148,11 +1148,11 @@ class PDFProcessor:
 
                     cached_for_page = cached_layout.get(pdf_page)
                     if cached_for_page is None:
-                        # No Surya layout cached for this page → no crops to
+                        # No PaddleOCR layout cached for this page → no crops to
                         # extract. The Stage 1 structural pass is authoritative.
                         continue
                     self.logger.info(
-                        f"   ♻️ [Job: {job_id}] Using Surya layout for PDF page "
+                        f"   ♻️ [Job: {job_id}] Using PaddleOCR layout for PDF page "
                         f"{pdf_page} ({len(cached_for_page.regions)} regions)"
                     )
                     layout_result = cached_for_page
@@ -2566,7 +2566,7 @@ class PDFProcessor:
             Tuple of (combined_ocr_text, ocr_results_list)
         """
         try:
-            # OCR runs on the Surya backbone (manager resolved from the registry).
+            # OCR runs on the PaddleOCR backbone (manager resolved from the registry).
             ocr_service = get_ocr_service(OCRConfig(languages=ocr_languages))
 
             combined_ocr_text = ""

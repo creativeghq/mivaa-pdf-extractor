@@ -34,7 +34,7 @@ def execute_pdf_extraction_job(
     ThreadPoolExecutor configured by PDFProcessor.
 
     Layout (regions + OCR text + figure boxes) is produced upstream by the
-    Surya structural pass (Stage 1) and persisted to document_layout_analysis
+    PaddleOCR structural pass (Stage 1) and persisted to document_layout_analysis
     before this worker runs, so the worker only extracts markdown text.
 
     Args:
@@ -46,7 +46,7 @@ def execute_pdf_extraction_job(
         - markdown_content: Combined markdown string.
         - metadata: Extraction metadata.
         - page_chunks: Optional list of per-page dicts with metadata.
-        - layout_regions_by_page: always an empty dict (layout comes from Surya);
+        - layout_regions_by_page: always an empty dict (layout comes from PaddleOCR);
           retained for return-contract compatibility with the caller.
     """
     try:
@@ -201,7 +201,7 @@ def execute_pdf_extraction_job(
         # Extract metadata
         metadata = _extract_metadata_standalone(pdf_path, len(markdown_content))
 
-        # Layout is produced upstream by the Surya structural pass (Stage 1),
+        # Layout is produced upstream by the PaddleOCR structural pass (Stage 1),
         # which persists per-page regions + OCR text to document_layout_analysis
         # before this worker runs. The worker no longer does its own YOLO+merge
         # layout pass — it ships markdown text only. The empty dict below keeps
@@ -258,11 +258,11 @@ def extract_text_with_ocr_pages_standalone(
     pages: Optional[List[int]],
     options: Dict,
 ) -> str:
-    """Standalone OCR extraction for specific pages via the Surya backbone.
+    """Standalone OCR extraction for specific pages via the PaddleOCR backbone.
 
-    Renders each page and runs Surya OCR (through ocr_service) to recover text
+    Renders each page and runs PaddleOCR OCR (through ocr_service) to recover text
     on scanned / low-text pages. Layout regions are produced upstream by the
-    Surya structural pass (Stage 1); this is a plain-text fallback only.
+    PaddleOCR structural pass (Stage 1); this is a plain-text fallback only.
     """
     import fitz
     from PIL import Image

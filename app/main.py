@@ -864,7 +864,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 ### AI Models
 1. **Voyage AI**: voyage-4 (1024D text embeddings), GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus 4.7 (deep enrichment)
-3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), Surya-2 (structural pass: layout + OCR + figure boxes) — vision is on Anthropic Claude.
+3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), PaddleOCR-VL (structural pass: layout + OCR + figure boxes) — vision is on Anthropic Claude.
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
 5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
 
@@ -1263,7 +1263,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
 
     ### HuggingFace Inference Endpoints
     - **SLIG (SigLIP2)** - Visual embeddings endpoint (auto-pause/resume)
-    - **Surya-2** - Structural pass: layout + OCR + figure boxes (auto-pause/resume)
+    - **PaddleOCR-VL** - Structural pass: layout + OCR + figure boxes (auto-pause/resume)
 
     ### Application Services
     - **RAG Service** - Lazy-loaded; vision via Anthropic Claude Opus 4.7 (memory optimized)
@@ -1668,46 +1668,40 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             "message": str(e)
         }
 
-    # Surya-2 Structural Pass (Layout + OCR Endpoint) — replaced YOLO + Chandra.
-    # Provider-aware: probes the active host (HuggingFace OR Modal) using the
-    # effective URL + bearer from get_surya_config(), and reports which provider
-    # is serving so the admin health surface shows where Surya actually runs.
+    # PaddleOCR-VL Structural Pass (Layout + OCR Endpoint) — replaced PaddleOCR-VL.
+    # Modal-hosted; probes the Modal /health using the URL + bearer from
+    # get_paddleocr_config().
     try:
         settings = get_settings()
-        surya_cfg = settings.get_surya_config()
-        surya_provider = surya_cfg.get("provider", "huggingface")
-        surya_base_url = (surya_cfg.get("endpoint_url") or "").strip()
-        # Bearer: HF uses the HF API key; Modal uses its vLLM --api-key. /health
-        # is unauthenticated on vLLM so a missing token still probes fine.
-        surya_token = (
-            surya_cfg.get("modal_api_key") if surya_provider == "modal"
-            else surya_cfg.get("hf_token")
-        ) or ""
-        if surya_cfg.get("enabled") and surya_base_url:
-            cache_key = "surya_endpoint"
+        paddle_cfg = settings.get_paddleocr_config()
+        paddle_provider = "modal"
+        paddle_base_url = (paddle_cfg.get("endpoint_url") or "").strip()
+        paddle_token = paddle_cfg.get("modal_api_key") or ""
+        if paddle_cfg.get("enabled") and paddle_base_url:
+            cache_key = "paddleocr_endpoint"
             current_time = time.time()
 
             if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
                 cached_status = _ai_health_cache[cache_key]["status"].copy()
                 cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
                 cached_status["cached"] = True
-                services_status["surya_endpoint"] = cached_status
+                services_status["paddleocr_endpoint"] = cached_status
             else:
                 try:
                     import httpx
-                    headers = {"Authorization": f"Bearer {surya_token}"} if surya_token else {}
+                    headers = {"Authorization": f"Bearer {paddle_token}"} if paddle_token else {}
                     start_time = time.time()
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         response = await client.get(
-                            surya_base_url.rstrip("/") + "/health",
+                            paddle_base_url.rstrip("/") + "/health",
                             headers=headers,
                         )
                     latency_ms = int((time.time() - start_time) * 1000)
                     if response.status_code == 400 and "paused" in response.text.lower():
                         status_result = {
                             "status": "healthy",
-                            "message": f"Surya endpoint paused (cost-saving mode) · provider={surya_provider}",
-                            "provider": surya_provider,
+                            "message": f"PaddleOCR endpoint paused (cost-saving mode) · provider={paddle_provider}",
+                            "provider": paddle_provider,
                             "latency_ms": latency_ms,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
@@ -1715,8 +1709,8 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     elif response.status_code in [200, 503]:
                         status_result = {
                             "status": "healthy",
-                            "message": f"Surya endpoint operational · provider={surya_provider}",
-                            "provider": surya_provider,
+                            "message": f"PaddleOCR endpoint operational · provider={paddle_provider}",
+                            "provider": paddle_provider,
                             "latency_ms": latency_ms,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
@@ -1724,33 +1718,33 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     else:
                         status_result = {
                             "status": "degraded",
-                            "message": f"HTTP {response.status_code} · provider={surya_provider}",
-                            "provider": surya_provider,
+                            "message": f"HTTP {response.status_code} · provider={paddle_provider}",
+                            "provider": paddle_provider,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
                         }
-                    services_status["surya_endpoint"] = status_result
+                    services_status["paddleocr_endpoint"] = status_result
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
                 except Exception as api_error:
                     status_result = {
                         "status": "degraded",
-                        "message": f"Connection error: {str(api_error)[:100]} · provider={surya_provider}",
-                        "provider": surya_provider,
+                        "message": f"Connection error: {str(api_error)[:100]} · provider={paddle_provider}",
+                        "provider": paddle_provider,
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False
                     }
-                    services_status["surya_endpoint"] = status_result
+                    services_status["paddleocr_endpoint"] = status_result
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
         else:
-            services_status["surya_endpoint"] = {
+            services_status["paddleocr_endpoint"] = {
                 "status": "disabled",
-                "provider": surya_provider,
-                "message": f"Surya endpoint not configured or disabled (provider={surya_provider})"
+                "provider": paddle_provider,
+                "message": f"PaddleOCR endpoint not configured or disabled (provider={paddle_provider})"
             }
     except Exception as e:
-        services_status["surya_endpoint"] = {
+        services_status["paddleocr_endpoint"] = {
             "status": "unknown",
             "message": str(e)
         }

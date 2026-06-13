@@ -368,9 +368,9 @@ async def process_stage_0_discovery(
             except Exception as _hist_err:
                 logger.debug(f"   append_stage_history failed (non-fatal): {_hist_err}")
 
-            # Structure-first: feed discovery the Surya structural pass's
+            # Structure-first: feed discovery the PaddleOCR structural pass's
             # reading-order text (layout-ordered + multilingual) instead of raw
-            # page.get_text(). The Surya pass runs before Stage 0, so its cache
+            # page.get_text(). The PaddleOCR pass runs before Stage 0, so its cache
             # is already populated. Falls back to None (the PyMuPDF text path
             # inside discover_products) only if the cache is somehow absent.
             try:
@@ -378,28 +378,28 @@ async def process_stage_0_discovery(
                     build_page_text_from_layout_cache,
                 )
                 from app.services.core.supabase_client import get_supabase_client
-                surya_pdf_text = build_page_text_from_layout_cache(
+                layout_pdf_text = build_page_text_from_layout_cache(
                     document_id, get_supabase_client(), logger
                 )
-                if surya_pdf_text:
+                if layout_pdf_text:
                     logger.info(
-                        f"   📝 [STAGE 0] Using Surya structural text for discovery "
-                        f"({len(surya_pdf_text):,} chars)"
+                        f"   📝 [STAGE 0] Using PaddleOCR structural text for discovery "
+                        f"({len(layout_pdf_text):,} chars)"
                     )
                 else:
                     logger.info(
-                        "   📝 [STAGE 0] No Surya cache text — discovery falls back to PyMuPDF text"
+                        "   📝 [STAGE 0] No PaddleOCR cache text — discovery falls back to PyMuPDF text"
                     )
-            except Exception as _surya_text_err:
-                surya_pdf_text = None
-                logger.debug(f"   Surya text build failed (non-fatal): {_surya_text_err}")
+            except Exception as _layout_text_err:
+                layout_pdf_text = None
+                logger.debug(f"   PaddleOCR text build failed (non-fatal): {_layout_text_err}")
 
             try:
                 catalog = await discovery_breaker.call(
                     lambda: with_timeout(
                         discovery_service.discover_products(
                             pdf_content=file_content,
-                            pdf_text=surya_pdf_text,
+                            pdf_text=layout_pdf_text,
                             total_pages=page_count,
                             categories=extract_categories,
                             agent_prompt=agent_prompt,

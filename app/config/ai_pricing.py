@@ -144,19 +144,19 @@ class AIPricingConfig:
         }
     }
 
-    # Surya-2 Structural Pass — layout + OCR + figure boxes in one call (GPU).
-    # Replaced YOLO DocParser + Chandra OCR. Both old SLIG-class GPU endpoints.
-    SURYA_PRICING = {
-        "surya-ocr-2": {
+    # PaddleOCR-VL Structural Pass — two-stage (PP-DocLayoutV2 + 0.9B VLM) layout
+    # + OCR + figure boxes per page (GPU, Modal). Replaced Surya-2.
+    PADDLEOCR_PRICING = {
+        "paddleocr-vl": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("0.80"),  # GPU endpoint (HF Inference)
+            "hourly_rate_usd": Decimal("0.80"),  # GPU container (Modal L4)
             "gpu_type": "nvidia-l4",
             "last_verified": "2026-06-13",
-            "source": "HuggingFace Inference Endpoint",
-            "full_name": "Surya-2 Structural Pass (datalab-to/surya-ocr-2)",
-            "note": "Layout regions + OCR text + figure boxes in one call; replaced YOLO + Chandra"
+            "source": "Modal",
+            "full_name": "PaddleOCR-VL Structural Pass (PaddlePaddle/PaddleOCR-VL)",
+            "note": "Layout regions + OCR text + figure boxes per page; replaced Surya-2"
         }
     }
 
@@ -334,7 +334,7 @@ class AIPricingConfig:
             **cls.VISION_PRICING,
             **cls.QWEN_PRICING,
             **cls.VISUAL_EMBEDDING_PRICING,
-            **cls.SURYA_PRICING,
+            **cls.PADDLEOCR_PRICING,
             **cls.REPLICATE_PRICING,
             **cls.FIRECRAWL_PRICING,
             **cls.EXTERNAL_SERVICE_PRICING,
@@ -502,7 +502,7 @@ class AIPricingConfig:
         Cost = inference_seconds × (hourly_rate / 3600)
 
         Args:
-            model: HuggingFace endpoint model name (e.g., 'slig-768d', 'surya-ocr-2')
+            model: HuggingFace endpoint model name (e.g., 'slig-768d', 'paddleocr-vl')
             inference_seconds: Time taken for inference in seconds
             include_markup: If True, applies 50% markup (default: True)
 
@@ -511,7 +511,7 @@ class AIPricingConfig:
         """
         # Find the model in any time-based pricing dictionary
         pricing = None
-        for pricing_dict in [cls.QWEN_PRICING, cls.VISUAL_EMBEDDING_PRICING, cls.SURYA_PRICING]:
+        for pricing_dict in [cls.QWEN_PRICING, cls.VISUAL_EMBEDDING_PRICING, cls.PADDLEOCR_PRICING]:
             if model in pricing_dict and pricing_dict[model].get("billing_type") == "time_based":
                 pricing = pricing_dict[model]
                 break
@@ -589,7 +589,7 @@ class AIPricingConfig:
         time_based_dicts = [
             cls.QWEN_PRICING,
             cls.VISUAL_EMBEDDING_PRICING,
-            cls.SURYA_PRICING,
+            cls.PADDLEOCR_PRICING,
         ]
         for pricing_dict in time_based_dicts:
             if model in pricing_dict:

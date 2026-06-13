@@ -257,7 +257,7 @@ async def process_single_product(
         )
         logger_instance.info(f"   📌 Created PDF_EXTRACTED checkpoint for {product.name}")
 
-        # Layout regions come from the doc-level Surya structural pass (Stage 1),
+        # Layout regions come from the doc-level PaddleOCR structural pass (Stage 1),
         # read from document_layout_analysis by the chunker. No per-product pass.
         layout_regions = []
 

@@ -3109,40 +3109,40 @@ async def process_document_with_discovery(
                 warmup_results["failed"].append({"endpoint": "slig", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup SLIG endpoint: {e}")
 
-        async def warmup_surya():
+        async def warmup_paddleocr():
             try:
-                from app.services.pdf.surya_endpoint_manager import SuryaEndpointManager
-                surya_config = settings.get_surya_config()
-                if surya_config.get("enabled", False) and surya_config.get("endpoint_url"):
+                from app.services.pdf.paddleocr_endpoint_manager import PaddleOCRManager
+                paddle_config = settings.get_paddleocr_config()
+                if paddle_config.get("enabled", False) and paddle_config.get("endpoint_url"):
                     # Provider-aware build (huggingface | modal). from_config picks
-                    # the lifecycle strategy from surya_config['provider'].
-                    manager = SuryaEndpointManager.from_config(surya_config)
-                    endpoint_managers['surya'] = manager
+                    # the Modal endpoint provider.
+                    manager = PaddleOCRManager.from_config(paddle_config)
+                    endpoint_managers['paddleocr'] = manager
 
                     # Provider-agnostic warmup: resume_if_needed() short-circuits
                     # when the endpoint is already up + healthy (HF checks SDK
                     # status + /health and skips re-warm; Modal /health-probes and
                     # auto-wakes), then warmup() confirms readiness.
-                    def resume_and_warmup_surya():
+                    def resume_and_warmup_paddleocr():
                         if manager.resume_if_needed():
                             return manager.warmup()
                         return False
 
-                    success = await asyncio.to_thread(resume_and_warmup_surya)
+                    success = await asyncio.to_thread(resume_and_warmup_paddleocr)
                     if success:
-                        warmup_results["success"].append("surya")
-                        logger.info("   ✅ Surya warmup complete")
+                        warmup_results["success"].append("paddleocr")
+                        logger.info("   ✅ PaddleOCR warmup complete")
                     else:
-                        warmup_results["failed"].append({"endpoint": "surya", "error": "warmup timed out"})
-                        logger.warning("   ⚠️ Surya warmup timed out (will retry on first use)")
+                        warmup_results["failed"].append({"endpoint": "paddleocr", "error": "warmup timed out"})
+                        logger.warning("   ⚠️ PaddleOCR warmup timed out (will retry on first use)")
                 else:
-                    warmup_results["skipped"].append("surya")
+                    warmup_results["skipped"].append("paddleocr")
             except Exception as e:
                 from app.services.embeddings.hf_errors import HFBillingError
                 if isinstance(e, HFBillingError):
                     raise
-                warmup_results["failed"].append({"endpoint": "surya", "error": str(e)})
-                logger.warning(f"⚠️ Failed to warmup Surya endpoint: {e}")
+                warmup_results["failed"].append({"endpoint": "paddleocr", "error": str(e)})
+                logger.warning(f"⚠️ Failed to warmup PaddleOCR endpoint: {e}")
 
         # Execute all warmups in parallel.
         # FAST-FAIL on HF billing errors: if any endpoint's resume returns
@@ -3153,7 +3153,7 @@ async def process_document_with_discovery(
         from app.services.embeddings.hf_errors import HFBillingError
         gather_results = await asyncio.gather(
             warmup_slig(),
-            warmup_surya(),
+            warmup_paddleocr(),
             return_exceptions=True,
         )
         billing_errors = [r for r in gather_results if isinstance(r, HFBillingError)]
@@ -3327,30 +3327,25 @@ async def process_document_with_discovery(
                 'url': _live_url_from_manager(endpoint_managers['slig'], slig_config['endpoint_url']),
                 'token': slig_config['hf_token']
             }
-        if 'surya' in endpoint_managers:
-            surya_config = settings.get_surya_config()
-            # Provider-aware bearer: HF uses the HF key, Modal uses its vLLM --api-key.
-            surya_token = (
-                surya_config.get('modal_api_key')
-                if surya_config.get('provider') == 'modal'
-                else surya_config.get('hf_token')
-            ) or ''
-            endpoints_config['surya'] = {
-                'url': _live_url_from_manager(endpoint_managers['surya'], surya_config['endpoint_url']),
-                'token': surya_token
+        if 'paddleocr' in endpoint_managers:
+            paddle_config = settings.get_paddleocr_config()
+            paddle_token = paddle_config.get('modal_api_key') or ''
+            endpoints_config['paddleocr'] = {
+                'url': _live_url_from_manager(endpoint_managers['paddleocr'], paddle_config['endpoint_url']),
+                'token': paddle_token
             }
 
         # Both endpoints are required:
         #   - SLIG for the per-image visual embeddings (CLIP-class).
-        #   - Surya for the structural pass — without it there is no layout,
+        #   - PaddleOCR for the structural pass — without it there is no layout,
         #     no OCR text, and no figure crops, so the pipeline cannot produce
         #     products. (Vision analysis + classification run on Anthropic
         #     Claude, which has no warmup, so they are not in this set.)
         required_endpoints = []
         if 'slig' in endpoints_config:
             required_endpoints.append('slig')
-        if 'surya' in endpoints_config:
-            required_endpoints.append('surya')
+        if 'paddleocr' in endpoints_config:
+            required_endpoints.append('paddleocr')
 
         all_healthy, health_results = await health_checker.check_all_endpoints(
             endpoints_config=endpoints_config,
@@ -3511,15 +3506,15 @@ async def process_document_with_discovery(
             return
 
         # ============================================================================
-        # STAGE 1: DOCUMENT-LEVEL STRUCTURAL PASS (Surya) — runs BEFORE discovery
+        # STAGE 1: DOCUMENT-LEVEL STRUCTURAL PASS (PaddleOCR) — runs BEFORE discovery
         # ============================================================================
-        # Structure-first architecture: Surya renders every physical page once
+        # Structure-first architecture: PaddleOCR renders every physical page once
         # and returns layout regions + OCR text + figure boxes, persisted to
         # document_layout_analysis. Running it first means:
-        #   - discovery reads Surya's reading-order text (cleaner, multilingual,
+        #   - discovery reads PaddleOCR's reading-order text (cleaner, multilingual,
         #     layout-ordered) instead of raw page.get_text(),
         #   - Stage 2 chunking reads the same cache,
-        #   - Stage 3 crops come from Surya's figure boxes (cache hit, no YOLO).
+        #   - Stage 3 crops come from PaddleOCR's figure boxes (cache hit, no YOLO).
         # One pass feeds the whole pipeline.
         try:
             _settings_for_precompute = get_settings()
@@ -3528,7 +3523,7 @@ async def process_document_with_discovery(
                     precompute_document_layout,
                 )
                 logger.info("=" * 80)
-                logger.info("📐 STAGE 1: DOCUMENT-LEVEL STRUCTURAL PASS (Surya)")
+                logger.info("📐 STAGE 1: DOCUMENT-LEVEL STRUCTURAL PASS (PaddleOCR)")
                 logger.info("=" * 80)
                 precompute_summary = await precompute_document_layout(
                     document_id=document_id,
@@ -3546,7 +3541,7 @@ async def process_document_with_discovery(
                 logger.info("⏭️  [STAGE 1] Skipped (LAYOUT_PRECOMPUTE_ENABLED=False)")
         except Exception as precompute_err:
             # Best-effort: discovery falls back to PyMuPDF text, chunker to its
-            # text path. Surya is a required endpoint, so a hard outage would
+            # text path. PaddleOCR is a required endpoint, so a hard outage would
             # already have failed the job at health validation.
             logger.warning(
                 f"⚠️ [STAGE 1] structural pass failed: {precompute_err}",
@@ -3729,7 +3724,7 @@ async def process_document_with_discovery(
         except Exception as scale_up_err:
             logger.debug(f"Proactive scale-up skipped (non-fatal): {scale_up_err}")
 
-        # NOTE: the document-level structural pass (Surya) now runs as STAGE 1
+        # NOTE: the document-level structural pass (PaddleOCR) now runs as STAGE 1
         # BEFORE discovery (see above) — structure-first. It is no longer run
         # here after discovery.
 

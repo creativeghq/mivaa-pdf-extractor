@@ -1438,7 +1438,7 @@ class ProductDiscoveryService:
             pages_content = self._parse_pdf_text_into_pages(pdf_text, pdf_page_count)
             self.logger.info(f"   📄 Parsed {len(pages_content)} physical pages from text (one-time operation)")
 
-            # Discovery uses the Surya structural-pass text (Stage 1); the
+            # Discovery uses the PaddleOCR structural-pass text (Stage 1); the
             # page/section detection below is text-based. No YOLO.
 
             # Get all product names for section boundary detection

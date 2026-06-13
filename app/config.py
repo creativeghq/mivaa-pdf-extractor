@@ -326,12 +326,12 @@ class Settings(BaseSettings):
         default=0.6,
         env="OCR_CONFIDENCE_THRESHOLD"
     )
-    # Chandra v2 is the only OCR engine. Pytesseract + EasyOCR were removed
-    # in the 2026-05-01 audit. OCR now runs on the Surya structural-pass
-    # backbone; this field is retained for downstream consumers of
-    # get_ocr_config() but only accepts "surya".
+    # OCR runs on the PaddleOCR-VL structural-pass backbone (replaced Surya-2
+    # 2026-06-13; Pytesseract + EasyOCR removed in the 2026-05-01 audit). This
+    # field is retained for downstream consumers of get_ocr_config() but only
+    # accepts "paddleocr".
     ocr_engine: str = Field(
-        default="surya",
+        default="paddleocr",
         env="OCR_ENGINE"
     )
     ocr_gpu_enabled: bool = Field(
@@ -527,94 +527,53 @@ class Settings(BaseSettings):
     )
 
     # ============================================================================
-    # Surya-2 — STRUCTURAL-PASS BACKBONE (layout + OCR + figure boxes, one call)
+    # PaddleOCR-VL — STRUCTURAL-PASS BACKBONE (layout + OCR + figure boxes)
     # ============================================================================
-    # One vision-language model that returns the page layout, OCR'd text, and
-    # figure boxes in a single /v1/chat/completions call. Replaces YOLO (region/
-    # figure boxes) + Chandra (text + boxes) + merge_layout (which bucketed
-    # Chandra text into YOLO boxes — Surya does that internally).
+    # Two-stage document parser (PP-DocLayoutV2 RT-DETR detector + 0.9B VLM) run
+    # in-process on Modal. One /parse call per page returns layout regions
+    # (label + bbox + reading order) + OCR'd content. Replaced Surya-2 2026-06-13
+    # (tighter RT-DETR crop boxes + a dedicated reading order). Modal-hosted only
+    # — the pipeline is not an OpenAI-compatible endpoint, so there is no HF path.
     # ============================================================================
-    surya_enabled: bool = Field(
+    paddleocr_enabled: bool = Field(
         default=True,
-        env="SURYA_ENABLED",
-        description="Enable the Surya-2 structural pass (the pipeline's layout+OCR backbone)"
+        env="PADDLEOCR_ENABLED",
+        description="Enable the PaddleOCR-VL structural pass (the pipeline's layout+OCR backbone)"
     )
-    surya_endpoint_url: str = Field(
-        default="https://cgfkr643d2v3lf15.eu-west-1.aws.endpoints.huggingface.cloud",
-        env="SURYA_ENDPOINT_URL",
-        description="Surya-2 Inference Endpoint URL"
+    paddleocr_modal_url: str = Field(
+        default="https://basilakis--paddleocr-vl-paddleservice-web.modal.run",
+        env="PADDLEOCR_MODAL_URL",
+        description="Modal endpoint base URL for the PaddleOCR-VL app (the URL `modal deploy` prints)."
     )
-    surya_endpoint_name: str = Field(
-        default="surya",
-        env="SURYA_ENDPOINT_NAME",
-        description="Surya-2 Inference Endpoint name (for pause/resume operations)"
-    )
-    surya_namespace: str = Field(
-        default="basiliskan",
-        env="SURYA_NAMESPACE",
-        description="HuggingFace namespace/username for Surya endpoint management"
-    )
-    surya_model_name: str = Field(
-        default="surya-ocr-2",
-        env="SURYA_MODEL_NAME",
-        description="Model id sent in the chat request; must match what the served endpoint advertises"
-    )
-    surya_inference_timeout: int = Field(
-        default=180,
-        env="SURYA_INFERENCE_TIMEOUT",
-        description="Per-call timeout (s). Full-page passes on dense pages can take 30-90s."
-    )
-    surya_warmup_timeout: int = Field(
-        default=300,
-        env="SURYA_WARMUP_TIMEOUT",
-        description="Max warmup time after a cold start (s)"
-    )
-    surya_max_resume_retries: int = Field(
-        default=3,
-        env="SURYA_MAX_RESUME_RETRIES",
-        description="Resume attempts on a paused/scaled-to-zero endpoint"
-    )
-    surya_max_tokens: int = Field(
-        default=8000,
-        env="SURYA_MAX_TOKENS",
-        description="Completion cap for the full-page HTML structural pass"
-    )
-    surya_max_image_pixels: int = Field(
-        default=2_000_000,
-        env="SURYA_MAX_IMAGE_PIXELS",
-        description="Page renders larger than this are downscaled before send (Surya input range ~2MP)"
-    )
-    surya_concurrency: int = Field(
-        default=8,
-        env="SURYA_CONCURRENCY",
-        description="Max concurrent Surya inference calls"
-    )
-
-    # --- Provider switch: which GPU host serves Surya -----------------------
-    # The inference contract (OpenAI-compatible /v1/chat/completions, vLLM) is
-    # identical across hosts; only the lifecycle differs. Flip this one var to
-    # move Surya between GPU providers — no code change.
-    #   "huggingface" → HF Inference Endpoint (SDK resume / scale-to-zero)
-    #   "modal"       → Modal-hosted vLLM (autoscaling owned by Modal)
-    surya_provider: str = Field(
-        default="modal",
-        env="SURYA_PROVIDER",
-        description="Which GPU host serves Surya: 'modal' (default) | 'huggingface'. HF kept as a fallback — flip to 'huggingface' to use the HF Inference Endpoint instead."
-    )
-    surya_modal_url: str = Field(
-        default="https://basilakis--surya-vllm-serve.modal.run",
-        env="SURYA_MODAL_URL",
-        description="Modal web endpoint base URL (the URL `modal deploy` prints). Default = the deployed surya-vllm app. Used when SURYA_PROVIDER=modal."
-    )
-    surya_modal_api_key: str = Field(
+    paddleocr_modal_api_key: str = Field(
         default="",
-        env="SURYA_MODAL_API_KEY",
-        description="Bearer token for the Modal vLLM endpoint (the vLLM --api-key, value of the surya-vllm-api-key Modal secret)."
+        env="PADDLEOCR_MODAL_API_KEY",
+        description="Bearer token for the Modal PaddleOCR-VL /parse endpoint (value of the paddleocr-api-key Modal secret). REQUIRED at runtime."
     )
-    surya_modal_model_name: str = Field(
-        default="surya-ocr-2",
-        env="SURYA_MODAL_MODEL_NAME",
-        description="Model id the Modal vLLM server advertises (--served-model-name). Kept equal to surya_model_name so callers are provider-agnostic."
+    paddleocr_model_name: str = Field(
+        default="paddleocr-vl",
+        env="PADDLEOCR_MODEL_NAME",
+        description="Display/stats name for the served model."
+    )
+    paddleocr_inference_timeout: int = Field(
+        default=180,
+        env="PADDLEOCR_INFERENCE_TIMEOUT",
+        description="Per-call /parse timeout (s). Warm parses are ~1-3s; the budget covers dense pages."
+    )
+    paddleocr_warmup_timeout: int = Field(
+        default=300,
+        env="PADDLEOCR_WARMUP_TIMEOUT",
+        description="Max warmup time after a cold start (s). Cold start = model load + first-call JIT (~90s)."
+    )
+    paddleocr_max_image_pixels: int = Field(
+        default=8_000_000,
+        env="PADDLEOCR_MAX_IMAGE_PIXELS",
+        description="Page renders larger than this are downscaled before send (PaddleOCR-VL handles high-res natively; this just caps payload size)."
+    )
+    paddleocr_concurrency: int = Field(
+        default=8,
+        env="PADDLEOCR_CONCURRENCY",
+        description="Max concurrent PaddleOCR inference calls"
     )
 
     # Voyage AI Settings (Text Embeddings - Primary Provider)
@@ -851,8 +810,8 @@ class Settings(BaseSettings):
     @field_validator("ocr_engine")
     @classmethod
     def validate_ocr_engine(cls, v):
-        """Validate OCR engine selection. Surya is the only supported engine."""
-        valid_engines = ["surya"]
+        """Validate OCR engine selection. PaddleOCR-VL is the only supported engine."""
+        valid_engines = ["paddleocr"]
         if v.lower() not in valid_engines:
             raise ValueError(f"OCR engine must be one of: {valid_engines}")
         return v.lower()
@@ -1060,7 +1019,7 @@ class Settings(BaseSettings):
 
     def create_ocr_config(self, languages: Optional[List[str]] = None):
         """
-        Create an OCRConfig instance. OCR runs on the Surya backbone (the
+        Create an OCRConfig instance. OCR runs on the PaddleOCR-VL backbone (the
         manager is resolved from the endpoint registry inside OCRService).
 
         Args:
@@ -1075,39 +1034,25 @@ class Settings(BaseSettings):
             preprocessing_enabled=self.ocr_preprocessing_enabled,
         )
 
-    def get_surya_config(self) -> Dict[str, Any]:
-        """Get Surya-2 structural-pass endpoint configuration.
+    def get_paddleocr_config(self) -> Dict[str, Any]:
+        """Get PaddleOCR-VL structural-pass endpoint configuration.
 
-        Provider-aware: ``endpoint_url`` and ``model_name`` resolve to the active
-        provider's values so the registry's "configured?" check and the chat
-        payload are correct for both HuggingFace and Modal. Both providers'
-        fields are returned so the factory can build either.
+        Modal-only (the pipeline is not an OpenAI-compatible endpoint). ``provider``
+        is always ``modal``; the manager factory builds a ModalEndpointProvider
+        from ``modal_url`` + ``modal_api_key``.
         """
-        provider = (self.surya_provider or "huggingface").strip().lower()
-        if provider == "modal":
-            effective_url = self.surya_modal_url
-            model_name = self.surya_modal_model_name
-        else:
-            effective_url = self.surya_endpoint_url
-            model_name = self.surya_model_name
         return {
-            "enabled": self.surya_enabled,
-            "provider": provider,
-            # Effective base URL for the active provider (registry's configured check).
-            "endpoint_url": effective_url,
-            "hf_token": self.huggingface_api_key,
-            "endpoint_name": self.surya_endpoint_name,
-            "namespace": self.surya_namespace,
-            # Modal-specific fields (used when provider == 'modal').
-            "modal_url": self.surya_modal_url,
-            "modal_api_key": self.surya_modal_api_key,
-            "model_name": model_name,
-            "inference_timeout": self.surya_inference_timeout,
-            "warmup_timeout": self.surya_warmup_timeout,
-            "max_resume_retries": self.surya_max_resume_retries,
-            "max_tokens": self.surya_max_tokens,
-            "max_image_pixels": self.surya_max_image_pixels,
-            "concurrency": self.surya_concurrency,
+            "enabled": self.paddleocr_enabled,
+            "provider": "modal",
+            # Effective base URL (registry's "configured?" check).
+            "endpoint_url": self.paddleocr_modal_url,
+            "modal_url": self.paddleocr_modal_url,
+            "modal_api_key": self.paddleocr_modal_api_key,
+            "model_name": self.paddleocr_model_name,
+            "inference_timeout": self.paddleocr_inference_timeout,
+            "warmup_timeout": self.paddleocr_warmup_timeout,
+            "max_image_pixels": self.paddleocr_max_image_pixels,
+            "concurrency": self.paddleocr_concurrency,
         }
 
     def get_image_processing_config(self) -> Dict[str, Any]:

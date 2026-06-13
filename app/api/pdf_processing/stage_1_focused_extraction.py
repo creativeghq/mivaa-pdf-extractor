@@ -145,7 +145,7 @@ async def extract_product_pages(
         )
 
         try:
-            # Layout regions come from the Surya structural pass (Stage 1),
+            # Layout regions come from the PaddleOCR structural pass (Stage 1),
             # already persisted per physical page. We collect those cached
             # regions below; there is no live per-product detection.
             if file_content:
@@ -182,7 +182,7 @@ async def extract_product_pages(
                             result = _CachedResult()
                         else:
                             # No cached regions for this page → no layout. The
-                            # Surya structural pass (Stage 1) is authoritative;
+                            # PaddleOCR structural pass (Stage 1) is authoritative;
                             # there is no live per-product detection fallback.
                             result = None
 
@@ -508,9 +508,9 @@ async def _load_cached_layout_regions(
     rows = response.data or []
     cached: Dict[int, List[Any]] = {}
     for row in rows:
-        if row.get('processing_version') != 'surya-2':
-            # Only honour cache rows produced by the Surya structural pass;
-            # older rows (markdown-analysis stubs, pre-Surya layout) are skipped.
+        if row.get('processing_version') != 'paddleocr-vl':
+            # Only honour cache rows produced by the PaddleOCR structural pass;
+            # older rows (markdown-analysis stubs, pre-PaddleOCR layout) are skipped.
             continue
         page_1_based_in_cache = int(row['page_number'])
         # Cache uses 1-based sheet numbering - translate to physical page.
