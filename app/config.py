@@ -1055,6 +1055,30 @@ class Settings(BaseSettings):
             "concurrency": self.paddleocr_concurrency,
         }
 
+    def get_slig_config(self) -> Dict[str, Any]:
+        """
+        Get SLIG (SigLIP2) visual embedding configuration.
+
+        SLIG is the one remaining HuggingFace endpoint (the structural pass moved
+        to PaddleOCR-VL on Modal). ``provider='huggingface'`` so the controller
+        runs HF-SDK prep/drain for it. (This method was accidentally stripped in
+        the Surya migration's YOLO/Chandra cleanup — restored 2026-06-13.)
+        """
+        return {
+            "enabled": self.slig_enabled,
+            "provider": "huggingface",
+            "endpoint_url": self.slig_endpoint_url,
+            "endpoint_token": self.slig_endpoint_token or self.huggingface_api_key,
+            "hf_token": self.slig_endpoint_token or self.huggingface_api_key,
+            "endpoint_name": self.slig_endpoint_name,
+            "namespace": self.slig_namespace,
+            "model_name": self.slig_model_name,
+            "embedding_dimension": self.slig_embedding_dimension,
+            "timeout": self.slig_timeout,
+            "max_retries": self.slig_max_retries,
+            "retry_delay": self.slig_retry_delay,
+        }
+
     def get_image_processing_config(self) -> Dict[str, Any]:
         """
         Get image processing configuration.
