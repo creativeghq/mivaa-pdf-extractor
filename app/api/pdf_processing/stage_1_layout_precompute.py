@@ -1,34 +1,31 @@
 """
-Stage 1.5: Document-level layout precompute (physical-page-aware).
+Stage 1: Document-level structural pass (Surya-2, physical-page-aware).
 
-Iterates **physical pages** 1..total_physical_pages — the same numbering
-products and chunks use throughout the rest of the pipeline. For each
-physical page:
+The pipeline's layout+OCR backbone. Iterates **physical pages**
+1..total_physical_pages — the same numbering products and chunks use
+throughout the rest of the pipeline. For each physical page:
 
 1. Look up `(pdf_idx, position)` from `PDFLayoutAnalysis.physical_to_pdf_map`.
    `position` is one of `single` / `full` / `left` / `right`. For spread
    layouts a single PDF sheet maps to 2 physical pages; we render only
-   the relevant half before sending to YOLO.
+   the relevant half before sending to Surya.
 2. Render the half-page (or full sheet) to a PIL image at LAYOUT_RENDER_DPI.
-3. Run YOLO on that image.
-4. Get text fragments aligned to the same clip:
-   - PyMuPDF spans clipped to the half-rect (born-digital path, ~free).
-   - Falls back to Chandra v2 OCR on scanned pages (no spans inside the
-     clip area).
-5. `merge_layout(yolo_regions, text_fragments)` produces MergedRegion[]
-   with `text_content` populated.
-6. Persist to `document_layout_analysis` keyed on
-   `(document_id, physical_page_number)` — same key Stage 2 chunking
-   reads later via `get_layout_from_document_cache`.
+3. One Surya structural pass over that image → layout regions (label + bbox)
+   + OCR'd text + figure boxes, in a single /v1/chat/completions call.
+   This replaced the previous YOLO (region boxes) + PyMuPDF/Chandra (text) +
+   merge_layout (bucketing) three-step flow — Surya does all of it internally.
+4. `blocks_to_layout_elements()` maps the Surya blocks onto the existing
+   `layout_elements` schema (region_type + pixel bbox + text_content).
+5. Persist to `document_layout_analysis` keyed on
+   `(document_id, physical_page_number)`, `processing_version='surya-2'` —
+   the same key/shape Stage 0 discovery, Stage 2 chunking, and Stage 3 crops
+   read later.
 
-Why this matters: the chunker keys regions by physical page. If we
-persisted regions keyed by PDF sheet index (the round-17 P2 patch did
-this implicitly), every cache read would miss and the chunker would
-fall back to text-based chunking — silently nullifying Stage 1.5's
-work. Iterating physical pages with `physical_to_pdf_map`-aware
-rendering keeps the cache compatible with downstream consumers.
+This runs BEFORE discovery (structure-first): discovery reads Surya's
+reading-order text instead of raw page.get_text().
 
-Resume-safe: pages already in the cache are skipped.
+Resume-safe: pages already in the cache are skipped (ocr_failed/page_failed
+rows are retried).
 Toggle: `LAYOUT_PRECOMPUTE_ENABLED` env var (defaults True).
 """
 
