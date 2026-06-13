@@ -145,20 +145,11 @@ async def extract_product_pages(
         )
 
         try:
-            from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
-            from app.config import get_settings
-
-            settings = get_settings()
-
-            # Check if YOLO is enabled
-            if not settings.yolo_enabled:
-                logger.info("   ⚠️ YOLO disabled in settings, skipping layout detection")
-            else:
-                # Initialize YOLO detector
-                yolo_config = settings.get_yolo_config()
-                detector = YoloLayoutDetector(config=yolo_config)
-
-                # Save PDF to temp file for YOLO processing
+            # Layout regions come from the Surya structural pass (Stage 1),
+            # already persisted per physical page. We collect those cached
+            # regions below; there is no live per-product detection.
+            if file_content:
+                # Save PDF to temp file (table extraction below reads it).
                 with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
                     tmp_file.write(file_content)
                     tmp_pdf_path = tmp_file.name
@@ -190,12 +181,10 @@ async def extract_product_pages(
                                 detection_time_ms = 0
                             result = _CachedResult()
                         else:
-                            logger.info(
-                                f"      Detecting regions on physical page {physical_page} "
-                                f"(PDF sheet {pdf_page_idx}, position {position})..."
-                            )
-                            # YOLO always detects on the full sheet
-                            result = await detector.detect_layout_regions(tmp_pdf_path, pdf_page_idx)
+                            # No cached regions for this page → no layout. The
+                            # Surya structural pass (Stage 1) is authoritative;
+                            # there is no live per-product detection fallback.
+                            result = None
 
                         if result and result.regions:
                             # Filter and clip regions if it's a spread

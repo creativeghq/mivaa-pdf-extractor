@@ -1438,20 +1438,8 @@ class ProductDiscoveryService:
             pages_content = self._parse_pdf_text_into_pages(pdf_text, pdf_page_count)
             self.logger.info(f"   📄 Parsed {len(pages_content)} physical pages from text (one-time operation)")
 
-            # ⚡ OPTIMIZATION: Initialize YOLO detector ONCE (not per-product)
-            yolo_detector = None
-            yolo_enabled = False
-            try:
-                from app.config import get_settings
-                settings = get_settings()
-                yolo_enabled = settings.yolo_enabled
-                if yolo_enabled:
-                    from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
-                    yolo_config = settings.get_yolo_config()
-                    yolo_detector = YoloLayoutDetector(config=yolo_config)
-                    self.logger.info("   🎯 YOLO detector initialized (reused for all products)")
-            except Exception as e:
-                self.logger.warning(f"   ⚠️ YOLO initialization failed: {e}, using text-only detection")
+            # Discovery uses the Surya structural-pass text (Stage 1); the
+            # page/section detection below is text-based. No YOLO.
 
             # Get all product names for section boundary detection
             all_product_names = [p.name for p in catalog.products]
@@ -1487,19 +1475,6 @@ class ProductDiscoveryService:
                             total_pages=pdf_page_count,
                             all_product_names=all_product_names
                         )
-
-                        # Step 2: YOLO validation (if enabled, uses shared detector)
-                        if detected_pages and yolo_enabled and yolo_detector:
-                            validated_pages = await self._validate_pages_with_yolo_optimized(
-                                pdf_path=pdf_path,
-                                detected_pages=detected_pages,
-                                product_name=product.name,
-                                detector=yolo_detector,
-                                pdf_layout=catalog  # Use catalog which has layout info
-                            )
-                            # Use validated pages if YOLO returned any, otherwise keep text-detected pages
-                            if validated_pages:
-                                detected_pages = validated_pages
 
                     if detected_pages:
                         self.logger.info(
@@ -2456,89 +2431,4 @@ class ProductDiscoveryService:
         )
 
         return validated_pages if validated_pages else detected_pages[:6]  # Fallback to first 6 pages
-
-    async def _validate_pages_with_yolo_optimized(
-        self,
-        pdf_path: str,
-        detected_pages: List[int],
-        product_name: str,
-        detector: Any,
-        pdf_layout: Optional[Any] = None
-    ) -> List[int]:
-        """
-        ⚡ OPTIMIZED: Validate pages using a pre-initialized YOLO detector.
-
-        Args:
-            pdf_path: Path to PDF file
-            detected_pages: List of PHYSICAL page numbers (1-based) from text search
-            product_name: Product name (for logging)
-            detector: Pre-initialized YoloLayoutDetector (shared across products)
-            pdf_layout: Optional PDFLayoutAnalysis for spread layout handling
-
-        Returns:
-            List of validated page numbers (1-based) where YOLO confirms product content
-        """
-        validated_pages = []
-
-        for page_num in detected_pages:
-            # Handle spread layout: convert physical page to PDF page + position
-            if pdf_layout and pdf_layout.has_spread_layout and page_num in pdf_layout.physical_to_pdf_map:
-                pdf_page_idx, position = pdf_layout.physical_to_pdf_map[page_num]
-                # For spreads, we run YOLO on the full PDF page
-                # The position ('left', 'right', 'full') tells us which half to focus on
-                page_idx = pdf_page_idx
-            else:
-                page_idx = page_num - 1  # Convert to 0-based for YOLO (non-spread case)
-
-            try:
-                # Run YOLO layout detection on the PDF page
-                result = await detector.detect_layout_regions(pdf_path, page_idx)
-
-                if result and result.regions:
-                    # Check if page has product-relevant content
-                    has_title = result.title_regions > 0
-                    has_image = result.image_regions > 0
-                    has_text = result.text_regions > 0
-
-                    # A product page should have at least:
-                    # - TITLE + IMAGE (typical product spread), OR
-                    # - IMAGE + TEXT (product with description), OR
-                    # - Just IMAGE (image-only page in product spread)
-                    is_product_page = (has_title and has_image) or (has_image and has_text) or has_image
-
-                    if is_product_page:
-                        validated_pages.append(page_num)
-                        self.logger.debug(
-                            f"      ✅ Page {page_num} validated: TITLE={has_title}, IMAGE={has_image}, TEXT={has_text}"
-                        )
-                    else:
-                        # Still include pages with text but log as uncertain
-                        if has_text:
-                            validated_pages.append(page_num)
-                            self.logger.debug(
-                                f"      ⚠️ Page {page_num} has text only, including but uncertain"
-                            )
-                        else:
-                            self.logger.debug(
-                                f"      ❌ Page {page_num} excluded: no relevant content found"
-                            )
-                else:
-                    # YOLO returned no regions - keep the page from text search
-                    validated_pages.append(page_num)
-                    self.logger.debug(f"      ⚠️ Page {page_num}: YOLO returned no regions, keeping from text search")
-
-            except Exception as e:
-                # If YOLO fails for a page, keep it from text search
-                validated_pages.append(page_num)
-                self.logger.warning(f"      ⚠️ YOLO failed for page {page_num}: {e}, keeping from text search")
-
-        # Log summary
-        if len(validated_pages) != len(detected_pages):
-            removed = set(detected_pages) - set(validated_pages)
-            self.logger.info(
-                f"   🎯 YOLO validation: {len(detected_pages)} → {len(validated_pages)} pages "
-                f"(removed: {sorted(removed)})"
-            )
-
-        return sorted(validated_pages)
 

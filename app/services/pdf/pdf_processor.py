@@ -1131,28 +1131,15 @@ class PDFProcessor:
         Returns:
             List of extracted image data with YOLO metadata
         """
-        from app.services.pdf.yolo_layout_detector import YoloLayoutDetector
-        from app.config import get_settings
         import fitz
         import gc
-
-        settings = get_settings()
-
-        # Check if YOLO is enabled
-        if not settings.yolo_enabled:
-            self.logger.info(f"   ⚠️ [Job: {job_id}] YOLO layout detection disabled")
-            return []
 
         extracted_images = []
 
         try:
-            # Initialize YOLO detector
-            yolo_detector = YoloLayoutDetector()
-
-            # Cache lookup: pdf_worker.execute_pdf_extraction_job already
-            # ran YOLO and persisted regions to `document_layout_analysis`
-            # during markdown extraction. Reuse those rows here so we don't
-            # invoke YOLO twice for the same page in the same processing run.
+            # Layout regions come from the Surya structural pass (Stage 1),
+            # persisted to document_layout_analysis. We crop IMAGE/FIGURE
+            # regions from that cache — there is no live detection here.
             cached_layout = await self._load_cached_layout_for_pages(
                 document_id=document_id,
                 pdf_pages=batch_pages,
@@ -1165,22 +1152,15 @@ class PDFProcessor:
                     pdf_page = page_idx + 1
 
                     cached_for_page = cached_layout.get(pdf_page)
-                    if cached_for_page is not None:
-                        self.logger.info(
-                            f"   ♻️ [Job: {job_id}] Using cached layout for PDF page "
-                            f"{pdf_page} ({len(cached_for_page.regions)} regions, no YOLO re-run)"
-                        )
-                        layout_result = cached_for_page
-                    else:
-                        self.logger.info(
-                            f"   🎯 [Job: {job_id}] YOLO detecting layout on PDF page {pdf_page}..."
-                        )
-                        # Detect layout regions
-                        layout_result = await yolo_detector.detect_layout_regions(
-                            pdf_path=pdf_path,
-                            page_num=page_idx,
-                            dpi=PDF_CONSTANTS.YOLO_RENDER_DPI
-                        )
+                    if cached_for_page is None:
+                        # No Surya layout cached for this page → no crops to
+                        # extract. The Stage 1 structural pass is authoritative.
+                        continue
+                    self.logger.info(
+                        f"   ♻️ [Job: {job_id}] Using Surya layout for PDF page "
+                        f"{pdf_page} ({len(cached_for_page.regions)} regions)"
+                    )
+                    layout_result = cached_for_page
 
                     # Collect all image-bearing region types — pre-audit behavior.
                     # YOLO often classifies small-tile grids in ceramic catalogs as
