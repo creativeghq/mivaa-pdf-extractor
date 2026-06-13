@@ -451,6 +451,16 @@ class EndpointController:
             ok = False
             try:
                 cfg = config_getters[key]() or {}
+                # Provider switch: Modal (and any non-HF host) owns its own
+                # autoscaling — there is no per-job min_replica bump to make via
+                # the HF SDK. Treat as ready (no-op) and move on.
+                if (cfg.get("provider") or "huggingface").lower() != "huggingface":
+                    logger.debug(
+                        "   prepare_for_processing: %s on provider=%s — autoscaling managed by host, skipping HF prep",
+                        key, cfg.get("provider"),
+                    )
+                    outcome[key] = True
+                    continue
                 ep_name = cfg.get("endpoint_name") or HF_ENDPOINT_NAMES[key]
                 ns = cfg.get("namespace", "basiliskan")
                 token = cfg.get("hf_token") or cfg.get("endpoint_token")
@@ -584,10 +594,16 @@ class EndpointController:
             if not scaled and key in config_getters:
                 try:
                     cfg = config_getters[key]() or {}
+                    # HF-SDK direct drain only applies to HF endpoints. Modal
+                    # drains on its own scaledown_window (its manager.scale_to_zero
+                    # already returned True above, so we normally don't get here).
+                    is_hf = (cfg.get("provider") or "huggingface").lower() == "huggingface"
                     ep_name = cfg.get("endpoint_name") or HF_ENDPOINT_NAMES[key]
                     ns = cfg.get("namespace", "basiliskan")
                     token = cfg.get("hf_token") or cfg.get("endpoint_token")
-                    if ep_name and token:
+                    if not is_hf:
+                        scaled = True  # host-managed drain; nothing to do
+                    elif ep_name and token:
                         def _do_direct_scale(name=ep_name, namespace=ns, tok=token) -> bool:
                             # Force-drain via scale_to_zero() — kills the
                             # replica in seconds AND keeps the endpoint URL

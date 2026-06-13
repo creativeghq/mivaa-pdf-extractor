@@ -590,6 +590,33 @@ class Settings(BaseSettings):
         description="Max concurrent Surya inference calls"
     )
 
+    # --- Provider switch: which GPU host serves Surya -----------------------
+    # The inference contract (OpenAI-compatible /v1/chat/completions, vLLM) is
+    # identical across hosts; only the lifecycle differs. Flip this one var to
+    # move Surya between GPU providers — no code change.
+    #   "huggingface" → HF Inference Endpoint (SDK resume / scale-to-zero)
+    #   "modal"       → Modal-hosted vLLM (autoscaling owned by Modal)
+    surya_provider: str = Field(
+        default="huggingface",
+        env="SURYA_PROVIDER",
+        description="Which GPU host serves Surya: 'huggingface' | 'modal'"
+    )
+    surya_modal_url: str = Field(
+        default="",
+        env="SURYA_MODAL_URL",
+        description="Modal web endpoint base URL (the URL `modal deploy` prints). Required when SURYA_PROVIDER=modal."
+    )
+    surya_modal_api_key: str = Field(
+        default="",
+        env="SURYA_MODAL_API_KEY",
+        description="Bearer token for the Modal vLLM endpoint (the vLLM --api-key, value of the surya-vllm-api-key Modal secret)."
+    )
+    surya_modal_model_name: str = Field(
+        default="surya-ocr-2",
+        env="SURYA_MODAL_MODEL_NAME",
+        description="Model id the Modal vLLM server advertises (--served-model-name). Kept equal to surya_model_name so callers are provider-agnostic."
+    )
+
     # Voyage AI Settings (Text Embeddings - Primary Provider)
     voyage_api_key: str = Field(
         default="",
@@ -1049,14 +1076,32 @@ class Settings(BaseSettings):
         )
 
     def get_surya_config(self) -> Dict[str, Any]:
-        """Get Surya-2 structural-pass endpoint configuration."""
+        """Get Surya-2 structural-pass endpoint configuration.
+
+        Provider-aware: ``endpoint_url`` and ``model_name`` resolve to the active
+        provider's values so the registry's "configured?" check and the chat
+        payload are correct for both HuggingFace and Modal. Both providers'
+        fields are returned so the factory can build either.
+        """
+        provider = (self.surya_provider or "huggingface").strip().lower()
+        if provider == "modal":
+            effective_url = self.surya_modal_url
+            model_name = self.surya_modal_model_name
+        else:
+            effective_url = self.surya_endpoint_url
+            model_name = self.surya_model_name
         return {
             "enabled": self.surya_enabled,
-            "endpoint_url": self.surya_endpoint_url,
+            "provider": provider,
+            # Effective base URL for the active provider (registry's configured check).
+            "endpoint_url": effective_url,
             "hf_token": self.huggingface_api_key,
             "endpoint_name": self.surya_endpoint_name,
             "namespace": self.surya_namespace,
-            "model_name": self.surya_model_name,
+            # Modal-specific fields (used when provider == 'modal').
+            "modal_url": self.surya_modal_url,
+            "modal_api_key": self.surya_modal_api_key,
+            "model_name": model_name,
             "inference_timeout": self.surya_inference_timeout,
             "warmup_timeout": self.surya_warmup_timeout,
             "max_resume_retries": self.surya_max_resume_retries,

@@ -1668,10 +1668,22 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             "message": str(e)
         }
 
-    # Surya-2 Structural Pass (Layout + OCR Endpoint) — replaced YOLO + Chandra
+    # Surya-2 Structural Pass (Layout + OCR Endpoint) — replaced YOLO + Chandra.
+    # Provider-aware: probes the active host (HuggingFace OR Modal) using the
+    # effective URL + bearer from get_surya_config(), and reports which provider
+    # is serving so the admin health surface shows where Surya actually runs.
     try:
         settings = get_settings()
-        if settings.surya_enabled and settings.surya_endpoint_url:
+        surya_cfg = settings.get_surya_config()
+        surya_provider = surya_cfg.get("provider", "huggingface")
+        surya_base_url = (surya_cfg.get("endpoint_url") or "").strip()
+        # Bearer: HF uses the HF API key; Modal uses its vLLM --api-key. /health
+        # is unauthenticated on vLLM so a missing token still probes fine.
+        surya_token = (
+            surya_cfg.get("modal_api_key") if surya_provider == "modal"
+            else surya_cfg.get("hf_token")
+        ) or ""
+        if surya_cfg.get("enabled") and surya_base_url:
             cache_key = "surya_endpoint"
             current_time = time.time()
 
@@ -1683,17 +1695,19 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
             else:
                 try:
                     import httpx
+                    headers = {"Authorization": f"Bearer {surya_token}"} if surya_token else {}
                     start_time = time.time()
                     async with httpx.AsyncClient(timeout=10.0) as client:
                         response = await client.get(
-                            settings.surya_endpoint_url.rstrip("/") + "/health",
-                            headers={"Authorization": f"Bearer {settings.huggingface_api_key}"}
+                            surya_base_url.rstrip("/") + "/health",
+                            headers=headers,
                         )
                     latency_ms = int((time.time() - start_time) * 1000)
                     if response.status_code == 400 and "paused" in response.text.lower():
                         status_result = {
                             "status": "healthy",
-                            "message": "Surya endpoint paused (cost-saving mode)",
+                            "message": f"Surya endpoint paused (cost-saving mode) · provider={surya_provider}",
+                            "provider": surya_provider,
                             "latency_ms": latency_ms,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
@@ -1701,7 +1715,8 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     elif response.status_code in [200, 503]:
                         status_result = {
                             "status": "healthy",
-                            "message": "Surya endpoint operational",
+                            "message": f"Surya endpoint operational · provider={surya_provider}",
+                            "provider": surya_provider,
                             "latency_ms": latency_ms,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
@@ -1709,7 +1724,8 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     else:
                         status_result = {
                             "status": "degraded",
-                            "message": f"HTTP {response.status_code}",
+                            "message": f"HTTP {response.status_code} · provider={surya_provider}",
+                            "provider": surya_provider,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False
                         }
@@ -1719,7 +1735,8 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 except Exception as api_error:
                     status_result = {
                         "status": "degraded",
-                        "message": f"Connection error: {str(api_error)[:100]}",
+                        "message": f"Connection error: {str(api_error)[:100]} · provider={surya_provider}",
+                        "provider": surya_provider,
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False
                     }
@@ -1729,7 +1746,8 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         else:
             services_status["surya_endpoint"] = {
                 "status": "disabled",
-                "message": "Surya endpoint not configured or disabled"
+                "provider": surya_provider,
+                "message": f"Surya endpoint not configured or disabled (provider={surya_provider})"
             }
     except Exception as e:
         services_status["surya_endpoint"] = {

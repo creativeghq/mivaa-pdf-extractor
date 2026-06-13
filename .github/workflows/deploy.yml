@@ -920,6 +920,15 @@ jobs:
           Environment=SURYA_ENDPOINT_NAME=${{ secrets.SURYA_ENDPOINT_NAME }}
           Environment=SURYA_NAMESPACE=${{ secrets.SURYA_NAMESPACE }}
           Environment=SURYA_MODEL_NAME=${{ secrets.SURYA_MODEL_NAME }}
+          # Provider switch — which GPU host serves Surya. Empty secret → code
+          # default ("huggingface"). Set SURYA_PROVIDER=modal + the two SURYA_MODAL_*
+          # values (from `modal deploy modal_app/surya_vllm.py`) to run Surya on
+          # Modal instead of HF. The inference contract is identical; only the host
+          # changes. See mivaa-pdf-extractor/modal_app/README.md.
+          Environment=SURYA_PROVIDER=${{ secrets.SURYA_PROVIDER }}
+          Environment=SURYA_MODAL_URL=${{ secrets.SURYA_MODAL_URL }}
+          Environment=SURYA_MODAL_API_KEY=${{ secrets.SURYA_MODAL_API_KEY }}
+          Environment=SURYA_MODAL_MODEL_NAME=${{ secrets.SURYA_MODAL_MODEL_NAME }}
           # Pipeline runtime caps. MAX_CONCURRENT_PRODUCTS=1 is the only
           # verified-safe value on a 4 GB droplet (above 1 hits cgroup
           # MemoryHigh and OOM-killed on Apr 29). Override via GH secret

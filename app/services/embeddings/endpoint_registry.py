@@ -192,24 +192,21 @@ class EndpointRegistry:
                     logger.warning("⚠️ Surya endpoint not enabled")
                     return None
                 if not surya_config.get("endpoint_url"):
-                    logger.warning("⚠️ Surya endpoint not configured")
+                    logger.warning(
+                        "⚠️ Surya endpoint not configured (provider=%s) — set %s",
+                        surya_config.get("provider"),
+                        "SURYA_MODAL_URL" if surya_config.get("provider") == "modal" else "SURYA_ENDPOINT_URL",
+                    )
                     return None
 
-                self._surya_manager = SuryaEndpointManager(
-                    endpoint_url=surya_config["endpoint_url"],
-                    hf_token=surya_config.get("hf_token", ""),
-                    endpoint_name=surya_config.get("endpoint_name"),
-                    namespace=surya_config.get("namespace"),
-                    model_name=surya_config.get("model_name", "surya-ocr-2"),
-                    inference_timeout=surya_config.get("inference_timeout", 180),
-                    warmup_timeout=surya_config.get("warmup_timeout", 300),
-                    max_resume_retries=surya_config.get("max_resume_retries", 3),
-                    max_tokens=surya_config.get("max_tokens", 8000),
-                    max_image_pixels=surya_config.get("max_image_pixels", 2_000_000),
-                    enabled=True,
-                )
+                # Provider-aware build (huggingface | modal). The factory inside
+                # from_config picks the lifecycle strategy from surya_config['provider'].
+                self._surya_manager = SuryaEndpointManager.from_config(surya_config)
 
-                logger.info("✅ Surya manager created (singleton)")
+                logger.info(
+                    "✅ Surya manager created (singleton, provider=%s)",
+                    surya_config.get("provider"),
+                )
                 return self._surya_manager
 
             except Exception as e:

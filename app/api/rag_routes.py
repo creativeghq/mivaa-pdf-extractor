@@ -3114,38 +3114,15 @@ async def process_document_with_discovery(
                 from app.services.pdf.surya_endpoint_manager import SuryaEndpointManager
                 surya_config = settings.get_surya_config()
                 if surya_config.get("enabled", False) and surya_config.get("endpoint_url"):
-                    manager = SuryaEndpointManager(
-                        endpoint_url=surya_config["endpoint_url"],
-                        hf_token=surya_config.get("hf_token", ""),
-                        endpoint_name=surya_config.get("endpoint_name"),
-                        namespace=surya_config.get("namespace"),
-                        model_name=surya_config.get("model_name", "surya-ocr-2"),
-                        inference_timeout=surya_config.get("inference_timeout", 180),
-                        warmup_timeout=surya_config.get("warmup_timeout", 300),
-                        max_resume_retries=surya_config.get("max_resume_retries", 3),
-                        max_tokens=surya_config.get("max_tokens", 8000),
-                        max_image_pixels=surya_config.get("max_image_pixels", 2_000_000),
-                        enabled=True,
-                    )
+                    # Provider-aware build (huggingface | modal). from_config picks
+                    # the lifecycle strategy from surya_config['provider'].
+                    manager = SuryaEndpointManager.from_config(surya_config)
                     endpoint_managers['surya'] = manager
 
-                    def check_surya_status():
-                        endpoint = manager._get_endpoint()
-                        if endpoint:
-                            endpoint.fetch()
-                            return endpoint.status
-                        return None
-
-                    status = await asyncio.to_thread(check_surya_status)
-                    if status == "running":
-                        await asyncio.to_thread(manager._resolve_endpoint_url)
-                        probe_ok = await asyncio.to_thread(manager._test_inference)
-                        if probe_ok:
-                            logger.info("   ✅ Surya endpoint running + health probe OK, skipping warmup")
-                            warmup_results["skipped"].append("surya")
-                            return
-                        logger.warning("   ⚠️ Surya endpoint status=running but health probe FAILED — running full warmup")
-
+                    # Provider-agnostic warmup: resume_if_needed() short-circuits
+                    # when the endpoint is already up + healthy (HF checks SDK
+                    # status + /health and skips re-warm; Modal /health-probes and
+                    # auto-wakes), then warmup() confirms readiness.
                     def resume_and_warmup_surya():
                         if manager.resume_if_needed():
                             return manager.warmup()
@@ -3352,9 +3329,15 @@ async def process_document_with_discovery(
             }
         if 'surya' in endpoint_managers:
             surya_config = settings.get_surya_config()
+            # Provider-aware bearer: HF uses the HF key, Modal uses its vLLM --api-key.
+            surya_token = (
+                surya_config.get('modal_api_key')
+                if surya_config.get('provider') == 'modal'
+                else surya_config.get('hf_token')
+            ) or ''
             endpoints_config['surya'] = {
                 'url': _live_url_from_manager(endpoint_managers['surya'], surya_config['endpoint_url']),
-                'token': surya_config.get('hf_token', '')
+                'token': surya_token
             }
 
         # Both endpoints are required:
