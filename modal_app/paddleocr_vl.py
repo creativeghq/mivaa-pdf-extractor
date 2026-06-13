@@ -46,7 +46,9 @@ CUDA_TAG = os.environ.get("PADDLEOCR_CUDA_TAG", "12.6.3-devel-ubuntu22.04")  # m
 SCALEDOWN_WINDOW = int(os.environ.get("PADDLEOCR_SCALEDOWN_WINDOW", "120"))  # idle → $0
 MIN_CONTAINERS = int(os.environ.get("PADDLEOCR_MIN_CONTAINERS", "0"))        # 0 = scale-to-zero
 MAX_CONTAINERS = int(os.environ.get("PADDLEOCR_MAX_CONTAINERS", "4"))        # autoscale ceiling
-MAX_CONCURRENT = int(os.environ.get("PADDLEOCR_MAX_CONCURRENT", "8"))
+# Keep this comfortably > 1 so /health probes are answered instantly and never
+# queue behind in-flight /parse work (max_inputs=1 caused a /health pile-up).
+MAX_CONCURRENT = int(os.environ.get("PADDLEOCR_MAX_CONCURRENT", "16"))
 PADDLE_VERSION = os.environ.get("PADDLEOCR_PADDLE_VERSION", "3.2.1")
 
 # Build: CUDA devel base + standalone Python, paddlepaddle-gpu from Paddle's cu126
@@ -111,19 +113,12 @@ class PaddleService:
             # Older signature without a device kwarg — rely on set_device above.
             self.pipeline = PaddleOCRVL()
 
-        # Warm with a real text image so the first request pays no JIT cost.
-        try:
-            import numpy as np
-            from PIL import Image, ImageDraw
-            im = Image.new("RGB", (400, 200), "white")
-            ImageDraw.Draw(im).text((20, 80), "WARMUP 123", fill="black")
-            import time as _t
-            t0 = _t.time()
-            _ = list(self.pipeline.predict(np.array(im)[:, :, ::-1]))
-            print(f"✅ warmup predict ok in {_t.time()-t0:.1f}s")
-        except Exception as e:  # noqa: BLE001 - warmup is best-effort
-            print(f"warmup predict skipped: {e}")
-        print("✅ PaddleOCR-VL pipeline loaded")
+        # NOTE: we deliberately do NOT run a warmup predict here. A warmup
+        # predict pays the paddle JIT cost (not cached across cold starts) and
+        # BLOCKS @modal.enter for ~60-90s, during which /health can't be served
+        # and probes pile up. Instead we let the model load (~10-30s), serve
+        # /health immediately, and the FIRST real /parse pays the one-time JIT.
+        print("✅ PaddleOCR-VL pipeline loaded (model on GPU; first /parse pays JIT)")
 
     def _parse_image(self, image_bytes: bytes):
         """Run the pipeline on one image; return (regions, width, height)."""
