@@ -122,8 +122,12 @@ class PaddleService:
         try:
             import numpy as np
             from PIL import Image, ImageDraw
-            im = Image.new("RGB", (1000, 1400), "white")
-            ImageDraw.Draw(im).text((60, 80), "WARMUP 123 Λευκό", fill="black")
+            # SMALL warmup image — the paddle JIT generalizes across input shapes,
+            # so this ~7s warmup makes the first real (full-page) /parse ~3s. A
+            # big warmup image instead makes THIS predict JIT-block for minutes
+            # (validated: 400x200 warmup → first 1000x1400 /parse = 3.2s).
+            im = Image.new("RGB", (400, 200), "white")
+            ImageDraw.Draw(im).text((20, 80), "WARMUP 123", fill="black")
             import time as _t
             t0 = _t.time()
             _ = list(self.pipeline.predict(np.array(im)[:, :, ::-1]))
