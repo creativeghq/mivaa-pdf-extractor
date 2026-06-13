@@ -63,7 +63,7 @@ class PDFProcessingConstants:
     TEXT_TO_IMAGE_RATIO_THRESHOLD: float = 30.0  # Threshold for text-to-image ratio
 
     # Render settings
-    YOLO_RENDER_DPI: int = 250  # DPI for YOLO layout detection rendering
+    LAYOUT_RENDER_DPI: int = 250  # DPI for layout detection rendering
     FULL_PAGE_RENDER_ZOOM: float = 250 / 72  # Zoom factor for full page rendering (250 DPI)
 
     # Embedded image quality gate — effective DPI below this triggers re-render from page
@@ -71,24 +71,22 @@ class PDFProcessingConstants:
     # 100 DPI is the floor — below this, the image looks visibly soft/pixelated
     MIN_EFFECTIVE_DPI: float = 100.0
 
-    # YOLO crop region types — which YOLO layout-region classifications get
-    # emitted as `extraction_layer='yolo_crop'` rows. Pre-audit this also
-    # included FIGURE/TABLE so that small-tile grids in ceramic catalogs
-    # (where YOLO commonly classifies a 12-tile color-swatch grid as a single
-    # TABLE region or a FIGURE) still produced per-region crops. Audit
-    # incident: job acff9ebb 2026-05-03, FOLD page 37 had small color-variant
-    # tiles invisible to PyMuPDF (flattened into render commands) and
-    # classified by YOLO as TABLE — they vanished from extraction entirely.
-    # Override via `PDF_YOLO_CROP_REGION_TYPES` env var (comma-separated).
-    YOLO_CROP_REGION_TYPES: tuple = ("IMAGE", "FIGURE", "TABLE")
+    # Region crop types — which layout-region classifications get emitted as
+    # `extraction_layer='region_crop'` rows. Includes FIGURE/TABLE so that
+    # small-tile grids in ceramic catalogs (where a 12-tile color-swatch grid
+    # is commonly classified as a single TABLE region or a FIGURE) still
+    # produce per-region crops — tiles invisible to PyMuPDF (flattened into
+    # render commands) are otherwise lost from extraction entirely.
+    # Override via `PDF_CROP_REGION_TYPES` env var (comma-separated).
+    CROP_REGION_TYPES: tuple = ("IMAGE", "FIGURE", "TABLE")
 
-    # YOLO crop padding — fraction of page dimensions added on each side of
-    # the YOLO bbox before crop. Default 0.03 (3%) captures the headline,
+    # Region crop padding — fraction of page dimensions added on each side of
+    # the region bbox before crop. Default 0.03 (3%) captures the headline,
     # caption, or label sitting just outside the detected region. Vision
     # analysis quality improves materially when the crop includes the text
     # the human eye reads with the image. Set to 0.0 to disable.
-    # Override via `PDF_YOLO_CROP_PADDING_FRACTION` env var.
-    YOLO_CROP_PADDING_FRACTION: float = 0.03
+    # Override via `PDF_CROP_PADDING_FRACTION` env var.
+    CROP_PADDING_FRACTION: float = 0.03
 
 
 # Global instance for easy access
@@ -462,7 +460,6 @@ class PDFProcessor:
             markdown_content = ""
             metadata = {}
             page_chunks = None
-            layout_regions_by_page: Dict[int, List[Any]] = {}
 
             if extract_text:
                 # Extract markdown content using existing function with timeout
@@ -480,13 +477,15 @@ class PDFProcessor:
 
                 try:
                     # Execute in thread pool. Worker returns
-                    # (markdown_content, metadata, page_chunks, layout_regions_by_page).
+                    # (markdown_content, metadata, page_chunks, layout_regions_by_page);
+                    # the 4th element is always {} (layout comes from the PaddleOCR
+                    # structural pass in stage_1_layout_precompute, not this worker).
                     # Filter out non-serializable objects (services, trackers) before passing to worker.
                     filtered_options = {
                         k: v for k, v in processing_options.items()
                         if k not in ('checkpoint_recovery_service', 'progress_tracker', 'job_id')
                     }
-                    markdown_content, metadata, page_chunks, layout_regions_by_page = await asyncio.wait_for(
+                    markdown_content, metadata, page_chunks, _ = await asyncio.wait_for(
                         loop.run_in_executor(
                             self.executor,
                             execute_pdf_extraction_job,
@@ -508,32 +507,6 @@ class PDFProcessor:
                     'file_size': os.path.getsize(pdf_path)
                 }
                 doc.close()
-            
-            # ============================================================
-            # Persist YOLO+Chandra merged layout regions per page BEFORE
-            # image extraction starts. Image-extraction layer 2 reads the
-            # cache to skip redundant YOLO calls; the cache must be populated
-            # first or it'll always fall through to a re-run. Same data also
-            # passed in-memory to image extraction below, eliminating the
-            # DB round-trip in the same processor invocation.
-            # Per-product stage_1 still reads the DB cache later (different
-            # invocation, in-memory data is gone by then).
-            # ============================================================
-            try:
-                if layout_regions_by_page:
-                    persisted = await self._persist_document_layout(
-                        document_id=document_id,
-                        layout_regions_by_page=layout_regions_by_page,
-                    )
-                    self.logger.info(
-                        f"💾 Persisted layout for {persisted}/{len(layout_regions_by_page)} "
-                        f"pages to document_layout_analysis"
-                    )
-                    metadata['layout_pages_persisted'] = persisted
-            except Exception as exc:
-                self.logger.warning(
-                    f"Layout persistence failed (non-fatal, downstream will re-run YOLO): {exc}"
-                )
 
             # Extract images if requested
             extracted_images = []
@@ -638,7 +611,7 @@ class PDFProcessor:
             bool: True if multimodal processing is recommended
 
         Note:
-            OCR uses 3-phase intelligent filtering (OpenCV → CLIP → Chandra v2),
+            OCR uses 3-phase intelligent filtering (OpenCV → CLIP → PaddleOCR),
             so enabling multimodal doesn't mean all images get OCR.
             Only images with text patterns AND technical content get full OCR.
         """
@@ -686,79 +659,6 @@ class PDFProcessor:
             self.logger.warning(f"Multimodal detection failed: {e}, defaulting to False")
             return False
 
-    async def _persist_document_layout(
-        self,
-        document_id: str,
-        layout_regions_by_page: Dict[int, List[Any]],
-    ) -> int:
-        """Persist YOLO+text merged regions to `document_layout_analysis`.
-
-        One row per (document_id, page_number). `layout_elements` is the
-        full list of merged regions as JSON dicts; `reading_order` is a
-        thin index of region ids in reading order; `processing_version`
-        tags the YOLO+Chandra v2 pipeline so future migrations can
-        invalidate the cache by version.
-
-        Downstream stages (`stage_1_focused_extraction`,
-        `stage_2_chunking`, image extraction layer 2) read this table
-        before invoking YOLO again, eliminating redundant per-product
-        YOLO calls.
-
-        Returns the number of pages persisted.
-        """
-        if not layout_regions_by_page:
-            return 0
-        try:
-            from app.services.core.supabase_client import get_supabase_client
-        except Exception as exc:
-            self.logger.debug(f"Supabase client unavailable, skipping layout persist: {exc}")
-            return 0
-
-        supabase = get_supabase_client()
-        persisted = 0
-
-        for page_number, merged_regions in layout_regions_by_page.items():
-            try:
-                layout_elements = []
-                reading_order: List[Dict[str, Any]] = []
-                for idx, region in enumerate(merged_regions):
-                    region_dict = region.to_dict() if hasattr(region, "to_dict") else dict(region)
-                    layout_elements.append(region_dict)
-                    reading_order.append({
-                        "index": idx,
-                        "region_type": region_dict.get("region_type"),
-                        "reading_order": region_dict.get("reading_order"),
-                    })
-
-                # Upsert by (document_id, page_number) so re-runs replace
-                # previous layout cache for the same document.
-                supabase.client.table('document_layout_analysis').upsert(
-                    {
-                        'document_id': document_id,
-                        'page_number': int(page_number),
-                        'layout_elements': layout_elements,
-                        'reading_order': reading_order,
-                        'structure_confidence': 0.85,
-                        'processing_version': 'yolo+chandra-v2',
-                        'analysis_metadata': {
-                            'pipeline': 'pdf_worker.execute_pdf_extraction_job',
-                            'region_count': len(layout_elements),
-                            'has_text': any(
-                                bool((r.get('text_content') or '').strip())
-                                for r in layout_elements
-                            ),
-                        },
-                    },
-                    on_conflict='document_id,page_number',
-                ).execute()
-                persisted += 1
-            except Exception as exc:
-                self.logger.debug(
-                    f"   Layout persist failed for page {page_number}: {exc}"
-                )
-
-        return persisted
-
     async def _load_cached_layout_for_pages(
         self,
         document_id: Optional[str],
@@ -768,11 +668,11 @@ class PDFProcessor:
 
         Returns dict[pdf_page_1_based] -> LayoutDetectionResult-like
         object (must expose `.regions` and `.get_regions_by_type(...)`).
-        Used by `_extract_batch_images_with_yolo` to skip YOLO when
+        Used by `_extract_region_crops` to skip the structural pass when
         regions are already cached by the markdown-extraction phase.
 
         On any error or missing rows, returns empty dict so the caller
-        falls back to running YOLO normally.
+        falls back to running the structural pass normally.
         """
         if not document_id or not pdf_pages:
             return {}
@@ -840,7 +740,7 @@ class PDFProcessor:
                     page_number=page_num - 1,
                     regions=regions,
                     detection_time_ms=0,
-                    model_version='yolo-docparser-cache',
+                    model_version='paddleocr-cache',
                 )
 
         return cached
@@ -934,7 +834,7 @@ class PDFProcessor:
             # Track extraction method for metrics (4-layer cascade)
             extraction_stats = {
                 'embedded_count': 0,
-                'yolo_crop_count': 0,
+                'region_crop_count': 0,
                 'full_render_count': 0,
                 'failed_count': 0,
                 'total_pages': len(pages_to_process),
@@ -961,8 +861,8 @@ class PDFProcessor:
                     layer = img.get('extraction_layer', 'embedded')
                     if layer == 'embedded':
                         extraction_stats['embedded_count'] += 1
-                    elif layer == 'yolo_crop':
-                        extraction_stats['yolo_crop_count'] += 1
+                    elif layer == 'region_crop':
+                        extraction_stats['region_crop_count'] += 1
                     elif layer == 'full_render':
                         extraction_stats['full_render_count'] += 1
 
@@ -994,7 +894,7 @@ class PDFProcessor:
             # log matches the data downstream stages will see.
             actual_layer_counts: Dict[str, int] = {
                 "embedded": 0,
-                "yolo_crop": 0,
+                "region_crop": 0,
                 "full_render": 0,
                 "other": 0,
             }
@@ -1002,18 +902,18 @@ class PDFProcessor:
                 layer = img.get("extraction_layer") or "embedded"
                 actual_layer_counts[layer if layer in actual_layer_counts else "other"] += 1
             extraction_stats["actual_embedded_count"] = actual_layer_counts["embedded"]
-            extraction_stats["actual_yolo_crop_count"] = actual_layer_counts["yolo_crop"]
+            extraction_stats["actual_region_crop_count"] = actual_layer_counts["region_crop"]
             extraction_stats["actual_full_render_count"] = actual_layer_counts["full_render"]
             extraction_stats["actual_other_layer_count"] = actual_layer_counts["other"]
 
             self.logger.info(
                 f"✅ 4-LAYER EXTRACTION COMPLETE: {len(all_images)} total images survived dedup "
                 f"(actual: embedded={actual_layer_counts['embedded']}, "
-                f"yolo_crop={actual_layer_counts['yolo_crop']}, "
+                f"region_crop={actual_layer_counts['region_crop']}, "
                 f"full_render={actual_layer_counts['full_render']}, "
                 f"other={actual_layer_counts['other']}; "
                 f"pre-dedup: embedded={extraction_stats['embedded_count']}, "
-                f"yolo_crop={extraction_stats['yolo_crop_count']}, "
+                f"region_crop={extraction_stats['region_crop_count']}, "
                 f"full_render={extraction_stats['full_render_count']}; "
                 f"duplicates_removed={extraction_stats['duplicates_removed']})"
             )
@@ -1036,7 +936,7 @@ class PDFProcessor:
 
         ✅ 4-LAYER EXTRACTION CASCADE:
         1. Layer 1: Embedded images (PyMuPDF) - Fast, extracts actual embedded images
-        2. Layer 2: YOLO-guided cropping - Detects IMAGE regions and crops from rendered page
+        2. Layer 2: Region-crop cropping - Crops IMAGE/FIGURE regions from the cached layout
         3. Layer 3: Full page render - Fallback for scanned PDFs and vector graphics
         4. Layer 4: Perceptual hash deduplication - Remove duplicates across all layers
 
@@ -1077,13 +977,13 @@ class PDFProcessor:
 
         # Layer 2: crop IMAGE/FIGURE regions from the PaddleOCR structural cache.
         self.logger.info(f"   🖼️ [Job: {job_id}] Layer 2: cropping from PaddleOCR layout cache...")
-        cropped_images = await self._extract_batch_images_with_yolo(
+        cropped_images = await self._extract_region_crops(
             pdf_path, image_dir, batch_pages, job_id, document_id
         )
-        # extraction_layer stays 'yolo_crop' — downstream (Phase-3 OCR filter,
+        # extraction_layer stays 'region_crop' — downstream (Phase-3 OCR filter,
         # dedupe buckets) keys on this exact tag; the source is now PaddleOCR.
         for img in cropped_images:
-            img['extraction_layer'] = 'yolo_crop'
+            img['extraction_layer'] = 'region_crop'
         all_images.extend(cropped_images)
         self.logger.info(
             f"   ✅ [Job: {job_id}] Layer 2 complete: {len(cropped_images)} cropped images"
@@ -1101,13 +1001,13 @@ class PDFProcessor:
         self.logger.info(
             f"   ✅ [Job: {job_id}] 4-layer extraction complete: "
             f"{len(unique_images)} unique images "
-            f"(embedded: {len(embedded_images)}, yolo: {len(all_images) - len(embedded_images)}, "
+            f"(embedded: {len(embedded_images)}, region_crops: {len(all_images) - len(embedded_images)}, "
             f"duplicates removed: {len(all_images) - len(unique_images)})"
         )
 
         return unique_images
 
-    async def _extract_batch_images_with_yolo(
+    async def _extract_region_crops(
         self,
         pdf_path: str,
         image_dir: str,
@@ -1116,15 +1016,16 @@ class PDFProcessor:
         document_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Extract images using YOLO layout detection (Layer 2).
+        Extract images by cropping cached layout regions (Layer 2).
 
         ✅ INTEGRATED with job tracking and error logging
 
-        Uses YOLO DocParser to detect IMAGE regions and crops them from rendered pages.
-        This is more accurate than embedded extraction for vector graphics and complex layouts.
+        Crops IMAGE/FIGURE regions from the cached PaddleOCR layout and saves
+        them from rendered pages. This is more accurate than embedded extraction
+        for vector graphics and complex layouts.
 
         Returns:
-            List of extracted image data with YOLO metadata
+            List of extracted image data with region-crop metadata
         """
         import fitz
         import gc
@@ -1157,19 +1058,19 @@ class PDFProcessor:
                     )
                     layout_result = cached_for_page
 
-                    # Collect all image-bearing region types — pre-audit behavior.
-                    # YOLO often classifies small-tile grids in ceramic catalogs as
+                    # Collect all image-bearing region types. The structural pass
+                    # often classifies small-tile grids in ceramic catalogs as
                     # TABLE or FIGURE, not IMAGE. Restricting to IMAGE-only loses
                     # those tiles entirely. Region types come from
-                    # PDFProcessingConstants.YOLO_CROP_REGION_TYPES, env-overridable
-                    # via `PDF_YOLO_CROP_REGION_TYPES`.
-                    crop_region_types_env = os.environ.get('PDF_YOLO_CROP_REGION_TYPES')
+                    # PDFProcessingConstants.CROP_REGION_TYPES, env-overridable
+                    # via `PDF_CROP_REGION_TYPES`.
+                    crop_region_types_env = os.environ.get('PDF_CROP_REGION_TYPES')
                     if crop_region_types_env:
                         crop_region_types = tuple(
                             t.strip().upper() for t in crop_region_types_env.split(',') if t.strip()
                         )
                     else:
-                        crop_region_types = PDF_CONSTANTS.YOLO_CROP_REGION_TYPES
+                        crop_region_types = PDF_CONSTANTS.CROP_REGION_TYPES
 
                     image_regions = []
                     for region_type in crop_region_types:
@@ -1195,7 +1096,7 @@ class PDFProcessor:
                         page = doc[page_idx]
 
                         # Render at 250 DPI for material-quality detail
-                        zoom = PDF_CONSTANTS.YOLO_RENDER_DPI / 72  # 250 DPI
+                        zoom = PDF_CONSTANTS.LAYOUT_RENDER_DPI / 72  # 250 DPI
                         mat = fitz.Matrix(zoom, zoom)
                         pix = page.get_pixmap(matrix=mat)
 
@@ -1205,7 +1106,7 @@ class PDFProcessor:
                         img_data = pix.tobytes("png")
                         full_page_image = Image.open(io.BytesIO(img_data))
 
-                        # YOLO crop padding — env-overridable, defaults to 3% of
+                        # Region crop padding — env-overridable, defaults to 3% of
                         # page dimensions. The padded crop is used ONLY as input to
                         # classification + vision_analysis (Claude Opus reads
                         # adjacent SKU/brand/dimension labels to fill VisionAnalysis
@@ -1215,12 +1116,12 @@ class PDFProcessor:
                         try:
                             pad_fraction = float(
                                 os.environ.get(
-                                    'PDF_YOLO_CROP_PADDING_FRACTION',
-                                    PDF_CONSTANTS.YOLO_CROP_PADDING_FRACTION,
+                                    'PDF_CROP_PADDING_FRACTION',
+                                    PDF_CONSTANTS.CROP_PADDING_FRACTION,
                                 )
                             )
                         except (TypeError, ValueError):
-                            pad_fraction = PDF_CONSTANTS.YOLO_CROP_PADDING_FRACTION
+                            pad_fraction = PDF_CONSTANTS.CROP_PADDING_FRACTION
                         pad_x = int(full_page_image.width * pad_fraction)
                         pad_y = int(full_page_image.height * pad_fraction)
 
@@ -1230,7 +1131,7 @@ class PDFProcessor:
                                 # Get bounding box coordinates
                                 bbox = region.bbox
 
-                                # Tight crop = exact YOLO bbox, clamped to page.
+                                # Tight crop = exact region bbox, clamped to page.
                                 tight_x1 = max(0, int(bbox.x))
                                 tight_y1 = max(0, int(bbox.y))
                                 tight_x2 = min(full_page_image.width, int(bbox.x2))
@@ -1245,7 +1146,7 @@ class PDFProcessor:
 
                                 # Save tight crop as the primary file (storage,
                                 # SLIG embeddings, UI all read this).
-                                image_filename = f"page_{pdf_page}_yolo_region_{region_idx}.jpg"
+                                image_filename = f"page_{pdf_page}_region_{region_idx}.jpg"
                                 image_path = os.path.join(image_dir, image_filename)
 
                                 cropped_image.save(image_path, "JPEG", quality=95, progressive=True)
@@ -1264,7 +1165,7 @@ class PDFProcessor:
                                     if (pad_x1, pad_y1, pad_x2, pad_y2) != (tight_x1, tight_y1, tight_x2, tight_y2):
                                         padded_image = full_page_image.crop((pad_x1, pad_y1, pad_x2, pad_y2))
                                         try:
-                                            vision_filename = f"page_{pdf_page}_yolo_region_{region_idx}_padded.jpg"
+                                            vision_filename = f"page_{pdf_page}_region_{region_idx}_padded.jpg"
                                             vision_input_path = os.path.join(image_dir, vision_filename)
                                             padded_image.save(vision_input_path, "JPEG", quality=95, progressive=True)
                                         finally:
@@ -1309,7 +1210,7 @@ class PDFProcessor:
                                     if best_caption:
                                         try:
                                             cap_bbox = best_caption.bbox
-                                            zoom = PDF_CONSTANTS.YOLO_RENDER_DPI / 72  # Same DPI used for rendering
+                                            zoom = PDF_CONSTANTS.LAYOUT_RENDER_DPI / 72  # Same DPI used for rendering
                                             pdf_rect = fitz.Rect(
                                                 cap_bbox.x / zoom,
                                                 cap_bbox.y / zoom,
@@ -1332,11 +1233,11 @@ class PDFProcessor:
                                     'width': width,
                                     'height': height,
                                     'format': 'JPEG',
-                                    'detection_method': 'yolo_guided',
-                                    'extraction_layer': 'yolo_crop',
-                                    'yolo_confidence': region.confidence,
-                                    'yolo_region_type': region.type,
-                                    'yolo_reading_order': region.reading_order,
+                                    'detection_method': 'layout_guided',
+                                    'extraction_layer': 'region_crop',
+                                    'region_confidence': region.confidence,
+                                    'region_type': region.type,
+                                    'region_reading_order': region.reading_order,
                                     'caption': caption_text,  # Associated caption text
                                     'bbox': [
                                         bbox.x / full_page_image.width,  # x normalized
@@ -1350,18 +1251,18 @@ class PDFProcessor:
 
                                 # 🔍 BBOX TRACE: Log bbox at extraction point
                                 self.logger.info(
-                                    f"   🔍 [BBOX TRACE] YOLO extraction - {image_filename}: "
+                                    f"   🔍 [BBOX TRACE] region crop - {image_filename}: "
                                     f"bbox={image_info.get('bbox')}, id(img_info)={id(image_info)}"
                                 )
 
                                 self.logger.debug(
-                                    f"   ✅ [Job: {job_id}] Extracted YOLO region {region_idx} "
+                                    f"   ✅ [Job: {job_id}] Extracted region crop {region_idx} "
                                     f"from PDF page {pdf_page} (confidence: {region.confidence:.2f})"
                                 )
 
                             except Exception as e:
                                 self.logger.error(
-                                    f"   ❌ [Job: {job_id}] Failed to crop YOLO region {region_idx} "
+                                    f"   ❌ [Job: {job_id}] Failed to crop region {region_idx} "
                                     f"on PDF page {pdf_page}: {e}"
                                 )
                                 continue
@@ -1375,21 +1276,16 @@ class PDFProcessor:
 
                 except Exception as e:
                     self.logger.error(
-                        f"   ❌ [Job: {job_id}] YOLO extraction failed for PDF page {pdf_page}: {e}"
+                        f"   ❌ [Job: {job_id}] region crop extraction failed for PDF page {pdf_page}: {e}"
                     )
                     continue
 
             self.logger.info(
-                f"   ✅ [Job: {job_id}] YOLO extraction complete: {len(extracted_images)} images extracted"
+                f"   ✅ [Job: {job_id}] region crop extraction complete: {len(extracted_images)} images extracted"
             )
 
-            # Mid-job YOLO pause removed: Stage 3 image classification still
-            # needs YOLO for region detection. Terminal cleanup
-            # (scale_all_to_zero in rag_routes.py finally block) handles
-            # the end-of-job scale-to-zero call.
-
         except Exception as e:
-            self.logger.error(f"   ❌ [Job: {job_id}] YOLO batch extraction failed: {e}")
+            self.logger.error(f"   ❌ [Job: {job_id}] region crop batch extraction failed: {e}")
 
         return extracted_images
 
@@ -1517,11 +1413,7 @@ class PDFProcessor:
 
                             # Populate image metadata with Layer 1 information (using PDF page number).
                             # `extraction_layer` is the canonical column-backed enum
-                            # ({embedded, yolo_crop, full_render, vision_guided}).
-                            # We no longer emit the legacy `pymupdf_*` strings — the
-                            # column constraint rejects them and the parallel
-                            # vocabulary caused the silent producer/consumer drift
-                            # cleaned up 2026-05-02.
+                            # ({embedded, region_crop, full_render, vision_guided}).
                             extracted_images.append({
                                 'path': image_path,
                                 'filename': image_filename,
@@ -1675,11 +1567,11 @@ class PDFProcessor:
         )
 
         unique_images = []
-        # Audit fix #13: per-extraction-layer dedup. Previously a yolo_crop
-        # whose phash collided with an embedded image of the same material
-        # was silently dropped + the surviving layer kept the wrong label.
-        # Keying the seen-hashes map by extraction_layer means cross-layer
-        # collisions are kept (embedded preferred, yolo_crop preserved).
+        # Per-extraction-layer dedup. A region_crop whose phash collides with
+        # an embedded image of the same material must not be silently dropped
+        # with the surviving layer keeping the wrong label. Keying the
+        # seen-hashes map by extraction_layer means cross-layer collisions are
+        # kept (embedded preferred, region_crop preserved).
         seen_hashes_by_layer: Dict[str, Dict] = {}
         duplicate_count = 0
         # Audit fix #29: corrupted images that fail hash computation are now
@@ -2321,7 +2213,7 @@ class PDFProcessor:
         This is Phase 1 of the OCR filtering pipeline. It uses simple computer vision
         techniques to detect text-like patterns without running expensive OCR.
 
-        Speed: ~0.1 seconds per image (avoids a Chandra v2 call per image)
+        Speed: ~0.1 seconds per image (avoids a PaddleOCR call per image)
 
         Args:
             image_path: Path to the image file
@@ -2666,11 +2558,9 @@ class PDFProcessor:
                 f"({len(images_skipped)} skipped: {len(opencv_skipped)} no text, {len(clip_skipped)} decorative)"
             )
             
-            # PHASE 3: OCR — Chandra v2 only via ocr_service.extract_text_from_image.
-            # Pytesseract + EasyOCR were removed 2026-05-01; Chandra retry-with-jitter
-            # carries the >90% success rate without a local fallback.
+            # PHASE 3: OCR — PaddleOCR via ocr_service.extract_text_from_image.
             self.logger.info(
-                f"📝 Phase 3: Running OCR (Chandra v2) "
+                f"📝 Phase 3: Running OCR (PaddleOCR) "
                 f"on {len(images_to_process)} filtered images"
             )
             

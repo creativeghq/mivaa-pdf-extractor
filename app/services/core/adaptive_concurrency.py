@@ -1,7 +1,7 @@
 """
 Adaptive concurrency controller — AIMD backpressure.
 
-When an upstream endpoint (SLIG, YOLO, Chandra OCR, Anthropic, etc.) cannot
+When an upstream endpoint (SLIG, PaddleOCR, Anthropic, etc.) cannot
 scale up its replicas (no available GPU, or rate-limited), we scale DOWN our
 in-flight request rate instead of queuing requests that will time out.
 Classic AIMD:

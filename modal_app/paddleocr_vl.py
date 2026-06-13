@@ -8,11 +8,11 @@ PaddleOCR-VL is a **two-stage** document parser run **in one process** by the
   2. PaddleOCR-VL-0.9B (NaViT encoder + ERNIE-4.5-0.3B) → recognizes the content
      inside each region (text, tables→markdown, formulas→LaTeX, charts).
 
-It replaced Surya-2 (2026-06-13) because the dedicated RT-DETR detector gives
-tighter figure/image boxes (→ cleaner product crops) and a dedicated reading
-order, and the VLM adds table/formula/chart recognition.
+The dedicated RT-DETR detector gives tight figure/image boxes (→ clean product
+crops) and a dedicated reading order, and the VLM adds table/formula/chart
+recognition.
 
-Unlike the Surya app this is NOT a vLLM ``/v1/chat/completions`` server — vLLM
+This is NOT a vLLM ``/v1/chat/completions`` server — vLLM
 serving of PaddleOCR-VL needs nightly builds and only covers the VLM half. We
 run the full ``PaddleOCRVL`` pipeline in-process (paddlepaddle-gpu, no vLLM) and
 expose a small custom contract the MIVAA PaddleOCRManager speaks:
@@ -22,7 +22,7 @@ expose a small custom contract the MIVAA PaddleOCRManager speaks:
                            → {"regions":[{"bbox":[x0,y0,x1,y1] px,"label","content",
                                           "order"}], "width", "height"}
 
-Lifecycle parity with the Surya app: scale-to-zero (``min_containers=0`` +
+Lifecycle: scale-to-zero (``min_containers=0`` +
 ``scaledown_window``) so it costs $0 idle; first request cold-starts a GPU
 container; MIVAA health-probes ``/health`` as its warmup.
 

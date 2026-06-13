@@ -93,8 +93,9 @@ class Settings(BaseSettings):
         default=4000, env="PRODUCT_MEMORY_THRESHOLD_MB",
         description="Pause adding new products if process RSS exceeds this"
     )
-    # Stage 1.5 (document-level layout precompute) — runs YOLO + Chandra
-    # bbox-text merge once per page upfront and caches results in
+    # Stage 1.5 (document-level layout precompute) — runs the PaddleOCR-VL
+    # structural pass (layout regions + OCR text) once per page upfront and
+    # caches results in
     # `document_layout_analysis`. Stage 2 chunker reads from that cache so
     # layout-aware chunking actually has populated text_content (was the
     # root cause of chunks=0 on stylized catalog pages). Set False to
@@ -108,7 +109,7 @@ class Settings(BaseSettings):
     # Each base cap × 4 replicas matches what the AIMD gate in
     # endpoint_controller.py raises to once replicas come online.
     # Without these caps, a 1000-image catalog fires 1000 simultaneous
-    # SLIG / YOLO / Chandra requests and trips upstream rate limits.
+    # SLIG and PaddleOCR structural-pass requests and trips upstream rate limits.
     slig_concurrency: int = Field(
         default=32, env="SLIG_CONCURRENCY",
         description="Max concurrent SLIG visual-embedding requests (base=8 × 4 replicas)"
@@ -326,8 +327,7 @@ class Settings(BaseSettings):
         default=0.6,
         env="OCR_CONFIDENCE_THRESHOLD"
     )
-    # OCR runs on the PaddleOCR-VL structural-pass backbone (replaced Surya-2
-    # 2026-06-13; Pytesseract + EasyOCR removed in the 2026-05-01 audit). This
+    # OCR runs on the PaddleOCR-VL structural-pass backbone. This
     # field is retained for downstream consumers of get_ocr_config() but only
     # accepts "paddleocr".
     ocr_engine: str = Field(
@@ -419,10 +419,10 @@ class Settings(BaseSettings):
 
     # Vision-Guided Extraction Settings (Model-Agnostic) - PREMIUM OPTIONAL
     # Uses Claude Vision API to detect products and extract precise image regions
-    # NOTE: YOLO is the primary extraction method (7x cheaper, 2x faster, universal coverage)
+    # NOTE: the layout structural pass is the primary extraction method (cheaper, faster, universal coverage)
     # Vision-Guided is a premium option for high-value product catalogs only
     vision_guided_enabled: bool = Field(
-        default=False,  # DISABLED by default - use YOLO as primary
+        default=False,  # DISABLED by default - use the layout structural pass as primary
         env="VISION_GUIDED_ENABLED",
         description="Enable vision-guided product extraction (premium option, requires API keys)"
     )
@@ -531,8 +531,8 @@ class Settings(BaseSettings):
     # ============================================================================
     # Two-stage document parser (PP-DocLayoutV2 RT-DETR detector + 0.9B VLM) run
     # in-process on Modal. One /parse call per page returns layout regions
-    # (label + bbox + reading order) + OCR'd content. Replaced Surya-2 2026-06-13
-    # (tighter RT-DETR crop boxes + a dedicated reading order). Modal-hosted only
+    # (label + bbox + reading order) + OCR'd content, with tight RT-DETR crop
+    # boxes and a dedicated reading order. Modal-hosted only
     # — the pipeline is not an OpenAI-compatible endpoint, so there is no HF path.
     # ============================================================================
     paddleocr_enabled: bool = Field(
@@ -1061,8 +1061,7 @@ class Settings(BaseSettings):
 
         SLIG is the one remaining HuggingFace endpoint (the structural pass moved
         to PaddleOCR-VL on Modal). ``provider='huggingface'`` so the controller
-        runs HF-SDK prep/drain for it. (This method was accidentally stripped in
-        the Surya migration's YOLO/Chandra cleanup — restored 2026-06-13.)
+        runs HF-SDK prep/drain for it.
         """
         return {
             "enabled": self.slig_enabled,

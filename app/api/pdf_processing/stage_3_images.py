@@ -79,7 +79,7 @@ async def process_product_images(
     catalog: Any,
     config: Dict[str, Any],
     logger: logging.Logger,
-    layout_regions: Optional[List[Any]] = None,  # YOLO layout regions with bbox data
+    layout_regions: Optional[List[Any]] = None,  # layout regions with bbox data
     tracker: Optional[Any] = None,  # ProgressTracker for per-image progress events
     product_db_id: Optional[str] = None,  # `products.id` for ai_usage_logs cost attribution
 ) -> Dict[str, Any]:
@@ -99,7 +99,7 @@ async def process_product_images(
         catalog: Full catalog (for spread layout info)
         config: Processing configuration
         logger: Logger instance
-        layout_regions: Optional YOLO layout regions with bbox data for accurate positioning
+        layout_regions: Optional layout regions with bbox data for accurate positioning
         tracker: Optional ProgressTracker — when provided, image-level progress
                  events ("Image 12/50 — v:12 c:12 t:12 s:11 m:12 u:12") are
                  pushed to background_jobs so the admin UI can display them.
@@ -133,18 +133,18 @@ async def process_product_images(
     if has_spread_layout:
         logger.info(f"   📐 Spread layout detected")
 
-    # Build YOLO region lookup by physical page for better bbox data
-    yolo_regions_by_page: Dict[int, List[Any]] = {}
+    # Build layout region lookup by physical page for better bbox data
+    region_layout_by_page: Dict[int, List[Any]] = {}
     if layout_regions:
-        logger.info(f"   🎯 YOLO layout regions available: {len(layout_regions)} regions")
+        logger.info(f"   🎯 Layout regions available: {len(layout_regions)} regions")
         for region in layout_regions:
             # Get physical page from region (set in product_processor.py)
             page_num = getattr(region.bbox, 'page', None) if hasattr(region, 'bbox') else None
             if page_num:
-                if page_num not in yolo_regions_by_page:
-                    yolo_regions_by_page[page_num] = []
-                yolo_regions_by_page[page_num].append(region)
-        logger.info(f"   📍 YOLO regions by page: {dict((k, len(v)) for k, v in yolo_regions_by_page.items())}")
+                if page_num not in region_layout_by_page:
+                    region_layout_by_page[page_num] = []
+                region_layout_by_page[page_num].append(region)
+        logger.info(f"   📍 Layout regions by page: {dict((k, len(v)) for k, v in region_layout_by_page.items())}")
 
     # ✅ Use singleton PDFProcessor to prevent repeated initialization
     pdf_processor = get_pdf_processor()
@@ -178,8 +178,8 @@ async def process_product_images(
 
         # Extract images for this PDF sheet.
         # `enable_multimodal=False` (added 2026-05-03): pdf_processor's auto-detect
-        # would otherwise run a per-image OCR pass (Chandra+Tesseract chain) inside
-        # extraction. That pass is REDUNDANT with the canonical Phase 3 OCR run
+        # would otherwise run a per-image OCR pass inside extraction. That pass
+        # is REDUNDANT with the canonical Phase 3 OCR run
         # (`_run_phase_3_ocr_for_product`) that fires after save_images_and_generate_clips.
         # Doubling OCR was burning ~7-15 min/product on a 30-image catalog (job
         # 72031fb0 hit the 1200s budget because of it). The Phase 3 pass is the
@@ -280,49 +280,49 @@ async def process_product_images(
 
                 extracted_images_list.append(img)
 
-            # Fallback for images without valid bbox: try YOLO regions first, then distribute evenly.
+            # Fallback for images without valid bbox: try layout regions first, then distribute evenly.
             if images_without_bbox:
                 logger.warning(f"      ⚠️ {len(images_without_bbox)} images without valid PyMuPDF bbox")
 
-                # Try to match images with YOLO regions by filename pattern
-                yolo_left_regions = yolo_regions_by_page.get(left_phys, [])
-                yolo_right_regions = yolo_regions_by_page.get(right_phys, [])
+                # Try to match images with layout regions by filename pattern
+                left_layout_regions = region_layout_by_page.get(left_phys, [])
+                right_layout_regions = region_layout_by_page.get(right_phys, [])
 
-                if yolo_left_regions or yolo_right_regions:
-                    logger.info(f"      🎯 Using YOLO regions: {len(yolo_left_regions)} left, {len(yolo_right_regions)} right")
+                if left_layout_regions or right_layout_regions:
+                    logger.info(f"      🎯 Using layout regions: {len(left_layout_regions)} left, {len(right_layout_regions)} right")
 
                 for fallback_idx, (img_idx, img) in enumerate(images_without_bbox):
                     filename = img.get('filename', '')
                     assigned = False
 
-                    # ✅ Check if this is a YOLO region image (filename contains 'yolo_region')
-                    if 'yolo_region' in filename:
-                        # YOLO images already have physical page from YOLO detection
-                        # Try to match by region index in filename
+                    # Region crops carry their index in the filename (page_N_region_M.jpg).
+                    if '_region_' in filename:
+                        # Match the region index, then resolve which physical page
+                        # (left/right of a spread) the region's bbox falls on.
                         import re
-                        region_match = re.search(r'yolo_region_(\d+)', filename)
+                        region_match = re.search(r'_region_(\d+)', filename)
                         if region_match:
                             region_idx = int(region_match.group(1))
                             # Check if this region was detected on left or right page
-                            for region in yolo_left_regions:
+                            for region in left_layout_regions:
                                 if hasattr(region, 'bbox') and region.bbox:
                                     bbox = region.bbox
                                     center = bbox.x + (bbox.width / 2) if hasattr(bbox, 'x') else 0
                                     if center < mid_x:
                                         img['page_number'] = left_phys
                                         img['physical_side'] = 'left'
-                                        img['yolo_assisted'] = True
+                                        img['region_assisted'] = True
                                         assigned = True
-                                        logger.debug(f"      📍 YOLO image {filename} assigned to left page via YOLO bbox")
+                                        logger.debug(f"      📍 Region crop {filename} assigned to left page via bbox")
                                         break
                             if not assigned:
-                                for region in yolo_right_regions:
+                                for region in right_layout_regions:
                                     if hasattr(region, 'bbox') and region.bbox:
                                         img['page_number'] = right_phys
                                         img['physical_side'] = 'right'
-                                        img['yolo_assisted'] = True
+                                        img['region_assisted'] = True
                                         assigned = True
-                                        logger.debug(f"      📍 YOLO image {filename} assigned to right page via YOLO bbox")
+                                        logger.debug(f"      📍 Region crop {filename} assigned to right page via bbox")
                                         break
 
                     # ✅ Final fallback: alternate between left and right
@@ -367,7 +367,7 @@ async def process_product_images(
         logger.warning(f"      This could mean:")
         logger.warning(f"      1. Pages are text-only (no embedded images)")
         logger.warning(f"      2. Images were filtered out by size/quality thresholds")
-        logger.warning(f"      3. YOLO endpoint returned errors")
+        logger.warning(f"      3. The layout structural pass returned errors")
         if tracker is not None:
             try:
                 await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
@@ -561,7 +561,7 @@ async def process_product_images(
     # PHASE 3 OCR — text-bearing product images (audit fix #10, 2026-05-01)
     # ========================================================================
     # Previously OCR fired only on icon candidates. Regular product images
-    # (yolo_crop of TABLE/TEXT/TITLE/CAPTION regions, embedded images flagged
+    # (region_crop of TABLE/TEXT/TITLE/CAPTION regions, embedded images flagged
     # text-bearing by Phase 1 OpenCV) had no per-image OCR — so spec sheets in
     # scanned catalogs lost all per-image text. Phase 3 OCR now runs on those
     # too, writing to document_images.ocr_text / ocr_blocks columns. NEVER
@@ -615,13 +615,13 @@ async def _run_phase_3_ocr_for_product(
     product_name: str,
     logger: logging.Logger,
 ) -> Optional[Dict[str, int]]:
-    """Run Chandra v2 OCR on text-bearing product images, write to document_images.ocr_*.
+    """Run PaddleOCR on text-bearing product images, write to document_images.ocr_*.
 
     Filtering rule (per audit Q2):
-    - yolo_crop of region_type ∈ {TABLE, TEXT, TITLE, CAPTION}: OCR'd
+    - region_crop of region_type ∈ {TABLE, TEXT, TITLE, CAPTION}: OCR'd
     - embedded with metadata.text_detected=True (Phase 1 OpenCV flagged): OCR'd
     - full_render: SKIPPED (Stage 1.5 already covered the page)
-    - photo / decoration / yolo_crop of IMAGE: SKIPPED (no text expected)
+    - photo / decoration / region_crop of IMAGE: SKIPPED (no text expected)
 
     Each OCR result lands in `document_images.{ocr_text, ocr_blocks, ocr_failed,
     ocr_attempts, ocr_skipped_reason}`. Never flows into chunker. Runs AFTER
@@ -655,7 +655,7 @@ async def _run_phase_3_ocr_for_product(
 
     # Fetch the saved image rows by image_id. extraction_layer is the
     # canonical column-backed enum since 2026-05-02
-    # ({embedded, yolo_crop, full_render, vision_guided}).
+    # ({embedded, region_crop, full_render, vision_guided}).
     try:
         resp = (
             sb.client.table("document_images")
@@ -676,33 +676,28 @@ async def _run_phase_3_ocr_for_product(
         image_id = row["id"]
         metadata = row.get("metadata") or {}
         extraction_layer = row.get("extraction_layer") or "embedded"
-        # YOLO region type is persisted under metadata.yolo_region_type.
-        # Stage 1.5 layout-aware regions (TABLE/TEXT/TITLE/CAPTION) AND
-        # icon-style yolo crops both go through this path.
-        region_type = (
-            metadata.get("yolo_region_type")
-            or metadata.get("region_type")
-            or ""
-        ).upper()
+        # Region type (TABLE/TEXT/TITLE/CAPTION/IMAGE/FIGURE) is carried under
+        # metadata.region_type for layout-guided crops.
+        region_type = (metadata.get("region_type") or "").upper()
 
         # Apply text-bearing filter (CLAUDE.md "Phase 3 OCR" spec):
-        #   yolo_crop  + region ∈ {TABLE, TEXT, TITLE, CAPTION}        → OCR
-        #   yolo_crop  + region ∈ {IMAGE, FIGURE, PHOTO}               → SKIP (photo)
-        #   yolo_crop  + region unknown / other                        → OCR (conservative)
+        #   region_crop  + region ∈ {TABLE, TEXT, TITLE, CAPTION}        → OCR
+        #   region_crop  + region ∈ {IMAGE, FIGURE, PHOTO}               → SKIP (photo)
+        #   region_crop  + region unknown / other                        → OCR (conservative)
         #   embedded   + metadata.text_detected is True                → OCR
         #   embedded   + metadata.text_detected is False               → SKIP (embedded_no_text_detected)
         #   embedded   + text_detected missing                          → OCR (conservative)
         #   full_render                                                → SKIP (dup of Stage 1.5)
-        # Rationale: Chandra calls aren't free. Stage 1.5 already covered
-        # full_render pages and YOLO's IMAGE-class crops are explicitly
-        # classified as non-text, so OCRing them was burning Chandra calls.
+        # Rationale: OCR calls aren't free. Stage 1.5 already covered
+        # full_render pages and IMAGE-class layout crops are explicitly
+        # classified as non-text, so OCRing them was burning OCR calls.
         text_bearing_regions = {"TABLE", "TEXT", "TITLE", "CAPTION"}
         photo_regions        = {"IMAGE", "FIGURE", "PHOTO"}
 
         skipped_reason: Optional[str] = None
         if extraction_layer == "full_render":
             skipped_reason = "full_render_dup_of_stage_1_5"
-        elif extraction_layer == "yolo_crop":
+        elif extraction_layer == "region_crop":
             if region_type in photo_regions:
                 skipped_reason = "photo_not_text_bearing"
             # else (TABLE/TEXT/TITLE/CAPTION + unknown) → OCR
@@ -775,7 +770,7 @@ async def _run_phase_3_ocr_for_product(
                 )
             continue
 
-        if ocr_result is None or ocr_result.method == "chandra_failed":
+        if ocr_result is None or ocr_result.method == "paddleocr_failed":
             counts["ocr_failed"] += 1
             try:
                 sb.client.table("document_images").update({
@@ -785,7 +780,7 @@ async def _run_phase_3_ocr_for_product(
             except Exception as upd_err:
                 logger.warning(
                     f"      Phase 3 OCR: DB update of ocr_failed=true "
-                    f"after chandra_failed failed for {image_id}: {upd_err}"
+                    f"after paddleocr_failed failed for {image_id}: {upd_err}"
                 )
             continue
 
@@ -805,7 +800,7 @@ async def _run_phase_3_ocr_for_product(
 
     # Per-product Phase 3 OCR summary — added 2026-05-03 to make OCR
     # coverage visible in journalctl per product. Lets ops eyeball
-    # success rate without joining `chandra_ocr_metrics` against
+    # success rate without joining `paddleocr_metrics` against
     # `document_images`.
     total = sum(counts.values())
     logger.info(
@@ -915,14 +910,14 @@ async def process_catalog_wide_icons(
 
     # Extract images from every supplementary PDF page IN PARALLEL.
     # Pre-2026-05-03 this was a sequential loop, and `process_pdf_from_bytes`
-    # auto-enabled multimodal OCR (Chandra) on every supplementary page even
+    # auto-enabled multimodal OCR on every supplementary page even
     # though the icon-classification step downstream runs its own OCR per icon
-    # candidate. Net effect: 30+ supplementary pages × 1-3 wasted Chandra calls
-    # × 80s each = 1-2+ hours of pure waste before reaching VALENOVA's actual
+    # candidate. Net effect: 30+ supplementary pages × 1-3 wasted OCR calls
+    # × 80s each = 1-2+ hours of pure waste before reaching the actual
     # processing (job 051e1dda timed out here). Two changes:
     #   - `enable_multimodal=False` skips the redundant page-level OCR pass.
     #   - `asyncio.gather` with a semaphore (4 concurrent) parallelizes the
-    #     per-page extract step, so YOLO/PyMuPDF work runs in parallel instead
+    #     per-page extract step, so layout/PyMuPDF work runs in parallel instead
     #     of single-file.
     catalog_icon_sem = asyncio.Semaphore(4)
     extracted_images_list: List[Dict[str, Any]] = []

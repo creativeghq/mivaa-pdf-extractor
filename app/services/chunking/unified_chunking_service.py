@@ -8,7 +8,7 @@ Consolidates chunking strategies into a single service:
 
 Layout-aware chunking is NOT a strategy; it's activated by passing
 `layout_regions_by_page` into `chunk_pages()`, which routes through
-`_chunk_with_layout_regions` to respect YOLO region boundaries.
+`_chunk_with_layout_regions` to respect layout region boundaries.
 """
 
 import logging
@@ -81,7 +81,7 @@ class UnifiedChunkingService:
 
     Layout-aware chunking is activated per-call by passing layout_regions_by_page
     to chunk_pages(); it routes through `_chunk_with_layout_regions` and respects
-    YOLO region boundaries, keeps TABLE regions atomic, and combines TITLE+TEXT.
+    layout region boundaries, keeps TABLE regions atomic, and combines TITLE+TEXT.
     """
 
     SENTENCE_ENDINGS = r'[.!?]+\s+'
@@ -165,7 +165,7 @@ class UnifiedChunkingService:
                    [{"metadata": {"page": 0}, "text": "..."}, ...]
             document_id: Document ID for chunk metadata
             metadata: Additional metadata for chunks
-            layout_regions_by_page: Optional dict mapping page_number -> list of YOLO layout regions
+            layout_regions_by_page: Optional dict mapping page_number -> list of layout regions
                                    for layout-aware chunking
 
         Returns:
@@ -293,13 +293,13 @@ class UnifiedChunkingService:
             page_number: Page number (1-based)
             start_chunk_index: Starting index for chunks
             metadata: Additional metadata
-            layout_regions: Optional YOLO layout regions for this page
+            layout_regions: Optional layout regions for this page
 
         Returns:
             List of chunks with page_number in metadata
         """
         # Use layout-aware chunking if regions are provided AND any of them
-        # actually carry `text_content`. YOLO regions ship with bounding
+        # actually carry `text_content`. Layout regions ship with bounding
         # boxes but not text — `text_content` only gets populated when an
         # upstream OCR / PDF-text-by-bbox stage runs first. If we hand the
         # layout-aware path regions with all-empty text_content, every
@@ -322,7 +322,7 @@ class UnifiedChunkingService:
         else:
             if layout_regions:
                 # WARNING (was debug): silent fallback was hiding the case where
-                # Stage 1.5 ran but produced empty text_content (Chandra OCR
+                # Stage 1.5 ran but produced empty text_content (PaddleOCR
                 # failed, scanned page). Bumped to WARNING so it shows up in
                 # production logs, plus a per-page-fallback counter is bumped on
                 # the metadata dict so downstream observability can quantify the
@@ -825,7 +825,7 @@ class UnifiedChunkingService:
         metadata: Optional[Dict[str, Any]] = None
     ) -> List[Chunk]:
         """
-        Create chunks using YOLO layout regions as boundaries.
+        Create chunks using layout regions as boundaries.
 
         This method implements layout-aware chunking that:
         1. Respects region boundaries (don't split TEXT, TITLE, CAPTION regions)
@@ -837,7 +837,7 @@ class UnifiedChunkingService:
             text: Full page text
             document_id: Document ID
             page_number: Page number (1-based)
-            layout_regions: YOLO layout regions for this page
+            layout_regions: layout regions for this page
             metadata: Additional metadata
 
         Returns:

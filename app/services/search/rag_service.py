@@ -48,7 +48,7 @@ class RAGService:
         self._available = True  # Service is available after initialization
 
         # Vision-analysis and image classification both run on Anthropic
-        # Claude Opus 4.7 (post-Qwen-removal). No HF endpoint plumbing
+        # Claude Opus 4.7. No HF endpoint plumbing
         # needed here — the Anthropic API key is read on demand inside
         # _analyze_image_material / _classify_image_material via os.getenv.
 
@@ -155,7 +155,7 @@ class RAGService:
             page_chunks: Optional page-aware text data (preserves page numbers).
                          When provided, PDF extraction is skipped.
             progress_callback: Optional async callback for progress updates (current, total, step_name)
-            layout_regions_by_page: Optional dict mapping 1-based page_number to YOLO layout regions
+            layout_regions_by_page: Optional dict mapping 1-based page_number to layout regions
 
         Returns:
             Dict containing:
@@ -605,7 +605,7 @@ class RAGService:
             default_weights = {
                 'visual': 0.20,         # Visual SLIG embeddings
                 'chunk': 0.20,          # Text chunks
-                'understanding': 0.15,  # Vision-understanding (Qwen → Voyage AI)
+                'understanding': 0.15,  # Vision-understanding (Claude → Voyage AI)
                 'product': 0.15,        # Direct product embeddings
                 'keyword': 0.12,        # Keyword matching
                 'color': 0.05,          # Color SLIG

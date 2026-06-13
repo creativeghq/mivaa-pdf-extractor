@@ -145,7 +145,8 @@ class SLIGEndpointManager:
             endpoint.fetch()
 
             if endpoint.status == "running":
-                # Probe before trusting — see chandra_endpoint_manager for rationale.
+                # Probe before trusting: a "running" status doesn't guarantee the
+                # model is actually serving (it can be mid-load or wedged).
                 # SLIG's _test_inference fires a tiny image-embedding request,
                 # which is the actual hot path so it confirms inference health.
                 if self._test_inference():

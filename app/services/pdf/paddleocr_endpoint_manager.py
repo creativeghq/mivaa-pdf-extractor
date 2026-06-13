@@ -3,8 +3,7 @@ PaddleOCR-VL structural-pass endpoint manager.
 
 Drives the PaddleOCR-VL pipeline hosted on Modal — the two-stage document parser
 (PP-DocLayoutV2 detector + 0.9B VLM) that produces the page layout + OCR text +
-figure boxes. It replaced the Surya-2 backbone (2026-06-13): tighter RT-DETR crop
-boxes and a dedicated reading order.
+figure boxes per page, with tight RT-DETR crop boxes and a dedicated reading order.
 
 The manager speaks the Modal app's custom ``/parse`` contract (NOT OpenAI chat):
 
@@ -62,7 +61,7 @@ class PaddleOCRManager:
     """Manages the PaddleOCR-VL structural pass over a Modal endpoint provider."""
 
     # Transient-failure retries (HTTP 5xx / timeouts). PaddleOCR is deterministic
-    # (no temperature ladder like Surya) — a retry just re-issues the same call.
+    # — a retry just re-issues the same call.
     _MAX_ATTEMPTS = 3
 
     def __init__(

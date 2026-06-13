@@ -406,8 +406,8 @@ class SupabaseClient:
             bbox = validated_bbox
 
             # `extraction_layer` is the canonical column-backed enum
-            # ({embedded, yolo_crop, full_render, vision_guided}). PyMuPDF is
-            # the engine for embedded/full_render/yolo_crop; the column
+            # ({embedded, region_crop, full_render, vision_guided}). PyMuPDF is
+            # the engine for embedded/full_render/region_crop; the column
             # describes what kind of output we got, not which library did it.
             # Producer (pdf_processor) emits canonical values directly since
             # the 2026-05-02 cleanup, so all callers funnel through image_info.

@@ -1,5 +1,5 @@
 """
-Stage 1: Focused Extraction with YOLO Layout Detection
+Stage 1: Focused Extraction with PaddleOCR Layout Detection
 
 This module handles page extraction and layout analysis for individual products
 in the product-centric pipeline.
@@ -10,7 +10,7 @@ used internally when accessing PyMuPDF - never exposed to other stages.
 
 Features:
 - Page validation (physical pages)
-- YOLO layout detection (TEXT, IMAGE, TABLE, TITLE, CAPTION regions)
+- Layout detection (TEXT, IMAGE, TABLE, TITLE, CAPTION regions)
 - Layout region storage in database
 - Caption-to-image linking
 """
@@ -43,8 +43,8 @@ async def extract_product_pages(
 
     This function:
     1. Validates PHYSICAL page numbers
-    2. Handles spread layouts internally (for YOLO detection)
-    3. Detects layout regions using YOLO DocParser (if enabled)
+    2. Handles spread layouts internally (for layout detection)
+    3. Detects layout regions using the PaddleOCR structural pass (if enabled)
     4. Stores layout regions in database
     5. Links captions to images
 
@@ -61,7 +61,7 @@ async def extract_product_pages(
             (e.g. 71). Pages above this bound are dropped silently.
             See bug 2026-05-01: passing PDF-sheet-count silently dropped 50%
             of products in a spread-layout catalog.
-        enable_layout_detection: Enable YOLO layout detection (default: True)
+        enable_layout_detection: Enable layout detection (default: True)
         product_id: Database product ID (required for layout storage)
         catalog: Optional catalog with spread layout info (has_spread_layout, physical_to_pdf_map)
 
@@ -123,19 +123,19 @@ async def extract_product_pages(
     logger.info(f"   ✅ Validated {len(physical_pages)} physical pages: {physical_pages}")
 
     # ========================================================================
-    # STEP 2: YOLO Layout Detection (if enabled)
+    # STEP 2: Layout Detection (if enabled)
     # ========================================================================
     layout_regions = []
     layout_stats = {}
 
     if enable_layout_detection and physical_pages:
-        logger.info(f"   🎯 Running YOLO layout detection on {len(physical_pages)} physical pages...")
+        logger.info(f"   🎯 Collecting layout regions for {len(physical_pages)} physical pages...")
 
-        # Cache lookup: pdf_worker.execute_pdf_extraction_job persists merged
-        # YOLO+text regions to `document_layout_analysis` per page during
-        # markdown extraction. Reuse those rather than re-running YOLO when
-        # they exist - saves an HF call per product page and guarantees the
-        # same regions feed both stage_1 and the layout-aware chunker.
+        # Cache lookup: the PaddleOCR structural pass persists layout regions to
+        # `document_layout_analysis` per page upfront. Reuse those rather than
+        # re-detecting per product - saves a call per product page and
+        # guarantees the same regions feed both stage_1 and the
+        # layout-aware chunker.
         cached_regions = await _load_cached_layout_regions(
             document_id=document_id,
             physical_pages=physical_pages,
@@ -165,15 +165,14 @@ async def extract_product_pages(
                             pdf_page_idx = physical_page - 1
                             position = 'single'
 
-                        # Check cache before invoking YOLO - if pdf_worker
-                        # already persisted regions for this page, reuse them
-                        # so we get identical regions to what the chunker has
-                        # already seen and we save an HF call per page.
+                        # The PaddleOCR structural pass already persisted regions
+                        # for this page; reuse them so we get identical regions
+                        # to what the chunker has already seen.
                         cached_for_page = cached_regions.get(physical_page) if cached_regions else None
                         if cached_for_page:
                             logger.info(
                                 f"      ♻️ Using {len(cached_for_page)} cached regions for "
-                                f"physical page {physical_page} (no YOLO re-run)"
+                                f"physical page {physical_page}"
                             )
 
                             class _CachedResult:
@@ -331,7 +330,7 @@ async def _store_layout_regions(
         # Prepare region data for insertion
         region_data = []
         for region in regions:
-            # Normalize pixel coords to 0-1 using image_size from YOLO metadata
+            # Normalize pixel coords to 0-1 using image_size from layout metadata
             img_size = region.metadata.get('image_size') if region.metadata else None
             if isinstance(img_size, (tuple, list)) and len(img_size) == 2:
                 img_w = float(img_size[0]) or 1.0
@@ -359,8 +358,8 @@ async def _store_layout_regions(
                 'reading_order': region.reading_order,
                 'text_content': getattr(region, 'text_content', None),
                 'metadata': {
-                    'yolo_model': 'yolo-docparser',
-                    'extraction_method': 'yolo_guided'
+                    'layout_model': 'paddleocr-vl',
+                    'extraction_method': 'layout_guided'
                 }
             })
 
@@ -409,7 +408,7 @@ async def _extract_and_store_tables(
     Args:
         pdf_path: Path to PDF file
         product_id: Database product ID
-        table_regions: List of TABLE LayoutRegion objects from YOLO
+        table_regions: List of TABLE LayoutRegion objects from layout detection
         logger: Logger instance
 
     Returns:
@@ -468,15 +467,13 @@ async def _load_cached_layout_regions(
     physical_to_pdf_map: Dict[int, Any],
     logger: logging.Logger,
 ) -> Dict[int, List[Any]]:
-    """Load YOLO+text merged regions from `document_layout_analysis` cache.
+    """Load layout regions from the `document_layout_analysis` cache.
 
     Returns a dict keyed by physical page number (1-based). Each value is
-    a list of `LayoutRegion` objects rebuilt from the cached jsonb so the
-    rest of stage_1 can treat them identically to fresh YOLO output.
+    a list of `LayoutRegion` objects rebuilt from the cached jsonb.
 
-    The cache is written by `pdf_processor._persist_document_layout`
-    during PDF markdown extraction. We look it up here to avoid running
-    YOLO twice for the same page.
+    The cache is written by the PaddleOCR structural pass (Stage 1). We look
+    it up here so every product reuses the same persisted regions.
     """
     from app.models.layout_models import BoundingBox, LayoutRegion
 
@@ -527,7 +524,7 @@ async def _load_cached_layout_regions(
             try:
                 region_type = elem.get('region_type', 'TEXT')
                 # UNCLASSIFIED is the merge-service marker for orphan OCR
-                # fragments that didn't spatially match any YOLO region —
+                # fragments that didn't spatially match any layout region —
                 # created precisely so their text is never lost. Downstream
                 # consumers only know the canonical 5 types, so surface the
                 # orphans as TEXT (they carry text_content + bbox) instead
@@ -565,6 +562,6 @@ async def _load_cached_layout_regions(
     if cached:
         logger.info(
             f"   ♻️ Loaded cached layout for {len(cached)} pages from "
-            f"document_layout_analysis (skipping YOLO re-run)"
+            f"document_layout_analysis"
         )
     return cached

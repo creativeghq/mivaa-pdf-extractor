@@ -1,9 +1,9 @@
 """
 Vision / HuggingFace Endpoint Rate Limit Configuration
 
-This module defines rate limits for HuggingFace dedicated inference endpoints
-(SLIG, YOLO DocParser, Chandra OCR) and Anthropic vision tiers. Tiers are
-based on usage capacity and determine concurrency limits.
+This module defines rate limits for the SLIG HuggingFace dedicated inference
+endpoint, the PaddleOCR-VL structural pass, and Anthropic vision tiers. Tiers
+are based on usage capacity and determine concurrency limits.
 
 Tiers:
 - Tier 1: Default (HuggingFace dedicated endpoints + entry-level Anthropic)
@@ -116,7 +116,7 @@ def get_vision_concurrency_limit() -> int:
     """
     tier = get_current_tier()
 
-    # For HuggingFace dedicated endpoints (SLIG / YOLO / Chandra) we can use
+    # For the SLIG endpoint and the PaddleOCR structural pass we can use
     # higher concurrency — they handle 10 concurrent requests well.
     if tier.tier == 1:
         return 10

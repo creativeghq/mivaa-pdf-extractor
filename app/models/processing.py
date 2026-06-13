@@ -156,7 +156,7 @@ class ImageInfo(BaseModel):
     # `document_images.extraction_layer` CHECK constraint.
     extraction_layer: Optional[str] = Field(
         None,
-        description="Extraction layer: embedded (Layer 1), full_render (Layer 2), yolo_crop (YOLO-guided), vision_guided (Layer 3)"
+        description="Extraction layer: embedded (Layer 1), full_render (Layer 2), region_crop (layout-guided), vision_guided (Layer 3)"
     )
     layer: Optional[int] = Field(
         None,

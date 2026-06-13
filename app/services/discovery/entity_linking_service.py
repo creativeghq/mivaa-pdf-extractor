@@ -80,7 +80,7 @@ class EntityLinkingService:
 
             # Get all images for this document
             # Include vision-guided metadata fields. `extraction_layer` is
-            # the canonical enum since 2026-05-02 ({embedded, yolo_crop,
+            # the canonical enum since 2026-05-02 ({embedded, region_crop,
             # full_render, vision_guided}); the legacy `extraction_method`
             # column is no longer written for new rows.
             images_response = self.supabase.client.table('document_images')\

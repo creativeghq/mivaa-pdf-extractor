@@ -2227,7 +2227,7 @@ async def enrich_products_from_chunks_and_vision(
         # gives us a concrete page number to target with the spec vision pass.
         # Cheap — one query per document — and then in-memory lookups per
         # product. Keeps pipeline stages decoupled (no dependency on the
-        # YOLO pass populating metadata.page_range up front).
+        # layout pass populating metadata.page_range up front).
         try:
             assoc_resp = supabase.client.table("image_product_associations") \
                 .select("product_id, document_images!inner(page_number, document_id)") \
@@ -2277,7 +2277,7 @@ async def enrich_products_from_chunks_and_vision(
             # Signals, in order of authority (all are tried):
             #   1. products.metadata.page_range      (explicit, if present)
             #   2. chunks.metadata.product_pages    (MIVAA Stage 2 output)
-            #   3. image_product_associations       (YOLO layout result)
+            #   3. image_product_associations       (layout result)
             #   4. '--- # Page NN ---' markers in chunk text (last resort)
             page_set: set = set()
 

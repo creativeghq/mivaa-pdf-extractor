@@ -29,11 +29,12 @@ logger = logging.getLogger(__name__)
 class EndpointAutoScaler:
     """
     Auto-scales HuggingFace endpoints based on job queue depth.
-    
-    Manages the 3 HuggingFace endpoints we still depend on:
+
+    Manages the only HuggingFace endpoint we still depend on:
     - mh-slig (SLIG visual embeddings)
-    - mh-chandra (Chandra OCR fallback)
-    - mh-yolo (YOLO layout detection)
+
+    PaddleOCR-VL (the structural pass) runs on Modal, which owns its own
+    autoscaling, so it is not managed here.
     """
     
     def __init__(
@@ -157,7 +158,7 @@ class EndpointAutoScaler:
         Count is **product-level**, not job-level. A single PDF upload with 11
         products counts as 11 units of work — that's the right signal for
         deciding how many replicas to keep alive, since each product is
-        roughly an independent stream of YOLO/SLIG/Qwen calls.
+        roughly an independent stream of SLIG calls.
 
         For jobs that haven't started Stage 0 yet (no products in DB), each
         such job contributes 1 to the queue depth (placeholder) so we don't
@@ -303,7 +304,7 @@ class EndpointAutoScaler:
             queue >= 10     → max_replicas (typically 4)
 
         Each replica handles roughly 2-3 concurrent products comfortably given
-        the per-endpoint AIMD gates (qwen=8 cap, slig=16, yolo=12). 4 replicas
+        the per-endpoint AIMD gate (slig=16). 4 replicas
         × 3 products/replica = 12 products in flight at peak — matches the
         typical catalog size (10-15 products) almost perfectly.
         """

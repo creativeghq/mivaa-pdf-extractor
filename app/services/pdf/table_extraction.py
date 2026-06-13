@@ -1,11 +1,11 @@
 """
 Table Extraction Service using pdfplumber
 
-This service extracts tables from PDFs using pdfplumber library, guided by YOLO layout regions.
+This service extracts tables from PDFs using pdfplumber library, guided by layout regions.
 Tables are extracted as structured JSON and stored in the product_tables database table.
 
 Features:
-- Uses YOLO TABLE region bounding boxes to guide extraction
+- Uses TABLE region bounding boxes to guide extraction
 - Converts tables to structured JSON format
 - Stores in product_tables table with metadata
 """
@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class TableExtractor:
     """
-    Extract tables from PDFs using pdfplumber, guided by YOLO layout regions.
+    Extract tables from PDFs using pdfplumber, guided by layout regions.
     """
 
     def __init__(self):
@@ -39,7 +39,7 @@ class TableExtractor:
         Args:
             pdf_path: Path to PDF file
             page_number: Page number (1-based)
-            table_regions: Optional YOLO TABLE regions with bounding boxes
+            table_regions: Optional TABLE regions with bounding boxes
 
         Returns:
             List of extracted tables as dictionaries
@@ -56,9 +56,9 @@ class TableExtractor:
                 # pdfplumber uses 0-based indexing
                 page = pdf.pages[page_number - 1]
 
-                # If YOLO regions provided, use them to guide extraction
+                # If layout regions provided, use them to guide extraction
                 if table_regions and len(table_regions) > 0:
-                    self.logger.info(f"   📊 Extracting {len(table_regions)} tables from page {page_number} using YOLO regions")
+                    self.logger.info(f"   📊 Extracting {len(table_regions)} tables from page {page_number} using layout regions")
 
                     for region in table_regions:
                         # Extract bounding box coordinates
@@ -91,8 +91,8 @@ class TableExtractor:
                             continue
 
                 else:
-                    # No YOLO regions - extract all tables from page
-                    self.logger.info(f"   📊 Extracting tables from page {page_number} (no YOLO guidance)")
+                    # No layout regions - extract all tables from page
+                    self.logger.info(f"   📊 Extracting tables from page {page_number} (no layout guidance)")
 
                     try:
                         tables = page.extract_tables()
@@ -128,8 +128,8 @@ class TableExtractor:
         Args:
             table: pdfplumber table (list of lists)
             page_number: Page number
-            layout_region_id: Optional YOLO region ID
-            confidence: YOLO detection confidence
+            layout_region_id: Optional layout region ID
+            confidence: Region detection confidence
 
         Returns:
             Structured table dictionary

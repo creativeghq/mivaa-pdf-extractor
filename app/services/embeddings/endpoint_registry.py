@@ -171,7 +171,7 @@ class EndpointRegistry:
         Get or create the singleton PaddleOCR-VL structural-pass manager.
 
         PaddleOCR-VL is the pipeline's layout+OCR backbone (one /parse call per
-        page returns layout regions + OCR text + figure boxes), replacing Surya-2.
+        page returns layout regions + OCR text + figure boxes).
 
         Returns:
             PaddleOCRManager instance or None if not configured/enabled.

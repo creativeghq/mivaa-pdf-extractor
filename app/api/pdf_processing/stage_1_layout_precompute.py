@@ -12,8 +12,7 @@ throughout the rest of the pipeline. For each physical page:
 2. Render the half-page (or full sheet) to a PIL image at LAYOUT_RENDER_DPI.
 3. One PaddleOCR structural pass over that image → layout regions (label + bbox)
    + OCR'd text + figure boxes, in a single /v1/chat/completions call.
-   This replaced the previous YOLO (region boxes) + PyMuPDF/Chandra (text) +
-   merge_layout (bucketing) three-step flow — PaddleOCR does all of it internally.
+   PaddleOCR returns region boxes, text, and bucketing all internally.
 4. `regions_to_layout_elements()` maps the PaddleOCR regions onto the existing
    `layout_elements` schema (region_type + pixel bbox + text_content).
 5. Persist to `document_layout_analysis` keyed on
@@ -86,13 +85,12 @@ def _emit_stage_event(
     )
 
 
-# Render DPI for YOLO input. 250 keeps small typography legible while
-# capping per-page memory at ~3-5 MB for letter-sized sheets. Matches
-# the default `dpi` arg in YoloLayoutDetector.convert_pdf_page_to_image.
+# Render DPI for the PaddleOCR structural pass. 250 keeps small typography
+# legible while capping per-page memory at ~3-5 MB for letter-sized sheets.
 LAYOUT_RENDER_DPI = 250
 
-# Stage 1.5 reuses the standard Chandra OCR prompt; named explicitly here
-# so the per-page call site doesn't have to know about chandra internals.
+# Default OCR prompt for Stage 1.5; named explicitly here so the per-page
+# call site doesn't have to know about prompt internals.
 DEFAULT_OCR_PROMPT_FOR_STAGE_1_5 = (
     "Extract all text from this image. Return a JSON array where each entry is "
     '{"text": <fragment>, "x": <int>, "y": <int>, "w": <int>, "h": <int>}. '
@@ -157,7 +155,7 @@ def _pymupdf_spans_in_clip(
     """Extract PyMuPDF spans intersecting `clip`, in pixel-space bboxes.
 
     Spans go through the same coordinate scaling as the rendered image
-    (PDF_POINTS_TO_PIXEL_ZOOM) so they line up with YOLO regions, which
+    (PDF_POINTS_TO_PIXEL_ZOOM) so they line up with the layout regions, which
     are reported in pixel coordinates. For spread layouts we also
     translate x by -clip.x0 so each half-page span is in the half's own
     coordinate frame (matching the rendered image's origin).
@@ -199,7 +197,7 @@ async def precompute_document_layout(
     only_physical_pages: Optional[List[int]] = None,
     tracker: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Run YOLO + bbox-text merge for every uncached physical page; persist.
+    """Run the PaddleOCR structural pass for every uncached physical page; persist.
 
     Args:
         document_id: documents.id (FK target of document_layout_analysis)
@@ -264,8 +262,8 @@ async def precompute_document_layout(
     #    excluded only `ocr_failed`; `page_failed` (outer-exception path,
     #    written at line ~478 below) was documented as "will be retried" but
     #    the resume-skip filter never excluded it, so any transient render /
-    #    YOLO error permanently skipped that page. Both transient markers
-    #    must be excluded.
+    #    structural-pass error permanently skipped that page. Both transient
+    #    markers must be excluded.
     _RETRY_CACHE_STATUSES = {"ocr_failed", "page_failed"}
     existing_pages: Set[int] = set()
     try:
@@ -337,7 +335,7 @@ async def precompute_document_layout(
     # precompute on 200+ page documents routinely runs past the default
     # stuck-threshold (5 min) — without this flag the cron would re-dispatch
     # the job mid-stage and Stage 1.5 would start over from the resume point.
-    # Budget: 30s/page (worst case with Chandra retries), floor 300s.
+    # Budget: 30s/page (worst case with PaddleOCR retries), floor 300s.
     #
     # When a `tracker` is provided, we use its stack-based set_slow_operation
     # which is nest-safe vs Stage 3's parallel per-product markers. Without a
@@ -367,7 +365,7 @@ async def precompute_document_layout(
                 'updated_at': datetime.utcnow().isoformat(),
             }
             # supabase-py is sync; run the update in a thread so we don't block
-            # the event loop while the YOLO/Chandra fan-out runs.
+            # the event loop while the PaddleOCR fan-out runs.
             await asyncio.to_thread(
                 lambda: supabase.client.table('background_jobs')
                     .update(slow_op_payload)
@@ -437,7 +435,6 @@ async def precompute_document_layout(
 
                 # 3b. One PaddleOCR structural pass → layout regions + OCR text +
                 #     figure boxes, in the rendered half-page's own pixel frame.
-                #     Replaces YOLO + PyMuPDF/Chandra text + merge_layout.
                 try:
                     paddle_result = await asyncio.to_thread(
                         paddleocr_manager.run_structural_pass,
@@ -702,8 +699,9 @@ async def get_layout_from_document_cache_with_status(
 ) -> Dict[int, Dict[str, Any]]:
     """Read cached merged regions WITH cache_status semantics (audit fix #24).
 
-    Returns `{physical_page: {regions: [...], cache_status: 'success'|'yolo_only'|
-    'empty_page'|'ocr_failed'|'page_failed'|None}}`. cache_status=None means
+    Returns `{physical_page: {regions: [...], cache_status: 'success'|
+    'paddleocr_no_text'|'empty_page'|'ocr_failed'|'page_failed'|None}}`.
+    cache_status=None means
     the row exists but predates the 2026-05-01 migration that added the field.
 
     The chunker uses this to decide:

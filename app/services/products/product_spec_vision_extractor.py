@@ -3,8 +3,7 @@ Product spec extraction via Claude Vision on rendered PDF spec pages.
 
 Why Claude Vision instead of per-icon OCR:
   Ceramic catalog icon strips use stylized vector glyphs that document OCR
-  (Chandra v2 — our single-tier OCR since the 2026-05-01 Pytesseract/EasyOCR
-  removal) struggles with at icon scale. Individual 67x67 px icon crops also
+  (PaddleOCR) struggles with at icon scale. Individual 67x67 px icon crops also
   fail because they lack surrounding context — no label, no value, nothing
   to anchor the interpretation.
 

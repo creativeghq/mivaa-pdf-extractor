@@ -5,9 +5,8 @@ PaddleOCR-VL is a **two-stage** document parser run in one process by the
 ``paddleocr`` package on Modal: PP-DocLayoutV2 (RT-DETR detector + pointer
 network) localizes regions, labels them, and predicts reading order; the
 PaddleOCR-VL-0.9B VLM recognizes the content inside each region (text,
-tables→markdown, formulas→LaTeX, charts). It replaced Surya-2 (2026-06-13) — the
-RT-DETR boxes are tighter (→ cleaner product crops) and the reading order is from
-a dedicated model.
+tables→markdown, formulas→LaTeX, charts). The RT-DETR boxes are tight
+(→ clean product crops) and the reading order comes from a dedicated model.
 
 The Modal app ([modal_app/paddleocr_vl.py](../../../modal_app/paddleocr_vl.py))
 returns a JSON ``/parse`` response::
@@ -18,14 +17,13 @@ returns a JSON ``/parse`` response::
 
 This module is PURE (no I/O). It maps that response onto the platform's existing
 ``document_layout_analysis`` element schema so every downstream consumer (Stage 2
-chunking, Stage 3 crops, focused extraction) stays untouched — exactly the seam
-the Surya parser produced.
+chunking, Stage 3 crops, focused extraction) stays untouched.
 
 Coordinate convention: PaddleOCR returns **pixel** bboxes on the image we sent.
 We normalize to **0..1** at this boundary (dividing by the sent image's
 width/height), then :func:`region_to_layout_element` denormalizes back to the
 pixel space of the crop render — keeping the normalize→pixel conversion in one
-place, identical to the old Surya flow.
+place.
 """
 
 from __future__ import annotations
@@ -86,7 +84,7 @@ PADDLE_LABEL_TO_REGION_TYPE: Dict[str, str] = {
 }
 
 #: region_types that are product-image crop sources (Stage 3 cuts crops from
-#: these). RT-DETR's chart boxes are a new, welcome crop source vs Surya.
+#: these). RT-DETR's chart boxes are a new, welcome crop source.
 CROP_SOURCE_REGION_TYPES = frozenset({"IMAGE", "FIGURE"})
 
 #: Labels whose recognized content is structured (kept as HTML in metadata for
@@ -173,8 +171,7 @@ def region_to_layout_element(
 ) -> Dict[str, object]:
     """Convert a :class:`PaddleRegion` (0..1) into a pixel-space layout element
     matching the ``layout_elements[]`` contract Stage 2 chunking, Stage 3 crops,
-    and focused extraction already consume (identical shape to the old Surya
-    ``block_to_region``).
+    and focused extraction already consume.
 
     ``page_width_px`` / ``page_height_px`` are the rendered page pixel size
     (250 DPI render) used to denormalize.

@@ -503,12 +503,10 @@ class ImageProcessingService:
         logger.info(f"   LLM Rate Limit: {CURRENT_TIER.llm_rpm} RPM ({CURRENT_TIER.llm_rps:.1f} RPS)")
         endpoint_controller.log_stats("   Endpoint gates")
 
-        # Qwen concurrency is gated through the unified EndpointController.
-        # The controller owns the AIMD state across ALL calls (not just this
-        # classify pass), so a bad Qwen day earlier in the pipeline is already
-        # reflected when we get here. Claude fallback stays on a fixed semaphore
-        # — Anthropic's rate limits are published and stable, not a
-        # single-replica bottleneck.
+        # Vision classification runs on Claude (Anthropic), gated by a fixed
+        # semaphore — Anthropic's rate limits are published and stable, not a
+        # single-replica bottleneck. The unified EndpointController still owns
+        # the AIMD state for the GPU endpoints (SLIG, PaddleOCR) it manages.
         claude_semaphore = Semaphore(CLAUDE_CONCURRENCY)
 
         async def classify_with_two_stage(img_data):
@@ -1211,7 +1209,7 @@ class ImageProcessingService:
 
             # Sniff the real media type from the first 16 decoded bytes — Claude rejects
             # mismatched mime types ("specified as image/jpeg but appears to be image/png")
-            # and ~60% of our icon + YOLO crops are PNG. Falls back to image/jpeg on decode error.
+            # and ~60% of our icon + layout-region crops are PNG. Falls back to image/jpeg on decode error.
             detected_media_type = "image/jpeg"
             try:
                 import base64 as _b64
@@ -2149,7 +2147,7 @@ class ImageProcessingService:
         # Icon candidate processing                                         #
         # ──────────────────────────────────────────────────────────────── #
         # Icons are processed AFTER the regular material loop so they
-        # don't compete for the Qwen endpoint while embeddings are running.
+        # don't compete for the vision (Claude) call slots while embeddings are running.
         # Each icon gets a single Claude call (the icon prompt is small and
         # the OCR step is local), so we run them with a smaller concurrency
         # cap to avoid hammering the Anthropic rate limit.

@@ -1,24 +1,26 @@
 """
-Unified endpoint controller for all HuggingFace Inference Endpoints.
+Unified endpoint controller for the inference endpoints.
 
 This is the single coordination point for:
-  - lifecycle     (resume / warmup / pause of the 3 HF endpoints)
+  - lifecycle     (resume / warmup / pause of each endpoint)
   - backpressure  (AdaptiveConcurrency gate per endpoint, AIMD)
   - supply/demand closed loop with EndpointAutoScaler
   - observability (one stats() call for everything)
 
 Why:
-  We have 3 HF endpoints (SLIG, YOLO, Chandra). Each used to have its
-  own scattered warmup path, its own (or no) concurrency gate, and its own
-  call-site pattern. When one endpoint got overloaded, nothing shrank our
-  in-flight request rate; we just piled requests into a saturated queue and
-  timed them out.
+  We have two inference endpoints: SLIG (the only HuggingFace endpoint,
+  visual embeddings) and PaddleOCR (the structural pass, hosted on Modal).
+  Each used to have its own scattered warmup path, its own (or no)
+  concurrency gate, and its own call-site pattern. When one endpoint got
+  overloaded, nothing shrank our in-flight request rate; we just piled
+  requests into a saturated queue and timed them out.
 
   This controller:
-  - Warms all 3 endpoints in parallel at job start (saves 60-180s vs serial).
+  - Warms both endpoints in parallel at job start (saves 60-180s vs serial).
   - Gives each endpoint its own AdaptiveConcurrency slot, tuned to its shape.
   - Per-endpoint failures shrink that endpoint only — a SLIG meltdown does
-    NOT drag YOLO/Chandra down with it.
+    NOT drag the PaddleOCR gate down with it (the two concurrency gates,
+    slig and paddleocr, are independent).
   - If HF scales replicas up (via EndpointAutoScaler), the controller raises
     the concurrency cap to match. If HF cannot scale up, the controller
     AIMD-shrinks our in-flight rate to match whatever capacity exists.
@@ -86,7 +88,7 @@ class EndpointController:
         #     16 concurrent is fine; failures here usually mean network, not load.
         #   - PaddleOCR (paddleocr): the structural-pass backbone (Modal) — layout
         #     + OCR + figure boxes per page, ~1-3s warm. Heavier than SLIG; cap at
-        #     8 concurrent, 1 minimum. Replaced Surya-2.
+        #     8 concurrent, 1 minimum.
         self.slig  = AdaptiveConcurrency(name="slig",  initial=8, minimum=2, maximum=16, failure_threshold=3, success_threshold=15)
         self.paddleocr = AdaptiveConcurrency(name="paddleocr", initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
 
@@ -187,7 +189,7 @@ class EndpointController:
         Useful in `except` blocks where you want one-line error classification:
 
             except Exception as e:
-                endpoint_controller.record_overload_exception("chandra", e)
+                endpoint_controller.record_overload_exception("paddleocr", e)
                 raise
         """
         name = type(exc).__name__
@@ -707,11 +709,10 @@ class EndpointController:
         """Pretty-print gate state at stage boundaries."""
         s = self.stats()
         logger.info(
-            "%s: slig=%d/%d (in=%d) | yolo=%d/%d (in=%d) | chandra=%d/%d (in=%d)",
+            "%s: slig=%d/%d (in=%d) | paddleocr=%d/%d (in=%d)",
             prefix,
             s["slig"]["limit"], s["slig"]["max"], s["slig"]["in_flight"],
-            s["yolo"]["limit"], s["yolo"]["max"], s["yolo"]["in_flight"],
-            s["chandra"]["limit"], s["chandra"]["max"], s["chandra"]["in_flight"],
+            s["paddleocr"]["limit"], s["paddleocr"]["max"], s["paddleocr"]["in_flight"],
         )
 
 

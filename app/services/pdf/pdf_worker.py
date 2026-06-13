@@ -203,9 +203,9 @@ def execute_pdf_extraction_job(
 
         # Layout is produced upstream by the PaddleOCR structural pass (Stage 1),
         # which persists per-page regions + OCR text to document_layout_analysis
-        # before this worker runs. The worker no longer does its own YOLO+merge
-        # layout pass — it ships markdown text only. The empty dict below keeps
-        # the return contract (callers treat it as "no worker-side layout").
+        # before this worker runs. The worker ships markdown text only. The empty
+        # dict below keeps the return contract (callers treat it as "no
+        # worker-side layout").
         layout_regions_by_page: Dict[int, List[Any]] = {}
 
         # Explicit GC before returning

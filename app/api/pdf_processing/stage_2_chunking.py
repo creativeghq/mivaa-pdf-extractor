@@ -62,10 +62,10 @@ async def process_product_chunking(
     chunking_strategy = "no_layout_regions"  # default — plain text chunking
 
     # Priority 1 (preferred): Stage 1.5 document-level cache.
-    # Stage 1.5 runs YOLO + bbox-text merge once per page upfront and
-    # persists merged regions (with `text_content` populated) to
+    # Stage 1.5 runs the PaddleOCR structural pass once per page upfront and
+    # persists layout regions (with `text_content` populated) to
     # `document_layout_analysis`. Reading from that cache gives the
-    # chunker text-aware regions without any per-product YOLO/Chandra
+    # chunker text-aware regions without any per-product layout
     # work. See app/api/pdf_processing/stage_1_layout_precompute.py.
     if config.get('enable_layout_aware_chunking', True):
         try:
@@ -131,8 +131,8 @@ async def process_product_chunking(
         except Exception as cache_err:
             logger.debug(f"   document layout cache read failed (non-fatal): {cache_err}")
 
-    # Priority 2: Caller-provided in-memory regions (legacy paths that
-    # ran YOLO themselves). Only used if Priority 1 produced nothing.
+    # Priority 2: Caller-provided in-memory layout regions.
+    # Only used if Priority 1 produced nothing.
     if not layout_regions_by_page and layout_regions:
         logger.info(f"   📐 Using {len(layout_regions)} caller-provided layout regions")
         for region in layout_regions:
@@ -269,7 +269,7 @@ async def process_product_chunking(
         # outcomes are how products end up with no search index entries
         # without anyone noticing for weeks. If this fires, something is
         # actually wrong upstream — usually a bad physical_page_upper_bound,
-        # a missing/corrupt PDF, or a YOLO/Chandra failure that nuked the
+        # a missing/corrupt PDF, or a structural-pass failure that nuked the
         # text extraction. Don't whisper it; shout.
         try:
             requested_pages = list(getattr(product, 'page_range', None) or [])

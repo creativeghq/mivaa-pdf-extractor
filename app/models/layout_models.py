@@ -1,7 +1,7 @@
 """
 Layout Detection Models
 
-Pydantic models for YOLO DocParser layout detection results.
+Pydantic models for layout detection results from the structural pass.
 Supports detection of TEXT, IMAGE, TABLE, TITLE, and CAPTION regions.
 """
 
@@ -60,7 +60,7 @@ RegionType = Literal["TEXT", "IMAGE", "TABLE", "TITLE", "CAPTION"]
 
 
 class LayoutRegion(BaseModel):
-    """Detected layout region from YOLO DocParser."""
+    """Detected layout region from the structural pass."""
     
     type: RegionType = Field(..., description="Region type: TEXT, IMAGE, TABLE, TITLE, or CAPTION")
     bbox: BoundingBox = Field(..., description="Bounding box coordinates")
@@ -111,7 +111,7 @@ class LayoutDetectionResult(BaseModel):
     
     # Processing metadata
     detection_time_ms: Optional[int] = Field(None, description="Detection time in milliseconds")
-    model_version: Optional[str] = Field(None, description="YOLO model version used")
+    model_version: Optional[str] = Field(None, description="Layout model version used")
     
     def __init__(self, **data):
         """Initialize and calculate statistics."""

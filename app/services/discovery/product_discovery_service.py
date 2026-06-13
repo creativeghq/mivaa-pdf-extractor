@@ -18,7 +18,7 @@ DISCOVERY PROCESS:
 - Stage 0A: Claude discovers PRODUCT NAMES + metadata INCLUDING page_range
 - Stage 0B: Page detection with PRIORITY:
   1. USE Claude's page_range if provided (trust the vision model)
-  2. FALLBACK to text search + YOLO only if Claude didn't provide page_range
+  2. FALLBACK to text search only if Claude didn't provide page_range
 - This eliminates catalog vs PDF page number confusion
 - Subsequent stages create semantic chunks for RAG search
 
@@ -26,7 +26,7 @@ KEY DESIGN DECISION:
 Claude CAN return page_range from visual analysis. We prioritize Claude's pages because:
 1. Vision model sees product names in images (not just extractable text)
 2. Text search fails when product names are embedded in images
-3. YOLO validation is used only as fallback when Claude doesn't provide pages
+3. Text-search page detection is used only as fallback when Claude doesn't provide pages
 
 EXTENSIBILITY:
 This service is designed to support future extraction types:
@@ -1275,7 +1275,7 @@ class ProductDiscoveryService:
             products.append(product)
 
             # page_range CAN be returned by Claude - we prioritize it if available
-            # Only fall back to text search + YOLO if Claude didn't provide page_range
+            # Only fall back to text search if Claude didn't provide page_range
 
         # Parse certificates
         certificates = []
@@ -1370,7 +1370,7 @@ class ProductDiscoveryService:
         STAGE 0B: Deterministic page detection + detailed metadata extraction.
 
         This is the core of the Two-Stage Discovery system:
-        1. DETERMINISTIC PAGE DETECTION: Use text search + YOLO to find pages for each product
+        1. DETERMINISTIC PAGE DETECTION: Use text search to find pages for each product
            (Claude CAN return page_range - prioritized if available)
         2. For each product, extract ONLY its detected pages from the PDF
         3. Send focused text to AI for detailed metadata extraction
@@ -1427,7 +1427,7 @@ class ProductDiscoveryService:
             # Claude CAN return page_range - we prioritize it, fallback to text search if not provided
             # ============================================================
             self.logger.info(
-                f"🔍 DETERMINISTIC PAGE DETECTION: Detecting pages for {len(catalog.products)} products using text search + YOLO"
+                f"🔍 DETERMINISTIC PAGE DETECTION: Detecting pages for {len(catalog.products)} products using text search"
             )
 
             # Ensure we have pdf_text with PHYSICAL page markers (handles spread layouts)
@@ -1439,7 +1439,7 @@ class ProductDiscoveryService:
             self.logger.info(f"   📄 Parsed {len(pages_content)} physical pages from text (one-time operation)")
 
             # Discovery uses the PaddleOCR structural-pass text (Stage 1); the
-            # page/section detection below is text-based. No YOLO.
+            # page/section detection below is text-based.
 
             # Get all product names for section boundary detection
             all_product_names = [p.name for p in catalog.products]

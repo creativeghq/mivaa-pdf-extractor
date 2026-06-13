@@ -145,7 +145,7 @@ class AIPricingConfig:
     }
 
     # PaddleOCR-VL Structural Pass — two-stage (PP-DocLayoutV2 + 0.9B VLM) layout
-    # + OCR + figure boxes per page (GPU, Modal). Replaced Surya-2.
+    # + OCR + figure boxes per page (GPU, Modal).
     PADDLEOCR_PRICING = {
         "paddleocr-vl": {
             "input": Decimal("0.00"),
@@ -156,7 +156,7 @@ class AIPricingConfig:
             "last_verified": "2026-06-13",
             "source": "Modal",
             "full_name": "PaddleOCR-VL Structural Pass (PaddlePaddle/PaddleOCR-VL)",
-            "note": "Layout regions + OCR text + figure boxes per page; replaced Surya-2"
+            "note": "Layout regions + OCR text + figure boxes per page"
         }
     }
 

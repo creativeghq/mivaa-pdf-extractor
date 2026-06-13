@@ -3019,7 +3019,7 @@ async def process_document_with_discovery(
         logger.info("=" * 80)
 
         # Create WARMUP_STARTED checkpoint
-        warmup_endpoints_to_start = ["slig", "yolo", "chandra"]
+        warmup_endpoints_to_start = ["slig", "paddleocr"]
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
             stage=ProcessingStage.WARMUP_STARTED,
@@ -3280,7 +3280,7 @@ async def process_document_with_discovery(
         # ============================================================================
         # UNIFIED ENDPOINT CONTROLLER — align AIMD gates with auto-scaler
         # ============================================================================
-        # The controller owns per-endpoint concurrency gates (qwen/slig/yolo/chandra).
+        # The controller owns per-endpoint concurrency gates (slig/paddleocr).
         # Calling warm_all() here:
         #   1. Force-shrinks gates to minimum for any endpoint whose manager is
         #      missing or whose warmup failed (no piling in on a broken endpoint)
@@ -3518,7 +3518,7 @@ async def process_document_with_discovery(
         #   - discovery reads PaddleOCR's reading-order text (cleaner, multilingual,
         #     layout-ordered) instead of raw page.get_text(),
         #   - Stage 2 chunking reads the same cache,
-        #   - Stage 3 crops come from PaddleOCR's figure boxes (cache hit, no YOLO).
+        #   - Stage 3 crops come from PaddleOCR's figure boxes (cache hit).
         # One pass feeds the whole pipeline.
         try:
             _settings_for_precompute = get_settings()

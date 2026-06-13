@@ -189,7 +189,7 @@ async def process_single_product(
 
     try:
         # ========================================================================
-        # STAGE 1: Extract Product Pages + YOLO Layout Detection
+        # STAGE 1: Extract Product Pages + Layout Detection
         # ========================================================================
         current_stage = ProductStage.EXTRACTION
         await product_tracker.update_product_stage(product_id, ProductStage.EXTRACTION)
@@ -471,7 +471,7 @@ async def process_single_product(
                 catalog=catalog,
                 config=config,
                 logger=logger_instance,
-                layout_regions=layout_regions,  # YOLO layout regions for bbox data
+                layout_regions=layout_regions,  # layout regions for bbox data
                 tracker=tracker,  # Per-image progress events visible in admin UI
                 product_db_id=product_db_id,  # plumb FK for ai_usage_logs cost attribution
             )
@@ -719,9 +719,9 @@ async def process_single_product(
                     if region.type == 'TABLE':
                         table_regions.append(region)
 
-                    # Normalise YOLO bbox to satisfy product_layout_regions
-                    # CHECK constraints (width > 0, height > 0). YOLO occasionally
-                    # emits degenerate regions — we saw one with negative height on
+                    # Normalise the layout bbox to satisfy product_layout_regions
+                    # CHECK constraints (width > 0, height > 0). Layout detection
+                    # occasionally emits degenerate regions — we saw one with negative height on
                     # page 24 of harmony-signature-book-24-25.pdf that crashed the
                     # whole insert batch. Clamp negatives to abs(); drop anything
                     # that remains zero-size.
@@ -734,13 +734,13 @@ async def process_single_product(
                     if w <= 0 or h <= 0:
                         dropped_invalid_bbox += 1
                         logger_instance.warning(
-                            f"   ⚠️ Dropping degenerate YOLO region on page {region.bbox.page}: "
+                            f"   ⚠️ Dropping degenerate layout region on page {region.bbox.page}: "
                             f"x={raw_x}, y={raw_y}, w={raw_w}, h={raw_h}"
                         )
                         continue
                     if raw_w < 0 or raw_h < 0:
                         logger_instance.warning(
-                            f"   ⚠️ Clamped inverted YOLO bbox on page {region.bbox.page}: "
+                            f"   ⚠️ Clamped inverted layout bbox on page {region.bbox.page}: "
                             f"(w={raw_w}, h={raw_h}) → (w={w}, h={h})"
                         )
 
@@ -755,7 +755,7 @@ async def process_single_product(
                         'confidence': region.confidence,
                         'reading_order': region.reading_order,
                         'text_content': getattr(region, 'text_content', None),
-                        'metadata': {'yolo_model': 'yolo-docparser'}
+                        'metadata': {'layout_model': 'paddleocr-vl'}
                     })
 
                 if region_data:
@@ -766,7 +766,7 @@ async def process_single_product(
                     )
                 elif dropped_invalid_bbox:
                     logger_instance.warning(
-                        f"   ⚠️ All {dropped_invalid_bbox} YOLO regions were degenerate — nothing stored"
+                        f"   ⚠️ All {dropped_invalid_bbox} layout regions were degenerate — nothing stored"
                     )
 
                 # Extract tables if TABLE regions found

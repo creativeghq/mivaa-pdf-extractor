@@ -420,10 +420,9 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log GPT call: {e}")
             return False
     
-    # `log_qwen_call` and `_calculate_qwen_cost` were removed 2026-05-02 as
-    # part of the post-Qwen-removal cleanup. All HF-endpoint billing now
-    # goes through `log_time_based_call` (per-GPU-second pricing), which
-    # is the only correct path for SLIG / YOLO / Chandra / future HF
+    # All GPU-endpoint billing goes through `log_time_based_call`
+    # (per-GPU-second pricing), which is the only correct path for SLIG
+    # (HuggingFace) / PaddleOCR (Modal structural pass) / future GPU
     # endpoints. Token-based cost math gave $0.00 for these and was a
     # latent billing bug.
 
@@ -513,7 +512,7 @@ class AICallLogger:
         image_id: Optional[str] = None,
     ) -> bool:
         """
-        Log a time-based (HuggingFace GPU endpoint) call: SLIG, OCR (Chandra), YOLO.
+        Log a time-based (GPU endpoint) call: SLIG (HuggingFace), PaddleOCR (Modal structural pass).
 
         Cost is computed from latency × hourly_rate (no token math, since
         these endpoints bill per GPU-second). Uses ai_pricing.calculate_cost

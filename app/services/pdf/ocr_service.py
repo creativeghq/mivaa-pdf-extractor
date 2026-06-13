@@ -4,8 +4,7 @@ OCR Service for multi-modal text extraction from image crops.
 Single-tier: the PaddleOCR-VL structural pass (the platform's layout+OCR backbone).
 Per-crop OCR runs PaddleOCR in full-page mode on the crop, which returns the crop's
 text plus per-block bboxes — used for icon-metadata positioning and per-image
-OCR labels. PaddleOCR replaced the previous Chandra-only OCR engine (and the earlier
-Pytesseract/EasyOCR tiers, removed 2026-05-01).
+OCR labels.
 """
 
 import asyncio

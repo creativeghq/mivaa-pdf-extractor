@@ -60,7 +60,7 @@ def install_job_context_filter() -> None:
     Those records bypass the root filter, hit a formatter with
     %(job_id)s in the pattern, and crash with KeyError.
 
-    Observed failure mode: yolo_endpoint_manager logs from a worker
+    Observed failure mode: paddleocr_endpoint_manager logs from a worker
     thread → no filter runs → KeyError: 'job_id' → format error handler
     re-emits → infinite loop → kernel OOM kill.
 
