@@ -84,14 +84,43 @@ app = modal.App("paddleocr-vl")
 class PaddleService:
     @modal.enter()
     def load(self):
-        """Load the full PaddleOCR-VL pipeline once per container (layout + VLM)."""
+        """Load the full PaddleOCR-VL pipeline once per container (layout + VLM).
+
+        CRITICAL: force the GPU. PaddleOCR pipelines default to CPU unless
+        ``device="gpu"`` is set — a 0.9B VLM on CPU is minutes/page. We set the
+        paddle device globally AND pass device to the pipeline, and log the GPU
+        state so a silent CPU fallback is visible.
+        """
+        import paddle
         from paddleocr import PaddleOCRVL
 
-        self.pipeline = PaddleOCRVL()
-        # Warm the graph with a tiny blank page so the first real request is hot.
+        print(
+            f"PADDLE cuda_compiled={paddle.is_compiled_with_cuda()} "
+            f"device={paddle.device.get_device()} "
+            f"gpu_count={paddle.device.cuda.device_count()}"
+        )
+        try:
+            paddle.set_device("gpu")
+        except Exception as e:  # noqa: BLE001
+            print(f"⚠️ paddle.set_device(gpu) failed: {e}")
+        print(f"PADDLE device after set = {paddle.device.get_device()}")
+
+        try:
+            self.pipeline = PaddleOCRVL(device="gpu")
+        except TypeError:
+            # Older signature without a device kwarg — rely on set_device above.
+            self.pipeline = PaddleOCRVL()
+
+        # Warm with a real text image so the first request pays no JIT cost.
         try:
             import numpy as np
-            _ = list(self.pipeline.predict(np.full((64, 64, 3), 255, dtype="uint8")))
+            from PIL import Image, ImageDraw
+            im = Image.new("RGB", (400, 200), "white")
+            ImageDraw.Draw(im).text((20, 80), "WARMUP 123", fill="black")
+            import time as _t
+            t0 = _t.time()
+            _ = list(self.pipeline.predict(np.array(im)[:, :, ::-1]))
+            print(f"✅ warmup predict ok in {_t.time()-t0:.1f}s")
         except Exception as e:  # noqa: BLE001 - warmup is best-effort
             print(f"warmup predict skipped: {e}")
         print("✅ PaddleOCR-VL pipeline loaded")
