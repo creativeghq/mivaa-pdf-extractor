@@ -151,11 +151,18 @@ class PaddleService:
                 bbox = blk.get("block_bbox") or blk.get("bbox")
                 if not bbox or len(bbox) != 4:
                     continue
+                # Robust to keys that EXIST with a None value (dict.get returns
+                # None, not the default, in that case) — that was a 500-bug.
+                order = blk.get("block_order")
+                if order is None:
+                    order = blk.get("block_id")
+                if order is None:
+                    order = len(regions)
                 regions.append({
                     "bbox": [float(v) for v in bbox],   # pixel x0 y0 x1 y1
                     "label": str(blk.get("block_label") or blk.get("label") or "text"),
                     "content": blk.get("block_content") or blk.get("content") or "",
-                    "order": int(blk.get("block_order", blk.get("block_id", len(regions)))),
+                    "order": int(order),
                 })
         regions.sort(key=lambda r: r["order"])
         return regions, width, height
