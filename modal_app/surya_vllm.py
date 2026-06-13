@@ -47,9 +47,13 @@ VLLM_PORT = 8000
 # Idle seconds before Modal drains the GPU container → $0/h. Short = cheaper,
 # longer = fewer cold starts between back-to-back catalogs.
 SCALEDOWN_WINDOW = int(os.environ.get("SURYA_SCALEDOWN_WINDOW", "120"))
-# 0 = pure scale-to-zero (cheapest). 1 = keep one replica always hot.
+# 0 = pure scale-to-zero (cheapest, $0 when idle). 1 = keep one replica always hot.
 MIN_CONTAINERS = int(os.environ.get("SURYA_MIN_CONTAINERS", "0"))
-MAX_CONTAINERS = int(os.environ.get("SURYA_MAX_CONTAINERS", "2"))
+# Burst ceiling — Modal autoscales 0 → MAX_CONTAINERS under load (more concurrent
+# pages / parallel jobs spin more GPU replicas, then drain back to 0 when idle).
+MAX_CONTAINERS = int(os.environ.get("SURYA_MAX_CONTAINERS", "4"))
+# Requests one container batches before Modal adds another replica. vLLM does
+# continuous batching, so one GPU already overlaps several pages.
 MAX_CONCURRENT = int(os.environ.get("SURYA_MAX_CONCURRENT", "16"))
 # Pin to the vLLM version Surya-2 is tested against (datalab's bench uses 0.20.1).
 VLLM_VERSION = os.environ.get("SURYA_VLLM_VERSION", "0.20.1")
