@@ -135,14 +135,21 @@ class SligService:
     def load(self):
         """Load SigLIP2-base once per container, force GPU, warm with a real pass.
 
-        We load EXACTLY as the HF ``handler.py`` did
-        (``AutoModel.from_pretrained(..., trust_remote_code=True)`` — a harmless
-        no-op here since the repo carries no custom modeling code) so the math is
-        identical. ``trust_remote_code`` is kept only for byte-for-byte fidelity
-        with the original load path.
+        The model loads as the HF ``handler.py`` did
+        (``AutoModel.from_pretrained``). The TOKENIZER/PROCESSOR, however, must
+        NOT go through ``AutoProcessor``: the repo ships a **Gemma** tokenizer
+        (siglip2's 256k-vocab tokenizer.json) but ``config.json`` declares
+        ``model_type: "siglip"``, so ``AutoProcessor`` mis-resolves the tokenizer
+        to the slow ``SiglipTokenizer``, which then looks for a sentencepiece
+        ``spiece.model`` ``vocab_file`` that doesn't exist → ``TypeError: expected
+        str … not NoneType`` and a container crash-loop. ``AutoTokenizer`` resolves
+        the Gemma tokenizer correctly, so we load tokenizer + image processor
+        separately. Same tokenizer/preprocessor files as the HF endpoint → same
+        embeddings (the parity check confirms). Slow image processor
+        (``use_fast=False``) matches the processor saved with the model.
         """
         import torch
-        from transformers import AutoModel, AutoProcessor
+        from transformers import AutoImageProcessor, AutoModel, AutoTokenizer
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(
@@ -151,7 +158,8 @@ class SligService:
             flush=True,
         )
         self.model = AutoModel.from_pretrained(MODEL_REPO, trust_remote_code=True).to(self.device)
-        self.processor = AutoProcessor.from_pretrained(MODEL_REPO, trust_remote_code=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(MODEL_REPO)
+        self.image_processor = AutoImageProcessor.from_pretrained(MODEL_REPO, use_fast=False)
         self.model.eval()
 
         # Warmup as a health gate: one real image embed + one text embed pays the
@@ -192,7 +200,7 @@ class SligService:
     def _get_image_embeddings(self, images):
         import torch
 
-        inputs = self.processor(images=images, return_tensors="pt").to(self.device)
+        inputs = self.image_processor(images=images, return_tensors="pt").to(self.device)
         with torch.no_grad():
             features = self.model.get_image_features(**inputs)
         return features / features.norm(dim=-1, keepdim=True)
@@ -200,7 +208,7 @@ class SligService:
     def _get_text_embeddings(self, texts):
         import torch
 
-        inputs = self.processor(
+        inputs = self.tokenizer(
             text=texts, padding="max_length", truncation=True, return_tensors="pt"
         ).to(self.device)
         with torch.no_grad():
