@@ -51,8 +51,20 @@ fi
 API_URL="http://localhost:8000"
 PDF_URL="https://bgbavxtjlbvgplozizxu.supabase.co/storage/v1/object/public/pdf-documents/harmony-signature-book-24-25.pdf"
 PDF_NAME="harmony-signature-book-24-25.pdf"
+SERVICE_NAME="mivaa-pdf-extractor.service"
 MAX_WAIT_TIME=1800  # 30 minutes max wait (product-centric pipeline takes longer)
 CHECK_INTERVAL=10   # Check every 10 seconds
+
+# The /api/rag/documents/upload endpoint requires a JWT for public callers, or a
+# valid x-cron-secret for trusted internal triggers (this harness). The systemd
+# unit holds CRON_SECRET as an Environment= line, which a manually-run shell does
+# NOT inherit — so pull it from the running service when it isn't already exported.
+# `sudo -n` is non-interactive: if NOPASSWD isn't configured it fails silently and
+# we fall through with an empty secret (upload will then 401, surfacing the cause).
+if [ -z "$CRON_SECRET" ]; then
+    CRON_SECRET=$(sudo -n systemctl show "$SERVICE_NAME" -p Environment 2>/dev/null \
+        | tr ' ' '\n' | sed -n 's/^CRON_SECRET=//p' | head -1)
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -147,6 +159,7 @@ upload_pdf() {
     fi
 
     response=$(curl -s -X POST "$API_URL/api/rag/documents/upload" \
+        -H "x-cron-secret: $CRON_SECRET" \
         -F "file_url=$PDF_URL" \
         -F "title=$PDF_NAME" \
         -F "processing_mode=standard" \

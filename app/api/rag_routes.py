@@ -47,7 +47,7 @@ from app.schemas.api_responses import (
     CheckpointListResponse, RelevancyListResponse, StatsResponse,
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
-from app.dependencies import get_current_user, get_workspace_context
+from app.dependencies import get_current_user, get_workspace_context, get_optional_workspace_context
 
 logger = logging.getLogger(__name__)
 
@@ -536,6 +536,7 @@ async def get_embedding_service() -> RealEmbeddingsService:
 
 @router.post("/documents/upload")
 async def upload_document(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: Optional[UploadFile] = File(None, description="PDF file to upload (required unless file_url is provided)"),
 
@@ -600,7 +601,15 @@ async def upload_document(
     # JWT and derive the workspace from JWT claims — the form-supplied
     # `workspace_id` is treated as a hint and rejected when it doesn't match
     # the caller's workspace membership.
-    workspace_context = Depends(get_workspace_context),
+    #
+    # The dependency is OPTIONAL (get_optional_workspace_context → returns None
+    # instead of raising 403 on a missing/invalid bearer). The actual auth gate
+    # is enforced in the body so a trusted internal trigger carrying an
+    # `x-cron-secret` (the E2E harness, cron-initiated uploads) can bypass the
+    # JWT requirement — mirroring resume_job. If we kept the hard
+    # Depends(get_workspace_context) here, HTTPBearer(auto_error=True) would 403
+    # at the dependency layer BEFORE we could check the secret.
+    workspace_context = Depends(get_optional_workspace_context),
 ):
     """
     **🎯 CONSOLIDATED UPLOAD ENDPOINT — Single Entry Point**
@@ -810,25 +819,47 @@ async def upload_document(
             # Don't block uploads if the draining check itself errors
             pass
 
+        # ── Auth gate ──────────────────────────────────────────────────────
+        # Public callers MUST present a valid JWT (workspace_context not None).
+        # Trusted internal callers (the E2E harness, cron-initiated uploads)
+        # present a valid `x-cron-secret` instead and bypass the JWT — same
+        # mechanism as resume_job. CRON_SECRET unset ⇒ no bypass exists.
+        _cron_secret_header = (request.headers.get("x-cron-secret") or "").strip()
+        _expected_cron_secret = (os.getenv("CRON_SECRET") or "").strip()
+        _is_cron_call = bool(_expected_cron_secret) and _cron_secret_header == _expected_cron_secret
+
+        if not _is_cron_call and workspace_context is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Authentication required. Provide a Bearer JWT, or an "
+                    "x-cron-secret header for trusted internal callers."
+                ),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
         # Workspace integrity check: the JWT-derived workspace from
         # workspace_context.workspace_id is authoritative. The form-supplied
         # `workspace_id` must either match it, or be left at the platform
         # default (which we replace with the JWT-derived value). This closes
         # the cross-workspace data-leak hole flagged in the 2026-05-23 audit.
+        # On a cron-secret call there is no JWT workspace, so the form-supplied
+        # `workspace_id` (defaulting to the platform default) is trusted as-is.
         _PLATFORM_DEFAULT_WS = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
-        _jwt_ws = str(workspace_context.workspace_id)
-        if workspace_id == _PLATFORM_DEFAULT_WS:
-            # Caller didn't override — bind to their actual workspace.
-            workspace_id = _jwt_ws
-        elif workspace_id != _jwt_ws:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"workspace_id '{workspace_id}' does not match the authenticated "
-                    f"caller's workspace ('{_jwt_ws}'). Submit a workspace_id you "
-                    f"are a member of, or omit it to use your default."
-                ),
-            )
+        if workspace_context is not None:
+            _jwt_ws = str(workspace_context.workspace_id)
+            if workspace_id == _PLATFORM_DEFAULT_WS:
+                # Caller didn't override — bind to their actual workspace.
+                workspace_id = _jwt_ws
+            elif workspace_id != _jwt_ws:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        f"workspace_id '{workspace_id}' does not match the authenticated "
+                        f"caller's workspace ('{_jwt_ws}'). Submit a workspace_id you "
+                        f"are a member of, or omit it to use your default."
+                    ),
+                )
 
         # Validate input: either file or file_url must be provided
         if not file and not file_url:
@@ -1710,7 +1741,7 @@ async def resume_job(
     job_id: str,
     background_tasks: BackgroundTasks,
     request: Request,
-    workspace_context = Depends(get_workspace_context),
+    workspace_context = Depends(get_optional_workspace_context),
 ):
     """
     Resume a job from its last checkpoint (alias for restart).
@@ -1720,6 +1751,13 @@ async def resume_job(
     double-bill HF/Anthropic. The auto-recovery cron path uses a separate
     cron-secret header (see `x-cron-secret` accept logic below) to bypass
     the JWT check for legitimate automated recovery.
+
+    The workspace dependency is OPTIONAL on purpose: the auto-recovery-cron
+    presents ONLY an `x-cron-secret` header and no bearer token. A hard
+    Depends(get_workspace_context) would 403 at HTTPBearer(auto_error=True)
+    before this body's cron check could run — which silently broke automated
+    recovery (the cron just logged the 403 and moved on). Optional + in-body
+    enforcement is the correct shape.
     """
     # Cron bypass: if the call carries a valid x-cron-secret header, skip the
     # workspace ownership check. This is the only path the supabase
@@ -1730,6 +1768,16 @@ async def resume_job(
     is_cron_call = bool(expected_cron_secret) and cron_secret_header == expected_cron_secret
 
     if not is_cron_call:
+        # Non-cron callers MUST authenticate with a JWT.
+        if workspace_context is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "Authentication required. Provide a Bearer JWT, or an "
+                    "x-cron-secret header for trusted automated recovery."
+                ),
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         # Enforce workspace ownership.
         try:
             supabase_client = get_supabase_client()

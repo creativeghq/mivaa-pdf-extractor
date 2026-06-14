@@ -24,6 +24,11 @@ on:
         required: false
         default: false
         type: boolean
+      force_modal_deploy:
+        description: 'Force `modal deploy` of the PaddleOCR-VL app (ignore the modal_app-unchanged shortcut)'
+        required: false
+        default: false
+        type: boolean
 
 # Fix D: serialize MIVAA deploys. A second push cancels itself in the queue
 # instead of running in parallel and double-restarting the systemd unit
@@ -33,6 +38,78 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Deploy the PaddleOCR-VL structural-pass app to Modal whenever modal_app/**
+  # changes (or on workflow_dispatch with force_modal_deploy=true). Runs in
+  # parallel with the SSH server deploy below — the two are independent: this
+  # pushes the GPU endpoint code to Modal, the `deploy` job ships the FastAPI
+  # service to the droplet. Auth uses the MODAL_TOKEN_ID / MODAL_TOKEN_SECRET
+  # GitHub Actions secrets (create at https://modal.com/settings/tokens or
+  # `modal token new`). The endpoint's own bearer (paddleocr-api-key Modal
+  # secret) is referenced by the app at deploy time and never travels through CI.
+  deploy-modal:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # paths-filter needs the previous commit to diff against on push events.
+          fetch-depth: 2
+
+      - name: 🧭 Detect Modal app changes
+        id: modal_changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            modal:
+              - 'modal_app/**'
+
+      - name: 🔎 Resolve modal deploy gate
+        id: modal_gate
+        run: |
+          set -euo pipefail
+          CHANGED='${{ steps.modal_changes.outputs.modal }}'
+          FORCE='${{ github.event.inputs.force_modal_deploy }}'
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$FORCE" = "true" ]; then
+            CHANGED=true
+          fi
+          CHANGED="${CHANGED:-false}"
+          echo "deploy=$CHANGED" >> "$GITHUB_OUTPUT"
+          if [ "$CHANGED" = "true" ]; then
+            echo "🚀 modal_app/** changed → will run \`modal deploy\`."
+          else
+            echo "⏩ modal_app/** unchanged → skipping Modal deploy."
+          fi
+
+      - name: 🧱 Set up Python
+        if: steps.modal_gate.outputs.deploy == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 📦 Install Modal CLI
+        if: steps.modal_gate.outputs.deploy == 'true'
+        run: pip install --upgrade modal
+
+      - name: 🚀 Deploy PaddleOCR-VL to Modal
+        if: steps.modal_gate.outputs.deploy == 'true'
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MODAL_TOKEN_ID:-}" ] || [ -z "${MODAL_TOKEN_SECRET:-}" ]; then
+            echo "❌ MODAL_TOKEN_ID / MODAL_TOKEN_SECRET are not set in GitHub Actions secrets."
+            echo "   Add them (Settings → Secrets and variables → Actions) from https://modal.com/settings/tokens"
+            exit 1
+          fi
+          echo "Deploying modal_app/paddleocr_vl.py to Modal (app: paddleocr-vl)…"
+          modal deploy modal_app/paddleocr_vl.py
+          echo "✅ Modal deploy complete."
+          echo "## 🧩 Modal Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployed \`modal_app/paddleocr_vl.py\` (app \`paddleocr-vl\`) to Modal." >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
     runs-on: ubuntu-latest
     environment: production

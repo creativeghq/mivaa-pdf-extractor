@@ -713,7 +713,10 @@ class PDFProcessor:
             for elem in elements:
                 try:
                     region_type = elem.get('region_type', 'TEXT')
-                    if region_type not in ("TEXT", "IMAGE", "TABLE", "TITLE", "CAPTION"):
+                    # FIGURE must be here: PaddleOCR labels most product photos /
+                    # tile-grids as `figure`, and CROP_REGION_TYPES crops FIGURE.
+                    # Dropping it here silently lost every figure-labeled crop.
+                    if region_type not in ("TEXT", "IMAGE", "TABLE", "TITLE", "CAPTION", "FIGURE"):
                         continue
                     bbox_dict = elem.get('bbox') or {}
                     width = float(bbox_dict.get('width', 1)) or 1.0
