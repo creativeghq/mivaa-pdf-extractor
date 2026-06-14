@@ -21,6 +21,7 @@ association logic.
 import os
 import asyncio
 import logging
+import tempfile
 from typing import Dict, Any, Optional, List
 
 # ============================================================================
@@ -340,6 +341,41 @@ async def process_product_images(
             for img in page_result.extracted_images:
                 img['page_number'] = target_physical_page  # Physical page (1-based)
                 extracted_images_list.append(img)
+
+    # ========================================================================
+    # REGION CROPS (spread-aware) — IMAGE/FIGURE crops from the PaddleOCR cache
+    # ========================================================================
+    # The per-sheet pdf_processor call above contributes ONLY embedded images
+    # (its broken, non-spread-aware region-crop layer was disabled). Region
+    # crops come exclusively from this single spread-aware pass, which renders
+    # each PHYSICAL page as the same clipped half Stage 1.5 used and crops the
+    # cached pixel bboxes directly. Crops are already keyed by physical page, so
+    # no spread side-assignment is needed.
+    try:
+        from app.services.pdf.region_crop_extractor import (
+            extract_region_crops_for_physical_pages,
+        )
+
+        region_crop_dir = tempfile.mkdtemp(prefix=f"region_crops_{document_id}_")
+        region_crops = await extract_region_crops_for_physical_pages(
+            file_content=file_content,
+            physical_pages=sorted(set(physical_pages)),
+            catalog=catalog,
+            document_id=document_id,
+            image_dir=region_crop_dir,
+            job_id=job_id,
+            logger=logger,
+        )
+        if region_crops:
+            logger.info(
+                f"   🖼️ Region crops (spread-aware): {len(region_crops)} "
+                f"IMAGE/FIGURE crops added"
+            )
+            extracted_images_list.extend(region_crops)
+    except Exception as region_err:
+        logger.error(
+            f"   ❌ Spread-aware region crop extraction failed (non-fatal): {region_err}"
+        )
 
     total_images = len(extracted_images_list)
 
