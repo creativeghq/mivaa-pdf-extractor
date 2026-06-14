@@ -63,7 +63,7 @@ import modal
 # --------------------------------------------------------------------------- #
 # Tunables (read at `modal deploy` time)
 # --------------------------------------------------------------------------- #
-GPU = os.environ.get("SLIG_GPU", "L4")                       # L4 24GB; T4 16GB is cheaper and fits
+GPU = os.environ.get("SLIG_GPU", "A10G")                     # A10G 24GB — matches the proven PaddleOCR app in this workspace; T4/L4 also fit
 SCALEDOWN_WINDOW = int(os.environ.get("SLIG_SCALEDOWN_WINDOW", "120"))   # idle → $0
 MIN_CONTAINERS = int(os.environ.get("SLIG_MIN_CONTAINERS", "0"))         # 0 = scale-to-zero; 1 = always warm
 MAX_CONTAINERS = int(os.environ.get("SLIG_MAX_CONTAINERS", "4"))         # autoscale ceiling for ingest bursts
