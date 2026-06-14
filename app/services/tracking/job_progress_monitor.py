@@ -179,16 +179,19 @@ class JobProgressMonitor:
         db_stage_count = None
         db_last_stages: list = []
         db_current_stage: Optional[str] = None
+        db_slow_op: Optional[Dict[str, Any]] = None
         try:
             from app.services.core.supabase_client import get_supabase_client
             supabase = get_supabase_client()
             if supabase._client is not None:
                 resp = supabase.client.table('background_jobs') \
-                    .select('stage_history') \
+                    .select('stage_history, current_slow_operation') \
                     .eq('id', self.job_id) \
                     .limit(1) \
                     .execute()
                 rows = resp.data or []
+                if rows and isinstance(rows[0].get('current_slow_operation'), dict):
+                    db_slow_op = rows[0]['current_slow_operation']
                 if rows:
                     sh = rows[0].get('stage_history') or []
                     if isinstance(sh, list):
@@ -288,6 +291,35 @@ class JobProgressMonitor:
                     seconds_since_last_fire = (now - self._stuck_alert_last_fired).total_seconds()
                     if seconds_since_last_fire >= self._stuck_alert_refire_interval_seconds:
                         should_fire = True
+
+                # Suppress the "stuck" alert while the job is inside a KNOWN long
+                # operation it declared via current_slow_operation (Stage 1.5,
+                # discovery, Stage 3 set it with an expected_max_seconds budget).
+                # This is the same signal the auto-recovery cron honors — a 140-page
+                # Stage 1.5 legitimately sits in "initializing" for ~15-20 min. Only
+                # suppress while within 1.5× the declared budget, so a genuinely-hung
+                # op still surfaces eventually.
+                if should_fire and isinstance(db_slow_op, dict) and db_slow_op.get("operation"):
+                    try:
+                        _started = db_slow_op.get("started_at")
+                        _budget = float(db_slow_op.get("expected_max_seconds") or 0)
+                        if _started:
+                            _st = datetime.fromisoformat(str(_started).replace("Z", "+00:00"))
+                            _ref = datetime.now(_st.tzinfo) if _st.tzinfo else datetime.utcnow()
+                            _age = (_ref - _st).total_seconds()
+                            if _budget <= 0 or _age < _budget * 1.5:
+                                should_fire = False
+                                logger.debug(
+                                    f"progress_monitor: suppressing stuck alert for {self.job_id} "
+                                    f"— in slow-op '{db_slow_op.get('operation')}' "
+                                    f"({_age:.0f}s of {_budget:.0f}s budget)"
+                                )
+                        else:
+                            # Marker present without a start time → conservatively
+                            # treat as an active long op and suppress.
+                            should_fire = False
+                    except Exception:
+                        should_fire = False  # unparseable marker → suppress once
 
                 if should_fire:
                     sentry_sdk.capture_message(
