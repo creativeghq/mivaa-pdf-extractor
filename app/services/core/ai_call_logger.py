@@ -316,8 +316,19 @@ class AICallLogger:
                     module_slug=module_slug
                 )
 
-            # Extract response text
-            response_text = response.content[0].text if hasattr(response, 'content') else str(response)
+            # Extract response text. content[0] may be a tool_use block whose
+            # .text is None (forced tool_choice paths) — fall back to the tool
+            # input / a str repr so the response_text[:500] slice below never
+            # hits None[:500] ('NoneType' object is not subscriptable).
+            content = getattr(response, 'content', None)
+            if content:
+                first = content[0]
+                response_text = getattr(first, 'text', None)
+                if response_text is None:
+                    tool_input = getattr(first, 'input', None)
+                    response_text = json.dumps(tool_input) if tool_input is not None else ""
+            else:
+                response_text = str(response)
 
             return await self.log_ai_call(
                 task=task,

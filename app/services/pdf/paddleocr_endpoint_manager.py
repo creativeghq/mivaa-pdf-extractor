@@ -460,9 +460,14 @@ def _coerce_image_to_png_bytes(image_input: Any, max_pixels: int) -> bytes:
     from PIL import Image
 
     if isinstance(image_input, str):
-        img = Image.open(image_input)
+        # Detach from the file so the OS descriptor is released immediately.
+        # A bare Image.open(path) holds the fd open until GC; under the parallel
+        # per-crop OCR pass that exhausts the ulimit ([Errno 24] Too many open files).
+        with Image.open(image_input) as _src:
+            _src.load()
+            img = _src.copy()
     elif isinstance(image_input, bytes):
-        img = Image.open(BytesIO(image_input))
+        img = Image.open(BytesIO(image_input))  # BytesIO holds no OS fd
     else:
         img = image_input
 

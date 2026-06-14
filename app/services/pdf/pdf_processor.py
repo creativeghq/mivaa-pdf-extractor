@@ -1967,7 +1967,11 @@ class PDFProcessor:
             if not os.path.exists(image_path):
                 return {'should_process': False, 'reason': 'file_not_found', 'confidence': 0.0}
 
-            image = Image.open(image_path).convert('RGB')
+            # Context-manage the open so PIL releases the file descriptor here;
+            # a bare Image.open(path).convert() orphans the source ImageFile with
+            # its fd open until GC ([Errno 24] under high-volume image processing).
+            with Image.open(image_path) as _src:
+                image = _src.convert('RGB')
 
             # ============================================================================
             # IMAGE VALIDATION - Resize large images to prevent 400 errors
