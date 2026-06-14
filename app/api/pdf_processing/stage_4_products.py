@@ -633,7 +633,11 @@ async def create_single_product(
             last_err: Optional[Exception] = None
             for attempt in range(3):
                 try:
-                    emb_result = await embeddings_svc.generate_text_embedding(embedding_text)
+                    emb_result = await embeddings_svc.generate_text_embedding(
+                        embedding_text,
+                        job_id=job_id,
+                        product_id=product_id,
+                    )
                     if emb_result.get('success') and emb_result.get('embedding'):
                         text_emb = emb_result['embedding']
                         break

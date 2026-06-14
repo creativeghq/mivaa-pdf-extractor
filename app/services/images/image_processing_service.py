@@ -1535,6 +1535,9 @@ class ImageProcessingService:
                     image_data=image_base64_data,
                     material_properties={},
                     vision_analysis=vision_analysis,
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
                 )
 
                 if not embedding_result or not embedding_result.get('success'):

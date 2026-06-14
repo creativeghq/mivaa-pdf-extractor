@@ -449,6 +449,13 @@ class SupabaseClient:
                     # we mirror it here (not `extraction_method`) so any
                     # consumer reading from metadata sees the same value.
                     'extraction_layer': extraction_layer_val,
+                    # Invariant marker (2026-06-14): why this image did NOT go
+                    # through the SLIG + vision embedding bundle. None = it DID
+                    # (regular material image). 'icon_candidate_spec_path' =
+                    # routed to OCR/Claude spec extraction. 'classified_non_material'
+                    # = dropped as non-material. Guarantees no document_images row
+                    # lands with an empty vision_provider AND no recorded reason.
+                    'bundle_skipped_reason': image_info.get('bundle_skipped_reason'),
                     'storage_uploaded': image_info.get('storage_uploaded', False),
                     'storage_bucket': image_info.get('storage_bucket', 'pdf-tiles'),
                     'storage_path': image_info.get('storage_path'),

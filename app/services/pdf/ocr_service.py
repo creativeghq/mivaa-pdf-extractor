@@ -239,15 +239,19 @@ class OCRService:
             pil_image = image
             w, h = pil_image.size
 
-        import time as _time
-        _paddle_start = _time.time()
         try:
+            # GPU time-based cost (ai_usage_logs) is logged inside
+            # run_structural_pass itself now — the manager owns cost logging
+            # uniformly for every caller, so we no longer log it here (doing so
+            # would double-count the same call). image_id is threaded through so
+            # the manager's cost row carries per-image attribution.
             paddle_result = self.paddleocr_manager.run_structural_pass(
                 pil_image,
                 caller=caller,
                 page_number=None,
                 job_id=job_id,
                 document_id=document_id,
+                image_id=image_id,
             )
             from app.services.core.endpoint_controller import endpoint_controller
             endpoint_controller.record_success("paddleocr")
@@ -265,26 +269,6 @@ class OCRService:
                 text="", confidence=0.0, method='paddleocr_failed', blocks=[],
                 attempts_made=0,
             )]
-
-        # Track GPU time-based cost — sync-safe.
-        try:
-            import asyncio as _asyncio
-            from app.services.core.ai_call_logger import AICallLogger
-            _paddle_latency_ms = int((_time.time() - _paddle_start) * 1000)
-            _log_coro = AICallLogger().log_time_based_call(
-                task="pdf_ocr_paddleocr",
-                model="paddleocr-vl",
-                latency_ms=_paddle_latency_ms,
-                confidence_score=0.85,
-                confidence_breakdown={},
-            )
-            try:
-                _loop = _asyncio.get_running_loop()
-                _loop.create_task(_log_coro)
-            except RuntimeError:
-                _asyncio.run(_log_coro)
-        except Exception as _log_err:
-            logger.debug(f"PaddleOCR OCR logging failed (non-fatal): {_log_err}")
 
         paddle_text = paddle_result.get('generated_text', '') or ''
         paddle_regions = paddle_result.get('regions', []) or []

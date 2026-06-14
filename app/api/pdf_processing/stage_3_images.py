@@ -491,6 +491,22 @@ async def process_product_images(
     # promoted to the icon path (DECORATIVE override).
     non_material_count = len(remaining_non_material)
 
+    # Invariant marker (Fix B, 2026-06-14): every image NOT going through the
+    # SLIG + vision embedding bundle must record WHY on its document_images row
+    # (or, for dropped images, in the stage result). Icon candidates ARE saved
+    # (icon/spec path) — stamp the reason on each dict so save_single_image
+    # persists it under metadata.bundle_skipped_reason. remaining_non_material
+    # is dropped entirely (no document_images row), so it can't be stamped — we
+    # surface an aggregate count in the stage log + result below instead. The
+    # regular_material_images carry no marker (None) — they DID go through the
+    # bundle.
+    for _icon_img in icon_candidates:
+        _icon_img['bundle_skipped_reason'] = 'icon_candidate_spec_path'
+    logger.info(
+        f"   🏷️ Bundle-skip reasons: {len(icon_candidates)} icon_candidate_spec_path "
+        f"(saved) + {non_material_count} classified_non_material (dropped, no row)"
+    )
+
     # 🔍 BBOX TRACE: Log bbox after classification + icon split
     logger.info(
         f"   🔍 [BBOX TRACE] After split - checking {len(regular_material_images)} regular + "
@@ -639,6 +655,13 @@ async def process_product_images(
         'images_material': len(regular_material_images),
         'images_icon_candidates': len(icon_candidates),
         'images_non_material': non_material_count,
+        # Bundle-skip accounting (Fix B): icon candidates carry the reason on
+        # their persisted document_images row; non-material images are dropped
+        # without a row, so their reason is surfaced here as an aggregate count.
+        'bundle_skip_reasons': {
+            'icon_candidate_spec_path': len(icon_candidates),
+            'classified_non_material': non_material_count,
+        },
         'vector_stats': vector_stats,
         'failed_images': failed_images,
     }

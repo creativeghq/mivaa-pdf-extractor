@@ -178,7 +178,10 @@ class RealEmbeddingsService:
         image_url: Optional[str] = None,
         material_properties: Optional[Dict[str, Any]] = None,
         image_data: Optional[str] = None,  # base64 encoded
-        vision_analysis: Optional[Dict[str, Any]] = None  # Claude Opus 4.7 vision_analysis JSON (schema-locked via Anthropic tool use)
+        vision_analysis: Optional[Dict[str, Any]] = None,  # Claude Opus 4.7 vision_analysis JSON (schema-locked via Anthropic tool use)
+        job_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate all embedding types for an entity.
@@ -191,6 +194,9 @@ class RealEmbeddingsService:
             material_properties: Material properties dict (optional)
             image_data: Base64 encoded image data (optional)
             vision_analysis: Claude Opus 4.7 vision_analysis JSON for understanding embedding (optional)
+            job_id: Optional job ID for cost attribution (rolls up into total_ai_cost_usd)
+            product_id: Optional product ID for per-product cost attribution
+            image_id: Optional image ID for per-image cost attribution
 
         Returns:
             Dictionary with all embedding types
@@ -218,7 +224,10 @@ class RealEmbeddingsService:
             # 1. Generate Text Embedding (1024D) - REAL with Voyage AI optimization
             text_embedding = await self._generate_text_embedding(
                 text=text_content,
-                input_type=input_type
+                input_type=input_type,
+                job_id=job_id,
+                product_id=product_id,
+                image_id=image_id,
             )
             if text_embedding:
                 embeddings["embeddings"]["text_1024"] = text_embedding
@@ -231,7 +240,10 @@ class RealEmbeddingsService:
             visual_embedding = None
             if image_url or image_data:
                 visual_embedding, model_used, pil_image_for_reuse = await self._generate_visual_embedding(
-                    image_url, image_data
+                    image_url, image_data,
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
                 )
                 if visual_embedding:
                     embeddings["embeddings"]["visual_768"] = visual_embedding  # SLIG 768D
@@ -264,6 +276,9 @@ class RealEmbeddingsService:
             if vision_analysis:
                 aspect_embeddings = await self._generate_specialized_aspect_embeddings(
                     vision_analysis=vision_analysis,
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
                 )
                 if aspect_embeddings:
                     embeddings["embeddings"]["color_aspect_1024"] = aspect_embeddings.get("color")
@@ -331,7 +346,10 @@ class RealEmbeddingsService:
     async def generate_text_embedding(
         self,
         query: str,
-        dimensions: int = 1024
+        dimensions: int = 1024,
+        job_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Public method to generate a text embedding for search queries.
@@ -344,6 +362,9 @@ class RealEmbeddingsService:
         Args:
             query: Text query to embed
             dimensions: Embedding dimensions (default 1024)
+            job_id: Optional job ID for cost attribution
+            product_id: Optional product ID for per-product cost attribution
+            image_id: Optional image ID for per-image cost attribution
         """
         try:
             # Track which provider answered by recording state before/after.
@@ -353,7 +374,13 @@ class RealEmbeddingsService:
             # path stamp openai. Implementation: peek at self._last_provider
             # which the embedder sets at the end of the call.
             self._last_provider = None
-            embedding = await self._generate_text_embedding(text=query, dimensions=dimensions)
+            embedding = await self._generate_text_embedding(
+                text=query,
+                dimensions=dimensions,
+                job_id=job_id,
+                product_id=product_id,
+                image_id=image_id,
+            )
             if embedding:
                 return {
                     "success": True,
@@ -564,7 +591,10 @@ class RealEmbeddingsService:
         dimensions: int = 1024,
         input_type: str = "document",
         truncation: bool = True,
-        output_dtype: str = "float"
+        output_dtype: str = "float",
+        job_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
         """
         Generate embeddings for multiple texts in a single batch API call.
@@ -661,7 +691,10 @@ class RealEmbeddingsService:
                             "validation": 0.90,
                             "batch_size": len(texts)
                         },
-                        action="use_ai_result"
+                        action="use_ai_result",
+                        job_id=job_id,
+                        product_id=product_id,
+                        image_id=image_id,
                     )
 
                     self.logger.info(f"✅ Generated {len(embeddings)} Voyage AI embeddings in batch ({voyage_dimensions}D, {input_type})")
@@ -702,6 +735,9 @@ class RealEmbeddingsService:
                         "batch_size": len(texts)
                     },
                     action="fallback_to_rules",
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
                     fallback_reason=f"Voyage AI batch error: {str(e)}",
                     error_message=str(e)
                 )
@@ -763,7 +799,10 @@ class RealEmbeddingsService:
                             "validation": 0.90,
                             "batch_size": len(texts)
                         },
-                        action="use_ai_result"
+                        action="use_ai_result",
+                        job_id=job_id,
+                        product_id=product_id,
+                        image_id=image_id,
                     )
 
                     self.logger.info(f"✅ Generated {len(embeddings)} OpenAI embeddings in batch ({dimensions}D)")
@@ -800,6 +839,9 @@ class RealEmbeddingsService:
                     "batch_size": len(texts)
                 },
                 action="fallback_to_rules",
+                job_id=job_id,
+                product_id=product_id,
+                image_id=image_id,
                 fallback_reason=f"Batch API error: {str(e)}",
                 error_message=str(e)
             )
@@ -815,6 +857,8 @@ class RealEmbeddingsService:
         truncation: bool = True,
         output_dtype: str = "float",
         allow_openai_fallback: Optional[bool] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> Optional[List[float]]:
         """Generate text embedding using Voyage AI (primary) with OpenAI fallback.
 
@@ -933,6 +977,8 @@ class RealEmbeddingsService:
                             },
                             action="use_ai_result",
                             job_id=job_id,
+                            product_id=product_id,
+                            image_id=image_id,
                         )
 
                         self.logger.info(f"✅ Generated Voyage AI embedding ({voyage_dimensions}D, {input_type})")
@@ -966,6 +1012,8 @@ class RealEmbeddingsService:
                     },
                     action="fallback_to_rules",
                     job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
                     fallback_reason=f"Voyage AI error: {str(e)}",
                     error_message=str(e)
                 )
@@ -1047,7 +1095,9 @@ class RealEmbeddingsService:
                             "validation": 0.90
                         },
                         action="use_ai_result",
-                        job_id=job_id
+                        job_id=job_id,
+                        product_id=product_id,
+                        image_id=image_id,
                     )
 
                     self.logger.info(f"✅ Generated OpenAI embedding ({openai_dimensions}D) - fallback")
@@ -1078,6 +1128,8 @@ class RealEmbeddingsService:
                 },
                 action="fallback_failed",
                 job_id=job_id,
+                product_id=product_id,
+                image_id=image_id,
                 fallback_reason=f"OpenAI API error: {str(e)}",
                 error_message=str(e)
             )
@@ -1090,7 +1142,9 @@ class RealEmbeddingsService:
         image_data: Optional[str],
         confidence_threshold: float = 0.8,
         pil_image = None,  # NEW: Accept pre-decoded PIL image
-        job_id: Optional[str] = None  # NEW: Add job_id for logging
+        job_id: Optional[str] = None,  # NEW: Add job_id for logging
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> tuple[Optional[List[float]], str, Optional[any]]:
         """
         Generate visual embedding using SLIG cloud endpoint exclusively.
@@ -1110,7 +1164,8 @@ class RealEmbeddingsService:
         """
         # Use configured visual embedding model (default: SigLIP)
         visual_embedding, pil_image_out = await self._generate_siglip_embedding(
-            image_url, image_data, pil_image=pil_image, job_id=job_id
+            image_url, image_data, pil_image=pil_image, job_id=job_id,
+            product_id=product_id, image_id=image_id,
         )
         if visual_embedding:
             self.logger.info(f"✅ Using visual embedding from {self.slig_model_name}")
@@ -1124,7 +1179,9 @@ class RealEmbeddingsService:
         image_url: Optional[str],
         image_data: Optional[str],
         pil_image = None,  # NEW: Accept pre-decoded PIL image
-        job_id: Optional[str] = None  # NEW: Add job_id for logging
+        job_id: Optional[str] = None,  # NEW: Add job_id for logging
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> tuple[Optional[List[float]], Optional[any]]:
         """
         Generate visual embedding using Google SigLIP ViT-SO400M.
@@ -1211,12 +1268,15 @@ class RealEmbeddingsService:
 
                     self.logger.info(f"✅ SLIG embedding generated: {len(embedding)}D (latency={latency_ms}ms)")
 
-                    await self.ai_logger.log_ai_call(
+                    # SLIG runs on a HuggingFace GPU endpoint — bill per
+                    # GPU-second (time-based), NOT per token. The old
+                    # log_ai_call token path yielded $0.00 for this call
+                    # (0 tokens) and was a latent billing gap. model="slig-768d"
+                    # routes to VISUAL_EMBEDDING_PRICING (time-based) in
+                    # ai_pricing.calculate_time_based_cost.
+                    await self.ai_logger.log_time_based_call(
                         task="visual_embedding_generation",
-                        model=self.slig_model_name,
-                        input_tokens=0,
-                        output_tokens=0,
-                        cost=0.0,
+                        model="slig-768d",
                         latency_ms=latency_ms,
                         confidence_score=0.95,
                         confidence_breakdown={
@@ -1232,9 +1292,11 @@ class RealEmbeddingsService:
                             "vectors_generated": 1,
                             "vector_dimension": self.slig_embedding_dimension,
                             "vector_kind": "visual",
+                            "endpoint_model": self.slig_model_name,
                         },
-                        action="use_ai_result",
                         job_id=job_id,
+                        product_id=product_id,
+                        image_id=image_id,
                     )
 
                     return embedding, pil_image
@@ -1258,6 +1320,9 @@ class RealEmbeddingsService:
     async def _generate_specialized_aspect_embeddings(
         self,
         vision_analysis: Any,
+        job_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> Optional[Dict[str, List[float]]]:
         """Generate 4 per-image aspect embeddings (1024D Voyage) from VisionAnalysis.
 
@@ -1350,6 +1415,9 @@ class RealEmbeddingsService:
                     text=text,
                     input_type="document",
                     allow_openai_fallback=False,
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
                 )
                 if not vec:
                     self.logger.warning(f"⚠️ Aspect '{aspect}' Voyage embed returned None")
@@ -1398,6 +1466,9 @@ class RealEmbeddingsService:
                     "schema_version": SCHEMA_VERSION,
                 },
                 action="use_ai_result",
+                job_id=job_id,
+                product_id=product_id,
+                image_id=image_id,
             )
         except Exception as log_err:
             self.logger.debug(f"Aspect aggregate log skipped: {log_err}")

@@ -39,6 +39,64 @@ from app.services.pdf.paddleocr_pipeline import (
 logger = logging.getLogger(__name__)
 
 
+def _fire_and_forget_async(coro) -> None:
+    """Run an async coroutine to completion off the calling thread.
+
+    ``run_structural_pass`` / ``run_block_ocr`` are SYNC (they use ``time.sleep``)
+    and are dispatched via ``asyncio.to_thread`` from the async stages — so the
+    calling thread has no running event loop, and we must not block it on a DB
+    write. This spins up a throwaway daemon thread with its own event loop, runs
+    the coroutine there, and returns immediately. Best-effort: any failure is
+    swallowed so GPU-cost logging can never break the structural pass.
+    """
+    import asyncio
+    import threading
+
+    def _runner() -> None:
+        try:
+            asyncio.new_event_loop().run_until_complete(coro)
+        except Exception as bg_err:  # noqa: BLE001
+            logger.debug("PaddleOCR cost-log thread failed (non-fatal): %s", bg_err)
+
+    try:
+        threading.Thread(target=_runner, daemon=True).start()
+    except Exception as spawn_err:  # noqa: BLE001
+        logger.debug("PaddleOCR cost-log thread spawn failed (non-fatal): %s", spawn_err)
+
+
+def _log_paddleocr_gpu_cost(
+    task: str,
+    latency_ms: int,
+    job_id: Optional[str],
+    image_id: Optional[str],
+    product_id: Optional[str],
+) -> None:
+    """Log the GPU-seconds cost of a successful PaddleOCR call to ai_usage_logs.
+
+    PaddleOCR-VL runs on a Modal GPU endpoint — billing is per GPU-second
+    (time-based), NOT per token. model="paddleocr-vl" routes to PADDLEOCR_PRICING
+    (time-based) in ai_pricing.calculate_time_based_cost. Best-effort — never
+    raises into the structural pass.
+    """
+    try:
+        from app.services.core.ai_call_logger import AICallLogger
+
+        _fire_and_forget_async(
+            AICallLogger().log_time_based_call(
+                task=task,
+                model="paddleocr-vl",
+                latency_ms=latency_ms,
+                confidence_score=0.85,
+                confidence_breakdown={},
+                job_id=job_id,
+                image_id=image_id,
+                product_id=product_id,
+            )
+        )
+    except Exception as log_err:  # noqa: BLE001
+        logger.debug("PaddleOCR GPU cost log failed (non-fatal): %s", log_err)
+
+
 class PaddleOCRResponseError(RuntimeError):
     """Raised when PaddleOCR returns output that cannot be parsed into regions.
 
@@ -175,6 +233,8 @@ class PaddleOCRManager:
         page_number: Optional[int] = None,
         job_id: Optional[str] = None,
         document_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Full-page structural pass (``page`` mode).
 
@@ -262,6 +322,15 @@ class PaddleOCRManager:
                 len(regions), len(generated_text), latency_ms, attempt_idx,
                 self.provider.provider_name,
             )
+            # GPU-seconds cost → ai_usage_logs (rolls up into total_ai_cost_usd).
+            # paddleocr_metrics above is endpoint telemetry; this is billing.
+            _log_paddleocr_gpu_cost(
+                task="pdf_structural_pass",
+                latency_ms=latency_ms,
+                job_id=job_id,
+                image_id=image_id,
+                product_id=product_id,
+            )
             return {
                 "regions": regions,
                 "generated_text": generated_text,
@@ -280,6 +349,7 @@ class PaddleOCRManager:
         image_id: Optional[str] = None,
         job_id: Optional[str] = None,
         document_id: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """OCR a single cropped block image to text (``block`` mode).
 
@@ -305,6 +375,14 @@ class PaddleOCRManager:
             job_id=job_id, document_id=document_id, attempt_number=1,
             outcome="success", region_count=1 if text else 0, chars_count=len(text),
             failure_mode_head=None, latency_ms=latency_ms,
+        )
+        # GPU-seconds cost → ai_usage_logs (rolls up into total_ai_cost_usd).
+        _log_paddleocr_gpu_cost(
+            task="pdf_ocr_paddleocr",
+            latency_ms=latency_ms,
+            job_id=job_id,
+            image_id=image_id,
+            product_id=product_id,
         )
         return {"generated_text": text, "raw": payload, "attempts_made": 1}
 
