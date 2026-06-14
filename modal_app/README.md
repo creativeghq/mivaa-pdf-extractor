@@ -172,3 +172,97 @@ modal app logs paddleocr-vl        # stream server logs
 modal app list                     # see deployed apps + status
 modal app stop paddleocr-vl        # tear the deployment down
 ```
+
+---
+
+# SLIG (SigLIP2) on Modal — GPU host for visual embeddings
+
+`slig.py` deploys **SLIG** — the platform's visual encoder — to Modal, the same
+way PaddleOCR-VL is deployed. SLIG produces the 768D `visual` vector in the
+7-embedding fusion search (`vecs.image_slig_embeddings`) and also serves zero-shot
+classification + image⇄text similarity. The model is the public HF repo
+`basiliskan/slig`, which is a **verbatim duplication of
+`google/siglip2-base-patch16-512`** — stock SigLIP2 base, **native 768D, no
+projection head** (older docstrings saying "SO400M / 1152→768 projection" are
+wrong; `config.json` is `model_type: "siglip"` with no `auto_map`).
+
+It exposes the **same `{inputs, parameters}` contract** the HF Inference Endpoint
+used (see [`docs/api/slig-inference.md`](../../docs/api/slig-inference.md)), so the
+MIVAA SLIG client's payload builders don't change:
+
+```
+GET  /health           → 200 once the model is loaded + warmed (unauth probe)
+POST /infer  (bearer)  → {"inputs": <str|[str]|{image(s),text(s)}>,
+                          "parameters": {"mode": "...", "candidate_labels": [...]}}
+   mode ∈ {zero_shot, image_embedding, text_embedding, similarity, auto}
+   → image_embedding / text_embedding: [{"embedding": [768 floats]}, ...]
+   → zero_shot:  [{"label","score"}, ...] (single) | [[...], ...] (batch)
+   → similarity: {"similarity_scores": [[...]], "image_count", "text_count"}
+```
+
+**Embedding parity:** the model is loaded exactly as the HF custom `handler.py`
+did (stock `transformers` `AutoModel.from_pretrained` + `AutoProcessor`, then
+`get_*_features` → L2-norm), so newly-embedded vectors are bit-for-bit comparable
+with everything already in `vecs.image_slig_embeddings`. **Validate before
+cutover** by re-embedding a few known images and confirming cosine ≈ 1.0 against
+their stored vectors — that's the migration go/no-go.
+
+**Warm posture:** ships **scale-to-zero** (`SLIG_MIN_CONTAINERS=0`, $0 idle), same
+as PaddleOCR. The model is small (~400M / 1.5 GB, baked into the image), so a cold
+start is load-only (~5–15s), no network download. ⚠️ Unlike PaddleOCR (batch-only),
+SLIG also serves **realtime search queries** — with scale-to-zero the first query
+after idle eats the cold start, so the MIVAA search path must warm-probe before the
+embed and degrade gracefully on timeout (drop the visual vector, keep the rest).
+Set `SLIG_MIN_CONTAINERS=1` to keep one replica always warm if query latency wins
+over $0 idle.
+
+## Deploy
+
+```bash
+# No new secret needed — the app reuses the existing `paddleocr-api-key` Modal
+# secret (one shared bearer across both apps; only the URL differs per app).
+modal deploy modal_app/slig.py
+```
+
+Modal prints `https://<workspace>--slig-sligservice-web.modal.run` — that's
+**`SLIG_MODAL_URL`**. The bearer is the **same value as `PADDLEOCR_MODAL_API_KEY`**
+(reused from the shared `paddleocr-api-key` secret), so on the MIVAA side set
+`SLIG_MODAL_API_KEY` to that same value. To give SLIG its own key later, create a
+`slig-api-key` secret exposing `SLIG_API_KEY`, add it to `secrets=[...]` in
+`slig.py`, and it takes precedence.
+
+CI auto-deploys via the existing `deploy-modal` job (the `dorny/paths-filter` gate
+fires on any `modal_app/**` change, so editing `slig.py` and pushing redeploys it
+alongside PaddleOCR). MIVAA wiring (`SLIG_MODAL_URL` / `SLIG_MODAL_API_KEY` env,
+provider switch) lands in the platform-integration phase — this folder is the
+standalone module only.
+
+## Verify directly
+
+```bash
+curl https://<workspace>--slig-sligservice-web.modal.run/health
+curl -X POST https://<workspace>--slig-sligservice-web.modal.run/infer \
+  -H "Authorization: Bearer $SLIG_MODAL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"inputs":"a photo of ceramic floor tiles","parameters":{"mode":"text_embedding"}}'
+```
+
+## Tuning (env vars at `modal deploy` time)
+
+| Env | Default | Meaning |
+|---|---|---|
+| `SLIG_GPU` | `L4` | GPU type (`T4` 16 GB is cheaper and fits the ~400M model; `L4`/`A10G` give more batch throughput on big catalog ingests) |
+| `SLIG_SCALEDOWN_WINDOW` | `120` | Idle seconds before the GPU container drains to $0 |
+| `SLIG_MIN_CONTAINERS` | `0` | `1` = keep one replica always warm (no cold starts on search; costs ~1 GPU/h) |
+| `SLIG_MAX_CONTAINERS` | `4` | Burst ceiling for ingest |
+| `SLIG_MAX_CONCURRENT` | `16` | Max in-flight requests per container (keep > 1 so `/health` never queues behind `/infer`) |
+| `SLIG_MODEL_REPO` | `basiliskan/slig` | Source model repo (public; pulled into the image at build) |
+| `SLIG_TORCH_VERSION` | `2.5.1` | torch CUDA wheel version |
+| `SLIG_TRANSFORMERS_VERSION` | `4.49.0` | transformers version (siglip2 needs ≥ 4.49; pinned for forward-pass reproducibility) |
+
+## Operate
+
+```bash
+modal app logs slig
+modal app stop slig
+```
