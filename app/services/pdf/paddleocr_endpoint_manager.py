@@ -39,31 +39,6 @@ from app.services.pdf.paddleocr_pipeline import (
 logger = logging.getLogger(__name__)
 
 
-def _fire_and_forget_async(coro) -> None:
-    """Run an async coroutine to completion off the calling thread.
-
-    ``run_structural_pass`` / ``run_block_ocr`` are SYNC (they use ``time.sleep``)
-    and are dispatched via ``asyncio.to_thread`` from the async stages — so the
-    calling thread has no running event loop, and we must not block it on a DB
-    write. This spins up a throwaway daemon thread with its own event loop, runs
-    the coroutine there, and returns immediately. Best-effort: any failure is
-    swallowed so GPU-cost logging can never break the structural pass.
-    """
-    import asyncio
-    import threading
-
-    def _runner() -> None:
-        try:
-            asyncio.new_event_loop().run_until_complete(coro)
-        except Exception as bg_err:  # noqa: BLE001
-            logger.debug("PaddleOCR cost-log thread failed (non-fatal): %s", bg_err)
-
-    try:
-        threading.Thread(target=_runner, daemon=True).start()
-    except Exception as spawn_err:  # noqa: BLE001
-        logger.debug("PaddleOCR cost-log thread spawn failed (non-fatal): %s", spawn_err)
-
-
 def _log_paddleocr_gpu_cost(
     task: str,
     latency_ms: int,
@@ -73,26 +48,46 @@ def _log_paddleocr_gpu_cost(
 ) -> None:
     """Log the GPU-seconds cost of a successful PaddleOCR call to ai_usage_logs.
 
-    PaddleOCR-VL runs on a Modal GPU endpoint — billing is per GPU-second
-    (time-based), NOT per token. model="paddleocr-vl" routes to PADDLEOCR_PRICING
-    (time-based) in ai_pricing.calculate_time_based_cost. Best-effort — never
-    raises into the structural pass.
+    PaddleOCR-VL runs on a Modal GPU endpoint — billed per GPU-second (time-based,
+    $1/GPU-hour), NOT per token.
+
+    DIRECT SYNCHRONOUS insert: ``run_structural_pass`` / ``run_block_ocr`` are
+    sync (dispatched via ``asyncio.to_thread``), the supabase client is a process
+    singleton, and the insert is ~ms — so we just write the row inline. The
+    previous fire-and-forget pattern spawned a daemon thread with a FRESH
+    ``asyncio.new_event_loop()`` per call and never closed it: 140 page passes →
+    140 leaked event loops → FD exhaustion ("Too many open files" + "deallocating
+    an open event loop"). Best-effort — never raises into the structural pass.
     """
     try:
-        from app.services.core.ai_call_logger import AICallLogger
+        from datetime import datetime, timezone
+        from app.config.ai_pricing import ai_pricing
+        from app.services.core.supabase_client import get_supabase_client
 
-        _fire_and_forget_async(
-            AICallLogger().log_time_based_call(
-                task=task,
-                model="paddleocr-vl",
-                latency_ms=latency_ms,
-                confidence_score=0.85,
-                confidence_breakdown={},
-                job_id=job_id,
-                image_id=image_id,
-                product_id=product_id,
-            )
+        secs = max(latency_ms / 1000.0, 0.001)
+        cost_data = ai_pricing.calculate_time_based_cost(
+            model="paddleocr-vl", inference_seconds=secs
         )
+        billed = float(cost_data.get("billed_cost_usd", 0.0))
+        get_supabase_client().client.table("ai_usage_logs").insert({
+            "operation_type": task,
+            "model_name": "paddleocr-vl",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "raw_cost_usd": billed,
+            "markup_multiplier": 1.0,
+            "billed_cost_usd": billed,
+            "job_id": job_id,
+            "product_id": product_id,
+            "image_id": image_id,
+            "module_slug": "pdf_pipeline",
+            "metadata": {
+                "latency_ms": latency_ms,
+                "billing": "time_based",
+                "gpu_hourly_usd": 1.0,
+            },
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }).execute()
     except Exception as log_err:  # noqa: BLE001
         logger.debug("PaddleOCR GPU cost log failed (non-fatal): %s", log_err)
 
