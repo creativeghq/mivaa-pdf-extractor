@@ -157,6 +157,18 @@ class AICallLogger:
                 # the cost row. Now: 2 attempts, bump to ERROR on persistent
                 # failure so operator sees cost-tracking gap.
                 cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens)
+                # `calculate_cost` is TOKEN-based and returns $0 for GPU/time-based
+                # endpoints (SLIG, PaddleOCR) which have 0 tokens. Those callers
+                # (`log_time_based_call`) already computed the GPU-seconds cost and
+                # pass it as `cost` — honor it when the token math is $0, otherwise
+                # the mirror would silently bill $0 for every GPU call.
+                _markup = float(cost_data.get("markup_multiplier", 1.5)) or 1.5
+                _computed_billed = float(cost_data.get("billed_cost_usd", 0) or 0)
+                _billed = _computed_billed if _computed_billed > 0 else float(cost or 0)
+                _computed_raw = float(cost_data.get("raw_cost_usd", 0) or 0)
+                _raw = _computed_raw if _computed_raw > 0 else (
+                    _billed / _markup if _markup else _billed
+                )
                 usage_entry = {
                     "user_id": user_id,
                     "workspace_id": workspace_id,
@@ -166,9 +178,9 @@ class AICallLogger:
                     "output_tokens": output_tokens,
                     "input_cost_usd": float(cost_data.get("input_cost_usd", 0)),
                     "output_cost_usd": float(cost_data.get("output_cost_usd", 0)),
-                    "raw_cost_usd": float(cost_data.get("raw_cost_usd", cost)),
-                    "markup_multiplier": float(cost_data.get("markup_multiplier", 1.5)),
-                    "billed_cost_usd": float(cost_data.get("billed_cost_usd", cost)),
+                    "raw_cost_usd": _raw,
+                    "markup_multiplier": _markup,
+                    "billed_cost_usd": _billed,
                     "job_id": job_id,
                     "module_slug": module_slug,
                     "product_id": product_id,
