@@ -939,22 +939,14 @@ jobs:
           Environment=CRON_SECRET=${{ secrets.CRON_SECRET }}
           Environment=OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
           Environment=VOYAGE_API_KEY=${{ secrets.VOYAGE_API_KEY }}
-          Environment=HUGGINGFACE_API_KEY=${{ secrets.HUGGINGFACE_API_KEY }}
-          Environment=HUGGING_FACE_ACCESS_TOKEN=${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
-          Environment=HUGGINGFACE_API_URL=${{ secrets.HUGGINGFACE_API_URL }}
-          Environment=HUGGINGFACE_SIGLIP_MODEL=${{ secrets.HUGGINGFACE_SIGLIP_MODEL }}
-          Environment=HUGGINGFACE_BATCH_SIZE=${{ secrets.HUGGINGFACE_BATCH_SIZE }}
-          Environment=HUGGINGFACE_TIMEOUT=${{ secrets.HUGGINGFACE_TIMEOUT }}
-          Environment=HUGGINGFACE_MAX_RETRIES=${{ secrets.HUGGINGFACE_MAX_RETRIES }}
-          # SLIG (SigLIP2) cloud endpoint. Empty GitHub Secrets are safe here
-          # thanks to _coerce_empty_string_to_default in app/config.py — any
-          # secret left unset falls back to the field's declared default.
-          # Once all SLIG_* secrets are populated you can delete the legacy
-          # drop-in at /etc/systemd/system/mivaa-pdf-extractor.service.d/slig-env.conf.
-          Environment=SLIG_ENDPOINT_URL=${{ secrets.SLIG_ENDPOINT_URL }}
-          Environment=SLIG_ENDPOINT_TOKEN=${{ secrets.SLIG_ENDPOINT_TOKEN }}
-          Environment=SLIG_ENDPOINT_NAME=${{ secrets.SLIG_ENDPOINT_NAME }}
-          Environment=SLIG_NAMESPACE=${{ secrets.SLIG_NAMESPACE }}
+          # SLIG (SigLIP2) visual embeddings — Modal-hosted (modal_app/slig.py),
+          # migrated off HuggingFace 2026-06-14 (parity cosine=1.0). The Modal URL
+          # is baked as the config.py default (the deployed `slig` app), so the
+          # ONLY required secret is the bearer — and that's SHARED with PaddleOCR,
+          # so SLIG_MODAL_API_KEY points at the SAME paddleocr-api-key value. The
+          # remaining SLIG_* fall back to code defaults when their GH secret is empty.
+          Environment=SLIG_MODAL_URL=${{ secrets.SLIG_MODAL_URL }}
+          Environment=SLIG_MODAL_API_KEY=${{ secrets.PADDLEOCR_MODAL_API_KEY }}
           Environment=SLIG_MODEL_NAME=${{ secrets.SLIG_MODEL_NAME }}
           Environment=SLIG_EMBEDDING_DIMENSION=${{ secrets.SLIG_EMBEDDING_DIMENSION }}
           Environment=SLIG_ENABLED=${{ secrets.SLIG_ENABLED }}

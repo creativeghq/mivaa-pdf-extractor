@@ -133,12 +133,13 @@ class RealEmbeddingsService:
         self._device = None
 
         # ============================================================================
-        # SLIG (SigLIP2) Cloud Endpoint Configuration
+        # SLIG (SigLIP2) Modal Endpoint Configuration
         # ============================================================================
-        # All visual embeddings are generated via SLIG cloud endpoint (no local models)
+        # Visual embeddings are served by the `slig` Modal app (modal_app/slig.py).
+        # These attrs hold the Modal base URL + bearer; SLIGClient appends /infer.
         from app.config import settings
-        self.slig_endpoint_url = settings.slig_endpoint_url
-        self.slig_endpoint_token = settings.slig_endpoint_token
+        self.slig_endpoint_url = settings.slig_modal_url
+        self.slig_endpoint_token = settings.slig_modal_api_key
         self.slig_model_name = settings.slig_model_name
         self.slig_embedding_dimension = settings.slig_embedding_dimension
         self.slig_enabled = settings.slig_enabled
@@ -158,7 +159,7 @@ class RealEmbeddingsService:
         self.voyage_model = getattr(config, "voyage_model", None) or "voyage-4"
 
         # Log SLIG configuration
-        self.logger.info(f"☁️ Visual Embeddings: SLIG Cloud Endpoint (basiliskan/slig — SigLIP2 SO400M projected to 768D)")
+        self.logger.info(f"☁️ Visual Embeddings: SLIG on Modal (basiliskan/slig — siglip2-base-patch16-512, native 768D)")
 
         # Voyage AI configuration
         self.voyage_api_key = settings.voyage_api_key

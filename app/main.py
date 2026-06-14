@@ -393,31 +393,10 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"❌ Failed to start job monitor service: {e}", exc_info=True)
 
-    # Initialize and start HuggingFace endpoint auto-scaler
-    try:
-        from app.services.embeddings.endpoint_auto_scaler import EndpointAutoScaler
-        settings = get_settings()
-        hf_token = settings.huggingface_api_key or os.environ.get('HF_TOKEN', '')
-        
-        if hf_token:
-            auto_scaler = EndpointAutoScaler(
-                hf_token=hf_token,
-                namespace="basiliskan",
-                check_interval_seconds=30,
-                scale_up_threshold=3,
-                
-                enabled=True
-            )
-            t = asyncio.create_task(auto_scaler.start())
-            t.add_done_callback(_log_task_error('endpoint_auto_scaler'))
-            app.state.endpoint_auto_scaler = auto_scaler
-            logger.info("✅ HuggingFace endpoint auto-scaler started")
-        else:
-            logger.warning("⚠️ HF_TOKEN not configured - endpoint auto-scaling disabled")
-            app.state.endpoint_auto_scaler = None
-    except Exception as e:
-        logger.error(f"❌ Failed to start endpoint auto-scaler: {e}", exc_info=True)
-        app.state.endpoint_auto_scaler = None
+    # HuggingFace endpoint auto-scaler removed 2026-06-14: both GPU endpoints
+    # (SLIG + PaddleOCR-VL) are now on Modal, which owns autoscaling. There is no
+    # HF endpoint left to scale.
+    app.state.endpoint_auto_scaler = None
 
     # /tmp janitor: sweep PDF temp files left orphan by prior SIGKILL / OOM
     # crashes. Runs once per process start; the ResourceManager handles the
@@ -1593,7 +1572,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
     try:
         import os
         settings = get_settings()
-        if settings.slig_enabled and settings.slig_endpoint_url:
+        if settings.slig_enabled and settings.slig_modal_url:
             cache_key = "slig_endpoint"
             current_time = time.time()
 
@@ -1603,35 +1582,22 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 cached_status["cached"] = True
                 services_status["slig_endpoint"] = cached_status
             else:
-                # Check endpoint status (HF endpoints may be auto-paused).
+                # Modal-hosted: probe the unauthenticated GET /health (a 200 means
+                # a container is warm; a cold endpoint cold-starts on first call).
                 try:
                     import httpx
                     start_time = time.time()
+                    health_url = settings.slig_modal_url.rstrip("/") + "/health"
 
                     async with httpx.AsyncClient(timeout=10.0) as client:
-                        response = await client.post(
-                            settings.slig_endpoint_url,
-                            headers={
-                                "Authorization": f"Bearer {settings.huggingface_api_key}",
-                                "Content-Type": "application/json"
-                            },
-                            json={"inputs": "test"}
-                        )
+                        response = await client.get(health_url)
 
                     latency_ms = int((time.time() - start_time) * 1000)
 
-                    if response.status_code == 400 and "paused" in response.text.lower():
+                    if response.status_code in [200, 503]:  # 503 = loading/cold-start
                         status_result = {
                             "status": "healthy",
-                            "message": "SLIG endpoint paused (cost-saving mode)",
-                            "latency_ms": latency_ms,
-                            "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                            "cached": False
-                        }
-                    elif response.status_code in [200, 503]:  # 503 = loading
-                        status_result = {
-                            "status": "healthy",
-                            "message": "SLIG endpoint operational",
+                            "message": "SLIG endpoint operational (Modal)",
                             "latency_ms": latency_ms,
                             "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                             "cached": False

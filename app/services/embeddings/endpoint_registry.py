@@ -101,25 +101,24 @@ class EndpointRegistry:
                 from app.services.embeddings.slig_client import SLIGClient
 
                 settings = get_settings()
+                cfg = settings.get_slig_config()
 
-                if not settings.slig_endpoint_url or not settings.slig_endpoint_token:
-                    logger.warning("⚠️ SLIG endpoint not configured")
+                if not cfg.get("enabled") or not cfg.get("modal_url"):
+                    logger.warning("⚠️ SLIG endpoint not configured — set SLIG_MODAL_URL")
                     return None
 
-                # Pass the pre-warmed manager from registry to the client so the
-                # client can check endpoint status before inference and avoid
-                # 400 errors on a not-ready endpoint.
+                # Pass the shared Modal manager so the client can /health-check
+                # before inference (avoids hitting a cold endpoint blind).
                 self._slig_client = SLIGClient(
-                    endpoint_url=settings.slig_endpoint_url,
-                    token=settings.slig_endpoint_token,
-                    endpoint_name="mh-slig",
-                    namespace="basiliskan",
-                    auto_pause=False,  # Disable auto-pause to prevent re-warmups
-                    endpoint_manager=self._slig_manager  # ✅ Pass pre-warmed manager!
+                    endpoint_url=cfg["modal_url"],
+                    token=cfg.get("modal_api_key", ""),
+                    timeout=cfg.get("timeout", 300),
+                    model_name=cfg.get("model_name", "basiliskan/slig"),
+                    endpoint_manager=self._slig_manager,
                 )
 
                 if self._slig_manager:
-                    logger.info("✅ SLIG client created with pre-warmed manager (singleton)")
+                    logger.info("✅ SLIG client created with shared Modal manager (singleton)")
                 else:
                     logger.warning("⚠️ SLIG client created without manager - endpoint status checks disabled")
                 return self._slig_client
@@ -145,21 +144,15 @@ class EndpointRegistry:
                 from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
 
                 settings = get_settings()
+                cfg = settings.get_slig_config()
 
-                if not settings.slig_endpoint_url or not settings.slig_endpoint_token:
-                    logger.warning("⚠️ SLIG endpoint not configured")
+                if not cfg.get("enabled") or not cfg.get("modal_url"):
+                    logger.warning("⚠️ SLIG endpoint not configured — set SLIG_MODAL_URL")
                     return None
 
-                self._slig_manager = SLIGEndpointManager(
-                    endpoint_url=settings.slig_endpoint_url,
-                    hf_token=settings.slig_endpoint_token,
-                    endpoint_name="mh-slig",
-                    namespace="basiliskan",
-                    auto_pause_timeout=60,
-                    warmup_timeout=60
-                )
+                self._slig_manager = SLIGEndpointManager.from_config(cfg)
 
-                logger.info("✅ SLIG manager created (singleton)")
+                logger.info("✅ SLIG manager created (singleton, provider=modal)")
                 return self._slig_manager
 
             except Exception as e:

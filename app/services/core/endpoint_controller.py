@@ -2,18 +2,16 @@
 Unified endpoint controller for the inference endpoints.
 
 This is the single coordination point for:
-  - lifecycle     (resume / warmup / pause of each endpoint)
+  - lifecycle     (warmup / scale-to-zero of each endpoint)
   - backpressure  (AdaptiveConcurrency gate per endpoint, AIMD)
-  - supply/demand closed loop with EndpointAutoScaler
   - observability (one stats() call for everything)
 
 Why:
-  We have two inference endpoints: SLIG (the only HuggingFace endpoint,
-  visual embeddings) and PaddleOCR (the structural pass, hosted on Modal).
-  Each used to have its own scattered warmup path, its own (or no)
-  concurrency gate, and its own call-site pattern. When one endpoint got
-  overloaded, nothing shrank our in-flight request rate; we just piled
-  requests into a saturated queue and timed them out.
+  We have two inference endpoints, both Modal-hosted (2026-06-14): SLIG (visual
+  embeddings) and PaddleOCR-VL (the structural pass). Each used to have its own
+  scattered warmup path, its own (or no) concurrency gate, and its own call-site
+  pattern. When one endpoint got overloaded, nothing shrank our in-flight request
+  rate; we just piled requests into a saturated queue and timed them out.
 
   This controller:
   - Warms both endpoints in parallel at job start (saves 60-180s vs serial).
@@ -21,9 +19,8 @@ Why:
   - Per-endpoint failures shrink that endpoint only — a SLIG meltdown does
     NOT drag the PaddleOCR gate down with it (the two concurrency gates,
     slig and paddleocr, are independent).
-  - If HF scales replicas up (via EndpointAutoScaler), the controller raises
-    the concurrency cap to match. If HF cannot scale up, the controller
-    AIMD-shrinks our in-flight rate to match whatever capacity exists.
+  - Modal owns replica autoscaling on the host side; the AIMD gate here shrinks
+    our in-flight rate to match whatever capacity exists under overload.
 
 Call-site pattern:
 
@@ -50,27 +47,15 @@ from app.services.core.adaptive_concurrency import AdaptiveConcurrency
 logger = logging.getLogger(__name__)
 
 
-# Mapping between our short names and the HuggingFace endpoint names used
-# by the auto-scaler. Resolved from `Settings.*_endpoint_name` so the user
-# can rename endpoints on HF without editing code.
-def _resolve_hf_endpoint_names() -> Dict[str, str]:
-    try:
-        from app.config import get_settings
-        s = get_settings()
-        return {
-            "slig":  s.slig_endpoint_name,
-            "paddleocr": "paddleocr-vl",  # Modal endpoint; HF-SDK ops are skipped via provider guard
-        }
-    except Exception:
-        return {
-            "slig":  "mh-slig",
-            "paddleocr": "paddleocr-vl",
-        }
+# Short endpoint keys → app names. Both inference endpoints are Modal-hosted
+# (SLIG visual embeddings + PaddleOCR-VL structural pass) as of 2026-06-14 —
+# Modal owns autoscaling, so these names are just for logging + gate lookup.
+ENDPOINT_NAMES: Dict[str, str] = {
+    "slig": "slig",
+    "paddleocr": "paddleocr-vl",
+}
 
-
-HF_ENDPOINT_NAMES: Dict[str, str] = _resolve_hf_endpoint_names()
-
-VALID_ENDPOINT_KEYS = frozenset(HF_ENDPOINT_NAMES.keys())
+VALID_ENDPOINT_KEYS = frozenset(ENDPOINT_NAMES.keys())
 
 
 class EndpointController:
@@ -235,9 +220,6 @@ class EndpointController:
         async with self._warm_lock:
             from app.services.embeddings.endpoint_registry import endpoint_registry
 
-            # Serialize access to the auto-scaler's status so we can cooperate.
-            auto_scaler = self._get_auto_scaler()
-
             warm_specs = [
                 ("slig",  endpoint_registry.get_slig_manager()),
                 ("paddleocr", endpoint_registry.get_paddleocr_manager()),
@@ -258,11 +240,6 @@ class EndpointController:
                 "🔥 EndpointController.warm_all(%s): healthy=%s degraded=%s",
                 job_id, healthy, degraded,
             )
-
-            # Cooperate with the auto-scaler: if it has a fresh replica count
-            # from the HF API, use it to raise concurrency caps above default.
-            if auto_scaler is not None:
-                self._align_caps_with_replica_counts(auto_scaler)
 
             return outcome
 
@@ -361,53 +338,6 @@ class EndpointController:
             gate.force_minimum()
             return False
 
-    # ────────────────────────────────────────────────────────────────────
-    # Auto-scaler cooperation
-    # ────────────────────────────────────────────────────────────────────
-
-    def _get_auto_scaler(self) -> Optional[Any]:
-        """Safely fetch the global auto-scaler if initialized."""
-        try:
-            from app.services.embeddings.endpoint_auto_scaler import get_auto_scaler
-            return get_auto_scaler()
-        except Exception:
-            return None
-
-    def _align_caps_with_replica_counts(self, auto_scaler: Any) -> None:
-        """Raise per-gate `maximum` to match actual HF replica counts.
-
-        If the auto-scaler has scaled SLIG to 2 replicas, we can safely run
-        at 2 × base_max concurrent (16 → 32). This is the "supply side" of
-        the control loop — when HF grants more capacity, we let our
-        demand-side gate use it. AIMD still handles in-run overload; this
-        is just the ceiling.
-        """
-        try:
-            status = auto_scaler.get_status()
-            current = status.get("current_replicas", {}) or {}
-
-            # Map HF endpoint names → our short keys via HF_ENDPOINT_NAMES
-            for short_key, hf_name in HF_ENDPOINT_NAMES.items():
-                replicas = current.get(hf_name, 0)
-                if replicas <= 0:
-                    continue
-
-                gate = self.get_gate(short_key)
-                base_max = gate._max
-                # Scale cap by replica count, but never above 4× the base
-                # (defensive ceiling so a misreported replica count can't
-                # let us DDoS an endpoint).
-                new_max = min(base_max * replicas, base_max * 4)
-                if new_max > gate._max:
-                    logger.info(
-                        "📈 %s cap raised: %d → %d (HF has %d replica(s))",
-                        short_key, gate._max, new_max, replicas,
-                    )
-                    gate._max = new_max
-        except Exception as e:
-            # Cooperation is best-effort; never fail the pipeline on scaler noise.
-            logger.debug("Auto-scaler alignment skipped: %s", e)
-
     async def prepare_for_processing(
         self,
         reason: str = "job_start",
@@ -415,115 +345,19 @@ class EndpointController:
         max_replica: int = 4,
         scale_to_zero_timeout: int = 30,
     ) -> Dict[str, bool]:
-        """Pre-warm posture for an active job: ensure every HF endpoint has
-        `min_replica >= 1` (so we always have one warm replica) with a
-        `max_replica` ceiling for burst, and `scaleToZeroTimeout` set so
-        that the moment we later call `scale_all_to_zero`, HF's idle clock
-        starts ticking properly.
-
-        Calling this is the FIRST half of the per-job state machine:
+        """Pre-warm posture for an active job. No-op now: both endpoints (SLIG +
+        PaddleOCR-VL) are Modal-hosted and Modal owns autoscaling — there is no
+        per-job min_replica bump to make. Kept (with its signature) as the first
+        half of the per-job state machine so callers don't change:
             prepare_for_processing → ... job runs ... → scale_all_to_zero
 
-        Args:
-            reason: log-correlation tag, e.g. "pdf_job_<id>", "scrape_<sid>"
-            min_replica: floor while job is active (default 1)
-            max_replica: ceiling (default 4)
-            scale_to_zero_timeout: minutes of idle before HF drains the last
-                replica AFTER min is dropped to 0 (default 30)
-
-        Returns:
-            Dict[endpoint_key, success_bool] for each of the 4 endpoints.
+        Returns ``{key: True}`` for each endpoint (host-managed = ready).
         """
-        try:
-            from app.config import get_settings
-            settings = get_settings()
-            config_getters = {
-                "slig":  settings.get_slig_config,
-                "paddleocr": settings.get_paddleocr_config,
-            }
-        except Exception as e:
-            logger.warning(
-                "prepare_for_processing(reason=%s): could not load settings: %s",
-                reason, e,
-            )
-            return {k: False for k in HF_ENDPOINT_NAMES}
-
-        outcome: Dict[str, bool] = {}
-        for key in HF_ENDPOINT_NAMES:
-            ok = False
-            try:
-                cfg = config_getters[key]() or {}
-                # Provider switch: Modal (and any non-HF host) owns its own
-                # autoscaling — there is no per-job min_replica bump to make via
-                # the HF SDK. Treat as ready (no-op) and move on.
-                if (cfg.get("provider") or "huggingface").lower() != "huggingface":
-                    logger.debug(
-                        "   prepare_for_processing: %s on provider=%s — autoscaling managed by host, skipping HF prep",
-                        key, cfg.get("provider"),
-                    )
-                    outcome[key] = True
-                    continue
-                ep_name = cfg.get("endpoint_name") or HF_ENDPOINT_NAMES[key]
-                ns = cfg.get("namespace", "basiliskan")
-                token = cfg.get("hf_token") or cfg.get("endpoint_token")
-                if not (ep_name and token):
-                    logger.warning(
-                        "prepare_for_processing: %s missing endpoint_name/token, skipping",
-                        key,
-                    )
-                    outcome[key] = False
-                    continue
-
-                def _do(name=ep_name, namespace=ns, tok=token,
-                        min_r=min_replica, max_r=max_replica,
-                        sttz=scale_to_zero_timeout) -> bool:
-                    from huggingface_hub import get_inference_endpoint
-                    ep = get_inference_endpoint(
-                        name=name, namespace=namespace, token=tok,
-                    )
-                    ep.fetch()
-                    # `scaledToZero` state accepts update() directly — HF
-                    # auto-spins a replica when min_replica > 0 is set, so
-                    # we don't need an explicit resume() step. (Paused
-                    # state, on the other hand, would still need resume —
-                    # but we don't pause() any endpoints anymore.)
-                    raw = getattr(ep, "raw", {}) or {}
-                    current_scaling = (raw.get("compute", {}) or {}).get("scaling", {}) or {}
-                    cur_min = current_scaling.get("minReplica")
-                    cur_max = current_scaling.get("maxReplica")
-                    cur_sttz = current_scaling.get("scaleToZeroTimeout")
-                    # No-op when already at desired posture (avoid HF API write
-                    # rate-limit hits when multiple jobs queue up).
-                    if cur_min == min_r and cur_max == max_r and cur_sttz == sttz:
-                        return True
-                    ep.update(
-                        min_replica=min_r,
-                        max_replica=max_r,
-                        scale_to_zero_timeout=sttz,
-                    )
-                    return True
-
-                ok = await asyncio.to_thread(_do)
-                if ok:
-                    logger.info(
-                        "   📈 %s prepared for job (min=%d, max=%d, scaleToZero=%dmin, reason=%s)",
-                        key, min_replica, max_replica, scale_to_zero_timeout, reason,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "   ⚠️ prepare_for_processing %s failed: %s (reason=%s)",
-                    key, e, reason,
-                )
-            outcome[key] = ok
-
-        success_count = sum(1 for v in outcome.values() if v)
-        logger.info(
-            "📈 EndpointController.prepare_for_processing(reason=%s): "
-            "ready=%d/%d endpoints (min=%d, max=%d, scaleToZeroTimeout=%dmin)",
-            reason, success_count, len(outcome),
-            min_replica, max_replica, scale_to_zero_timeout,
+        logger.debug(
+            "prepare_for_processing(reason=%s): Modal-managed autoscaling — no-op",
+            reason,
         )
-        return outcome
+        return {k: True for k in ENDPOINT_NAMES}
 
     async def scale_all_to_zero(self, reason: str = "cleanup", force: bool = False) -> Dict[str, bool]:
         """Force every HF endpoint to min_replica=0, with concurrent-job guard.
@@ -554,20 +388,9 @@ class EndpointController:
                     "Use force=True to override.",
                     reason, active_count
                 )
-                return {k: False for k in HF_ENDPOINT_NAMES}
+                return {k: False for k in ENDPOINT_NAMES}
 
         from app.services.embeddings.endpoint_registry import endpoint_registry
-
-        try:
-            from app.config import get_settings
-            settings = get_settings()
-            config_getters = {
-                "slig":  settings.get_slig_config,
-                "paddleocr": settings.get_paddleocr_config,
-            }
-        except Exception as e:
-            logger.warning("scale_all_to_zero(reason=%s): could not load settings for HF fallback: %s", reason, e)
-            config_getters = {}
 
         manager_getters = {
             "slig":  endpoint_registry.get_slig_manager,
@@ -575,85 +398,32 @@ class EndpointController:
         }
 
         outcome: Dict[str, bool] = {}
-        for key in HF_ENDPOINT_NAMES:
+        for key in ENDPOINT_NAMES:
             scaled = False
-
             mgr = None
             try:
                 mgr = manager_getters[key]()
             except Exception:
                 mgr = None
 
+            # Modal: manager.scale_to_zero() is a no-op that returns True (Modal
+            # drains the GPU container on its own scaledown_window). We just reset
+            # our warm flags so the next job re-probes /health.
             if mgr is not None and hasattr(mgr, "scale_to_zero"):
                 try:
-                    ok = await asyncio.to_thread(mgr.scale_to_zero)
-                    if ok:
-                        scaled = True
-                        logger.info("   📉 %s scaled to zero (manager, reason=%s)", key, reason)
+                    scaled = bool(await asyncio.to_thread(mgr.scale_to_zero))
+                    if scaled:
+                        logger.info("   📉 %s scale-to-zero (Modal idle clock, reason=%s)", key, reason)
                 except Exception as e:
-                    logger.warning("   ⚠️ %s manager scale_to_zero failed: %s", key, e)
-
-            if not scaled and key in config_getters:
-                try:
-                    cfg = config_getters[key]() or {}
-                    # HF-SDK direct drain only applies to HF endpoints. Modal
-                    # drains on its own scaledown_window (its manager.scale_to_zero
-                    # already returned True above, so we normally don't get here).
-                    is_hf = (cfg.get("provider") or "huggingface").lower() == "huggingface"
-                    ep_name = cfg.get("endpoint_name") or HF_ENDPOINT_NAMES[key]
-                    ns = cfg.get("namespace", "basiliskan")
-                    token = cfg.get("hf_token") or cfg.get("endpoint_token")
-                    if not is_hf:
-                        scaled = True  # host-managed drain; nothing to do
-                    elif ep_name and token:
-                        def _do_direct_scale(name=ep_name, namespace=ns, tok=token) -> bool:
-                            # Force-drain via scale_to_zero() — kills the
-                            # replica in seconds AND keeps the endpoint URL
-                            # alive so the next inference request auto-wakes
-                            # it (no explicit resume needed). Different from
-                            # pause(), which would 400-error on stray
-                            # post-job traffic. Setting min_replica=0 alone
-                            # would leave the replica running up to 30 min
-                            # idle per scaleToZeroTimeout — that's the
-                            # behavior this primitive bypasses.
-                            from huggingface_hub import get_inference_endpoint
-                            ep = get_inference_endpoint(name=name, namespace=namespace, token=tok)
-                            ep.fetch()
-                            if ep.status in ("scaledToZero", "paused"):
-                                return True
-                            ep.scale_to_zero()
-                            return True
-
-                        ok = await asyncio.to_thread(_do_direct_scale)
-                        if ok:
-                            scaled = True
-                            logger.info("   📉 %s scaled to zero (direct HF, reason=%s)", key, reason)
-                except Exception as e:
-                    logger.warning("   ⚠️ %s direct HF scale_to_zero failed: %s", key, e)
+                    logger.warning("   ⚠️ %s scale_to_zero failed: %s", key, e)
 
             outcome[key] = scaled
             self._warmed[key] = False
-            # Audit fix #39: also reset the manager's own warmup_completed flag.
-            # Previously only the controller flag was cleared, so the manager
-            # thought it was still warm and the next call would skip warmup
-            # despite the endpoint actually being scaled to zero (cold-start).
             if mgr is not None and hasattr(mgr, "warmup_completed"):
                 try:
                     mgr.warmup_completed = False
                 except Exception:
                     pass
-
-        try:
-            auto_scaler = self._get_auto_scaler()
-            if auto_scaler is not None:
-                for short_key, hf_name in HF_ENDPOINT_NAMES.items():
-                    if outcome.get(short_key):
-                        try:
-                            auto_scaler._current_replicas[hf_name] = 0
-                        except Exception:
-                            pass
-        except Exception:
-            pass
 
         succeeded = [k for k, v in outcome.items() if v]
         failed    = [k for k, v in outcome.items() if not v]
@@ -664,34 +434,11 @@ class EndpointController:
         return outcome
 
     async def request_scale_up(self, endpoint: str, desired_replicas: int) -> bool:
-        """Ask the auto-scaler to add replicas for one endpoint.
-
-        Useful at job start when you know you're about to hit an endpoint
-        hard — e.g. the main pipeline can call `request_scale_up('slig', 2)`
-        before Stage 3 kicks off. If HF has capacity, we get more replicas;
-        if not, this is a no-op and the adaptive gate still keeps us safe.
-
-        Returns True on success, False on failure/no-op.
-        """
-        auto_scaler = self._get_auto_scaler()
-        if auto_scaler is None or not getattr(auto_scaler, "enabled", False):
-            return False
-
-        hf_name = HF_ENDPOINT_NAMES.get(endpoint)
-        if hf_name is None:
-            return False
-
-        try:
-            # scale_endpoint is sync + uses HF API; run in thread.
-            ok = await asyncio.to_thread(
-                auto_scaler.scale_endpoint, hf_name, desired_replicas
-            )
-            if ok:
-                self._align_caps_with_replica_counts(auto_scaler)
-            return bool(ok)
-        except Exception as e:
-            logger.warning("request_scale_up(%s, %d) failed: %s", endpoint, desired_replicas, e)
-            return False
+        """No-op since 2026-06-14: both endpoints are Modal-hosted and Modal
+        autoscales on demand (up to ``max_containers``) — there is no manual
+        replica request to make. Kept so any legacy caller is harmless. The
+        adaptive concurrency gate still handles in-run overload."""
+        return False
 
     # ────────────────────────────────────────────────────────────────────
     # Observability

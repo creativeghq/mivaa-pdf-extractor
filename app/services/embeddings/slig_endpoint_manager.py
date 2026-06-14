@@ -1,464 +1,111 @@
 """
-SLIG (SigLIP2) Inference Endpoint Manager
+SLIG (SigLIP2) visual-embedding endpoint manager.
 
-Manages HuggingFace Inference Endpoint lifecycle for SLIG visual embeddings.
-Provides automatic pause/resume functionality to control billing costs.
+Thin lifecycle wrapper over a :class:`ModalEndpointProvider` — Modal owns
+autoscaling, so ``warmup`` = a GET ``/health`` probe and ``scale_to_zero`` is
+Modal's idle clock (a no-op here). The actual inference (image / text / zero-shot
+/ similarity over POST ``/infer``) lives in :class:`SLIGClient`; this manager only
+provides the uniform lifecycle interface that the EndpointController + ``warm_all``
+orchestrator call across every Modal-hosted endpoint.
 
-CRITICAL: Endpoint is paused by default (no billing). Only resumes when visual embeddings are needed,
-then auto-pauses after idle timeout to prevent unnecessary billing.
-
-Cost Control Strategy:
-- Endpoint paused: $0/hour
-- Endpoint running: ~$0.60/hour (GPU)
-- Auto-pause after 60s idle (configurable)
-- Force-pause after batch processing
-- Warmup required: 60 seconds before first inference
-- Typical cost: ~$0.01 per 100 images
+Migrated off HuggingFace Inference Endpoints 2026-06-14 (parity verified,
+cosine = 1.0 vs the HF endpoint). All ``huggingface_hub`` pause/resume/scale code
+is gone — SLIG is the `slig` Modal app (``modal_app/slig.py``).
 """
 
-import os
-import time
 import logging
-from typing import Optional
+import time
 from datetime import datetime
+from typing import Any, Dict, Optional
 
-try:
-    from huggingface_hub import get_inference_endpoint
-    HF_HUB_AVAILABLE = True
-except ImportError:
-    HF_HUB_AVAILABLE = False
-    logging.warning("huggingface_hub not available - pause/resume features disabled")
+from app.services.pdf.endpoint_providers import EndpointProvider, build_endpoint_provider
 
 logger = logging.getLogger(__name__)
 
 
 class SLIGEndpointManager:
-    """
-    Manages HuggingFace Inference Endpoint lifecycle for SLIG (SigLIP2).
-    
-    Features:
-    - Automatic resume before inference (start billing)
-    - Automatic pause after idle timeout (stop billing)
-    - Force pause after batch processing
-    - Warmup handling (60s required before first inference)
-    - Error handling and retry logic
-    - Cost tracking and monitoring
-    """
-    
+    """Lifecycle manager for the SLIG visual-embedding endpoint (Modal-hosted)."""
+
     def __init__(
         self,
-        endpoint_url: str,
-        hf_token: str,
-        endpoint_name: str = "mh-slig",
-        namespace: str = "basiliskan",
-        auto_pause_timeout: int = 60,
-        inference_timeout: int = 30,
-        warmup_timeout: int = 60,
-        max_resume_retries: int = 3,
-        enabled: bool = True
+        provider: EndpointProvider,
+        model_name: str = "basiliskan/slig",
+        enabled: bool = True,
     ):
-        """
-        Initialize SLIG endpoint manager.
-        
-        Args:
-            endpoint_url: Full URL of the SLIG inference endpoint
-            hf_token: HuggingFace API token (with write permissions)
-            endpoint_name: Endpoint name for pause/resume (e.g., 'mh-slig')
-            namespace: HuggingFace namespace/username (e.g., 'basiliskan')
-            auto_pause_timeout: Seconds of idle time before auto-pause (default: 60)
-            inference_timeout: Timeout for inference calls in seconds (default: 30)
-            warmup_timeout: Warmup time in seconds (default: 60)
-            max_resume_retries: Maximum retry attempts for resuming endpoint (default: 3)
-            enabled: Enable/disable SLIG endpoint management (default: True)
-        """
-        self.endpoint_url = endpoint_url
-        self.hf_token = hf_token
-        self.endpoint_name = endpoint_name
-        self.namespace = namespace
-        self.auto_pause_timeout = auto_pause_timeout
-        self.inference_timeout = inference_timeout
-        self.warmup_timeout = warmup_timeout
-        self.max_resume_retries = max_resume_retries
+        self.provider = provider
+        self.model_name = model_name
         self.enabled = enabled
-        
-        # Track usage for auto-pause
         self.last_used: Optional[float] = None
-        self.last_resume_time: Optional[float] = None
-        self.total_uptime: float = 0.0
-        self.resume_count: int = 0
-        self.pause_count: int = 0
         self.inference_count: int = 0
-        self.warmup_completed: bool = False
-        
-        # Endpoint instance (for pause/resume)
-        self._endpoint = None
-        self._can_pause_resume = HF_HUB_AVAILABLE and endpoint_name and namespace
-        
-        if not self._can_pause_resume:
-            logger.warning("⚠️ SLIG endpoint pause/resume not available - endpoint will run continuously")
-        
-        logger.info(f"✅ SLIG Endpoint Manager initialized: {endpoint_name}")
-    
-    def _get_endpoint(self):
-        """Get or create endpoint instance for pause/resume operations."""
-        if not self._can_pause_resume:
-            return None
-        
-        if self._endpoint is None:
-            try:
-                self._endpoint = get_inference_endpoint(
-                    name=self.endpoint_name,
-                    namespace=self.namespace,
-                    token=self.hf_token
-                )
-                logger.info(f"✅ Connected to SLIG endpoint: {self.endpoint_name}")
-            except Exception as e:
-                logger.error(f"❌ Failed to get SLIG endpoint: {e}")
-                return None
-        
-        return self._endpoint
-    
+        logger.info(
+            "✅ SLIG manager initialized (provider=%s, model=%s)",
+            provider.provider_name, model_name,
+        )
+
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> "SLIGEndpointManager":
+        """Build a manager (+ Modal provider) from ``Settings.get_slig_config()``."""
+        provider = build_endpoint_provider(config, label="slig")
+        return cls(
+            provider=provider,
+            model_name=config.get("model_name", "basiliskan/slig"),
+            enabled=config.get("enabled", True),
+        )
+
+    # ------------------------------------------------------------------ #
+    # Lifecycle — delegated to the provider (controller + warm_all call these)
+    # ------------------------------------------------------------------ #
     def resume_if_needed(self) -> bool:
-        """
-        Resume endpoint if it's paused or wait if initializing.
-
-        Handles all HuggingFace endpoint states:
-        - running: Ready to use
-        - paused/scaledToZero: Needs resume
-        - initializing: Needs polling until ready
-
-        CRITICAL: This starts billing! Only call when visual embeddings are needed.
-
-        Returns:
-            True if endpoint is running or successfully resumed, False if failed
-        """
-        if not self._can_pause_resume:
-            logger.info("Pause/resume not available - assuming endpoint is running")
-            return True
-
-        endpoint = self._get_endpoint()
-        if not endpoint:
-            return False
-
-        try:
-            # Fetch current status
-            endpoint.fetch()
-
-            if endpoint.status == "running":
-                # Probe before trusting: a "running" status doesn't guarantee the
-                # model is actually serving (it can be mid-load or wedged).
-                # SLIG's _test_inference fires a tiny image-embedding request,
-                # which is the actual hot path so it confirms inference health.
-                if self._test_inference():
-                    logger.info("✅ SLIG endpoint running and healthy")
-                    return True
-                logger.warning(
-                    "⚠️ SLIG endpoint reports running but inference probe failed — re-warming"
-                )
-                self.warmup_completed = False
-                return self.warmup()
-
-            # Handle "initializing" state - poll until ready
-            if endpoint.status == "initializing":
-                logger.info(f"⏳ SLIG endpoint initializing, waiting for it to be ready...")
-                return self._wait_for_running(endpoint)
-
-            if endpoint.status in ["paused", "scaledToZero"]:
-                logger.info(f"🔄 Resuming SLIG endpoint (status: {endpoint.status})...")
-
-                # Resume with retries
-                from app.services.embeddings.hf_errors import is_hf_billing_error, HFBillingError
-                for attempt in range(self.max_resume_retries):
-                    try:
-                        endpoint.resume().wait(timeout=90)  # P2-3: 90s cap
-                        self.resume_count += 1
-                        self.last_resume_time = time.time()
-                        self.warmup_completed = False  # Reset warmup flag
-                        logger.info(f"✅ SLIG endpoint resumed (attempt {attempt + 1}/{self.max_resume_retries})")
-
-                        # Warmup after resume
-                        if not self.warmup():
-                            logger.error("❌ SLIG endpoint warmup failed")
-                            return False
-                        return True
-                    except Exception as e:
-                        # FAST-FAIL on HF billing errors — retries can't fix this.
-                        if is_hf_billing_error(e):
-                            logger.error(
-                                f"💳 HF billing error on SLIG resume — aborting all retries: {e}"
-                            )
-                            raise HFBillingError("mh-slig", self.namespace, original=e) from e
-                        logger.warning(f"⚠️ Resume attempt {attempt + 1} failed: {e}")
-                        if attempt < self.max_resume_retries - 1:
-                            time.sleep(2 ** attempt)  # Exponential backoff
-                        else:
-                            raise
-
-            logger.error(f"❌ Endpoint in unexpected state: {endpoint.status}")
-            return False
-
-        except Exception as e:
-            logger.error(f"❌ Failed to resume endpoint: {e}")
-            return False
-
-    def _wait_for_running(self, endpoint) -> bool:
-        """
-        Wait for endpoint to transition from initializing to running.
-
-        Args:
-            endpoint: HuggingFace endpoint instance
-
-        Returns:
-            True if endpoint becomes running, False on timeout
-        """
-        start_time = time.time()
-        poll_interval = 5  # Check every 5 seconds
-        max_wait = self.warmup_timeout
-
-        # HF "no GPU capacity" detector — replicas can be requested but
-        # never become ready when the HF region is out of the requested
-        # GPU class. Detect by watching for a falling ready_count.
-        last_ready_replica = 0
-        last_progress_time = time.time()
-        NO_PROGRESS_TIMEOUT = 90
-
-        while (time.time() - start_time) < max_wait:
-            try:
-                endpoint.fetch()
-
-                if endpoint.status == "running":
-                    elapsed = time.time() - start_time
-                    logger.info(f"✅ SLIG endpoint ready after {elapsed:.1f}s")
-                    self.last_resume_time = time.time()
-
-                    # Warmup after becoming ready
-                    if not self.warmup():
-                        logger.error("❌ SLIG endpoint warmup failed")
-                        return False
-                    return True
-
-                if endpoint.status in ["failed", "error"]:
-                    logger.error(f"❌ Endpoint failed: {endpoint.status}")
-                    return False
-
-                # No-progress detection
-                try:
-                    compute = getattr(endpoint, "compute", {}) or {}
-                    current_ready = (compute.get("readyReplica") if isinstance(compute, dict) else None) or 0
-                    target = (compute.get("targetReplica") if isinstance(compute, dict) else None) or "?"
-                except Exception:
-                    current_ready, target = 0, "?"
-
-                if current_ready > last_ready_replica:
-                    last_ready_replica = current_ready
-                    last_progress_time = time.time()
-                elif (time.time() - last_progress_time) > NO_PROGRESS_TIMEOUT:
-                    logger.error(
-                        f"❌ HuggingFace cannot allocate GPU capacity for SLIG endpoint "
-                        f"'{getattr(self, 'endpoint_name', '<unknown>')}' — no progress in "
-                        f"{NO_PROGRESS_TIMEOUT}s (state={endpoint.status}, "
-                        f"ready=0/{target}). This is an HF infrastructure issue, "
-                        f"not a code bug. Either wait for capacity to free up, "
-                        f"or set min_replica=1 on the HF endpoint dashboard to "
-                        f"keep at least one instance always-on (eliminates "
-                        f"cold-start delays for production runs)."
-                    )
-                    return False
-
-                logger.info(f"   ⏳ Still {endpoint.status}, waiting... ({time.time() - start_time:.0f}s, ready={current_ready}/{target})")
-                time.sleep(poll_interval)
-
-            except Exception as e:
-                logger.warning(f"⚠️ Error checking status: {e}")
-                time.sleep(poll_interval)
-
-        logger.error(f"❌ Timeout waiting for endpoint (max {max_wait}s)")
-        return False
+        return self.provider.resume_if_needed()
 
     def warmup(self) -> bool:
-        """
-        Warmup the SLIG endpoint after resume using inference testing.
-
-        Instead of blind sleep, this method polls the endpoint with test
-        requests until it responds successfully, with exponential backoff.
-
-        Returns:
-            True if warmup successful, False if failed/timeout
-        """
-        if self.warmup_completed:
-            logger.info("✅ SLIG endpoint already warmed up")
-            return True
-
-        # Defensive check: ensure endpoint is not paused before warmup
-        if self._can_pause_resume:
-            endpoint = self._get_endpoint()
-            if endpoint:
-                try:
-                    endpoint.fetch()
-                    if endpoint.status in ["paused", "scaledToZero"]:
-                        logger.warning(f"⚠️ SLIG endpoint is {endpoint.status} - triggering resume")
-                        endpoint.resume().wait(timeout=90)  # P2-3: 90s cap (was 300s) — billing starts the moment resume succeeds
-                        self.resume_count += 1
-                        self.last_resume_time = time.time()
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to check/resume endpoint during warmup: {e}")
-
-        logger.info(f"🔥 Warming up SLIG endpoint (max {self.warmup_timeout}s)...")
-
-        # Test inference with exponential backoff
-        start_time = time.time()
-        attempt = 0
-        base_delay = 2  # Start with 2 second delay
-        max_delay = 15  # Cap at 15 seconds between attempts
-
-        while (time.time() - start_time) < self.warmup_timeout:
-            attempt += 1
-
-            if self._test_inference():
-                elapsed = time.time() - start_time
-                logger.info(f"✅ SLIG endpoint warmed up in {elapsed:.1f}s ({attempt} attempts)")
-                self.warmup_completed = True
-                return True
-
-            # Calculate delay with exponential backoff (2, 4, 8, 15, 15, ...)
-            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
-            remaining = self.warmup_timeout - (time.time() - start_time)
-
-            if remaining > delay:
-                logger.info(f"   ⏳ Attempt {attempt} failed, retrying in {delay}s...")
-                time.sleep(delay)
-            else:
-                # Not enough time for another full delay, do a quick final check
-                time.sleep(min(2, remaining))
-
-        # Timeout reached
-        elapsed = time.time() - start_time
-        logger.error(f"❌ SLIG warmup failed after {elapsed:.1f}s ({attempt} attempts)")
-        return False
-
-    def _test_inference(self) -> bool:
-        """
-        Test if the endpoint can handle inference requests.
-
-        Uses a minimal test to check endpoint health without wasting resources.
-
-        Returns:
-            True if endpoint responds successfully, False otherwise
-        """
-        try:
-            import requests
-
-            # Create a 16x16 red pixel PNG for testing
-            # 1x1 images are too small for SigLIP - use 16x16 minimum
-            test_image_base64 = (
-                "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4"
-                "2mP4z8BAEmIY1TCqYfhqAACQ+f8B8u7oVwAAAABJRU5ErkJggg=="
-            )
-
-            headers = {
-                "Authorization": f"Bearer {self.hf_token}",
-                "Content-Type": "application/json"
-            }
-
-            # Send minimal inference request
-            # Handler expects: {"inputs": "<base64_string>", "parameters": {"mode": "image_embedding"}}
-            response = requests.post(
-                self.endpoint_url,
-                headers=headers,
-                json={
-                    "inputs": test_image_base64,
-                    "parameters": {"mode": "image_embedding"}
-                },
-                timeout=10  # Short timeout for health check
-            )
-
-            if response.status_code == 200:
-                return True
-            elif response.status_code == 503:
-                # Service unavailable - still warming up
-                return False
-            elif response.status_code == 500:
-                # Internal error - might still be loading model
-                return False
-            else:
-                logger.debug(f"   Warmup test returned status {response.status_code}")
-                return False
-
-        except requests.exceptions.Timeout:
-            # Timeout is expected during warmup
-            return False
-        except requests.exceptions.ConnectionError:
-            # Connection error means endpoint not ready
-            return False
-        except Exception as e:
-            logger.debug(f"   Warmup test error: {e}")
-            return False
-
-    def pause_if_idle(self) -> bool:
-        """
-        DISABLED: Let HuggingFace handle scale-to-zero automatically.
-        Manual pausing causes endpoints to not auto-resume on requests.
-
-        Returns:
-            True always (no-op)
-        """
-        logger.debug("pause_if_idle() disabled - letting HF handle scale-to-zero automatically")
-        return True
+        return self.provider.warmup()
 
     def scale_to_zero(self) -> bool:
-        """Force-drain endpoint to 0 replicas IMMEDIATELY at job terminal.
+        return self.provider.scale_to_zero()
 
-        Uses `endpoint.scale_to_zero()` — replica killed in seconds, $0/h
-        immediately. Endpoint URL stays alive so the next inference
-        request auto-wakes it (no explicit resume needed).
-        """
-        if not self._can_pause_resume:
-            logger.warning("Endpoint management not available - cannot scale to zero")
-            return False
+    def pause_if_idle(self) -> bool:
+        # Modal drains on its own idle clock — nothing to pause. Kept as a no-op
+        # so any legacy caller is harmless.
+        return True
 
-        endpoint = self._get_endpoint()
-        if not endpoint:
-            return False
+    def _test_inference(self) -> bool:
+        """Liveness probe (GET /health) — delegates to the provider. Kept under
+        this name because the warmup orchestrator + controller call it uniformly
+        across managers."""
+        return self.provider.health_check()
 
-        try:
-            endpoint.fetch()
-            current_status = endpoint.status
+    @property
+    def warmup_completed(self) -> bool:
+        return self.provider.warmup_completed
 
-            if current_status in ("scaledToZero", "paused"):
-                logger.info(f"SLIG endpoint already at zero ({current_status}) — no-op")
-                return True
+    @warmup_completed.setter
+    def warmup_completed(self, value: bool) -> None:
+        self.provider.warmup_completed = bool(value)
 
-            logger.info(f"📉 Scaling SLIG endpoint to zero NOW (was: {current_status}) — instant $0/h, URL stays alive")
-            endpoint.scale_to_zero()
+    @property
+    def endpoint_url(self) -> str:
+        return self.provider.resolve_base_url()
 
-            if self.last_resume_time:
-                uptime = time.time() - self.last_resume_time
-                self.total_uptime += uptime
+    @property
+    def endpoint_name(self) -> Optional[str]:
+        return getattr(self.provider, "endpoint_name", None)
 
-            self.warmup_completed = False
-            logger.info(f"✅ SLIG endpoint scaled to zero — billing stopped, auto-wakes on next request")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ Failed to scale SLIG endpoint to zero: {e}")
-            return False
+    @property
+    def provider_name(self) -> str:
+        return self.provider.provider_name
 
     def mark_used(self):
-        """Mark endpoint as recently used (for auto-pause tracking)."""
         self.last_used = time.time()
         self.inference_count += 1
 
-    def get_stats(self) -> dict:
-        """Get endpoint usage statistics."""
+    def get_stats(self) -> Dict[str, Any]:
         return {
-            "endpoint_name": self.endpoint_name,
-            "resume_count": self.resume_count,
-            "pause_count": self.pause_count,
+            "provider": self.provider.provider_name,
+            "model_name": self.model_name,
             "inference_count": self.inference_count,
-            "total_uptime_seconds": self.total_uptime,
-            "total_uptime_minutes": round(self.total_uptime / 60, 2),
-            "estimated_cost_usd": round(self.total_uptime / 3600 * 0.60, 4),  # $0.60/hour
-            "warmup_completed": self.warmup_completed,
-            "last_used": datetime.fromtimestamp(self.last_used).isoformat() if self.last_used else None
+            "warmup_completed": self.provider.warmup_completed,
+            "total_uptime_seconds": self.provider.total_uptime,
+            "last_used": datetime.fromtimestamp(self.last_used).isoformat() if self.last_used else None,
+            "enabled": self.enabled,
         }
-

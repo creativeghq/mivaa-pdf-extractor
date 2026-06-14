@@ -1,16 +1,16 @@
 """
-SLIG (SigLIP2) Cloud Client
+SLIG (SigLIP2) Client
 
-Client for HuggingFace Inference Endpoint `mh-slig` (namespace `basiliskan`)
-serving the custom HF model `basiliskan/slig`. Underlying architecture is
-SigLIP2 SO400M (native 1152D); the endpoint applies a 1152D → 768D projection
-head so every downstream consumer sees a uniform 768D output.
+Client for the `slig` Modal app (``modal_app/slig.py``) serving the model
+`basiliskan/slig` = google/siglip2-base-patch16-512 (**native 768D, no
+projection head**). Migrated off HuggingFace Inference Endpoints 2026-06-14
+(parity verified, cosine = 1.0). POSTs to the Modal ``/infer`` route with the
+same ``{inputs, parameters}`` contract the HF endpoint used.
 
 Supports 4 modes: zero_shot, image_embedding, text_embedding, similarity.
 
-Includes automatic endpoint lifecycle management (pause/resume) to control costs.
-
-Based on API specification in docs/api/slig.md
+Lifecycle (warmup / scale-to-zero) is Modal-managed and handled by the shared
+SLIGEndpointManager passed in from the endpoint registry.
 """
 
 import httpx
@@ -45,25 +45,19 @@ class SLIGClient:
         token: str,
         timeout: float = 30.0,
         model_name: str = "basiliskan/slig",
-        endpoint_name: str = "mh-slig",
-        namespace: str = "basiliskan",
-        auto_pause: bool = True,
-        auto_pause_timeout: int = 60,
-        endpoint_manager: "SLIGEndpointManager" = None  # ✅ Accept pre-created manager
+        endpoint_manager: "SLIGEndpointManager" = None,  # shared Modal manager from registry
+        **_legacy_ignored,  # tolerate old HF kwargs (endpoint_name/namespace/auto_pause)
     ):
         """
         Initialize SLIG client.
 
         Args:
-            endpoint_url: HuggingFace Inference Endpoint URL
-            token: HuggingFace authentication token
-            timeout: Request timeout in seconds
-            model_name: Model name for logging
-            endpoint_name: Endpoint name for pause/resume
-            namespace: HuggingFace namespace/username
-            auto_pause: Enable automatic pause/resume (default: True)
-            auto_pause_timeout: Seconds of idle time before auto-pause (default: 60)
-            endpoint_manager: Pre-created endpoint manager (for singleton pattern)
+            endpoint_url: Modal SLIG app base URL (``/infer`` is appended).
+            token: Modal bearer (SLIG_MODAL_API_KEY).
+            timeout: Request timeout in seconds.
+            model_name: Model name for logging.
+            endpoint_manager: Shared Modal endpoint manager (from the registry)
+                used for the ``/health`` warmup check before inference.
         """
         self.endpoint_url = endpoint_url.rstrip('/')
         self.token = token
@@ -73,31 +67,10 @@ class SLIGClient:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
-
-        # Initialize endpoint manager for pause/resume
-        self._endpoint_manager = None
-
-        # ✅ Use pre-created manager if provided (singleton pattern from registry)
+        self._endpoint_manager = endpoint_manager
         if endpoint_manager is not None:
-            self._endpoint_manager = endpoint_manager
-            logger.info("✅ SLIG client using pre-warmed endpoint manager (singleton)")
-        elif auto_pause:
-            try:
-                from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
-                self._endpoint_manager = SLIGEndpointManager(
-                    endpoint_url=endpoint_url,
-                    hf_token=token,
-                    endpoint_name=endpoint_name,
-                    namespace=namespace,
-                    auto_pause_timeout=auto_pause_timeout
-                )
-                logger.info("✅ SLIG endpoint manager initialized (auto-pause enabled)")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to initialize endpoint manager: {e}")
-                logger.warning("⚠️ Endpoint will run continuously (no auto-pause)")
-        else:
-            logger.info("ℹ️ SLIG auto-pause disabled - endpoint will run continuously")
-        
+            logger.info("✅ SLIG client using shared Modal endpoint manager")
+
     async def _ensure_endpoint_ready(self):
         """Ensure endpoint is running and warmed up before inference."""
         # ✅ If we have an endpoint manager, verify the endpoint is ready
@@ -134,10 +107,10 @@ class SLIGClient:
 
         async with endpoint_controller.slig.slot():
             try:
-                # Make inference call
+                # Make inference call — Modal SLIG app serves the /infer route.
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
                     response = await client.post(
-                        self.endpoint_url,
+                        f"{self.endpoint_url}/infer",
                         headers=self.headers,
                         json=payload
                     )
