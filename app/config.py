@@ -462,38 +462,31 @@ class Settings(BaseSettings):
     )
 
     # ============================================================================
-    # SLIG (SigLIP2) Visual Embedding - HuggingFace Inference Endpoint
+    # SLIG (SigLIP2) Visual Embedding — Modal GPU endpoint
     # ============================================================================
-    # All visual embeddings are generated via cloud endpoint (no local models)
-    slig_endpoint_url: str = Field(
-        default="https://f4kbl5do4tz6svct.us-east-1.aws.endpoints.huggingface.cloud",
-        env="SLIG_ENDPOINT_URL",
-        description="SLIG (SigLIP2) Inference Endpoint URL"
+    # 768D visual + text embeddings for the fusion search, plus zero-shot and
+    # similarity. Served by the `slig` Modal app (modal_app/slig.py) — migrated
+    # off HuggingFace Inference Endpoints 2026-06-14 (parity verified, cosine=1.0).
+    # Model is google/siglip2-base-patch16-512 (native 768D, no projection head).
+    slig_modal_url: str = Field(
+        default="https://basilakis--slig-sligservice-web.modal.run",
+        env="SLIG_MODAL_URL",
+        description="Modal endpoint base URL for the SLIG app (the URL `modal deploy` prints)."
     )
-    slig_endpoint_token: str = Field(
+    slig_modal_api_key: str = Field(
         default="",
-        env="SLIG_ENDPOINT_TOKEN",
-        description="SLIG Inference Endpoint authentication token (HuggingFace token)"
-    )
-    slig_endpoint_name: str = Field(
-        default="mh-slig",
-        env="SLIG_ENDPOINT_NAME",
-        description="SLIG endpoint service name"
-    )
-    slig_namespace: str = Field(
-        default="basiliskan",
-        env="SLIG_NAMESPACE",
-        description="SLIG endpoint namespace"
+        env="SLIG_MODAL_API_KEY",
+        description="Bearer for the Modal SLIG /infer endpoint. Shared with PaddleOCR (value of the paddleocr-api-key Modal secret). REQUIRED at runtime."
     )
     slig_model_name: str = Field(
         default="basiliskan/slig",
         env="SLIG_MODEL_NAME",
-        description="SLIG model name for logging and tracking (production: basiliskan/slig — SigLIP2 SO400M with 1152D→768D projection head)"
+        description="SLIG model name for logging/stats (google/siglip2-base-patch16-512, native 768D)."
     )
     slig_embedding_dimension: int = Field(
         default=768,
         env="SLIG_EMBEDDING_DIMENSION",
-        description="SLIG embedding dimension (768 — projected from SO400M's native 1152D)"
+        description="SLIG embedding dimension (768)."
     )
     slig_enabled: bool = Field(
         default=True,
@@ -514,16 +507,6 @@ class Settings(BaseSettings):
         default=2,
         env="SLIG_RETRY_DELAY",
         description="Delay between SLIG retry attempts (seconds)"
-    )
-
-    # ============================================================================
-    # HuggingFace Global Token (Used by all HF Endpoints)
-    # ============================================================================
-    # In Pydantic v2 with BaseSettings and case_sensitive=False:
-    # Field name 'huggingface_api_key' automatically reads from HUGGINGFACE_API_KEY env var
-    huggingface_api_key: str = Field(
-        default="",
-        description="HuggingFace API token for Inference Endpoints (with write permissions)"
     )
 
     # ============================================================================
@@ -1059,18 +1042,16 @@ class Settings(BaseSettings):
         """
         Get SLIG (SigLIP2) visual embedding configuration.
 
-        SLIG is the one remaining HuggingFace endpoint (the structural pass moved
-        to PaddleOCR-VL on Modal). ``provider='huggingface'`` so the controller
-        runs HF-SDK prep/drain for it.
+        SLIG is hosted on Modal (modal_app/slig.py) — migrated off HuggingFace
+        2026-06-14. ``provider='modal'`` so the controller treats lifecycle as
+        host-managed (warmup = /health probe, scale-to-zero = Modal idle clock).
         """
         return {
             "enabled": self.slig_enabled,
-            "provider": "huggingface",
-            "endpoint_url": self.slig_endpoint_url,
-            "endpoint_token": self.slig_endpoint_token or self.huggingface_api_key,
-            "hf_token": self.slig_endpoint_token or self.huggingface_api_key,
-            "endpoint_name": self.slig_endpoint_name,
-            "namespace": self.slig_namespace,
+            "provider": "modal",
+            "endpoint_url": self.slig_modal_url,
+            "modal_url": self.slig_modal_url,
+            "modal_api_key": self.slig_modal_api_key,
             "model_name": self.slig_model_name,
             "embedding_dimension": self.slig_embedding_dimension,
             "timeout": self.slig_timeout,

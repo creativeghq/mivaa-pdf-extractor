@@ -114,31 +114,30 @@ class AIPricingConfig:
     # works without raising KeyError on the dict itself.
     QWEN_PRICING: dict = {}
 
-    # SLIG Visual Embedding Model (L4 GPU)
+    # SLIG Visual Embedding Model (Modal GPU)
     VISUAL_EMBEDDING_PRICING = {
         "slig-768d": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour / model (self-hosted)  # L4 GPU
-            "gpu_type": "nvidia-l4",
-            "last_verified": "2026-01-23",
-            "source": "HuggingFace Inference Endpoint",
-            "full_name": "SigLIP2 ViT-SO400M (SLIG)",
-            "namespace": "basiliskan",
-            "service": "mh-slig",
+            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour (Modal)
+            "gpu_type": "nvidia-a10g",
+            "last_verified": "2026-06-14",
+            "source": "Modal (app: slig)",
+            "full_name": "SigLIP2-base-patch16-512 (SLIG)",
+            "service": "slig",
             "dimensions": 768,
-            "note": "Visual embeddings: general, color, texture, style, material"
+            "note": "Visual embeddings: general, color, texture, style, material. Migrated off HuggingFace 2026-06-14 (native 768D, no projection head)."
         },
-        "siglip2-vit-so400m": {
+        "siglip2-base-patch16-512": {
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour / model (self-hosted)
-            "gpu_type": "nvidia-l4",
-            "last_verified": "2026-01-23",
-            "source": "HuggingFace Inference Endpoint",
-            "full_name": "SigLIP2 ViT-SO400M",
+            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour (Modal)
+            "gpu_type": "nvidia-a10g",
+            "last_verified": "2026-06-14",
+            "source": "Modal (app: slig)",
+            "full_name": "SigLIP2-base-patch16-512",
             "dimensions": 768,
             "note": "Alias for slig-768d"
         }

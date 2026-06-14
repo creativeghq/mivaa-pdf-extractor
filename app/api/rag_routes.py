@@ -3108,52 +3108,28 @@ async def process_document_with_discovery(
             try:
                 from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager
                 slig_config = settings.get_slig_config()
-                if slig_config.get("enabled", False):
-                    manager = SLIGEndpointManager(
-                        endpoint_url=slig_config["endpoint_url"],
-                        hf_token=slig_config["hf_token"],
-                        endpoint_name=slig_config.get("endpoint_name", "mh-slig"),
-                        namespace=slig_config.get("namespace", "basiliskan"),
-                        enabled=True
-                    )
+                if slig_config.get("enabled", False) and slig_config.get("modal_url"):
+                    # Modal-hosted: from_config builds the Modal endpoint provider.
+                    # resume_if_needed() short-circuits when already warm + healthy,
+                    # then warmup() /health-probes (auto-wakes a cold container).
+                    manager = SLIGEndpointManager.from_config(slig_config)
                     endpoint_managers['slig'] = manager
 
-                    # Check if already running (use thread pool for blocking call)
-                    def check_slig_status():
-                        endpoint = manager._get_endpoint()
-                        if endpoint:
-                            endpoint.fetch()
-                            return endpoint.status
-                        return None
-                    
-                    status = await asyncio.to_thread(check_slig_status)
-                    if status == "running":
-                        # Audit fix #4 + #5: health-probe + URL refresh before trusting status.
-                        if hasattr(manager, '_refresh_url_from_endpoint'):
-                            await asyncio.to_thread(manager._refresh_url_from_endpoint)
-                        probe_ok = await asyncio.to_thread(manager._test_inference) if hasattr(manager, '_test_inference') else True
-                        if probe_ok:
-                            logger.info(f"   ✅ SLIG endpoint running + health probe OK, skipping warmup")
-                            warmup_results["skipped"].append("slig")
-                            return
-                        logger.warning("   ⚠️ SLIG endpoint status=running but health probe FAILED — running full warmup")
-
-                    # Run blocking resume and warmup in thread pool
                     def resume_and_warmup_slig():
                         if manager.resume_if_needed():
                             return manager.warmup()
                         return False
-                    
+
                     success = await asyncio.to_thread(resume_and_warmup_slig)
                     if success:
                         warmup_results["success"].append("slig")
                         logger.info("   ✅ SLIG warmup complete")
+                    else:
+                        warmup_results["failed"].append({"endpoint": "slig", "error": "warmup timed out"})
+                        logger.warning("   ⚠️ SLIG warmup timed out (will retry on first use)")
                 else:
                     warmup_results["skipped"].append("slig")
             except Exception as e:
-                from app.services.embeddings.hf_errors import HFBillingError
-                if isinstance(e, HFBillingError):
-                    raise
                 warmup_results["failed"].append({"endpoint": "slig", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup SLIG endpoint: {e}")
 
@@ -3186,57 +3162,21 @@ async def process_document_with_discovery(
                 else:
                     warmup_results["skipped"].append("paddleocr")
             except Exception as e:
-                from app.services.embeddings.hf_errors import HFBillingError
-                if isinstance(e, HFBillingError):
-                    raise
                 warmup_results["failed"].append({"endpoint": "paddleocr", "error": str(e)})
                 logger.warning(f"⚠️ Failed to warmup PaddleOCR endpoint: {e}")
 
-        # Execute all warmups in parallel.
-        # FAST-FAIL on HF billing errors: if any endpoint's resume returns
-        # 403 "Payment method required", short-circuit the job NOW —
-        # there's no point burning more retry cycles or proceeding to
-        # discovery when the HF account can't bill. The user has to add
-        # a payment method; until then every warmup call is wasted.
-        from app.services.embeddings.hf_errors import HFBillingError
+        # Execute all warmups in parallel. Both endpoints are Modal-hosted, so
+        # warmup is just a /health probe that auto-wakes a cold container — there
+        # is no HF-billing fast-fail path anymore.
         gather_results = await asyncio.gather(
             warmup_slig(),
             warmup_paddleocr(),
             return_exceptions=True,
         )
-        billing_errors = [r for r in gather_results if isinstance(r, HFBillingError)]
-        if billing_errors:
-            err = billing_errors[0]
-            logger.error(
-                f"💳 HF BILLING ERROR detected — aborting job {job_id} immediately. "
-                f"Endpoint '{err.endpoint_name}' (namespace='{err.namespace}') refused to start: "
-                f"add a payment method at https://huggingface.co/settings/billing"
-            )
-            sentry_sdk.capture_message(
-                f"💳 PDF job {job_id} aborted — HF billing required",
-                level="error",
-            )
-            # Persist clean failure to DB so the UI shows it correctly.
-            job_storage[job_id]["status"] = "failed"
-            job_storage[job_id]["error"] = str(err)
-            job_storage[job_id]["failed_at"] = datetime.utcnow().isoformat()
-            if job_recovery_service:
-                await job_recovery_service.persist_job(
-                    job_id=job_id,
-                    document_id=document_id,
-                    filename=filename,
-                    status="failed",
-                    progress=job_storage[job_id].get("progress", 0),
-                    metadata=job_storage[job_id].get("metadata", {}),
-                    error=str(err),
-                )
-            # Raise to trigger the orchestrator's outer except + finally
-            # so cleanup (scale-to-zero, temp files, etc.) still runs.
-            raise err
-        # Re-raise any non-billing exception that gather captured so the
-        # orchestrator's normal error handling kicks in.
+        # Re-raise any exception that gather captured so the orchestrator's
+        # normal error handling kicks in.
         for r in gather_results:
-            if isinstance(r, BaseException) and not isinstance(r, HFBillingError):
+            if isinstance(r, BaseException):
                 raise r
 
         logger.info("=" * 80)
@@ -3346,99 +3286,52 @@ async def process_document_with_discovery(
             logger.warning(f"⚠️ Endpoint controller alignment skipped: {e}")
 
         # ============================================================================
-        # HEALTH VALIDATION - Verify endpoints actually respond before processing
+        # HEALTH VALIDATION — confirm each warmed endpoint answers GET /health
         # ============================================================================
-        # Unlike warmup (which just waits), health checks verify actual inference works
-        from app.services.embeddings.endpoint_health_checker import EndpointHealthChecker
-
+        # Both endpoints are Modal-hosted; a /health 200 means a container is
+        # serving. warm_all() above already probed + force-minimumed broken gates.
+        # This is the blocking gate: stop the job if a REQUIRED endpoint
+        # (SLIG visual embeddings, PaddleOCR structural pass) isn't answering.
+        # Vision analysis + classification run on Anthropic Claude (no warmup), so
+        # they are not in this set.
         logger.info("=" * 80)
-        logger.info("🔍 VALIDATING ENDPOINT HEALTH (inference-based)")
+        logger.info("🔍 VALIDATING ENDPOINT HEALTH (/health probe)")
         logger.info("=" * 80)
 
-        health_checker = EndpointHealthChecker(
-            max_health_check_attempts=30,  # 30 attempts × 6 seconds = 180s max
-            health_check_interval_seconds=6,
-            health_check_timeout_seconds=30
+        health_results = {}
+        for name, manager in endpoint_managers.items():
+            try:
+                ok = await asyncio.to_thread(manager._test_inference)
+            except Exception as probe_err:
+                logger.warning(f"   ⚠️ {name} /health probe raised: {probe_err}")
+                ok = False
+            health_results[name] = ok
+            logger.info(f"   {'✅' if ok else '❌'} {name}: {'healthy' if ok else 'UNHEALTHY'}")
+
+        required_endpoints = [n for n in ('slig', 'paddleocr') if n in endpoint_managers]
+        all_healthy = all(health_results.get(n, False) for n in required_endpoints)
+        endpoint_registry.set_health_validated(
+            all_healthy, {k: {"healthy": v} for k, v in health_results.items()}
         )
 
-        # Read URL from each endpoint MANAGER (live, post-resume), not from
-        # settings.get_*_config()['endpoint_url'] — settings fields are fallback-only
-        # and usually empty; the manager resolves the real URL during warmup.
-        def _live_url_from_manager(manager, fallback_url):
-            url = getattr(manager, 'endpoint_url', None) or fallback_url or ''
-            return url
-
-        endpoints_config = {}
-        if 'slig' in endpoint_managers:
-            slig_config = settings.get_slig_config()
-            endpoints_config['slig'] = {
-                'url': _live_url_from_manager(endpoint_managers['slig'], slig_config['endpoint_url']),
-                'token': slig_config['hf_token']
-            }
-        if 'paddleocr' in endpoint_managers:
-            paddle_config = settings.get_paddleocr_config()
-            paddle_token = paddle_config.get('modal_api_key') or ''
-            endpoints_config['paddleocr'] = {
-                'url': _live_url_from_manager(endpoint_managers['paddleocr'], paddle_config['endpoint_url']),
-                'token': paddle_token
-            }
-
-        # Both endpoints are required:
-        #   - SLIG for the per-image visual embeddings (CLIP-class).
-        #   - PaddleOCR for the structural pass — without it there is no layout,
-        #     no OCR text, and no figure crops, so the pipeline cannot produce
-        #     products. (Vision analysis + classification run on Anthropic
-        #     Claude, which has no warmup, so they are not in this set.)
-        required_endpoints = []
-        if 'slig' in endpoints_config:
-            required_endpoints.append('slig')
-        if 'paddleocr' in endpoints_config:
-            required_endpoints.append('paddleocr')
-
-        all_healthy, health_results = await health_checker.check_all_endpoints(
-            endpoints_config=endpoints_config,
-            required_endpoints=required_endpoints
-        )
-
-        # Store health results in registry
-        endpoint_registry.set_health_validated(all_healthy, health_results)
-
-        # ============================================================================
-        # BLOCKING GATE - Stop processing if required endpoints are unhealthy
-        # ============================================================================
         if not all_healthy:
-            # A required endpoint is "failed" if it's unhealthy OR was never
-            # checked (missing from results). The latter used to silently slip
-            # through and let the job march into Stage 1 against a dead endpoint.
-            failed_endpoints = [
-                name for name in required_endpoints
-                if name not in health_results
-                or health_results[name].status.value != 'healthy'
-            ]
-
-            if failed_endpoints:
-                error_msg = f"Required endpoints failed health check: {failed_endpoints}"
-                logger.error(f"❌ {error_msg}")
-                logger.error("   Pipeline cannot proceed without healthy endpoints")
-
-                # Update job status to failed (job_storage is a dict)
-                job_storage[job_id]["status"] = "failed"
-                job_storage[job_id]["error"] = error_msg
-                job_storage[job_id]["failed_at"] = datetime.utcnow().isoformat()
-                # Also persist to database
-                if job_recovery_service:
-                    await job_recovery_service.persist_job(
-                        job_id=job_id,
-                        document_id=document_id,
-                        filename=filename,
-                        status="failed",
-                        progress=0,
-                        error=error_msg
-                    )
-                raise RuntimeError(error_msg)
-            else:
-                # Only optional endpoints failed - log warning but proceed
-                logger.warning("⚠️ Some optional endpoints unhealthy, proceeding with degraded functionality")
+            failed_endpoints = [n for n in required_endpoints if not health_results.get(n, False)]
+            error_msg = f"Required endpoints failed health check: {failed_endpoints}"
+            logger.error(f"❌ {error_msg}")
+            logger.error("   Pipeline cannot proceed without healthy endpoints")
+            job_storage[job_id]["status"] = "failed"
+            job_storage[job_id]["error"] = error_msg
+            job_storage[job_id]["failed_at"] = datetime.utcnow().isoformat()
+            if job_recovery_service:
+                await job_recovery_service.persist_job(
+                    job_id=job_id,
+                    document_id=document_id,
+                    filename=filename,
+                    status="failed",
+                    progress=0,
+                    error=error_msg
+                )
+            raise RuntimeError(error_msg)
 
         logger.info("=" * 80)
         logger.info("✅ ALL REQUIRED ENDPOINTS HEALTHY - Ready to process")
@@ -3752,29 +3645,10 @@ async def process_document_with_discovery(
         logger.info(f"🏭 PRODUCT-CENTRIC PIPELINE: Processing {len(catalog.products)} products")
         logger.info(f"{'='*80}\n")
 
-        # Proactive HF scale-up: now that we know catalog size, push the
-        # auto-scaler to provision the right replica count immediately
-        # (instead of waiting for the 30s cron tick to discover the load).
-        # Uses calculate_desired_replicas() so the policy stays in one place.
-        try:
-            from app.services.embeddings.endpoint_auto_scaler import get_auto_scaler
-            from app.services.core.endpoint_controller import endpoint_controller, HF_ENDPOINT_NAMES
-            _auto_scaler = get_auto_scaler()
-            if _auto_scaler is not None and getattr(_auto_scaler, 'enabled', False):
-                # Ensure configs are loaded so we know each endpoint's max
-                if not _auto_scaler._endpoints_initialized:
-                    await _auto_scaler.initialize_endpoint_configs()
-                product_count = len(catalog.products)
-                for short_key, hf_name in HF_ENDPOINT_NAMES.items():
-                    cfg = _auto_scaler._endpoint_configs.get(hf_name, {})
-                    max_rep = cfg.get('max_replica', 4)
-                    desired = _auto_scaler.calculate_desired_replicas(product_count, max_rep)
-                    if desired > 1:
-                        scaled = await endpoint_controller.request_scale_up(short_key, desired)
-                        if scaled:
-                            logger.info(f"📈 Pre-scaled {short_key} to {desired} replicas for {product_count} products")
-        except Exception as scale_up_err:
-            logger.debug(f"Proactive scale-up skipped (non-fatal): {scale_up_err}")
+        # Replica provisioning is Modal-managed now (both SLIG + PaddleOCR-VL on
+        # Modal autoscale on demand up to max_containers) — no proactive HF
+        # scale-up call needed. The AdaptiveConcurrency gates still throttle
+        # in-flight load under backpressure.
 
         # NOTE: the document-level structural pass (PaddleOCR) now runs as STAGE 1
         # BEFORE discovery (see above) — structure-first. It is no longer run
