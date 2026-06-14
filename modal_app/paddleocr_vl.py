@@ -61,7 +61,12 @@ image = (
         f"paddlepaddle-gpu=={PADDLE_VERSION}",
         index_url="https://www.paddlepaddle.org.cn/packages/stable/cu126/",
     )
-    .pip_install("paddleocr[doc-parser]", "fastapi[standard]", "pillow", "numpy")
+    .pip_install("paddleocr[doc-parser]", "fastapi[standard]", "pillow")
+    # paddle needs numpy 1.x. numpy 2.x breaks the PaddleOCR-VL "_worker_vlm"
+    # ("Unable to create tensor" -> cold-start hang / silent CPU fallback).
+    # Pin AFTER paddleocr so this layer downgrades whatever it pulled
+    # (confirmed: the unpinned image resolved numpy 2.3.5 / scipy 1.17.1).
+    .pip_install("numpy==1.26.4", "scipy==1.11.4")
     # PaddleX caches downloaded models under ~/.paddlex; point it at the volume.
     .env({"PADDLE_PDX_CACHE_HOME": "/root/.paddlex"})
 )
@@ -79,6 +84,11 @@ app = modal.App("paddleocr-vl")
     min_containers=MIN_CONTAINERS,
     max_containers=MAX_CONTAINERS,
     timeout=600,
+    # Cold load (model load + paddle JIT warmup) can exceed Modal's default
+    # 600s init budget on slower workers → container killed + recycle loop
+    # ('initializing for too long: 600s'). Give init headroom; higher precedence
+    # than `timeout`. Scale-to-zero unchanged ($0 idle).
+    startup_timeout=1800,
     volumes={"/root/.paddlex": weights},
     secrets=[modal.Secret.from_name("paddleocr-api-key")],
 )

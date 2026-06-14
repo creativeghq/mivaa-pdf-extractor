@@ -408,188 +408,164 @@ async def precompute_document_layout(
     # Circuit breaker: if the first pages all fail with HTTP/endpoint errors, the
     # endpoint is down/misconfigured — abort the whole job instead of grinding
     # every page × retries against a dead endpoint (that was the request-flood).
-    consecutive_http_failures = 0
     CIRCUIT_BREAKER_THRESHOLD = 3
 
-    doc = await asyncio.to_thread(fitz.open, pdf_path)
-    try:
-        for physical_page in pages_to_process:
-            pdf_idx, position = physical_to_pdf[physical_page]
-            extraction_path = "none"
-            layout_elements_payload: List[Dict[str, Any]] = []
-            # cache_status semantics:
-            #   'success'        — blocks present, at least one carries OCR text
-            #   'paddleocr_no_text'  — blocks present but none carry text (e.g. a
-            #                      full-bleed image page) — legitimate; cached
-            #   'empty_page'     — PaddleOCR returned no regions for the page
-            #   'ocr_failed'     — PaddleOCR exhausted retries; row retried next run
-            #   'page_failed'    — outer exception (render etc.); retried next run
-            cache_status = "empty_page"
+    # ── Bounded-parallel page processing (perf: was strictly serial). ──────────
+    # fitz is NOT thread-safe across one handle, so each task opens its OWN
+    # lightweight handle for just its render. Concurrency is bounded by chunk
+    # size (caps concurrent renders → flat-ish memory) and matches Modal's
+    # autoscale ceiling so PaddleOCR serves the fan-out. The circuit breaker is
+    # re-checked per chunk: a misconfigured (401/403/404) endpoint, or N early
+    # failures with zero successes, aborts the whole job fast instead of grinding
+    # every page against a dead endpoint.
+    import os as _os_s15
+    PARALLELISM = max(1, int(_os_s15.environ.get("STAGE_1_5_CONCURRENCY", "6")))
+    _state = {"persisted": 0, "http_failures": 0, "config_error": None}
+    _state_lock = asyncio.Lock()
 
+    async def _process_one_page(physical_page: int) -> None:
+        pdf_idx, position = physical_to_pdf[physical_page]
+        extraction_path = "none"
+        layout_elements_payload: List[Dict[str, Any]] = []
+        cache_status = "empty_page"
+        page_doc = None
+        try:
+            page_doc = await asyncio.to_thread(fitz.open, pdf_path)
+            image, _bound_rect = await asyncio.to_thread(
+                _render_physical_page, page_doc, pdf_idx, position
+            )
+            page_w_px, page_h_px = image.size
             try:
-                # 3a. Render the relevant half (or full sheet) to a PIL image.
-                image, _bound_rect = await asyncio.to_thread(
-                    _render_physical_page, doc, pdf_idx, position
+                paddle_result = await asyncio.to_thread(
+                    paddleocr_manager.run_structural_pass,
+                    image, "stage_1_5_layout_precompute",
+                    physical_page, job_id, document_id,
                 )
-                page_w_px, page_h_px = image.size
-
-                # 3b. One PaddleOCR structural pass → layout regions + OCR text +
-                #     figure boxes, in the rendered half-page's own pixel frame.
+                regions = paddle_result.get("regions") or []
+                layout_elements_payload = regions_to_layout_elements(
+                    regions, page_w_px, page_h_px, physical_page
+                )
+                if layout_elements_payload:
+                    has_text = any(
+                        (el.get("text_content") or "").strip()
+                        for el in layout_elements_payload
+                    )
+                    cache_status = "success" if has_text else "paddleocr_no_text"
+                    extraction_path = "paddleocr" if has_text else "paddleocr_no_text"
+                else:
+                    cache_status = "empty_page"
+                    extraction_path = "none"
+            except PaddleOCRConfigError as cfg_err:
+                cache_status = "ocr_failed"
+                async with _state_lock:
+                    _state["config_error"] = cfg_err
+            except PaddleOCRResponseError as sre:
+                cache_status = "ocr_failed"
+                async with _state_lock:
+                    _state["http_failures"] += 1
+                logger.warning(
+                    f"   ⚠️ [STAGE 1.5] PaddleOCR exhausted retries on physical "
+                    f"page {physical_page}: {sre}"
+                )
+            except Exception as se:
+                cache_status = "ocr_failed"
+                async with _state_lock:
+                    _state["http_failures"] += 1
+                logger.warning(
+                    f"   ⚠️ [STAGE 1.5] PaddleOCR HTTP/endpoint error on physical "
+                    f"page {physical_page}: {se}"
+                )
+            try:
+                image.close()
+            except Exception:
+                pass
+        except Exception as e:
+            cache_status = "page_failed"
+            logger.warning(f"   ⚠️ [STAGE 1.5] page {physical_page} failed: {e}")
+        finally:
+            if page_doc is not None:
                 try:
-                    paddle_result = await asyncio.to_thread(
-                        paddleocr_manager.run_structural_pass,
-                        image,
-                        "stage_1_5_layout_precompute",   # caller
-                        physical_page,                   # page_number
-                        job_id,                          # job_id
-                        document_id,                     # document_id
-                    )
-                    regions = paddle_result.get("regions") or []
-                    layout_elements_payload = regions_to_layout_elements(
-                        regions, page_w_px, page_h_px, physical_page
-                    )
-                    if layout_elements_payload:
-                        has_text = any(
-                            (el.get("text_content") or "").strip()
-                            for el in layout_elements_payload
-                        )
-                        cache_status = "success" if has_text else "paddleocr_no_text"
-                        extraction_path = "paddleocr" if has_text else "paddleocr_no_text"
-                    else:
-                        cache_status = "empty_page"
-                        extraction_path = "none"
-                    consecutive_http_failures = 0  # a real response — endpoint is up
-                except PaddleOCRConfigError as cfg_err:
-                    # NON-retryable (401/403/404) — the endpoint is misconfigured.
-                    # Abort the whole job immediately; no point processing more pages.
-                    try:
-                        image.close()
-                    except Exception:
-                        pass
-                    logger.error(
-                        f"   ❌ [STAGE 1.5] PaddleOCR endpoint misconfigured — aborting job: {cfg_err}"
-                    )
-                    _emit_stage_event(
-                        supabase, job_id, "failed",
-                        {**summary, "error": f"paddleocr_config_error: {cfg_err}",
-                         "duration_ms": int((time.time() - started_at) * 1000)},
-                        logger,
-                    )
-                    raise RuntimeError(f"PaddleOCR endpoint misconfigured: {cfg_err}") from cfg_err
-                except PaddleOCRResponseError as sre:
-                    # Retries exhausted — mark 'ocr_failed' so the resume-skip
-                    # filter excludes this row and a future run retries it.
-                    cache_status = "ocr_failed"
-                    consecutive_http_failures += 1
-                    logger.warning(
-                        f"   ⚠️ [STAGE 1.5] PaddleOCR exhausted retries on physical "
-                        f"page {physical_page}: {sre}"
-                    )
-                except Exception as se:
-                    cache_status = "ocr_failed"
-                    consecutive_http_failures += 1
-                    logger.warning(
-                        f"   ⚠️ [STAGE 1.5] PaddleOCR HTTP/endpoint error on physical "
-                        f"page {physical_page}: {se}"
-                    )
-
-                # Circuit breaker: too many consecutive failures = endpoint down.
-                if consecutive_http_failures >= CIRCUIT_BREAKER_THRESHOLD:
-                    try:
-                        image.close()
-                    except Exception:
-                        pass
-                    msg = (
-                        f"PaddleOCR endpoint failed {consecutive_http_failures} pages in a "
-                        f"row — aborting job (endpoint down/too slow). Last page {physical_page}."
-                    )
-                    logger.error(f"   ❌ [STAGE 1.5] {msg}")
-                    _emit_stage_event(
-                        supabase, job_id, "failed",
-                        {**summary, "error": f"paddleocr_circuit_breaker: {msg}",
-                         "duration_ms": int((time.time() - started_at) * 1000)},
-                        logger,
-                    )
-                    raise RuntimeError(msg)
-
-                # Free the render before persisting (cap RSS).
-                try:
-                    image.close()
+                    page_doc.close()
                 except Exception:
                     pass
 
-            except Exception as e:
-                cache_status = "page_failed"
-                logger.warning(
-                    f"   ⚠️ [STAGE 1.5] page {physical_page} failed: {e}"
-                )
-
-            extraction_paths[extraction_path] = (
-                extraction_paths.get(extraction_path, 0) + 1
-            )
-
-            # 3f. Persist for this physical page (always — empty rows are
-            #     valid: they short-circuit a future re-run from doing the
-            #     same useless work).
-            try:
-                # layout_elements_payload was built above from the PaddleOCR regions
-                # (it is [] on empty/failed pages — still persisted so a future
-                # run short-circuits instead of redoing the work). reading_order
-                # is derived in lock-step. The cache readers
-                # (pdf_processor._load_cached_layout_for_pages,
-                # stage_1_focused_extraction._load_cached_layout,
-                # stage_2_chunking.get_layout_from_document_cache_with_status)
-                # gate on `processing_version`; that gate now accepts 'paddleocr-vl'.
-                reading_order_payload = [
-                    {
-                        "index": idx,
-                        "region_type": elem.get("region_type"),
-                        "reading_order": elem.get("reading_order"),
-                    }
-                    for idx, elem in enumerate(layout_elements_payload)
-                ]
-
-                payload = {
-                    "document_id": document_id,
-                    "page_number": physical_page,
-                    "layout_elements": layout_elements_payload,
-                    "reading_order": reading_order_payload,
-                    "structure_confidence": 0.85,
-                    "processing_version": "paddleocr-vl",
-                    "analysis_metadata": {
-                        "stage_1_5": True,
-                        "extraction_path": extraction_path,
-                        "cache_status": cache_status,
-                        "pdf_idx": pdf_idx,
-                        "position": position,
-                        "region_count": len(layout_elements_payload),
-                        "has_text_content": any(
-                            (el.get("text_content") or "").strip()
-                            for el in layout_elements_payload
-                        ),
-                    },
-                }
-                (
-                    supabase.client.table("document_layout_analysis")
+        reading_order_payload = [
+            {
+                "index": idx,
+                "region_type": elem.get("region_type"),
+                "reading_order": elem.get("reading_order"),
+            }
+            for idx, elem in enumerate(layout_elements_payload)
+        ]
+        payload = {
+            "document_id": document_id,
+            "page_number": physical_page,
+            "layout_elements": layout_elements_payload,
+            "reading_order": reading_order_payload,
+            "structure_confidence": 0.85,
+            "processing_version": "paddleocr-vl",
+            "analysis_metadata": {
+                "stage_1_5": True,
+                "extraction_path": extraction_path,
+                "cache_status": cache_status,
+                "pdf_idx": pdf_idx,
+                "position": position,
+                "region_count": len(layout_elements_payload),
+                "has_text_content": any(
+                    (el.get("text_content") or "").strip()
+                    for el in layout_elements_payload
+                ),
+            },
+        }
+        try:
+            await asyncio.to_thread(
+                lambda: supabase.client.table("document_layout_analysis")
                     .upsert(payload, on_conflict="document_id,page_number")
                     .execute()
+            )
+            async with _state_lock:
+                _state["persisted"] += 1
+                extraction_paths[extraction_path] = (
+                    extraction_paths.get(extraction_path, 0) + 1
                 )
-                persisted += 1
-            except Exception as e:
-                logger.warning(
-                    f"   ⚠️ [STAGE 1.5] cache write failed for physical "
-                    f"page {physical_page}: {e}"
+        except Exception as e:
+            logger.warning(
+                f"   ⚠️ [STAGE 1.5] cache write failed for physical "
+                f"page {physical_page}: {e}"
+            )
+
+    try:
+        for _i in range(0, len(pages_to_process), PARALLELISM):
+            _chunk = pages_to_process[_i:_i + PARALLELISM]
+            await asyncio.gather(*[_process_one_page(_p) for _p in _chunk])
+            if _state["config_error"] is not None:
+                _cfg = _state["config_error"]
+                logger.error(
+                    f"   ❌ [STAGE 1.5] PaddleOCR endpoint misconfigured — aborting job: {_cfg}"
                 )
+                _emit_stage_event(
+                    supabase, job_id, "failed",
+                    {**summary, "error": f"paddleocr_config_error: {_cfg}",
+                     "duration_ms": int((time.time() - started_at) * 1000)},
+                    logger,
+                )
+                raise RuntimeError(f"PaddleOCR endpoint misconfigured: {_cfg}")
+            if _state["http_failures"] >= CIRCUIT_BREAKER_THRESHOLD and _state["persisted"] == 0:
+                _msg = (
+                    f"PaddleOCR endpoint failed {_state['http_failures']} pages with zero "
+                    f"successes — aborting job (endpoint down/too slow)."
+                )
+                logger.error(f"   ❌ [STAGE 1.5] {_msg}")
+                _emit_stage_event(
+                    supabase, job_id, "failed",
+                    {**summary, "error": f"paddleocr_circuit_breaker: {_msg}",
+                     "duration_ms": int((time.time() - started_at) * 1000)},
+                    logger,
+                )
+                raise RuntimeError(_msg)
     finally:
-        try:
-            doc.close()
-        except Exception:
-            pass
         # Always clear the slow-op marker once Stage 1.5 finishes — even on
-        # exception — so the next stage can set its own marker without colliding
-        # and so auto-recovery doesn't keep suppressing recovery on a stalled job.
-        # Use the stack-based clear (keyed on the operation we pushed) when a
-        # tracker is available; fall back to direct UPDATE otherwise.
+        # exception — so the next stage can set its own marker without colliding.
         if _stage_1_5_slow_op_set:
             if tracker is not None:
                 try:
@@ -609,6 +585,8 @@ async def precompute_document_layout(
                     )
                 except Exception as _clear_err:
                     logger.debug(f"   clear_slow_operation (fallback) failed (non-fatal): {_clear_err}")
+
+    persisted = _state["persisted"]
 
     summary["pages_processed"] = len(pages_to_process)
     summary["pages_persisted"] = persisted

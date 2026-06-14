@@ -1686,7 +1686,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
                 cached_status["cached"] = True
                 services_status["paddleocr_endpoint"] = cached_status
-            else:
+            elif force_refresh:
                 try:
                     import httpx
                     headers = {"Authorization": f"Bearer {paddle_token}"} if paddle_token else {}
@@ -1737,6 +1737,23 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     services_status["paddleocr_endpoint"] = status_result
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
+            else:
+                # Normal (non-forced) /health must NOT probe the Modal endpoint:
+                # PaddleOCR is scale-to-zero, so a cold container is healthy by
+                # design and probing it just wakes/queues requests on Modal (the
+                # recurring /health poll was flooding it as 'pending'). Liveness
+                # is validated at job warmup. Use ?force_refresh=true to probe.
+                status_result = {
+                    "status": "healthy",
+                    "message": f"Configured (Modal scale-to-zero; not probed) \u00b7 provider={paddle_provider}",
+                    "provider": paddle_provider,
+                    "scale_to_zero": True,
+                    "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                    "cached": False,
+                }
+                services_status["paddleocr_endpoint"] = status_result
+                cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
         else:
             services_status["paddleocr_endpoint"] = {
                 "status": "disabled",

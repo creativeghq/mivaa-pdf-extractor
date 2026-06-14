@@ -104,30 +104,47 @@ class EndpointProvider(ABC):
             return False
 
     def _warmup_by_probe(self) -> bool:
-        """Probe GET ``/health`` until 200 or ``warmup_timeout``."""
+        """Warm the endpoint with ONE patient probe (not a probe loop).
+
+        A scaled-to-zero Modal container cold-starts in ~250s; a single GET
+        /health with a long timeout (requests follows Modal's 303 cold-start
+        redirect) rides that boot and returns 200 when ready. Using one request
+        instead of a loop of short probes means warmup never sprays / floods the
+        endpoint while it boots. Liveness elsewhere uses the short health_check.
+        """
         if self.warmup_completed:
             return True
         logger.info(
-            "🔥 Warming up %s endpoint (provider=%s, max %ds)...",
+            "🔥 Warming up %s endpoint (provider=%s) — single patient probe (max %ds)...",
             self.label, self.provider_name, self.warmup_timeout,
         )
         start = time.time()
-        attempt = 0
-        base_delay, max_delay = 2, 15
-        while (time.time() - start) < self.warmup_timeout:
-            attempt += 1
-            if self.health_check():
+        try:
+            base = (self.resolve_base_url() or "").rstrip("/")
+            if not base:
+                logger.error("❌ %s warmup: base URL unresolved", self.label)
+                return False
+            url = base if base.endswith(self.health_path) else base + self.health_path
+            resp = requests.get(
+                url, headers=self.auth_header(), timeout=self.warmup_timeout
+            )
+            if resp.status_code == 200:
                 logger.info(
-                    "✅ %s endpoint warmed up in %.1fs (%d attempts)",
-                    self.label, time.time() - start, attempt,
+                    "✅ %s endpoint warmed up in %.1fs (single probe)",
+                    self.label, time.time() - start,
                 )
                 self.warmup_completed = True
                 self.last_resume_time = time.time()
                 return True
-            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
-            remaining = self.warmup_timeout - (time.time() - start)
-            time.sleep(min(delay, remaining) if remaining > 0 else 0)
-        logger.error("❌ %s warmup failed after %.1fs", self.label, time.time() - start)
+            logger.error(
+                "❌ %s warmup got HTTP %s after %.1fs",
+                self.label, resp.status_code, time.time() - start,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "❌ %s warmup probe failed after %.1fs: %s",
+                self.label, time.time() - start, e,
+            )
         return False
 
     def stats(self) -> Dict[str, Any]:
