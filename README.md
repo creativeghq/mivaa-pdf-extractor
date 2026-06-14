@@ -83,7 +83,7 @@ Content-Type: application/json
 
 ### **🤖 AI Analysis APIs**
 
-#### Semantic Analysis (Qwen Vision)
+#### Semantic Analysis (Anthropic Claude Vision)
 ```http
 POST /api/semantic-analysis
 Content-Type: multipart/form-data
@@ -177,7 +177,7 @@ Authorization: Bearer your-jwt-token
 - **PDF Processing**: Advanced text, table, and image extraction using PyMuPDF4LLM
 - **RAG System**: Retrieval-Augmented Generation with direct vector database queries
 - **Vector Search**: Semantic similarity search with optimized embeddings
-- **AI Analysis**: Qwen Vision models for material analysis
+- **AI Analysis**: Anthropic Claude Opus 4.7 vision (via tool use) for material analysis
 - **Embedding Generation**: Standardized text-embedding-ada-002 (1536 dimensions)
 - **Multi-modal Processing**: Text, images, and structured data extraction
 - **Performance Monitoring**: Built-in metrics and health checks
@@ -214,7 +214,7 @@ The service now provides:
 - **JWT Authentication** for secure access
 - **Performance Monitoring** with built-in metrics
 - **RAG Integration** with direct vector database
-- **AI Analysis** with Qwen Vision models (HuggingFace)
+- **AI Analysis** with Anthropic Claude Opus 4.7 vision (via tool use)
 - **Vector Search** with optimized embeddings
 - **Multi-modal Processing** for text, images, and structured data
 
