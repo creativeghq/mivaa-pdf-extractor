@@ -535,34 +535,59 @@ async def precompute_document_layout(
             )
 
     try:
-        for _i in range(0, len(pages_to_process), PARALLELISM):
-            _chunk = pages_to_process[_i:_i + PARALLELISM]
-            await asyncio.gather(*[_process_one_page(_p) for _p in _chunk])
-            if _state["config_error"] is not None:
-                _cfg = _state["config_error"]
-                logger.error(
-                    f"   ❌ [STAGE 1.5] PaddleOCR endpoint misconfigured — aborting job: {_cfg}"
-                )
-                _emit_stage_event(
-                    supabase, job_id, "failed",
-                    {**summary, "error": f"paddleocr_config_error: {_cfg}",
-                     "duration_ms": int((time.time() - started_at) * 1000)},
-                    logger,
-                )
-                raise RuntimeError(f"PaddleOCR endpoint misconfigured: {_cfg}")
-            if _state["http_failures"] >= CIRCUIT_BREAKER_THRESHOLD and _state["persisted"] == 0:
-                _msg = (
-                    f"PaddleOCR endpoint failed {_state['http_failures']} pages with zero "
-                    f"successes — aborting job (endpoint down/too slow)."
-                )
-                logger.error(f"   ❌ [STAGE 1.5] {_msg}")
-                _emit_stage_event(
-                    supabase, job_id, "failed",
-                    {**summary, "error": f"paddleocr_circuit_breaker: {_msg}",
-                     "duration_ms": int((time.time() - started_at) * 1000)},
-                    logger,
-                )
-                raise RuntimeError(_msg)
+        # STREAMING fan-out (not chunk-barriered). Bound concurrency with a
+        # semaphore so exactly PARALLELISM pages are in flight AT ALL TIMES: as
+        # one finishes the next starts immediately. The previous
+        # gather-per-chunk-of-PARALLELISM made every chunk wait for its SLOWEST
+        # page (dense pages take 15s vs ~2s sparse), which collapsed throughput
+        # back toward serial and let Modal scale its GPUs down between chunks.
+        _sem = asyncio.Semaphore(PARALLELISM)
+        _abort = asyncio.Event()
+
+        async def _bounded(physical_page: int) -> None:
+            if _abort.is_set():
+                return
+            async with _sem:
+                if _abort.is_set():
+                    return
+                await _process_one_page(physical_page)
+                # Latch abort on a fatal endpoint condition so no NEW pages enter;
+                # in-flight pages drain, then we re-raise below.
+                if _state["config_error"] is not None:
+                    _abort.set()
+                elif (
+                    _state["http_failures"] >= CIRCUIT_BREAKER_THRESHOLD
+                    and _state["persisted"] == 0
+                ):
+                    _abort.set()
+
+        await asyncio.gather(*[_bounded(_p) for _p in pages_to_process])
+
+        if _state["config_error"] is not None:
+            _cfg = _state["config_error"]
+            logger.error(
+                f"   ❌ [STAGE 1.5] PaddleOCR endpoint misconfigured — aborting job: {_cfg}"
+            )
+            _emit_stage_event(
+                supabase, job_id, "failed",
+                {**summary, "error": f"paddleocr_config_error: {_cfg}",
+                 "duration_ms": int((time.time() - started_at) * 1000)},
+                logger,
+            )
+            raise RuntimeError(f"PaddleOCR endpoint misconfigured: {_cfg}")
+        if _state["http_failures"] >= CIRCUIT_BREAKER_THRESHOLD and _state["persisted"] == 0:
+            _msg = (
+                f"PaddleOCR endpoint failed {_state['http_failures']} pages with zero "
+                f"successes — aborting job (endpoint down/too slow)."
+            )
+            logger.error(f"   ❌ [STAGE 1.5] {_msg}")
+            _emit_stage_event(
+                supabase, job_id, "failed",
+                {**summary, "error": f"paddleocr_circuit_breaker: {_msg}",
+                 "duration_ms": int((time.time() - started_at) * 1000)},
+                logger,
+            )
+            raise RuntimeError(_msg)
     finally:
         # Always clear the slow-op marker once Stage 1.5 finishes — even on
         # exception — so the next stage can set its own marker without colliding.
