@@ -61,7 +61,12 @@ image = (
         f"paddlepaddle-gpu=={PADDLE_VERSION}",
         index_url="https://www.paddlepaddle.org.cn/packages/stable/cu126/",
     )
-    .pip_install("paddleocr[doc-parser]", "fastapi[standard]", "pillow", "numpy")
+    .pip_install("paddleocr[doc-parser]", "fastapi[standard]", "pillow")
+    # paddle needs numpy 1.x. numpy 2.x breaks the PaddleOCR-VL "_worker_vlm"
+    # ("Unable to create tensor" -> cold-start hang / silent CPU fallback).
+    # Pin AFTER paddleocr so this layer downgrades whatever it pulled
+    # (confirmed: the unpinned image resolved numpy 2.3.5 / scipy 1.17.1).
+    .pip_install("numpy==1.26.4", "scipy==1.11.4")
     # PaddleX caches downloaded models under ~/.paddlex; point it at the volume.
     .env({"PADDLE_PDX_CACHE_HOME": "/root/.paddlex"})
 )
