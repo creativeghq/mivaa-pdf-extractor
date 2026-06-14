@@ -120,7 +120,7 @@ class AIPricingConfig:
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("0.80"),  # L4 GPU
+            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour / model (self-hosted)  # L4 GPU
             "gpu_type": "nvidia-l4",
             "last_verified": "2026-01-23",
             "source": "HuggingFace Inference Endpoint",
@@ -134,7 +134,7 @@ class AIPricingConfig:
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("0.80"),
+            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour / model (self-hosted)
             "gpu_type": "nvidia-l4",
             "last_verified": "2026-01-23",
             "source": "HuggingFace Inference Endpoint",
@@ -151,7 +151,7 @@ class AIPricingConfig:
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("0.80"),  # GPU container (Modal L4)
+            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour / model (self-hosted)  # GPU container (Modal L4)
             "gpu_type": "nvidia-l4",
             "last_verified": "2026-06-13",
             "source": "Modal",
@@ -519,14 +519,19 @@ class AIPricingConfig:
         if not pricing:
             raise ValueError(f"Model {model} is not configured for time-based billing")
 
-        hourly_rate = pricing.get("hourly_rate_usd", Decimal("1.30"))
+        hourly_rate = pricing.get("hourly_rate_usd", Decimal("1.00"))
         gpu_type = pricing.get("gpu_type", "unknown")
 
-        # Cost = seconds × (hourly_rate / 3600)
+        # Cost = seconds × (hourly_rate / 3600). The caller sums one row per GPU
+        # call, so the per-job total is (total GPU-seconds across ALL parallel
+        # containers) × hourly_rate — i.e. it already accounts for scaling: more
+        # containers doing more work ⇒ more summed seconds ⇒ proportionally more cost.
         raw_cost = Decimal(str(inference_seconds)) * (hourly_rate / Decimal("3600"))
 
-        # Apply markup
-        billed_cost = raw_cost * cls.MARKUP_MULTIPLIER if include_markup else raw_cost
+        # GPU endpoints (SLIG, PaddleOCR — self-hosted/Modal at a flat $/GPU-hour)
+        # are a DIRECT infra cost, not a resold token API, so the stated hourly
+        # rate IS the cost — no platform markup. billed == raw here.
+        billed_cost = raw_cost
 
         # Convert to credits (1 credit = $0.01)
         credits_to_debit = billed_cost * Decimal("100")
@@ -534,7 +539,7 @@ class AIPricingConfig:
         return {
             "raw_cost_usd": raw_cost,
             "billed_cost_usd": billed_cost,
-            "markup_multiplier": cls.MARKUP_MULTIPLIER,
+            "markup_multiplier": Decimal("1.0"),
             "credits_to_debit": credits_to_debit,
             "inference_seconds": Decimal(str(inference_seconds)),
             "hourly_rate_usd": hourly_rate,
