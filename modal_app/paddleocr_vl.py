@@ -56,10 +56,13 @@ GPU = os.environ.get("PADDLEOCR_GPU", "A10G")               # 24 GB; VLM ~2-4 GB
 CUDA_TAG = os.environ.get("PADDLEOCR_CUDA_TAG", "12.6.3-devel-ubuntu22.04")  # matches cu126 wheel
 SCALEDOWN_WINDOW = int(os.environ.get("PADDLEOCR_SCALEDOWN_WINDOW", "120"))  # idle → $0
 MIN_CONTAINERS = int(os.environ.get("PADDLEOCR_MIN_CONTAINERS", "0"))        # 0 = scale-to-zero
-MAX_CONTAINERS = int(os.environ.get("PADDLEOCR_MAX_CONTAINERS", "4"))        # autoscale ceiling
-# Keep this comfortably > 1 so /health probes are answered instantly and never
-# queue behind in-flight /parse work (max_inputs=1 caused a /health pile-up).
-MAX_CONCURRENT = int(os.environ.get("PADDLEOCR_MAX_CONCURRENT", "16"))
+MAX_CONTAINERS = int(os.environ.get("PADDLEOCR_MAX_CONTAINERS", "8"))        # autoscale ceiling
+# A GPU container runs inferences SERIALLY (one VLM), so to parallelise Stage 1.5
+# across GPUs Modal must SPREAD load to new containers — that only happens when a
+# container's in-flight count hits max_inputs. Keep this LOW (2) so N concurrent
+# /parse calls fan out to ~N/2 containers instead of queueing on one GPU. 2 (not 1)
+# leaves a slot so a /health probe never waits a full parse behind in-flight work.
+MAX_CONCURRENT = int(os.environ.get("PADDLEOCR_MAX_CONCURRENT", "2"))
 PADDLE_VERSION = os.environ.get("PADDLEOCR_PADDLE_VERSION", "3.2.1")
 
 # Build: CUDA devel base + standalone Python, paddlepaddle-gpu from Paddle's cu126
