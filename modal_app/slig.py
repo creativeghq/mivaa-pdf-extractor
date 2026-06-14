@@ -96,7 +96,10 @@ image = (
         "safetensors>=0.4.0",
         "sentencepiece>=0.1.99",          # SigLIP2 uses a 256k-vocab sentencepiece tokenizer
         "pillow>=10.0.0",
-        "huggingface_hub",
+        # MUST be <1.0: transformers 4.49 imports symbols that huggingface_hub
+        # 1.0 removed. Left unpinned, pip grabs the latest (1.19+) and the
+        # container crash-loops on `from transformers import ...` at startup.
+        "huggingface_hub>=0.26.0,<1.0",
         "hf_transfer",                    # fast 1.5 GB pull at build time
         "fastapi[standard]",
     )
