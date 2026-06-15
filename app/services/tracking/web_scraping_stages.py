@@ -28,7 +28,7 @@ class WebScrapingStage(str, Enum):
     IMAGES_EXTRACTED = "images_extracted"         # Image URLs extracted from markdown
     IMAGES_DOWNLOADED = "images_downloaded"       # Images downloaded to Supabase Storage
     IMAGES_CLASSIFIED = "images_classified"       # Material vs non-material classification
-    CLIPS_GENERATED = "clips_generated"           # CLIP embeddings generated for all images
+    CLIPS_GENERATED = "clips_generated"           # SLIG embeddings generated for all images
 
     # Text processing phase
     CHUNKS_CREATED = "chunks_created"             # Smart chunking applied
@@ -82,7 +82,7 @@ WEB_SCRAPING_STAGE_DESCRIPTIONS = {
     WebScrapingStage.IMAGES_EXTRACTED: "Extracting image URLs from content",
     WebScrapingStage.IMAGES_DOWNLOADED: "Downloading images to storage",
     WebScrapingStage.IMAGES_CLASSIFIED: "Classifying images (material vs non-material)",
-    WebScrapingStage.CLIPS_GENERATED: "Generating CLIP embeddings for images",
+    WebScrapingStage.CLIPS_GENERATED: "Generating SLIG embeddings for images",
     WebScrapingStage.CHUNKS_CREATED: "Creating text chunks with quality scoring",
     WebScrapingStage.EMBEDDINGS_QUEUED: "Queueing text embeddings for generation",
     WebScrapingStage.COMPLETED: "Scraping completed successfully",

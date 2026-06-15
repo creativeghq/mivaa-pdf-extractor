@@ -1950,7 +1950,7 @@ class PDFProcessor:
         """
         AI-powered decision on whether an image needs OCR processing.
 
-        Uses CLIP embeddings to classify images as:
+        Uses SLIG (SigLIP2) embeddings to classify images as:
         - RELEVANT: Product specs, dimensions, technical data, material properties
         - IRRELEVANT: Historical photos, biographies, decorative images, mood boards
 

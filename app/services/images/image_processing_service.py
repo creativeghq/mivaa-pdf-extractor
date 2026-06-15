@@ -6,7 +6,7 @@ This service encapsulates all image-related operations in the PDF processing pip
 2. Classify images (material vs non-material) using Claude
 3. Upload material images to Supabase Storage
 4. Save images to database
-5. Generate CLIP embeddings
+5. Generate SLIG embeddings
 """
 
 import os
@@ -1447,10 +1447,10 @@ class ImageProcessingService:
                         'vision_analysis_source': VisionProvider.SKIPPED.value,
                     })
 
-                # Generate CLIP embeddings
+                # Generate SLIG embeddings
                 image_path = img_data.get('path')
                 if not image_path or not os.path.exists(image_path):
-                    logger.warning(f"   ⚠️ Image file not found for CLIP generation: {image_path}")
+                    logger.warning(f"   ⚠️ Image file not found for SLIG generation: {image_path}")
                     return (True, False, "Image file not found", {
                         'image_id': image_id,
                         'visual_slig': False,
@@ -1462,7 +1462,7 @@ class ImageProcessingService:
                         'vision_analysis_source': VisionProvider.SKIPPED.value,
                     })
 
-                logger.info(f"   🎨 Generating CLIP embeddings for image {idx + 1}/{total}")
+                logger.info(f"   🎨 Generating SLIG embeddings for image {idx + 1}/{total}")
 
                 # Read tight crop (the primary file) for embedding generation.
                 # SLIG visual / color / texture / style / material vectors must
@@ -1541,7 +1541,7 @@ class ImageProcessingService:
                 )
 
                 if not embedding_result or not embedding_result.get('success'):
-                    last_error = "Failed to generate CLIP embeddings"
+                    last_error = "Failed to generate SLIG embeddings"
                     retry_count += 1
                     if retry_count < max_retries:
                         logger.warning(f"   ⚠️ Retry {retry_count}/{max_retries} for image {image_id}")
@@ -1914,7 +1914,7 @@ class ImageProcessingService:
         product_id: Optional[str] = None,  # FK to products.id for per-product cost attribution
     ) -> Dict[str, Any]:
         """
-        Save images to database and generate CLIP embeddings with batching and retry logic.
+        Save images to database and generate SLIG embeddings with batching and retry logic.
 
         This method implements:
         1. Batch processing (default: 20 images per batch)
@@ -1961,7 +1961,7 @@ class ImageProcessingService:
         """
         icon_candidates = icon_candidates or []
 
-        logger.info(f"💾 Saving {len(material_images)} material images to database and generating CLIP embeddings...")
+        logger.info(f"💾 Saving {len(material_images)} material images to database and generating SLIG embeddings...")
         if icon_candidates:
             logger.info(f"   🔖 Plus {len(icon_candidates)} icon candidates → OCR + Claude path (no embeddings)")
         logger.info(f"   📦 Batch size: {batch_size}, Max retries: {max_retries}")
@@ -2236,7 +2236,7 @@ class ImageProcessingService:
         # Final summary
         logger.info(f"✅ Image processing complete:")
         logger.info(f"   Images saved to DB: {images_saved_count + checkpoint_index}")
-        logger.info(f"   CLIP embeddings generated: {clip_embeddings_count + checkpoint_index}")
+        logger.info(f"   SLIG embeddings generated: {clip_embeddings_count + checkpoint_index}")
         logger.info(
             f"   Vectors written: visual={vector_stats['visual_slig']}, "
             f"color={vector_stats['color_slig']}, texture={vector_stats['texture_slig']}, "

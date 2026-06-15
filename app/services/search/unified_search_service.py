@@ -3,7 +3,7 @@ Unified Search Service - Step 7 Implementation
 
 Consolidates all search strategies into a single, unified service:
 1. Semantic search - Based on text embeddings
-2. Visual search - Based on image/CLIP embeddings
+2. Visual search - Based on image/SLIG (SigLIP2) embeddings
 3. Multi-vector search - Combines all embedding types
 4. Hybrid search - Combines semantic and keyword search
 5. Material search - Specialized for material properties
@@ -31,7 +31,7 @@ class SearchStrategy(str, Enum):
     MATERIAL = "material"
     KEYWORD = "keyword"
     UNDERSTANDING = "understanding"
-    # Specialized CLIP embedding strategies
+    # Specialized SLIG embedding strategies
     COLOR = "color"
     TEXTURE = "texture"
     STYLE = "style"
@@ -116,7 +116,7 @@ class UnifiedSearchService:
 
     This service provides:
     - Semantic search using text embeddings
-    - Visual search using CLIP embeddings
+    - Visual search using SLIG (SigLIP2) embeddings
     - Multi-vector search combining all embedding types
     - Hybrid search combining semantic and keyword
     - Material search for material properties
@@ -486,13 +486,13 @@ class UnifiedSearchService:
         workspace_id: Optional[str] = None
     ) -> List[SearchResult]:
         """
-        Visual search using CLIP embeddings.
-        
-        Searches images using CLIP embeddings.
+        Visual search using SLIG (SigLIP2) embeddings.
+
+        Searches images using SLIG (SigLIP2) embeddings.
         """
         try:
             # For visual search, query should be image URL or description
-            # Generate CLIP embedding from description
+            # Generate SLIG embedding from description
             from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
             embeddings_service = RealEmbeddingsService()
             

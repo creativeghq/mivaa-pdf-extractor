@@ -212,7 +212,7 @@ class CircuitBreaker:
 # Vision Model: More lenient due to transient JSON formatting issues (not actual API failures)
 claude_breaker = CircuitBreaker(name="Claude API", failure_threshold=3, timeout_seconds=120)
 vision_breaker = CircuitBreaker(name="Vision Model", failure_threshold=8, timeout_seconds=45, recovery_timeout=30, half_open_max_calls=3)
-clip_breaker = CircuitBreaker(name="CLIP Embeddings", failure_threshold=5, timeout_seconds=60)
+clip_breaker = CircuitBreaker(name="SLIG Embeddings", failure_threshold=5, timeout_seconds=60)
 gpt_breaker = CircuitBreaker(name="GPT API", failure_threshold=3, timeout_seconds=120)
 
 

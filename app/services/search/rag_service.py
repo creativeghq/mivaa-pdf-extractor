@@ -1511,7 +1511,7 @@ class RAGService:
         """
         ✅ Visual similarity search using VECS with relationship enrichment.
 
-        Searches images using VECS visual embeddings (SigLIP/CLIP) with HNSW indexing.
+        Searches images using VECS visual embeddings (SLIG (SigLIP2)) with HNSW indexing.
         Returns enriched results with related products and chunks.
 
         Args:
@@ -1611,7 +1611,7 @@ class RAGService:
 
     async def _generate_visual_embedding_for_search(self, image: 'Image') -> Optional[List[float]]:
         """
-        Generate visual embedding for an image using configured model (SigLIP/CLIP).
+        Generate visual embedding for an image using configured model (SLIG (SigLIP2)).
 
         Uses RealEmbeddingsService which has visual embedding model loaded.
 

@@ -21,7 +21,7 @@ STAGE_TIMEOUTS = {
     "downloading": 120,              # 2 minutes - file download should be quick
     "extracting_text": 300,          # 5 minutes - text extraction is fast
     "extracting_images": 1800,       # 30 minutes - image extraction can be slow for large PDFs
-    "generating_embeddings": 2400,   # 40 minutes - CLIP embeddings (4 specialized embeddings per image)
+    "generating_embeddings": 2400,   # 40 minutes - SLIG embeddings (4 specialized embeddings per image)
     "product_discovery": 1200,       # 20 minutes - Claude API calls for product analysis
     "focused_extraction": 900,       # 15 minutes - focused text extraction for products
     "chunking": 900,                 # 15 minutes - text chunking and processing

@@ -8,7 +8,7 @@ on a single responsibility and can be tested/debugged independently.
 Endpoints:
 - POST /api/internal/classify-images/{job_id} - Classify images as material/non-material
 - POST /api/internal/upload-images/{job_id} - Upload material images to storage
-- POST /api/internal/save-images-db/{job_id} - Save images to DB and generate CLIP embeddings
+- POST /api/internal/save-images-db/{job_id} - Save images to DB and generate SLIG embeddings
 - POST /api/internal/detect-products/{job_id} - Product discovery
 - POST /api/internal/create-chunks/{job_id} - Text chunking with duplicate prevention
 - POST /api/internal/create-relationships/{job_id} - Create chunk-image and product-image relationships
@@ -334,11 +334,11 @@ async def save_images_to_db(
     request: SaveImagesRequest
 ):
     """
-    Save images to database and generate visual embeddings (SigLIP/CLIP).
+    Save images to database and generate visual embeddings (SLIG (SigLIP2)).
 
     This endpoint:
     1. Saves images to document_images table
-    2. Generates visual embeddings using SigLIP (primary) or CLIP (fallback)
+    2. Generates visual embeddings using SLIG (SigLIP2)
     3. Creates 5 specialized embeddings per image (visual, color, texture, style, material)
     4. Saves embeddings to database table AND VECS collection
 
@@ -368,7 +368,7 @@ async def save_images_to_db(
         SaveImagesResponse with counts and model used
     """
     try:
-        logger.info(f"💾 [Job {job_id}] Starting DB save and CLIP generation for {len(request.material_images)} images")
+        logger.info(f"💾 [Job {job_id}] Starting DB save and SLIG generation for {len(request.material_images)} images")
 
         # Initialize tracker
         tracker = JobTracker(job_id)
@@ -377,7 +377,7 @@ async def save_images_to_db(
         # Initialize service
         image_service = ImageProcessingService()
 
-        # Save images and generate CLIP embeddings
+        # Save images and generate SLIG embeddings
         result = await image_service.save_images_and_generate_clips(
             material_images=request.material_images,
             document_id=request.document_id,
@@ -395,7 +395,7 @@ async def save_images_to_db(
             sync_to_db=True
         )
 
-        logger.info(f"✅ [Job {job_id}] DB save complete: {result['images_saved']} saved, {result['clip_embeddings_generated']} CLIP embeddings")
+        logger.info(f"✅ [Job {job_id}] DB save complete: {result['images_saved']} saved, {result['clip_embeddings_generated']} SLIG embeddings")
 
         return SaveImagesResponse(
             success=True,
@@ -973,7 +973,7 @@ async def regenerate_image_embeddings(
     This endpoint:
     1. Fetches existing images from document_images table
     2. Downloads images from Supabase Storage
-    3. Generates 5 CLIP embeddings per image (visual, color, texture, style, material)
+    3. Generates 5 SLIG embeddings per image (visual, color, texture, style, material)
     4. Generates understanding embedding (1024D) if vision_analysis exists
     5. Saves embeddings to VECS collections
 

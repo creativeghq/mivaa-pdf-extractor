@@ -132,7 +132,7 @@ def timeout_guard(timeout_seconds: float, operation_name: Optional[str] = None):
         operation_name: Optional name for logging (defaults to function name)
     
     Example:
-        @timeout_guard(timeout_seconds=60, operation_name="CLIP embedding")
+        @timeout_guard(timeout_seconds=60, operation_name="SLIG embedding")
         async def generate_clip_embedding(image_data):
             # ... long-running operation ...
             return embedding

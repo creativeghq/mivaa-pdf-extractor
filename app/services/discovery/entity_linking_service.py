@@ -961,7 +961,7 @@ class EntityLinkingService:
             else:
                 logger.debug(f"   No tables found for product")
 
-            # Enhance image associations with multi-modal analysis (CLIP embeddings)
+            # Enhance image associations with multi-modal analysis (SLIG embeddings)
             multimodal_result = await self._enhance_image_associations_multimodal(
                 document_id=document_id,
                 logger=logger
@@ -991,7 +991,7 @@ class EntityLinkingService:
     ) -> Dict[str, Any]:
         """
         Enhance image-product associations using multi-modal analysis.
-        Uses CLIP embeddings for visual similarity scoring.
+        Uses SLIG (SigLIP2) embeddings for visual similarity scoring.
         """
         try:
             logger.info("Enhancing image associations with multi-modal analysis...")
@@ -1006,7 +1006,7 @@ class EntityLinkingService:
                 logger.info(f"   Multi-modal: {associations_created} associations enhanced")
                 logger.info(f"   Avg confidence: {avg_confidence * 100:.1f}%")
             else:
-                logger.info("   No multi-modal associations created (may already exist or no CLIP embeddings)")
+                logger.info("   No multi-modal associations created (may already exist or no SLIG embeddings)")
 
             return result
         except Exception as e:

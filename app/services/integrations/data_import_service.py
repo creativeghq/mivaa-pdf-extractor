@@ -71,7 +71,7 @@ class DataImportService:
             overlap_size=100
         ))
 
-        # Image processor for classification and CLIP embeddings (lazy init)
+        # Image processor for classification and SLIG embeddings (lazy init)
         self.image_processor = None
 
         # Embedding service for inline text-embedding generation
@@ -786,7 +786,7 @@ class DataImportService:
         """
         Link downloaded images to product in database.
 
-        ✅ ENHANCED: Now includes image classification and CLIP embedding generation.
+        ✅ ENHANCED: Now includes image classification and SLIG embedding generation.
 
         Args:
             product_id: Product ID
@@ -804,7 +804,7 @@ class DataImportService:
 
             logger.info(f"📷 Processing {len(successful_images)} images for product {product_id}")
 
-            # Prepare images for classification and CLIP generation
+            # Prepare images for classification and SLIG generation
             images_for_processing = []
             for img in successful_images:
                 images_for_processing.append({
@@ -834,11 +834,11 @@ class DataImportService:
 
             logger.info(f"   ✅ Classification: {len(material_images)} material, {len(non_material_images)} non-material")
 
-            # Generate CLIP embeddings for ALL images
+            # Generate SLIG embeddings for ALL images
             all_images = material_images + non_material_images
 
             if all_images:
-                logger.info(f"   🎨 Generating CLIP embeddings for ALL {len(all_images)} images")
+                logger.info(f"   🎨 Generating SLIG embeddings for ALL {len(all_images)} images")
 
                 result = await image_processor.save_images_and_generate_clips(
                     material_images=all_images,  # Process all images

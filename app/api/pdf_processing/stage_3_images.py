@@ -548,11 +548,11 @@ async def process_product_images(
         logger.info(f"      Image {i}: {img.get('filename')}, bbox_len={bbox_len}, bbox={bbox[:4] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else bbox}, id={id(img)}")
 
     # ========================================================================
-    # SAVE TO DATABASE AND GENERATE CLIP EMBEDDINGS
+    # SAVE TO DATABASE AND GENERATE SLIG EMBEDDINGS
     # ========================================================================
     # Get material_category from config (passed from upload settings)
     material_category = config.get('material_category')
-    logger.info(f"   💾 DATABASE STAGE: Saving metadata and generating CLIP embeddings...")
+    logger.info(f"   💾 DATABASE STAGE: Saving metadata and generating SLIG embeddings...")
     logger.info(f"      Material category: {material_category or 'not specified'}")
     if uploaded_icons:
         logger.info(f"      Icon candidates: {len(uploaded_icons)} → OCR + Claude path")
@@ -575,7 +575,7 @@ async def process_product_images(
 
     logger.info(f"   📊 DATABASE RESULTS:")
     logger.info(f"      Images saved to DB: {images_processed}/{len(uploaded_all)}")
-    logger.info(f"      CLIP embeddings generated: {clip_embeddings}/{images_processed}")
+    logger.info(f"      SLIG embeddings generated: {clip_embeddings}/{images_processed}")
     if vector_stats:
         logger.info(
             f"      Vectors per type: visual={vector_stats.get('visual_slig', 0)}, "
@@ -642,7 +642,7 @@ async def process_product_images(
     logger.info(f"      Regular material images: {len(regular_material_images)}")
     logger.info(f"      Icon candidates: {len(icon_candidates)}")
     logger.info(f"      Successfully processed: {images_processed}")
-    logger.info(f"      CLIP embeddings: {clip_embeddings}")
+    logger.info(f"      SLIG embeddings: {clip_embeddings}")
 
     if tracker is not None:
         try:

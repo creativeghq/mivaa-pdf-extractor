@@ -4,7 +4,7 @@ Multi-Modal Image-Product Association Service
 Creates intelligent image-product linking using:
 - Spatial proximity (40% weight): Same page ±1, spatial distance
 - Caption similarity (30% weight): Text similarity between image captions and product descriptions
-- CLIP visual similarity (30% weight): Visual-text similarity using existing CLIP embeddings
+- SLIG (SigLIP2) visual similarity (30% weight): Visual-text similarity using existing SLIG embeddings
 
 Replaces random associations with weighted confidence scoring for meaningful relationships.
 """
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class AssociationWeights:
     spatial: float = 0.4   # 40% weight for spatial proximity
     caption: float = 0.3   # 30% weight for caption similarity
-    clip: float = 0.3      # 30% weight for CLIP visual similarity
+    clip: float = 0.3      # 30% weight for SLIG (SigLIP2) visual similarity
 
 @dataclass
 class AssociationOptions:
@@ -326,7 +326,7 @@ class MultiModalImageProductAssociationService:
         return 0.3 + (jaccard_similarity * 0.7)
 
     async def _calculate_clip_score(self, image: Dict[str, Any], product: Dict[str, Any]) -> float:
-        """Calculate CLIP visual similarity score (0-1).
+        """Calculate SLIG (SigLIP2) visual similarity score (0-1).
 
         Uses actual cosine similarity between embeddings when available.
         Falls back to neutral score when embeddings are missing.

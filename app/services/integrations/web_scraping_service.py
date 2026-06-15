@@ -1225,7 +1225,7 @@ class WebScrapingService:
             # Embed ALL images (material + non-material) — search needs both
             all_images = material_images + non_material_images
             if all_images:
-                self.logger.info(f"   🎨 Generating CLIP embeddings for {len(all_images)} images")
+                self.logger.info(f"   🎨 Generating SLIG embeddings for {len(all_images)} images")
                 result = await image_processor.save_images_and_generate_clips(
                     material_images=all_images,
                     document_id=product_id,
