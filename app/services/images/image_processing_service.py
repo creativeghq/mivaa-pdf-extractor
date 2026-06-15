@@ -3,7 +3,7 @@ Image Processing Service - Handles image extraction, classification, upload, and
 
 This service encapsulates all image-related operations in the PDF processing pipeline:
 1. Extract images from PDF
-2. Classify images (material vs non-material) using Qwen/Claude
+2. Classify images (material vs non-material) using Claude
 3. Upload material images to Supabase Storage
 4. Save images to database
 5. Generate CLIP embeddings
@@ -66,7 +66,7 @@ def is_material_classification(classification: str) -> bool:
     Check if a classification indicates a material image.
 
     Args:
-        classification: The classification string from Qwen (e.g., 'PRODUCT_IMAGE', 'DECORATIVE')
+        classification: The classification string from the vision model (e.g., 'PRODUCT_IMAGE', 'DECORATIVE')
 
     Returns:
         True if this is a material image, False otherwise
@@ -588,7 +588,7 @@ class ImageProcessingService:
                     logger.debug(f"   🔍 Low confidence ({primary_result['confidence']:.2f}) - validating with {validation_model}: {filename}")
 
                 async with claude_semaphore:
-                    # Use Claude or Qwen-32B for validation with retry
+                    # Use Claude for validation with retry
                     validation_result = None
                     for attempt in range(max_retries):
                         if 'claude' in validation_model.lower():
@@ -890,9 +890,9 @@ class ImageProcessingService:
     # typically have 5-8 icons in a single row at the bottom of the page.
     #
     # Two sources feed the icon candidate pool:
-    #   (a) `material_images`     — Qwen classified them as PRODUCT_IMAGE/MIXED
+    #   (a) `material_images`     — the vision model classified them as PRODUCT_IMAGE/MIXED
     #                               but they're actually small spec icons
-    #   (b) `non_material_images` — Qwen classified them as DECORATIVE
+    #   (b) `non_material_images` — the vision model classified them as DECORATIVE
     #                               (logos, headers, etc.); the DECORATIVE
     #                               override re-routes them to icon extraction
     #                               IF they meet the size + grid rules
@@ -921,7 +921,7 @@ class ImageProcessingService:
 
     @staticmethod
     def _classification_is_decorative(img_data: Dict[str, Any]) -> bool:
-        """True if Qwen classified this image as DECORATIVE.
+        """True if the vision model classified this image as DECORATIVE.
 
         Used by the DECORATIVE override path: a small grid of decorative-
         classified images on the same page is more likely a strip of spec
@@ -951,8 +951,8 @@ class ImageProcessingService:
         rule (≥ ICON_MIN_PER_PAGE per page) is enforced as the second pass.
 
         Args:
-            material_images: Images Qwen classified as PRODUCT_IMAGE / MIXED
-            non_material_images: Optional — images Qwen classified as
+            material_images: Images the vision model classified as PRODUCT_IMAGE / MIXED
+            non_material_images: Optional — images the vision model classified as
                 DECORATIVE / TECHNICAL_DIAGRAM. When provided, decorative
                 images that meet the icon shape + grid rules are re-routed
                 to the icon path (the "DECORATIVE override").
@@ -971,8 +971,8 @@ class ImageProcessingService:
 
         # Pass 2: group by page and check the per-page count gate
         # (combine both pools for the count, since a spec strip can span both
-        # classifier verdicts — Qwen often calls some icons PRODUCT_IMAGE and
-        # adjacent ones DECORATIVE).
+        # classifier verdicts — the vision model often calls some icons
+        # PRODUCT_IMAGE and adjacent ones DECORATIVE).
         from collections import defaultdict
         page_counts: Dict[int, int] = defaultdict(int)
         for img, is_icon in material_shaped + decorative_shaped:

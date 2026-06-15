@@ -793,7 +793,7 @@ class UnifiedSearchService:
         workspace_id: Optional[str] = None
     ) -> List[SearchResult]:
         """
-        Understanding search using Qwen vision_analysis → Voyage AI embeddings (1024D).
+        Understanding search using Claude vision_analysis → Voyage AI embeddings (1024D).
 
         Enables spec-based search (e.g., "porcelain tile 60x120cm", "R10 slip rating").
         """
@@ -1003,8 +1003,8 @@ class UnifiedSearchService:
 
     async def _parse_query_with_ai(self, query: str) -> tuple[str, Dict[str, Any], str, Dict[str, float]]:
         """
-        🧠 Parse natural language query using Qwen (primary) or GPT-4o-mini (fallback)
-        to extract structured filters and select dynamic weight profile.
+        🧠 Parse natural language query using Claude Haiku 4.5 to extract
+        structured filters and select dynamic weight profile.
 
         This is the PREPROCESSING step that runs BEFORE multi-strategy search.
 
@@ -1094,8 +1094,8 @@ Return ONLY valid JSON. Use null for missing fields."""
             try:
                 parsed_data = await self._parse_query_with_haiku(query, system_prompt)
                 self.logger.debug(f"🤖 Query parsed with Haiku 4.5")
-            except Exception as qwen_err:
-                self.logger.debug(f"Qwen unavailable ({qwen_err}), falling back to Claude Haiku")
+            except Exception as parse_err:
+                self.logger.debug(f"Primary query parse failed ({parse_err}), falling back to Claude Haiku")
 
             # Fallback: Claude Haiku 4.5
             if parsed_data is None:

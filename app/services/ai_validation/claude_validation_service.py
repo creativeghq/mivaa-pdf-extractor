@@ -28,7 +28,7 @@ class ClaudeValidationService:
     Service for async Claude validation of low-quality images.
     
     Workflow:
-    1. Images are analyzed with Qwen during sync processing
+    1. Images are analyzed with Claude during sync processing
     2. Images with quality score < 0.7 are queued for Claude validation
     3. This service processes the queue before product creation
     4. Updates image records with Claude validation results
@@ -43,7 +43,7 @@ class ClaudeValidationService:
         self,
         image_id: str,
         document_id: str,
-        qwen_quality_score: float,
+        quality_score: float,
         priority: int = 5
     ) -> str:
         """
@@ -52,7 +52,7 @@ class ClaudeValidationService:
         Args:
             image_id: Image ID to validate
             document_id: Parent document ID
-            qwen_quality_score: Quality score from Qwen analysis
+            quality_score: Quality score from the initial vision analysis
             priority: Job priority (1-10, lower = higher priority)
             
         Returns:
@@ -69,7 +69,7 @@ class ClaudeValidationService:
                 'status': 'pending',
                 'priority': priority,
                 'metadata': {
-                    'qwen_quality_score': qwen_quality_score,
+                    'quality_score': quality_score,
                     'queued_at': datetime.utcnow().isoformat()
                 },
                 'retry_count': 0,
@@ -83,7 +83,7 @@ class ClaudeValidationService:
             
             self.logger.info(
                 f"✅ Queued image {image_id} for Claude validation "
-                f"(Qwen score: {qwen_quality_score:.2f})"
+                f"(quality score: {quality_score:.2f})"
             )
             
             return job_id

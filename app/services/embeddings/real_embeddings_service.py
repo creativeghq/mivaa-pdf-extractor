@@ -81,7 +81,7 @@ class RealEmbeddingsService:
     This service provides:
     - Text embeddings via Voyage AI (1024D primary) with OpenAI fallback (1024D)
     - Visual embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
-    - Understanding embeddings (1024D) - Qwen vision_analysis → Voyage AI text embedding
+    - Understanding embeddings (1024D) - Claude vision_analysis → Voyage AI text embedding
     - Multimodal fusion (1792D) - combined text+visual (1024D + 768D = 1792D)
 
     Concurrency:

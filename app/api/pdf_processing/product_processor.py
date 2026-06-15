@@ -438,7 +438,7 @@ async def process_single_product(
                 logger_instance.info(
                     f"♻️  [RESUME Stage 3] Reusing {images_processed} existing images "
                     f"({clip_embeddings} with SLIG embeddings) for {product.name} — "
-                    f"Qwen + SLIG + Voyage calls skipped"
+                    f"Claude vision + SLIG + Voyage calls skipped"
                 )
                 image_result = {
                     'images_processed': images_processed,
@@ -504,7 +504,7 @@ async def process_single_product(
                 "style_slig_count": vector_stats.get('style_slig', 0),
                 "material_slig_count": vector_stats.get('material_slig', 0),
                 "understanding_count": vector_stats.get('understanding', 0),
-                "vision_analysis_qwen": vector_stats.get('vision_analysis_qwen', 0),
+                "vision_analysis_claude": vector_stats.get('vision_analysis_claude', 0),
                 "vision_analysis_claude_fallback": vector_stats.get('vision_analysis_claude_fallback', 0),
                 "vision_analysis_failed": vector_stats.get('vision_analysis_failed', 0),
                 # Icon extraction stats — visible in admin UI

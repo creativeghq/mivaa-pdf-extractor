@@ -726,7 +726,7 @@ async def get_job_ai_tracking(job_id: str):
     Get detailed AI model tracking information for a job.
 
     Returns comprehensive metrics on:
-    - Which AI models were used (QWEN, Anthropic, CLIP, OpenAI)
+    - Which AI models were used (Anthropic Claude, SLIG, Voyage, OpenAI)
     - Confidence scores and results
     - Token usage and processing time
     - Success/failure rates
@@ -825,7 +825,7 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
 
     Args:
         job_id: Job identifier
-        model_name: AI model name (QWEN, Anthropic, CLIP, OpenAI)
+        model_name: AI model name (Anthropic Claude, SLIG, Voyage, OpenAI)
 
     Returns:
         Statistics for the specified AI model

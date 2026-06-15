@@ -2,7 +2,7 @@
 Product Enrichment Service - Stage 5 Implementation
 
 This service enriches products with real data from:
-1. Image analysis results (Qwen, Claude, CLIP embeddings)
+1. Image analysis results (Claude Vision, SLIG embeddings)
 2. Material properties extracted from images
 3. Product embeddings for semantic search
 4. Related product linking

@@ -189,7 +189,7 @@ async def classify_images(
     request: ClassifyImagesRequest
 ):
     """
-    Classify images as material or non-material using Qwen Vision + Claude validation.
+    Classify images as material or non-material using Claude Vision (+ Claude validation).
 
     This endpoint:
     1. Uses vision model for fast initial classification

@@ -48,7 +48,7 @@ class AdaptiveConcurrency:
         maximum: int = 8,
         failure_threshold: int = 2,
         success_threshold: int = 10,
-        name: str = "qwen",
+        name: str = "endpoint",
     ):
         if not (minimum >= 1 and initial >= minimum and maximum >= initial):
             raise ValueError(

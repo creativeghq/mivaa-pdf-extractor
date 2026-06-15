@@ -96,7 +96,7 @@ class DocumentClassifier:
         job_id: Optional[str],
     ) -> Dict[str, Any]:
         """
-        Stage 1: Fast classification using Qwen.
+        Stage 1: Fast classification using Claude Haiku 4.5.
         
         Args:
             content: Text content

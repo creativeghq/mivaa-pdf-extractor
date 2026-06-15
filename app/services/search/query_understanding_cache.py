@@ -1,7 +1,7 @@
 """
 Query Understanding Cache
 
-Caches the LLM-based query parser output (Qwen / GPT-5-mini) so that repeat
+Caches the LLM-based query parser output (Claude Haiku 4.5) so that repeat
 queries skip the ~2-5 second LLM call entirely.
 
 The parse output is deterministic for a given query (system prompt is fixed,

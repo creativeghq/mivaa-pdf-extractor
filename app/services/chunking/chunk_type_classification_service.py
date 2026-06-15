@@ -55,7 +55,7 @@ class ChunkTypeClassificationService:
         Classify a single chunk and extract structured metadata.
 
         Uses pattern matching first. For low-confidence results (SUPPORTING_CONTENT
-        or UNCLASSIFIED), falls back to Qwen for better accuracy.
+        or UNCLASSIFIED), falls back to Claude (Sonnet) for better accuracy.
 
         Args:
             content: The text content of the chunk
@@ -69,7 +69,7 @@ class ChunkTypeClassificationService:
             # Primary: pattern-based classification (fast, no API cost)
             classification = self._analyze_content_patterns(content)
 
-            # For ambiguous cases, upgrade with Qwen if endpoint is available
+            # For ambiguous cases, upgrade with Claude (Sonnet)
             is_ambiguous = (
                 classification['chunk_type'] in (ChunkType.SUPPORTING_CONTENT, ChunkType.UNCLASSIFIED)
                 and len(content) >= 50  # Not worth LLM call for tiny chunks
@@ -77,7 +77,7 @@ class ChunkTypeClassificationService:
             if is_ambiguous:
                 qwen_result = await self._classify_with_qwen(content)
                 if qwen_result and qwen_result.confidence > classification['confidence']:
-                    logger.info(f"   🤖 Qwen upgraded classification: {classification['chunk_type'].value} → {qwen_result.chunk_type.value} ({qwen_result.confidence:.2f})")
+                    logger.info(f"   🤖 Claude upgraded classification: {classification['chunk_type'].value} → {qwen_result.chunk_type.value} ({qwen_result.confidence:.2f})")
                     return qwen_result
 
             # Extract structured metadata based on final classification

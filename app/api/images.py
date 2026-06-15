@@ -865,8 +865,8 @@ async def reclassify_image(
     This endpoint:
     1. Fetches the image from document_images table
     2. Downloads the image from Supabase Storage
-    3. Re-runs Qwen Vision classification
-    4. Optionally validates with secondary model (Qwen-32B or Claude)
+    3. Re-runs Claude Vision classification
+    4. Optionally validates with a secondary Claude pass
     5. Updates the database with new classification results
 
     Args:

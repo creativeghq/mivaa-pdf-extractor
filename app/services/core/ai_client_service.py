@@ -185,17 +185,16 @@ class AIClientService:
     
     @property
     def httpx(self) -> httpx.AsyncClient:
-        """Get shared httpx async client for HuggingFace and other HTTP APIs.
+        """Get shared httpx async client for Modal and other HTTP APIs.
 
-        Timeout is 200s — sized for the slowest Qwen vision call we make.
-        Previous default of 35s caused ReadTimeout on first inference of a
-        cold-started endpoint; large multimodal requests (image + spec
-        prompt) routinely take 60-120s end-to-end on the current Qwen
-        endpoint, so 200s leaves headroom without masking real hangs.
+        Timeout is 200s — sized for the slowest Claude vision call we make.
+        Previous default of 35s caused ReadTimeout; large multimodal requests
+        (image + spec prompt) routinely take 60-120s end-to-end on the Claude
+        vision path, so 200s leaves headroom without masking real hangs.
         """
         if self._httpx_client is None:
             self._httpx_client = httpx.AsyncClient(
-                # 200s sized for the slowest Qwen vision call. See class
+                # 200s sized for the slowest Claude vision call. See class
                 # docstring for the latency profile that drove this.
                 timeout=httpx.Timeout(200.0),  # Generous timeout for large vision models
                 limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
