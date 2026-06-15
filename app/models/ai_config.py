@@ -12,12 +12,12 @@ from pydantic import BaseModel, Field
 class AIModelConfig(BaseModel):
     """Configuration for AI models used in PDF processing pipeline."""
 
-    # Visual Embedding Model (SLIG Cloud Endpoint - basiliskan/slig)
-    # SigLIP2 SO400M (native 1152D) with a 1152D→768D projection head; all
-    # visual embeddings emerge as a uniform 768D output for VECS storage parity.
+    # Visual Embedding Model (SLIG on Modal - basiliskan/slig)
+    # google/siglip2-base-patch16-512 — native 768D output (no SO400M, no
+    # projection head). Migrated off HuggingFace to Modal 2026-06-14.
     visual_embedding_primary: str = Field(
         default="basiliskan/slig",
-        description="Visual embedding model via SLIG cloud endpoint (SigLIP2 SO400M projected to 768D)"
+        description="Visual embedding model via SLIG on Modal (siglip2-base-patch16-512, native 768D)"
     )
     visual_embedding_fallback: str = Field(
         default=None,

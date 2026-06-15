@@ -25,8 +25,8 @@ class DocumentClassifier:
     """
     Two-stage document classification system.
     
-    Stage 1: Fast text classification using Qwen
-    Stage 2: Deep enrichment using Claude (for product content)
+    Stage 1: Fast text classification using Claude Haiku 4.5
+    Stage 2: Deep enrichment using Claude Opus (for product content)
     """
     
     # Content type definitions

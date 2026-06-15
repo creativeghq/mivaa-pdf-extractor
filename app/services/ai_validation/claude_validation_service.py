@@ -1,13 +1,12 @@
 """
 Claude Validation Service
 
-Provides async background validation for images with low Qwen quality scores.
-This service runs AFTER product creation to enhance image analysis quality.
+Provides async background validation for images with low quality scores, to
+enhance image analysis quality.
 
-NEW ARCHITECTURE (per user requirements):
-- Qwen-only analysis during sync processing (fast, prevents OOM)
+ARCHITECTURE (vision is Anthropic-only since the Qwen removal, 2026-05-01):
+- Initial per-image analysis runs on Claude Opus during sync processing
 - Claude validation queued for low-quality images (score < 0.7)
-- Runs async BEFORE product creation
 - Updates image records with enhanced analysis
 """
 

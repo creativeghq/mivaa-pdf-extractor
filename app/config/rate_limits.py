@@ -1,12 +1,12 @@
 """
-Vision / HuggingFace Endpoint Rate Limit Configuration
+Vision / Modal GPU Endpoint Rate Limit Configuration
 
-This module defines rate limits for the SLIG HuggingFace dedicated inference
-endpoint, the PaddleOCR-VL structural pass, and Anthropic vision tiers. Tiers
-are based on usage capacity and determine concurrency limits.
+This module defines rate limits for the SLIG visual-embedding endpoint and the
+PaddleOCR-VL structural pass (both Modal-hosted as of 2026-06-14), plus Anthropic
+vision tiers. Tiers are based on usage capacity and determine concurrency limits.
 
 Tiers:
-- Tier 1: Default (HuggingFace dedicated endpoints + entry-level Anthropic)
+- Tier 1: Default (Modal GPU endpoints + entry-level Anthropic)
 - Tier 2: Medium capacity
 - Tier 3: High capacity
 - Tier 4: Very high capacity
