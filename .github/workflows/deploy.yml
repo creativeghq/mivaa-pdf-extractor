@@ -142,8 +142,6 @@ jobs:
           DATAFORSEO_PASSWORD: ${{ secrets.DATAFORSEO_PASSWORD }}
           TURNSTILE_SITE_KEY: ${{ secrets.TURNSTILE_SITE_KEY }}
           TURNSTILE_SECRET_KEY: ${{ secrets.TURNSTILE_SECRET_KEY }}
-          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
-          HUGGING_FACE_ACCESS_TOKEN: ${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
           JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
           MATERIAL_KAI_API_KEY: ${{ secrets.MATERIAL_KAI_API_KEY }}
           MATERIAL_KAI_API_URL: ${{ secrets.MATERIAL_KAI_API_URL }}
@@ -270,7 +268,7 @@ jobs:
           echo ""
           echo "🔧 Key Components:"
           echo "  • PDF Processing: PyMuPDF + pymupdf4llm"
-          echo "  • AI/ML: OpenAI, HuggingFace, Replicate"
+          echo "  • AI/ML: Anthropic, OpenAI, Voyage, Modal (SLIG + PaddleOCR-VL), Replicate"
           echo "  • Database: Supabase (PostgreSQL)"
           echo "  • Authentication: JWT with custom middleware"
           echo "  • Monitoring: Sentry error tracking"
@@ -288,7 +286,7 @@ jobs:
           echo "| **⚙️ Process Manager** | systemd (mivaa-pdf-extractor.service) |" >> $GITHUB_STEP_SUMMARY
           echo "| **📁 Deployment Path** | /var/www/mivaa-pdf-extractor |" >> $GITHUB_STEP_SUMMARY
           echo "| **📄 PDF Processing** | PyMuPDF + pymupdf4llm |" >> $GITHUB_STEP_SUMMARY
-          echo "| **🤖 AI/ML** | OpenAI, HuggingFace, Replicate |" >> $GITHUB_STEP_SUMMARY
+          echo "| **🤖 AI/ML** | Anthropic, OpenAI, Voyage, Modal (SLIG + PaddleOCR-VL), Replicate |" >> $GITHUB_STEP_SUMMARY
           echo "| **🗄️ Database** | Supabase (PostgreSQL) |" >> $GITHUB_STEP_SUMMARY
           echo "| **🔐 Authentication** | JWT with custom middleware |" >> $GITHUB_STEP_SUMMARY
           echo "| **📊 Monitoring** | Sentry error tracking |" >> $GITHUB_STEP_SUMMARY
@@ -317,8 +315,6 @@ jobs:
           echo "  • SUPABASE_PROJECT_ID: ✅ Configured"
           echo "  • ANTHROPIC_API_KEY: ✅ Configured"
           echo "  • OPENAI_API_KEY: ✅ Configured"
-          echo "  • HUGGINGFACE_API_KEY: ✅ Configured"
-          echo "  • HUGGING_FACE_ACCESS_TOKEN: ✅ Configured"
           echo "  • REPLICATE_API_TOKEN: ✅ Configured"
           echo "  • JINA_API_KEY: ✅ Configured"
           echo "  • FIRECRAWL_API_KEY: ✅ Configured"
