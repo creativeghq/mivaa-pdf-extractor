@@ -1,5 +1,6 @@
 # MIVAA PDF Extractor Dependencies
-# Cloud-only architecture — all ML inference via HuggingFace endpoints (SLIG, YOLO, Chandra)
+# Cloud-only architecture — GPU inference (SLIG visual embeddings + PaddleOCR-VL
+# structural pass) runs on Modal; HuggingFace fully removed 2026-06-14.
 # Vision is Anthropic-only (Claude Opus 4.7 via SDK >= 0.42, with Anthropic tool_use
 # schema-locked output via emit_vision_analysis tool). Qwen endpoint retired 2026-05-01.
 # OCR: Chandra v2 cloud endpoint only — retry-with-jitter (3 attempts at temps 0.0/0.4/0.8,
@@ -38,8 +39,8 @@ imagehash==4.3.1
 openai>=2.31.0
 voyageai==0.3.7
 
-# HuggingFace Hub for cloud endpoint management (SLIG + Qwen endpoints)
-huggingface-hub>=0.20.0
+# (huggingface-hub removed 2026-06-14 — SLIG moved to Modal; no app code imports it.
+#  The Modal image installs its own huggingface_hub for the one-time weight pull.)
 
 # Supabase integration
 supabase>=2.28.3
