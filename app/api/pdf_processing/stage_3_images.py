@@ -477,9 +477,9 @@ async def process_product_images(
     # Re-route small grid-of-icons images (R-rating, PEI, slip, fire ratings,
     # packaging icons, …) to the icon extraction path so they get OCR + Claude
     # → spec metadata into products.metadata, NOT visual SLIG embeddings.
-    # The DECORATIVE override re-routes images Qwen labelled as DECORATIVE if
-    # they ALSO meet the icon size + grid rules (Qwen often misclassifies
-    # spec icons as decoration).
+    # The DECORATIVE override re-routes images the vision model labelled as
+    # DECORATIVE if they ALSO meet the icon size + grid rules (vision models
+    # often misclassify spec icons as decoration).
     regular_material_images, icon_candidates, remaining_non_material = (
         image_service._split_material_and_icon_candidates(
             material_images=material_images,
@@ -585,19 +585,20 @@ async def process_product_images(
             f"material={vector_stats.get('material_slig', 0)}, "
             f"understanding={vector_stats.get('understanding', 0)}"
         )
-        qwen_count = vector_stats.get('vision_analysis_qwen', 0)
-        fallback_count = vector_stats.get('vision_analysis_claude_fallback', 0)
+        # Vision is Claude-only post-2026-05-01 — the live primary count is
+        # vision_analysis_claude (vision_analysis_qwen/claude_fallback are legacy
+        # keys that stay 0 for new analyses).
+        claude_count = vector_stats.get('vision_analysis_claude', 0)
         failed_count = vector_stats.get('vision_analysis_failed', 0)
         logger.info(
-            f"      Vision analysis: qwen={qwen_count}, "
-            f"claude_fallback={fallback_count}, failed={failed_count}"
+            f"      Vision analysis: claude={claude_count}, failed={failed_count}"
         )
-        total_analyzed = qwen_count + fallback_count
-        if total_analyzed > 0 and fallback_count / total_analyzed > 0.5:
+        total_attempted = claude_count + failed_count
+        if total_attempted > 0 and failed_count / total_attempted > 0.5:
             logger.warning(
-                f"      ⚠️ Qwen fallback rate high: {fallback_count}/{total_analyzed} "
-                f"({100 * fallback_count / total_analyzed:.0f}%) images routed to Claude. "
-                f"Check Qwen endpoint health."
+                f"      ⚠️ Vision analysis failure rate high: {failed_count}/{total_attempted} "
+                f"({100 * failed_count / total_attempted:.0f}%) images failed. "
+                f"Check Claude API health / rate limits."
             )
         if vector_stats.get('icon_candidates_processed', 0) > 0:
             logger.info(

@@ -320,7 +320,7 @@ async def process_product_chunking(
 
     # STEP 3: Classify chunks + attach structured metadata
     # Fetches stored chunks, runs pattern-based classification (fast, no API),
-    # falls back to Qwen for ambiguous cases, then bulk-updates the metadata.
+    # falls back to Claude (Sonnet) for ambiguous cases, then bulk-updates the metadata.
     if chunk_ids and config.get('enable_chunk_classification', True):
         try:
             classification_service = ChunkTypeClassificationService()

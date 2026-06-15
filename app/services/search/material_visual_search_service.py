@@ -56,7 +56,7 @@ class MaterialSearchRequest(BaseModel):
     
     # Processing options
     enable_clip_embeddings: bool = Field(True, description="Generate CLIP embeddings")
-    enable_vision_analysis: bool = Field(False, description="Enable Qwen Vision analysis")
+    enable_vision_analysis: bool = Field(False, description="Enable Claude Vision analysis")
     
     # Context
     user_id: Optional[str] = Field(None, description="User identifier")

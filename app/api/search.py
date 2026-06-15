@@ -965,7 +965,7 @@ async def material_visual_search(
     This endpoint provides:
     - Visual similarity search using SLIG embeddings
     - Material property filtering (spectral, chemical, mechanical, thermal)
-    - Qwen Vision analysis for material understanding
+    - Claude Vision analysis for material understanding
     - Multi-modal fusion with configurable weights
     - Integration with Supabase visual search infrastructure
     """
@@ -1012,7 +1012,7 @@ async def analyze_material_image(
     - Material identification and classification
     - Spectral, chemical, and mechanical property analysis
     - SLIG embedding generation
-    - Qwen Vision material understanding
+    - Claude Vision material understanding
     """
     try:
         image_data = request.get("image_data")
