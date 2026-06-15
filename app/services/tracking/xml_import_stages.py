@@ -24,7 +24,7 @@ class XmlImportStage(str, Enum):
     # Image processing phase
     IMAGES_DOWNLOADED = "images_downloaded"       # Images downloaded to Supabase Storage
     IMAGES_CLASSIFIED = "images_classified"       # Material vs non-material classification
-    CLIPS_GENERATED = "clips_generated"           # CLIP embeddings generated for all images
+    CLIPS_GENERATED = "clips_generated"           # SLIG embeddings generated for all images
 
     # Text processing phase
     CHUNKS_CREATED = "chunks_created"             # Smart chunking applied
@@ -74,7 +74,7 @@ XML_IMPORT_STAGE_DESCRIPTIONS = {
     XmlImportStage.PRODUCTS_PARSED: "Parsing XML and extracting products",
     XmlImportStage.IMAGES_DOWNLOADED: "Downloading product images",
     XmlImportStage.IMAGES_CLASSIFIED: "Classifying images (material vs non-material)",
-    XmlImportStage.CLIPS_GENERATED: "Generating CLIP embeddings for images",
+    XmlImportStage.CLIPS_GENERATED: "Generating SLIG embeddings for images",
     XmlImportStage.CHUNKS_CREATED: "Creating text chunks with quality scoring",
     XmlImportStage.EMBEDDINGS_QUEUED: "Queueing text embeddings for generation",
     XmlImportStage.COMPLETED: "Import completed successfully",

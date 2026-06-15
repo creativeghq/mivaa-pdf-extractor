@@ -94,7 +94,7 @@ class ProgressTracker:
     products_created: int = 0
     text_embeddings_generated: int = 0  # NEW: Track text embeddings separately
     image_embeddings_generated: int = 0  # NEW: Track image embeddings separately
-    clip_embeddings_generated: int = 0  # Track CLIP/SigLIP embeddings separately
+    clip_embeddings_generated: int = 0  # Track SLIG (SigLIP2) embeddings separately
     total_images_extracted: int = 0  # Total images found in PDF (including non-material)
     relations_created: int = 0  # Track entity relationships created
 
@@ -451,7 +451,7 @@ class ProgressTracker:
 
         Args:
             text_embeddings: Number of text embeddings generated (from chunks)
-            image_embeddings: Number of image embeddings generated (CLIP/SigLIP)
+            image_embeddings: Number of image embeddings generated (SLIG (SigLIP2))
             relations_created: Number of entity relationships created
             sync_to_db: If True, sync progress to database after update
         """

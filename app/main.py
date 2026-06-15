@@ -822,7 +822,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 **Key Features:**
 - ✅ **Knowledge Base**: `/api/kb/*` - Document management with AI embeddings, semantic search, PDF extraction, categories, and product attachments (NEW)
 - ✅ **Consolidated Upload**: `/api/rag/documents/upload` with processing modes (quick/standard/deep) and categories
-- 🎯 **Enhanced Multi-Vector Search**: 6 specialized CLIP embeddings + JSONB filtering + query understanding (ENABLED BY DEFAULT)
+- 🎯 **Enhanced Multi-Vector Search**: 6 specialized SLIG embeddings + JSONB filtering + query understanding (ENABLED BY DEFAULT)
 - ✅ **10 Search Strategies**: `/api/rag/search?strategy={strategy}` - multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type
 - ✅ **Query Understanding**: GPT-4o-mini auto-extracts filters from natural language ($0.0001/query, enabled by default)
 - ✅ **Comprehensive Health**: `/health` for all services (database, storage, AI models)
@@ -887,7 +887,7 @@ Get your token from the frontend application or Supabase authentication.
   - Search analytics tracking
 
 🎯 **Enhanced Multi-Vector Search** - MAJOR UPGRADE (v2.3.0, Nov 2025)
-  - **6 Specialized CLIP Embeddings**: text (20%), visual (20%), color (15%), texture (15%), style (15%), material (15%)
+  - **6 Specialized SLIG Embeddings**: text (20%), visual (20%), color (15%), texture (15%), style (15%), material (15%)
   - **JSONB Metadata Filtering**: Property-based filtering (finish, properties, dimensions, etc.)
   - **Query Understanding**: ✅ ENABLED BY DEFAULT - GPT-4o-mini auto-extracts filters from natural language
   - **Performance**: ~250-350ms (with query understanding), ~200-300ms (without)
@@ -901,8 +901,8 @@ Get your token from the frontend application or Supabase authentication.
   - Vector Search: Pure similarity matching (<100ms)
   - Hybrid Search: Semantic + PostgreSQL full-text (<180ms)
   - Material Search: JSONB property filtering (<50ms)
-  - Image Search: Visual similarity with CLIP (<150ms)
-  - Color/Texture/Style/Material Type: Specialized CLIP embeddings (<150ms each)
+  - Image Search: Visual similarity with SLIG (SigLIP2) (<150ms)
+  - Color/Texture/Style/Material Type: Specialized SLIG embeddings (<150ms each)
 
 ✅ **Product Detection Pipeline** - 60-70% false positive reduction with 4-layer validation
 ✅ **Chunk Quality System** - Hash-based + semantic deduplication, quality scoring
@@ -2113,7 +2113,7 @@ def custom_openapi():
         "api_consolidation": "Consolidated and organized endpoints with clear categorization",
         "consolidated_upload": "/api/rag/documents/upload with modes (quick/standard/deep) + categories",
         "consolidated_search": "/api/rag/search with multi_vector strategy (default and only supported)",
-        "multi_vector_enhanced": "🎯 ENHANCED: 6 specialized CLIP embeddings (text 20%, visual 20%, color 15%, texture 15%, style 15%, material 15%) + JSONB metadata filtering + query understanding",
+        "multi_vector_enhanced": "🎯 ENHANCED: 6 specialized SLIG embeddings (text 20%, visual 20%, color 15%, texture 15%, style 15%, material 15%) + JSONB metadata filtering + query understanding",
         "query_understanding": "✅ ENABLED BY DEFAULT: GPT-4o-mini auto-extracts filters from natural language ($0.0001/query)",
         "consolidated_health": "/health for all services (database, storage, AI models)",
         "pdf_processing": "14-stage AI pipeline with checkpoint recovery",

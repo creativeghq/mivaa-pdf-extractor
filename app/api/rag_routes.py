@@ -3186,15 +3186,15 @@ async def process_document_with_discovery(
         if warmup_results['failed']:
             logger.warning(f"   Failed: {warmup_results['failed']}")
 
-            # Check if SLIG (critical for CLIP embeddings) failed
+            # Check if SLIG (critical for SLIG embeddings) failed
             failed_endpoints = [f.get('endpoint') if isinstance(f, dict) else f for f in warmup_results['failed']]
             if 'slig' in failed_endpoints:
-                logger.error("❌ CRITICAL: SLIG endpoint warmup failed - cannot generate CLIP embeddings")
+                logger.error("❌ CRITICAL: SLIG endpoint warmup failed - cannot generate SLIG embeddings")
                 logger.error("   Stopping processing to prevent incomplete data")
 
                 # Update job status to failed
                 job_storage[job_id]["status"] = "failed"
-                job_storage[job_id]["error"] = "SLIG endpoint warmup failed - CLIP embeddings unavailable"
+                job_storage[job_id]["error"] = "SLIG endpoint warmup failed - SLIG embeddings unavailable"
                 if job_recovery_service:
                     await job_recovery_service.persist_job(
                         job_id=job_id,
@@ -3203,14 +3203,14 @@ async def process_document_with_discovery(
                         status="failed",
                         progress=job_storage[job_id].get("progress", 0),
                         metadata=job_storage[job_id].get("metadata", {}),
-                        error="SLIG endpoint warmup failed - CLIP embeddings unavailable"
+                        error="SLIG endpoint warmup failed - SLIG embeddings unavailable"
                     )
                 # NOT HTTPException — we are inside a BackgroundTask, no HTTP
                 # response to attach a 503 to. Raise a plain RuntimeError so
                 # the orchestrator's outer except + finally runs and triggers
                 # scale-to-zero cleanup of the endpoints we already woke.
                 raise RuntimeError(
-                    "SLIG endpoint warmup failed - CLIP embeddings unavailable"
+                    "SLIG endpoint warmup failed - SLIG embeddings unavailable"
                 )
         logger.info("=" * 80)
 
@@ -3930,7 +3930,7 @@ async def process_document_with_discovery(
         logger.info(f"❌ Products failed: {products_failed}/{total_products}")
         logger.info(f"📝 Total chunks created: {total_chunks_created}")
         logger.info(f"🖼️  Total images processed: {total_images_processed}")
-        logger.info(f"🎨 Total CLIP embeddings: {total_clip_embeddings}")
+        logger.info(f"🎨 Total SLIG embeddings: {total_clip_embeddings}")
         logger.info(f"🔗 Total relationships created: {total_relationships_created}")
         logger.info(f"⏱️  Processing time: {parallel_result.processing_time_seconds:.1f}s")
         logger.info(f"{'='*80}\n")
@@ -4708,7 +4708,7 @@ async def search_documents(
     - Uses direct database queries (no LLM required)
 
     ### Image Similarity Search (`strategy="image"`) ✅
-    - Visual similarity using CLIP embeddings
+    - Visual similarity using SLIG (SigLIP2) embeddings
     - Requires `image_url` or `image_base64` in request body
     - Best for: Finding visually similar products
     - Uses VECS vector database with HNSW indexing
@@ -4959,7 +4959,7 @@ async def search_documents(
             )
 
         elif strategy == "image":
-            # Image similarity search using visual embeddings (SigLIP/CLIP)
+            # Image similarity search using visual embeddings (SLIG (SigLIP2))
             # Requires image_url or image_base64 in request
             image_url = getattr(request, 'image_url', None)
             image_base64 = getattr(request, 'image_base64', None)

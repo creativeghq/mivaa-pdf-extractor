@@ -28,7 +28,7 @@ class MaterialSearchRequest(BaseModel):
     # Core search inputs
     query_image: Optional[str] = Field(None, description="Base64 encoded image or image URL")
     query_text: Optional[str] = Field(None, description="Text description for hybrid search")
-    query_embedding: Optional[List[float]] = Field(None, description="Pre-computed CLIP embedding")
+    query_embedding: Optional[List[float]] = Field(None, description="Pre-computed SLIG (SigLIP2) embedding")
     
     # Search configuration
     search_type: str = Field("hybrid", description="Type of search: visual_similarity, semantic_analysis, hybrid, material_properties")
@@ -55,7 +55,7 @@ class MaterialSearchRequest(BaseModel):
     include_embeddings: bool = Field(False, description="Include embedding vectors in response")
     
     # Processing options
-    enable_clip_embeddings: bool = Field(True, description="Generate CLIP embeddings")
+    enable_clip_embeddings: bool = Field(True, description="Generate SLIG (SigLIP2) embeddings")
     enable_vision_analysis: bool = Field(False, description="Enable Claude Vision analysis")
     
     # Context
@@ -82,7 +82,7 @@ class MaterialSearchResult(BaseModel):
     # Analysis data
     visual_analysis: Optional[Dict[str, Any]] = Field(None, description="Visual analysis results")
     material_properties: Optional[Dict[str, Any]] = Field(None, description="Material property analysis")
-    clip_embedding: Optional[List[float]] = Field(None, description="CLIP embedding vector")
+    clip_embedding: Optional[List[float]] = Field(None, description="SLIG (SigLIP2) embedding vector")
     vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Vision model analysis")
     
     # Metadata
@@ -516,14 +516,14 @@ class MaterialVisualSearchService:
             from app.services.search.search_enrichment_service import SearchEnrichmentService
             from app.dependencies import get_supabase_client
 
-            # ✅ Step 1: Generate CLIP embedding from query image
+            # ✅ Step 1: Generate SLIG embedding from query image
             query_embedding = None
             specialized_embeddings = None  # For multi-vector search (color, texture, style, material)
 
             if request.query_embedding:
                 query_embedding = request.query_embedding
             elif request.query_image:
-                # Generate CLIP embedding from image using SLIG client
+                # Generate SLIG embedding from image using SLIG client
                 from app.services.embeddings.endpoint_registry import endpoint_registry
                 import base64
                 import requests
@@ -542,12 +542,12 @@ class MaterialVisualSearchService:
                 slig_client = endpoint_registry.get_slig_client()
                 if slig_client:
                     query_embedding = await slig_client.get_image_embedding(image)
-                    logger.info(f"✅ Generated CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
+                    logger.info(f"✅ Generated SLIG embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
                 else:
                     logger.error("❌ SLIG client not available for embedding generation")
 
             elif request.query_text:
-                # Generate CLIP text embedding using SLIG client (768D — for the
+                # Generate SLIG text embedding using SLIG client (768D — for the
                 # primary visual collection image_slig_embeddings, which stays
                 # SLIG SigLIP2 768D regardless of v2 rollout state).
                 from app.services.embeddings.endpoint_registry import endpoint_registry
@@ -555,7 +555,7 @@ class MaterialVisualSearchService:
                 slig_client = endpoint_registry.get_slig_client()
                 if slig_client:
                     query_embedding = await slig_client.get_text_embedding(request.query_text)
-                    logger.info(f"✅ Generated text CLIP embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
+                    logger.info(f"✅ Generated text SLIG embedding via SLIG: {len(query_embedding) if query_embedding else 0} dims")
 
                     # Per-aspect query embedding: 1024D Voyage of the user's
                     # text — same model and embedding space as the aspect

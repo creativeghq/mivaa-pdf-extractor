@@ -425,7 +425,7 @@ async def search_documents(
     - Uses direct database queries (no LLM required)
 
     ### Image Similarity Search (`strategy="image"`) ✅
-    - Visual similarity using CLIP embeddings
+    - Visual similarity using SLIG (SigLIP2) embeddings
     - Requires `image_url` or `image_base64` in request body
     - Best for: Finding visually similar products
     - Uses VECS vector database with HNSW indexing
@@ -646,7 +646,7 @@ async def search_documents(
             )
 
         elif strategy == "image":
-            # Image similarity search using visual embeddings (SigLIP/CLIP)
+            # Image similarity search using visual embeddings (SLIG (SigLIP2))
             # Requires image_url or image_base64 in request
             image_url = getattr(request, 'image_url', None)
             image_base64 = getattr(request, 'image_base64', None)

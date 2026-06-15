@@ -516,9 +516,9 @@ async def process_single_product(
         result.images_processed = images_processed
         result.clip_embeddings_generated = clip_embeddings
         logger_instance.info(f"✅ Processed {images_processed} images for {product.name}")
-        logger_instance.info(f"✅ Generated {clip_embeddings} CLIP embeddings for {product.name}")
+        logger_instance.info(f"✅ Generated {clip_embeddings} SLIG embeddings for {product.name}")
 
-        # Update tracker with CLIP embeddings count.
+        # Update tracker with SLIG embeddings count.
         # ProgressTracker.update_database_stats() expects `images_extracted`, not `images_stored`.
         if tracker:
             await tracker.update_database_stats(
@@ -528,7 +528,7 @@ async def process_single_product(
                 sync_to_db=True
             )
             # Log the actual tracker values to verify sync
-            logger_instance.info(f"   📊 Updated tracker: {images_processed} images, {clip_embeddings} CLIP embeddings")
+            logger_instance.info(f"   📊 Updated tracker: {images_processed} images, {clip_embeddings} SLIG embeddings")
             logger_instance.info(f"   📊 Tracker totals: images_extracted={tracker.images_extracted}, clip_embeddings={tracker.clip_embeddings_generated}, image_embeddings={tracker.image_embeddings_generated}")
 
         # ✅ CHECKPOINT: IMAGES_EXTRACTED - Stage 3 complete
@@ -549,7 +549,7 @@ async def process_single_product(
         )
         logger_instance.info(f"   📌 Created IMAGES_EXTRACTED checkpoint for {product.name}")
 
-        # ✅ CHECKPOINT: IMAGE_EMBEDDINGS_GENERATED - CLIP embeddings complete
+        # ✅ CHECKPOINT: IMAGE_EMBEDDINGS_GENERATED - SLIG embeddings complete
         if clip_embeddings > 0:
             await checkpoint_recovery_service.create_checkpoint(
                 job_id=job_id,
@@ -1034,7 +1034,7 @@ async def cleanup_product_memory(logger_instance: logging.Logger) -> None:
     logger_instance.debug(f"   Collected {collected_gen1} gen-1 objects")
 
     # Generation-2 sweep — model caches, HF endpoint clients, numpy buffers,
-    # CLIP embeddings cached at module level all live here. Without this
+    # SLIG embeddings cached at module level all live here. Without this
     # sweep, RSS climbs by ~100-200MB per product (Bug — job b7d70de1
     # hit RSS=2.8GB on product 1 alone).
     collected_gen2 = gc.collect(2)

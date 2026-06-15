@@ -1467,7 +1467,7 @@ async def queue_regenerate_image_embeddings(
     This endpoint queues an async job that will:
     1. Fetch existing images from document_images table
     2. Download images from Supabase Storage
-    3. Generate 5 CLIP embeddings per image (visual, color, texture, style, material)
+    3. Generate 5 SLIG embeddings per image (visual, color, texture, style, material)
     4. Save embeddings to VECS collections
 
     **Use Cases:**
