@@ -17,7 +17,9 @@ from app.services.integrations.data_import_service import DataImportService
 from app.services.core.supabase_client import get_supabase_client
 from app.schemas.api_responses import ImportProcessResponse, ImportHistoryListResponse, ServiceHealthResponse
 from app.dependencies import get_current_user
-from app.api.documents.query_routes import authorize_rag_workspace
+# NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module to avoid a
+# circular-import cycle on startup (app.api.documents → management_routes →
+# app.orchestration → rag_routes). Runtime-only use makes the late binding safe.
 
 logger = logging.getLogger(__name__)
 
@@ -298,3 +300,9 @@ async def import_health_check() -> Dict[str, Any]:
     }
 
 
+
+
+# ============================================================================
+# Deferred import (break circular-import cycle — see Sentry MIVAA-5HQ)
+# ============================================================================
+from app.api.documents.query_routes import authorize_rag_workspace  # noqa: E402

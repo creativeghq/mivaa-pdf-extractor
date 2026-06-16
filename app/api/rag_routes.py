@@ -48,7 +48,13 @@ from app.schemas.api_responses import (
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
 from app.dependencies import get_current_user, get_workspace_context, get_optional_workspace_context
-from app.api.documents.query_routes import authorize_rag_workspace
+# NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
+# Importing it at the top triggers `app.api.documents.__init__` →
+# `management_routes` → `app.orchestration` → back into this (still partially
+# initialized) module, raising a circular-import ImportError on startup
+# (Sentry MIVAA-5HQ). It is only used inside request handlers at runtime, so
+# deferring the import to end-of-module — after `job_storage` and
+# `process_document_with_discovery` are defined — breaks the cycle.
 
 logger = logging.getLogger(__name__)
 
@@ -6009,3 +6015,15 @@ async def search_knowledge_base(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Knowledge base search failed: {str(e)}"
         )
+
+
+# ============================================================================
+# Deferred imports (break circular-import cycle — see Sentry MIVAA-5HQ)
+# ============================================================================
+# `app.api.documents` pulls in `management_routes` → `app.orchestration`, which
+# re-exports `process_document_with_discovery` / `job_storage` from THIS module.
+# Importing from `app.api.documents` at the top of the file would re-enter this
+# module before those symbols exist. By the time this runs at end-of-module they
+# are defined, so the cycle resolves. `authorize_rag_workspace` is only used
+# inside request handlers (runtime), so a late binding is safe.
+from app.api.documents.query_routes import authorize_rag_workspace  # noqa: E402

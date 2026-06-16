@@ -36,7 +36,10 @@ from app.services.tracking.progress_tracker import ProgressTracker
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 from app.schemas.jobs import JobStatus
 from app.dependencies import get_current_user
-from app.api.documents.query_routes import authorize_rag_workspace
+# NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module — importing
+# from `app.api.documents` at the top triggers a circular-import cycle on startup
+# (app.api.documents → management_routes → app.orchestration → rag_routes). It is only
+# used inside request handlers, so a late binding is safe (see Sentry MIVAA-5HQ).
 
 logger = logging.getLogger(__name__)
 
@@ -2142,3 +2145,9 @@ async def document_extraction_status(
             status_code=500,
             detail=f"Status lookup failed: {str(e)}",
         )
+
+
+# ============================================================================
+# Deferred import (break circular-import cycle — see Sentry MIVAA-5HQ)
+# ============================================================================
+from app.api.documents.query_routes import authorize_rag_workspace  # noqa: E402
