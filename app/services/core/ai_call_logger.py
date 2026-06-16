@@ -60,6 +60,30 @@ class AICallLogger:
         from app.services.integrations.credits_integration_service import get_credits_service
         self.credits_service = get_credits_service()
 
+    async def _debit(self, **kwargs):
+        """Debit AI credits and DON'T silently swallow a failure.
+
+        `debit_credits_for_ai_operation` returns {'success': False, ...} (it does not
+        raise) when the balance is exhausted or the RPC fails. The AI call already ran,
+        so we can't refuse it post-hoc — but a failed debit is unbilled revenue and must
+        be visible/alertable, not dropped. Log it at ERROR with enough context to recover.
+        """
+        try:
+            result = await self.credits_service.debit_credits_for_ai_operation(**kwargs)
+        except Exception as e:  # noqa: BLE001 — never let billing logging break the AI path
+            self.logger.error(
+                "[ai_call_logger] credit debit raised (UNBILLED) user=%s op=%s model=%s: %s",
+                kwargs.get('user_id'), kwargs.get('operation_type'), kwargs.get('model_name'), e,
+            )
+            return None
+        if isinstance(result, dict) and result.get('success') is False:
+            self.logger.error(
+                "[ai_call_logger] credit debit FAILED (UNBILLED) user=%s op=%s model=%s: %s",
+                kwargs.get('user_id'), kwargs.get('operation_type'), kwargs.get('model_name'),
+                result.get('error') or result,
+            )
+        return result
+
     @async_retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
     async def log_ai_call(
         self,
@@ -304,7 +328,7 @@ class AICallLogger:
 
             # Debit credits if user_id provided (with job_id for cost aggregation)
             if user_id:
-                await self.credits_service.debit_credits_for_ai_operation(
+                await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -403,7 +427,7 @@ class AICallLogger:
 
             # Debit credits if user_id provided (with job_id for cost aggregation)
             if user_id:
-                await self.credits_service.debit_credits_for_ai_operation(
+                await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -482,7 +506,7 @@ class AICallLogger:
                 cost = float(cost_per_generation_usd) * float(ai_pricing.MARKUP_MULTIPLIER)
 
             if user_id and cost > 0:
-                await self.credits_service.debit_credits_for_ai_operation(
+                await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -553,7 +577,7 @@ class AICallLogger:
             cost = float(cost_data.get("billed_cost_usd", 0.0))
 
             if user_id and cost > 0:
-                await self.credits_service.debit_credits_for_ai_operation(
+                await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -647,7 +671,7 @@ class AICallLogger:
 
             # Debit credits from user account
             if user_id:
-                await self.credits_service.debit_credits_for_ai_operation(
+                await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=f"firecrawl_{operation_type}",
@@ -751,7 +775,7 @@ class AICallLogger:
         try:
             # Debit credits if user_id provided
             if user_id and success:
-                await self.credits_service.debit_credits_for_ai_operation(
+                await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type="vision_guided_extraction",
