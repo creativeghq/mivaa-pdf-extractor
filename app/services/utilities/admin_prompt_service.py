@@ -126,9 +126,25 @@ class AdminPromptService:
             Updated prompt record
         """
         try:
-            # Get current prompt
-            current = await self.get_prompt(workspace_id, stage, category)
-            
+            # Look up the existing active prompt for this (workspace, stage, category)
+            # WITHOUT constraining prompt_type. The extraction editor also surfaces the
+            # image-classification prompt (prompt_type='classification'); using the
+            # extraction-only get_prompt() here returned None for it and the insert
+            # branch then created an inert duplicate stamped prompt_type='extraction'
+            # that the pipeline (which reads 'classification') never sees (audit #217 H9).
+            # Resolving by (stage, category) lets the update-by-id branch preserve the
+            # row's real prompt_type.
+            existing = self.supabase.client.table('prompts')\
+                .select('*')\
+                .eq('workspace_id', workspace_id)\
+                .eq('stage', stage)\
+                .eq('category', category)\
+                .eq('is_active', True)\
+                .order('version', desc=True)\
+                .limit(1)\
+                .execute()
+            current = existing.data[0] if existing.data else None
+
             if current:
                 # Create audit trail entry
                 await self._create_audit_entry(

@@ -35,6 +35,8 @@ from app.services.core.supabase_client import get_supabase_client, SupabaseClien
 from app.services.tracking.progress_tracker import ProgressTracker
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 from app.schemas.jobs import JobStatus
+from app.dependencies import get_current_user
+from app.api.documents.query_routes import authorize_rag_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -412,7 +414,8 @@ async def save_images_to_db(
 async def create_chunks(
     job_id: str,
     request: CreateChunksRequest,
-    supabase_client: SupabaseClient = Depends(get_supabase_client)
+    supabase_client: SupabaseClient = Depends(get_supabase_client),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Create semantic chunks and generate text embeddings.
@@ -438,6 +441,7 @@ async def create_chunks(
         CreateChunksResponse with counts
     """
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
         logger.info(f"📝 [Job {job_id}] Starting chunking for document {request.document_id}")
 
         # Initialize tracker
@@ -584,6 +588,8 @@ async def create_chunks(
             existing_embeddings=0
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ [Job {job_id}] Chunking failed: {e}")
         raise HTTPException(status_code=500, detail=f"Chunking failed: {str(e)}")
@@ -789,7 +795,8 @@ class GenerateProductEmbeddingsResponse(BaseModel):
 @router.post("/generate-product-embeddings", response_model=GenerateProductEmbeddingsResponse)
 async def generate_product_embeddings(
     request: GenerateProductEmbeddingsRequest,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Generate embeddings for products that don't have them yet.
@@ -811,6 +818,7 @@ async def generate_product_embeddings(
         GenerateProductEmbeddingsResponse with counts and errors
     """
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
         logger.info(f"🎨 Starting product embedding generation for workspace: {request.workspace_id}")
 
         # Build query to find products
@@ -934,6 +942,8 @@ async def generate_product_embeddings(
             errors=errors
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Product embedding generation failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to generate product embeddings: {str(e)}")
@@ -965,7 +975,8 @@ class RegenerateImageEmbeddingsResponse(BaseModel):
 @router.post("/regenerate-image-embeddings", response_model=RegenerateImageEmbeddingsResponse)
 async def regenerate_image_embeddings(
     request: RegenerateImageEmbeddingsRequest,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Regenerate visual embeddings for existing images in the database.
@@ -999,6 +1010,7 @@ async def regenerate_image_embeddings(
         RegenerateImageEmbeddingsResponse with counts and errors
     """
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
         from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
         from app.services.embeddings.vecs_service import get_vecs_service
         import base64
@@ -1249,6 +1261,8 @@ async def regenerate_image_embeddings(
             errors=errors
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Image embedding regeneration failed: {str(e)}")
 
@@ -1378,7 +1392,10 @@ class ExtractEntitiesResponse(BaseModel):
 
 
 @router.post("/extract-entities", response_model=ExtractEntitiesResponse)
-async def extract_entities(request: ExtractEntitiesRequest):
+async def extract_entities(
+    request: ExtractEntitiesRequest,
+    claims: Dict[str, Any] = Depends(get_current_user),
+):
     """
     Match document entities to products for an already-processed document.
 
@@ -1393,6 +1410,7 @@ async def extract_entities(request: ExtractEntitiesRequest):
         ExtractEntitiesResponse with match statistics
     """
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
         from app.services.discovery.document_entity_service import DocumentEntityService
 
         logger.info(f"🔗 Matching entities for document {request.document_id}")
@@ -1413,6 +1431,8 @@ async def extract_entities(request: ExtractEntitiesRequest):
             message=f"Matched {relationships} entity-product relationships from {entities} entities"
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Entity extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Entity extraction failed: {str(e)}")
@@ -1437,7 +1457,10 @@ class GenerateEntityEmbeddingsResponse(BaseModel):
 
 
 @router.post("/generate-entity-embeddings", response_model=GenerateEntityEmbeddingsResponse)
-async def generate_entity_embeddings(request: GenerateEntityEmbeddingsRequest):
+async def generate_entity_embeddings(
+    request: GenerateEntityEmbeddingsRequest,
+    claims: Dict[str, Any] = Depends(get_current_user),
+):
     """
     Generate text embeddings for all document entities.
 
@@ -1452,6 +1475,7 @@ async def generate_entity_embeddings(request: GenerateEntityEmbeddingsRequest):
         GenerateEntityEmbeddingsResponse with counts
     """
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
         from app.services.discovery.document_entity_service import DocumentEntityService
 
         logger.info(f"🎨 Generating entity embeddings for document {request.document_id}")
@@ -1472,6 +1496,8 @@ async def generate_entity_embeddings(request: GenerateEntityEmbeddingsRequest):
             message=f"Generated {created} embeddings for {processed} entities"
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Entity embedding generation failed: {e}")
         raise HTTPException(status_code=500, detail=f"Entity embedding generation failed: {str(e)}")
@@ -1502,7 +1528,8 @@ class RegenerateTextEmbeddingsResponse(BaseModel):
 @router.post("/regenerate-text-embeddings", response_model=RegenerateTextEmbeddingsResponse)
 async def regenerate_text_embeddings(
     request: RegenerateTextEmbeddingsRequest,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Generate Voyage AI text embeddings for document chunks that are missing them.
@@ -1517,6 +1544,7 @@ async def regenerate_text_embeddings(
         RegenerateTextEmbeddingsResponse with counts
     """
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
         from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
         logger.info(f"📝 Starting text embedding regeneration for workspace: {request.workspace_id}")
@@ -1602,6 +1630,8 @@ async def regenerate_text_embeddings(
             errors=errors
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Text embedding regeneration failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to regenerate text embeddings: {str(e)}")

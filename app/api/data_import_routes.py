@@ -9,13 +9,15 @@ Endpoints for processing XML/web scraping import jobs:
 
 import logging
 from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, Depends
 from pydantic import BaseModel, Field
 from datetime import datetime
 
 from app.services.integrations.data_import_service import DataImportService
 from app.services.core.supabase_client import get_supabase_client
 from app.schemas.api_responses import ImportProcessResponse, ImportHistoryListResponse, ServiceHealthResponse
+from app.dependencies import get_current_user
+from app.api.documents.query_routes import authorize_rag_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,8 @@ class ImportHistoryResponse(BaseModel):
 @router.post("/process", response_model=ImportProcessResponse)
 async def process_import_job(
     request: ProcessImportRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    claims: Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
     """
     Start processing an import job.
@@ -94,8 +97,13 @@ async def process_import_job(
         Processing status
     """
     try:
+        # Cross-tenant guard (audit #217 H7): trust the Material-Kai service identity
+        # (the xml-import-orchestrator edge fn), else require the caller to be a member
+        # of the target workspace.
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         logger.info(f"🚀 Starting import job processing: {request.job_id}")
-        
+
         # Initialize service
         import_service = DataImportService()
         
@@ -111,14 +119,19 @@ async def process_import_job(
             "message": "Import job processing started",
             "job_id": request.job_id
         }
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Failed to start import job processing: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/jobs/{job_id}")
-async def get_import_job_status(job_id: str) -> ImportJobStatus:
+async def get_import_job_status(
+    job_id: str,
+    claims: Dict[str, Any] = Depends(get_current_user),
+) -> ImportJobStatus:
     """
     Get import job status and progress.
     
@@ -137,8 +150,10 @@ async def get_import_job_status(job_id: str) -> ImportJobStatus:
         
         if not response.data:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
-        
+
         job = response.data
+        # Cross-tenant guard (audit #217 H7): bind the caller to the job's workspace.
+        await authorize_rag_workspace(claims, job.get('workspace_id'))
         
         # Calculate progress percentage
         total = job.get('total_products', 0)
@@ -185,7 +200,8 @@ async def get_import_history(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     status: Optional[str] = Query(None, description="Filter by status"),
-    import_type: Optional[str] = Query(None, description="Filter by import type")
+    import_type: Optional[str] = Query(None, description="Filter by import type"),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ) -> ImportHistoryResponse:
     """
     Get import history for a workspace.
@@ -201,9 +217,13 @@ async def get_import_history(
         Paginated import history
     """
     try:
+        # Cross-tenant guard (audit #217 H7): only members of the workspace (or the
+        # service identity) may read its import history.
+        await authorize_rag_workspace(claims, workspace_id)
+
         supabase_wrapper = get_supabase_client()
         supabase = supabase_wrapper.client
-        
+
         # Build query
         query = supabase.table('data_import_jobs').select('*', count='exact').eq('workspace_id', workspace_id)
         
@@ -241,7 +261,9 @@ async def get_import_history(
             page=page,
             page_size=page_size
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Failed to get import history: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
