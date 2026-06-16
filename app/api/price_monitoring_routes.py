@@ -1091,24 +1091,42 @@ async def broadcast_api_announcement(
     )
     by_uid = {p["user_id"]: p for p in (profiles.data or []) if p.get("email")}
 
-    already: set = set()
+    # Idempotency dedup (audit #217 M2): email_logs has NO user_id/template_slug columns —
+    # the old query referenced non-existent columns, errored, and was swallowed, so every
+    # broadcast re-emailed everyone. Dedup on the real columns: resolve the template slug to
+    # its template_id and skip any recipient email already sent that template.
+    already_emails: set = set()
     try:
-        prior = (
-            sb.table("email_logs")
-            .select("user_id")
-            .eq("template_slug", body.template_slug)
-            .eq("status", "sent")
+        tmpl = (
+            sb.table("email_templates")
+            .select("id")
+            .eq("slug", body.template_slug)
+            .limit(1)
             .execute()
         )
-        already = {r.get("user_id") for r in (prior.data or []) if r.get("user_id")}
-    except Exception:
-        pass
+        tid = (tmpl.data or [{}])[0].get("id")
+        if tid:
+            prior = (
+                sb.table("email_logs")
+                .select("to_email")
+                .eq("template_id", tid)
+                .eq("status", "sent")
+                .execute()
+            )
+            already_emails = {
+                (r.get("to_email") or "").lower()
+                for r in (prior.data or [])
+                if r.get("to_email")
+            }
+    except Exception as e:
+        logger.warning(f"broadcast dedup lookup failed (will not skip): {e}")
 
     targets = [
         {"user_id": uid, "email": p["email"], "full_name": p.get("full_name") or "there"}
         for uid, p in by_uid.items()
-        if uid not in already
+        if (p["email"] or "").lower() not in already_emails
     ]
+    already = already_emails  # preserve the downstream `skipped_already_sent` counter
 
     if body.dry_run:
         return {"success": True, "data": {

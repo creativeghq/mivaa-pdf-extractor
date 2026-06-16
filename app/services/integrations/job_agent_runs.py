@@ -96,14 +96,20 @@ def start_run(
     refresh_run_id: str,
     triggered_by: str = "schedule",
 ) -> Optional[str]:
-    """Insert an agent_runs row in 'running' state. Returns the agent_runs.id."""
+    """Insert an agent_runs row in 'processing' state. Returns the agent_runs.id.
+
+    Uses 'processing' (NOT 'running') to match the rest of the stack — the edge
+    background-agent runner, the admin UI, and auto-recovery-cron only recognise
+    'processing'. Writing 'running' here made job-research runs invisible / mis-bucketed
+    while in flight (audit #217 M7).
+    """
     if not background_agent_id:
         return None
     try:
         sb = get_supabase_client().client
         res = sb.table("agent_runs").insert({
             "agent_id": background_agent_id,
-            "status": "running",
+            "status": "processing",
             "triggered_by": triggered_by,
             "input_data": {"refresh_run_id": refresh_run_id},
             "model_used": "claude-haiku-4-5-20251001",
