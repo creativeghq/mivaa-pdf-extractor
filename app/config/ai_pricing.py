@@ -33,6 +33,72 @@ class AIPricingConfig:
     # Users are billed at raw_cost * MARKUP_MULTIPLIER
     MARKUP_MULTIPLIER = Decimal("1.50")
 
+    # DB-driven pricing overlay (audit #217 H5). The `ai_model_pricing` admin table is
+    # authoritative: when a model_key row exists it overrides the hardcoded dicts below
+    # (which remain as a fallback so billing never breaks on a missing/unreachable row).
+    # Per-model `markup_multiplier` is honored too. Cached per-process with a short TTL
+    # so per-call billing stays cheap.
+    _DB_CACHE_TTL_SECONDS = 300
+    _db_pricing_cache: Optional[Dict[str, Dict]] = None
+    _db_pricing_cache_ts: float = 0.0
+
+    @classmethod
+    def _get_db_pricing(cls) -> Dict[str, Dict]:
+        """Load active rows from ai_model_pricing keyed by lowercased model_key.
+        Returns {} on any error so callers fall back to the hardcoded dicts."""
+        import time as _time
+        now = _time.time()
+        if cls._db_pricing_cache is not None and (now - cls._db_pricing_cache_ts) < cls._DB_CACHE_TTL_SECONDS:
+            return cls._db_pricing_cache
+        try:
+            from app.services.core.supabase_client import get_supabase_client
+            client = get_supabase_client().client
+            rows = client.table('ai_model_pricing').select(
+                'model_key, billing_type, input_price_per_million, output_price_per_million, '
+                'cost_per_generation, cost_per_unit, markup_multiplier, is_active'
+            ).eq('is_active', True).execute()
+            cache: Dict[str, Dict] = {}
+            for r in (rows.data or []):
+                key = (r.get('model_key') or '').strip().lower()
+                if not key:
+                    continue
+                cache[key] = {
+                    'input': Decimal(str(r.get('input_price_per_million') or '0')),
+                    'output': Decimal(str(r.get('output_price_per_million') or '0')),
+                    'cost_per_generation': Decimal(str(r.get('cost_per_generation') or '0')),
+                    'cost_per_unit': Decimal(str(r.get('cost_per_unit') or '0')),
+                    'markup': Decimal(str(r.get('markup_multiplier') or cls.MARKUP_MULTIPLIER)),
+                    'billing_type': r.get('billing_type'),
+                }
+            cls._db_pricing_cache = cache
+            cls._db_pricing_cache_ts = now
+            return cache
+        except Exception:
+            # Network/DB error — keep any stale cache, else empty (→ hardcoded fallback).
+            return cls._db_pricing_cache or {}
+
+    @classmethod
+    def _db_lookup(cls, model: str) -> Optional[Dict]:
+        """Exact-then-fuzzy match a model against the DB pricing cache."""
+        db = cls._get_db_pricing()
+        if not db:
+            return None
+        ml = (model or '').lower()
+        if ml in db:
+            return db[ml]
+        for key, val in db.items():
+            if key in ml or ml in key:
+                return val
+        return None
+
+    @classmethod
+    def get_model_markup(cls, model: str) -> Decimal:
+        """Per-model markup from the DB row if present, else the platform default."""
+        row = cls._db_lookup(model)
+        if row and row.get('markup'):
+            return row['markup']
+        return cls.MARKUP_MULTIPLIER
+
     # Anthropic Claude Pricing (per 1M tokens) — canonical 3 latest-tier models
     CLAUDE_PRICING = {
         "claude-opus-4-7": {
@@ -354,6 +420,12 @@ class AIPricingConfig:
         Raises:
             ValueError: If model pricing not found
         """
+        # DB overlay first (audit #217 H5): admin-edited prices win over the hardcoded
+        # defaults. Falls through to the static dicts when no row matches.
+        db_row = cls._db_lookup(model)
+        if db_row is not None and (db_row["input"] or db_row["output"]):
+            return {"input": db_row["input"], "output": db_row["output"]}
+
         all_pricing = cls.get_all_pricing()
 
         if model in all_pricing:
@@ -407,8 +479,9 @@ class AIPricingConfig:
         output_cost = (Decimal(output_tokens) / Decimal(1_000_000)) * pricing["output"]
         raw_cost = input_cost + output_cost
 
-        # Apply markup for billing
-        billed_cost = raw_cost * cls.MARKUP_MULTIPLIER if include_markup else raw_cost
+        # Apply per-model markup (DB row if present, else platform default) — audit #217 H5
+        markup = cls.get_model_markup(model)
+        billed_cost = raw_cost * markup if include_markup else raw_cost
 
         # Convert to credits (1 credit = $0.01)
         credits_to_debit = billed_cost * Decimal("100")
@@ -417,7 +490,7 @@ class AIPricingConfig:
             "input_cost_usd": input_cost,
             "output_cost_usd": output_cost,
             "raw_cost_usd": raw_cost,
-            "markup_multiplier": cls.MARKUP_MULTIPLIER,
+            "markup_multiplier": markup,
             "billed_cost_usd": billed_cost,
             "credits_to_debit": credits_to_debit
         }
@@ -563,16 +636,22 @@ class AIPricingConfig:
         Returns:
             Dict with raw_cost_usd, billed_cost_usd, credits_to_debit
         """
-        pricing = cls.REPLICATE_PRICING.get(model)
+        # DB overlay first (audit #217 H5): admin-edited per-generation price + markup win.
+        db_row = cls._db_lookup(model)
+        if db_row is not None and db_row.get("cost_per_generation"):
+            cost_per_gen = db_row["cost_per_generation"]
+            markup = db_row.get("markup") or cls.MARKUP_MULTIPLIER
+        else:
+            pricing = cls.REPLICATE_PRICING.get(model)
+            if not pricing or pricing.get("billing_type") != "per_generation":
+                raise ValueError(f"Model {model} is not configured for per-generation billing")
+            cost_per_gen = pricing.get("cost_per_generation", Decimal("0.01"))
+            markup = cls.MARKUP_MULTIPLIER
 
-        if not pricing or pricing.get("billing_type") != "per_generation":
-            raise ValueError(f"Model {model} is not configured for per-generation billing")
-
-        cost_per_gen = pricing.get("cost_per_generation", Decimal("0.01"))
         raw_cost = cost_per_gen * Decimal(num_generations)
 
         # Apply markup
-        billed_cost = raw_cost * cls.MARKUP_MULTIPLIER if include_markup else raw_cost
+        billed_cost = raw_cost * markup if include_markup else raw_cost
 
         # Convert to credits (1 credit = $0.01)
         credits_to_debit = billed_cost * Decimal("100")
@@ -580,7 +659,7 @@ class AIPricingConfig:
         return {
             "raw_cost_usd": raw_cost,
             "billed_cost_usd": billed_cost,
-            "markup_multiplier": cls.MARKUP_MULTIPLIER,
+            "markup_multiplier": markup,
             "credits_to_debit": credits_to_debit,
             "num_generations": num_generations,
             "cost_per_generation": cost_per_gen
