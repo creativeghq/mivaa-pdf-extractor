@@ -145,17 +145,13 @@ async def process_product_chunking(
         if layout_regions_by_page:
             chunking_strategy = "caller_provided_regions"
 
-    # Priority 3: Per-product DB regions (older code path that wrote
-    # `product_layout_regions` rows during Stage 4 of a prior job).
-    if not layout_regions_by_page and product_id and config.get('enable_layout_aware_chunking', True):
-        logger.info(f"   📐 Loading layout regions from product_layout_regions cache...")
-        layout_regions_by_page = await get_layout_regions(
-            product_id=product_id,
-            supabase=supabase,
-            logger=logger
-        )
-        if layout_regions_by_page:
-            chunking_strategy = "product_layout_regions_cache"
+    # Priority 3 (REMOVED — audit #217 M4): the per-product `product_layout_regions`
+    # cache is no longer written. The 2026-06-14 cutover moved layout to the doc-level
+    # PaddleOCR structural pass (Stage 1, `document_layout_analysis`), read by Priority 1
+    # above; the per-product writer in product_processor is permanently disabled
+    # (layout_regions=[]). Reading the table here only ever returned stale pre-cutover
+    # rows or nothing, so the branch + its get_layout_regions query are dropped to keep
+    # the cutover consistent. New + re-chunked products use the doc-level cache.
 
     # Telemetry: record which chunking strategy actually fired for this product.
     # `pipeline_strategy_metrics` is the per-stage distribution log the 2026-05-01
@@ -429,60 +425,8 @@ async def _classify_and_update_chunks(
     logger.info(f"   ✅ Classified {updates_made}/{len(rows)} chunks")
 
 
-async def get_layout_regions(
-    product_id: str,
-    supabase: Any,
-    logger: logging.Logger
-) -> Dict[int, List[Dict[str, Any]]]:
-    """
-    Fetch layout regions from database for a product.
-
-    Args:
-        product_id: Database product ID
-        supabase: Supabase client
-        logger: Logger instance
-
-    Returns:
-        Dict mapping page_number -> list of regions sorted by reading_order
-        Example: {1: [region1, region2], 2: [region3, region4]}
-    """
-    try:
-        # Fetch all layout regions for this product
-        result = supabase.client.table('product_layout_regions')\
-            .select('*')\
-            .eq('product_id', product_id)\
-            .order('page_number')\
-            .order('reading_order')\
-            .execute()
-
-        if not result.data:
-            logger.info(f"   No layout regions found for product {product_id}")
-            return {}
-
-        # Group regions by page number
-        regions_by_page = {}
-        for region in result.data:
-            page_num = region['page_number']
-            if page_num not in regions_by_page:
-                regions_by_page[page_num] = []
-            regions_by_page[page_num].append(region)
-
-        logger.info(f"   Loaded {len(result.data)} layout regions across {len(regions_by_page)} pages")
-        return regions_by_page
-
-    except Exception as e:
-        # Empty dict and DB-query-failure used to be indistinguishable to
-        # the caller (both fell through to text-based chunking); the only
-        # signal was an ERROR log that often got missed. Capture to Sentry
-        # so operators can react to layout-aware chunking degradation.
-        logger.error(
-            f"   ❌ Failed to fetch layout regions for product {product_id} "
-            f"(falling through to text-based chunking): {e}"
-        )
-        try:
-            import sentry_sdk
-            sentry_sdk.capture_exception(e)
-        except Exception:
-            pass
-        return {}
+# get_layout_regions() was removed in the 2026-06-14 product_layout_regions cutover
+# (audit #217 M4). It read the per-product `product_layout_regions` cache, which is no
+# longer written; layout now comes from the doc-level PaddleOCR pass cached in
+# `document_layout_analysis` (Priority 1 in chunk_product_pages).
 
