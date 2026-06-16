@@ -381,8 +381,14 @@ def debit_credits(
             "p_amount": amount,
             "p_operation_type": operation_type,
         }).execute()
-        ok = bool(result.data) if hasattr(result, "data") else True
-        return ok
+        # The RPC returns [{success: bool, ...}] — insufficient balance yields
+        # success=false (a non-empty, truthy row). bool(data) would treat that as a
+        # successful debit → paid op served free (audit #217 H3).
+        data = getattr(result, "data", None)
+        if not data:
+            return False
+        row = data[0] if isinstance(data, list) else data
+        return bool(row.get("success")) if isinstance(row, dict) else bool(row)
     except Exception as e:
         logger.info(f"mention-cost: credit debit skipped (likely insufficient): {e}")
         return False

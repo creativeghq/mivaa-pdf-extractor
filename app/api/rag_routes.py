@@ -48,6 +48,7 @@ from app.schemas.api_responses import (
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
 from app.dependencies import get_current_user, get_workspace_context, get_optional_workspace_context
+from app.api.documents.query_routes import authorize_rag_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -4455,7 +4456,8 @@ async def process_document_with_discovery(
 @router.post("/query", response_model=QueryResponse)
 async def query_documents(
     request: QueryRequest,
-    rag_service: RAGService = Depends(get_rag_service)
+    rag_service: RAGService = Depends(get_rag_service),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     **🤖 CONSOLIDATED QUERY ENDPOINT - Text-Based RAG Query**
@@ -4505,6 +4507,8 @@ async def query_documents(
     start_time = datetime.utcnow()
 
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         # Advanced RAG query using Claude 4.5
         result = await rag_service.advanced_rag_query(
             query=request.query,
@@ -4539,17 +4543,20 @@ async def query_documents(
 @router.post("/chat", response_model=ChatResponse)
 async def chat_with_documents(
     request: ChatRequest,
-    rag_service: RAGService = Depends(get_rag_service)
+    rag_service: RAGService = Depends(get_rag_service),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Conversational interface for document Q&A.
-    
+
     This endpoint maintains conversation context and provides
     contextual responses based on the document collection.
     """
     start_time = datetime.utcnow()
-    
+
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         # Generate conversation ID if not provided
         conversation_id = request.conversation_id or str(uuid4())
 
@@ -4576,7 +4583,9 @@ async def chat_with_documents(
             sources=result.get('sources', []),
             processing_time=processing_time
         )
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Chat processing failed: {e}", exc_info=True)
         raise HTTPException(
@@ -4678,7 +4687,8 @@ async def search_documents(
         True,  # ✅ ENABLED BY DEFAULT - Makes platform smarter with minimal cost ($0.0001/query)
         description="🧠 AI query parsing to automatically extract filters from natural language (e.g., 'waterproof ceramic tiles for outdoor patio, matte finish' → auto-extracts material_type, properties, finish, etc.). Set to false to disable."
     ),
-    rag_service: RAGService = Depends(get_rag_service)
+    rag_service: RAGService = Depends(get_rag_service),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     **🔍 SEARCH ENDPOINT - Multi-Vector Search with AI Query Understanding**
@@ -4827,6 +4837,8 @@ async def search_documents(
     qu_was_product_name = False
 
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         # Validate strategy
         valid_strategies = ['multi_vector', 'material', 'image']
         if strategy not in valid_strategies:
@@ -5646,7 +5658,8 @@ class KnowledgeBaseSearchResponse(BaseModel):
 async def search_knowledge_base(
     request: KnowledgeBaseSearchRequest,
     rag_service: RAGService = Depends(get_rag_service),
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     🔍 Search existing knowledge base without uploading a PDF.
@@ -5678,6 +5691,8 @@ async def search_knowledge_base(
     - "installation specifications"
     """
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         start_time = datetime.utcnow()
         logger.info(f"🔍 Knowledge base search: '{request.query}' in workspace {request.workspace_id}")
 

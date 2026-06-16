@@ -5,7 +5,6 @@ Sends notifications via Supabase Edge Function
 
 import logging
 from typing import Optional, Dict, Any, List
-from datetime import datetime
 from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -41,26 +40,24 @@ class NotificationService:
             Result dictionary with success status
         """
         try:
-            # Create notification record
+            # Write to `user_notifications` — the table the bell UI (NotificationsPanel)
+            # actually reads. The old code inserted into a dead `notifications` table that
+            # nothing reads, so every MIVAA job-lifecycle notification was silently lost
+            # (audit #217 H10). Mapping: message → body, data.action_url → action_url,
+            # full data payload → metadata.
+            payload = data or {}
             notification_data = {
                 'user_id': user_id,
-                'notification_type': notification_type,
-                'channel_type': 'email',  # Default channel
-                'status': 'pending',
+                'type': notification_type,
                 'title': title,
-                'message': message,
-                'data': data or {},
-                'created_at': datetime.utcnow().isoformat()
+                'body': message,
+                'action_url': payload.get('action_url'),
+                'is_read': False,
+                'metadata': payload,
             }
-            
-            result = self.supabase.client.table('notifications').insert(notification_data).execute()
-            
-            # Bell notification is delivered via the DB insert above (the frontend
-            # reads from the notifications table). Push delivery via the
-            # notification-dispatcher edge function is not yet wired — the
-            # dispatcher accepts 'send-push' (with subscriptions) and
-            # 'send-webhook' (with webhook endpoints), but this service doesn't
-            # have the user's push subscriptions to pass. Tracked as a follow-up.
+
+            result = self.supabase.client.table('user_notifications').insert(notification_data).execute()
+
             logger.info(f"✅ Notification saved for user {user_id}: {title}")
             return {'success': True, 'notification_id': result.data[0]['id']}
                 

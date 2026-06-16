@@ -21,6 +21,7 @@ from app.services.search.rag_service import RAGService
 from app.services.products.product_relationship_service import ProductRelationshipService
 from app.services.core.supabase_client import get_supabase_client
 from app.services.search.search_prompt_service import SearchPromptService
+from app.dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,53 @@ router = APIRouter(tags=["Documents"])
 def get_rag_service() -> RAGService:
     """Get RAG service instance"""
     return RAGService()
+
+
+async def authorize_rag_workspace(claims: Dict[str, Any], workspace_id: str) -> None:
+    """
+    Authorize an authenticated caller for a body-supplied `workspace_id`.
+
+    MIVAA is internet-reachable and the `/api/rag` prefix is excluded from the JWT
+    middleware (routes self-guard). Before this gate, /query, /chat and /search had
+    NO auth dependency and trusted the body `workspace_id` → any internet caller could
+    read any tenant's documents/chunks (audit C4). Two trusted caller shapes:
+
+    - Material Kai platform service (the edge mivaa-gateway / internal callers) —
+      `claims['service']=='mivaa'`. The gateway has already authenticated the end user
+      and debited credits, so the body `workspace_id` is trusted as-is. Test users
+      (dev/test envs) are likewise trusted.
+    - A real Supabase user JWT — must be an ACTIVE member of `workspace_id`, else 403.
+
+    `get_current_user` (HTTPBearer auto_error) already rejects callers with no/invalid
+    bearer with 401, which is what closes the unauthenticated-access hole.
+    """
+    if claims.get("service") == "mivaa" or claims.get("is_test_user"):
+        return
+
+    user_id = claims.get("sub") or claims.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing user identity")
+
+    try:
+        client = get_supabase_client()
+        resp = (
+            client.client.table("workspace_members")
+            .select("status")
+            .eq("user_id", user_id)
+            .eq("workspace_id", workspace_id)
+            .eq("status", "active")
+            .execute()
+        )
+        is_member = bool(resp.data)
+    except Exception as e:
+        logger.error(f"Workspace authorization check failed: {e}")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Workspace authorization failed")
+
+    if not is_member:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Not authorized for workspace {workspace_id}",
+        )
 
 
 # ============================================================================
@@ -238,7 +286,8 @@ async def _enhance_search_results(
 @router.post("/query", response_model=QueryResponse)
 async def query_documents(
     request: QueryRequest,
-    rag_service: RAGService = Depends(get_rag_service)
+    rag_service: RAGService = Depends(get_rag_service),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     **🤖 CONSOLIDATED QUERY ENDPOINT - Text-Based RAG Query**
@@ -290,6 +339,8 @@ async def query_documents(
     start_time = datetime.utcnow()
 
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         # Advanced RAG query using Claude 4.5
         result = await rag_service.advanced_rag_query(
             query=request.query,
@@ -325,7 +376,8 @@ async def query_documents(
 @router.post("/chat", response_model=ChatResponse)
 async def chat_with_documents(
     request: ChatRequest,
-    rag_service: RAGService = Depends(get_rag_service)
+    rag_service: RAGService = Depends(get_rag_service),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Conversational interface for document Q&A.
@@ -349,6 +401,8 @@ async def chat_with_documents(
     start_time = datetime.utcnow()
 
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         # Generate conversation ID if not provided
         conversation_id = request.conversation_id or str(uuid4())
 
@@ -376,6 +430,8 @@ async def chat_with_documents(
             processing_time=processing_time
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Chat processing failed: {e}", exc_info=True)
         raise HTTPException(
@@ -395,7 +451,8 @@ async def search_documents(
         True,  # ✅ ENABLED BY DEFAULT - Makes platform smarter with minimal cost ($0.0001/query)
         description="🧠 AI query parsing to automatically extract filters from natural language (e.g., 'waterproof ceramic tiles for outdoor patio, matte finish' → auto-extracts material_type, properties, finish, etc.). Set to false to disable."
     ),
-    rag_service: RAGService = Depends(get_rag_service)
+    rag_service: RAGService = Depends(get_rag_service),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     **🔍 SEARCH ENDPOINT - Multi-Vector Search with AI Query Understanding**
@@ -538,6 +595,8 @@ async def search_documents(
     start_time = datetime.utcnow()
 
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         # Validate strategy
         valid_strategies = ['multi_vector', 'material', 'image']
         if strategy not in valid_strategies:
@@ -737,7 +796,8 @@ async def search_documents(
 @router.post("/search/knowledge-base", response_model=KnowledgeBaseSearchResponse)
 async def search_knowledge_base(
     request: KnowledgeBaseSearchRequest,
-    rag_service: RAGService = Depends(get_rag_service)
+    rag_service: RAGService = Depends(get_rag_service),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     🔍 Search existing knowledge base without uploading a PDF.
@@ -769,6 +829,8 @@ async def search_knowledge_base(
     - "installation specifications"
     """
     try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         start_time = datetime.utcnow()
         logger.info(f"🔍 Knowledge base search: '{request.query}' in workspace {request.workspace_id}")
 

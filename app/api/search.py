@@ -59,7 +59,8 @@ from ..services.search.unified_search_service import (
 )
 
 # Import centralized dependencies
-from ..dependencies import get_rag_service, get_supabase_client
+from ..dependencies import get_rag_service, get_supabase_client, get_workspace_context
+from ..schemas.auth import WorkspaceContext
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -76,7 +77,8 @@ router = APIRouter(prefix="/api", tags=["Search", "Embeddings", "Chat"])
 async def semantic_search(
     request: SemanticSearchRequest,
     rag: RAGService = Depends(get_rag_service),
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
 ) -> SemanticSearchResponse:
     """Semantic search across `document_chunks` (1024D Voyage halfvec).
 
@@ -133,7 +135,9 @@ async def semantic_search(
                     "similarity_threshold": float(request.similarity_threshold),
                     "match_count": int(request.max_results),
                     "filter_document_ids": document_ids,
-                    "filter_workspace_id": None,
+                    # Scope to the caller's workspace — previously None, which searched
+                    # every tenant's chunks for any authenticated user (audit #217 H7).
+                    "filter_workspace_id": str(workspace_context.workspace_id),
                 },
             ).execute()
         )

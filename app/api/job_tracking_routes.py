@@ -151,12 +151,18 @@ async def create_tracked(
             costs.refund_credits(user_id=user_id, amount=debit_amount, operation_type="job_research.refresh")
         raise HTTPException(status_code=500, detail=str(e)[:200])
 
-    # If first-refresh ran but produced 0 hits AND every source failed, refund
+    # Refund the first-refresh credit on a true no-op (audit #217 H15): an explicit
+    # error, OR new candidates were found but the classifier persisted none of them.
     fr = (row.get("first_refresh") or {})
-    if debit_amount and user_id and fr.get("error"):
+    no_op = bool(fr.get("error")) or (
+        fr.get("candidates_after_exclusions", 0) > 0 and fr.get("persisted", 0) == 0
+    )
+    credits_debited = debit_amount
+    if debit_amount and user_id and no_op:
         costs.refund_credits(user_id=user_id, amount=debit_amount, operation_type="job_research.refresh")
+        credits_debited = 0
 
-    return {"data": row, "partner_credits_debited": debit_amount}
+    return {"data": row, "partner_credits_debited": credits_debited}
 
 
 @router.get("", summary="List your tracked job searches")
@@ -234,6 +240,18 @@ async def refresh_tracked(
     if outcome.get("skipped"):
         if user_id:
             costs.refund_credits(user_id=user_id, amount=debit_amount, operation_type="job_research.refresh")
+        return {"data": outcome, "partner_credits_debited": 0}
+
+    # No-op refund (audit #217 H15): if the refresh found NEW candidates but persisted
+    # none of them, the classifier dropped everything (wholesale failure or all-mismatch
+    # bug) — the partner paid and got zero listings. A legitimate "nothing new" run
+    # short-circuits earlier with no `candidates_after_exclusions` key, so it keeps the
+    # credit (upstream calls genuinely ran).
+    if user_id and outcome.get("error"):
+        costs.refund_credits(user_id=user_id, amount=debit_amount, operation_type="job_research.refresh")
+        return {"data": outcome, "partner_credits_debited": 0}
+    if user_id and outcome.get("candidates_after_exclusions", 0) > 0 and outcome.get("persisted", 0) == 0:
+        costs.refund_credits(user_id=user_id, amount=debit_amount, operation_type="job_research.refresh")
         return {"data": outcome, "partner_credits_debited": 0}
 
     return {"data": outcome, "partner_credits_debited": debit_amount}
