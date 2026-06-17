@@ -1874,14 +1874,21 @@ class ProductDiscoveryService:
                         product_name=product.name
                     )
 
-                    # NEW: Validate metadata against prototypes
-                    from app.services.metadata.metadata_prototype_validator import get_metadata_validator
+                    # NEW: Validate metadata against prototypes. The acceptance
+                    # threshold is the admin-configured per-category value from
+                    # material_categories.ai_confidence_threshold (audit #217 M3) —
+                    # resolved from the product's category, default 0.80 on miss.
+                    from app.services.metadata.metadata_prototype_validator import (
+                        get_metadata_validator,
+                        get_category_confidence_threshold,
+                    )
 
                     try:
                         validator = get_metadata_validator(job_id=job_id)
+                        _cat_threshold = await get_category_confidence_threshold(category_hint)
                         validation_result = await validator.validate_metadata(
                             extracted_metadata=extracted,
-                            confidence_threshold=0.80
+                            confidence_threshold=_cat_threshold
                         )
 
                         validated_metadata = validation_result["validated_metadata"]

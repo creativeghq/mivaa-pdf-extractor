@@ -27,6 +27,58 @@ from app.services.embeddings.real_embeddings_service import RealEmbeddingsServic
 logger = logging.getLogger(__name__)
 
 
+# ── Per-category confidence threshold (audit #217 M3) ─────────────────────────
+# Admins tune `material_categories.ai_confidence_threshold` per category bucket
+# (e.g. decor/furniture/lighting looser at 0.60, raw materials stricter at 0.80).
+# The prototype validator previously ignored that and hardcoded 0.80, so the admin
+# control was inert. The ingestion path now resolves the product's category
+# threshold here. Cached per-process (5-min TTL); falls back to the default.
+import time as _time
+
+_DEFAULT_CONFIDENCE_THRESHOLD = 0.80
+_category_threshold_cache: Optional[Dict[str, float]] = None
+_category_threshold_ts: float = 0.0
+_CATEGORY_THRESHOLD_TTL_SECONDS = 300
+
+
+async def get_category_confidence_threshold(
+    category_key: Optional[str],
+    default: float = _DEFAULT_CONFIDENCE_THRESHOLD,
+) -> float:
+    """Resolve the admin-configured prototype-validation threshold for a material
+    category bucket (material_categories.category_key). Returns `default` for an
+    unknown/empty category or on DB error."""
+    global _category_threshold_cache, _category_threshold_ts
+    if not category_key:
+        return default
+    now = _time.time()
+    if _category_threshold_cache is None or (now - _category_threshold_ts) >= _CATEGORY_THRESHOLD_TTL_SECONDS:
+        try:
+            client = get_supabase_client().client
+            res = (
+                client.table('material_categories')
+                .select('category_key, ai_confidence_threshold')
+                .eq('is_active', True)
+                .execute()
+            )
+            cache: Dict[str, float] = {}
+            for r in (res.data or []):
+                k = (r.get('category_key') or '').strip().lower()
+                t = r.get('ai_confidence_threshold')
+                if k and t is not None:
+                    try:
+                        cache[k] = float(t)
+                    except (TypeError, ValueError):
+                        pass
+            _category_threshold_cache = cache
+            _category_threshold_ts = now
+        except Exception as e:
+            logger.warning(f"category threshold load failed (using default {default}): {e}")
+            if _category_threshold_cache is None:
+                return default
+    return _category_threshold_cache.get(category_key.strip().lower(), default)
+
+
 class MetadataPrototypeValidator:
     """Validates metadata against prototype values using CLIP embeddings."""
     
