@@ -816,6 +816,8 @@ async def search_via_perplexity(
             parsed = json.loads(m.group(0)) if m else {"listings": []}
 
         for item in (parsed.get("listings") or []):
+            if not isinstance(item, dict):
+                continue
             url = (item.get("url") or "").strip()
             if not url or not url.startswith(("http://", "https://")):
                 continue
@@ -940,6 +942,8 @@ async def search_via_firecrawl_careers(
             page_company = company_hint or domain_of(url).split(".")[0].title()
 
             for item in (extracted.get("listings") or []):
+                if not isinstance(item, dict):
+                    continue
                 listing_url = (item.get("url") or "").strip()
                 if not listing_url:
                     continue

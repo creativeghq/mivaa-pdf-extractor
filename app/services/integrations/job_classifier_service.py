@@ -369,7 +369,14 @@ async def classify_batch(
                     if block.get("type") == "tool_use" and block.get("name") == "submit_classifications":
                         verdicts = (block.get("input") or {}).get("verdicts", []) or []
                         break
-                by_idx = {int(v.get("index", -1)): v for v in verdicts}
+                by_idx: Dict[int, Any] = {}
+                for v in verdicts:
+                    if not isinstance(v, dict):
+                        continue
+                    try:
+                        by_idx[int(v.get("index", -1))] = v
+                    except (ValueError, TypeError):
+                        continue
                 for local_idx, global_idx in enumerate(chunk_indices):
                     v = by_idx.get(local_idx)
                     if not v:

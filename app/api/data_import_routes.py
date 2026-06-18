@@ -148,7 +148,7 @@ async def get_import_job_status(
         supabase = supabase_wrapper.client
         
         # Get job from database
-        response = supabase.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
+        response = supabase.table('data_import_jobs').select('*').eq('id', job_id).maybe_single().execute()
         
         if not response.data:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")

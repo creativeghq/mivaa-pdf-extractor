@@ -222,7 +222,7 @@ class MentionSearchService:
         """Run all enabled sources in parallel. Returns deduped hits."""
         start = time.time()
         cfg = source_config or {}
-        country = (country_codes or [""])[0].upper() or None
+        country = ((country_codes or [""])[0] or "").upper() or None
 
         tasks: List[Tuple[str, asyncio.Task]] = []
         if sources_enabled.get("news", True):

@@ -93,8 +93,14 @@ async def authenticate_api_key(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
 
     expires_at = key.get("expires_at")
-    if expires_at and datetime.fromisoformat(expires_at.replace("Z", "+00:00")) < datetime.now(timezone.utc):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key expired")
+    if expires_at:
+        try:
+            expired = datetime.fromisoformat(expires_at.replace("Z", "+00:00")) < datetime.now(timezone.utc)
+        except (ValueError, TypeError, AttributeError):
+            # Malformed / non-string expires_at — treat as invalid rather than 500.
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key expired")
+        if expired:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key expired")
 
     # allowed_endpoints: None means allow-all. A non-empty list must include
     # the lookup endpoint path (or a trailing-wildcard prefix match).

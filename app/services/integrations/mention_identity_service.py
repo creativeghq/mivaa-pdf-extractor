@@ -626,11 +626,21 @@ Return ONLY a JSON array of length {len(candidates)}, in input order. Each entry
         out: List[Dict[str, Any]] = []
         for i in range(len(candidates)):
             v = arr[i] if i < len(arr) else {}
+            if not isinstance(v, dict):
+                v = {}
+            try:
+                relevance_score = float(v.get("relevance_score") or 0.5)
+            except (ValueError, TypeError):
+                relevance_score = 0.5
+            try:
+                sentiment_score = float(v.get("sentiment_score") or 0.0)
+            except (ValueError, TypeError):
+                sentiment_score = 0.0
             out.append({
                 "relevance": v.get("relevance") or "unverifiable",
-                "relevance_score": float(v.get("relevance_score") or 0.5),
+                "relevance_score": relevance_score,
                 "sentiment": v.get("sentiment") or "neutral",
-                "sentiment_score": float(v.get("sentiment_score") or 0.0),
+                "sentiment_score": sentiment_score,
                 "match_note": (v.get("match_note") or "")[:200],
             })
         return out

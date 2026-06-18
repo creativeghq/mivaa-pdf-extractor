@@ -827,7 +827,23 @@ class ProductDiscoveryService:
                 max_tokens=8000,
                 messages=[{"role": "user", "content": content_blocks}],
             )
-            raw = response.content[0].text.strip()
+            if not getattr(response, "content", None):
+                self.logger.error("   vision retry: Claude returned empty content (no blocks)")
+                return None
+            _text_block = next(
+                (
+                    b for b in response.content
+                    if getattr(b, "type", None) == "text" and getattr(b, "text", None)
+                ),
+                None,
+            )
+            if _text_block is None:
+                self.logger.error(
+                    "   vision retry: Claude returned no text block "
+                    f"(types: {[getattr(b, 'type', '?') for b in response.content]})"
+                )
+                return None
+            raw = _text_block.text.strip()
 
             # Strip code fences if present (same shape as text-path response).
             if "```json" in raw:
@@ -1089,7 +1105,21 @@ class ProductDiscoveryService:
                         {"role": "user", "content": prompt}
                     ]
                 )
-                content = response.content[0].text.strip()
+                if not getattr(response, "content", None):
+                    raise ValueError("Claude returned empty content (no blocks)")
+                text_block = next(
+                    (
+                        b for b in response.content
+                        if getattr(b, "type", None) == "text" and getattr(b, "text", None)
+                    ),
+                    None,
+                )
+                if text_block is None:
+                    raise ValueError(
+                        "Claude returned no text block in content "
+                        f"(types: {[getattr(b, 'type', '?') for b in response.content]})"
+                    )
+                content = text_block.text.strip()
 
                 if "```json" in content:
                     json_start = content.find("```json") + 7
@@ -1250,7 +1280,10 @@ class ProductDiscoveryService:
             page_types = {}
             if page_types_raw:
                 for page_str, page_type in page_types_raw.items():
-                    page_types[int(page_str)] = page_type
+                    try:
+                        page_types[int(page_str)] = page_type
+                    except (ValueError, TypeError):
+                        continue
 
             # Page range detection priority:
             # 1. start_page (calculate end from next product's start)
@@ -1319,7 +1352,10 @@ class ProductDiscoveryService:
         # Build page classification
         page_classification = {}
         for page_str, classification in result.get("page_classification", {}).items():
-            page_classification[int(page_str)] = classification
+            try:
+                page_classification[int(page_str)] = classification
+            except (ValueError, TypeError):
+                continue
 
         # Extract catalog-level factory info (from cover/intro pages).
         # Accept legacy alias keys (catalog_manufacturer/brand/supplier) — fold into catalog_factory.
