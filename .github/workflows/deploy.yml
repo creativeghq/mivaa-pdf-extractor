@@ -496,9 +496,13 @@ jobs:
           touch /tmp/pip-install.log
           # Use the clone's own python (-m pip) so installs target .venv_new — its activate
           # script still points at the canonical .venv path, so we must NOT 'source' it.
-          .venv_new/bin/python -m pip install --upgrade pip 2>&1 | tee -a /tmp/pip-install.log
-          echo 'Reconciling clone to requirements.txt (delta only)...'
-          .venv_new/bin/python -m pip install -r requirements.txt 2>&1 | tee -a /tmp/pip-install.log
+          # Reconcile to requirements.txt, but CONSTRAINED to the clone's current exact versions
+          # so existing (working) packages are never surprise-upgraded to a newer broken wheel —
+          # only genuinely-new packages get installed. Deterministic; a no-op when requirements
+          # is unchanged.
+          .venv_new/bin/pip freeze > /tmp/venv_constraints.txt
+          echo 'Reconciling clone to requirements.txt (constrained to current versions)...'
+          .venv_new/bin/python -m pip install -r requirements.txt -c /tmp/venv_constraints.txt 2>&1 | tee -a /tmp/pip-install.log
 
           # Blue-green: import-verify .venv_new and atomically swap it in (rollback on failure).
           # Logic lives in a script file to avoid ssh-heredoc shell-escaping pitfalls.
