@@ -542,12 +542,12 @@ jobs:
           # Test final installation
           echo 'Testing final pymupdf4llm installation...'
           python -c 'import pymupdf4llm; print(\"✅ pymupdf4llm working:\", pymupdf4llm.__version__ if hasattr(pymupdf4llm, \"__version__\") else \"version unknown\")'
-          pip install --no-deps supabase==2.3.0
-          pip install --no-deps postgrest==0.13.0
-          pip install --no-deps gotrue==2.9.1
-          pip install --no-deps storage3==0.7.7
-          pip install --no-deps supafunc==0.3.3
-          pip install --no-deps realtime==1.0.6
+          # Install the Supabase stack RESOLVED (not --no-deps) so pip pulls the correct
+          # postgrest/gotrue/storage3/supafunc/realtime + supabase-auth/supabase-functions.
+          # The old hand-pinned --no-deps supabase==2.3.0 / postgrest==0.13.0 overrode
+          # requirements.txt and shipped a postgrest with no `.or_` → 500'd the price/job
+          # crons + keyword search (2026-06-19 incident). Matches requirements.txt + live venv.
+          pip install "supabase==2.31.0"
 
           # Step 7: Install missing dependencies that --no-deps skipped (FIXED VERSIONS)
           echo 'Step 7: Installing essential dependencies with compatible versions...'
