@@ -12,6 +12,12 @@ if [ ! -d .venv_new ]; then
   exit 1
 fi
 
+# The deploy shell exports LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu for the pip build, but the
+# service runs WITHOUT it — forcing system libs ahead of the wheels' bundled native libs
+# SEGFAULTS them at import. Clear it so the verify matches the live service's runtime env (the
+# env-load below re-sets it only if the service actually uses it).
+unset LD_LIBRARY_PATH
+
 # Load the running service's exact environment (API keys etc.) so 'import app.main' — which
 # validates config at import time — succeeds during verification.
 MAINPID="$(systemctl show -p MainPID --value mivaa-pdf-extractor 2>/dev/null || echo 0)"
