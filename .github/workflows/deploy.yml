@@ -483,7 +483,13 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no root@157.245.166.19 "
           cd /var/www/mivaa-pdf-extractor
-          source .venv/bin/activate
+          # Blue-green: build a FRESH venv aside (.venv_new) and install into it, so the live
+          # service's .venv is never mutated mid-install (no degradation, no monitor flap).
+          # It is import-verified + atomically swapped in at the END of this step; on ANY
+          # failure we exit before the swap and the live venv is untouched.
+          rm -rf .venv_new
+          ./.venv/bin/python -m venv .venv_new
+          source .venv_new/bin/activate
           export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
 
           # --- Ensure pip and uv are installed ---
@@ -569,6 +575,31 @@ jobs:
           pip install aiohttp==3.9.3
 
           echo 'All dependencies installed with exact versions - no conflicts!'
+
+          # Reconcile to requirements.txt so the fresh venv is COMPLETE + authoritative (the
+          # curated --no-deps list above pins heavy packages; requirements.txt fills the rest).
+          pip install -r requirements.txt
+
+          # --- Blue-green swap ---
+          echo 'Verifying .venv_new boots app.main before swapping...'
+          deactivate || true
+          if ! ./.venv_new/bin/python -c 'import app.main'; then
+            echo '❌ .venv_new failed to import app.main — NOT swapping; live venv untouched'
+            exit 1
+          fi
+          rm -rf .venv_old
+          mv .venv .venv_old
+          mv .venv_new .venv
+          # Scripts in bin/ hard-code the build path (.venv_new) in shebangs AND the activate
+          # script's VIRTUAL_ENV — rewrite every .venv_new reference to .venv after the rename.
+          grep -rlIF '.venv_new' .venv/bin 2>/dev/null | xargs -r sed -i 's#\.venv_new#.venv#g' || true
+          if ! ./.venv/bin/python -c 'import app.main'; then
+            echo '❌ post-swap import failed — rolling back to previous venv'
+            rm -rf .venv
+            mv .venv_old .venv
+            exit 1
+          fi
+          echo '✅ Blue-green venv built + swapped (live service still serving old until restart)'
           "
 
       # 4.3. Verify package installations
