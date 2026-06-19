@@ -579,27 +579,11 @@ jobs:
           # Reconcile to requirements.txt so the fresh venv is COMPLETE + authoritative (the
           # curated --no-deps list above pins heavy packages; requirements.txt fills the rest).
           pip install -r requirements.txt
-
-          # --- Blue-green swap ---
-          echo 'Verifying .venv_new boots app.main before swapping...'
           deactivate || true
-          if ! ./.venv_new/bin/python -c 'import app.main'; then
-            echo '❌ .venv_new failed to import app.main — NOT swapping; live venv untouched'
-            exit 1
-          fi
-          rm -rf .venv_old
-          mv .venv .venv_old
-          mv .venv_new .venv
-          # Scripts in bin/ hard-code the build path (.venv_new) in shebangs AND the activate
-          # script's VIRTUAL_ENV — rewrite every .venv_new reference to .venv after the rename.
-          grep -rlIF '.venv_new' .venv/bin 2>/dev/null | xargs -r sed -i 's#\.venv_new#.venv#g' || true
-          if ! ./.venv/bin/python -c 'import app.main'; then
-            echo '❌ post-swap import failed — rolling back to previous venv'
-            rm -rf .venv
-            mv .venv_old .venv
-            exit 1
-          fi
-          echo '✅ Blue-green venv built + swapped (live service still serving old until restart)'
+
+          # Blue-green: import-verify .venv_new and atomically swap it in (rollback on failure).
+          # Logic lives in a script file to avoid ssh-heredoc shell-escaping pitfalls.
+          bash scripts/deploy/bluegreen_swap.sh
           "
 
       # 4.3. Verify package installations
