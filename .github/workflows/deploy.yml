@@ -1516,6 +1516,29 @@ jobs:
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
 
+      # 6.5 Post-deploy FLOW smoke gate.
+      # The health check above is informational and only hits /health — which stayed 200
+      # even while the price/job crons 500'd on the postgrest .or_ dep drift (2026-06-19).
+      # This step exercises the actual critical flows and FAILS the deploy if they break,
+      # so a bad dep/config change can't ship green. Reads CRON_SECRET from the live env.
+      - name: 🔥 Post-deploy flow smoke (gate)
+        run: |
+          echo "Exercising critical flows /health does not cover (.or_ cron path + embedding contract)..."
+          ssh -o StrictHostKeyChecking=no root@157.245.166.19 '
+            set -e
+            CRON=$(systemctl show mivaa-pdf-extractor -p Environment | tr " " "\n" | grep "^CRON_SECRET=" | cut -d "=" -f2)
+            echo "→ embedding contract (/api/embeddings/clip-text → 1024D)"
+            curl -fsS -m 60 -X POST http://localhost:8000/api/embeddings/clip-text \
+              -H "Content-Type: application/json" \
+              -d "{\"text\":\"deploy smoke\",\"model\":\"voyage-4\",\"input_type\":\"document\",\"dimensions\":1024}" \
+              | grep -q "\"success\": *true" || { echo "❌ EMBEDDINGS FAILED"; exit 1; }
+            echo "→ price-monitoring cron-refresh (postgrest .or_ path)"
+            curl -fsS -m 60 -X POST "http://localhost:8000/api/v1/price-monitoring/tracked-queries/cron-refresh?limit=1" \
+              -H "x-cron-secret: $CRON" \
+              | grep -q "\"success\": *true" || { echo "❌ CRON-REFRESH FAILED (likely a dependency/API regression)"; exit 1; }
+            echo "✅ Flow smoke passed"
+          '
+
       # 7. Post-Deployment Summary
       - name: 📊 Final Deployment Summary
         run: |
