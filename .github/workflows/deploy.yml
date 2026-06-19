@@ -497,88 +497,15 @@ jobs:
           pip install --upgrade pip
           pip install uv
 
-          # --- Exact version installation to prevent conflicts ---
-          echo 'Installing exact versions to prevent dependency conflicts...'
-
-          # Create pip install log file
+          # Build the venv purely from requirements.txt (RESOLVED). The old curated --no-deps
+          # pin list (numpy/scipy/opencv/httpx/supabase/... installed with no dependency
+          # resolution) produced an inconsistent binary combo that SEGFAULTED on import — and
+          # was the same brittleness that shipped postgrest 0.13 (no .or_) in the first place.
+          # A single resolved install yields a consistent stack and matches the live venv that
+          # was rebuilt this way during the 2026-06-19 incident.
           touch /tmp/pip-install.log
-
-          # CRITICAL: Use --no-deps and exact versions to prevent pip from upgrading
-
-          # Step 1: Core scientific computing with exact versions
-          echo 'Step 1: Installing core scientific computing...'
-          pip install --no-deps numpy==1.26.4
-          pip install --no-deps pandas==2.1.4
-          pip install --no-deps scipy==1.11.4
-
-          # Step 2: HTTP and API clients with exact versions
-          echo 'Step 2: Installing HTTP and API clients...'
-          pip install --no-deps httpx==0.27.0
-          pip install --no-deps requests==2.31.0
-          pip install --no-deps openai==1.51.0
-          # anthropic SDK dropped 2026-05-23 — standardized on httpx.
-          # The shim in ai_client_service._AnthropicShim* + claude_helper
-          # _call_anthropic_async/sync provides `.messages.create()` API
-          # parity without the SDK pin trap. No more "SDK too old for tools".
-
-          # Step 4: Computer vision with exact versions
-          echo 'Step 4: Installing computer vision...'
-          pip install --no-deps opencv-python-headless==4.8.0.76
-          pip install --no-deps Pillow==10.2.0
-          pip install --no-deps scikit-image==0.21.0
-          pip install --no-deps imageio==2.31.6
-
-
-          # Fix pypdf version conflict
-          pip install --no-deps pypdf==4.3.1
-
-          # Step 6: Web framework and remaining packages
-          echo 'Step 6: Installing web framework and remaining packages...'
-          pip install --no-deps fastapi==0.115.0
-          pip install --no-deps starlette==0.40.0
-          pip install --no-deps anyio==3.7.1
-          pip install --no-deps uvicorn==0.24.0
-          # Install pymupdf4llm directly - let it handle PyMuPDF dependencies
-          echo \"Installing pymupdf4llm...\" >> /tmp/pip-install.log
-          echo 'Installing pymupdf4llm - letting it handle PyMuPDF dependencies automatically...'
-
-          # Install pymupdf4llm and let pip resolve PyMuPDF dependencies
-          pip install pymupdf4llm==0.0.12 2>&1 | tee -a /tmp/pip-install.log
-
-          # Test final installation
-          echo 'Testing final pymupdf4llm installation...'
-          python -c 'import pymupdf4llm; print(\"✅ pymupdf4llm working:\", pymupdf4llm.__version__ if hasattr(pymupdf4llm, \"__version__\") else \"version unknown\")'
-          # Install the Supabase stack RESOLVED (not --no-deps) so pip pulls the correct
-          # postgrest/gotrue/storage3/supafunc/realtime + supabase-auth/supabase-functions.
-          # The old hand-pinned --no-deps supabase==2.3.0 / postgrest==0.13.0 overrode
-          # requirements.txt and shipped a postgrest with no `.or_` → 500'd the price/job
-          # crons + keyword search (2026-06-19 incident). Matches requirements.txt + live venv.
-          pip install "supabase==2.31.0"
-
-          # Step 7: Install missing dependencies that --no-deps skipped (FIXED VERSIONS)
-          echo 'Step 7: Installing essential dependencies with compatible versions...'
-          pip install pydantic==2.8.0
-          pip install pydantic-settings==2.1.0
-          pip install python-dotenv==1.0.1
-          pip install python-multipart==0.0.6
-          pip install python-dateutil==2.8.2
-          pip install PyJWT==2.10.1
-          pip install cryptography==41.0.7
-          pip install email-validator==2.1.0
-          pip install aiofiles==23.2.1
-          pip install bcrypt==4.1.2
-          pip install psutil==5.9.6
-          pip install nltk==3.9.1
-          # OCR fallbacks (easyocr, pytesseract, torch) removed 2026-05-01 —
-          # Chandra v2 retry-with-jitter handles failure modes those were "covering."
-          pip install scikit-learn==1.3.2
-          pip install aiohttp==3.9.3
-
-          echo 'All dependencies installed with exact versions - no conflicts!'
-
-          # Reconcile to requirements.txt so the fresh venv is COMPLETE + authoritative (the
-          # curated --no-deps list above pins heavy packages; requirements.txt fills the rest).
-          pip install -r requirements.txt
+          echo 'Installing dependencies from requirements.txt (resolved)...'
+          pip install -r requirements.txt 2>&1 | tee -a /tmp/pip-install.log
           deactivate || true
 
           # Blue-green: import-verify .venv_new and atomically swap it in (rollback on failure).
