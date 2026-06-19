@@ -483,30 +483,22 @@ jobs:
         run: |
           ssh -o StrictHostKeyChecking=no root@157.245.166.19 "
           cd /var/www/mivaa-pdf-extractor
-          # Blue-green: build a FRESH venv aside (.venv_new) and install into it, so the live
-          # service's .venv is never mutated mid-install (no degradation, no monitor flap).
-          # It is import-verified + atomically swapped in at the END of this step; on ANY
-          # failure we exit before the swap and the live venv is untouched.
+          # Blue-green: CLONE the known-good live venv aside (.venv_new) and apply only the
+          # dependency DELTA to the clone — the live .venv is never mutated mid-install, and we
+          # never rebuild from scratch. (A fresh 'pip install -r requirements.txt' resolves the
+          # loose >= ranges to newer wheels that have SEGFAULTED on import; cloning keeps the
+          # proven-working versions and changes only what requirements.txt actually moved.)
+          # Import-verified + atomically swapped at the END of this step; on ANY failure the
+          # live venv is untouched.
           rm -rf .venv_new
-          ./.venv/bin/python -m venv .venv_new
-          source .venv_new/bin/activate
+          cp -a .venv .venv_new
           export LD_LIBRARY_PATH=\"/usr/lib/x86_64-linux-gnu:\$LD_LIBRARY_PATH\"
-
-          # --- Ensure pip and uv are installed ---
-          python -m ensurepip --upgrade
-          pip install --upgrade pip
-          pip install uv
-
-          # Build the venv purely from requirements.txt (RESOLVED). The old curated --no-deps
-          # pin list (numpy/scipy/opencv/httpx/supabase/... installed with no dependency
-          # resolution) produced an inconsistent binary combo that SEGFAULTED on import — and
-          # was the same brittleness that shipped postgrest 0.13 (no .or_) in the first place.
-          # A single resolved install yields a consistent stack and matches the live venv that
-          # was rebuilt this way during the 2026-06-19 incident.
           touch /tmp/pip-install.log
-          echo 'Installing dependencies from requirements.txt (resolved)...'
-          pip install -r requirements.txt 2>&1 | tee -a /tmp/pip-install.log
-          deactivate || true
+          # Use the clone's own python (-m pip) so installs target .venv_new — its activate
+          # script still points at the canonical .venv path, so we must NOT 'source' it.
+          .venv_new/bin/python -m pip install --upgrade pip 2>&1 | tee -a /tmp/pip-install.log
+          echo 'Reconciling clone to requirements.txt (delta only)...'
+          .venv_new/bin/python -m pip install -r requirements.txt 2>&1 | tee -a /tmp/pip-install.log
 
           # Blue-green: import-verify .venv_new and atomically swap it in (rollback on failure).
           # Logic lives in a script file to avoid ssh-heredoc shell-escaping pitfalls.
