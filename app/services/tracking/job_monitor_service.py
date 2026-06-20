@@ -297,11 +297,18 @@ class JobMonitorService:
         try:
             cutoff_time = datetime.utcnow() - timedelta(minutes=timeout_minutes)
 
-            result = self.supabase_client.client.table("scraping_sessions")\
-                .select("*")\
-                .in_("status", ["processing", "scraping"])\
-                .lt("updated_at", cutoff_time.isoformat())\
-                .execute()
+            # Retry on transient "Server disconnected" — PostgREST's pooled
+            # connection goes stale between monitor ticks (see detect_stuck_jobs).
+            result = await execute_db_with_retry(
+                lambda: (
+                    self.supabase_client.client.table("scraping_sessions")
+                    .select("*")
+                    .in_("status", ["processing", "scraping"])
+                    .lt("updated_at", cutoff_time.isoformat())
+                    .execute()
+                ),
+                label="detect_stuck_scraping_sessions",
+            )
 
             stuck_sessions = result.data or []
 
