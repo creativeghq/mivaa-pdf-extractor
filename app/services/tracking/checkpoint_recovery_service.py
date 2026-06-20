@@ -21,6 +21,7 @@ from enum import Enum
 from app.services.core.supabase_client import get_supabase_client
 from app.utils.timestamp_utils import normalize_timestamp
 from app.utils.retry_utils import retry_async
+from app.utils.retry_helper import execute_db_with_retry
 from app.utils.query_metrics import track_query_performance
 
 logger = logging.getLogger(__name__)
@@ -344,11 +345,20 @@ class CheckpointRecoveryService:
         try:
             cutoff_time = (datetime.utcnow() - timedelta(minutes=timeout_minutes)).isoformat()
 
-            result = self.supabase_client.client.table(self.jobs_table)\
-                .select("*")\
-                .eq("status", "processing")\
-                .lt("updated_at", cutoff_time)\
-                .execute()
+            # PostgREST's pooled keep-alive connection goes stale between cron
+            # ticks and the first query raises "Server disconnected" — retry on
+            # transient connection errors so the detector survives a dropped
+            # connection instead of skipping the tick.
+            result = await execute_db_with_retry(
+                lambda: (
+                    self.supabase_client.client.table(self.jobs_table)
+                    .select("*")
+                    .eq("status", "processing")
+                    .lt("updated_at", cutoff_time)
+                    .execute()
+                ),
+                label="detect_stuck_jobs",
+            )
 
             stuck_jobs = result.data or []
 

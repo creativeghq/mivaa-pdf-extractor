@@ -177,6 +177,58 @@ def should_retry_exception(exception: Exception) -> bool:
     return False
 
 
+async def execute_db_with_retry(
+    query_factory: Callable[[], T],
+    *,
+    label: str = "db_query",
+    max_retries: int = 3,
+    initial_delay: float = 0.5,
+    max_delay: float = 8.0,
+) -> T:
+    """
+    Run a synchronous Supabase/PostgREST query with retry on transient
+    connection errors.
+
+    PostgREST keeps a pooled keep-alive HTTP connection; after a long idle
+    period (e.g. between background-cron ticks) the server closes it, so the
+    next query raises httpx "Server disconnected" / ConnectError. Re-issuing
+    the request transparently establishes a fresh connection, so a short
+    backoff retry is all that's needed.
+
+    `query_factory` MUST build AND execute the query (a zero-arg callable that
+    returns the PostgREST response). It is re-invoked from scratch on every
+    attempt so each retry issues a brand-new request rather than replaying a
+    consumed builder. Non-retryable exceptions (per `should_retry_exception`)
+    are raised immediately without burning attempts.
+    """
+    delay = initial_delay
+    last_exception = None
+
+    for attempt in range(max_retries + 1):  # +1 for the initial attempt
+        try:
+            result = query_factory()
+            if attempt > 0:
+                logger.info(
+                    f"✅ {label} succeeded on attempt {attempt + 1}/{max_retries + 1}"
+                )
+            return result
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries and should_retry_exception(e):
+                logger.warning(
+                    f"⚠️ {label} transient connection failure "
+                    f"(attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(delay)
+                delay = min(delay * 2.0, max_delay)
+                continue
+            raise
+
+    # Unreachable, but keeps type-checkers happy.
+    raise last_exception
+
+
 # Specialized decorator for database operations
 async_retry_db_operation = async_retry_with_backoff(
     max_retries=3,

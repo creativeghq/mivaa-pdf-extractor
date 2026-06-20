@@ -22,6 +22,7 @@ from app.services.tracking.checkpoint_recovery_service import (
     ProcessingStage
 )
 from app.utils.retry_utils import retry_async
+from app.utils.retry_helper import execute_db_with_retry
 from app.utils.query_metrics import track_query_performance, query_metrics
 
 logger = logging.getLogger(__name__)
@@ -330,11 +331,18 @@ class JobMonitorService:
         try:
             cutoff_time = datetime.utcnow() - timedelta(minutes=timeout_minutes)
 
-            result = self.supabase_client.client.table("data_import_jobs")\
-                .select("*")\
-                .eq("status", "processing")\
-                .lt("updated_at", cutoff_time.isoformat())\
-                .execute()
+            # Retry on transient "Server disconnected" — PostgREST's pooled
+            # connection goes stale between monitor ticks (see detect_stuck_jobs).
+            result = await execute_db_with_retry(
+                lambda: (
+                    self.supabase_client.client.table("data_import_jobs")
+                    .select("*")
+                    .eq("status", "processing")
+                    .lt("updated_at", cutoff_time.isoformat())
+                    .execute()
+                ),
+                label="detect_stuck_import_jobs",
+            )
 
             stuck_jobs = result.data or []
 
