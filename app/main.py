@@ -154,7 +154,7 @@ async def lifespan(app: FastAPI):
         if sentry_config["enabled"] and sentry_config["dsn"]:
             # Configure Sentry integrations
             integrations = [
-                FastApiIntegration(auto_enabling_integrations=False),
+                FastApiIntegration(),  # sentry-sdk 2.x removed the auto_enabling_integrations kwarg
                 LoggingIntegration(
                     level=logging.INFO,        # Capture info and above as breadcrumbs
                     event_level=logging.ERROR  # Send errors as events
@@ -201,13 +201,13 @@ async def lifespan(app: FastAPI):
             logger.info("✅ Sentry error tracking initialized successfully")
             
             # Test Sentry integration with a custom message
-            with sentry_sdk.configure_scope() as scope:
-                scope.set_tag("service", "mivaa-pdf-extractor")
-                scope.set_tag("version", settings.app_version)
-                scope.set_context("startup", {
-                    "environment": sentry_config["environment"],
-                    "debug_mode": settings.debug
-                })
+            # sentry-sdk 2.x removed configure_scope(); set tags/context on the current scope directly.
+            sentry_sdk.set_tag("service", "mivaa-pdf-extractor")
+            sentry_sdk.set_tag("version", settings.app_version)
+            sentry_sdk.set_context("startup", {
+                "environment": sentry_config["environment"],
+                "debug_mode": settings.debug,
+            })
             
             sentry_sdk.capture_message("MIVAA PDF Extractor service started", level="info")
             
