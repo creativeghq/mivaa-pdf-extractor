@@ -542,7 +542,7 @@ async def delete_job(job_id: str):
 
         # Get services
         supabase_client = get_supabase_client()
-        from app.services.core.vecs_service import get_vecs_service
+        from app.services.embeddings.vecs_service import get_vecs_service
         vecs_service = get_vecs_service()
 
         # Import cleanup service

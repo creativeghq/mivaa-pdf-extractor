@@ -1091,7 +1091,7 @@ class VecsService:
             # Note: vecs doesn't support delete by filter, so we need to query first
             results = collection.query(
                 data=[0.0] * 768,  # Dummy query
-                limit=10000,  # Large limit to get all
+                limit=1000,  # vecs caps query limit at 1000 (>1000 raises)
                 filters={"document_id": {"$eq": document_id}},
                 include_value=False,
                 include_metadata=False
@@ -1139,6 +1139,57 @@ class VecsService:
         except Exception as e:
             logger.error(f"❌ Failed to delete embeddings for document {document_id}: {e}")
             return 0
+
+    async def delete_embeddings_by_image_ids(self, image_ids: List[str]) -> int:
+        """
+        Delete embeddings for an explicit list of image IDs across all six
+        collections, keyed on the collection PRIMARY KEY (== document_images.id).
+
+        Prefer this over `delete_document_embeddings` whenever the caller
+        already knows the image_ids: that method filters the vecs collection on
+        a `document_id` *metadata* field which the ingest path never reliably
+        wrote, so it silently matched nothing and orphaned every embedding.
+        Deleting by primary key works regardless of what metadata was stored.
+
+        Args:
+            image_ids: document_images.id values (uuid strings).
+
+        Returns:
+            Number of distinct image_ids whose embeddings were purged.
+        """
+        ids = [str(i) for i in (image_ids or []) if i]
+        if not ids:
+            return 0
+
+        for col_name, dim in [
+            ("image_slig_embeddings", 768),
+            ("image_understanding_embeddings", 1024),
+            ("image_color_embeddings", 1024),
+            ("image_texture_embeddings", 1024),
+            ("image_style_embeddings", 1024),
+            ("image_material_embeddings", 1024),
+        ]:
+            try:
+                col = self.get_or_create_collection(name=col_name, dimension=dim)
+                col.delete(ids=ids)
+            except Exception as col_err:
+                logger.warning(f"Bulk vecs delete from {col_name} failed: {col_err}")
+
+        # Clear the presence flags for these images in one update.
+        try:
+            self._get_supabase_rest().client.table('document_images').update({
+                'has_slig_embedding': False,
+                'has_understanding_embedding': False,
+                'has_color_slig': False,
+                'has_texture_slig': False,
+                'has_style_slig': False,
+                'has_material_slig': False,
+            }).in_('id', ids).execute()
+        except Exception as flag_err:
+            logger.warning(f"Failed to clear embedding flags for {len(ids)} images: {flag_err}")
+
+        logger.info(f"✅ Purged embeddings for {len(ids)} image(s) across all collections")
+        return len(ids)
 
 
 # Global instance

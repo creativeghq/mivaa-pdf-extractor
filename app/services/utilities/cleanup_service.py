@@ -689,12 +689,17 @@ class CleanupService:
                 self.logger.info(f"   Stats: {stats}")
                 return stats
 
-            # 1b. Resolve the canonical product_id list for this job. Products
-            # may be linked via:
+            # 1b. Resolve the canonical product_id list for this job. The real
+            # products.id (a UUID) is reachable via:
             #   - `products.source_job_id = job_id`           (XML import, scraping, PDF stage_4)
             #   - `products.source_document_id = document_id` (PDF, legacy rows)
-            #   - `product_processing_status.job_id = job_id` (defensive — per-product progress table)
-            # Union all three so we don't leave orphans regardless of pipeline.
+            # NOTE: we deliberately do NOT union in
+            # `product_processing_status.product_id` — that column is a TEXT
+            # business key (e.g. "product_5_CASTELLO"), NOT the products.id
+            # UUID. Feeding it into `.in_('id', …)` raised 22P02 and aborted
+            # every product + product-child delete. pps rows are cleaned by
+            # job_id separately (step 7b). We also UUID-validate the final list
+            # as belt-and-braces so a stray non-UUID can never poison the query.
             product_ids: List[str] = []
             try:
                 pid_set = set()
@@ -716,16 +721,18 @@ class CleanupService:
                         if row.get('id'):
                             pid_set.add(row['id'])
 
-                pps_response = supabase_client.client.table('product_processing_status')\
-                    .select('product_id')\
-                    .eq('job_id', job_id)\
-                    .execute()
-                for row in (pps_response.data or []):
-                    pid = row.get('product_id')
-                    if pid:
-                        pid_set.add(pid)
+                # Keep only well-formed UUIDs — products.id is uuid; anything
+                # else would raise 22P02 on the .in_('id', …) deletes below.
+                import uuid as _uuid
 
-                product_ids = list(pid_set)
+                def _is_uuid(v) -> bool:
+                    try:
+                        _uuid.UUID(str(v))
+                        return True
+                    except (ValueError, AttributeError, TypeError):
+                        return False
+
+                product_ids = [p for p in pid_set if _is_uuid(p)]
                 if product_ids:
                     self.logger.info(f"📦 Resolved {len(product_ids)} products tied to job {job_id}")
             except Exception as e:
@@ -781,17 +788,22 @@ class CleanupService:
                 stats['errors'].append(f"Chunks deletion failed: {str(e)}")
 
             # 3. Delete embeddings from vecs.
-            # `delete_document_embeddings` already wipes the primary +
-            # specialized image collections by document_id. The previous
-            # follow-up call to `delete_image_embeddings_by_document` was
-            # a typo — that method does not exist on VecsService — and the
-            # AttributeError was being swallowed silently, double-counting
-            # would never have triggered anyway.
-            if document_id and vecs_service:
+            # Delete by the resolved image_id PKs (collection id == document_images.id),
+            # NOT by `delete_document_embeddings(document_id)`. That method filters
+            # the vecs collection on a `document_id` *metadata* field that the
+            # ingest path never reliably wrote — so it found 0 ids and deleted
+            # nothing, orphaning every embedding while reporting success.
+            # `delete_embeddings_by_image_ids` deletes by primary key across all
+            # six collections, which works regardless of stored metadata. Fall
+            # back to the metadata path only when we have no image_ids at all.
+            if vecs_service and (image_ids or document_id):
                 try:
-                    image_emb_deleted = await vecs_service.delete_document_embeddings(document_id)
-                    stats['embeddings_deleted'] += image_emb_deleted
-                    self.logger.info(f"✅ Deleted {stats['embeddings_deleted']} embeddings from vecs")
+                    if image_ids:
+                        emb_deleted = await vecs_service.delete_embeddings_by_image_ids(image_ids)
+                    else:
+                        emb_deleted = await vecs_service.delete_document_embeddings(document_id)
+                    stats['embeddings_deleted'] += emb_deleted
+                    self.logger.info(f"✅ Deleted {stats['embeddings_deleted']} image embedding set(s) from vecs")
                 except Exception as e:
                     self.logger.error(f"Failed to delete embeddings: {e}")
                     stats['errors'].append(f"Embeddings deletion failed: {str(e)}")
@@ -800,9 +812,10 @@ class CleanupService:
             # These tables don't have a job_id of their own; they're keyed off
             # image_id, so we need the resolved image_ids list.
             if image_ids:
+                # NOTE: image_metafield_values was dropped from the schema —
+                # do not attempt to delete from it (PGRST205 every run).
                 for table_name, stat_key in [
                     ('chunk_image_relationships',  'chunk_image_relationships_deleted'),
-                    ('image_metafield_values',     'image_metafield_values_deleted'),
                     ('image_validations',          'image_validations_deleted'),
                     ('image_product_associations', 'image_product_associations_deleted'),
                 ]:
@@ -843,10 +856,12 @@ class CleanupService:
             # have not always added it consistently, and a missed cascade
             # leaves orphans that survive every cleanup pass.
             if product_ids:
+                # NOTE: product_enrichments is keyed by chunk_id (no product_id
+                # column) so it cannot be deleted by product_id (42703 every
+                # run); its rows are chunk-scoped and removed with the chunks.
                 for table_name, stat_key in [
                     ('product_layout_regions',     'product_layout_regions_deleted'),
                     ('product_tables',             'product_tables_deleted'),
-                    ('product_enrichments',        'product_enrichments_deleted'),
                     ('image_product_associations', 'image_product_associations_deleted'),
                 ]:
                     try:
@@ -1007,18 +1022,38 @@ class CleanupService:
                 self.logger.warning(f"⚠️ Scraping companion table cleanup skipped: {e}")
                 stats['errors'].append(f"Scraping companion cleanup failed: {str(e)}")
 
-            # 10. Delete job record
+            # 10. Delete job record.
+            # NOTE: deleting the document in step 9 CASCADEs to background_jobs
+            # (background_jobs.document_id is ON DELETE CASCADE), so the job row
+            # may already be gone — and the explicit delete below can even raise
+            # a transient "Server disconnected" right after a large cascade. We
+            # therefore define job_deleted as "is the row actually gone now?",
+            # determined by an existence check that runs EVEN IF the delete
+            # raises, so a fully-successful wipe never returns a spurious 404.
             try:
-                job_del_response = supabase_client.client.table('background_jobs')\
+                supabase_client.client.table('background_jobs')\
                     .delete()\
                     .eq('id', job_id)\
                     .execute()
-
-                stats['job_deleted'] = len(job_del_response.data) > 0 if job_del_response.data else False
-                self.logger.info(f"✅ Deleted job record")
             except Exception as e:
-                self.logger.error(f"Failed to delete job: {e}")
-                stats['errors'].append(f"Job deletion failed: {str(e)}")
+                self.logger.warning(
+                    f"Explicit job-row delete raised (row may already be "
+                    f"cascade-deleted by the document delete): {e}"
+                )
+
+            try:
+                check = supabase_client.client.table('background_jobs')\
+                    .select('id')\
+                    .eq('id', job_id)\
+                    .execute()
+                stats['job_deleted'] = not bool(check.data)
+            except Exception as e:
+                # Verification call itself failed; the successful document
+                # delete already cascade-removes the job, so treat as deleted
+                # rather than emit a spurious failure.
+                stats['job_deleted'] = bool(stats.get('document_deleted'))
+                self.logger.warning(f"Could not verify job-row deletion: {e}")
+            self.logger.info(f"✅ Job row removed (job_deleted={stats['job_deleted']})")
 
             # 11. Clean temporary files
             if document_id:
