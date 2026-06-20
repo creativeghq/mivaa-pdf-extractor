@@ -61,16 +61,47 @@ _FINE_CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
 }
 
 
-def _resolve_default_unit(material_category: Optional[str]) -> str:
+# #227 — the coarse "upload categories" are admin-managed in the `material_categories`
+# table (each row carries its own default_unit). The hardcoded _CATEGORY_DEFAULT_UNITS
+# above only knows the original 10 buckets, so an 11th category added in admin would fall
+# through to 'pcs'. Load the table's coarse key→unit map at runtime (cached per process,
+# fully guarded) so admin-added categories resolve their configured unit; the hardcoded
+# map stays as the fallback. NOTE: this is the COARSE bucket map — it deliberately does
+# NOT touch the fine-grained MATERIAL_CATEGORY_VOCAB (a different, finer vocabulary).
+_DB_CATEGORY_UNITS: Optional[Dict[str, str]] = None
+
+
+def _load_db_category_units(supabase: Any) -> Dict[str, str]:
+    global _DB_CATEGORY_UNITS
+    if _DB_CATEGORY_UNITS is not None:
+        return _DB_CATEGORY_UNITS
+    units: Dict[str, str] = {}
+    try:
+        resp = supabase.client.table('material_categories') \
+            .select('category_key, default_unit').eq('is_active', True).execute()
+        for row in (resp.data or []):
+            key = (row.get('category_key') or '').lower().strip()
+            unit = row.get('default_unit')
+            if key and unit:
+                units[key] = unit
+    except Exception:
+        units = {}
+    _DB_CATEGORY_UNITS = units
+    return _DB_CATEGORY_UNITS
+
+
+def _resolve_default_unit(material_category: Optional[str], supabase: Any = None) -> str:
     """Resolve default unit from material category.
 
     Resolution order:
       1. Exact match against the fine-grained MATERIAL_CATEGORY_VOCAB map
          (e.g. 'porcelain_tile' → 'sqm').
-      2. Exact match against the coarse upload-bucket map ('tiles' → 'sqm').
-      3. Fuzzy substring match against the coarse map (catches mid-pipeline
+      2. Admin-managed coarse buckets from the material_categories table (#227) —
+         honors categories added in admin beyond the original 10.
+      3. Exact match against the hardcoded coarse upload-bucket map ('tiles' → 'sqm').
+      4. Fuzzy substring match against the hardcoded coarse map (catches mid-pipeline
          normalizations that strip the suffix).
-      4. Fallback to 'pcs'.
+      5. Fallback to 'pcs'.
     """
     if not material_category:
         return 'pcs'
@@ -78,10 +109,15 @@ def _resolve_default_unit(material_category: Optional[str]) -> str:
     # 1. Fine-grained vocab match — most specific wins
     if cat in _FINE_CATEGORY_DEFAULT_UNITS:
         return _FINE_CATEGORY_DEFAULT_UNITS[cat]
-    # 2. Coarse bucket exact match
+    # 2. Admin-managed coarse buckets (authoritative for the upload taxonomy)
+    if supabase is not None:
+        db_units = _load_db_category_units(supabase)
+        if cat in db_units:
+            return db_units[cat]
+    # 3. Hardcoded coarse bucket exact match (fallback)
     if cat in _CATEGORY_DEFAULT_UNITS:
         return _CATEGORY_DEFAULT_UNITS[cat]
-    # 3. Fuzzy match against coarse buckets
+    # 4. Fuzzy match against coarse buckets
     for key, unit in _CATEGORY_DEFAULT_UNITS.items():
         if key in cat or cat in key:
             return unit
@@ -530,7 +566,7 @@ async def create_single_product(
 
     # Set default unit from category if not already present
     if not metadata.get('unit'):
-        metadata['unit'] = _resolve_default_unit(metadata.get('material_category'))
+        metadata['unit'] = _resolve_default_unit(metadata.get('material_category'), supabase)
 
     # ── Auto-canonicalize descriptive facets (multilingual auto-merge) ────
     # Whitelisted facet values (color, material, finish, style, …) flow
