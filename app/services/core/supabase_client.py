@@ -6,13 +6,108 @@ for database operations and storage management.
 """
 
 import logging
+import time
 import httpx
+import inspect
+import functools
+import importlib
 from datetime import datetime
 from typing import Any, Dict, Optional
 from supabase import create_client, Client
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
+
+# Guard so the central PostgREST .execute() retry patch is installed once per
+# process, no matter how many times initialize() runs.
+_postgrest_retry_installed = False
+
+
+def _install_postgrest_retry_once(
+    max_retries: int = 3,
+    initial_delay: float = 0.5,
+    max_delay: float = 8.0,
+) -> None:
+    """
+    Centralize transient-disconnect retry for EVERY Supabase/PostgREST query.
+
+    PostgREST keeps a pooled keep-alive HTTP connection; after an idle period
+    the server closes it, so the next query raises httpx "Server disconnected"
+    / ConnectError. We were patching this per call-site (job_monitor_service,
+    rag_service, …) — easy to miss. Instead, wrap the sync request-builder's
+    `.execute()` at the library boundary so a fresh request is re-issued
+    transparently on transient failures.
+
+    This single patch covers BOTH access paths:
+      • sync   — `supabase_client.client.table(...).execute()`
+      • async  — `supabase_client.async_client.table(...).execute()`, which
+                 dispatches the SAME sync `.execute()` via asyncio.to_thread.
+
+    Discovers the builder classes that define their own `execute` (rather than
+    hardcoding class names) so it survives postgrest version bumps. Non-retryable
+    errors (per should_retry_exception) propagate immediately.
+    """
+    global _postgrest_retry_installed
+    if _postgrest_retry_installed:
+        return
+
+    from app.utils.retry_helper import should_retry_exception
+
+    try:
+        module = importlib.import_module("postgrest._sync.request_builder")
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"⚠️ PostgREST retry patch skipped (import failed): {e}")
+        return
+
+    def _wrap(original):
+        @functools.wraps(original)
+        def execute_with_retry(self, *args, **kwargs):
+            delay = initial_delay
+            for attempt in range(max_retries + 1):  # +1 for the initial attempt
+                try:
+                    result = original(self, *args, **kwargs)
+                    if attempt > 0:
+                        logger.info(
+                            f"✅ PostgREST query succeeded on attempt "
+                            f"{attempt + 1}/{max_retries + 1}"
+                        )
+                    return result
+                except Exception as e:
+                    if attempt < max_retries and should_retry_exception(e):
+                        logger.warning(
+                            f"⚠️ PostgREST transient failure "
+                            f"(attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        time.sleep(delay)
+                        delay = min(delay * 2.0, max_delay)
+                        continue
+                    raise
+        execute_with_retry._mivaa_retry_wrapped = True  # type: ignore[attr-defined]
+        return execute_with_retry
+
+    patched = []
+    for name, obj in vars(module).items():
+        if not inspect.isclass(obj):
+            continue
+        # Only patch classes that define their OWN execute (subclasses that
+        # inherit it are covered transitively through the patched parent).
+        execute = obj.__dict__.get("execute")
+        if execute is None or getattr(execute, "_mivaa_retry_wrapped", False):
+            continue
+        obj.execute = _wrap(execute)
+        patched.append(name)
+
+    _postgrest_retry_installed = True
+    if patched:
+        logger.info(
+            f"✅ Installed central PostgREST .execute() retry on: {', '.join(patched)}"
+        )
+    else:
+        logger.warning(
+            "⚠️ PostgREST retry patch found no builder classes to wrap "
+            "(library layout changed?) — falling back to per-call-site retries."
+        )
 
 
 class SupabaseClient:
@@ -89,7 +184,11 @@ class SupabaseClient:
                 supabase_url=settings.supabase_url,
                 supabase_key=supabase_key
             )
-            
+
+            # Centralize transient-disconnect retry for every query (sync + async)
+            # at the PostgREST builder boundary — see _install_postgrest_retry_once.
+            _install_postgrest_retry_once()
+
             logger.info("Supabase client initialized successfully")
             
         except Exception as e:
