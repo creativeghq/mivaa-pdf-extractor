@@ -26,6 +26,7 @@ import gc
 # Import utilities
 from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
 from app.utils.memory_monitor import memory_monitor
+from app.utils.retry_utils import retry_sync
 
 # Import services
 from ..embeddings.real_embeddings_service import RealEmbeddingsService
@@ -90,8 +91,11 @@ class RAGService:
 
     def _load_classification_prompt(self) -> Optional[str]:
         """Load image classification prompt from database."""
-        try:
-            result = self.supabase_client.client.table('prompts')\
+        # Retry on transient "Server disconnected" — PostgREST's pooled
+        # connection can be stale on a cold worker (see job_monitor_service).
+        @retry_sync(max_attempts=3, base_delay=2.0)
+        def _query():
+            return self.supabase_client.client.table('prompts')\
                 .select('prompt_text')\
                 .eq('prompt_type', 'classification')\
                 .eq('stage', 'image_analysis')\
@@ -100,6 +104,9 @@ class RAGService:
                 .order('version', desc=True)\
                 .limit(1)\
                 .execute()
+
+        try:
+            result = _query()
 
             if result.data and len(result.data) > 0:
                 self.logger.info("✅ Loaded classification prompt from database")
