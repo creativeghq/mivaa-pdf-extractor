@@ -265,11 +265,15 @@ class AIPricingConfig:
             "last_verified": "2026-01-23",
             "source": "https://replicate.com/pricing"
         },
-        "stable-diffusion-3": {
+        # Keyed by the model "id" used in interior_design_routes (sd3), not the
+        # Replicate model path (stability-ai/stable-diffusion-3) — the AI call
+        # logger logs model.get("id"), so the pricing key must match the id.
+        "sd3": {
             "cost_per_generation": Decimal("0.055"),
             "billing_type": "per_generation",
             "last_verified": "2026-01-23",
-            "source": "https://replicate.com/pricing"
+            "source": "https://replicate.com/pricing",
+            "note": "Stable Diffusion 3 (stability-ai/stable-diffusion-3)"
         },
         # Image-to-Image Models (Interior Design)
         "comfyui-interior-remodel": {
