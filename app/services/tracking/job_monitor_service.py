@@ -21,8 +21,6 @@ from app.services.tracking.checkpoint_recovery_service import (
     checkpoint_recovery_service,
     ProcessingStage
 )
-from app.utils.retry_utils import retry_async
-from app.utils.retry_helper import execute_db_with_retry
 from app.utils.query_metrics import track_query_performance, query_metrics
 
 logger = logging.getLogger(__name__)
@@ -225,11 +223,6 @@ class JobMonitorService:
             logger.error(f"❌ Error detecting crashed-at-startup jobs: {e}")
             return []
 
-    @retry_async(
-        max_attempts=3,
-        base_delay=2.0,
-        exceptions=(Exception,)
-    )
     @track_query_performance("background_jobs", "select_heartbeat_timeout")
     async def _detect_heartbeat_timeout_jobs(self, heartbeat_timeout_seconds: int = 900) -> List[Dict[str, Any]]:
         """
@@ -297,18 +290,11 @@ class JobMonitorService:
         try:
             cutoff_time = datetime.utcnow() - timedelta(minutes=timeout_minutes)
 
-            # Retry on transient "Server disconnected" — PostgREST's pooled
-            # connection goes stale between monitor ticks (see detect_stuck_jobs).
-            result = await execute_db_with_retry(
-                lambda: (
-                    self.supabase_client.client.table("scraping_sessions")
-                    .select("*")
-                    .in_("status", ["processing", "scraping"])
-                    .lt("updated_at", cutoff_time.isoformat())
-                    .execute()
-                ),
-                label="detect_stuck_scraping_sessions",
-            )
+            result = self.supabase_client.client.table("scraping_sessions")\
+                .select("*")\
+                .in_("status", ["processing", "scraping"])\
+                .lt("updated_at", cutoff_time.isoformat())\
+                .execute()
 
             stuck_sessions = result.data or []
 
@@ -338,18 +324,11 @@ class JobMonitorService:
         try:
             cutoff_time = datetime.utcnow() - timedelta(minutes=timeout_minutes)
 
-            # Retry on transient "Server disconnected" — PostgREST's pooled
-            # connection goes stale between monitor ticks (see detect_stuck_jobs).
-            result = await execute_db_with_retry(
-                lambda: (
-                    self.supabase_client.client.table("data_import_jobs")
-                    .select("*")
-                    .eq("status", "processing")
-                    .lt("updated_at", cutoff_time.isoformat())
-                    .execute()
-                ),
-                label="detect_stuck_import_jobs",
-            )
+            result = self.supabase_client.client.table("data_import_jobs")\
+                .select("*")\
+                .eq("status", "processing")\
+                .lt("updated_at", cutoff_time.isoformat())\
+                .execute()
 
             stuck_jobs = result.data or []
 

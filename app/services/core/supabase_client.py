@@ -13,7 +13,7 @@ import functools
 import importlib
 from datetime import datetime
 from typing import Any, Dict, Optional
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -173,16 +173,24 @@ class SupabaseClient:
             if not settings.supabase_anon_key:
                 raise ValueError("SUPABASE_ANON_KEY is required but not provided")
             
-            # Create httpx client with connection pooling
+            # Create httpx client with connection pooling.
+            # keepalive_expiry=30s makes the client recycle idle connections
+            # BEFORE PostgREST's gateway closes them, which is the root cause of
+            # the transient "Server disconnected" errors (the central retry in
+            # _install_postgrest_retry_once is the safety net for the residual).
             self._httpx_client = self._create_httpx_client()
             logger.info("✅ Created httpx client with connection pooling (max_connections=50, max_keepalive=20)")
 
             # Create Supabase client
             # Use service role key if available, otherwise use anon key
             supabase_key = settings.supabase_service_role_key or settings.supabase_anon_key
+            # Inject the tuned httpx client so the pool config above actually
+            # applies to PostgREST (supabase plumbs options.httpx_client into the
+            # postgrest sub-client). Without this the config was dead.
             self._client = create_client(
                 supabase_url=settings.supabase_url,
-                supabase_key=supabase_key
+                supabase_key=supabase_key,
+                options=ClientOptions(httpx_client=self._httpx_client),
             )
 
             # Centralize transient-disconnect retry for every query (sync + async)
