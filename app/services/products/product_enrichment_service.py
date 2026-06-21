@@ -264,7 +264,7 @@ RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
             from app.services.core.claude_helper import tracked_claude_call
             response = tracked_claude_call(
                 task="product_enrichment_description",
-                model="claude-opus-4-7",
+                model="claude-opus-4-8",
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}],
             )

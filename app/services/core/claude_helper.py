@@ -63,7 +63,7 @@ _DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
 # (status: deprecated → invalid_request_error 400). Callers can keep passing
 # temperature; we silently drop it for these models so the call still succeeds.
 _MODELS_WITHOUT_TEMPERATURE = (
-    "claude-opus-4-7",
+    "claude-opus-4-8",
     "claude-opus-4-6",
 )
 

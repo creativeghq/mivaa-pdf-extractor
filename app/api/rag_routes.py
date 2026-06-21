@@ -1704,7 +1704,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
             # Extract parameters from job metadata (works for both legacy and discovery jobs)
             job_metadata = job_data.get('metadata', {})
-            discovery_model = job_metadata.get('discovery_model', 'claude-opus-4-7')
+            discovery_model = job_metadata.get('discovery_model', 'claude-opus-4-8')
             categories = job_metadata.get('categories', ['products'])
             enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
             agent_prompt = job_metadata.get('agent_prompt')
@@ -1935,7 +1935,7 @@ async def reprocess_document(
             .execute()
         prev_job = (jobs_resp.data or [{}])[0] if jobs_resp.data else {}
 
-        discovery_model = prev_job.get("discovery_model") or "claude-opus-4-7"
+        discovery_model = prev_job.get("discovery_model") or "claude-opus-4-8"
         extract_categories = prev_job.get("extract_categories") or []
 
         # ── 2. Resolve PDF on disk ─────────────────────────────────────
@@ -5347,7 +5347,7 @@ async def get_rag_statistics(
             "ai_models": {
                 "embeddings": "SLIG SigLIP2 768D / Voyage AI 1024D",
                 "rag_synthesis": "Claude Opus 4.7",
-                "vision": "claude-opus-4-7"
+                "vision": "claude-opus-4-8"
             }
         }
 

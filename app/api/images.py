@@ -144,7 +144,7 @@ async def analyze_image(
         "quality": 0.92
       },
       "processing_time": 1.23,
-      "model_used": "claude-opus-4-7"
+      "model_used": "claude-opus-4-8"
     }
     ```
 

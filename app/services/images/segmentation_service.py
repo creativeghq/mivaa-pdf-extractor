@@ -169,7 +169,7 @@ class SegmentationService:
         return "image/jpeg"  # safe fallback
 
     async def _segment_with_anthropic(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
-        """Call Anthropic claude-opus-4-7 for segmentation."""
+        """Call Anthropic claude-opus-4-8 for segmentation."""
         import httpx
         media_type = self._detect_media_type(image_base64)
         async with httpx.AsyncClient(timeout=120) as client:
@@ -181,7 +181,7 @@ class SegmentationService:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-opus-4-7",
+                    "model": "claude-opus-4-8",
                     "max_tokens": 16384,
                     "messages": [
                         {

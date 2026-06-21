@@ -101,7 +101,7 @@ class AIPricingConfig:
 
     # Anthropic Claude Pricing (per 1M tokens) — canonical 3 latest-tier models
     CLAUDE_PRICING = {
-        "claude-opus-4-7": {
+        "claude-opus-4-8": {
             "input": Decimal("15.00"),
             "output": Decimal("75.00"),
             "last_verified": "2026-04-18",
@@ -415,7 +415,7 @@ class AIPricingConfig:
         Get pricing for a specific model.
 
         Args:
-            model: Model name (e.g., 'claude-haiku-4-5', 'claude-opus-4-7', 'voyage-4')
+            model: Model name (e.g., 'claude-haiku-4-5', 'claude-opus-4-8', 'voyage-4')
             provider: Optional provider hint ('anthropic', 'openai', 'huggingface', 'firecrawl')
 
         Returns:

@@ -112,7 +112,7 @@ class AICallLogger:
         
         Args:
             task: Type of task (document_classification, product_extraction, etc.)
-            model: AI model used (claude-opus-4-7, claude-haiku-4-5, voyage-4, etc.)
+            model: AI model used (claude-opus-4-8, claude-haiku-4-5, voyage-4, etc.)
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
             cost: Cost in USD
@@ -303,7 +303,7 @@ class AICallLogger:
 
         Args:
             task: Type of task
-            model: Claude model (claude-opus-4-7, claude-opus-4-7, claude-haiku-4-5)
+            model: Claude model (claude-opus-4-8, claude-opus-4-8, claude-haiku-4-5)
             response: Claude API response object
             latency_ms: Latency in milliseconds
             confidence_score: Calculated confidence score
@@ -754,7 +754,7 @@ class AICallLogger:
 
         Args:
             page_num: PDF page number processed
-            model: Vision model used (e.g., claude-opus-4-7, claude-haiku-4-5)
+            model: Vision model used (e.g., claude-opus-4-8, claude-haiku-4-5)
             detections: Number of products detected on page
             confidence: Average detection confidence (0.0-1.0)
             latency_ms: Latency in milliseconds

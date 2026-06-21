@@ -1305,7 +1305,7 @@ async def _build_aspect_query_embedding(
                         "content-type": "application/json",
                     },
                     json={
-                        "model": "claude-opus-4-7",
+                        "model": "claude-opus-4-8",
                         "max_tokens": 4096,
                         "tools": [VISION_ANALYSIS_TOOL],
                         "tool_choice": {"type": "tool", "name": "emit_vision_analysis"},

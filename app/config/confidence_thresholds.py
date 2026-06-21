@@ -194,14 +194,14 @@ class EscalationRules:
     MODEL_CHAIN = [
         "claude-haiku-4-5",   # Cheapest vision-capable
         "claude-sonnet-4-6",  # Balanced
-        "claude-opus-4-7",    # Most powerful (for critical tasks)
+        "claude-opus-4-8",    # Most powerful (for critical tasks)
     ]
 
     # Cost multipliers (Haiku 4.5 = baseline post-Qwen-removal).
     COST_MULTIPLIERS = {
         "claude-haiku-4-5": 1.0,       # Baseline
         "claude-sonnet-4-6": 4.0,
-        "claude-opus-4-7": 12.0,       # Opus is the top-tier model
+        "claude-opus-4-8": 12.0,       # Opus is the top-tier model
     }
     
     # Maximum escalation attempts before giving up

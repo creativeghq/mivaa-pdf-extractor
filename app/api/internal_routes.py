@@ -203,7 +203,7 @@ async def classify_images(
 
     AI Configuration (Optional):
     - classification_primary_model: Primary classification model (default: claude-haiku-4-5)
-    - classification_validation_model: Validation model (default: claude-opus-4-7)
+    - classification_validation_model: Validation model (default: claude-opus-4-8)
     - classification_confidence_threshold: Threshold for validation (default: 0.7)
     - classification_temperature: Temperature setting (default: 0.1)
     - classification_max_tokens: Max tokens for responses (default: 512)
@@ -215,7 +215,7 @@ async def classify_images(
       "extracted_images": [...],
       "ai_config": {
         "classification_primary_model": "claude-haiku-4-5",
-        "classification_validation_model": "claude-opus-4-7",
+        "classification_validation_model": "claude-opus-4-8",
         "classification_confidence_threshold": 0.8
       }
     }

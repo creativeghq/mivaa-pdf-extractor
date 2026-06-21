@@ -192,7 +192,7 @@ class ImageProcessingService:
         # model — Stage 3 has been single-tier since Qwen was removed
         # (2026-05-01). The primary/validation parameters are kept for
         # call-site compatibility but the values flow into telemetry only.
-        primary_model = primary_model or 'claude-opus-4-7'
+        primary_model = primary_model or 'claude-opus-4-8'
         validation_model = validation_model or _cfg.anthropic_model_validation
 
         classification_start_time = time.time()
@@ -232,7 +232,7 @@ class ImageProcessingService:
             Tool use guarantees schema-conformant JSON output (no regex
             recovery, no markdown stripping, no `_invalid_response` branch).
             The `model` argument is now a tag used purely for logging; the
-            actual model is always `claude-opus-4-7`.
+            actual model is always `claude-opus-4-8`.
             """
             import time
             import httpx
@@ -281,7 +281,7 @@ class ImageProcessingService:
                             'content-type': 'application/json',
                         },
                         json={
-                            'model': 'claude-opus-4-7',
+                            'model': 'claude-opus-4-8',
                             'max_tokens': 1024,
                             'tools': [classify_tool],
                             'tool_choice': {'type': 'tool', 'name': 'emit_classification'},
@@ -310,7 +310,7 @@ class ImageProcessingService:
                         'is_material': False,
                         'confidence': 0.0,
                         'reason': f'Anthropic API error {response.status_code}',
-                        'model': 'claude-opus-4-7_api_error',
+                        'model': 'claude-opus-4-8_api_error',
                         'error': error_body,
                     }
 
@@ -325,7 +325,7 @@ class ImageProcessingService:
                         'is_material': False,
                         'confidence': 0.0,
                         'reason': 'No tool_use block returned',
-                        'model': 'claude-opus-4-7_invalid_response',
+                        'model': 'claude-opus-4-8_invalid_response',
                     }
 
                 result = tool_block['input']
@@ -343,7 +343,7 @@ class ImageProcessingService:
 
                 await ai_logger.log_ai_call(
                     task="image_classification",
-                    model="claude-opus-4-7",
+                    model="claude-opus-4-8",
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cost=cost,
@@ -371,19 +371,19 @@ class ImageProcessingService:
                     'reason': reason,
                     'classification': classification_category,
                     'product_indicators': result.get('product_indicators') or [],
-                    'model': 'claude-opus-4-7',
+                    'model': 'claude-opus-4-8',
                 }
 
             except Exception as e:
                 logger.error(
-                    f"❌ CLASSIFICATION FAILED for {image_path} | model=claude-opus-4-7 "
+                    f"❌ CLASSIFICATION FAILED for {image_path} | model=claude-opus-4-8 "
                     f"| {type(e).__name__}: {str(e)[:200]}"
                 )
                 return {
                     'is_material': False,
                     'confidence': 0.0,
-                    'reason': f'claude-opus-4-7 failed: {str(e)}',
-                    'model': 'claude-opus-4-7_failed',
+                    'reason': f'claude-opus-4-8 failed: {str(e)}',
+                    'model': 'claude-opus-4-8_failed',
                     'error': str(e),
                 }
             finally:

@@ -1717,7 +1717,7 @@ class RAGService:
             # Step 4: Call Claude Opus 4.7
             client = self.ai_client_service.anthropic
             response = client.messages.create(
-                model="claude-opus-4-7",
+                model="claude-opus-4-8",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -1728,7 +1728,7 @@ class RAGService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_claude_call(
                 task="rag_query_document",
-                model="claude-opus-4-7",
+                model="claude-opus-4-8",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=0.85,
@@ -1755,7 +1755,7 @@ class RAGService:
                 "metadata": {
                     "chunks_retrieved": len(chunks),
                     "processing_time_ms": latency_ms,
-                    "model": "claude-opus-4-7"
+                    "model": "claude-opus-4-8"
                 }
             }
 
@@ -1886,7 +1886,7 @@ class RAGService:
             # Step 6: Call Claude Opus 4.7
             client = self.ai_client_service.anthropic
             response = client.messages.create(
-                model="claude-opus-4-7",
+                model="claude-opus-4-8",
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -1901,7 +1901,7 @@ class RAGService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_claude_call(
                 task=f"rag_advanced_query_{query_type}",
-                model="claude-opus-4-7",
+                model="claude-opus-4-8",
                 response=response,
                 latency_ms=latency_ms,
                 confidence_score=confidence,
@@ -1944,7 +1944,7 @@ class RAGService:
                     "query_type": query_type,
                     "has_conversation_context": conversation_context is not None,
                     "processing_time_ms": latency_ms,
-                    "model": "claude-opus-4-7"
+                    "model": "claude-opus-4-8"
                 }
             }
 
@@ -2018,7 +2018,7 @@ class RAGService:
                         'content-type': 'application/json',
                     },
                     json={
-                        'model': 'claude-opus-4-7',
+                        'model': 'claude-opus-4-8',
                         'max_tokens': 4096,
                         'tools': [VISION_ANALYSIS_TOOL],
                         'tool_choice': {'type': 'tool', 'name': 'emit_vision_analysis'},
@@ -2091,7 +2091,7 @@ class RAGService:
                     'confidence_score': confidence_score,
                     'material_properties': material_properties,
                     'vision_analysis': result,  # full schema-locked dict for embedding
-                    'model': 'claude-opus-4-7'
+                    'model': 'claude-opus-4-8'
                 }
 
         except Exception as e:
@@ -2176,7 +2176,7 @@ class RAGService:
                         'content-type': 'application/json',
                     },
                     json={
-                        'model': 'claude-opus-4-7',
+                        'model': 'claude-opus-4-8',
                         'max_tokens': 1024,
                         'tools': [classify_tool],
                         'tool_choice': {'type': 'tool', 'name': 'emit_classification'},
@@ -2230,7 +2230,7 @@ class RAGService:
                     'reason': reason,
                     'classification': classification,
                     'product_indicators': result.get('product_indicators') or [],
-                    'model': 'claude-opus-4-7'
+                    'model': 'claude-opus-4-8'
                 }
 
         except Exception as e:

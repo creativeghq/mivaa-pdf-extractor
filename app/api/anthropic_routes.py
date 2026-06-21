@@ -148,7 +148,7 @@ async def validate_image_with_claude(
     - **Max image size**: 10MB
     - **Timeout**: 30 seconds
     - **Rate limit**: 60 requests/minute
-    - **Model**: claude-opus-4-7
+    - **Model**: claude-opus-4-8
     """
     try:
         import time
@@ -190,7 +190,7 @@ Respond in JSON format:
         from app.services.core.claude_helper import tracked_claude_call
         response = tracked_claude_call(
             task="image_validation_vision",
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             max_tokens=2048,
             messages=[
                 {
@@ -237,7 +237,7 @@ Respond in JSON format:
             "metadata": {
                 "content_description": analysis_result.get("content_description"),
                 "materials_identified": analysis_result.get("materials_identified"),
-                "model_used": "claude-opus-4-7",
+                "model_used": "claude-opus-4-8",
             },
         }
 
@@ -312,7 +312,7 @@ Focus on:
         from app.services.core.claude_helper import tracked_claude_call
         response = tracked_claude_call(
             task="product_enrichment_chunk",
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             max_tokens=2048,
             messages=[
                 {
@@ -351,7 +351,7 @@ Focus on:
             "metadata": {
                 "key_features": enrichment_data.get("key_features"),
                 "use_cases": enrichment_data.get("use_cases"),
-                "model_used": "claude-opus-4-7",
+                "model_used": "claude-opus-4-8",
             },
         }
 
@@ -404,7 +404,7 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
 
         # Call Claude Vision API
         response = anthropic_client.messages.create(
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             max_tokens=1024,
             messages=[{
                 "role": "user",
@@ -446,7 +446,7 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
 
         await ai_logger.log_claude_call(
             task="test_vision_integration",
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             response=response,
             latency_ms=latency_ms,
             confidence_score=confidence_score,
@@ -460,7 +460,7 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
             "claude_response": response_text,
             "processing_time_ms": processing_time,
             "api_key_available": bool(settings.anthropic_api_key),
-            "model_used": "claude-opus-4-7"
+            "model_used": "claude-opus-4-8"
         }
 
     except Exception as e:
@@ -470,7 +470,7 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
         latency_ms = int((time.time() - start_time) * 1000)
         await ai_logger.log_ai_call(
             task="test_vision_integration",
-            model="claude-opus-4-7",
+            model="claude-opus-4-8",
             input_tokens=0,
             output_tokens=0,
             cost=0.0,
