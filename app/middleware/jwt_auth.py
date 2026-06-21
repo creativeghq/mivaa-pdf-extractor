@@ -640,7 +640,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # Must match the rest of the stack: only *active* members pass. A
             # pending/removed member must not be able to use the X-Workspace-Id
             # override to reach a workspace they no longer belong to.
-            response = self.supabase.client.table("workspace_members").select("status").eq(
+            response = self.supabase.table("workspace_members").select("status").eq(
                 "user_id", user_id
             ).eq("workspace_id", workspace_id).eq("status", "active").execute()
 

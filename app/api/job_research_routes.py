@@ -152,7 +152,7 @@ async def create_tracked_job(
     svc = get_job_research_service()
     try:
         row = await svc.create(
-            owner_user_id=str(user.id),
+            owner_user_id=str(user.get("sub")),
             workspace_id=str(workspace.id) if workspace else None,
             **body.model_dump(exclude_none=True),
         )
@@ -169,7 +169,7 @@ async def regenerate_keywords(
     """Re-run Haiku keyword expansion. Returns the new expanded list + the rejected suggestions."""
     svc = get_job_research_service()
     try:
-        result = await svc.regenerate_keywords(tracked_job_id, owner_user_id=str(user.id))
+        result = await svc.regenerate_keywords(tracked_job_id, owner_user_id=str(user.get("sub")))
     except RuntimeError as e:
         raise HTTPException(status_code=404, detail=str(e))
     return result
@@ -181,7 +181,7 @@ async def list_tracked_jobs(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    return {"tracked_jobs": svc.list_for_user(str(user.id), only_active=only_active)}
+    return {"tracked_jobs": svc.list_for_user(str(user.get("sub")), only_active=only_active)}
 
 
 @router.get("/track/{tracked_job_id}")
@@ -190,7 +190,7 @@ async def get_tracked_job(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    row = svc.get(tracked_job_id, owner_user_id=str(user.id))
+    row = svc.get(tracked_job_id, owner_user_id=str(user.get("sub")))
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
     return {"tracked_job": row}
@@ -203,7 +203,7 @@ async def update_tracked_job(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    row = svc.update(tracked_job_id, str(user.id), body.model_dump(exclude_none=True))
+    row = svc.update(tracked_job_id, str(user.get("sub")), body.model_dump(exclude_none=True))
     return {"tracked_job": row}
 
 
@@ -213,7 +213,7 @@ async def delete_tracked_job(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    ok = svc.deactivate(tracked_job_id, str(user.id))
+    ok = svc.deactivate(tracked_job_id, str(user.get("sub")))
     if not ok:
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
@@ -230,7 +230,7 @@ async def refresh_tracked_job(
 ):
     svc = get_job_research_service()
     # Ownership check
-    if not svc.get(tracked_job_id, owner_user_id=str(user.id)):
+    if not svc.get(tracked_job_id, owner_user_id=str(user.get("sub"))):
         raise HTTPException(status_code=404, detail="Not found")
     outcome = await svc.refresh(tracked_job_id, force=force, force_full_discovery=force_full_discovery)
     return outcome
@@ -246,7 +246,7 @@ async def list_listings(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    if not svc.get(tracked_job_id, owner_user_id=str(user.id)):
+    if not svc.get(tracked_job_id, owner_user_id=str(user.get("sub"))):
         raise HTTPException(status_code=404, detail="Not found")
     rows = svc.list_listings(
         tracked_job_id, relevance=relevance, days=days,
@@ -262,7 +262,7 @@ async def get_summary(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    if not svc.get(tracked_job_id, owner_user_id=str(user.id)):
+    if not svc.get(tracked_job_id, owner_user_id=str(user.get("sub"))):
         raise HTTPException(status_code=404, detail="Not found")
     return svc.summary(tracked_job_id, days=days)
 
@@ -276,7 +276,7 @@ async def add_exclusion(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    if not svc.get(tracked_job_id, owner_user_id=str(user.id)):
+    if not svc.get(tracked_job_id, owner_user_id=str(user.get("sub"))):
         raise HTTPException(status_code=404, detail="Not found")
     try:
         row = svc.add_exclusion(tracked_job_id, **body.model_dump(exclude_none=True))
@@ -291,7 +291,7 @@ async def list_exclusions(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    if not svc.get(tracked_job_id, owner_user_id=str(user.id)):
+    if not svc.get(tracked_job_id, owner_user_id=str(user.get("sub"))):
         raise HTTPException(status_code=404, detail="Not found")
     return {"exclusions": svc.list_exclusions(tracked_job_id)}
 
@@ -319,7 +319,7 @@ async def mark_listing(
 ):
     svc = get_job_research_service()
     try:
-        row = svc.mark_listing(listing_id, action=body.action, user_id=str(user.id), notes=body.notes)
+        row = svc.mark_listing(listing_id, action=body.action, user_id=str(user.get("sub")), notes=body.notes)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"listing": row}
@@ -351,14 +351,14 @@ async def correct_match(
             raise HTTPException(status_code=404, detail="listing not found")
 
         # Confirm tracked_job is owned by the user (RLS enforces, but we want a clean 403)
-        owner_check = svc.get(listing_row["tracked_job_id"], owner_user_id=str(user.id))
+        owner_check = svc.get(listing_row["tracked_job_id"], owner_user_id=str(user.get("sub")))
         if not owner_check:
             raise HTTPException(status_code=403, detail="not your listing")
 
         svc.sb.table("job_match_corrections").insert({
             "tracked_job_id": listing_row["tracked_job_id"],
             "job_listing_id": listing_id,
-            "user_id": str(user.id),
+            "user_id": str(user.get("sub")),
             "original_relevance": listing_row.get("relevance"),
             "corrected_relevance": body.corrected_relevance,
             "reason": (body.reason or None),
@@ -421,7 +421,7 @@ async def create_job_site(
             "category": body.category,
             "is_enabled": body.is_enabled,
             "notes": body.notes,
-            "created_by": str(user.id),
+            "created_by": str(user.get("sub")),
         }).execute()
     except Exception as e:
         msg = str(e)
@@ -495,7 +495,7 @@ async def create_job_sites_bulk(
                 "category": body.category,
                 "notes": body.notes,
                 "is_enabled": True,
-                "created_by": str(user.id),
+                "created_by": str(user.get("sub")),
             }).execute()
             created += 1
         except Exception as e:
