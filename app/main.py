@@ -1933,7 +1933,6 @@ from app.api.saved_searches_routes import router as saved_searches_router
 from app.api.duplicate_detection_routes import router as duplicate_detection_router
 from app.api.suggestions import router as suggestions_router
 from app.api.data_import_routes import router as data_import_router
-from app.api.web_scraping_routes import router as web_scraping_router
 from app.api.job_health_routes import router as job_health_router
 from app.api.knowledge_base import router as knowledge_base_router
 from app.api.category_prototypes import router as category_prototypes_router
@@ -1983,8 +1982,7 @@ app.include_router(extraction_config_router)  # Extraction configuration
 app.include_router(saved_searches_router)  # NEW: Saved searches with AI deduplication
 app.include_router(duplicate_detection_router)  # NEW: Duplicate detection and product merging (same factory only)
 app.include_router(suggestions_router)  # NEW: Search suggestions, auto-complete, trending, typo correction
-app.include_router(data_import_router)  # NEW: Data import (XML, web scraping) with batch processing
-app.include_router(web_scraping_router)  # NEW: Web scraping session processing (Firecrawl integration)
+app.include_router(data_import_router)  # NEW: Data import (XML) with batch processing
 app.include_router(job_health_router)  # NEW: Job health monitoring (heartbeat, stuck jobs, performance metrics)
 app.include_router(knowledge_base_router)  # NEW: Knowledge Base & Documentation System
 app.include_router(category_prototypes_router)  # NEW: Category prototype management for material validation
@@ -2151,15 +2149,14 @@ def custom_openapi():
         "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
         "monitoring_routes": "/, /metrics, /performance/summary (3 endpoints)",
         "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary",
-        "web_scraping_routes": "/api/scraping/* (2 endpoints) - Firecrawl integration, web content to products",
         "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 endpoints) - Relationship queries",
         "module_routes": "/api/v1/modules/* (3 endpoints) - Module-system control (POST /_invalidate) + greek-marketplaces module (GET /status, POST /search) — gated by public.modules row"
     }
 
     # Add platform statistics (UPDATED - Corrected counts after audit)
     openapi_schema["info"]["x-platform-stats"] = {
-        "total_endpoints": 130,  # Corrected: 25+16+13+10+10+8+7+7+7+5+4+4+3+3+3+2+2+2 = 130
-        "endpoint_categories": 18,  # Corrected: Added internal_routes and web_scraping_routes
+        "total_endpoints": 128,  # web_scraping_routes (2) removed
+        "endpoint_categories": 17,  # web_scraping_routes removed
         "ai_models": 13,
         "processing_stages": 14,
         "embedding_types": 6,

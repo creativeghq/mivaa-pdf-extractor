@@ -9,12 +9,6 @@ from app.services.tracking.xml_import_stages import (
     get_xml_import_progress,
     XML_IMPORT_STAGE_DESCRIPTIONS,
 )
-from app.services.tracking.web_scraping_stages import (
-    WebScrapingStage,
-    WEB_SCRAPING_STAGE_ORDER,
-    get_web_scraping_progress,
-    WEB_SCRAPING_STAGE_DESCRIPTIONS,
-)
 
 __all__ = [
     # PDF Processing
@@ -24,9 +18,4 @@ __all__ = [
     "XML_IMPORT_STAGE_ORDER",
     "get_xml_import_progress",
     "XML_IMPORT_STAGE_DESCRIPTIONS",
-    # Web Scraping
-    "WebScrapingStage",
-    "WEB_SCRAPING_STAGE_ORDER",
-    "get_web_scraping_progress",
-    "WEB_SCRAPING_STAGE_DESCRIPTIONS",
 ]
