@@ -734,6 +734,13 @@ class VecsService:
                 logger.warning(f"Empty query embedding for {embedding_type} search")
                 return []
 
+            # Tenancy: refuse an unscoped aspect search. Without a workspace filter this returned
+            # image matches across ALL tenants. The aspect rows now carry workspace_id in metadata,
+            # so a real workspace_id scopes correctly; a missing one fails closed.
+            if not workspace_id:
+                logger.error(f"{embedding_type} aspect search called without workspace_id — refusing (returning empty)")
+                return []
+
             collection_name = collection_mapping[embedding_type]
             collection = self.get_or_create_collection(
                 name=collection_name,

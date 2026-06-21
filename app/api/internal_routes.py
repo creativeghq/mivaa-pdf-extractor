@@ -1167,6 +1167,7 @@ async def regenerate_image_embeddings(
                         embeddings=specialized_embeddings,
                         metadata={
                             'document_id': image.get('document_id'),
+                            'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)
                         },
                         embedding_model=aspect_emb_model,

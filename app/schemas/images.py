@@ -312,6 +312,11 @@ class ImageSearchRequest(BaseModel):
     limit: int = Field(10, ge=1, le=50, description="Maximum number of results")
     similarity_threshold: float = Field(0.7, ge=0.0, le=1.0, description="Minimum similarity score")
     
+    # Tenancy (required) — scopes results to the caller's workspace. The gateway validates the
+    # caller is a member of this workspace before forwarding; without it the search returned
+    # document_images across ALL tenants.
+    workspace_id: Optional[str] = Field(None, description="Workspace to scope the search to (required)")
+
     # Filters
     document_ids: Optional[List[str]] = Field(None, description="Limit search to specific documents")
     image_types: Optional[List[str]] = Field(None, description="Filter by image types (diagram, photo, etc.)")

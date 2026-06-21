@@ -411,6 +411,11 @@ async def search_similar_images(
 
     Supports both image-to-image and text-to-image search.
     """
+    # Tenancy: scope to the caller's workspace. Required — without it the query below returned
+    # document_images across ALL tenants. The gateway validates the caller is a member of this
+    # workspace before forwarding. Raised before the inner try/except so it surfaces as a 400.
+    if not request.workspace_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="workspace_id is required")
     try:
         logger.info(f"Starting image similarity search")
         start_time = datetime.utcnow()
@@ -427,6 +432,9 @@ async def search_similar_images(
         try:
             # Query images from database based on search criteria
             query = supabase.client.table('document_images').select('*')
+
+            # Tenancy filter — never return another workspace's images.
+            query = query.eq('workspace_id', request.workspace_id)
 
             # Apply filters if provided
             if request.document_ids:

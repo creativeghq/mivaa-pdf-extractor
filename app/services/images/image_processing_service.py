@@ -1647,6 +1647,7 @@ class ImageProcessingService:
                         embeddings=specialized_embeddings,
                         metadata={
                             'document_id': document_id,
+                            'workspace_id': workspace_id,
                             'page_number': img_data.get('page_number', 1)
                         },
                         embedding_model=aspect_emb_model,

@@ -90,13 +90,20 @@ async def process_scraping_session(
 
         session = session_response.data
 
+        # Tenancy: use the session's OWN workspace_id (set when the authenticated user created the
+        # session), NOT the request body field — a caller could otherwise pass an arbitrary
+        # workspace_id and ingest scraped products into another tenant.
+        session_workspace_id = session.get("workspace_id")
+        if not session_workspace_id:
+            raise HTTPException(status_code=400, detail="Scraping session has no workspace_id")
+
         # Initialize service
         scraping_service = WebScrapingService(model=request.model)
 
         # Create background job for tracking
         job_id = await scraping_service.create_background_job(
             session_id=request.session_id,
-            workspace_id=request.workspace_id,
+            workspace_id=session_workspace_id,
             categories=request.categories or ["products"]
         )
 
@@ -114,7 +121,7 @@ async def process_scraping_session(
             try:
                 result = await scraping_service.process_scraping_session(
                     session_id=request.session_id,
-                    workspace_id=request.workspace_id,
+                    workspace_id=session_workspace_id,
                     categories=request.categories or ["products"],
                     job_id=job_id
                 )
@@ -203,7 +210,10 @@ async def retry_session_processing(
                 detail=f"Session status is '{session['status']}', can only retry 'failed' or 'completed' sessions"
             )
 
-        workspace_id = session.get("workspace_id") or "default"
+        # Never fall back to a shared "default" workspace — that would cross tenants.
+        workspace_id = session.get("workspace_id")
+        if not workspace_id:
+            raise HTTPException(status_code=400, detail="Scraping session has no workspace_id")
         scraping_service = WebScrapingService(model="claude")
 
         # Create a fresh background job for the retry
