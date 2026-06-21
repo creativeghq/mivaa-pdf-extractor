@@ -58,6 +58,72 @@ from app.dependencies import get_current_user, get_workspace_context, get_option
 
 logger = logging.getLogger(__name__)
 
+
+async def require_rag_resource_access(
+    request: Request,
+    workspace_context = Depends(get_optional_workspace_context),
+):
+    """FastAPI dependency authorizing a caller against the workspace that owns the resource a
+    sensitive /api/rag route operates on — resolved from the request (job_id → background_jobs,
+    document_id → documents, path param or ?document_id query).
+
+    The /api/rag prefix is excluded from the global JWT middleware (it's called by edge functions
+    with a service-role JWT), so destructive/read routes here would otherwise be reachable
+    UNAUTHENTICATED by anyone who can guess a document_id/job_id. This mirrors resume_job's
+    in-body guard: allow the x-cron-secret automation bypass, else require a JWT whose workspace
+    owns the target. Attached via the route decorator's `dependencies=[...]` so it runs ONLY for
+    real HTTP calls — internal callers (e.g. resume_job -> restart_job_from_checkpoint) invoke the
+    handler directly and are unaffected. Fail-closed on any lookup error.
+    """
+    cron_secret_header = (request.headers.get("x-cron-secret") or "").strip()
+    expected_cron_secret = (os.getenv("CRON_SECRET") or "").strip()
+    if expected_cron_secret and cron_secret_header == expected_cron_secret:
+        return  # trusted automation (auto-recovery cron)
+
+    if workspace_context is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required. Provide a Bearer JWT, or an x-cron-secret header for trusted automation.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    job_id = request.path_params.get("job_id")
+    document_id = request.path_params.get("document_id") or request.query_params.get("document_id")
+    if job_id:
+        table, id_value, label = "background_jobs", job_id, "job"
+    elif document_id:
+        table, id_value, label = "documents", document_id, "document"
+    else:
+        # A list endpoint with no resource id would otherwise return rows across all tenants.
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A document_id or job_id is required.",
+        )
+
+    try:
+        sb = get_supabase_client()
+        row = sb.client.table(table).select("workspace_id").eq("id", str(id_value)).single().execute()
+        if not row.data:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{label} not found")
+        resource_ws = str(row.data.get("workspace_id") or "")
+        if resource_ws and resource_ws != str(workspace_context.workspace_id):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You are not a member of the workspace that owns this {label}.",
+            )
+    except HTTPException:
+        raise
+    except Exception as ownership_err:
+        logger.error(
+            f"require_rag_resource_access({table}, {id_value}) raised: {ownership_err}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Could not verify {label} ownership; refusing the operation.",
+        )
+
+
 # ============================================================================
 # Background Task Helper for Async Functions
 # ============================================================================
@@ -1411,7 +1477,7 @@ async def get_job_checkpoints(job_id: str):
         )
 
 
-@router.post("/jobs/{job_id}/restart", response_model=StatusResponse)
+@router.post("/jobs/{job_id}/restart", response_model=StatusResponse, dependencies=[Depends(require_rag_resource_access)])
 async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundTasks):
     """
     Manually restart a job from its last checkpoint.
@@ -1816,7 +1882,7 @@ async def resume_job(
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
-@router.post("/documents/{document_id}/reprocess")
+@router.post("/documents/{document_id}/reprocess", dependencies=[Depends(require_rag_resource_access)])
 async def reprocess_document(
     document_id: str,
     background_tasks: BackgroundTasks,
@@ -2079,7 +2145,7 @@ async def list_jobs(
         )
 
 
-@router.delete("/documents/jobs/{job_id}")
+@router.delete("/documents/jobs/{job_id}", dependencies=[Depends(require_rag_resource_access)])
 async def delete_job(
     job_id: str,
     preserve_outputs: Optional[bool] = Query(
@@ -2207,7 +2273,7 @@ async def delete_job(
         )
 
 
-@router.get("/chunks", responses={200: {"model": ListDataResponse}})
+@router.get("/chunks", responses={200: {"model": ListDataResponse}}, dependencies=[Depends(require_rag_resource_access)])
 async def get_chunks(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of chunks to return"),
@@ -2270,7 +2336,7 @@ async def get_chunks(
         )
 
 
-@router.get("/images", responses={200: {"model": ListDataResponse}})
+@router.get("/images", responses={200: {"model": ListDataResponse}}, dependencies=[Depends(require_rag_resource_access)])
 async def get_images(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of images to return"),
@@ -2321,7 +2387,7 @@ async def get_images(
         )
 
 
-@router.get("/products", responses={200: {"model": ListDataResponse}})
+@router.get("/products", responses={200: {"model": ListDataResponse}}, dependencies=[Depends(require_rag_resource_access)])
 async def get_products(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of products to return"),
@@ -2395,7 +2461,7 @@ async def get_products(
         )
 
 
-@router.get("/embeddings", responses={200: {"model": ListDataResponse}})
+@router.get("/embeddings", responses={200: {"model": ListDataResponse}}, dependencies=[Depends(require_rag_resource_access)])
 async def get_embeddings(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     embedding_type: Optional[str] = Query(None, description="Filter by embedding type (text, visual, color, texture, style, material, understanding)"),
