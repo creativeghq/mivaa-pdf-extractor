@@ -61,11 +61,12 @@ MAX_PAGES_TO_SCAN = 10  # cap on knowledge pages per catalog (last 10 pages)
 
 # Prompt returns a flat JSON schema so we can loop over fields without
 # guessing nested structure.
-KNOWLEDGE_PROMPT = """You are reading a page from the END of a ceramic tile catalog. These pages contain catalog-wide content that applies to ALL products in the catalog.
+KNOWLEDGE_PROMPT = """You are reading a page from the END of a ceramic tile (or similar building-material) catalog. These pages contain catalog-wide content that applies to ALL products in the catalog.
 
 Classify this page into ONE of these types (or "none" if it's something else):
 
-- "iconography"     — legend explaining what spec icons mean (R9/R10/R11, PEI I-V, water absorption classes, shade variation V1-V4)
+- "iconography"     — legend explaining what spec/technical icons mean (R9/R10/R11, PEI I-V, water absorption classes, shade variation V1-V4, frost/chemical resistance, suitability symbols)
+- "packing"         — packing / logistics legend or table: pieces per box, m² (or sq ft) per box, weight per box, boxes per pallet, m²/weight per pallet, pallet dimensions, tile thickness, sold-by-piece vs sold-by-m²
 - "regulation"      — technical standards, regulations, test norms (EN 14411, ANSI A137.1, DIN 51130, UNE, ISO)
 - "installation"    — handling and installation recommendations (thin-set, joint width, substrate, cutting)
 - "care"            — cleaning and maintenance instructions (neutral pH, sealants, stain removal)
@@ -75,12 +76,19 @@ Classify this page into ONE of these types (or "none" if it's something else):
 - "brand"           — brand introduction, mission statement, about the company
 - "none"            — cover page, product photos, index, contact info, or anything not matching the above
 
+CRITICAL — TRANSCRIBE, DO NOT SUMMARISE. For "iconography" and "packing" pages you MUST read every icon/symbol and every row of any table and write down its EXACT meaning and EXACT value. NEVER write generic descriptions like "includes information on pieces per box, weight per box, ..." or "detailed packing specifications with icons for ..." — that is useless and will be rejected. Instead transcribe each icon/row with three things:
+  1. the icon/symbol itself, described in a few words (e.g. "box", "stacked boxes / pallet", "scales / weight", "ruler / thickness", "hand", "foot", "shower");
+  2. the label or term printed next to it (if bilingual, give the English term);
+  3. the actual VALUE printed on the page if there is one (e.g. "12 pcs", "1.44 m²", "25 kg", "R10", "PEI IV", "120×80×91 cm"). Use "—" ONLY when the page is a definition-only legend with no numbers next to the icon.
+
+Render the iconography/packing content as a markdown table with columns: `Icon | Meaning | Value`. If the page shows multiple tile formats each with their own packing numbers, add a row per format (put the format in the Meaning column).
+
 Return STRICT JSON ONLY (no prose, no markdown fences):
 
 {
-  "page_type": "iconography" | "regulation" | "installation" | "care" | "sustainability" | "certification" | "legal" | "brand" | "none",
-  "title": "Concise section title, e.g. 'Technical Standards' or 'Care Instructions'",
-  "content_markdown": "The page content as clean markdown. Preserve structure (headings, lists, tables). Strip page numbers, artifacts. If text is bilingual, keep ONLY the English version. Maximum 3000 characters.",
+  "page_type": "iconography" | "packing" | "regulation" | "installation" | "care" | "sustainability" | "certification" | "legal" | "brand" | "none",
+  "title": "Concise section title, e.g. 'Technical Characteristics Legend' or 'Packing Information'",
+  "content_markdown": "The page content as clean markdown. For iconography/packing pages this MUST be the per-icon / per-row table described above with the real labels and values — NOT a summary. Preserve any other structure (headings, lists, tables). Strip page numbers and artifacts. If text is bilingual, keep ONLY the English version. Maximum 4500 characters.",
   "key_points": ["bullet 1", "bullet 2", "..."],
   "certifications": ["ISO 14001", "ISO 9001", "CE", "LEED", "EN 14411", "..."],
   "language": "en"
@@ -170,7 +178,7 @@ def _call_claude_vision_knowledge(
         resp = tracked_claude_call(
             task="catalog_knowledge_extraction",
             model=KNOWLEDGE_VISION_MODEL,
-            max_tokens=3000,
+            max_tokens=4096,
             messages=[{
                 "role": "user",
                 "content": [
@@ -218,6 +226,7 @@ def _call_claude_vision_knowledge(
 # `kb_docs.metadata.page_type` for display purposes on the frontend.
 PAGE_TYPE_TO_RELATIONSHIP: Dict[str, str] = {
     "iconography":    "related",
+    "packing":        "specification",
     "regulation":     "specification",
     "installation":   "specification",
     "care":           "supplementary",

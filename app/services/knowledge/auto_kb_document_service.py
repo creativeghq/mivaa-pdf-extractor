@@ -1,265 +1,56 @@
 """
-Auto KB Document Service
+Auto KB Document Service — DEPRECATED / DISABLED (2026-06-22).
 
-Automatically creates knowledge base documents from extracted product metadata.
-This service is called after metadata extraction to create KB docs for:
-- Packaging information
-- Compliance/safety data
-- Care/maintenance instructions
+Historically this created ONE KB doc PER PRODUCT for packaging, compliance,
+care and certifications. That produced massive duplication: a 60-product
+catalog generated ~150 near-identical docs (every product got its own
+"… - Certifications" / "… - Compliance & Safety" copy of catalog-wide facts),
+and each re-ingest of the catalog multiplied them again.
+
+Those facts are now owned in exactly one place each:
+
+  * Catalog-wide knowledge (certifications, compliance, care/cleaning,
+    regulations, iconography + packing legends, brand) →
+    `catalog_knowledge_extractor` + `catalog_legend_extractor_v2`, which create
+    ONE doc per (catalog, knowledge-type) and attach it to every product. The
+    `upsert_kb_doc` RPC dedupes these on a stable catalog identity, so
+    re-ingesting the same catalog updates the doc instead of duplicating it.
+  * Per-SKU packaging numbers (pieces/box, m²/box, weight, pallet config) →
+    already persisted on the product's own `metadata.packaging` and rendered on
+    the product detail page. No separate KB doc needed.
+  * Certifications → propagated onto each product's
+    `metadata.compliance.certifications` (rendered as chips) by the catalog
+    extractors.
+
+So this per-product KB-doc generator is intentionally a no-op. It is kept as a
+thin shim only so existing call sites stay safe; do NOT re-enable per-product
+KB-doc creation here — extend the catalog-wide extractors instead.
 """
 
 import logging
-from typing import Dict, Any, Optional
-from datetime import datetime
-
-from app.services.core.supabase_client import get_supabase_client
-from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
 
 class AutoKBDocumentService:
-    """
-    Service to auto-create KB documents from extracted metadata.
+    """Deprecated no-op. Per-product KB-doc generation was removed 2026-06-22.
 
-    Creates structured KB documents from:
-    - packaging metadata
-    - compliance/safety metadata
-    - care/maintenance instructions
+    See the module docstring for where each kind of knowledge now lives.
     """
-
-    def __init__(self):
-        self.supabase = get_supabase_client()
 
     async def create_kb_documents_from_metadata(
         self,
         product_id: str,
         product_name: str,
         workspace_id: str,
-        metadata: Dict[str, Any]
+        metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """
-        Create KB docs from packaging/compliance/care metadata.
-
-        Args:
-            product_id: Database product ID
-            product_name: Product name for document titles
-            workspace_id: Workspace ID
-            metadata: Extracted metadata dict
-
-        Returns:
-            Stats dict with documents_created count and any errors
-        """
-        stats = {'documents_created': 0, 'errors': []}
-
-        try:
-            # 1. Packaging information
-            packaging = metadata.get('packaging', {})
-            if packaging and any(self._has_value(v) for v in packaging.values()):
-                doc_id = await self._create_kb_doc(
-                    workspace_id, product_id,
-                    f"{product_name} - Packaging",
-                    self._format_section("Packaging Information", packaging),
-                    'packaging'
-                )
-                if doc_id:
-                    stats['documents_created'] += 1
-
-            # 2. Compliance/safety information
-            compliance = metadata.get('compliance', {})
-            if compliance and any(self._has_value(v) for v in compliance.values()):
-                doc_id = await self._create_kb_doc(
-                    workspace_id, product_id,
-                    f"{product_name} - Compliance & Safety",
-                    self._format_section("Compliance & Safety", compliance),
-                    'compliance'
-                )
-                if doc_id:
-                    stats['documents_created'] += 1
-
-            # 3. Care/maintenance instructions (from application metadata)
-            application = metadata.get('application', {})
-            care_instructions = application.get('care_instructions') or application.get('maintenance')
-            if care_instructions:
-                care_value = self._extract_value(care_instructions)
-                if care_value:
-                    doc_id = await self._create_kb_doc(
-                        workspace_id, product_id,
-                        f"{product_name} - Care Instructions",
-                        f"## Care & Maintenance\n\n{care_value}",
-                        'care'
-                    )
-                    if doc_id:
-                        stats['documents_created'] += 1
-
-            # 4. Certifications (from compliance or standalone)
-            certifications = metadata.get('certifications', []) or compliance.get('certifications', [])
-            if certifications:
-                certs_value = self._extract_value(certifications)
-                if certs_value:
-                    cert_list = certs_value if isinstance(certs_value, list) else [certs_value]
-                    if cert_list:
-                        cert_content = "## Certifications\n\n" + "\n".join(f"- {c}" for c in cert_list)
-                        doc_id = await self._create_kb_doc(
-                            workspace_id, product_id,
-                            f"{product_name} - Certifications",
-                            cert_content,
-                            'certification'
-                        )
-                        if doc_id:
-                            stats['documents_created'] += 1
-
-            if stats['documents_created'] > 0:
-                logger.info(f"✅ Created {stats['documents_created']} KB docs for {product_name}")
-            else:
-                logger.debug(f"ℹ️ No KB-eligible metadata found for {product_name}")
-
-        except Exception as e:
-            logger.error(f"❌ KB creation failed for {product_name}: {e}")
-            stats['errors'].append(str(e))
-
-        return stats
-
-    def _has_value(self, val) -> bool:
-        """Check if a value is non-empty."""
-        if val is None:
-            return False
-        if isinstance(val, dict):
-            if 'value' in val:
-                return bool(val['value'])
-            return any(self._has_value(v) for v in val.values())
-        if isinstance(val, list):
-            return len(val) > 0
-        return bool(val)
-
-    def _extract_value(self, val):
-        """Extract value from {value, confidence} format or plain value."""
-        if isinstance(val, dict) and 'value' in val:
-            return val['value']
-        return val
-
-    def _format_section(self, title: str, data: Dict) -> str:
-        """Format metadata dict as markdown section."""
-        lines = [f"## {title}\n"]
-        for key, value in data.items():
-            extracted = self._extract_value(value)
-            if isinstance(extracted, list):
-                extracted = ", ".join(str(x) for x in extracted)
-            if extracted:
-                formatted_key = key.replace('_', ' ').title()
-                lines.append(f"- **{formatted_key}**: {extracted}")
-        return "\n".join(lines)
-
-    async def _create_kb_doc(
-        self,
-        workspace_id: str,
-        product_id: str,
-        title: str,
-        content: str,
-        category: str
-    ) -> Optional[str]:
-        """
-        Create KB document and link to product.
-
-        Args:
-            workspace_id: Workspace ID
-            product_id: Product ID to link
-            title: Document title
-            content: Document content (markdown)
-            category: Document category (packaging, compliance, care, certification)
-
-        Returns:
-            Document ID if created, None otherwise
-        """
-        try:
-            # Upsert KB document via RPC (idempotent on product_id + category + title).
-            # The DB trigger auto-fires kb-generate-embedding for pending docs.
-            rpc_result = self.supabase.client.rpc(
-                "upsert_kb_doc",
-                {
-                    "p_workspace_id": workspace_id,
-                    "p_title": title,
-                    "p_content": content,
-                    "p_metadata": {
-                        "auto_generated": True,
-                        "category": category,
-                        "product_id": product_id,
-                        "generated_at": datetime.utcnow().isoformat(),
-                    },
-                },
-            ).execute()
-            doc_id = rpc_result.data if isinstance(rpc_result.data, str) else None
-
-            if doc_id:
-
-                # Link document to product (idempotent — skip if already linked).
-                #
-                # kb_doc_attachments.relationship_type has a CHECK constraint
-                # limiting it to one of: primary, supplementary, related,
-                # certification, specification. Map the auto-KB `category`
-                # (packaging / compliance / care / certification) onto that
-                # vocabulary — otherwise every insert fails with 23514.
-                CATEGORY_TO_RELATIONSHIP = {
-                    "packaging":     "specification",
-                    "compliance":    "specification",
-                    "certification": "certification",
-                    "care":          "supplementary",
-                }
-                relationship_type = CATEGORY_TO_RELATIONSHIP.get(category, "related")
-                try:
-                    self.supabase.client.table("kb_doc_attachments").upsert(
-                        {
-                            "workspace_id": workspace_id,
-                            "document_id": doc_id,
-                            "product_id": product_id,
-                            "relationship_type": relationship_type,
-                        },
-                        on_conflict="document_id,product_id",
-                    ).execute()
-                except Exception as att_err:
-                    # Fall back to a duplicate-tolerant insert if no constraint exists yet
-                    logger.debug(f"kb_doc_attachments upsert failed ({att_err}); trying plain insert")
-                    try:
-                        self.supabase.client.table("kb_doc_attachments").insert({
-                            "workspace_id": workspace_id,
-                            "document_id": doc_id,
-                            "product_id": product_id,
-                            "relationship_type": relationship_type,
-                        }).execute()
-                    except Exception:
-                        pass  # ignore duplicate-link errors — attachment already exists
-
-                # Generate embedding for the new doc
-                try:
-                    emb_service = RealEmbeddingsService()
-                    emb_result = await emb_service.generate_all_embeddings(
-                        entity_id=doc_id,
-                        entity_type="kb_doc",
-                        text_content=content
-                    )
-                    if emb_result.get("success"):
-                        text_embedding = emb_result.get("embeddings", {}).get("text_1024")
-                        self.supabase.client.table("kb_docs").update({
-                            "text_embedding": text_embedding,
-                            "embedding_status": "success",
-                            "embedding_model": "voyage-4",
-                            "embedding_generated_at": datetime.utcnow().isoformat()
-                        }).eq("id", doc_id).execute()
-                    else:
-                        self.supabase.client.table("kb_docs").update({
-                            "embedding_status": "failed"
-                        }).eq("id", doc_id).execute()
-                except Exception as emb_err:
-                    logger.warning(f"   ⚠️ Embedding failed for KB doc '{title}': {emb_err}")
-                    self.supabase.client.table("kb_docs").update({
-                        "embedding_status": "failed"
-                    }).eq("id", doc_id).execute()
-
-                logger.info(f"   ✅ KB doc created: {title}")
-                return doc_id
-
-            return None
-
-        except Exception as e:
-            logger.error(f"   ❌ KB doc creation failed for '{title}': {e}")
-            return None
+        # Intentionally creates nothing. Catalog-wide knowledge is generated
+        # once per catalog by the catalog extractors; per-SKU packaging lives on
+        # the product metadata. Returning the same shape callers already expect.
+        logger.debug(
+            "AutoKBDocumentService is disabled (no-op) — skipping per-product "
+            "KB docs for '%s'", product_name,
+        )
+        return {"documents_created": 0, "errors": [], "skipped": "deprecated_no_op"}
