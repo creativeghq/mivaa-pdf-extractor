@@ -7,11 +7,16 @@ on:
     # behavior of the Python service. Anything not matched by paths-ignore
     # still triggers the workflow, including any file under app/, scripts/,
     # configs, requirements.txt, .python-version, and this workflow itself.
+    #
+    # `modal_app/**` is ignored here because it is owned by the dedicated
+    # deploy-modal.yml workflow (which triggers ON `modal_app/**`). A Modal-only
+    # change must NOT restart the FastAPI systemd service on the droplet.
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
       - '.gitignore'
       - 'LICENSE'
+      - 'modal_app/**'
   workflow_dispatch:
     inputs:
       deployment_reason:
@@ -24,11 +29,6 @@ on:
         required: false
         default: false
         type: boolean
-      force_modal_deploy:
-        description: 'Force `modal deploy` of the PaddleOCR-VL app (ignore the modal_app-unchanged shortcut)'
-        required: false
-        default: false
-        type: boolean
 
 # Fix D: serialize MIVAA deploys. A second push cancels itself in the queue
 # instead of running in parallel and double-restarting the systemd unit
@@ -38,85 +38,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Deploy the Modal GPU apps (PaddleOCR-VL structural pass + SLIG visual
-  # embeddings) whenever modal_app/** changes (or on workflow_dispatch with
-  # force_modal_deploy=true). Runs in parallel with the SSH server deploy below —
-  # the two are independent: this pushes the GPU endpoint code to Modal, the
-  # `deploy` job ships the FastAPI service to the droplet. Auth uses the
-  # MODAL_TOKEN_ID / MODAL_TOKEN_SECRET GitHub Actions secrets (create at
-  # https://modal.com/settings/tokens or `modal token new`). Each app's own
-  # bearer (paddleocr-api-key / slig-api-key Modal secrets) is referenced by the
-  # app at deploy time and never travels through CI.
-  deploy-modal:
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          # paths-filter needs the previous commit to diff against on push events.
-          fetch-depth: 2
-
-      - name: 🧭 Detect Modal app changes
-        id: modal_changes
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            modal:
-              - 'modal_app/**'
-
-      - name: 🔎 Resolve modal deploy gate
-        id: modal_gate
-        run: |
-          set -euo pipefail
-          CHANGED='${{ steps.modal_changes.outputs.modal }}'
-          FORCE='${{ github.event.inputs.force_modal_deploy }}'
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "$FORCE" = "true" ]; then
-            CHANGED=true
-          fi
-          CHANGED="${CHANGED:-false}"
-          echo "deploy=$CHANGED" >> "$GITHUB_OUTPUT"
-          if [ "$CHANGED" = "true" ]; then
-            echo "🚀 modal_app/** changed → will run \`modal deploy\`."
-          else
-            echo "⏩ modal_app/** unchanged → skipping Modal deploy."
-          fi
-
-      - name: 🧱 Set up Python
-        if: steps.modal_gate.outputs.deploy == 'true'
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: 📦 Install Modal CLI
-        if: steps.modal_gate.outputs.deploy == 'true'
-        run: pip install --upgrade modal
-
-      - name: 🚀 Deploy Modal apps (PaddleOCR-VL + SLIG)
-        if: steps.modal_gate.outputs.deploy == 'true'
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: |
-          set -euo pipefail
-          if [ -z "${MODAL_TOKEN_ID:-}" ] || [ -z "${MODAL_TOKEN_SECRET:-}" ]; then
-            echo "❌ MODAL_TOKEN_ID / MODAL_TOKEN_SECRET are not set in GitHub Actions secrets."
-            echo "   Add them (Settings → Secrets and variables → Actions) from https://modal.com/settings/tokens"
-            exit 1
-          fi
-          # Deploy every Modal app. Re-deploying an unchanged app is cheap and
-          # idempotent — Modal only rebuilds the image when that app's own inputs
-          # changed, so a paddleocr_vl.py edit won't rebuild the SLIG image and
-          # vice-versa. Add new modal_app/*.py apps to this list.
-          echo "Deploying modal_app/paddleocr_vl.py to Modal (app: paddleocr-vl)…"
-          modal deploy modal_app/paddleocr_vl.py
-          echo "Deploying modal_app/slig.py to Modal (app: slig)…"
-          modal deploy modal_app/slig.py
-          echo "✅ Modal deploy complete."
-          echo "## 🧩 Modal Deploy" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "Deployed \`modal_app/paddleocr_vl.py\` (app \`paddleocr-vl\`) and \`modal_app/slig.py\` (app \`slig\`) to Modal." >> "$GITHUB_STEP_SUMMARY"
-
+  # NOTE: Modal GPU app deploys (PaddleOCR-VL + SLIG) live in the dedicated
+  # `.github/workflows/deploy-modal.yml` workflow, which triggers on
+  # `modal_app/**` changes only. This workflow ships the FastAPI service to the
+  # droplet and intentionally ignores `modal_app/**` (see paths-ignore above).
   deploy:
     runs-on: ubuntu-latest
     environment: production

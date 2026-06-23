@@ -1,0 +1,69 @@
+name: 🧩 Modal Deployment (PaddleOCR-VL + SLIG)
+
+# Deploys the Modal GPU apps — PaddleOCR-VL (structural layout + OCR backbone)
+# and SLIG (SigLIP2 visual encoder) — whenever their source under modal_app/**
+# changes. This is independent of the droplet FastAPI deploy (deploy.yml), which
+# ignores modal_app/** so a Modal-only change never restarts the systemd service.
+#
+# Auth uses the MODAL_TOKEN_ID / MODAL_TOKEN_SECRET GitHub Actions secrets
+# (create at https://modal.com/settings/tokens or `modal token new`). Each app's
+# own bearer (paddleocr-api-key / slig-api-key Modal secrets) is referenced by
+# the app at deploy time and never travels through CI.
+on:
+  push:
+    branches: [ "main", "production" ]
+    paths:
+      - 'modal_app/**'
+      - '.github/workflows/deploy-modal.yml'
+  workflow_dispatch:
+    inputs:
+      deployment_reason:
+        description: '📝 Reason for manual Modal deployment'
+        required: false
+        default: 'Manual Modal deploy'
+        type: string
+
+# Serialize Modal deploys so two pushes don't race `modal deploy` on the same app.
+concurrency:
+  group: deploy-modal-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy-modal:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🧱 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 📦 Install Modal CLI
+        run: pip install --upgrade modal
+
+      - name: 🚀 Deploy Modal apps (PaddleOCR-VL + SLIG)
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MODAL_TOKEN_ID:-}" ] || [ -z "${MODAL_TOKEN_SECRET:-}" ]; then
+            echo "❌ MODAL_TOKEN_ID / MODAL_TOKEN_SECRET are not set in GitHub Actions secrets."
+            echo "   Add them (Settings → Secrets and variables → Actions) from https://modal.com/settings/tokens"
+            exit 1
+          fi
+          # Deploy every Modal app. Re-deploying an unchanged app is cheap and
+          # idempotent — Modal only rebuilds the image when that app's own inputs
+          # changed, so a paddleocr_vl.py edit won't rebuild the SLIG image and
+          # vice-versa. Add new modal_app/*.py apps to this list.
+          echo "Deploying modal_app/paddleocr_vl.py to Modal (app: paddleocr-vl)…"
+          modal deploy modal_app/paddleocr_vl.py
+          echo "Deploying modal_app/slig.py to Modal (app: slig)…"
+          modal deploy modal_app/slig.py
+          echo "✅ Modal deploy complete."
+          echo "## 🧩 Modal Deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Deployed \`modal_app/paddleocr_vl.py\` (app \`paddleocr-vl\`) and \`modal_app/slig.py\` (app \`slig\`) to Modal." >> "$GITHUB_STEP_SUMMARY"
