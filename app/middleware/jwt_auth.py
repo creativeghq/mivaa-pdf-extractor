@@ -273,6 +273,12 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
 
             # Try to validate as Supabase JWT token first
             supabase_claims = await self._validate_supabase_jwt(token)
+            if not supabase_claims:
+                # Local HS256 decode fails for the new asymmetric (ES256) Supabase JWT
+                # Signing Keys — fall back to asking Supabase to validate the token
+                # (algorithm-agnostic), mirroring the get_user() pattern the module
+                # routes already use. Fixes 401s on price-monitoring/mentions/jobs/quotes.
+                supabase_claims = await self._validate_supabase_via_api(token)
             if supabase_claims:
                 logger.info(f"✅ Supabase JWT validated for user: {supabase_claims.get('sub')}")
                 return supabase_claims
@@ -414,6 +420,53 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             return None
         except Exception as e:
             logger.warning(f"Supabase JWT validation error: {str(e)}")
+            return None
+
+    async def _validate_supabase_via_api(self, token: str) -> Optional[Dict[str, Any]]:
+        """
+        Validate a Supabase user JWT by asking Supabase to verify it
+        (supabase.auth.get_user -> GET /auth/v1/user) instead of decoding locally
+        with SUPABASE_JWT_SECRET. Algorithm-agnostic, so it works for the new
+        asymmetric JWT Signing Keys (ES256) where the local HS256 decode fails.
+        Mirrors the get_user() pattern used by the module routes (greek_marketplaces
+        / idealo / modules_control / public_tools).
+        """
+        try:
+            self._ensure_supabase_client()
+            if self.supabase is None:
+                return None
+            response = self.supabase.auth.get_user(token)
+            user = getattr(response, "user", None)
+            if user is None or not getattr(user, "id", None):
+                return None
+            user_id = str(user.id)
+            email = getattr(user, "email", None)
+            role = getattr(user, "role", None) or "authenticated"
+            app_metadata = getattr(user, "app_metadata", None) or {}
+            user_metadata = getattr(user, "user_metadata", None) or {}
+            workspace_id = (
+                app_metadata.get("workspace_id")
+                or user_metadata.get("workspace_id")
+                or self.settings.material_kai_workspace_id
+            )
+            logger.info(f"✅ Supabase JWT validated via API for user: {user_id}")
+            return {
+                "sub": user_id,
+                "email": email,
+                "role": role,
+                "workspace_id": workspace_id,
+                "user_id": user_id,
+                "organization": "material-kai-vision-platform",
+                "permissions": [
+                    "pdf:read", "pdf:write",
+                    "document:read", "document:write",
+                    "search:read",
+                    "image:read", "image:write",
+                ],
+                "source": "supabase_api",
+            }
+        except Exception as e:
+            logger.warning(f"Supabase get_user validation failed: {str(e)}")
             return None
 
     def _is_simple_api_key(self, token: str) -> bool:
