@@ -46,7 +46,13 @@ def create_background_agent_for_tracked_job(
             "name": f"Job Research — {label[:140]}",
             "description": f"Background job-discovery for keywords: {', '.join(keywords[:5])}{'...' if len(keywords) > 5 else ''}",
             "agent_type": "job-research",
-            "trigger_type": "schedule",
+            # Must be one of the allowed background_agents_trigger_type_check
+            # values (cron|event|manual|chain). "schedule" was rejected (23514),
+            # so NO job-research agent row was ever created — internal or external
+            # — leaving the admin saved-jobs panel permanently empty. (job-research
+            # is actually driven by its own :45 cron, not the agent runner; "cron"
+            # is the honest descriptor anyway.)
+            "trigger_type": "cron",
             "schedule": f"every {refresh_interval_hours}h",
             "model": "claude-haiku-4-5-20251001",
             "config": {
