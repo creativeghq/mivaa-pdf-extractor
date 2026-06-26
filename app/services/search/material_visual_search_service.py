@@ -614,12 +614,12 @@ class MaterialVisualSearchService:
 
             vecs_service = get_vecs_service()
 
-            # Build metadata filters
-            filters = None
-            if request.workspace_id:
-                # Note: VECS metadata doesn't have workspace_id, but we can filter by document_id
-                # if we know which documents belong to the workspace
-                pass
+            # Build metadata filters. VECS rows carry workspace_id in metadata
+            # (stamped at upsert), so scope every collection query by tenant.
+            # Fail-closed: with no workspace_id the downstream vecs reads return [].
+            filters = {"workspace_id": {"$eq": request.workspace_id}} if request.workspace_id else None
+            if not request.workspace_id:
+                logger.warning("material visual search called without workspace_id - results will be empty (fail-closed)")
 
             # Generate understanding query embedding for spec-based search.
             # MaterialSearchRequest exposes `query_text` (not `query`); the prior

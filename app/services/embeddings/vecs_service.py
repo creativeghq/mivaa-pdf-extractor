@@ -526,6 +526,9 @@ class VecsService:
             List of similar images with similarity scores
         """
         try:
+            if not workspace_id and not document_id:
+                logger.error("search_understanding_embeddings called without workspace_id/document_id - refusing (returning empty) to prevent cross-tenant leakage")
+                return []
             collection = self.get_or_create_collection(
                 name="image_understanding_embeddings",
                 dimension=1024
@@ -596,6 +599,9 @@ class VecsService:
             List of search results with image_id, distance, and metadata
         """
         try:
+            if not filters or not ("workspace_id" in filters or "document_id" in filters):
+                logger.error("search_similar_images called without a workspace_id/document_id filter - refusing (returning empty) to prevent cross-tenant leakage")
+                return []
             collection = self.get_or_create_collection(
                 name="image_slig_embeddings",
                 dimension=768
