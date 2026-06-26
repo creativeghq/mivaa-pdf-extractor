@@ -140,6 +140,9 @@ async def create_tracked(
         row = await svc.create(
             api_key_id=ctx.api_key_id,
             workspace_id=getattr(ctx, "workspace_id", None),
+            # Attribute the background_agents row to the api_key's owner so the
+            # search shows up in their /admin/background-agents + saved-jobs panel.
+            api_key_owner_user_id=getattr(ctx, "user_id", None),
             **body.model_dump(exclude_none=True),
         )
     except ValueError as e:

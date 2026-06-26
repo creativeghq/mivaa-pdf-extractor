@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -79,6 +80,72 @@ def _parse_dt(v: Any) -> Optional[datetime]:
         return None
 
 
+_REL_AGO_RE = re.compile(r"(\d+)\s*\+?\s*(hour|hr|day|week|month|year)s?\s*ago", re.I)
+
+
+def normalize_posted_at(v: Any) -> Optional[str]:
+    """Normalize a source-reported posted date into an ISO-8601 timestamp string
+    (or None) so it never crashes the `posted_at timestamptz` insert.
+
+    Job boards render the posted date as human text — "New", "Just posted",
+    "2 days ago", "1 month ago", "30+ days ago", "Today", "Yesterday" — which
+    Postgres rejects (22007). Before this normalizer every careers-page /
+    job-board listing carrying a relative date was silently dropped at insert
+    (audit 2026-06-26: 47/56 matched listings lost in one refresh).
+
+    Strategy: already-ISO/datetime → pass through; relative phrases → compute
+    from now(); anything unparseable → None (drop the field, keep the listing).
+    """
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.isoformat()
+    s = str(v).strip()
+    if not s:
+        return None
+
+    # 1) Already a real timestamp? Trust _parse_dt (handles ISO + trailing Z).
+    parsed = _parse_dt(s)
+    if parsed:
+        return parsed.isoformat()
+
+    low = s.lower()
+    now = _utcnow()
+
+    # 2) "New" / "just posted" / "today" / "active today" → now
+    if any(tok in low for tok in ("new", "just posted", "just now", "today", "hours ago", "hour ago", "minutes ago", "minute ago")):
+        # "N hours ago" handled below too; treat sub-day as ~now
+        m = _REL_AGO_RE.search(low)
+        if m and m.group(2).lower() in ("hour", "hr"):
+            return (now - timedelta(hours=int(m.group(1)))).isoformat()
+        return now.isoformat()
+
+    if "yesterday" in low:
+        return (now - timedelta(days=1)).isoformat()
+
+    # 3) "N days/weeks/months/years ago" (also "30+ days ago")
+    m = _REL_AGO_RE.search(low)
+    if m:
+        n = int(m.group(1))
+        unit = m.group(2).lower()
+        if unit in ("day",):
+            delta = timedelta(days=n)
+        elif unit in ("week",):
+            delta = timedelta(weeks=n)
+        elif unit in ("month",):
+            delta = timedelta(days=30 * n)
+        elif unit in ("year",):
+            delta = timedelta(days=365 * n)
+        elif unit in ("hour", "hr"):
+            delta = timedelta(hours=n)
+        else:
+            delta = timedelta(0)
+        return (now - delta).isoformat()
+
+    # 4) Bare date like "2026-06-24" already handled by _parse_dt above; give up.
+    return None
+
+
 class JobResearchService:
     def __init__(self) -> None:
         self.sb = get_supabase_client().client
@@ -115,6 +182,11 @@ class JobResearchService:
         refresh_interval_hours: int = 24,
         source_conversation_id: Optional[str] = None,
         run_first_refresh: bool = True,
+        # External (api_key) flow: the tracked_job itself is api_key-owned
+        # (user_id NULL), but we still attribute a background_agents row to the
+        # api_key's OWNER so the search surfaces in /admin/background-agents and
+        # its JobResearchSavedJobsPanel for that user. Not written onto tracked_jobs.
+        api_key_owner_user_id: Optional[str] = None,
         # Legacy/no-op (retained for backwards compat with the old route shape)
         auto_expand_keywords: Optional[bool] = None,
     ) -> Dict[str, Any]:
@@ -207,11 +279,15 @@ class JobResearchService:
             created["expanded_keywords"] = []
 
         # ── v0.2: background_agents bookkeeping row ────────────────────────
-        if owner_user_id:
+        # Internal flow → owned by owner_user_id. External (api_key) flow →
+        # owned by the api_key's owner (api_key_owner_user_id) so it still shows
+        # up in that user's /admin/background-agents with the saved-jobs panel.
+        bg_owner = owner_user_id or api_key_owner_user_id
+        if bg_owner:
             try:
                 bg_id = bookkeeping.create_background_agent_for_tracked_job(
                     tracked_job_id=tracked_job_id,
-                    user_id=owner_user_id,
+                    user_id=bg_owner,
                     workspace_id=workspace_id,
                     label=label,
                     keywords=clean_keywords,
@@ -279,6 +355,34 @@ class JobResearchService:
             q = q.eq("api_key_id", api_key_id)
         res = q.maybe_single().execute()
         return (res.data if res else None) or None
+
+    def get_readable(self, tracked_job_id: str, reader_user_id: str) -> Optional[Dict[str, Any]]:
+        """Read-authorization for the internal (session-JWT) UI. A user may READ a
+        tracked_job if they own it directly (internal flow) OR if it is owned by an
+        api_key that THEY own (external flow surfaced back into the premade pages).
+
+        Used by the read endpoints (get / listings / summary / exclusions /
+        correct-match owner-check). Write endpoints (refresh / update / delete)
+        intentionally stay on the strict `get(owner_user_id=...)` path — api_key
+        jobs are mutated through the external /api/v1/jobs/track API, not the UI.
+        """
+        row = self.get(tracked_job_id)
+        if not row:
+            return None
+        if reader_user_id and row.get("user_id") == reader_user_id:
+            return row
+        api_key_id = row.get("api_key_id")
+        if api_key_id and reader_user_id:
+            try:
+                ak = (
+                    self.sb.table("api_keys").select("user_id")
+                    .eq("id", api_key_id).maybe_single().execute()
+                )
+                if ak and ak.data and ak.data.get("user_id") == reader_user_id:
+                    return row
+            except Exception as e:
+                logger.debug(f"get_readable api_key owner check failed: {e}")
+        return None
 
     def list_for_user(self, user_id: str, *, only_active: bool = True) -> List[Dict[str, Any]]:
         q = self.sb.table("tracked_jobs").select("*").eq("user_id", user_id).order("created_at", desc=True)
@@ -689,7 +793,11 @@ class JobResearchService:
                     "employment_type": hit.employment_type,
                     "seniority": hit.seniority,
                     "description_excerpt": hit.description_excerpt,
-                    "posted_at": hit.posted_at,
+                    # Bug-fix 2026-06-26: normalize relative dates ("2 days ago",
+                    # "New", "1 month ago") → ISO. A raw relative string used to
+                    # 400 the insert (22007) and silently drop the listing — which
+                    # cost us ~80% of careers/job-board matches every refresh.
+                    "posted_at": normalize_posted_at(hit.posted_at),
                     "source": hit.source,
                     "relevance": relevance,
                     "relevance_score": (v or {}).get("relevance_score"),

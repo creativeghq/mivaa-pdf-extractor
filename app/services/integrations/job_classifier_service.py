@@ -77,6 +77,54 @@ def _tokens(s: str) -> set:
     return {t for t in re.split(r"[^a-z0-9+#]+", s.lower()) if t and len(t) > 1}
 
 
+# Content/discussion/social domains that are NEVER an actual job posting. The
+# google_serp source (general Google web search) routinely surfaces blog posts,
+# Reddit threads, YouTube videos and "N companies hiring" listicles that share
+# title tokens with the user's keywords and so used to be fast-PROMOTED to
+# `match` by the token rule below — flooding results with noise while the real
+# jobs were elsewhere. We hard-drop these deterministically (no Haiku spend).
+_NON_POSTING_DOMAINS = {
+    "reddit.com", "medium.com", "quora.com", "youtube.com", "youtu.be",
+    "substack.com", "news.ycombinator.com", "twitter.com", "x.com",
+    "facebook.com", "instagram.com", "tiktok.com", "wikipedia.org",
+    "pinterest.com", "threads.net", "linkedin.com/pulse",
+}
+
+# Sources whose hits must NEVER be fast-promoted to `match` by the token rule —
+# they're inherently mixed (web SERP), so every survivor goes to Haiku, which
+# can reject non-postings. Job-native sources (google_jobs, perplexity_sonar,
+# firecrawl_careers, rss_feed) keep the cheap fast-path.
+_UNTRUSTED_FAST_PROMOTE_SOURCES = {"google_serp"}
+
+
+def _host(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        h = (urlparse(url).netloc or "").lower()
+        return h[4:] if h.startswith("www.") else h
+    except Exception:
+        return ""
+
+
+def _is_non_posting(hit: JobHit) -> bool:
+    """True when the hit is clearly an article / forum thread / social / video,
+    not an applyable job posting."""
+    url = (hit.url or hit.canonical_url or "").lower()
+    host = (hit.company_domain or "").lower() or _host(url)
+    if host.startswith("www."):
+        host = host[4:]
+    for d in _NON_POSTING_DOMAINS:
+        if "/" in d:  # path-qualified marker like linkedin.com/pulse
+            if d in url:
+                return True
+        elif host == d or host.endswith("." + d):
+            return True
+    # Reddit comment permalinks sometimes arrive with odd hosts.
+    if "/comments/" in url and "reddit" in url:
+        return True
+    return False
+
+
 def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
     """Deterministic verdict before Haiku. Returns (relevance, note) or None."""
     blob = " ".join(filter(None, [
@@ -85,6 +133,10 @@ def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
     ]))
     if not blob.strip():
         return ("unverifiable", "no readable content from source")
+
+    # Non-posting content (blog / Reddit / YouTube / social) → drop outright.
+    if _is_non_posting(hit):
+        return ("mismatch", "not a job posting (article/forum/social/video)")
 
     # excluded company → mismatch
     co_norm = _normalize(hit.company or "")
@@ -133,7 +185,10 @@ def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
 
     # Fast-path match: at least one distinctive keyword token in the TITLE
     # AND every required token (after stoplist removal) is somewhere in the blob.
-    if distinctive_overlap:
+    # BUT never fast-promote from untrusted SERP sources — a title sharing a
+    # keyword token ("...AI Product...") is not proof it's an applyable job
+    # (could be a listicle/guide). Those fall through to Haiku to confirm.
+    if distinctive_overlap and hit.source not in _UNTRUSTED_FAST_PROMOTE_SOURCES:
         title_tokens = _tokens(hit.title or "")
         if distinctive_keyword_tokens & title_tokens:
             return ("match", f"keyword token(s) hit title: {sorted(distinctive_keyword_tokens & title_tokens)[:3]}")
@@ -278,10 +333,16 @@ def _build_user_prompt(facets: JobFacets, batch: List[JobHit], corrections: Opti
     return (
         f"{facets_block}\n"
         f"{few_shot_block}"
-        f"Classify each listing below. 'match' = clearly hits the user's intent. "
-        f"'tangential' = same field but wrong specialization. "
-        f"'mismatch' = entirely different role or excluded. "
-        f"'unverifiable' = not enough signal to decide.\n\n"
+        f"Classify each listing below. Each MUST be an actual, applyable job "
+        f"posting for a specific open role. "
+        f"'match' = a real job posting that clearly hits the user's intent. "
+        f"'tangential' = a real job posting in the same field but wrong specialization. "
+        f"'mismatch' = an entirely different role, an excluded one, OR anything "
+        f"that is NOT a job posting — a blog/news article, a Reddit or forum "
+        f"discussion, a YouTube video, a salary/career guide, a course, or a "
+        f"'companies hiring' listicle. When in doubt about whether it is even a "
+        f"job posting, prefer 'mismatch'. "
+        f"'unverifiable' = looks like a posting but not enough signal to judge fit.\n\n"
         + "\n".join(items)
         + "\n\nCall submit_classifications with one verdict per listing."
     )

@@ -190,7 +190,9 @@ async def get_tracked_job(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    row = svc.get(tracked_job_id, owner_user_id=str(user.get("sub")))
+    # get_readable: own job OR a job owned by an api_key this user owns (external
+    # flow surfaced into the premade pages).
+    row = svc.get_readable(tracked_job_id, str(user.get("sub")))
     if not row:
         raise HTTPException(status_code=404, detail="Not found")
     return {"tracked_job": row}
@@ -246,7 +248,7 @@ async def list_listings(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    if not svc.get(tracked_job_id, owner_user_id=str(user.get("sub"))):
+    if not svc.get_readable(tracked_job_id, str(user.get("sub"))):
         raise HTTPException(status_code=404, detail="Not found")
     rows = svc.list_listings(
         tracked_job_id, relevance=relevance, days=days,
@@ -262,7 +264,7 @@ async def get_summary(
     user: User = Depends(get_current_user),
 ):
     svc = get_job_research_service()
-    if not svc.get(tracked_job_id, owner_user_id=str(user.get("sub"))):
+    if not svc.get_readable(tracked_job_id, str(user.get("sub"))):
         raise HTTPException(status_code=404, detail="Not found")
     return svc.summary(tracked_job_id, days=days)
 
@@ -350,8 +352,8 @@ async def correct_match(
         if not listing_row:
             raise HTTPException(status_code=404, detail="listing not found")
 
-        # Confirm tracked_job is owned by the user (RLS enforces, but we want a clean 403)
-        owner_check = svc.get(listing_row["tracked_job_id"], owner_user_id=str(user.get("sub")))
+        # Confirm tracked_job is readable by the user (own job OR via owned api_key)
+        owner_check = svc.get_readable(listing_row["tracked_job_id"], str(user.get("sub")))
         if not owner_check:
             raise HTTPException(status_code=403, detail="not your listing")
 
