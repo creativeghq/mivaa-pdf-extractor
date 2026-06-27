@@ -198,7 +198,7 @@ class UnifiedSearchService:
             dynamic_weights = WEIGHT_PROFILES["balanced"]
 
             if enable_query_understanding:
-                parsed_query, parsed_filters, weight_profile, dynamic_weights = await self._parse_query_with_ai(query)
+                parsed_query, parsed_filters, weight_profile, dynamic_weights = await self._parse_query_with_ai(query, workspace_id=workspace_id)
 
                 # Merge parsed filters with user-provided filters (user filters take precedence)
                 if parsed_filters:
@@ -1001,7 +1001,7 @@ class UnifiedSearchService:
 
         return json.loads(content.strip())
 
-    async def _parse_query_with_ai(self, query: str) -> tuple[str, Dict[str, Any], str, Dict[str, float]]:
+    async def _parse_query_with_ai(self, query: str, workspace_id: Optional[str] = None) -> tuple[str, Dict[str, Any], str, Dict[str, float]]:
         """
         🧠 Parse natural language query using Claude Haiku 4.5 to extract
         structured filters and select dynamic weight profile.
@@ -1230,13 +1230,13 @@ Return ONLY valid JSON. Use null for missing fields."""
                         for v in val:
                             if not isinstance(v, str) or not v.strip():
                                 continue
-                            c = await resolve_query_term(self.supabase, facet_key, v)
+                            c = await resolve_query_term(self.supabase, facet_key, v, workspace_id=workspace_id)
                             if c:
                                 translated.append(c)
                         if translated:
                             parsed_data[parsed_key] = translated
                     elif isinstance(val, str):
-                        c = await resolve_query_term(self.supabase, facet_key, val)
+                        c = await resolve_query_term(self.supabase, facet_key, val, workspace_id=workspace_id)
                         if c:
                             parsed_data[parsed_key] = c
             except Exception as canon_err:

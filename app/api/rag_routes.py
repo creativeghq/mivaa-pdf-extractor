@@ -4959,7 +4959,7 @@ async def search_documents(
                 # Create temporary service instance for query parsing
                 unified_service = UnifiedSearchService()
                 visual_query, parsed_filters, weight_profile, dynamic_weights = await asyncio.wait_for(
-                    unified_service._parse_query_with_ai(query_to_use),
+                    unified_service._parse_query_with_ai(query_to_use, workspace_id=request.workspace_id),
                     timeout=8  # 8s timeout — don't let query understanding block search
                 )
                 qu_was_cache_hit = getattr(unified_service, '_last_query_understanding_was_cache_hit', False)

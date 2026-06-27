@@ -402,6 +402,7 @@ async def resolve_query_term(
     supabase: Any,
     facet_key: str,
     raw_term: str,
+    workspace_id: Optional[str] = None,
 ) -> str:
     """Query-side canonicalizer. L1 normalize → alias lookup against
     facet_canonical_values. Returns canonical English if known, else the
@@ -417,14 +418,19 @@ async def resolve_query_term(
     if not norm:
         return ""
 
+    def _scoped_base():
+        q = (supabase.client.table('facet_canonical_values')
+                .select('canonical_value')
+                .eq('facet_key', facet_key))
+        if workspace_id:
+            # Scope query-side resolution to own workspace + operator golden set.
+            q = q.or_(f'workspace_id.eq.{workspace_id},is_golden.is.true')
+        return q
+
     async def _lookup_one(filter_fn) -> Optional[str]:
         try:
             resp = await asyncio.to_thread(
-                lambda: filter_fn(
-                    supabase.client.table('facet_canonical_values')
-                        .select('canonical_value')
-                        .eq('facet_key', facet_key)
-                ).limit(1).execute()
+                lambda: filter_fn(_scoped_base()).limit(1).execute()
             )
             if resp.data:
                 return resp.data[0]['canonical_value']

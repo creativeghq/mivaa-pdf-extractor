@@ -637,7 +637,7 @@ async def search_documents(
 
                 # Create temporary service instance for query parsing
                 unified_service = UnifiedSearchService()
-                visual_query, parsed_filters, weight_profile, dynamic_weights = await unified_service._parse_query_with_ai(query_to_use)
+                visual_query, parsed_filters, weight_profile, dynamic_weights = await unified_service._parse_query_with_ai(query_to_use, workspace_id=request.workspace_id)
 
                 # Update query to use visual query (core concept for embedding)
                 query_to_use = visual_query

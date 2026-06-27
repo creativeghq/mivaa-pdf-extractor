@@ -47,6 +47,10 @@ class CanonicalizeRequest(BaseModel):
         None,
         description="If provided, enables diff-before-canonicalize so re-tags skip already-seen values and attributes_raw merges across runs.",
     )
+    workspace_id: Optional[str] = Field(
+        None,
+        description="Workspace to scope canonicalization to. Required for tenant isolation; omitted => canonicalizer fails closed (workspace_required).",
+    )
 
 
 class CanonicalizeResponse(BaseModel):
@@ -65,6 +69,7 @@ async def canonicalize(req: CanonicalizeRequest) -> CanonicalizeResponse:
             req.raw_attributes,
             source=req.source,
             product_id=req.product_id,  # uuid string OK; service stringifies
+            workspace_id=req.workspace_id,
         )
     except Exception as e:
         logger.exception("canonicalize endpoint failed")
