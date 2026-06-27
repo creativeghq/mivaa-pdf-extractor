@@ -1447,6 +1447,31 @@ class ImageProcessingService:
                         'vision_analysis_source': VisionProvider.SKIPPED.value,
                     })
 
+                # Phase 0.6 crop quality-gate: a genuinely low-quality crop
+                # (blurry / tiny / artefact) yields a real-but-meaningless vector
+                # that pollutes visual search. Skip embedding such crops. Very
+                # conservative default (only acts on explicitly-scored-low crops;
+                # full-page renders are never gated); tune via CROP_EMBED_MIN_QUALITY.
+                _crop_layers = ('yolo_crop', 'region_crop')
+                _crop_q = img_data.get('quality_score')
+                _crop_min_q = float(os.getenv('CROP_EMBED_MIN_QUALITY', '0.15'))
+                if (img_data.get('extraction_layer') in _crop_layers
+                        and _crop_q is not None and _crop_q < _crop_min_q):
+                    logger.info(
+                        f"   ⏸️ Image {idx + 1}/{total} low-quality crop "
+                        f"(quality_score={_crop_q} < {_crop_min_q}) — skipping embeddings (Phase 0.6 gate)"
+                    )
+                    return (True, False, "low_quality_crop", {
+                        'image_id': image_id,
+                        'visual_slig': False,
+                        'color_slig': False,
+                        'texture_slig': False,
+                        'style_slig': False,
+                        'material_slig': False,
+                        'understanding': False,
+                        'vision_analysis_source': VisionProvider.SKIPPED.value,
+                    })
+
                 # Generate SLIG embeddings
                 image_path = img_data.get('path')
                 if not image_path or not os.path.exists(image_path):
