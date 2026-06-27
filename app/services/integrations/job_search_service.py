@@ -657,6 +657,124 @@ def load_site_defaults_from_db(site_type: str) -> List[str]:
         logger.warning(f"job-search: load DB defaults for {site_type} failed: {e}")
         return []
 
+# ────────────────────────────────────────────────────────────────────────────
+# No-board fallback — discover the right local job boards ON THE FLY
+#
+# When a search targets a location we haven't curated boards for (e.g. Greece,
+# where kariera.gr / skywalker.gr / jobfind.gr aren't in the perplexity_domain
+# list), the engine is blind to where those jobs actually live. Rather than
+# require manual board curation up front, we run ONE cheap Haiku call per refresh
+# that asks "where are these roles posted in this location?" and feed the answer
+# into the Perplexity domain filter for THIS run only. Temporary + per-search,
+# nothing persisted — a stop-gap until an operator curates real boards.
+# ────────────────────────────────────────────────────────────────────────────
+
+_ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+_ANTHROPIC_VERSION = "2023-06-01"
+
+_BOARD_DISCOVERY_TOOL = {
+    "name": "report_job_boards",
+    "description": "Report the job-board / careers website domains where these roles are posted in this location.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "domains": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Bare domains only, no scheme or path. e.g. kariera.gr",
+            },
+        },
+        "required": ["domains"],
+    },
+}
+
+
+def _clean_domain(d: str) -> str:
+    d = (d or "").strip().lower()
+    d = re.sub(r"^https?://", "", d)
+    d = d.split("/")[0].split("?")[0].strip()
+    if d.startswith("www."):
+        d = d[4:]
+    if "." not in d or " " in d or len(d) < 4:
+        return ""
+    return d
+
+
+async def discover_local_job_boards(
+    *,
+    location: Optional[str],
+    country_code: Optional[str],
+    keywords: List[str],
+    attribution: "costs.CostAttribution",
+    limit: int = 8,
+) -> List[str]:
+    """Ask Haiku for the job-board domains where the given roles are posted in the
+    given location. Returns bare domains (local/regional prioritised). Best-effort:
+    any failure returns [] and discovery is simply skipped."""
+    where = (location or "").strip() or (country_code or "").strip()
+    if not where:
+        return []
+    api_key = os.getenv("ANTHROPIC_API_KEY") or ""
+    if not api_key:
+        return []
+    role = ", ".join([k for k in (keywords or []) if k][:6]) or "professional"
+    prompt = (
+        f"Roles being searched: {role}.\n"
+        f"Location: {where}.\n\n"
+        f"List up to {limit} job-board / careers-website DOMAINS where such roles in this "
+        f"location are most commonly posted. PRIORITISE local / national boards for the "
+        f"country (for Greece e.g. kariera.gr, skywalker.gr, jobfind.gr, careernet.gr, "
+        f"randstad.gr) over global ones. Return BARE domains only — no https://, no path. "
+        f"Only real, well-known boards. NEVER invent a domain."
+    )
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": _ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
+    payload = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 400,
+        "tools": [_BOARD_DISCOVERY_TOOL],
+        "tool_choice": {"type": "tool", "name": "report_job_boards"},
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    started = time.time()
+    out: List[str] = []
+    in_tok = out_tok = 0
+    success = True
+    err: Optional[str] = None
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as http:
+            resp = await http.post(_ANTHROPIC_MESSAGES_URL, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        usage = data.get("usage") or {}
+        in_tok = int(usage.get("input_tokens") or 0)
+        out_tok = int(usage.get("output_tokens") or 0)
+        for block in (data.get("content") or []):
+            if block.get("type") == "tool_use" and block.get("name") == "report_job_boards":
+                for d in ((block.get("input") or {}).get("domains") or []):
+                    dd = _clean_domain(d)
+                    if dd and dd not in out:
+                        out.append(dd)
+                break
+    except Exception as e:
+        success = False
+        err = str(e)[:200]
+        logger.warning(f"job-search board discovery failed: {err}")
+    try:
+        costs.log_haiku_call(
+            attribution=attribution, operation="board_discovery",
+            input_tokens=in_tok, output_tokens=out_tok,
+            latency_ms=int((time.time() - started) * 1000),
+            success=success, error_message=err,
+        )
+    except Exception:
+        pass
+    return out[:limit]
+
+
 _JOB_LISTING_SCHEMA = {
     "type": "object",
     "properties": {
@@ -764,11 +882,16 @@ async def search_via_perplexity(
     # v0.4: load the operator-curated list from job_research_sites (editable in the
     # hidden admin page at /admin/knowledge-base/job-sources). Falls back to the
     # hardcoded constant if the DB read fails or returns nothing.
-    domains = _load_perplexity_domains_from_db()
-    if extra_domains:
-        for d in extra_domains:
-            if d and d not in domains:
-                domains.append(d)
+    # Discovered/region-specific domains (extra_domains) go FIRST so they survive
+    # the 10-domain cap — otherwise a location search's local boards (e.g. Greek
+    # boards passed in by the no-board fallback) would be truncated away behind
+    # the global defaults.
+    base_domains = _load_perplexity_domains_from_db()
+    domains: List[str] = []
+    for d in list(extra_domains or []) + base_domains:
+        d = (d or "").strip().lower()
+        if d and d not in domains:
+            domains.append(d)
     domains = domains[:10]  # Perplexity caps at 10
 
     payload = {

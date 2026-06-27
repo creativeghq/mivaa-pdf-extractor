@@ -49,9 +49,9 @@ from app.services.integrations.job_classifier_service import (
 from app.services.integrations.job_keyword_expansion_service import expand_keywords
 from app.services.integrations.job_salary_normalizer import normalize_listing_in_place
 from app.services.integrations.job_search_service import (
-    JobHit, build_query_variations, dedupe_hits, search_via_dataforseo_jobs,
-    search_via_dataforseo_serp, search_via_firecrawl_careers,
-    search_via_perplexity, search_via_rss_feeds,
+    JobHit, build_query_variations, dedupe_hits, discover_local_job_boards,
+    search_via_dataforseo_jobs, search_via_dataforseo_serp,
+    search_via_firecrawl_careers, search_via_perplexity, search_via_rss_feeds,
 )
 
 logger = logging.getLogger(__name__)
@@ -600,6 +600,25 @@ class JobResearchService:
         )
 
         try:
+            # No-board fallback (2026-06-27): for a location-scoped search, ask
+            # Haiku once where these roles are posted locally and feed the
+            # discovered domains into Perplexity's filter for this run. Stop-gap
+            # until an operator curates real boards in job_research_sites.
+            discovered_domains: List[str] = []
+            if country_code or location:
+                try:
+                    discovered_domains = await discover_local_job_boards(
+                        location=location, country_code=country_code,
+                        keywords=all_search_terms, attribution=attribution,
+                    )
+                    if discovered_domains:
+                        bookkeeping.append_log(
+                            run_id=agent_run_id, level="info",
+                            message=f"No-board fallback: discovered {len(discovered_domains)} local board(s): {', '.join(discovered_domains[:8])}",
+                        )
+                except Exception as e:
+                    logger.warning(f"job-refresh: board discovery failed (non-fatal): {e}")
+
             tasks = []
             sources_called: List[str] = []
             if sources_enabled.get("google_jobs", True):
@@ -639,6 +658,7 @@ class JobResearchService:
                     excluded_companies=excluded_companies,
                     attribution=attribution,
                     model=model_primary,
+                    extra_domains=discovered_domains or None,
                     limit=7,
                 ))
                 for i, phrasing in enumerate(all_query_variations[:3] if all_query_variations else []):
@@ -652,6 +672,7 @@ class JobResearchService:
                         excluded_companies=excluded_companies,
                         attribution=attribution,
                         model="sonar",
+                        extra_domains=discovered_domains or None,
                         limit=5,
                     ))
             if sources_enabled.get("careers_pages", False):
@@ -742,6 +763,28 @@ class JobResearchService:
                     _seen_urls.add(key)
                 url_unique.append(h)
             deduped = url_unique
+
+            # 2026-06-27: near-duplicate collapse. A job board sometimes exposes the
+            # SAME role under two different URLs (different slugs/ids) — e.g. the two
+            # Hays "SC Cleared Product Owner" listings. content_hash + canonical_url
+            # both keyed on the URL, so both survived. Collapse on the role identity
+            # itself: normalized (title + company), keeping the first occurrence
+            # (deduped is already source-priority-ordered). Only fires when both
+            # title and company are present so distinct-but-untitled rows aren't merged.
+            def _norm_key(s: str) -> str:
+                return re.sub(r"[\s\-_/|]+", " ", (s or "").strip().lower()).strip()
+            _seen_role: set = set()
+            role_unique: List[JobHit] = []
+            for h in deduped:
+                t = _norm_key(h.title or "")
+                co = _norm_key(h.company or "")
+                if t and co:
+                    rkey = f"{t}|{co}"
+                    if rkey in _seen_role:
+                        continue
+                    _seen_role.add(rkey)
+                role_unique.append(h)
+            deduped = role_unique
 
             excl = self._load_exclusions(tracked_job_id)
             deduped = [h for h in deduped if not _is_excluded(h, excl, excluded_companies)]

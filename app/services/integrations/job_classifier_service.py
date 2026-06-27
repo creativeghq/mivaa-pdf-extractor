@@ -122,6 +122,25 @@ def _is_non_posting(hit: JobHit) -> bool:
     # Reddit comment permalinks sometimes arrive with odd hosts.
     if "/comments/" in url and "reddit" in url:
         return True
+
+    # Aggregator SEARCH / listing pages — NOT a single applyable job. These slip
+    # past Haiku because the page TITLE looks job-like ("431 Θέσεις εργασίας ...",
+    # "Εργασία trade marketing Θεσσαλονίκη", "Trade Marketing Jobs in Athens").
+    title_l = (hit.title or "").strip().lower()
+    # Jooble is a meta-aggregator: real job pages are /desc/<id> or /jdp/<id>;
+    # any other path on a jooble host is a search-results page.
+    if "jooble." in host and "/desc" not in url and "/jdp" not in url:
+        return True
+    # Generic search-results URL shapes.
+    if re.search(r"/(search|srch|q-|browse)(/|$)", url) or "/jobs/q-" in url or "?q=" in url or "&q=" in url:
+        return True
+    # Listing-page titles: "<N> jobs/θέσεις/vacancies …" or "… jobs in <place>".
+    if re.match(r"^\s*\d[\d.,]*\s+(jobs|θέσεις|θεσεις|vacancies|positions|offers|empleos)\b", title_l):
+        return True
+    if re.search(r"\b(jobs|vacancies|positions)\s+in\s+\w", title_l):
+        return True
+    if title_l.startswith(("εργασία ", "εργασια ")):
+        return True
     return False
 
 
