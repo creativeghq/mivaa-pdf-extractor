@@ -253,6 +253,10 @@ class VecsService:
             # Prepare metadata
             meta = metadata or {}
 
+            if not meta.get("workspace_id"):
+                logger.error(f"Refusing SLIG upsert for image {image_id}: metadata missing workspace_id (tenant-attribution invariant)")
+                return False
+
             # Upsert single record
             collection.upsert(
                 records=[(image_id, siglip_embedding, meta)]
@@ -286,6 +290,15 @@ class VecsService:
                 name="image_slig_embeddings",
                 dimension=768
             )
+
+            # Tenant-attribution invariant: drop records whose metadata lacks
+            # workspace_id rather than store unattributable vectors.
+            _orig = len(records)
+            records = [r for r in records if len(r) >= 3 and (r[2] or {}).get("workspace_id")]
+            if len(records) != _orig:
+                logger.error(f"Dropped {_orig - len(records)}/{_orig} SLIG batch records missing workspace_id (tenant-attribution invariant)")
+            if not records:
+                return 0
 
             # Batch upsert
             collection.upsert(records=records)
@@ -352,6 +365,10 @@ class VecsService:
         """
         results: Dict[str, bool] = {}
         succeeded_types: List[str] = []
+
+        if not (metadata or {}).get("workspace_id"):
+            logger.error(f"Refusing specialized aspect upsert for image {image_id}: metadata missing workspace_id (tenant-attribution invariant)")
+            return {name: False for name in ("image_color_embeddings", "image_texture_embeddings", "image_style_embeddings", "image_material_embeddings")}
 
         collection_mapping = {
             "color": "image_color_embeddings",
@@ -480,6 +497,10 @@ class VecsService:
                 meta["embedding_model"] = embedding_model
             if schema_version is not None:
                 meta["schema_version"] = schema_version
+
+            if not meta.get("workspace_id"):
+                logger.error(f"Refusing understanding upsert for image {image_id}: metadata missing workspace_id (tenant-attribution invariant)")
+                return False
 
             collection.upsert(
                 records=[(image_id, embedding, meta)]
