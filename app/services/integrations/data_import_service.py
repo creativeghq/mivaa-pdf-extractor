@@ -677,6 +677,7 @@ class DataImportService:
                 canonical = await canonicalize_product_attributes(
                     self.db, product_metadata, source=source,
                     product_id=existing_id if existing_id else None,
+                    workspace_id=self.workspace_id,
                 )
                 product_record['attributes'] = canonical.attributes
                 product_record['attributes_raw'] = canonical.attributes_raw

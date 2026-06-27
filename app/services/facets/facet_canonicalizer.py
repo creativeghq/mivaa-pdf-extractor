@@ -107,6 +107,7 @@ class FacetCanonicalizer:
         *,
         source: str,
         product_id: Optional[UUID] = None,
+        workspace_id: Optional[str] = None,
     ) -> CanonicalizedAttributes:
         # ── 1. Collect canonicalizable (facet, raw, norm) triples ────────────
         pending = self._collect_pending(raw_metadata)
@@ -134,7 +135,7 @@ class FacetCanonicalizer:
         ]
 
         if fresh:
-            resolutions.extend(await self._resolve_fresh(fresh, source=source, product_id=product_id))
+            resolutions.extend(await self._resolve_fresh(fresh, source=source, product_id=product_id, workspace_id=workspace_id))
 
         # ── 3. Build canonical + raw maps ────────────────────────────────────
         attributes = self._build_canonical_map(raw_metadata, resolutions)
@@ -250,6 +251,7 @@ class FacetCanonicalizer:
         *,
         source: str,
         product_id: Optional[UUID],
+        workspace_id: Optional[str] = None,
     ) -> List[FacetResolution]:
         # ── L0.5: pretranslate non-ASCII norms ────────────────────────────────
         translation_inputs = [(facet, raw) for (facet, raw, norm) in fresh if not is_ascii_english(norm)]
@@ -271,7 +273,7 @@ class FacetCanonicalizer:
             working.append((facet, raw, effective))
 
         # ── Tier-1 local prefetch (skip embed for known aliases) ──────────────
-        existing_by_facet = await self._fetch_existing(sorted({f for (f, _r, _n) in working}))
+        existing_by_facet = await self._fetch_existing(sorted({f for (f, _r, _n) in working}), workspace_id=workspace_id)
         needs_embed: List[Tuple[str, str, str]] = []
         for facet, raw, norm in working:
             if self._tier1_hit(existing_by_facet.get(facet, []), norm, raw) is None:
@@ -308,7 +310,7 @@ class FacetCanonicalizer:
                 item['embedding'] = list(emb)
             items_payload.append(item)
 
-        results = await self._rpc_batch(items_payload, source=source, product_id=product_id)
+        results = await self._rpc_batch(items_payload, source=source, product_id=product_id, workspace_id=workspace_id)
 
         return [
             FacetResolution(
@@ -336,17 +338,20 @@ class FacetCanonicalizer:
                 return row['canonical_value']
         return None
 
-    async def _fetch_existing(self, facet_keys: List[str]) -> Dict[str, List[Dict[str, Any]]]:
+    async def _fetch_existing(self, facet_keys: List[str], workspace_id: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
         if not facet_keys:
             return {}
         try:
-            resp = await asyncio.to_thread(
-                lambda: self._supabase.client
+            def _run():
+                q = (self._supabase.client
                     .table('facet_canonical_values')
                     .select('facet_key, canonical_value, aliases')
-                    .in_('facet_key', facet_keys)
-                    .execute()
-            )
+                    .in_('facet_key', facet_keys))
+                if workspace_id:
+                    # Tier-1 prefetch scoped to own workspace + operator golden set.
+                    q = q.or_(f'workspace_id.eq.{workspace_id},is_golden.is.true')
+                return q.execute()
+            resp = await asyncio.to_thread(_run)
             out: Dict[str, List[Dict[str, Any]]] = {}
             for row in (resp.data or []):
                 out.setdefault(row['facet_key'], []).append(row)
@@ -361,6 +366,7 @@ class FacetCanonicalizer:
         *,
         source: str,
         product_id: Optional[UUID],
+        workspace_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         if not items:
             return []
@@ -371,6 +377,7 @@ class FacetCanonicalizer:
                     'p_threshold': _THRESHOLD,
                     'p_source': source,
                     'p_product_id': str(product_id) if product_id else None,
+                    'p_workspace_id': str(workspace_id) if workspace_id else None,
                 }).execute()
             )
             data = resp.data
@@ -475,6 +482,7 @@ async def canonicalize_product_attributes(
     source: str,
     product_id: Optional[UUID] = None,
     embedding_service: Optional[Any] = None,
+    workspace_id: Optional[str] = None,
 ) -> CanonicalizedAttributes:
     """One-shot helper for ingest paths. Instantiates RealEmbeddingsService if
     one wasn't supplied. Failures degrade gracefully — returns a result with
@@ -486,7 +494,7 @@ async def canonicalize_product_attributes(
             embedding_service = RealEmbeddingsService()
         canonicalizer = FacetCanonicalizer(supabase, embedding_service)
         return await canonicalizer.canonicalize_product(
-            raw_metadata, source=source, product_id=product_id,
+            raw_metadata, source=source, product_id=product_id, workspace_id=workspace_id,
         )
     except Exception as e:
         logger.error(f"canonicalize_product_attributes failed (source={source}): {e}")

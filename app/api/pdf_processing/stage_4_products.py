@@ -582,7 +582,7 @@ async def create_single_product(
     import asyncio as _asyncio
     try:
         canonical = await _asyncio.wait_for(
-            canonicalize_product_attributes(supabase, metadata, source='pdf_stage_4'),
+            canonicalize_product_attributes(supabase, metadata, source='pdf_stage_4', workspace_id=workspace_id),
             timeout=30.0,
         )
     except _asyncio.TimeoutError:
