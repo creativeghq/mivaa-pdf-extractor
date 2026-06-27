@@ -689,6 +689,19 @@ class DataImportService:
             except Exception as canon_err:
                 logger.warning(f"   ⚠️ Canonicalization failed (XML), continuing: {canon_err}")
 
+            # Phase 2: resolve maker → per-workspace crm_companies node (flows
+            # into both the insert and the update_payload via product_record).
+            try:
+                _factory_name = (product_metadata.get('factory_name') or '').strip()
+                if _factory_name and _factory_name.lower() != 'unknown factory' and self.workspace_id:
+                    _bc = await self.db.rpc('resolve_brand_company', {
+                        'p_workspace_id': self.workspace_id,
+                        'p_name': _factory_name,
+                    }).execute()
+                    product_record['brand_company_id'] = _bc.data if (_bc and _bc.data) else None
+            except Exception as _brand_err:
+                logger.warning(f"   ⚠️ brand resolve failed (XML): {_brand_err}")
+
             if existing_id:
                 # Update in place; refresh updated_at, preserve created_at
                 update_payload = {k: v for k, v in product_record.items() if k != 'created_at'}

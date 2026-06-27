@@ -610,6 +610,20 @@ async def create_single_product(
             f"across {len(canonical.attributes)} facets"
         )
 
+    # Phase 2: resolve the verbatim maker (metadata.factory_name) to a
+    # per-workspace crm_companies node so brand becomes a queryable entity.
+    brand_company_id = None
+    _factory_name = (metadata.get('factory_name') or '').strip()
+    if _factory_name:
+        try:
+            _bc = supabase.client.rpc('resolve_brand_company', {
+                'p_workspace_id': workspace_id,
+                'p_name': _factory_name,
+            }).execute()
+            brand_company_id = _bc.data if (_bc and _bc.data) else None
+        except Exception as _brand_err:
+            logger.warning(f"   ⚠️ brand resolve failed for {_factory_name!r}: {_brand_err}")
+
     product_data = {
         'source_document_id': document_id,
         'workspace_id': workspace_id,
@@ -618,6 +632,7 @@ async def create_single_product(
         'metadata': metadata,
         'attributes': canonical.attributes,
         'attributes_raw': canonical.attributes_raw,
+        'brand_company_id': brand_company_id,
         'source_type': 'pdf_processing',
         'source_job_id': job_id
     }
