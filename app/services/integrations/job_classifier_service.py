@@ -267,26 +267,76 @@ _CLASSIFY_TOOL = {
 }
 
 
-def _load_recent_corrections(tracked_job_id: Optional[str], limit: int = 5) -> List[Dict[str, Any]]:
-    """v0.3: pull the most recent classifier corrections the user submitted for
-    THIS tracked_job. Used as Haiku few-shot examples on the next refresh."""
-    if not tracked_job_id:
+def _load_recent_corrections(
+    tracked_job_id: Optional[str],
+    workspace_id: Optional[str] = None,
+    *,
+    per_job_limit: int = 5,
+    workspace_limit: int = 6,
+) -> List[Dict[str, Any]]:
+    """Pull recent classifier corrections to feed Haiku as few-shot examples —
+    this is the "training" signal that slowly tightens the classifier.
+
+    Two tiers, most-specific first:
+      1. Corrections on THIS tracked_job (the user's direct feedback on this search).
+      2. Corrections from OTHER searches in the SAME workspace — so a lesson taught
+         on one search ("a Sales Director is not a Product role") compounds and
+         applies to every future search, instead of being re-learned each time.
+
+    Deduped by job_listing_id, per-job examples ranked ahead of workspace ones.
+    Workspace tier is best-effort: any error degrades to just the per-job tier.
+    """
+    if not tracked_job_id and not workspace_id:
         return []
-    try:
-        sb = get_supabase_client().client
-        res = (
-            sb.table("job_match_corrections")
-            .select("original_relevance, corrected_relevance, reason, "
-                    "job_listings(title, company)")
-            .eq("tracked_job_id", tracked_job_id)
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return res.data or []
-    except Exception as e:
-        logger.debug(f"job-classifier: load corrections failed: {e}")
-        return []
+    sb = get_supabase_client().client
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    # Tier 1 — this tracked_job
+    if tracked_job_id:
+        try:
+            res = (
+                sb.table("job_match_corrections")
+                .select("job_listing_id, original_relevance, corrected_relevance, reason, "
+                        "job_listings(title, company)")
+                .eq("tracked_job_id", tracked_job_id)
+                .order("created_at", desc=True)
+                .limit(per_job_limit)
+                .execute()
+            )
+            for r in (res.data or []):
+                lid = r.get("job_listing_id")
+                if lid in seen:
+                    continue
+                seen.add(lid)
+                out.append(r)
+        except Exception as e:
+            logger.debug(f"job-classifier: load per-job corrections failed: {e}")
+
+    # Tier 2 — workspace-wide corpus (compounding training across searches)
+    if workspace_id:
+        try:
+            res = (
+                sb.table("job_match_corrections")
+                .select("job_listing_id, original_relevance, corrected_relevance, reason, "
+                        "job_listings(title, company), tracked_jobs!inner(workspace_id)")
+                .eq("tracked_jobs.workspace_id", workspace_id)
+                .order("created_at", desc=True)
+                .limit(per_job_limit + workspace_limit)
+                .execute()
+            )
+            for r in (res.data or []):
+                if len(out) >= per_job_limit + workspace_limit:
+                    break
+                lid = r.get("job_listing_id")
+                if lid in seen:
+                    continue
+                seen.add(lid)
+                out.append(r)
+        except Exception as e:
+            logger.debug(f"job-classifier: load workspace corrections failed: {e}")
+
+    return out
 
 
 def _build_user_prompt(facets: JobFacets, batch: List[JobHit], corrections: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -307,7 +357,7 @@ def _build_user_prompt(facets: JobFacets, batch: List[JobHit], corrections: Opti
     few_shot_block = ""
     if corrections:
         examples = []
-        for c in corrections[:5]:
+        for c in corrections[:8]:
             inner = (c.get("job_listings") or {})
             t = inner.get("title") or ""
             co = inner.get("company") or ""
@@ -401,7 +451,10 @@ async def classify_batch(
     }
     BATCH = 25
     # v0.3: load few-shot corrections once per refresh (not per batch).
-    corrections = _load_recent_corrections(getattr(attribution, "tracked_job_id", None))
+    corrections = _load_recent_corrections(
+        getattr(attribution, "tracked_job_id", None),
+        getattr(attribution, "workspace_id", None),
+    )
     async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as http:
         for chunk_start in range(0, len(to_call), BATCH):
             chunk_indices = to_call[chunk_start:chunk_start + BATCH]
