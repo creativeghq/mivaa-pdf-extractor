@@ -36,6 +36,7 @@ This service is designed to support future extraction types:
 """
 
 import logging
+import os
 import asyncio
 import base64
 import json
@@ -651,11 +652,23 @@ class ProductDiscoveryService:
             # to Claude vision with the same discovery prompt, and merge any
             # products it sees into the catalog before Stage 0B continues.
             # Bounded retry — one shot, capped at 10 pages, never reruns.
-            if not catalog.products and pdf_path and "products" in categories:
+            # VISION_DISCOVERY_MODE: 'zero_fallback' (default — only when text found
+            # nothing), 'low_yield' (also when text yield is suspiciously low for the
+            # page count → catches catalogs that MIX text + image-baked names),
+            # 'always', or 'off'. Default keeps current behaviour (no surprise cost);
+            # operators opt into broader coverage per their catalogs.
+            _vis_mode = os.getenv('VISION_DISCOVERY_MODE', 'zero_fallback').strip().lower()
+            _vis_text_count = len(catalog.products)
+            _vis_should = bool(pdf_path) and ("products" in categories) and _vis_mode != 'off' and (
+                _vis_text_count == 0
+                or _vis_mode == 'always'
+                or (_vis_mode == 'low_yield' and total_physical_pages and _vis_text_count < total_physical_pages * 0.5)
+            )
+            if _vis_should:
                 try:
                     self.logger.warning(
-                        "⚠️ Text discovery returned 0 products — attempting vision retry "
-                        "for image-baked product names"
+                        f"⚠️ Vision discovery firing (mode={_vis_mode}, text_products={_vis_text_count}) "
+                        "— recovering image-baked product names"
                     )
                     vision_catalog = await self._vision_retry_discovery(
                         pdf_path=pdf_path,
@@ -673,7 +686,17 @@ class ProductDiscoveryService:
                             f"(was 0 from text discovery)"
                         )
                         # Merge vision-discovered products into the catalog.
-                        catalog.products = vision_catalog.products
+                        if _vis_text_count == 0:
+                            catalog.products = vision_catalog.products
+                        else:
+                            _vis_seen = {(p.name or '').strip().lower() for p in catalog.products}
+                            _vis_added = [p for p in vision_catalog.products
+                                          if (p.name or '').strip().lower() not in _vis_seen]
+                            catalog.products = catalog.products + _vis_added
+                            self.logger.info(
+                                f"✅ Vision discovery merged {len(_vis_added)} image-baked products "
+                                f"(text discovery had {_vis_text_count})"
+                            )
                         catalog.confidence_score = max(
                             catalog.confidence_score or 0.0,
                             vision_catalog.confidence_score or 0.7,
