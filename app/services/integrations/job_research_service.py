@@ -242,7 +242,10 @@ class JobResearchService:
             "digest_day_of_week": digest_day_of_week,
             "alert_channels": alert_channels or ["bell", "email"],
             "alert_webhook_url": alert_webhook_url,
-            "refresh_interval_hours": max(1, int(refresh_interval_hours)),
+            # Daily floor (2026-06-27): never schedule a sub-daily refresh. A
+            # job search runs at most once per day; the cadence RPC also floors
+            # this at runtime as a backstop.
+            "refresh_interval_hours": max(24, int(refresh_interval_hours)),
             "source_conversation_id": source_conversation_id,
             "next_check_at": _iso(_utcnow()),  # eligible immediately
         }
@@ -405,6 +408,12 @@ class JobResearchService:
             "refresh_interval_hours", "auto_expand_keywords", "is_active",
         }
         clean = {k: v for k, v in patch.items() if k in ALLOWED and v is not None}
+        # Daily floor (2026-06-27): sub-daily refresh is not allowed.
+        if "refresh_interval_hours" in clean:
+            try:
+                clean["refresh_interval_hours"] = max(24, int(clean["refresh_interval_hours"]))
+            except (TypeError, ValueError):
+                clean.pop("refresh_interval_hours", None)
         if not clean:
             return self.get(tracked_job_id, owner_user_id=owner_user_id) or {}
         q = self.sb.table("tracked_jobs").update(clean).eq("id", tracked_job_id)
