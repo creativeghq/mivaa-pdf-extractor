@@ -557,8 +557,9 @@ async def search_via_dataforseo_serp(
         )
         return out
 
-    # Run all variations in parallel; flatten + return.
-    batches = await asyncio.gather(*[_one(q) for q in queries[:5]], return_exceptions=False)
+    # Run all variations in parallel; flatten + return. Cap raised 5→8 to fit the
+    # site-targeted LinkedIn/local-board queries alongside the generic phrasings.
+    batches = await asyncio.gather(*[_one(q) for q in queries[:8]], return_exceptions=False)
     flat: List[JobHit] = []
     for b in batches:
         flat.extend(b)
@@ -588,6 +589,38 @@ def build_query_variations(primary_keyword: str, location: Optional[str], remote
         f"{base}{remote_suffix} job opening{where_part}",
         f"{base}{remote_suffix} apply{where_part}",
     ]
+
+
+def build_site_targeted_queries(
+    keywords: List[str],
+    location: Optional[str],
+    country_code: Optional[str],
+    discovered_domains: Optional[List[str]] = None,
+    *,
+    max_keywords: int = 3,
+) -> List[str]:
+    """Geo + `site:`-scoped Google SERP queries that DELIBERATELY mine LinkedIn job
+    postings and curated/discovered local boards.
+
+    This is the most productive channel for under-served locales (e.g. Greece),
+    where the Google Jobs widget returns nothing but `linkedin.com/jobs/view/…`
+    pages rank organically. The SERP call is already geo-targeted by country, so
+    `{role} {place} site:linkedin.com/jobs` reliably surfaces local LinkedIn ads.
+    """
+    where = (location or "").strip()
+    if where.lower() in {"remote", "anywhere", "worldwide", "global", "any"}:
+        where = ""  # geo-targeting handles locale; don't pin a literal "remote"
+    kws = [k.strip() for k in (keywords or []) if k and k.strip()][:max_keywords]
+    if not kws:
+        return []
+    out: List[str] = []
+    for kw in kws:
+        out.append(re.sub(r"\s+", " ", f"{kw} {where} site:linkedin.com/jobs").strip())
+    boards = [d for d in (discovered_domains or []) if d][:4]
+    if boards:
+        site_expr = " OR ".join(f"site:{b}" for b in boards)
+        out.append(re.sub(r"\s+", " ", f"{kws[0]} {where} {site_expr}").strip())
+    return out
 
 
 # ────────────────────────────────────────────────────────────────────────────

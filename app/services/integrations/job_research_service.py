@@ -49,9 +49,10 @@ from app.services.integrations.job_classifier_service import (
 from app.services.integrations.job_keyword_expansion_service import expand_keywords
 from app.services.integrations.job_salary_normalizer import normalize_listing_in_place
 from app.services.integrations.job_search_service import (
-    JobHit, build_query_variations, dedupe_hits, discover_local_job_boards,
-    search_via_dataforseo_jobs, search_via_dataforseo_serp,
-    search_via_firecrawl_careers, search_via_perplexity, search_via_rss_feeds,
+    JobHit, build_query_variations, build_site_targeted_queries, dedupe_hits,
+    discover_local_job_boards, search_via_dataforseo_jobs,
+    search_via_dataforseo_serp, search_via_firecrawl_careers,
+    search_via_perplexity, search_via_rss_feeds,
 )
 
 logger = logging.getLogger(__name__)
@@ -632,11 +633,25 @@ class JobResearchService:
                     attribution=attribution,
                     limit=30,
                 ))
-            # v0.4: google_serp — general Google web SERP, fanned out across query variations
-            if sources_enabled.get("google_serp", True) and all_query_variations:
+            # v0.4: google_serp — general Google web SERP, fanned out across query
+            # variations. For a location-scoped search we PREPEND `site:`-targeted
+            # queries that deliberately mine LinkedIn job ads + discovered local
+            # boards (the most productive channel for locales the Google Jobs widget
+            # ignores, e.g. Greece, where linkedin.com/jobs/view pages rank organically).
+            site_queries = (
+                build_site_targeted_queries(keywords, location, country_code, discovered_domains)
+                if (country_code or location) else []
+            )
+            serp_queries = site_queries + [q for q in all_query_variations if q not in site_queries]
+            if sources_enabled.get("google_serp", True) and serp_queries:
                 sources_called.append("google_serp")
+                if site_queries:
+                    bookkeeping.append_log(
+                        run_id=agent_run_id, level="info",
+                        message=f"SERP site-targeting: {len(site_queries)} LinkedIn/local-board query(ies)",
+                    )
                 tasks.append(search_via_dataforseo_serp(
-                    queries=all_query_variations[:5],
+                    queries=serp_queries[:8],
                     country_code=country_code,
                     attribution=attribution,
                     limit_per_query=10,
