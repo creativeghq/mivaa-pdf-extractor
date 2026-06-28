@@ -813,26 +813,26 @@ class JobResearchService:
             _existing_urls = self._existing_canonical_urls(tracked_job_id, [h.canonical_url for h in candidates])
             candidates = [h for h in candidates if (h.canonical_url or "").lower() not in _existing_urls]
 
-            # 2026-06-28: recency gate — drop stale listings so we never surface a
-            # role that's months old and no longer accepting applications. A listing
-            # is kept only if it is "fresh-eligible":
-            #   • posted_at known AND within max_age_days, OR
-            #   • posted_at unknown AND the source self-expires (LinkedIn-SERP /
-            #     perplexity / rss — a live URL ≈ open role).
-            # Undated AGGREGATOR (firecrawl_careers) listings are dropped: those
-            # boards keep re-posting long-closed roles with no date, which is exactly
-            # how a 9-month-old dead link slipped through.
+            # 2026-06-28: recency gate — never surface a role that's months old and
+            # no longer accepting applications. STRICT: a listing is kept ONLY if it
+            # carries a trustworthy posted date that is within max_age_days. If we
+            # cannot verify the date, we DROP it — we do not guess.
+            #
+            # The earlier "undated LinkedIn/Perplexity link ≈ fresh" assumption was
+            # wrong: LinkedIn keeps RE-POSTING long-closed roles (observed: a job
+            # surfaced as "live" that was actually "Reposted 11 months ago"), and that
+            # posted date lives in the page body our SERP/Perplexity extraction never
+            # sees. Undatable = unverifiable = dropped, for every source.
             _cutoff = _utcnow() - timedelta(days=max_age_days)
-            _SELF_EXPIRING_SOURCES = {"google_serp", "perplexity_sonar", "rss_feed"}
 
             def _is_fresh(h: JobHit) -> bool:
                 iso = normalize_posted_at(getattr(h, "posted_at", None))
                 dt = _parse_dt(iso) if iso else None
-                if dt is not None:
-                    if dt.tzinfo is None:  # bare dates parse naive — treat as UTC
-                        dt = dt.replace(tzinfo=timezone.utc)
-                    return dt >= _cutoff
-                return (h.source in _SELF_EXPIRING_SOURCES)
+                if dt is None:
+                    return False  # no verifiable posted date → can't confirm fresh → drop
+                if dt.tzinfo is None:  # bare dates parse naive — treat as UTC
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt >= _cutoff
 
             _pre_fresh = len(candidates)
             candidates = [h for h in candidates if _is_fresh(h)]
