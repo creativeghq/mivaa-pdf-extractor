@@ -829,6 +829,8 @@ class JobResearchService:
                 iso = normalize_posted_at(getattr(h, "posted_at", None))
                 dt = _parse_dt(iso) if iso else None
                 if dt is not None:
+                    if dt.tzinfo is None:  # bare dates parse naive — treat as UTC
+                        dt = dt.replace(tzinfo=timezone.utc)
                     return dt >= _cutoff
                 return (h.source in _SELF_EXPIRING_SOURCES)
 
