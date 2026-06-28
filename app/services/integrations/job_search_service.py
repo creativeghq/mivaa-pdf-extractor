@@ -566,6 +566,74 @@ async def search_via_dataforseo_serp(
     return flat
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# LinkedIn enrichment — read the REAL (re)posted date + closed status
+#
+# LinkedIn job-view URLs that come from SERP/Perplexity carry no date in the
+# search result, and LinkedIn RE-POSTS long-closed roles, so we can't trust them.
+# But LinkedIn's public guest endpoint exposes both signals without auth:
+#   • the visible "(Re)posted X ago" date  → real recency
+#   • "No longer accepting applications"     → the role is CLOSED
+# We fetch it per LinkedIn hit, set the true posted_at, and drop closed roles.
+# Reachable from the prod IP (verified 2026-06-28).
+# ────────────────────────────────────────────────────────────────────────────
+
+_LINKEDIN_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+_LK_DATE_RE = re.compile(r'posted-time-ago__text[^>]*>\s*(.*?)\s*<', re.I | re.S)
+_LK_CLOSED_RE = re.compile(r'no longer accepting applications', re.I)
+
+
+def _linkedin_job_id(url: str) -> Optional[str]:
+    """Extract the numeric job id from a linkedin.com/jobs/view/... URL."""
+    m = re.search(r'/jobs/view/(?:[^/?#]*?-)?(\d{8,})', url or "")
+    return m.group(1) if m else None
+
+
+async def enrich_linkedin_listings(hits: List[JobHit], *, max_concurrent: int = 6) -> List[JobHit]:
+    """For every LinkedIn job-view hit: fetch the guest page, set the TRUE
+    (re)posted date on the hit, and DROP it if it's marked 'No longer accepting
+    applications'. Fail-closed — if the page can't be read, posted_at is left
+    unchanged (and the strict recency gate then drops it as undatable). Non-LinkedIn
+    hits pass through untouched."""
+    targets = [h for h in hits if "linkedin.com/jobs/view/" in (h.url or "").lower() and _linkedin_job_id(h.url)]
+    if not targets:
+        return hits
+    sem = asyncio.Semaphore(max_concurrent)
+    closed_urls: set = set()
+
+    async def _one(h: JobHit) -> None:
+        jid = _linkedin_job_id(h.url)
+        api = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jid}"
+        try:
+            async with sem:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=8.0), follow_redirects=True) as c:
+                    r = await c.get(api, headers={"User-Agent": _LINKEDIN_UA})
+            if r.status_code == 404:
+                closed_urls.add(h.url)  # removed listing
+                return
+            if r.status_code != 200:
+                return  # transient block — leave undated; gate will drop it
+            html = r.text or ""
+            if _LK_CLOSED_RE.search(html):
+                closed_urls.add(h.url)
+                return
+            m = _LK_DATE_RE.search(html)
+            if m and m.group(1).strip():
+                # e.g. "2 days ago" / "Reposted 3 weeks ago" / "10 months ago".
+                # normalize_posted_at (orchestrator) turns this into an ISO date.
+                h.posted_at = m.group(1).strip()
+        except Exception as e:
+            logger.debug(f"linkedin enrich failed ({h.url}): {str(e)[:120]}")
+
+    await asyncio.gather(*[_one(h) for h in targets], return_exceptions=True)
+    if closed_urls:
+        return [h for h in hits if h.url not in closed_urls]
+    return hits
+
+
 def build_query_variations(primary_keyword: str, location: Optional[str], remote_only: bool) -> List[str]:
     """Return a list of query-shape variations for the user's primary keyword.
     Used by the SERP source and (optionally) Perplexity to broaden recall.
