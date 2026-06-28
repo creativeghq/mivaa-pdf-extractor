@@ -1581,9 +1581,12 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
                 cached_status["cached"] = True
                 services_status["slig_endpoint"] = cached_status
-            else:
+            elif force_refresh:
                 # Modal-hosted: probe the unauthenticated GET /health (a 200 means
                 # a container is warm; a cold endpoint cold-starts on first call).
+                # ONLY on ?force_refresh=true. A normal /health must NEVER probe —
+                # it cold-starts the scale-to-zero Modal GPU every hour + on every
+                # deploy. Mirrors the PaddleOCR block below.
                 try:
                     import httpx
                     start_time = time.time()
@@ -1623,6 +1626,21 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     services_status["slig_endpoint"] = status_result
                     cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
                     _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
+            else:
+                # Normal (non-forced) /health must NOT probe the Modal endpoint —
+                # SLIG is scale-to-zero, so a cold container is healthy by design and
+                # probing it just cold-starts the GPU (the recurring hourly /health
+                # poll + every deploy were waking it). Liveness is validated at job
+                # warmup. Use ?force_refresh=true to probe.
+                status_result = {
+                    "status": "healthy",
+                    "message": "Configured (Modal scale-to-zero; not probed)",
+                    "last_checked": datetime.fromtimestamp(current_time).isoformat(),
+                    "cached": False,
+                }
+                services_status["slig_endpoint"] = status_result
+                cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
+                _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
         else:
             services_status["slig_endpoint"] = {
                 "status": "disabled",
