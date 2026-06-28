@@ -634,6 +634,190 @@ async def enrich_linkedin_listings(hits: List[JobHit], *, max_concurrent: int = 
     return hits
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# Universal lead verification — makes broad discovery (Perplexity / SERP) reliable
+#
+# Perplexity and Google-SERP are LEAD generators: they reach the open web (so we
+# are NOT limited to a hand-curated board list), but they don't guarantee a URL is
+# real, open, or recent. Before any such lead enters results we fetch the ACTUAL
+# page and confirm: it exists, it is a single applyable posting, it is not closed,
+# and its TRUE posted date. LinkedIn uses its free guest endpoint; everything else
+# uses Firecrawl (JS-render + anti-bot). Verdicts cached 7 days so daily refreshes
+# don't re-pay. EVERY Firecrawl call is cost-attributed to the search/user. Already-
+# structured sources (careers scrape, RSS) are trustworthy and skip verification.
+# ────────────────────────────────────────────────────────────────────────────
+
+_DISCOVERY_SOURCES = {"perplexity_sonar", "google_serp"}
+
+_FIRECRAWL_VERIFY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "is_job_posting": {"type": "boolean", "description": "true ONLY if this page is a single, specific, applyable job posting — NOT a list of jobs, a search-results page, a blog article, or a company homepage."},
+        "job_title": {"type": ["string", "null"]},
+        "company": {"type": ["string", "null"]},
+        "posted_date": {"type": ["string", "null"], "description": "The posted/reposted date EXACTLY as shown on the page, e.g. '3 days ago', 'Reposted 2 weeks ago', or 'June 20, 2026'. null if no date is shown."},
+        "is_closed": {"type": "boolean", "description": "true if the role is closed, filled, expired, or no longer accepting applications."},
+    },
+    "required": ["is_job_posting", "is_closed"],
+}
+
+
+def _load_verification_cache(urls: List[str]) -> Dict[str, Dict[str, Any]]:
+    urls = [u for u in urls if u]
+    if not urls:
+        return {}
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        sb = get_supabase_client().client
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = (
+            sb.table("job_url_verification_cache")
+            .select("canonical_url, is_valid, is_closed, posted_at_text")
+            .gt("expires_at", now_iso)
+            .in_("canonical_url", urls)
+            .execute().data or []
+        )
+        return {r["canonical_url"]: r for r in rows}
+    except Exception as e:
+        logger.debug(f"verify cache read failed: {e}")
+        return {}
+
+
+def _write_verification_cache(rows: List[Dict[str, Any]]) -> None:
+    if not rows:
+        return
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        sb = get_supabase_client().client
+        sb.table("job_url_verification_cache").upsert(rows, on_conflict="canonical_url").execute()
+    except Exception as e:
+        logger.debug(f"verify cache write failed: {e}")
+
+
+async def _verify_linkedin_one(h: JobHit) -> Dict[str, Any]:
+    """Free LinkedIn guest-endpoint verification."""
+    jid = _linkedin_job_id(h.url)
+    api = f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jid}"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=8.0), follow_redirects=True) as c:
+        r = await c.get(api, headers={"User-Agent": _LINKEDIN_UA})
+    if r.status_code == 404:
+        return {"is_valid": False, "is_closed": True, "posted_at_text": None}
+    if r.status_code != 200:
+        raise RuntimeError(f"linkedin http {r.status_code}")
+    html = r.text or ""
+    closed = bool(_LK_CLOSED_RE.search(html))
+    m = _LK_DATE_RE.search(html)
+    posted = m.group(1).strip() if (m and m.group(1).strip()) else None
+    return {"is_valid": (not closed), "is_closed": closed, "posted_at_text": posted}
+
+
+async def _verify_firecrawl_one(h: JobHit, attribution) -> Dict[str, Any]:
+    """Firecrawl page verification (cost-attributed). Raises on transient failure
+    so the caller leaves the lead unverified (the strict recency gate then drops it)."""
+    api_key = os.getenv("FIRECRAWL_API_KEY") or ""
+    if not api_key:
+        raise RuntimeError("FIRECRAWL_API_KEY not set")
+    started = time.time()
+    credits = 1
+    success = True
+    err: Optional[str] = None
+    verdict: Dict[str, Any] = {"is_valid": False, "is_closed": False, "posted_at_text": None}
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=10.0)) as client:
+            resp = await client.post(
+                "https://api.firecrawl.dev/v2/scrape",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"url": h.url, "formats": [{"type": "json", "schema": _FIRECRAWL_VERIFY_SCHEMA}], "onlyMainContent": True},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        credits = int(data.get("creditsUsed") or 1)
+        extracted = ((data.get("data") or {}).get("json") or {}) or {}
+        is_posting = bool(extracted.get("is_job_posting"))
+        is_closed = bool(extracted.get("is_closed"))
+        posted = extracted.get("posted_date")
+        verdict = {
+            "is_valid": (is_posting and not is_closed),
+            "is_closed": is_closed,
+            "posted_at_text": (posted.strip() if isinstance(posted, str) and posted.strip() else None),
+            "title": extracted.get("job_title"),
+            "company": extracted.get("company"),
+        }
+    except Exception as e:
+        success = False
+        err = str(e)[:200]
+        raise
+    finally:
+        costs.log_external_call(
+            operation_type="job_research.verify.firecrawl",
+            model_name="firecrawl-v2",
+            raw_cost_usd=float(credits) * costs.FIRECRAWL_PER_CREDIT,
+            attribution=attribution,
+            latency_ms=int((time.time() - started) * 1000),
+            extra_metadata={"url": (h.url or "")[:200], "credits_used": credits,
+                            "is_valid": verdict.get("is_valid"), "is_closed": verdict.get("is_closed")},
+            success=success, error_message=err,
+        )
+    return verdict
+
+
+async def verify_job_listings(hits: List[JobHit], *, attribution, max_verify: int = 30,
+                              max_concurrent: int = 5) -> List[JobHit]:
+    """Verify discovery-sourced (Perplexity/SERP) leads against the live page; drop
+    dead/closed/non-postings and set the TRUE posted date. Bounded by max_verify
+    (cost) and a 7-day cache. Non-discovery hits pass through untouched."""
+    leads = [h for h in hits if h.source in _DISCOVERY_SOURCES and (h.url or "")]
+    if not leads:
+        return hits
+    # Verify undated leads first (dated discovery hits the gate can already judge), then cap.
+    leads.sort(key=lambda h: 0 if not getattr(h, "posted_at", None) else 1)
+    leads = leads[:max_verify]
+
+    cache = _load_verification_cache([(h.canonical_url or h.url) for h in leads])
+    drop: set = set()
+    to_cache: List[Dict[str, Any]] = []
+    sem = asyncio.Semaphore(max_concurrent)
+
+    def _apply(h: JobHit, v: Dict[str, Any]) -> None:
+        if (not v.get("is_valid")) or v.get("is_closed"):
+            drop.add(h.url)
+            return
+        if v.get("posted_at_text"):
+            h.posted_at = v["posted_at_text"]
+
+    async def _one(h: JobHit) -> None:
+        key = h.canonical_url or h.url
+        c = cache.get(key)
+        if c is not None:
+            _apply(h, c)
+            return
+        try:
+            async with sem:
+                if "linkedin.com/jobs/view/" in (h.url or "").lower():
+                    v = await _verify_linkedin_one(h)
+                else:
+                    v = await _verify_firecrawl_one(h, attribution)
+        except Exception as e:
+            logger.debug(f"verify failed ({h.url}): {str(e)[:120]}")
+            return  # unverified → leave as-is; strict recency gate drops undated
+        _apply(h, v)
+        to_cache.append({
+            "canonical_url": key,
+            "is_valid": bool(v.get("is_valid")),
+            "is_closed": bool(v.get("is_closed")),
+            "posted_at_text": v.get("posted_at_text"),
+            "title": v.get("title"),
+            "company": v.get("company"),
+            "source": h.source,
+        })
+
+    await asyncio.gather(*[_one(h) for h in leads], return_exceptions=True)
+    _write_verification_cache(to_cache)
+    if drop:
+        return [h for h in hits if h.url not in drop]
+    return hits
+
+
 def build_query_variations(primary_keyword: str, location: Optional[str], remote_only: bool) -> List[str]:
     """Return a list of query-shape variations for the user's primary keyword.
     Used by the SERP source and (optionally) Perplexity to broaden recall.

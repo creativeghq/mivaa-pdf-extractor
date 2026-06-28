@@ -50,9 +50,9 @@ from app.services.integrations.job_keyword_expansion_service import expand_keywo
 from app.services.integrations.job_salary_normalizer import normalize_listing_in_place
 from app.services.integrations.job_search_service import (
     JobHit, build_query_variations, build_site_targeted_queries, dedupe_hits,
-    discover_local_job_boards, enrich_linkedin_listings,
-    search_via_dataforseo_jobs, search_via_dataforseo_serp,
-    search_via_firecrawl_careers, search_via_perplexity, search_via_rss_feeds,
+    discover_local_job_boards, search_via_dataforseo_jobs,
+    search_via_dataforseo_serp, search_via_firecrawl_careers,
+    search_via_perplexity, search_via_rss_feeds, verify_job_listings,
 )
 
 logger = logging.getLogger(__name__)
@@ -813,17 +813,21 @@ class JobResearchService:
             _existing_urls = self._existing_canonical_urls(tracked_job_id, [h.canonical_url for h in candidates])
             candidates = [h for h in candidates if (h.canonical_url or "").lower() not in _existing_urls]
 
-            # 2026-06-28: LinkedIn enrichment — fetch the guest page for each LinkedIn
-            # hit to set its REAL (re)posted date and drop roles marked "No longer
-            # accepting applications". Runs BEFORE the recency gate so the true date
-            # drives the freshness decision (and closed roles are already removed).
-            _pre_lk = len(candidates)
-            candidates = await enrich_linkedin_listings(candidates)
-            _lk_closed = _pre_lk - len(candidates)
-            if _lk_closed:
+            # 2026-06-28: lead verification — for every discovery-sourced lead
+            # (Perplexity / SERP, incl. LinkedIn) fetch the ACTUAL page to confirm it
+            # exists, is an open posting (not closed / "no longer accepting
+            # applications"), and read its TRUE posted date. This is what makes the
+            # broad open-web sources reliable instead of trusted-on-faith. Runs BEFORE
+            # the recency gate so verified dates + closed-drops drive the decision.
+            # LinkedIn uses the free guest endpoint; others use Firecrawl (cost-
+            # attributed to this search). Structured sources (careers/RSS) skip it.
+            _pre_v = len(candidates)
+            candidates = await verify_job_listings(candidates, attribution=attribution)
+            _v_dropped = _pre_v - len(candidates)
+            if _v_dropped:
                 bookkeeping.append_log(
                     run_id=agent_run_id, level="info",
-                    message=f"LinkedIn enrichment: dropped {_lk_closed} closed listing(s) (no longer accepting applications)",
+                    message=f"Lead verification: dropped {_v_dropped} dead/closed/non-posting listing(s)",
                 )
 
             # 2026-06-28: recency gate — never surface a role that's months old and
