@@ -74,6 +74,7 @@ class CreateExternalJobTrackRequest(BaseModel):
     careers_page_urls: Optional[List[str]] = Field(None, description="Required when sources_enabled.careers_pages=true.")
     rss_feed_urls: Optional[List[str]] = Field(None, description="Required when sources_enabled.rss_feeds=true.")
     refresh_interval_hours: int = Field(24, ge=1, le=168)
+    max_age_days: int = Field(14, ge=1, le=365, description="Recency gate: drop listings older than this (and undated aggregator listings). Default 14.")
     alert_webhook_url: Optional[str] = Field(None, description="Per-tracked_job webhook POST'd at digest tick + on burst.")
     digest_hour_utc: int = Field(7, ge=0, le=23, description="Reserved for future digest support on external flow.")
     run_first_refresh: bool = Field(True, description="Run discovery + classifier inline before returning.")
@@ -96,6 +97,7 @@ class UpdateExternalJobTrackRequest(BaseModel):
     careers_page_urls: Optional[List[str]] = None
     rss_feed_urls: Optional[List[str]] = None
     refresh_interval_hours: Optional[int] = Field(None, ge=1, le=168)
+    max_age_days: Optional[int] = Field(None, ge=1, le=365)
     alert_webhook_url: Optional[str] = None
     is_active: Optional[bool] = None
 

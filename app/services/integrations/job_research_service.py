@@ -181,6 +181,7 @@ class JobResearchService:
         alert_channels: Optional[List[str]] = None,
         alert_webhook_url: Optional[str] = None,
         refresh_interval_hours: int = 24,
+        max_age_days: int = 14,
         source_conversation_id: Optional[str] = None,
         run_first_refresh: bool = True,
         # External (api_key) flow: the tracked_job itself is api_key-owned
@@ -247,6 +248,7 @@ class JobResearchService:
             # job search runs at most once per day; the cadence RPC also floors
             # this at runtime as a backstop.
             "refresh_interval_hours": max(24, int(refresh_interval_hours)),
+            "max_age_days": max(1, min(365, int(max_age_days))),
             "source_conversation_id": source_conversation_id,
             "next_check_at": _iso(_utcnow()),  # eligible immediately
         }
@@ -406,7 +408,7 @@ class JobResearchService:
             "remote_only", "seniority", "employment_type", "salary_min", "salary_currency",
             "excluded_companies", "preferred_companies", "sources_enabled", "careers_page_urls", "rss_feed_urls",
             "digest_enabled", "digest_hour_utc", "alert_channels", "alert_webhook_url",
-            "refresh_interval_hours", "auto_expand_keywords", "is_active",
+            "refresh_interval_hours", "max_age_days", "auto_expand_keywords", "is_active",
         }
         clean = {k: v for k, v in patch.items() if k in ALLOWED and v is not None}
         # Daily floor (2026-06-27): sub-daily refresh is not allowed.
@@ -580,6 +582,7 @@ class JobResearchService:
         seniority = tj.get("seniority")
         excluded_companies = list(tj.get("excluded_companies") or [])
         preferred_companies = list(tj.get("preferred_companies") or [])
+        max_age_days = int(tj.get("max_age_days") or 14)
 
         # v0.4: query-shape variations — DB-persisted (from Haiku) ∪ default templates.
         primary_keyword = keywords[0] if keywords else (all_search_terms[0] if all_search_terms else "")
@@ -809,6 +812,34 @@ class JobResearchService:
             # this tracked_job (regardless of content_hash). Belt-and-suspenders.
             _existing_urls = self._existing_canonical_urls(tracked_job_id, [h.canonical_url for h in candidates])
             candidates = [h for h in candidates if (h.canonical_url or "").lower() not in _existing_urls]
+
+            # 2026-06-28: recency gate — drop stale listings so we never surface a
+            # role that's months old and no longer accepting applications. A listing
+            # is kept only if it is "fresh-eligible":
+            #   • posted_at known AND within max_age_days, OR
+            #   • posted_at unknown AND the source self-expires (LinkedIn-SERP /
+            #     perplexity / rss — a live URL ≈ open role).
+            # Undated AGGREGATOR (firecrawl_careers) listings are dropped: those
+            # boards keep re-posting long-closed roles with no date, which is exactly
+            # how a 9-month-old dead link slipped through.
+            _cutoff = _utcnow() - timedelta(days=max_age_days)
+            _SELF_EXPIRING_SOURCES = {"google_serp", "perplexity_sonar", "rss_feed"}
+
+            def _is_fresh(h: JobHit) -> bool:
+                iso = normalize_posted_at(getattr(h, "posted_at", None))
+                dt = _parse_dt(iso) if iso else None
+                if dt is not None:
+                    return dt >= _cutoff
+                return (h.source in _SELF_EXPIRING_SOURCES)
+
+            _pre_fresh = len(candidates)
+            candidates = [h for h in candidates if _is_fresh(h)]
+            _dropped_stale = _pre_fresh - len(candidates)
+            if _dropped_stale:
+                bookkeeping.append_log(
+                    run_id=agent_run_id, level="info",
+                    message=f"Recency gate (≤{max_age_days}d): dropped {_dropped_stale} stale/undated listing(s)",
+                )
 
             bookkeeping.append_log(
                 run_id=agent_run_id, level="info",
