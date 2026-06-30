@@ -956,6 +956,21 @@ class JobResearchService:
             self._update_after_refresh(tracked_job_id, run_id, persisted=persisted, new_matches=new_match_count)
             costs.stamp_refresh_cost(tracked_job_id=tracked_job_id, refresh_run_id=run_id)
 
+            # 2026-06-30: self-curation — record which boards yielded verified
+            # matches, auto-learn good new boards Perplexity/SERP surfaced (promote
+            # to the curated list once multi-employer/multi-run guardrails clear),
+            # and self-clean stale auto-added domains. Best-effort, no API spend.
+            try:
+                from app.services.integrations.job_source_curator import review_and_learn_sources
+                _cur = review_and_learn_sources(self.sb, tracked_job_id=tracked_job_id, refresh_run_id=run_id)
+                if _cur.get("promoted") or _cur.get("disabled"):
+                    bookkeeping.append_log(
+                        run_id=agent_run_id, level="info",
+                        message=f"Source curation: promoted {_cur.get('promoted') or []}; disabled {_cur.get('disabled') or []}",
+                    )
+            except Exception as e:
+                logger.warning(f"job-refresh: source curation failed (non-fatal): {e}")
+
             # v0.3: real-time burst alert (between daily digest ticks). Fires only
             # when the tracked_job opted in via alert_on_burst=true AND new_matches
             # exceeds burst_threshold AND not within a 2h cooldown.
