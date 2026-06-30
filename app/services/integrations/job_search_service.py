@@ -933,6 +933,7 @@ def load_site_defaults_from_db(site_type: str) -> List[str]:
             .select("url_or_domain")
             .eq("site_type", site_type)
             .eq("is_enabled", True)
+            .eq("manual_review", False)  # manual-review boards are surfaced, not scraped
             .execute()
         )
         rows = res.data or []
@@ -941,6 +942,36 @@ def load_site_defaults_from_db(site_type: str) -> List[str]:
     except Exception as e:
         logger.warning(f"job-search: load DB defaults for {site_type} failed: {e}")
         return []
+
+
+def load_manual_review_boards() -> List[Dict[str, str]]:
+    """Boards flagged manual_review=true: good remote boards our scraper can't
+    read (JS app / anti-bot). The engine doesn't scrape them — instead we surface
+    them so the user can browse them by hand. Returns [{name, url, reason}]."""
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        sb = get_supabase_client().client
+        rows = (
+            sb.table("job_research_sites")
+            .select("url_or_domain, display_name, browse_url, manual_review_reason")
+            .eq("is_enabled", True).eq("manual_review", True)
+            .execute().data or []
+        )
+        out: List[Dict[str, str]] = []
+        for r in rows:
+            url = (r.get("browse_url") or r.get("url_or_domain") or "").strip()
+            if not url:
+                continue
+            out.append({
+                "name": (r.get("display_name") or url),
+                "url": url,
+                "reason": (r.get("manual_review_reason") or ""),
+            })
+        return out
+    except Exception as e:
+        logger.debug(f"job-search: load manual-review boards failed: {e}")
+        return []
+
 
 # ────────────────────────────────────────────────────────────────────────────
 # No-board fallback — discover the right local job boards ON THE FLY

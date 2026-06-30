@@ -278,6 +278,20 @@ class JobDigestDispatcher:
                     f'</div>'
                 )
             parts.append('</div>')
+        manual = self._manual_boards()
+        if manual:
+            parts.append(
+                '<div style="margin-top:18px;padding-top:12px;border-top:1px solid #333;">'
+                '<div style="color:#bbb;font-size:13px;margin-bottom:6px;">'
+                '🔎 Browse these manually — great remote boards our scraper can\'t read:</div>'
+            )
+            for b in manual:
+                parts.append(
+                    f'<div style="margin:3px 0;">'
+                    f'<a href="{_html_escape(b["url"])}" style="color:#d4a3bf;text-decoration:none;font-size:14px;">'
+                    f'{_html_escape(b["name"])}</a></div>'
+                )
+            parts.append('</div>')
         return "".join(parts)
 
     def _build_body_text(self, sections: List[Dict[str, Any]]) -> str:
@@ -287,7 +301,19 @@ class JobDigestDispatcher:
             for l in s["listings"]:
                 lines.append(f"• {l.get('title') or '(no title)'} — {l.get('company') or ''}")
                 lines.append(f"  {l['url']}")
+        manual = self._manual_boards()
+        if manual:
+            lines.append("\n=== Browse these manually (great boards our scraper can't read) ===")
+            for b in manual:
+                lines.append(f"• {b['name']}: {b['url']}")
         return "\n".join(lines)
+
+    def _manual_boards(self) -> List[Dict[str, str]]:
+        try:
+            from app.services.integrations.job_search_service import load_manual_review_boards
+            return load_manual_review_boards()
+        except Exception:
+            return []
 
     def _build_action_url(self, tracked_job_id: str, *, conversation_id: Optional[str] = None) -> str:
         # v0.2: deep-link to the conversation where the user set up the search.

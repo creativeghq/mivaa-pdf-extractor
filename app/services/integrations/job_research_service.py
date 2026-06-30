@@ -50,7 +50,7 @@ from app.services.integrations.job_keyword_expansion_service import expand_keywo
 from app.services.integrations.job_salary_normalizer import normalize_listing_in_place
 from app.services.integrations.job_search_service import (
     JobHit, build_query_variations, build_site_targeted_queries, dedupe_hits,
-    discover_local_job_boards, search_via_dataforseo_jobs,
+    discover_local_job_boards, load_manual_review_boards, search_via_dataforseo_jobs,
     search_via_dataforseo_serp, search_via_firecrawl_careers,
     search_via_perplexity, search_via_rss_feeds, verify_job_listings,
 )
@@ -994,6 +994,9 @@ class JobResearchService:
                 "matches": new_match_count,
                 "by_source": per_source_counts,
                 "burst_alert": burst_outcome,
+                # Good boards our scraper can't read (JS/anti-bot) — surfaced for
+                # the user to browse by hand instead of being scraped or dropped.
+                "browse_manually": load_manual_review_boards(),
             }
             bookkeeping.complete_run(
                 run_id=agent_run_id, output_data=outcome,
