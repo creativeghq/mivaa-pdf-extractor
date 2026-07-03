@@ -428,6 +428,8 @@ def _tier_a_pymupdf(
     to the Stage 4.7 merge step.
     """
     merged_flat: Dict[str, Any] = {}
+    image_only_pages: List[int] = []
+    pages_scanned = 0
     try:
         doc = fitz.open(pdf_path)
     except Exception as e:
@@ -439,8 +441,19 @@ def _tier_a_pymupdf(
         for idx in page_indices:
             if not (0 <= idx < doc.page_count):
                 continue
+            pages_scanned += 1
             spans = _extract_text_spans(doc, idx)
             if not spans:
+                # No positional text spans at all → image-only / scanned page.
+                # Tier A is STRUCTURALLY unable to read it: its packing-column
+                # mapping needs per-token bbox geometry that a rendered image
+                # doesn't expose, and the PaddleOCR cache carries reading-order
+                # text but not per-token spans, so there's no cache fallback here
+                # (unlike the plain-text consumers). This is NOT "no packing data"
+                # — it's "Tier A is blind on this page". Tier B (Claude Opus Vision
+                # over the rendered page, fed the correct pages by the cache-aware
+                # resolver) is what recovers these; it always runs when enabled.
+                image_only_pages.append(idx)
                 continue
             product_row = _find_product_row(spans, product_name)
             if not product_row:
@@ -458,6 +471,16 @@ def _tier_a_pymupdf(
                     merged_flat[k] = v
     finally:
         doc.close()
+
+    # Make Tier A's structural blindness on image-only pages explicit (rather
+    # than a silent zero), so operators can see when Tier B vision is carrying
+    # the whole product instead of mistaking it for "no spec data exists".
+    if image_only_pages and not merged_flat:
+        logger.info(
+            f"product_spec_extractor_v2 tier_a: no text spans on "
+            f"{len(image_only_pages)}/{pages_scanned} page(s) for '{product_name}' "
+            f"(image-only/scanned: {image_only_pages}) — deferring entirely to Tier B vision"
+        )
 
     return _flat_to_nested(merged_flat, product_name)
 
@@ -523,6 +546,7 @@ def _tier_b_opus(
     *,
     job_id: Optional[str] = None,
     product_id: Optional[str] = None,
+    document_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fallback: delegate to the existing product_spec_vision_extractor
     but with the Claude Opus model override. Returns the same nested-metadata
@@ -534,10 +558,11 @@ def _tier_b_opus(
     # Import locally to avoid a cyclic/test-time dependency
     from app.services.products import product_spec_vision_extractor as psve
 
-    # Temporarily swap the model to Claude Opus — thread-local is overkill here
-    # since we call the function in-process and restore afterwards.
-    original_model = psve.CLAUDE_VISION_MODEL
-    psve.CLAUDE_VISION_MODEL = OPUS_FALLBACK_MODEL
+    # Pass the Opus override PER-CALL rather than mutating the module global
+    # psve.CLAUDE_VISION_MODEL. The previous swap-and-restore raced across the
+    # (up to 5) concurrent jobs per workspace: one job's `finally` could restore
+    # the default Haiku while another was mid-flight, silently sending spec-vision
+    # pages to the wrong model (S4-1). A per-call arg has no shared state.
     try:
         raw = psve.extract_specs_from_pdf_pages(
             pdf_path=pdf_path,
@@ -545,14 +570,14 @@ def _tier_b_opus(
             product_name=product_name,
             job_id=job_id,
             product_id=product_id,
+            document_id=document_id,
+            model=OPUS_FALLBACK_MODEL,
         )
     except Exception as e:
         logger.warning(
             f"product_spec_extractor_v2: tier_b opus fallback failed: {e}"
         )
         return {}
-    finally:
-        psve.CLAUDE_VISION_MODEL = original_model
 
     if not raw:
         return {}
@@ -699,6 +724,7 @@ async def extract_product_spec(
                 product_name,
                 job_id=job_id,
                 product_id=product_id,
+                document_id=document_id,
             )
             if tier_b_result:
                 source_tiers.append("claude_opus_vision")

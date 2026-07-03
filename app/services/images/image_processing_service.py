@@ -2018,8 +2018,19 @@ class ImageProcessingService:
         for vp in VisionProvider:
             vector_stats[f'vision_analysis_{vp.value}'] = 0
 
-        # Check checkpoint - get number of images already processed
-        checkpoint_index = await self._get_embedding_checkpoint(document_id)
+        # Check checkpoint - get number of images already processed.
+        # S3-1: _get_embedding_checkpoint counts DOCUMENT-WIDE embedded images, so
+        # it is only meaningful for the legacy document-wide call (product_id None).
+        # For a PER-PRODUCT call (product_id set — the Stage 3 path) it's the bug:
+        # after product A embeds N images, product B's document-wide count is N,
+        # which slices B's (shorter) list to empty and SKIPS product B's images
+        # entirely, never embedding them. document_images has no product_id column
+        # to scope the count by, so for per-product calls we simply don't skip —
+        # the product-level skip_images gate in product_processor already prevents
+        # re-running fully-done products on resume, so this won't mass-reprocess.
+        checkpoint_index = 0
+        if product_id is None:
+            checkpoint_index = await self._get_embedding_checkpoint(document_id)
         if checkpoint_index > 0:
             logger.info(f"   ⏭️ Resuming from checkpoint: {checkpoint_index} images already have embeddings")
             # Skip already processed images

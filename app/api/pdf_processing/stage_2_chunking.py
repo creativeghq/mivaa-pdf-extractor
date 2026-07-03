@@ -220,22 +220,41 @@ async def process_product_chunking(
                 logger.info("      📐 No layout in catalog, performing fresh layout analysis...")
                 layout_analysis = analyze_pdf_layout(used_temp_path)
 
+            # Structure-first text source. Stage 1 ran the PaddleOCR-VL structural
+            # pass on EVERY page and persisted each region's reading-order
+            # `text_content` to the cache loaded above as `layout_regions_by_page`.
+            # Prefer that text (canonical, multilingual, and present even for
+            # image-only / scanned pages whose PDF text layer is empty) and fall
+            # back to the PyMuPDF text layer only on a cache miss — mirroring
+            # discovery's build_page_text_from_layout_cache (robustness, not a
+            # parallel pipeline). Before this, an image-only page the VLM had
+            # already OCR'd was dropped here because get_physical_page_text
+            # returned empty, silently discarding the cached text → 0 chunks.
+            from app.api.pdf_processing.stage_1_layout_precompute import (
+                page_text_from_layout_regions,
+            )
+
             total_chars = 0
             failed_pages: list = []
             for phys_page in chunkable_pages_sorted:
-                # Isolate per-page failures — previously a single corrupt/
-                # malformed page threw to the outer except, which zeroed
-                # page_chunks_data and silently lost the product's ENTIRE
-                # text even though every other page extracted fine.
-                try:
-                    page_text, _ = get_physical_page_text(doc, layout_analysis, phys_page)
-                except Exception as page_err:
-                    failed_pages.append(phys_page)
-                    logger.warning(
-                        f"   ⚠️ Text extraction failed for physical page {phys_page} "
-                        f"— skipping page, continuing with the rest: {page_err}"
-                    )
-                    continue
+                page_text = page_text_from_layout_regions(
+                    layout_regions_by_page.get(phys_page) or []
+                )
+                if not page_text:
+                    # Cache miss for this page — fall back to the PDF text layer.
+                    # Isolate per-page failures — previously a single corrupt/
+                    # malformed page threw to the outer except, which zeroed
+                    # page_chunks_data and silently lost the product's ENTIRE
+                    # text even though every other page extracted fine.
+                    try:
+                        page_text, _ = get_physical_page_text(doc, layout_analysis, phys_page)
+                    except Exception as page_err:
+                        failed_pages.append(phys_page)
+                        logger.warning(
+                            f"   ⚠️ Text extraction failed for physical page {phys_page} "
+                            f"— skipping page, continuing with the rest: {page_err}"
+                        )
+                        continue
                 if not page_text or not page_text.strip():
                     continue
                 # chunk_pages() expects 0-indexed page metadata; it converts back

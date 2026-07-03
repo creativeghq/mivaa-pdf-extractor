@@ -46,6 +46,15 @@ from PIL import Image
 STAGE_NAME = "stage_1_5_layout_precompute"
 
 
+class LayoutPrecomputeFatalError(RuntimeError):
+    """Raised when the structural pass hits a condition that must ABORT the job
+    (endpoint misconfigured, or circuit-breaker tripped with zero successes) —
+    as opposed to a best-effort/transient failure the orchestrator may swallow
+    to fall back to PyMuPDF text. The orchestrator re-raises this specific type
+    so a genuinely dead/misconfigured PaddleOCR endpoint fails the job instead of
+    silently processing the whole catalog on inferior text (SPN-3)."""
+
+
 def _emit_stage_event(
     supabase: Any,
     job_id: Optional[str],
@@ -574,7 +583,7 @@ async def precompute_document_layout(
                  "duration_ms": int((time.time() - started_at) * 1000)},
                 logger,
             )
-            raise RuntimeError(f"PaddleOCR endpoint misconfigured: {_cfg}")
+            raise LayoutPrecomputeFatalError(f"PaddleOCR endpoint misconfigured: {_cfg}")
         if _state["http_failures"] >= CIRCUIT_BREAKER_THRESHOLD and _state["persisted"] == 0:
             _msg = (
                 f"PaddleOCR endpoint failed {_state['http_failures']} pages with zero "
@@ -587,7 +596,7 @@ async def precompute_document_layout(
                  "duration_ms": int((time.time() - started_at) * 1000)},
                 logger,
             )
-            raise RuntimeError(_msg)
+            raise LayoutPrecomputeFatalError(_msg)
     finally:
         # Always clear the slow-op marker once Stage 1.5 finishes — even on
         # exception — so the next stage can set its own marker without colliding.
@@ -629,6 +638,78 @@ async def precompute_document_layout(
     return summary
 
 
+def page_text_from_layout_regions(regions: List[Dict[str, Any]]) -> str:
+    """Join one page's cached layout regions into reading-order plain text.
+
+    Operates on an already-loaded ``layout_elements`` list (the per-page value of
+    ``layout_regions_by_page``) so callers that already hold the cache don't
+    re-query the DB. This is the canonical PaddleOCR-VL text the VLM produced for
+    the page — present even for image-only / scanned pages whose PDF text layer is
+    empty. Returns ``""`` when no region carries ``text_content``.
+    """
+    if not regions:
+        return ""
+    ordered = sorted(
+        (e for e in regions if (e.get("text_content") or "").strip()),
+        key=lambda e: (
+            e.get("reading_order") if e.get("reading_order") is not None else 1_000_000
+        ),
+    )
+    return "\n".join((e.get("text_content") or "").strip() for e in ordered).strip()
+
+
+def load_page_texts_from_cache(
+    supabase: Any,
+    document_id: Optional[str],
+    physical_pages: Optional[List[int]] = None,
+    logger: Optional[logging.Logger] = None,
+    zero_indexed: bool = False,
+) -> Dict[int, str]:
+    """Canonical reader for the PaddleOCR-VL text cache → ``{page: reading-order text}``.
+
+    The single source of truth every text consumer should use (discovery,
+    chunking-fallback, Stage 4 embedding body text, spec-vision page resolution,
+    catalog layout classification) instead of re-implementing the
+    query→gate→join loop. Queries ``document_layout_analysis`` (scoped to
+    ``physical_pages`` when given), keeps only ``processing_version='paddleocr-vl'``
+    rows, and joins each row's regions via :func:`page_text_from_layout_regions`.
+    Pages with no text are omitted.
+
+    Keys are 1-based physical page numbers; pass ``zero_indexed=True`` to get
+    0-based PDF page indices (i.e. ``physical_page - 1``) for consumers that index
+    ``doc[idx]`` directly. Returns ``{}`` on any failure / missing ``document_id``
+    so callers fall back to the raw PDF text path — never raises.
+    """
+    if not document_id:
+        return {}
+    try:
+        query = (
+            supabase.client.table("document_layout_analysis")
+            .select("page_number, layout_elements, processing_version")
+            .eq("document_id", document_id)
+        )
+        if physical_pages:
+            query = query.in_("page_number", sorted({int(p) for p in physical_pages}))
+        resp = query.execute()
+    except Exception as e:
+        if logger:
+            logger.debug(f"   layout cache text read failed (non-fatal): {e}")
+        return {}
+
+    out: Dict[int, str] = {}
+    for row in (resp.data or []):
+        if row.get("processing_version") != "paddleocr-vl":
+            continue
+        try:
+            pn = int(row["page_number"])  # 1-based physical page
+        except (TypeError, ValueError, KeyError):
+            continue
+        txt = page_text_from_layout_regions(row.get("layout_elements") or [])
+        if txt.strip():
+            out[(pn - 1) if zero_indexed else pn] = txt
+    return out
+
+
 def build_page_text_from_layout_cache(
     document_id: str,
     supabase: Any,
@@ -644,34 +725,13 @@ def build_page_text_from_layout_cache(
     Returns ``None`` when no PaddleOCR rows exist for the document, so the caller
     falls back to the PyMuPDF text path (robustness, not a parallel pipeline).
     """
-    try:
-        resp = (
-            supabase.client.table("document_layout_analysis")
-            .select("page_number, layout_elements, processing_version")
-            .eq("document_id", document_id)
-            .execute()
-        )
-    except Exception as e:
-        logger.debug(f"   layout-cache text build skipped: {e}")
+    page_texts = load_page_texts_from_cache(supabase, document_id, logger=logger)
+    if not page_texts:
         return None
-
-    rows = [r for r in (resp.data or []) if r.get("processing_version") == "paddleocr-vl"]
-    if not rows:
-        return None
-
-    rows.sort(key=lambda r: int(r["page_number"]))
-    parts: List[str] = []
-    for row in rows:
-        elements = row.get("layout_elements") or []
-        ordered = sorted(
-            (e for e in elements if (e.get("text_content") or "").strip()),
-            key=lambda e: (
-                e.get("reading_order") if e.get("reading_order") is not None else 1_000_000
-            ),
-        )
-        page_text = "\n".join((e.get("text_content") or "").strip() for e in ordered)
-        parts.append(f"\n\n--- # Page {int(row['page_number'])} ---\n\n{page_text}")
-
+    parts: List[str] = [
+        f"\n\n--- # Page {pn} ---\n\n{page_texts[pn]}"
+        for pn in sorted(page_texts)
+    ]
     return "\n\n".join(parts) if parts else None
 
 
@@ -720,7 +780,7 @@ async def get_layout_from_document_cache_with_status(
     try:
         resp = (
             supabase.client.table("document_layout_analysis")
-            .select("page_number, layout_elements, analysis_metadata")
+            .select("page_number, layout_elements, analysis_metadata, processing_version")
             .eq("document_id", document_id)
             .in_("page_number", physical_pages)
             .execute()
@@ -732,6 +792,11 @@ async def get_layout_from_document_cache_with_status(
     rows = resp.data or []
     out: Dict[int, Dict[str, Any]] = {}
     for row in rows:
+        # Gate on processing_version — same as the canonical text reader
+        # (load_page_texts_from_cache). Prevents a stale pre-cutover row (e.g.
+        # Surya-era) from feeding the chunker as if it were PaddleOCR output.
+        if row.get("processing_version") != "paddleocr-vl":
+            continue
         regions = row.get("layout_elements") or []
         if not isinstance(regions, list):
             regions = []

@@ -500,9 +500,30 @@ async def analyze_catalog_layout(
     }
     product_pages_by_name: Dict[str, List[int]] = {}
 
+    # Cache-first page text. PaddleOCR-VL (Stage 1) OCR'd every page — including
+    # image-only / scanned legend + spec pages whose embedded PDF text layer is
+    # empty — into document_layout_analysis. Classifying off raw get_text() alone
+    # silently misclassifies those as "other" and drops them from the legend/spec
+    # selection (so Layer 2's Claude-Vision legend pass never runs on them).
+    # Prefer the cache's reading-order text per page; fall back to raw get_text().
+    try:
+        from app.api.pdf_processing.stage_1_layout_precompute import (
+            load_page_texts_from_cache,
+        )
+        # 0-indexed to match doc[idx] in the classification loop.
+        cache_page_texts = load_page_texts_from_cache(
+            supabase, document_id, logger=logger, zero_indexed=True,
+        )
+    except Exception as _e:
+        cache_page_texts = {}
+        logger.debug(
+            f"[{job_id or '-'}] catalog_layout_analyzer: layout cache read "
+            f"failed (non-fatal), using raw text: {_e}"
+        )
+
     try:
         for idx in range(total_pages):
-            text = doc[idx].get_text() or ""
+            text = cache_page_texts.get(idx) or doc[idx].get_text() or ""
             ptype, matched_names = _classify_page(
                 page_text=text,
                 page_index=idx,

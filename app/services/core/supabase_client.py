@@ -556,6 +556,13 @@ class SupabaseClient:
                     # we mirror it here (not `extraction_method`) so any
                     # consumer reading from metadata sees the same value.
                     'extraction_layer': extraction_layer_val,
+                    # Layout region type for region_crop images (TABLE/TEXT/TITLE/
+                    # CAPTION/IMAGE/FIGURE). The region-crop extractor emits it
+                    # top-level on image_info; persist it under metadata so the
+                    # Phase-3 OCR text-bearing filter can read it (S3-2). Without
+                    # this it was dropped at save → every region crop fell to the
+                    # conservative "unknown → OCR" branch, OCRing product photos.
+                    'region_type': image_info.get('region_type'),
                     # Invariant marker (2026-06-14): why this image did NOT go
                     # through the SLIG + vision embedding bundle. None = it DID
                     # (regular material image). 'icon_candidate_spec_path' =

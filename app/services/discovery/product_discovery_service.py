@@ -1446,9 +1446,6 @@ class ProductDiscoveryService:
             Catalog with detected page_range and fully enriched product metadata
         """
         try:
-            from app.core.extractor import extract_pdf_to_markdown
-            import pymupdf4llm
-
             # Initialize metadata extractor with workspace_id for custom prompts
             metadata_extractor = DynamicMetadataExtractor(model=self.model, job_id=job_id, workspace_id=workspace_id)
 
@@ -1475,6 +1472,7 @@ class ProductDiscoveryService:
             self.tracker = tracker
 
             enriched_products = []
+            dropped_products: List[Dict[str, Any]] = []  # discovered-but-removed (S0-2/S0-3)
 
             # ⚡ OPTIMIZATION: Extract all product pages in ONE pass instead of sequentially
             # Collect all unique pages needed across all products
@@ -1496,6 +1494,58 @@ class ProductDiscoveryService:
             # ⚡ OPTIMIZATION: Parse PDF text into pages ONCE (not per-product)
             pages_content = self._parse_pdf_text_into_pages(pdf_text, pdf_page_count)
             self.logger.info(f"   📄 Parsed {len(pages_content)} physical pages from text (one-time operation)")
+
+            # Structure-first extraction text. On the live path `pdf_text` is the
+            # PaddleOCR-VL reading-order cache built by Stage 0
+            # (build_page_text_from_layout_cache) — present even for image-only /
+            # scanned pages whose PDF text layer is empty — but it can also be the
+            # raw PyMuPDF text (or None) when the cache was absent and discover_products
+            # rebuilt it. Parse it ONCE more in ORIGINAL case (1-based physical page →
+            # text) so per-product + supplementary extraction below can source from it
+            # and fall back to the spread-aware raw path (get_physical_page_text) ONLY
+            # on a per-page miss. Empty when pdf_text is None → pure raw fallback.
+            pages_text_cache = self._parse_pdf_text_into_pages(
+                pdf_text, pdf_page_count, lowercase=False
+            )
+
+            def _cache_page_text(page_idx0: int) -> str:
+                """Cache reading-order text for a 0-based page index ('' if absent)."""
+                return pages_text_cache.get(page_idx0 + 1, "") or ""
+
+            # Spread-aware raw fallback (cache-miss only). Uses get_physical_page_text
+            # — physical page → clipped text — which is correct on spread layouts
+            # (1 PDF sheet = 2 physical pages). The old fallback called
+            # pymupdf4llm.to_markdown(pages=<physical index>), but to_markdown indexes
+            # by PDF SHEET, so on a spread catalog it pulled the wrong sheet's text /
+            # went out of range (S0-1). analyze_pdf_layout is expensive, so memoize it
+            # and only compute on the first actual cache miss.
+            _raw_layout: Dict[str, Any] = {"layout": None, "computed": False}
+
+            def _raw_pages_text(page_idxs0: List[int]) -> Dict[int, str]:
+                """0-based physical page index → spread-aware raw text (cache-miss only)."""
+                if not page_idxs0:
+                    return {}
+                out: Dict[int, str] = {}
+                try:
+                    import fitz
+                    if not _raw_layout["computed"]:
+                        _raw_layout["computed"] = True
+                        _raw_layout["layout"] = analyze_pdf_layout(pdf_path)
+                    layout = _raw_layout["layout"]
+                    doc = fitz.open(pdf_path)
+                    try:
+                        for page_idx0 in page_idxs0:
+                            try:
+                                text, _ = get_physical_page_text(doc, layout, page_idx0 + 1)
+                            except Exception:
+                                continue
+                            if text and text.strip():
+                                out[page_idx0] = text
+                    finally:
+                        doc.close()
+                except Exception as e:
+                    self.logger.warning(f"   ⚠️ spread-aware raw fallback failed: {e}")
+                return out
 
             # Discovery uses the PaddleOCR structural-pass text (Stage 1); the
             # page/section detection below is text-based.
@@ -1607,62 +1657,27 @@ class ProductDiscoveryService:
                         self.logger.info(f"   ✅ TOC page exclusion complete. Remaining pages: {len(all_product_pages)}")
 
             # ============================================================
-            # INTELLIGENT PAGE EXTRACTION BASED ON PAGE TYPES
+            # PAGE TYPE DISTRIBUTION — telemetry only
             # ============================================================
-            page_texts = {}
-
+            # Text sourcing no longer branches on page type: every page's text is
+            # taken from the PaddleOCR-VL cache (cache-first, in the per-product
+            # loop below). The old TEXT/IMAGE/MIXED extraction split — and the
+            # per-type `page_types` / `page_texts` dicts it produced — were removed
+            # along with the IMAGE-page text-blanking that dropped VLM-OCR'd text.
+            # Keep a cheap distribution log for operator visibility.
             if all_product_pages:
-                sorted_pages = sorted(all_product_pages)
-
-                # Separate pages by type for optimal processing
-                text_pages = []
-                image_pages = []
-                mixed_pages = []
-
-                # Collect page types from all products
+                _dist = {"TEXT": 0, "IMAGE": 0, "MIXED": 0}
                 for product in catalog.products:
-                    if product.page_types:
-                        for page_num, page_type in product.page_types.items():
-                            page_idx = page_num - 1  # Convert to 0-based
-                            if page_idx in sorted_pages:
-                                if page_type == "TEXT":
-                                    text_pages.append(page_idx)
-                                elif page_type == "IMAGE":
-                                    image_pages.append(page_idx)
-                                elif page_type == "MIXED":
-                                    mixed_pages.append(page_idx)
-
-                # Remove duplicates
-                text_pages = sorted(set(text_pages))
-                image_pages = sorted(set(image_pages))
-                mixed_pages = sorted(set(mixed_pages))
-
-                self.logger.info(f"   📊 Page type distribution: {len(text_pages)} TEXT, {len(image_pages)} IMAGE, {len(mixed_pages)} MIXED")
-
-                # ✅ MEMORY OPTIMIZATION: Store page type classifications only (not extracted text)
-                # We'll extract text per-product to avoid keeping all 52 pages in memory
-                page_types = {}  # page_idx -> "TEXT" | "IMAGE" | "MIXED" | "UNCLASSIFIED"
-
-                for page_idx in text_pages:
-                    page_types[page_idx] = "TEXT"
-                for page_idx in image_pages:
-                    page_types[page_idx] = "IMAGE"
-                for page_idx in mixed_pages:
-                    page_types[page_idx] = "MIXED"
-
-                # Mark unclassified pages
-                unclassified_pages = [p for p in sorted_pages if p not in text_pages and p not in image_pages and p not in mixed_pages]
-                for page_idx in unclassified_pages:
-                    page_types[page_idx] = "UNCLASSIFIED"
-
-                if unclassified_pages:
-                    self.logger.warning(f"   ⚠️ {len(unclassified_pages)} pages have no type classification")
-
-                self.logger.info(f"   ✅ Page type classification complete: {len(page_types)} pages classified")
-                self.logger.info(f"   💾 MEMORY OPTIMIZATION: Text will be extracted per-product (not all at once)")
+                    for page_num, page_type in (product.page_types or {}).items():
+                        if (page_num - 1) in all_product_pages and page_type in _dist:
+                            _dist[page_type] += 1
+                self.logger.info(
+                    f"   📊 Page type distribution (telemetry): {_dist['TEXT']} TEXT, "
+                    f"{_dist['IMAGE']} IMAGE, {_dist['MIXED']} MIXED across "
+                    f"{len(all_product_pages)} product pages"
+                )
             else:
                 self.logger.warning("   ⚠️ No valid pages found for any products")
-                page_types = {}
 
             # ============================================================
             # SUPPLEMENTARY PAGES: Collect non-product pages (packaging, care, compliance)
@@ -1686,18 +1701,36 @@ class ProductDiscoveryService:
                     f"   📋 Found {len(supplementary_page_indices)} supplementary pages "
                     f"(not assigned to any product): {supplementary_page_indices[:20]}{'...' if len(supplementary_page_indices) > 20 else ''}"
                 )
-                try:
-                    supp_markdown = pymupdf4llm.to_markdown(pdf_path, pages=supplementary_page_indices)
-                    if supp_markdown and supp_markdown.strip():
-                        supplementary_text = supp_markdown.strip()
-                        self.logger.info(
-                            f"   ✅ Extracted {len(supplementary_text):,} chars from supplementary pages "
-                            f"(packaging, care, compliance content available for all products)"
-                        )
+                # Cache-first: take each supplementary page's reading-order text from
+                # the PaddleOCR cache; raw-extract ONLY the pages the cache missed.
+                # Packaging tables / certification icon strips / care legends on tail
+                # pages are frequently rasterized — the VLM OCR'd them into the cache
+                # where raw to_markdown returns nothing.
+                supp_by_page: Dict[int, str] = {}
+                supp_miss: List[int] = []
+                for page_idx in supplementary_page_indices:
+                    ct = _cache_page_text(page_idx)
+                    if ct.strip():
+                        supp_by_page[page_idx] = ct
                     else:
-                        self.logger.info("   ℹ️ Supplementary pages had no extractable text")
-                except Exception as e:
-                    self.logger.warning(f"   ⚠️ Failed to extract supplementary pages: {e}")
+                        supp_miss.append(page_idx)
+                if supp_miss:
+                    for page_idx, t in _raw_pages_text(supp_miss).items():
+                        supp_by_page[page_idx] = t
+                # Join in page order.
+                supplementary_text = "\n\n".join(
+                    supp_by_page[p] for p in supplementary_page_indices
+                    if (supp_by_page.get(p) or "").strip()
+                ).strip()
+                if supplementary_text:
+                    self.logger.info(
+                        f"   ✅ Extracted {len(supplementary_text):,} chars from supplementary pages "
+                        f"({len(supp_by_page)} of {len(supplementary_page_indices)} pages had text; "
+                        f"{len(supplementary_page_indices) - len(supp_miss)} from cache) "
+                        f"— packaging, care, compliance content available for all products"
+                    )
+                else:
+                    self.logger.info("   ℹ️ Supplementary pages had no extractable text")
             else:
                 self.logger.info("   ℹ️ No supplementary pages found (all pages assigned to products)")
 
@@ -1721,55 +1754,45 @@ class ProductDiscoveryService:
                     if not page_indices:
                         self.logger.warning(f"   ⚠️ Product '{product.name}' has no valid pages in this PDF - REMOVING from catalog")
                         self.logger.warning(f"      Original page_range: {product.page_range} (PDF has {pdf_page_count} pages)")
-                        # DO NOT add to enriched_products - this product doesn't exist in this PDF
+                        # DO NOT add to enriched_products - this product doesn't exist in this PDF.
+                        # Record it so the drop is DURABLE (S0-2/S0-3) — this is the single
+                        # choke point for both TOC-stripped-to-empty and page-detection-failed
+                        # products; without this the loss was log-only.
+                        dropped_products.append({
+                            "name": product.name,
+                            "original_page_range": list(product.page_range or []),
+                            "reason": "no_valid_pages_after_detection_and_toc_exclusion",
+                        })
                         continue
 
                     # ✅ MEMORY OPTIMIZATION: Extract text ONLY for this product's pages
                     # This keeps memory low (~500MB per product instead of 3-4GB for all pages)
+                    #
+                    # Structure-first: source each page's text from the PaddleOCR-VL
+                    # reading-order cache (pages_text_cache), regardless of the page's
+                    # TEXT/IMAGE/MIXED type. This replaces the previous type-branched
+                    # raw extraction — which (a) re-read the weak PDF text layer instead
+                    # of the cache and (b) hard-blanked IMAGE pages to "" on the
+                    # assumption "vision data already in metadata". That dropped the
+                    # spec/packing text the VLM had already OCR'd on image-only and
+                    # stylized pages. We fall back to the spread-aware raw path
+                    # (get_physical_page_text) ONLY for pages the cache genuinely missed
+                    # (e.g. cache absent / page_failed). An image-only page with no cache
+                    # text AND no text layer legitimately contributes "" (its content
+                    # reaches the product via the Stage 3 vision pass instead).
                     product_page_texts = {}
+                    cache_miss_pages: List[int] = []
+                    for page_idx in page_indices:
+                        ct = _cache_page_text(page_idx)
+                        if ct.strip():
+                            product_page_texts[page_idx] = ct
+                        else:
+                            cache_miss_pages.append(page_idx)
 
-                    # Separate pages by type for this product
-                    product_text_pages = [p for p in page_indices if page_types.get(p) == "TEXT"]
-                    product_image_pages = [p for p in page_indices if page_types.get(p) == "IMAGE"]
-                    product_mixed_pages = [p for p in page_indices if page_types.get(p) == "MIXED"]
-                    product_unclassified_pages = [p for p in page_indices if page_types.get(p) == "UNCLASSIFIED"]
-
-                    # Extract TEXT pages for this product
-                    if product_text_pages:
-                        try:
-                            text_markdown = pymupdf4llm.to_markdown(pdf_path, pages=product_text_pages)
-                            text_page_texts = self._split_markdown_by_pages(text_markdown, product_text_pages)
-                            product_page_texts.update(text_page_texts)
-                        except Exception as e:
-                            self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for TEXT pages: {e}")
-                            for page_idx in product_text_pages:
-                                product_page_texts[page_idx] = ""
-
-                    # IMAGE pages - use empty text (vision data already in metadata)
-                    for page_idx in product_image_pages:
-                        product_page_texts[page_idx] = ""
-
-                    # Extract MIXED pages for this product
-                    if product_mixed_pages:
-                        try:
-                            mixed_markdown = pymupdf4llm.to_markdown(pdf_path, pages=product_mixed_pages)
-                            mixed_page_texts = self._split_markdown_by_pages(mixed_markdown, product_mixed_pages)
-                            product_page_texts.update(mixed_page_texts)
-                        except Exception as e:
-                            self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for MIXED pages: {e}")
-                            for page_idx in product_mixed_pages:
-                                product_page_texts[page_idx] = ""
-
-                    # Extract UNCLASSIFIED pages for this product
-                    if product_unclassified_pages:
-                        try:
-                            unclass_markdown = pymupdf4llm.to_markdown(pdf_path, pages=product_unclassified_pages)
-                            unclass_page_texts = self._split_markdown_by_pages(unclass_markdown, product_unclassified_pages)
-                            product_page_texts.update(unclass_page_texts)
-                        except Exception as e:
-                            self.logger.warning(f"      ⚠️ PyMuPDF4LLM failed for unclassified pages: {e}")
-                            for page_idx in product_unclassified_pages:
-                                product_page_texts[page_idx] = ""
+                    if cache_miss_pages:
+                        fb_texts = _raw_pages_text(sorted(cache_miss_pages))
+                        for page_idx in cache_miss_pages:
+                            product_page_texts[page_idx] = fb_texts.get(page_idx, "") or ""
 
                     # Combine text from this product's pages
                     product_text = "\n\n".join(
@@ -1853,6 +1876,50 @@ class ProductDiscoveryService:
                 del supplementary_text
                 import gc
                 gc.collect()
+
+            # Durable record of discovered-but-dropped products (S0-2/S0-3). These
+            # were removed silently (log-only) before; a product Claude discovered
+            # but whose pages couldn't be resolved (image-baked name, aggressive TOC
+            # exclusion, bad page_range) now leaves an auditable trail at the job
+            # level + Sentry, so ops can see a partial-discovery loss.
+            if dropped_products and job_id:
+                _dropped_names = [d["name"] for d in dropped_products]
+                self.logger.error(
+                    f"   ❌ [STAGE 0B] {len(dropped_products)} discovered product(s) dropped "
+                    f"(no resolvable pages): {_dropped_names}"
+                )
+                try:
+                    from app.services.core.supabase_client import get_supabase_client
+                    _sb = get_supabase_client()
+                    _sb.client.rpc('merge_background_job_metadata', {
+                        'p_job_id': job_id,
+                        'p_metadata': {
+                            'discovery_dropped_products': dropped_products,
+                            'discovery_dropped_count': len(dropped_products),
+                        },
+                    }).execute()
+                    _sb.client.rpc('append_stage_history', {
+                        'p_job_id': job_id,
+                        'p_event': {
+                            'stage': 'stage_0_discovery',
+                            'status': 'products_dropped',
+                            'data': {
+                                'dropped_count': len(dropped_products),
+                                'dropped_products': dropped_products,
+                            },
+                            'occurred_at': datetime.utcnow().isoformat(),
+                        },
+                    }).execute()
+                except Exception as _drop_err:
+                    self.logger.debug(f"   dropped-product bookkeeping failed (non-fatal): {_drop_err}")
+                try:
+                    import sentry_sdk
+                    sentry_sdk.capture_message(
+                        f"Stage 0B dropped {len(dropped_products)} discovered product(s) with no resolvable pages",
+                        level="warning",
+                    )
+                except Exception:
+                    pass
 
             # ✅ UPDATE PROGRESS: Mark Stage 0B complete (10% progress)
             if self.tracker:
@@ -2011,40 +2078,6 @@ class ProductDiscoveryService:
             self.logger.error(f"Metadata enrichment failed: {e}")
             # Return original catalog if enrichment fails
             return catalog
-
-    def _split_markdown_by_pages(self, markdown_text: str, page_indices: list) -> dict:
-        """
-        Split PyMuPDF4LLM markdown output into individual pages.
-
-        PyMuPDF4LLM returns markdown with page markers like:
-        -----
-        # Page 1
-        content...
-        -----
-        # Page 2
-        content...
-
-        Args:
-            markdown_text: Full markdown text from PyMuPDF4LLM
-            page_indices: List of 0-indexed page numbers that were extracted
-
-        Returns:
-            Dictionary mapping page_index -> page_text
-        """
-        import re
-
-        page_texts = {}
-
-        # Split by page markers (format: --- # Page N ---)
-        pages = re.split(r'-{3,}\s*#?\s*Page\s*\d+\s*-*', markdown_text, flags=re.IGNORECASE)
-
-        # Map extracted pages to their indices
-        for i, page_text in enumerate(pages):
-            if i < len(page_indices) and page_text.strip():
-                page_idx = page_indices[i]
-                page_texts[page_idx] = page_text.strip()
-
-        return page_texts
 
     async def _iterative_batch_discovery(
         self,
@@ -2272,7 +2305,8 @@ class ProductDiscoveryService:
     def _parse_pdf_text_into_pages(
         self,
         pdf_text: str,
-        total_pages: int
+        total_pages: int,
+        lowercase: bool = True,
     ) -> Dict[int, str]:
         """
         ⚡ OPTIMIZED: Parse PDF text into pages ONCE.
@@ -2283,26 +2317,34 @@ class ProductDiscoveryService:
         Args:
             pdf_text: Full PDF markdown text with page markers
             total_pages: Total number of pages in PDF
+            lowercase: When True (default), content is lowercased — used for the
+                section-detection search pass. Pass False to get the ORIGINAL-case
+                reading-order text (used as the cache-first extraction text source,
+                where lowercasing would corrupt SKUs / units / proper nouns).
 
         Returns:
-            Dictionary mapping page_num (1-based) -> page_content (lowercased for search)
+            Dictionary mapping page_num (1-based) -> page_content
+            (lowercased when ``lowercase`` is True, original-case otherwise)
         """
         pages_content = {}
 
         if not pdf_text:
             return pages_content
 
+        def _norm(s: str) -> str:
+            return s.lower() if lowercase else s
+
         # Use pre-compiled pattern
         markers = list(self._PAGE_MARKER_PATTERN.finditer(pdf_text))
 
         if not markers:
             # Fallback: Treat whole text as Page 1 if no markers
-            pages_content[1] = pdf_text.lower()
+            pages_content[1] = _norm(pdf_text)
         else:
             # Add text before first marker to Page 1
             first_text = pdf_text[:markers[0].start()].strip()
             if first_text:
-                pages_content[1] = first_text.lower()
+                pages_content[1] = _norm(first_text)
 
             for i in range(len(markers)):
                 start = markers[i].end()
@@ -2314,8 +2356,7 @@ class ProductDiscoveryService:
                 if page_num <= total_pages:
                     content = pdf_text[start:end].strip()
                     if content:
-                        # Store lowercased content for faster search
-                        pages_content[page_num] = content.lower()
+                        pages_content[page_num] = _norm(content)
 
         return pages_content
 

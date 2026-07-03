@@ -43,7 +43,7 @@ async def _fetch_products_missing_embedding(
     client = get_supabase_client().client
     query = (
         client.table("products")
-        .select("id, name, description, long_description, metadata, workspace_id")
+        .select("id, name, description, long_description, metadata, workspace_id, source_document_id")
         .order("id")
         .limit(limit)
     )
@@ -88,6 +88,7 @@ async def backfill_product_text_embeddings(
     from app.api.pdf_processing.stage_4_products import (
         _fetch_known_spec_fields,
         build_product_embedding_text,
+        build_product_page_body_text,
     )
 
     supabase = get_supabase_client()
@@ -106,11 +107,23 @@ async def backfill_product_text_embeddings(
     for row in rows:
         try:
             metadata = row.get("metadata") or {}
+            meta_dict = metadata if isinstance(metadata, dict) else {}
+            # Reconstruct the SAME reading-order page body text the inline Stage 4
+            # path appended (metadata.page_range == product.page_range at creation;
+            # the cache is immutable post-Stage-1) so the backfilled vector stays
+            # byte-identical to the inline-generated one.
+            page_body_text = await build_product_page_body_text(
+                supabase,
+                row.get("source_document_id"),
+                meta_dict.get("page_range"),
+                logger,
+            )
             embedding_text = build_product_embedding_text(
                 name=row.get("name"),
                 description=row.get("description") or row.get("long_description"),
-                metadata=metadata if isinstance(metadata, dict) else {},
+                metadata=meta_dict,
                 known_spec_fields=known_spec_fields,
+                page_body_text=page_body_text,
             )
             if not embedding_text.strip():
                 failed += 1

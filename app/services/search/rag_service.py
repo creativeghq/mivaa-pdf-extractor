@@ -255,6 +255,7 @@ class RAGService:
             chunk_ids = []
             chunks_created = 0
             total_embeddings_stored = 0  # Track total embeddings across all batches
+            chunks_failed_insert = 0  # chunks that chunking produced but the INSERT lost (S2-1)
 
             try:
                 initial_mem = memory_monitor.get_memory_stats()
@@ -359,6 +360,9 @@ class RAGService:
                             chunks_created += 1
 
                     except Exception as e:
+                        # Count the loss so it's surfaced in the aggregate below
+                        # instead of vanishing as a per-chunk WARNING (S2-1).
+                        chunks_failed_insert += 1
                         self.logger.warning(f"   ⚠️ Failed to store chunk {chunk.chunk_index}: {e}")
                         continue
 
@@ -493,6 +497,22 @@ class RAGService:
             # Get quality metrics from chunking service
             quality_metrics = self.chunking_service.get_quality_metrics()
 
+            # Explicit aggregate failure markers (S2-1 / S2-4). Per-chunk insert
+            # and embedding failures are logged as WARNINGs above; without an
+            # aggregate the caller can't tell a clean run from one that silently
+            # lost half its chunks. `embeddings_failed` chunks are recoverable —
+            # they persist with has_text_embedding=false and the chunk-embedding
+            # backfill targets exactly that — but the loss must be VISIBLE.
+            embeddings_failed = max(0, chunks_created - total_embeddings_stored)
+            if chunks_failed_insert or embeddings_failed:
+                self.logger.error(
+                    f"❌ Indexing losses for document {document_id}: "
+                    f"{chunks_failed_insert} chunk insert(s) failed, "
+                    f"{embeddings_failed} chunk(s) stored WITHOUT an embedding "
+                    f"(of {chunks_created} stored / {total_chunks} produced). "
+                    f"Unembedded chunks are recoverable via the chunk-embedding backfill."
+                )
+
             self.logger.info(
                 f"✅ Indexed PDF: {chunks_created} chunks created, {total_embeddings_stored} embeddings in {elapsed_time:.2f}s "
                 f"(duplicates: {quality_metrics.exact_duplicates_prevented}, "
@@ -500,8 +520,13 @@ class RAGService:
             )
 
             return {
-                "success": True,
+                # success is False ONLY when chunking produced chunks but NONE were
+                # stored (storage-side total loss) — closes S2-4 where this always
+                # returned True. A legitimately empty document (0 produced) is a success.
+                "success": chunks_created > 0 or total_chunks == 0,
                 "chunks_created": chunks_created,
+                "chunks_failed_insert": chunks_failed_insert,
+                "embeddings_failed": embeddings_failed,
                 "chunk_ids": chunk_ids,
                 "processing_time": elapsed_time,
                 "embeddings_generated": total_embeddings_stored,  # Actual count of embeddings stored

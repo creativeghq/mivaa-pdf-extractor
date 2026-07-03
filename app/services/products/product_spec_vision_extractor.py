@@ -321,6 +321,7 @@ def _call_claude_vision(
     *,
     job_id: Optional[str] = None,
     product_id: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Single Claude Vision call, returns parsed JSON dict or None on failure.
 
@@ -328,6 +329,11 @@ def _call_claude_vision(
     product cost attribution lands in `ai_usage_logs.product_id` (audit
     fix: previously every Stage 4.7 spec-vision call landed without
     product_id and showed up as orphan spend on the cost dashboard).
+
+    `model` overrides the module-default `CLAUDE_VISION_MODEL` for this call
+    ONLY (Tier B passes Opus). Passing it per-call — instead of mutating the
+    module global — is what keeps concurrent jobs from leaking each other's
+    model choice (the S4-1 race).
     """
     if prompt is None:
         prompt = SPEC_PROMPT
@@ -346,7 +352,7 @@ def _call_claude_vision(
         from app.services.core.claude_helper import tracked_claude_call
         resp = tracked_claude_call(
             task="product_spec_vision_extraction",
-            model=CLAUDE_VISION_MODEL,
+            model=model or CLAUDE_VISION_MODEL,
             max_tokens=3000,
             messages=[{
                 "role": "user",
@@ -418,27 +424,97 @@ def _get_source_pdf_path(document_id: str) -> Optional[str]:
     return None
 
 
+# Per-document memo for the layout-cache text map. The cache is immutable for the
+# life of a job, so reading it once per document (not once per product) is safe.
+# Bounded so a long-lived worker doesn't accumulate full-document text maps.
+_CACHE_TEXT_BY_DOC: Dict[str, Dict[int, str]] = {}
+_CACHE_TEXT_MAX_DOCS = 4
+
+
+def _normalize_for_match(s: str) -> str:
+    """Accent-strip + uppercase so 'PIQUÉ' matches 'PIQUE' for name lookup."""
+    import unicodedata
+    s = unicodedata.normalize("NFD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return s.upper().strip()
+
+
+def _load_cache_page_texts(document_id: Optional[str]) -> Dict[int, str]:
+    """0-indexed PDF page → PaddleOCR-VL reading-order text, from the layout cache.
+
+    Lets name-based page resolution match products whose name is rendered INSIDE
+    a page image (designer fonts / logos / stylized titles) — the embedded PDF
+    text layer misses those, but the VLM OCR'd them into
+    ``document_layout_analysis``. Returns ``{}`` on any failure / no document_id,
+    so the caller falls back to the raw text layer only (never raises).
+
+    Memoized per document (see :data:`_CACHE_TEXT_BY_DOC`) so a catalog with many
+    image-baked-name products reads the layout table ONCE, not once per product.
+    """
+    if not document_id:
+        return {}
+    memo = _CACHE_TEXT_BY_DOC.get(document_id)
+    if memo is not None:
+        return memo
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        from app.api.pdf_processing.stage_1_layout_precompute import (
+            load_page_texts_from_cache,
+        )
+        # 0-indexed to match PDF page indices used by doc[idx] in the name scan.
+        result = load_page_texts_from_cache(
+            get_supabase_client(), document_id, logger=logger, zero_indexed=True,
+        )
+    except Exception as e:
+        logger.debug(f"   spec vision: layout cache read failed (non-fatal): {e}")
+        return {}
+    # Memoize only non-empty successes, so a transient failure / no-rows can retry
+    # on the next product instead of caching an empty map. Evict oldest on overflow.
+    if result:
+        if len(_CACHE_TEXT_BY_DOC) >= _CACHE_TEXT_MAX_DOCS:
+            oldest = next(iter(_CACHE_TEXT_BY_DOC), None)
+            if oldest is not None:
+                _CACHE_TEXT_BY_DOC.pop(oldest, None)  # crash-safe under concurrency
+        _CACHE_TEXT_BY_DOC[document_id] = result
+    return result
+
+
+def _find_pages_by_name_in_texts(
+    page_texts: Dict[int, str], product_name: str, max_pages: int = 12,
+) -> List[int]:
+    """0-indexed pages whose (normalized) reading-order text contains the name.
+
+    The cache-backed counterpart to :func:`_find_pdf_pages_by_text` — used as the
+    fallback that locates products whose name is baked into a page image, without
+    re-opening the PDF.
+    """
+    needle = _normalize_for_match(product_name)
+    if not needle:
+        return []
+    out: List[int] = []
+    for i in sorted(page_texts):
+        if needle in _normalize_for_match(page_texts[i]):
+            out.append(i)
+            if len(out) >= max_pages:
+                break
+    return out
+
+
 def _find_pdf_pages_by_text(
     pdf_path: str,
     product_name: str,
     max_pages: int = 12,
 ) -> List[int]:
-    """Scan the PDF and return 0-indexed page indices whose text contains
-    `product_name` (case- and accent-insensitive).
+    """Scan the PDF TEXT LAYER and return 0-indexed page indices whose text
+    contains `product_name` (case- and accent-insensitive).
 
     This is the authoritative signal for "where does this product live in the
     PDF" when the chunk metadata's `product_pages` turns out to be catalog
     folio labels (two per physical spread) rather than absolute PDF indices.
+    Pages whose name is baked into an image (empty text layer) are handled by
+    the cache-backed :func:`_find_pages_by_name_in_texts` fallback in the resolver.
     """
-    import unicodedata
-
-    def _normalize(s: str) -> str:
-        # Strip accents + uppercase so "PIQUÉ" matches "PIQUE" and vice versa.
-        s = unicodedata.normalize("NFD", s)
-        s = "".join(c for c in s if not unicodedata.combining(c))
-        return s.upper().strip()
-
-    needle = _normalize(product_name)
+    needle = _normalize_for_match(product_name)
     if not needle:
         return []
 
@@ -446,8 +522,7 @@ def _find_pdf_pages_by_text(
     matches: List[int] = []
     try:
         for i in range(doc.page_count):
-            text = _normalize(doc[i].get_text())
-            if needle in text:
+            if needle in _normalize_for_match(doc[i].get_text()):
                 matches.append(i)
                 if len(matches) >= max_pages:
                     break
@@ -460,6 +535,7 @@ def _resolve_pdf_pages_for_product(
     pdf_path: str,
     product_page_range: List[int],
     product_name: Optional[str] = None,
+    document_id: Optional[str] = None,
 ) -> List[int]:
     """Return 0-indexed PDF page indices where `product_name` actually lives.
 
@@ -489,10 +565,18 @@ def _resolve_pdf_pages_for_product(
     total = doc.page_count
     doc.close()
 
-    # Primary: name-based text scan
+    # Primary: name-based text scan. Raw PDF text layer FIRST (in-memory, no DB);
+    # only on a miss do we pay the layout-cache read — the image-baked-name
+    # minority — so born-digital catalogs never touch the layout table here, and
+    # the cache read is memoized per document so even an all-image catalog reads
+    # it once rather than per product.
     text_matches: List[int] = []
     if product_name:
         text_matches = _find_pdf_pages_by_text(pdf_path, product_name)
+        if not text_matches and document_id:
+            text_matches = _find_pages_by_name_in_texts(
+                _load_cache_page_texts(document_id), product_name,
+            )
 
     # Fallback: numeric conversion from chunk metadata
     numeric_matches: List[int] = sorted({
@@ -556,6 +640,8 @@ def extract_specs_from_pdf_pages(
     *,
     job_id: Optional[str] = None,
     product_id: Optional[str] = None,
+    document_id: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Extract ceramic-tile specifications from a product's PDF spec pages.
 
@@ -577,6 +663,7 @@ def extract_specs_from_pdf_pages(
 
     pdf_indices = _resolve_pdf_pages_for_product(
         pdf_path, product_page_range, product_name=product_name,
+        document_id=document_id,
     )
     if not pdf_indices:
         logger.info(f"product_spec_vision_extractor: no valid pages for {product_name}")
@@ -610,6 +697,7 @@ def extract_specs_from_pdf_pages(
                 prompt=product_aware_prompt,
                 job_id=job_id,
                 product_id=product_id,
+                model=model,
             )
         except Exception as e:
             logger.warning(f"   ⚠️ Claude Vision call failed for page {idx}: {e}")

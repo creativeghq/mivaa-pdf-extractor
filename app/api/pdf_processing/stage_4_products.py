@@ -669,12 +669,23 @@ async def create_single_product(
         try:
             # Shared with the product-embedding backfill — keep the text
             # construction identical so backfilled vectors live in the same
-            # semantic space as inline-generated ones.
+            # semantic space as inline-generated ones. Read page_range from the
+            # SAME source the backfill reads: the persisted `metadata` dict
+            # (== product_data['metadata'] below), NOT product.page_range — the two
+            # can differ when discovery pre-set metadata['page_range'] (line ~398
+            # only fills it if absent). Using metadata here guarantees byte-identity.
+            page_body_text = await build_product_page_body_text(
+                supabase,
+                document_id,
+                metadata.get('page_range'),
+                logger,
+            )
             embedding_text = build_product_embedding_text(
                 name=product.name,
                 description=description,
                 metadata=metadata,
                 known_spec_fields=known_spec_fields,
+                page_body_text=page_body_text,
             )
 
             from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
@@ -873,18 +884,32 @@ def _normalize_icon_field_name(field_name: str) -> str:
     return ICON_FIELD_NAME_NORMALIZATION.get(field_name.strip(), field_name.strip())
 
 
+PRODUCT_BODY_TEXT_MAX_CHARS = 4000
+
+
 def build_product_embedding_text(
     name: Optional[str],
     description: Optional[str],
     metadata: Dict[str, Any],
     known_spec_fields: List[str],
+    page_body_text: Optional[str] = None,
 ) -> str:
     """Build the canonical product embedding text from name + description +
-    searchable metadata + spec fields.
+    searchable metadata + spec fields + (optionally) the product's reading-order
+    page body text.
 
     Single source of truth shared by Stage 4 inline generation AND the
     product-embedding backfill — both must produce byte-identical text for
     the same inputs so backfilled vectors live in the same semantic space.
+
+    ``page_body_text`` is the PaddleOCR-VL reading-order text for the product's
+    pages (built by :func:`build_product_page_body_text`). It is appended LAST so
+    spec-based search matches free-text spec phrasing that never got structured
+    into a metadata field — and so image-only / scanned products (whose
+    ``description`` is often empty and whose specs depend on downstream extractors)
+    still carry the text the VLM actually OCR'd, instead of embedding on
+    ``name + category`` alone. Pass the SAME value from both callers to preserve
+    byte-identity.
     """
     embedding_text_parts = [name or '']
     if description:
@@ -931,7 +956,108 @@ def build_product_embedding_text(
                     f"{spec_field.replace('_', ' ')}: {', '.join(items)}"
                 )
 
+    # Append the product's reading-order page body text LAST (bounded upstream).
+    if page_body_text and page_body_text.strip():
+        embedding_text_parts.append(page_body_text.strip())
+
     return ' | '.join(embedding_text_parts)
+
+
+async def build_product_page_body_text(
+    supabase: Any,
+    document_id: Optional[str],
+    page_range: Optional[List[int]],
+    logger: logging.Logger,
+    max_chars: int = PRODUCT_BODY_TEXT_MAX_CHARS,
+) -> str:
+    """Reading-order page body text for a product, from the PaddleOCR-VL cache.
+
+    Joins each of the product's physical pages' cached reading-order text
+    (``document_layout_analysis``, ``processing_version='paddleocr-vl'``) in page
+    order. This is the canonical text the VLM produced for the product's pages —
+    present even for image-only / scanned pages whose PDF text layer is empty.
+
+    Deterministic: pages are de-duplicated + sorted and the cache is immutable
+    post-Stage-1, so the inline Stage 4 path and the backfill produce
+    byte-identical text for the same ``(document_id, page_range)``. Returns ``""``
+    when the cache has no rows for the pages (embedding then relies on name +
+    description + structured specs only) — never raises.
+    """
+    if not document_id or not page_range:
+        return ""
+    from app.api.pdf_processing.stage_1_layout_precompute import (
+        load_page_texts_from_cache,
+    )
+    # Canonical cache reader (sync) off the event loop. Keyed by 1-based physical page.
+    by_page = await asyncio.to_thread(
+        load_page_texts_from_cache, supabase, document_id, page_range, logger,
+    )
+    if not by_page:
+        return ""
+    joined = "\n\n".join(
+        by_page[p] for p in sorted(by_page) if by_page.get(p, "").strip()
+    ).strip()
+    if max_chars and len(joined) > max_chars:
+        joined = joined[:max_chars].rstrip()
+    return joined
+
+
+async def reembed_product_text(
+    supabase: Any,
+    document_id: Optional[str],
+    product_id: str,
+    name: Optional[str],
+    description: Optional[str],
+    metadata: Dict[str, Any],
+    known_spec_fields: List[str],
+    logger: logging.Logger,
+) -> bool:
+    """Rebuild + persist a product's text_embedding_1024 from its FINAL fields.
+
+    Used by Stage 4.7 enrichment after it writes a new `description` (S4-2): the
+    inline Stage 4 vector was built before the description existed, so it's stale
+    w.r.t. the persisted row. Re-embedding here — via the SAME
+    build_product_embedding_text + build_product_page_body_text helpers the inline
+    path and backfill use — keeps the stored vector consistent with the row.
+    Returns True on a successful 1024-dim write. Never raises.
+    """
+    try:
+        page_body_text = await build_product_page_body_text(
+            supabase, document_id, (metadata or {}).get("page_range"), logger,
+        )
+        embedding_text = build_product_embedding_text(
+            name=name,
+            description=description,
+            metadata=metadata or {},
+            known_spec_fields=known_spec_fields,
+            page_body_text=page_body_text,
+        )
+        if not embedding_text.strip():
+            return False
+        from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+        emb_result = await RealEmbeddingsService().generate_text_embedding(
+            embedding_text, product_id=product_id,
+        )
+        text_emb = emb_result.get("embedding") if emb_result.get("success") else None
+        if not text_emb or len(text_emb) != 1024:
+            logger.debug(
+                f"   re-embed skipped for {product_id}: "
+                f"{emb_result.get('error') or f'dim={len(text_emb) if text_emb else 0}'}"
+            )
+            return False
+        payload: Dict[str, Any] = {
+            "text_embedding_1024": "[" + ",".join(str(x) for x in text_emb) + "]",
+            "text_embedding_schema_version": 1,
+        }
+        if emb_result.get("model"):
+            payload["text_embedding_1024_model"] = emb_result["model"]
+        await asyncio.to_thread(
+            supabase.client.table("products").update(payload).eq("id", product_id).execute
+        )
+        return True
+    except Exception as e:
+        logger.debug(f"   re-embed after enrichment failed for {product_id} (non-fatal): {e}")
+        return False
 
 
 async def _fetch_known_spec_fields(
@@ -2309,6 +2435,9 @@ async def enrich_products_from_chunks_and_vision(
         # bottom is the one path still capable of raising — protected by an
         # outer try/except below so one bad product can't strand the rest.
         stats.setdefault("per_product_failures", 0)
+        # Fetched once for the whole document — the embedding-text builder used by
+        # the S4-2 re-embed below walks these fields (same as inline Stage 4).
+        _known_spec_fields = await _fetch_known_spec_fields(supabase, logger)
         for product in products:
             product_id = product["id"]
             product_name = product.get("name") or "(unnamed)"
@@ -2620,6 +2749,21 @@ async def enrich_products_from_chunks_and_vision(
                 f"(chunk_candidates={list(chunk_candidates.keys())}, "
                 f"vision_candidates={list(vision_candidates.keys())})"
             )
+
+            # S4-2: when enrichment writes a NEW description, the inline Stage 4
+            # text_embedding_1024 (built before the description existed) is stale
+            # w.r.t. the persisted row. Re-embed from the FINAL fields via the
+            # shared helper so the stored vector matches the row and doesn't drift
+            # from a later backfill. Best-effort — a failed re-embed leaves the
+            # (stale-but-present) vector rather than nulling it.
+            if new_description:
+                reembedded = await reembed_product_text(
+                    supabase, document_id, product_id, product_name,
+                    new_description, new_metadata, _known_spec_fields, logger,
+                )
+                if reembedded:
+                    stats.setdefault("products_reembedded", 0)
+                    stats["products_reembedded"] += 1
 
             # ── Stage 4.7.e: Re-run AutoKBDocumentService with newly-enriched metadata ──
             # The existing product_processor wired this service at product creation,

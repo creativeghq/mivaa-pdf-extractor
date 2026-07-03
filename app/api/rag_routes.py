@@ -31,7 +31,6 @@ from app.services.tracking.job_recovery_service import JobRecoveryService
 from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.core.supabase_client import get_supabase_client, SupabaseClient
 from app.services.core.ai_model_tracker import AIModelTracker
-from app.services.discovery.focused_product_extractor import get_focused_product_extractor
 from app.services.products.product_relationship_service import ProductRelationshipService
 from app.services.search.search_prompt_service import SearchPromptService
 from app.services.tracking.stuck_job_analyzer import stuck_job_analyzer
@@ -3534,6 +3533,11 @@ async def process_document_with_discovery(
         #   - Stage 2 chunking reads the same cache,
         #   - Stage 3 crops come from PaddleOCR's figure boxes (cache hit).
         # One pass feeds the whole pipeline.
+        # Imported before the try so the `except LayoutPrecomputeFatalError` clause
+        # below always has the name bound, even if the inner import were to fail.
+        from app.api.pdf_processing.stage_1_layout_precompute import (
+            LayoutPrecomputeFatalError,
+        )
         try:
             _settings_for_precompute = get_settings()
             if getattr(_settings_for_precompute, "layout_precompute_enabled", True):
@@ -3557,12 +3561,18 @@ async def process_document_with_discovery(
                 }
             else:
                 logger.info("⏭️  [STAGE 1] Skipped (LAYOUT_PRECOMPUTE_ENABLED=False)")
+        except LayoutPrecomputeFatalError:
+            # Intended-fatal: endpoint misconfigured, or circuit-breaker tripped
+            # with zero successes. Propagate so the outer handler fails the job
+            # (SPN-3) — do NOT downgrade to a warning and silently process the
+            # whole catalog on inferior PyMuPDF text.
+            logger.error("❌ [STAGE 1] structural pass hit a FATAL condition — failing job", exc_info=True)
+            raise
         except Exception as precompute_err:
             # Best-effort: discovery falls back to PyMuPDF text, chunker to its
-            # text path. PaddleOCR is a required endpoint, so a hard outage would
-            # already have failed the job at health validation.
+            # text path. A transient per-page failure shouldn't sink the job.
             logger.warning(
-                f"⚠️ [STAGE 1] structural pass failed: {precompute_err}",
+                f"⚠️ [STAGE 1] structural pass failed (non-fatal, falling back to PyMuPDF text): {precompute_err}",
                 exc_info=True,
             )
 
@@ -4034,6 +4044,52 @@ async def process_document_with_discovery(
                 f"pipeline (products_failed={products_failed}) — failing job {job_id} "
                 f"instead of completing with zero output."
             )
+
+        # Partial-loss signal (SPN-2): SOME products failed but not all. The job
+        # still completes (the succeeded products are usable), but a bare
+        # status='completed'/100% masks the loss — the only prior signal was the
+        # per-product `product_processing_status='failed'` rows, which don't touch
+        # the job. Surface it at the job level: a queryable metadata flag + audit
+        # event + Sentry warning, so ops sees a half-lost catalog before users do.
+        if total_products > 0 and products_failed > 0:
+            partial_msg = (
+                f"Job {job_id} completed with PARTIAL product loss: "
+                f"{products_failed}/{total_products} product(s) failed "
+                f"({products_completed} succeeded)."
+            )
+            logger.warning(f"⚠️ {partial_msg}")
+            try:
+                supabase.client.rpc('merge_background_job_metadata', {
+                    'p_job_id': job_id,
+                    'p_metadata': {
+                        'completion_reason': 'completed_with_failures',
+                        'products_failed': products_failed,
+                        'products_completed': products_completed,
+                        'total_products': total_products,
+                    },
+                }).execute()
+            except Exception as _meta_err:
+                logger.debug(f"partial-loss metadata stamp failed (non-fatal): {_meta_err}")
+            try:
+                supabase.client.rpc('append_stage_history', {
+                    'p_job_id': job_id,
+                    'p_event': {
+                        'stage': 'product_processing',
+                        'status': 'completed_with_failures',
+                        'data': {
+                            'products_failed': products_failed,
+                            'products_completed': products_completed,
+                            'total_products': total_products,
+                        },
+                        'completed_at': datetime.utcnow().isoformat(),
+                    },
+                }).execute()
+            except Exception as _hist_err:
+                logger.debug(f"partial-loss stage_history append failed (non-fatal): {_hist_err}")
+            try:
+                sentry_sdk.capture_message(partial_msg, level="warning")
+            except Exception:
+                pass
 
         # Update tracker with final counts. These are the AUTHORITATIVE
         # per-job totals — set them from the parallel_result aggregates (each
