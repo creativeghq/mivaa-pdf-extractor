@@ -1557,6 +1557,18 @@ class ProductDiscoveryService:
             # This sets page_range for products that have start_page from INDEX reading
             self._calculate_page_ranges_from_start_pages(catalog.products, pdf_page_count)
 
+            # ✅ STEP 1b (S0-4): correct folio→physical offset. Claude's start_page is
+            # the PRINTED FOLIO label from the index; the rest of the pipeline keys on
+            # PHYSICAL pages (Stage 1 cache, chunking, crops). On catalogs with
+            # unnumbered front-matter (covers/intro spreads) the folio is shifted from
+            # the physical page. We anchor the shift with the proper physical-page
+            # function (_detect_product_pages_optimized, which locates each product's
+            # headline on its REAL physical page in the cache text), take the consensus
+            # offset, and apply it so every product's page_range is physical-correct.
+            self._reconcile_folio_start_pages_to_physical(
+                catalog.products, pages_content, pdf_page_count, all_product_names
+            )
+
             # Phase 2 page trimming REMOVED - user wants ALL information kept and attached to products
             # The conservative page range calculation (end_page = next_start - 1) ensures
             # no pages are lost. Architect intros, technical specs, etc. stay with their products.
@@ -2298,6 +2310,72 @@ class ProductDiscoveryService:
                 f"(calculated from start_page)"
             )
 
+    def _reconcile_folio_start_pages_to_physical(
+        self,
+        products: List["ProductInfo"],
+        pages_content: Dict[int, str],
+        total_pages: int,
+        all_product_names: List[str],
+    ) -> int:
+        """Correct the folio→physical page offset for start_page-derived ranges (S0-4).
+
+        Claude's ``_start_page`` is the printed FOLIO label read from the catalog
+        index. The rest of the pipeline (PaddleOCR Stage 1 cache, chunking, crops)
+        addresses PHYSICAL PDF pages. On catalogs with unnumbered front-matter the
+        two diverge by a constant offset, so folio-derived ``page_range`` values
+        point at the wrong physical pages.
+
+        We anchor the offset by locating each product's headline on its REAL
+        physical page via :meth:`_detect_product_pages_optimized` (which searches the
+        physical-page-keyed cache text), compute ``physical_headline - folio_start``
+        per product, take the consensus, and shift every product's ``page_range`` by
+        it. Returns the applied offset (0 = folio already == physical, no change —
+        the born-digital / no-front-matter common case).
+        """
+        offsets: List[int] = []
+        for product in products:
+            folio_start = product.metadata.get("_start_page") if product.metadata else None
+            if not folio_start:
+                continue
+            physical_pages = self._detect_product_pages_optimized(
+                pages_content=pages_content,
+                product_name=product.name,
+                total_pages=total_pages,
+                all_product_names=all_product_names,
+            )
+            if physical_pages:
+                # physical_pages[0] is the headline (section start) physical page.
+                offsets.append(int(physical_pages[0]) - int(folio_start))
+
+        if not offsets:
+            return 0
+
+        from collections import Counter
+        offset, count = Counter(offsets).most_common(1)[0]
+        # Only shift on a confident consensus — a couple of mis-detections
+        # shouldn't move a correctly-numbered catalog. Require a majority.
+        if offset == 0:
+            return 0
+        if count < max(2, (len(offsets) // 2) + 1):
+            self.logger.warning(
+                f"   ⚠️ [S0-4] Folio→physical offset {offset:+d} seen on only "
+                f"{count}/{len(offsets)} anchored products — not confident, NOT shifting. "
+                f"page_range stays as-is."
+            )
+            return 0
+
+        self.logger.info(
+            f"   📐 [S0-4] Folio→physical offset = {offset:+d} "
+            f"(consensus {count}/{len(offsets)} anchored products) — shifting page ranges "
+            f"so they address real physical pages."
+        )
+        for product in products:
+            if product.page_range:
+                product.page_range = [
+                    p + offset for p in product.page_range
+                    if 1 <= (p + offset) <= total_pages
+                ]
+        return offset
 
     # Pre-compiled regex pattern for page markers (compiled once, reused)
     _PAGE_MARKER_PATTERN = re.compile(r'-{3,}\s*#?\s*Page\s*(\d+)\s*-*', re.IGNORECASE)
