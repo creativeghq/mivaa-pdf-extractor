@@ -51,7 +51,7 @@ def _log_paddleocr_gpu_cost(
     PaddleOCR-VL runs on a Modal GPU endpoint — billed per GPU-second (time-based,
     $1/GPU-hour), NOT per token.
 
-    DIRECT SYNCHRONOUS insert: ``run_structural_pass`` / ``run_block_ocr`` are
+    DIRECT SYNCHRONOUS insert: ``run_structural_pass`` is
     sync (dispatched via ``asyncio.to_thread``), the supabase client is a process
     singleton, and the insert is ~ms — so we just write the row inline. The
     previous fire-and-forget pattern spawned a daemon thread with a FRESH
@@ -337,49 +337,10 @@ class PaddleOCRManager:
         assert last_error is not None
         raise last_error
 
-    def run_block_ocr(
-        self,
-        image_input: Any,
-        caller: str = "block_ocr",
-        image_id: Optional[str] = None,
-        job_id: Optional[str] = None,
-        document_id: Optional[str] = None,
-        product_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """OCR a single cropped block image to text (``block`` mode).
-
-        Returns ``{"generated_text": str, "raw": dict, "attempts_made": int}``.
-        Used for per-image OCR on text-bearing product crops.
-        """
-        if not self.enabled:
-            raise Exception("PaddleOCR endpoint is disabled")
-        if not self.provider.resume_if_needed():
-            raise Exception("Failed to resume PaddleOCR endpoint")
-
-        image_bytes = _coerce_image_to_png_bytes(image_input, self.max_image_pixels)
-        start_time = time.time()
-        payload = self._do_parse(image_bytes, mode="block")
-        latency_ms = int((time.time() - start_time) * 1000)
-        text = str(payload.get("text") or "")
-        if not text:
-            regions = parse_parse_response(payload)
-            text = regions_to_reading_text(regions)
-        self._on_success(start_time)
-        self._emit_metric(
-            caller=caller, page_number=None, image_id=image_id,
-            job_id=job_id, document_id=document_id, attempt_number=1,
-            outcome="success", region_count=1 if text else 0, chars_count=len(text),
-            failure_mode_head=None, latency_ms=latency_ms,
-        )
-        # GPU-seconds cost → ai_usage_logs (rolls up into total_ai_cost_usd).
-        _log_paddleocr_gpu_cost(
-            task="pdf_ocr_paddleocr",
-            latency_ms=latency_ms,
-            job_id=job_id,
-            image_id=image_id,
-            product_id=product_id,
-        )
-        return {"generated_text": text, "raw": payload, "attempts_made": 1}
+    # run_block_ocr (block-mode per-crop OCR) was REMOVED 2026-07-04 (S1-2): it had
+    # no callers — Phase-3 per-image OCR goes through run_structural_pass (page mode)
+    # in ocr_service, not block mode. The Modal /parse endpoint still supports
+    # mode="block" if a future caller needs it.
 
     def _do_parse(self, image_bytes: bytes, mode: str) -> Dict[str, Any]:
         """Single ``/parse`` call. Returns the decoded JSON.

@@ -87,6 +87,13 @@ PADDLE_LABEL_TO_REGION_TYPE: Dict[str, str] = {
 #: these). RT-DETR's chart boxes are a new, welcome crop source.
 CROP_SOURCE_REGION_TYPES = frozenset({"IMAGE", "FIGURE"})
 
+#: Crop-source labels whose VLM-recognized content IS meaningful reading-order
+#: text (chart axis labels / values / titles, diagram annotations) — the VLM
+#: actually transcribed it, so preserve it as text_content instead of blanking
+#: it like a photo (S1-1). These stay crop sources (region_type FIGURE) AND
+#: contribute their text to chunking / discovery / embeddings.
+TEXT_BEARING_CROP_LABELS = frozenset({"chart", "diagram"})
+
 #: Labels whose recognized content is structured (kept as HTML in metadata for
 #: the TABLE region so Stage 2 can preserve table structure).
 TABLE_REGION_TYPES = frozenset({"TABLE"})
@@ -121,7 +128,13 @@ class PaddleRegion:
 
     @property
     def is_text_bearing(self) -> bool:
-        return self.region_type not in CROP_SOURCE_REGION_TYPES and bool(self.content)
+        # Charts/diagrams are crop sources but their VLM-recognized text is
+        # meaningful (S1-1) — count it as text-bearing so page-mode reading text
+        # includes it, matching region_to_layout_element's text_content handling.
+        return bool(self.content) and (
+            self.region_type not in CROP_SOURCE_REGION_TYPES
+            or self.label.strip().lower() in TEXT_BEARING_CROP_LABELS
+        )
 
 
 def _clamp01(v: float) -> float:
@@ -188,7 +201,10 @@ def region_to_layout_element(
         },
         "confidence": DEFAULT_REGION_CONFIDENCE,
         "reading_order": region.order,
-        "text_content": region.content if region.region_type not in CROP_SOURCE_REGION_TYPES else "",
+        "text_content": region.content if (
+            region.region_type not in CROP_SOURCE_REGION_TYPES
+            or region.label.strip().lower() in TEXT_BEARING_CROP_LABELS
+        ) else "",
         "fragments": [],  # PaddleOCR returns merged regions; no sub-fragment list.
         "metadata": {
             "paddle_label": region.label,

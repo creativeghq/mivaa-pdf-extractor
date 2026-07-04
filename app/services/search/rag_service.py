@@ -177,6 +177,14 @@ class RAGService:
                 self.logger.info(f"   ✅ Using page-aware data ({len(page_chunks)} pages)")
                 pages = page_chunks
             else:
+                # NOTE (KB-ingestion, #248): this raw PyMuPDF4LLM branch is NOT the
+                # live catalog/KB text source. All ingestion goes through
+                # process_document_with_discovery → Stage 2 (process_product_chunking),
+                # which is cache-first off the PaddleOCR structural cache and ALWAYS
+                # passes page_chunks — so this branch is effectively unreached. It is
+                # kept only as a robustness fallback for any direct caller that indexes
+                # a PDF without pre-derived page text. Do NOT wire new ingestion through
+                # here expecting VLM/cache text; it would silently lose image-only pages.
                 # Extract text from PDF using PyMuPDF4LLM with page_chunks=True
                 try:
                     import pymupdf4llm

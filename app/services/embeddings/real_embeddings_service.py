@@ -232,7 +232,13 @@ class RealEmbeddingsService:
             )
             if text_embedding:
                 embeddings["embeddings"]["text_1024"] = text_embedding
-                embeddings["metadata"]["model_versions"]["text"] = "voyage-4" if self.voyage_enabled else "text-embedding-3-small"
+                # Provenance = the model that ACTUALLY produced the vector (S3-3).
+                # Was a hardcoded "voyage-4" that lied whenever Settings.voyage_model
+                # was set to a different version.
+                embeddings["metadata"]["model_versions"]["text"] = (
+                    (self._last_provider or self.voyage_model) if self.voyage_enabled
+                    else "text-embedding-3-small"
+                )
                 embeddings["metadata"]["confidence_scores"]["text"] = 0.95
                 self.logger.info(f"✅ Text embedding generated (1024D, input_type={input_type})")
             
@@ -286,7 +292,9 @@ class RealEmbeddingsService:
                     embeddings["embeddings"]["texture_aspect_1024"] = aspect_embeddings.get("texture")
                     embeddings["embeddings"]["style_aspect_1024"] = aspect_embeddings.get("style")
                     embeddings["embeddings"]["material_aspect_1024"] = aspect_embeddings.get("material")
-                    embeddings["metadata"]["model_versions"]["specialized_aspect"] = "voyage-3"
+                    # Aspect vectors are produced by _generate_text_embedding →
+                    # self.voyage_model, NOT a fixed "voyage-3" (S3-3 provenance fix).
+                    embeddings["metadata"]["model_versions"]["specialized_aspect"] = self.voyage_model
                     embeddings["metadata"]["confidence_scores"]["specialized_aspect"] = 0.95
                     embeddings["metadata"]["schema_versions"] = embeddings["metadata"].get("schema_versions", {})
                     embeddings["metadata"]["schema_versions"]["specialized_aspect"] = SCHEMA_VERSION
@@ -306,7 +314,7 @@ class RealEmbeddingsService:
                 )
                 if ue_result and ue_result.get("embedding"):
                     embeddings["embeddings"]["understanding_1024"] = ue_result["embedding"]
-                    embeddings["metadata"]["model_versions"]["understanding"] = ue_result.get("embedding_model", "voyage-4")
+                    embeddings["metadata"]["model_versions"]["understanding"] = ue_result.get("embedding_model") or self.voyage_model
                     embeddings["metadata"]["schema_versions"] = embeddings["metadata"].get("schema_versions", {})
                     embeddings["metadata"]["schema_versions"]["understanding"] = ue_result.get("schema_version", 1)
                     embeddings["metadata"]["confidence_scores"]["understanding"] = 0.93
@@ -1450,7 +1458,7 @@ class RealEmbeddingsService:
         try:
             await self.ai_logger.log_ai_call(
                 task="aspect_embeddings_batch",
-                model="voyage-3",
+                model=self.voyage_model,  # S3-3: was hardcoded "voyage-3"; aspects use voyage_model
                 input_tokens=0,  # voyage doesn't surface token count on text embed
                 output_tokens=0,
                 cost=0.0,  # cost rolled up by Voyage account-level billing

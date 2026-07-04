@@ -705,6 +705,13 @@ async def process_single_product(
                 logger_instance.error(f"❌ Failed to update product metadata: {e}")
 
         # 4b. Store layout regions and extract tables
+        # DEAD (SPN-4, verified 2026-07-04): `layout_regions` is ALWAYS [] here —
+        # stage_1_focused_extraction returns layout_regions=[] since the 2026-06-14
+        # cutover (layout is owned by the PaddleOCR Stage 1 pass; TABLE content is
+        # preserved as metadata.html in document_layout_analysis and consumed by
+        # Stage 2). This block therefore never executes — no product_layout_regions
+        # rows are written, so the "duplicate inserts on resume" concern is moot.
+        # Retained-but-inert pending a dedicated deletion PR (issue #248).
         if layout_regions and product_db_id:
             try:
                 from app.services.pdf.table_extraction import TableExtractor
