@@ -367,9 +367,23 @@ async def process_product_images(
             logger=logger,
         )
         if region_crops:
+            # S3-4: region crops are the primary product-crop source but previously
+            # bypassed the perceptual-hash dedup that embedded images get inside
+            # pdf_processor. Overlapping / duplicate IMAGE-FIGURE regions on a page
+            # would each get a full SLIG + Voyage + Opus embedding bundle → duplicate
+            # visual vectors in VECS + ~2x embedding spend. Run the SAME per-layer
+            # phash dedup over the region-crop set (all layer='region_crop', so they
+            # only compare against each other — cross-layer collisions with embedded
+            # images are intentionally preserved, matching the existing design).
+            _pre = len(region_crops)
+            try:
+                region_crops = get_pdf_processor()._deduplicate_images(region_crops, job_id=job_id)
+            except Exception as _dedup_err:
+                logger.warning(f"   ⚠️ Region-crop dedup failed (non-fatal, keeping all): {_dedup_err}")
             logger.info(
                 f"   🖼️ Region crops (spread-aware): {len(region_crops)} "
                 f"IMAGE/FIGURE crops added"
+                + (f" ({_pre - len(region_crops)} duplicates dropped)" if _pre != len(region_crops) else "")
             )
             extracted_images_list.extend(region_crops)
     except Exception as region_err:

@@ -105,9 +105,10 @@ async def process_stage_5_quality(
         "confidence_score": catalog.confidence_score
     }
     
-    await tracker.complete_job(result=result)
-    
-    # Create COMPLETED checkpoint
+    # SPN-7: create the COMPLETED checkpoint FIRST — its validation can mark the
+    # job FAILED on an all-zero result. The old order (complete_job then checkpoint)
+    # set status='completed' and then the checkpoint flipped it to 'failed', a
+    # flip-flop with a stale completed_at. Validate-then-complete avoids it.
     await checkpoint_recovery_service.create_checkpoint(
         job_id=job_id,
         stage=CheckpointStage.COMPLETED,
@@ -124,6 +125,19 @@ async def process_stage_5_quality(
         }
     )
     logger.info(f"✅ Created COMPLETED checkpoint for job {job_id}")
+
+    # Only mark the job complete when it produced real output. On an all-zero
+    # result (rare — the products_completed==0 gate upstream usually prevents
+    # reaching here) the checkpoint's validation owns the terminal FAILED status,
+    # so we do NOT overwrite it with 'completed'.
+    if products_created > 0 or tracker.chunks_created > 0 or images_processed > 0:
+        await tracker.complete_job(result=result)
+    else:
+        logger.error(
+            f"⚠️ Job {job_id} reached Stage 5 with 0 products / 0 chunks / 0 images "
+            f"— NOT marking completed; the COMPLETED-checkpoint validation owns the "
+            f"terminal status."
+        )
     
     logger.info("=" * 80)
     logger.info(f"✅ [PRODUCT DISCOVERY PIPELINE] COMPLETED")

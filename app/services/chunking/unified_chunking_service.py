@@ -334,8 +334,12 @@ class UnifiedChunkingService:
                     f"Stage 1.5 OCR failed or the page is image-only. "
                     f"Search/RAG quality on this page may be degraded."
                 )
-                if metadata is not None:
-                    metadata["chunker_fell_back_to_text"] = True
+                # S2-3: do NOT stamp a fallback flag on the SHARED `metadata` dict —
+                # it's the same instance threaded through every page of the product,
+                # so one page's fallback smeared the flag onto every subsequent
+                # (clean) page's chunks and over-counted the metric. The accurate,
+                # per-page signal is the per-chunk `chunking_strategy_fallback` stamp
+                # below; a page-level fallback count = chunks carrying that key.
             # Select and execute chunking strategy on the full page text
             chunks = self._select_chunking_strategy(text, document_id, metadata, page_number)
             # Track that we fell back so the page-level metric is accurate.

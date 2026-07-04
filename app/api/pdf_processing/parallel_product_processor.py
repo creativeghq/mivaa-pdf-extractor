@@ -276,9 +276,12 @@ async def process_products_parallel(
                     logger_instance.error(
                         f"   ❌ ALSO failed to mark product {_product_id} as failed in DB: {mark_err}"
                     )
-                # Clear any in-flight slow-op marker the cancelled task left behind.
+                # Clear the slow-op marker THIS product's task left behind — pass the
+                # exact per-product key (S3 marker keyed by product name) rather than
+                # the default, which pops top-of-stack and could remove a sibling
+                # product's still-active marker under parallelism (SPN-9).
                 try:
-                    await tracker.clear_slow_operation()
+                    await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
                 except Exception:
                     pass
                 async with update_lock:
@@ -308,7 +311,7 @@ async def process_products_parallel(
                         f"   ❌ ALSO failed to mark product {_product_id} as failed in DB: {mark_err}"
                     )
                 try:
-                    await tracker.clear_slow_operation()
+                    await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")  # SPN-9: scoped clear
                 except Exception:
                     pass
                 async with update_lock:
@@ -507,7 +510,7 @@ async def _process_products_sequential(
                     f"   ❌ ALSO failed to mark product {_product_id} as failed in DB: {mark_err}"
                 )
             try:
-                await tracker.clear_slow_operation()
+                await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")  # SPN-9: scoped clear
             except Exception:
                 pass
             continue

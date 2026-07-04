@@ -921,9 +921,24 @@ def build_product_embedding_text(
         val = metadata.get(key)
         if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
             embedding_text_parts.append(val.replace('_', ' '))
-    colors = metadata.get('available_colors')
-    if isinstance(colors, list):
-        embedding_text_parts.extend(colors)
+    # S4-6: colors live under several keys depending on the source — the AI-text /
+    # XML path writes `available_colors`, the vision rollup writes
+    # `appearance.colors_from_vision` (and `appearance_colors`). The clause used to
+    # read only `available_colors`, so vision-derived colors (the common catalog
+    # case) never reached the embedding text. Gather from all known sources, deduped.
+    _color_sources = [
+        metadata.get('available_colors'),
+        metadata.get('appearance_colors'),
+        (metadata.get('appearance') or {}).get('colors_from_vision') if isinstance(metadata.get('appearance'), dict) else None,
+    ]
+    _seen_colors: set = set()
+    for _cs in _color_sources:
+        if isinstance(_cs, list):
+            for _c in _cs:
+                _cv = str(_c).strip()
+                if _cv and _cv.lower() not in _seen_colors:
+                    _seen_colors.add(_cv.lower())
+                    embedding_text_parts.append(_cv)
 
     # Walk every known spec field from material_metadata_fields and append
     # non-null values to the embedding text. A search like
@@ -2410,13 +2425,18 @@ async def enrich_products_from_chunks_and_vision(
         # product. Keeps pipeline stages decoupled (no dependency on the
         # layout pass populating metadata.page_range up front).
         try:
+            # S4-5: scope to THIS document at the DB (filter on the inner-joined
+            # document_images.document_id) instead of pulling every association row
+            # in the table and filtering in Python — that was an unbounded scan per
+            # enrichment run on a large multi-tenant DB.
             assoc_resp = supabase.client.table("image_product_associations") \
                 .select("product_id, document_images!inner(page_number, document_id)") \
+                .eq("document_images.document_id", document_id) \
                 .execute()
             product_to_image_pages: Dict[str, set] = {}
             for row in (assoc_resp.data or []):
                 di = row.get("document_images") or {}
-                if di.get("document_id") != document_id:
+                if di.get("document_id") != document_id:  # defensive; join already filters
                     continue
                 pn = di.get("page_number")
                 if pn is None:

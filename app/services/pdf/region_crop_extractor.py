@@ -239,7 +239,16 @@ async def _load_layout_regions_for_physical_pages(
             .execute()
         )
     except Exception as exc:
-        logger.debug(f"   ↺ Layout cache lookup failed: {exc}")
+        # S3-6: a cache READ FAILURE (transient DB error) is NOT the same as "this
+        # page had no IMAGE/FIGURE regions" — but both returned {} silently, so a
+        # product could end up with zero region crops and no signal. Log at WARNING
+        # so operators can tell "crops were attempted and the read failed" from
+        # "genuinely no crop regions" (still best-effort: returns {} either way).
+        logger.warning(
+            f"   ⚠️ Region-crop layout cache READ FAILED for document {document_id} "
+            f"pages {sorted(set(int(p) for p in physical_pages))[:10]} — product(s) may "
+            f"get zero region crops this run: {exc}"
+        )
         return {}
 
     rows = response.data or []

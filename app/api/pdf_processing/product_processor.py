@@ -702,7 +702,16 @@ async def process_single_product(
                     .execute()
                 logger_instance.info(f"✅ Merged and updated product metadata in DB: {product_db_id} ({len(merged_metadata)} fields)")
             except Exception as e:
-                logger_instance.error(f"❌ Failed to update product metadata: {e}")
+                # SPN-8: make the impact explicit rather than success-masking. The
+                # product row already exists (created upstream) and keeps its
+                # pre-merge metadata — this is a LOST enrichment merge, not a total
+                # product failure. Logged at ERROR with the product id so operators
+                # can re-run enrichment for exactly this product if needed.
+                logger_instance.error(
+                    f"❌ [SPN-8] Product metadata MERGE dropped for {product_db_id} "
+                    f"(product retains pre-merge metadata; enrichment lost, not a "
+                    f"product failure): {e}"
+                )
 
         # 4b. Store layout regions and extract tables
         # DEAD (SPN-4, verified 2026-07-04): `layout_regions` is ALWAYS [] here —
@@ -987,10 +996,12 @@ async def process_single_product(
         )
 
         # Clear any in-flight slow-op marker so the auto-recovery cron sees
-        # a clean state for the next product (or for the next job).
+        # a clean state for the next product (or for the next job). Pass THIS
+        # product's exact per-product key (SPN-9) so we don't pop a sibling's
+        # still-active marker under parallel product processing.
         if tracker is not None:
             try:
-                await tracker.clear_slow_operation()
+                await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
             except Exception:
                 pass
 
