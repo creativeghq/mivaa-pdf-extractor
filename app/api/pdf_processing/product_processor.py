@@ -713,117 +713,14 @@ async def process_single_product(
                     f"product failure): {e}"
                 )
 
-        # 4b. Store layout regions and extract tables
-        # DEAD (SPN-4, verified 2026-07-04): `layout_regions` is ALWAYS [] here —
-        # stage_1_focused_extraction returns layout_regions=[] since the 2026-06-14
-        # cutover (layout is owned by the PaddleOCR Stage 1 pass; TABLE content is
+        # 4b. Layout-region storage + per-product table extraction — REMOVED
+        # (SPN-4, 2026-07-04). `layout_regions` has been ALWAYS [] here since the
+        # 2026-06-14 cutover (stage_1_focused_extraction returns layout_regions=[]),
+        # so the old `if layout_regions and product_db_id:` block never executed:
+        # no product_layout_regions rows were written and no per-product tables were
+        # extracted. Layout is owned by the PaddleOCR Stage 1 pass; TABLE content is
         # preserved as metadata.html in document_layout_analysis and consumed by
-        # Stage 2). This block therefore never executes — no product_layout_regions
-        # rows are written, so the "duplicate inserts on resume" concern is moot.
-        # Retained-but-inert pending a dedicated deletion PR (issue #248).
-        if layout_regions and product_db_id:
-            try:
-                from app.services.pdf.table_extraction import TableExtractor
-                from app.services.core.supabase_client import get_supabase_client
-                supabase_client = get_supabase_client()
-
-                # Store layout regions
-                region_data = []
-                table_regions = []
-                dropped_invalid_bbox = 0
-                for region in layout_regions:
-                    if region.type == 'TABLE':
-                        table_regions.append(region)
-
-                    # Normalise the layout bbox to satisfy product_layout_regions
-                    # CHECK constraints (width > 0, height > 0). Layout detection
-                    # occasionally emits degenerate regions — we saw one with negative height on
-                    # page 24 of harmony-signature-book-24-25.pdf that crashed the
-                    # whole insert batch. Clamp negatives to abs(); drop anything
-                    # that remains zero-size.
-                    raw_x = float(region.bbox.x)
-                    raw_y = float(region.bbox.y)
-                    raw_w = float(region.bbox.width)
-                    raw_h = float(region.bbox.height)
-                    w = abs(raw_w)
-                    h = abs(raw_h)
-                    if w <= 0 or h <= 0:
-                        dropped_invalid_bbox += 1
-                        logger_instance.warning(
-                            f"   ⚠️ Dropping degenerate layout region on page {region.bbox.page}: "
-                            f"x={raw_x}, y={raw_y}, w={raw_w}, h={raw_h}"
-                        )
-                        continue
-                    if raw_w < 0 or raw_h < 0:
-                        logger_instance.warning(
-                            f"   ⚠️ Clamped inverted layout bbox on page {region.bbox.page}: "
-                            f"(w={raw_w}, h={raw_h}) → (w={w}, h={h})"
-                        )
-
-                    region_data.append({
-                        'product_id': product_db_id,
-                        'page_number': region.bbox.page,
-                        'region_type': region.type,
-                        'bbox_x': raw_x,
-                        'bbox_y': raw_y,
-                        'bbox_width': w,
-                        'bbox_height': h,
-                        'confidence': region.confidence,
-                        'reading_order': region.reading_order,
-                        'text_content': getattr(region, 'text_content', None),
-                        'metadata': {'layout_model': 'paddleocr-vl'}
-                    })
-
-                if region_data:
-                    supabase_client.client.table('product_layout_regions').insert(region_data).execute()
-                    logger_instance.info(
-                        f"   💾 Stored {len(region_data)} layout regions"
-                        + (f" ({dropped_invalid_bbox} degenerate dropped)" if dropped_invalid_bbox else "")
-                    )
-                elif dropped_invalid_bbox:
-                    logger_instance.warning(
-                        f"   ⚠️ All {dropped_invalid_bbox} layout regions were degenerate — nothing stored"
-                    )
-
-                # Extract tables if TABLE regions found
-                if table_regions:
-                    logger_instance.info(f"   📊 Extracting {len(table_regions)} tables...")
-                    extractor = TableExtractor()
-                    
-                    # Group by page
-                    tables_by_page = {}
-                    for region in table_regions:
-                        p_num = region.bbox.page
-                        if p_num not in tables_by_page:
-                            tables_by_page[p_num] = []
-                        tables_by_page[p_num].append(region)
-
-                    # Extract tables — P2-6: strict reuse of orchestrator temp PDF
-                    all_tables = []
-                    tab_temp_path = temp_pdf_path
-                    if not tab_temp_path or not os.path.exists(tab_temp_path):
-                        raise RuntimeError(
-                            f"Table extraction stage: temp PDF not available "
-                            f"(path={tab_temp_path!r})."
-                        )
-
-                    for page_num, regions in tables_by_page.items():
-                        tables = extractor.extract_tables_from_page(
-                            pdf_path=tab_temp_path,
-                            page_number=page_num,
-                            table_regions=regions
-                        )
-                        all_tables.extend(tables)
-
-                    if all_tables:
-                        stored_count = await extractor.store_tables_in_database(
-                            product_id=product_db_id,
-                            tables=all_tables,
-                            supabase_client=supabase_client
-                        )
-                        logger_instance.info(f"   ✅ Stored {stored_count} tables")
-            except Exception as e:
-                logger_instance.error(f"❌ Failed to store layout/tables: {e}")
+        # Stage 2. Deleted the dead block wholesale (issue #248).
 
         await product_tracker.mark_stage_complete(
             product_id,

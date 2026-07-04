@@ -1667,17 +1667,28 @@ class ImageProcessingService:
                     # The has_color_slig / has_texture_slig / has_style_slig /
                     # has_material_slig flags on document_images are updated by
                     # vecs_service automatically after each successful upsert.
-                    await self.vecs_service.upsert_specialized_embeddings(
-                        image_id=image_id,
-                        embeddings=specialized_embeddings,
-                        metadata={
-                            'document_id': document_id,
-                            'workspace_id': workspace_id,
-                            'page_number': img_data.get('page_number', 1)
-                        },
-                        embedding_model=aspect_emb_model,
-                        schema_version=aspect_schema_version,
-                    )
+                    #
+                    # S3-7: wrap like the understanding write above. Previously this
+                    # was unwrapped, so a transient aspect-VECS error propagated to the
+                    # outer per-image retry loop and RE-RAN THE WHOLE IMAGE — re-billing
+                    # Opus vision + SLIG for a failure isolated to the aspect write. On
+                    # failure the has_*_slig flags simply stay false, so the image is
+                    # discoverable by the aspect-embedding backfill (no data loss, no
+                    # double-billing).
+                    try:
+                        await self.vecs_service.upsert_specialized_embeddings(
+                            image_id=image_id,
+                            embeddings=specialized_embeddings,
+                            metadata={
+                                'document_id': document_id,
+                                'workspace_id': workspace_id,
+                                'page_number': img_data.get('page_number', 1)
+                            },
+                            embedding_model=aspect_emb_model,
+                            schema_version=aspect_schema_version,
+                        )
+                    except Exception as aspect_error:
+                        logger.warning(f"   ⚠️ Failed to save aspect embeddings to VECS: {aspect_error}")
 
                     # ✨ Stage 3.5 - Convert visual embeddings to text metadata
                     try:
@@ -1748,6 +1759,15 @@ class ImageProcessingService:
 
         # Record the terminal failure on the image row so it's visible in the DB,
         # not only in logs. embedding_metadata is a JSONB column.
+        # S3-8 — this is the ORPHAN-DISCOVERY marker for an image that saved its
+        # document_images row but got ZERO vectors after all retries. Backfill /
+        # ops query for these with:
+        #     embedding_metadata->>'status' = 'failed'
+        #     (optionally AND has_slig_embedding = false to exclude any later-
+        #      succeeded rows, since the flag flips true on a successful re-embed).
+        # This is the embedding-failure parallel to the ai_classification->
+        # >classification_pending quarantine marker and the vision_analysis_failed
+        # boolean — a genuine all-vectors-failed image is NOT silent.
         failed_image_id = img_data.get('id')
         if failed_image_id:
             try:

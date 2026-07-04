@@ -498,19 +498,14 @@ async def precompute_document_layout(
                 except Exception:
                     pass
 
-        reading_order_payload = [
-            {
-                "index": idx,
-                "region_type": elem.get("region_type"),
-                "reading_order": elem.get("reading_order"),
-            }
-            for idx, elem in enumerate(layout_elements_payload)
-        ]
+        # S1-3: the top-level `reading_order` column was a parallel copy of data
+        # already in layout_elements[].reading_order and NO consumer read it (every
+        # reader sorts on the per-element field). Dropped the redundant write; the
+        # column is nullable with a '[]' default.
         payload = {
             "document_id": document_id,
             "page_number": physical_page,
             "layout_elements": layout_elements_payload,
-            "reading_order": reading_order_payload,
             "structure_confidence": 0.85,
             "processing_version": "paddleocr-vl",
             "analysis_metadata": {

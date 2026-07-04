@@ -853,7 +853,15 @@ class UnifiedChunkingService:
         # Sort regions by reading_order (already sorted from DB query, but ensure it)
         sorted_regions = sorted(layout_regions, key=lambda r: r.get('reading_order', 999))
 
-        # Group regions into semantic chunks
+        # Group regions into semantic chunks.
+        # S2-6: `current_position` is an APPROXIMATE running offset into the
+        # reading-order-concatenated region text (the actual chunk source) — it
+        # advances by emitted chunk length, so it's monotonic/ordinal but not an
+        # exact character offset (region separators / skipped-empty regions aren't
+        # counted) and is NOT an offset into the raw PyMuPDF `text` param (which the
+        # layout path ignores). The only consumer (product_creation_service) uses it
+        # as a "rough page-relative fraction", which tolerates this. Do not treat
+        # start/end_position from a layout-aware chunk as an exact source offset.
         current_chunk_text = ""
         current_chunk_regions = []
         current_position = 0
