@@ -22,10 +22,11 @@ Endpoints:
 - POST /api/internal/validate-pipeline/{job_id} - Audit pipeline completion status across all stages
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import logging
+import os
 
 from app.services.images.image_processing_service import ImageProcessingService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
@@ -51,6 +52,28 @@ router = APIRouter(
         404: {"description": "Job not found"}
     }
 )
+
+
+async def verify_internal_access(request: Request) -> None:
+    """Pentest #250 D19/D20: `/api/internal` is service-to-service and excluded from the
+    JWT middleware, yet these thin HTTP wrappers (the pipeline calls the underlying
+    services in-process — it never hits these routes) were fully unauthenticated while
+    reachable via the public gateway URL. Accept EITHER the `x-cron-secret` used by the
+    other internal endpoints OR a valid platform JWT (the admin UI / mivaaApiClient sends
+    one); reject anonymous external callers."""
+    secret = os.getenv("CRON_SECRET")
+    if secret and request.headers.get("x-cron-secret") == secret:
+        return
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            from app.dependencies import _get_jwt_middleware
+            claims = await _get_jwt_middleware()._validate_token(auth.split(" ", 1)[1])
+            if claims:
+                return
+        except Exception:
+            pass
+    raise HTTPException(status_code=401, detail="Unauthorized: internal endpoint requires a valid token or x-cron-secret")
 
 
 # ============================================================================
@@ -188,7 +211,7 @@ class CreateRelationshipsResponse(BaseModel):
 # ENDPOINTS
 # ============================================================================
 
-@router.post("/classify-images/{job_id}", response_model=ClassifyImagesResponse)
+@router.post("/classify-images/{job_id}", response_model=ClassifyImagesResponse, dependencies=[Depends(verify_internal_access)])
 async def classify_images(
     job_id: str,
     request: ClassifyImagesRequest
@@ -274,7 +297,7 @@ async def classify_images(
         raise HTTPException(status_code=500, detail=f"Image classification failed: {str(e)}")
 
 
-@router.post("/upload-images/{job_id}", response_model=UploadImagesResponse)
+@router.post("/upload-images/{job_id}", response_model=UploadImagesResponse, dependencies=[Depends(verify_internal_access)])
 async def upload_images(
     job_id: str,
     request: UploadImagesRequest
@@ -333,7 +356,7 @@ async def upload_images(
         raise HTTPException(status_code=500, detail=f"Image upload failed: {str(e)}")
 
 
-@router.post("/save-images-db/{job_id}", response_model=SaveImagesResponse)
+@router.post("/save-images-db/{job_id}", response_model=SaveImagesResponse, dependencies=[Depends(verify_internal_access)])
 async def save_images_to_db(
     job_id: str,
     request: SaveImagesRequest
@@ -598,7 +621,7 @@ async def create_chunks(
         raise HTTPException(status_code=500, detail=f"Chunking failed: {str(e)}")
 
 
-@router.post("/create-relationships/{job_id}", response_model=CreateRelationshipsResponse)
+@router.post("/create-relationships/{job_id}", response_model=CreateRelationshipsResponse, dependencies=[Depends(verify_internal_access)])
 async def create_relationships(
     job_id: str,
     request: CreateRelationshipsRequest
@@ -1676,7 +1699,7 @@ class ValidatePipelineResponse(BaseModel):
     recommendations: List[str]
 
 
-@router.post("/validate-pipeline/{job_id}", response_model=ValidatePipelineResponse)
+@router.post("/validate-pipeline/{job_id}", response_model=ValidatePipelineResponse, dependencies=[Depends(verify_internal_access)])
 async def validate_pipeline(
     job_id: str,
     supabase: SupabaseClient = Depends(get_supabase_client)
@@ -1794,7 +1817,7 @@ class EnrichExistingProductResponse(BaseModel):
     message: str
 
 
-@router.post("/enrich-existing-product/{product_id}", response_model=EnrichExistingProductResponse)
+@router.post("/enrich-existing-product/{product_id}", response_model=EnrichExistingProductResponse, dependencies=[Depends(verify_internal_access)])
 async def enrich_existing_product(product_id: str) -> EnrichExistingProductResponse:
     """
     Retroactively run Stage 4.7 enrichment (chunk regex + vision_analysis rollup)
@@ -1880,7 +1903,7 @@ class RunCatalogKnowledgeResponse(BaseModel):
     message: str
 
 
-@router.post("/run-catalog-knowledge/{document_id}", response_model=RunCatalogKnowledgeResponse)
+@router.post("/run-catalog-knowledge/{document_id}", response_model=RunCatalogKnowledgeResponse, dependencies=[Depends(verify_internal_access)])
 async def run_catalog_knowledge(document_id: str, force: bool = False) -> RunCatalogKnowledgeResponse:
     """
     Standalone runner for Layer 1 (catalog layout analyzer) + Layer 2
@@ -1996,7 +2019,7 @@ class DocumentExtractionStatusResponse(BaseModel):
     products_sample: List[ProductCoverage]
 
 
-@router.get("/document-extraction-status/{document_id}", response_model=DocumentExtractionStatusResponse)
+@router.get("/document-extraction-status/{document_id}", response_model=DocumentExtractionStatusResponse, dependencies=[Depends(verify_internal_access)])
 async def document_extraction_status(
     document_id: str,
     sample_limit: int = 10,
