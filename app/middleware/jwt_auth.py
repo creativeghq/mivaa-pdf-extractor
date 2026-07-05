@@ -142,6 +142,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # route-level guard, then remove these two lines.
             "/api/embeddings",            # SLIG/Voyage text+image embeddings (edge callers)
             "/api/svbrdf",                # SVBRDF/PBR extraction (generate-pbr-maps)
+            # Deploy/restart infra hooks — called by CI/ops via ADMIN_RESTART_TOKEN or
+            # no token (route-level), NOT a Supabase JWT. Specific paths only, so the
+            # rest of /api/admin (e.g. /api/admin/logs) stays JWT-enforced. FOLLOW-UP
+            # (#250): give pause/resume-for-deploy an explicit token check.
+            "/api/admin/pause-for-deploy",
+            "/api/admin/resume-from-deploy",
+            "/api/admin/restart-service",
         ]
         
         # Initialize Supabase client for token validation (lazy initialization)
