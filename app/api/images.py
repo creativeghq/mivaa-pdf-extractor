@@ -45,6 +45,7 @@ from ..services.integrations.material_kai_service import MaterialKaiService, get
 from ..services.core.supabase_client import get_supabase_client
 from ..dependencies import get_current_user, get_workspace_context, require_image_read, require_image_write
 from ..middleware.jwt_auth import WorkspaceContext, User
+from ..utils.ssrf_guard import assert_safe_url, SSRFError
 from ..config import get_settings
 
 # Configure logging
@@ -110,7 +111,8 @@ def check_export_rate_limit(user_id: str) -> bool:
 @router.post("/analyze", response_model=ImageAnalysisResponse)
 async def analyze_image(
     request: ImageAnalysisRequest,
-    material_kai: MaterialKaiService = Depends(get_material_kai_service)
+    material_kai: MaterialKaiService = Depends(get_material_kai_service),
+    current_user: User = Depends(get_current_user),
 ) -> ImageAnalysisResponse:
     """
     **🔍 Image Analysis - AI-Powered Visual Understanding**
@@ -200,10 +202,12 @@ async def analyze_image(
                 )
 
             image_data = result.data[0]
+            # #250 D23: don't let a caller analyze another workspace's image by id.
+            _assert_user_in_workspace(supabase, current_user.id, image_data.get("workspace_id"))
             image_url = image_data.get("image_url")
         elif request.image_url:
-            # Use provided image URL directly
-            image_url = str(request.image_url)
+            # #250 E2: caller-supplied URL is downloaded server-side → SSRF-guard it.
+            image_url = assert_safe_url(str(request.image_url))
             image_data = {
                 "id": "external",
                 "image_url": image_url,
@@ -274,6 +278,8 @@ async def analyze_image(
         
     except HTTPException:
         raise
+    except SSRFError:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="image_url is not allowed")
     except Exception as e:
         logger.error(f"Image analysis failed: {str(e)}")
         raise HTTPException(
@@ -285,33 +291,57 @@ async def analyze_image(
 @router.post("/analyze/batch", response_model=ImageBatchResponse)
 async def analyze_batch_images(
     request: ImageBatchRequest,
-    material_kai: MaterialKaiService = Depends(get_material_kai_service)
+    material_kai: MaterialKaiService = Depends(get_material_kai_service),
+    current_user: User = Depends(get_current_user),
 ) -> ImageBatchResponse:
     """
     Analyze multiple images in batch using Material Kai Vision Platform.
-    
+
     Supports parallel processing for improved performance.
     """
+    # #250 H6: cap the fan-out so one request can't trigger unbounded LLM spend.
+    _BATCH_MAX = 50
+    if len(request.image_ids or []) > _BATCH_MAX:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"Too many images ({len(request.image_ids)}). Maximum {_BATCH_MAX} per batch.",
+        )
     try:
         logger.info(f"Starting batch image analysis for {len(request.image_ids)} images")
-        
+
         # Generate batch ID
         batch_id = str(uuid.uuid4())
         start_time = datetime.utcnow()
-        
+
         # Get Supabase client
         supabase = get_supabase_client()
-        
+
         # Process each image
         batch_results = []
         for image_id in request.image_ids:
             try:
                 # Get image data from database
                 result = supabase.client.table("document_images").select("*").eq("id", image_id).execute()
-                
+
                 if result.data:
                     img_data = result.data[0]
-                    
+
+                    # #250 D23: skip images outside the caller's workspaces (mark not-found,
+                    # don't leak existence) so a batch can't analyze other tenants' images.
+                    _img_ws = img_data.get("workspace_id")
+                    if _img_ws:
+                        _mem = supabase.client.table("workspace_members").select("id")\
+                            .eq("user_id", current_user.id).eq("workspace_id", _img_ws)\
+                            .eq("status", "active").limit(1).execute()
+                        if not _mem.data:
+                            batch_results.append(ImageBatchResult(
+                                image_id=image_id,
+                                status=ProcessingStatus.FAILED,
+                                error=f"Image {image_id} not found in database",
+                                processing_time_ms=0.0,
+                            ))
+                            continue
+
                     # Try Material Kai service first
                     try:
                         analysis_result = await material_kai.analyze_image(
@@ -1050,11 +1080,18 @@ async def segment_image(
     # Resolve base64 — prefer image_url (server-side fetch avoids CORS)
     image_base64 = request.image_base64
     if not image_base64 and request.image_url:
+        # #250 E2: caller-supplied URL fetched server-side → SSRF-guard + no redirect follow.
         try:
-            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-                resp = await client.get(request.image_url)
+            safe_url = assert_safe_url(str(request.image_url))
+        except SSRFError:
+            raise HTTPException(status_code=400, detail="image_url is not allowed")
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
+                resp = await client.get(safe_url)
                 resp.raise_for_status()
                 image_base64 = base64.b64encode(resp.content).decode()
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Failed to fetch image_url: {e}")
 
