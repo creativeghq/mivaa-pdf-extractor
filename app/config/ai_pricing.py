@@ -391,6 +391,37 @@ class AIPricingConfig:
             "source": "https://www.zerobounce.net/email-validation-pricing",
             "note": "Single email validation"
         },
+        # Pentest #250 H1: previously-unmetered MIVAA image AI operations.
+        # credits_to_debit = cost_per_unit * markup(1.5) * 100 → ~2/3/2/1 credits.
+        # Canonical/admin-editable source = ai_model_pricing table (same model_key).
+        "sam-segment": {
+            "cost_per_unit": Decimal("0.013"),
+            "unit": "segmentation",
+            "last_verified": "2026-07-05",
+            "source": "internal",
+            "note": "Material-zone segmentation via Claude Opus vision"
+        },
+        "image-inpaint": {
+            "cost_per_unit": Decimal("0.020"),
+            "unit": "inpaint",
+            "last_verified": "2026-07-05",
+            "source": "internal",
+            "note": "Inpaint / region-edit via Replicate"
+        },
+        "image-analyze": {
+            "cost_per_unit": Decimal("0.013"),
+            "unit": "analysis",
+            "last_verified": "2026-07-05",
+            "source": "internal",
+            "note": "Image analysis via Claude vision"
+        },
+        "inpaint-prompt": {
+            "cost_per_unit": Decimal("0.007"),
+            "unit": "prompt",
+            "last_verified": "2026-07-05",
+            "source": "internal",
+            "note": "Inpainting prompt generation via Claude"
+        },
     }
     
     @classmethod

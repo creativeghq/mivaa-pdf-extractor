@@ -19,10 +19,13 @@ from datetime import datetime
 from typing import Literal, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from typing import Any, Dict
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from app.services.core.supabase_client import get_supabase_client
 from app.utils.ssrf_guard import assert_safe_url, SSRFError
+from app.dependencies import get_current_user
+from app.utils.credit_metering import meter_operation as _meter, refund_operation as _refund
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +154,7 @@ async def _generate_sam2_mask(
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 @router.post("/sam", response_model=SAMMaskResponse)
-async def generate_sam_mask(request: SAMMaskRequest) -> SAMMaskResponse:
+async def generate_sam_mask(request: SAMMaskRequest, user: Dict[str, Any] = Depends(get_current_user)) -> SAMMaskResponse:
     """
     Generate a binary inpainting mask from an image + zone hint.
 
@@ -204,6 +207,7 @@ async def generate_sam_mask(request: SAMMaskRequest) -> SAMMaskResponse:
             and request.hint_type == "bbox"
             and request.bbox
         ):
+            _billed = await _meter(user, "sam-segment", "sam_segment")  # #250 H1: debit before Replicate
             try:
                 sam2_b64 = await _generate_sam2_mask(
                     image_url=request.image_url,
@@ -212,6 +216,8 @@ async def generate_sam_mask(request: SAMMaskRequest) -> SAMMaskResponse:
                     img_h=out_h,
                     replicate_token=replicate_token,
                 )
+                if not sam2_b64:
+                    _refund(user, _billed, "sam_segment")  # fell back to free Pillow path
                 if sam2_b64:
                     # Verify/normalise the mask dimensions
                     mask_img = Image.open(io.BytesIO(base64.b64decode(sam2_b64))).convert("L")
@@ -227,6 +233,7 @@ async def generate_sam_mask(request: SAMMaskRequest) -> SAMMaskResponse:
                 logger.warning("SAM 2 returned None — falling back to Pillow bbox")
             except Exception as sam_err:
                 logger.warning("SAM 2 failed (%s) — falling back to Pillow bbox", sam_err)
+                _refund(user, _billed, "sam_segment")  # #250 H1: no paid work happened
 
         # ── Pillow fallback ────────────────────────────────────────────────
         mask_array = np.zeros((out_h, out_w), dtype=np.uint8)
@@ -316,7 +323,7 @@ class InpaintResponse(BaseModel):
 
 
 @router.post("/inpaint", response_model=InpaintResponse)
-async def inpaint_region(request: InpaintRequest) -> InpaintResponse:
+async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends(get_current_user)) -> InpaintResponse:
     """
     Replace a masked region in an image.
 
@@ -386,6 +393,7 @@ async def inpaint_region(request: InpaintRequest) -> InpaintResponse:
             }
         model_label = request.model
 
+    _billed = await _meter(user, "image-inpaint", "inpaint")  # #250 H1: debit before Replicate
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             headers = {
@@ -446,8 +454,10 @@ async def inpaint_region(request: InpaintRequest) -> InpaintResponse:
             raise HTTPException(status_code=504, detail="Inpainting timed out after 5 minutes")
 
     except HTTPException:
+        _refund(user, _billed, "inpaint")  # #250 H1: no successful inpaint → refund
         raise
     except Exception as e:
+        _refund(user, _billed, "inpaint")
         logger.error("Inpainting error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Inpainting error: {str(e)}")
 
@@ -465,7 +475,7 @@ class GeneratePromptResponse(BaseModel):
 
 
 @router.post("/generate-prompt", response_model=GeneratePromptResponse)
-async def generate_inpainting_prompt(request: GeneratePromptRequest) -> GeneratePromptResponse:
+async def generate_inpainting_prompt(request: GeneratePromptRequest, user: Dict[str, Any] = Depends(get_current_user)) -> GeneratePromptResponse:
     """
     Ask Claude Haiku to write an optimised FLUX Fill Pro inpainting prompt
     given a zone label and a user description.
@@ -475,6 +485,8 @@ async def generate_inpainting_prompt(request: GeneratePromptRequest) -> Generate
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    _billed = await _meter(user, "inpaint-prompt", "inpaint_prompt")  # #250 H1: debit before Claude
 
     ctx_parts: list[str] = []
     if request.zone_context:
@@ -492,13 +504,18 @@ async def generate_inpainting_prompt(request: GeneratePromptRequest) -> Generate
     )
 
     from app.services.core.claude_helper import tracked_claude_call
-    message = tracked_claude_call(
-        task="sam_inpainting_prompt_generation",
-        model="claude-haiku-4-5",
-        max_tokens=200,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    prompt_text = message.content[0].text.strip()
+    try:
+        message = tracked_claude_call(
+            task="sam_inpainting_prompt_generation",
+            model="claude-haiku-4-5",
+            max_tokens=200,
+            messages=[{"role": "user", "content": user_message}],
+        )
+        prompt_text = message.content[0].text.strip()
+    except Exception as e:
+        _refund(user, _billed, "inpaint_prompt")  # #250 H1
+        logger.error("inpaint prompt generation failed: %s", e)
+        raise HTTPException(status_code=502, detail="Prompt generation failed")
     return GeneratePromptResponse(prompt=prompt_text)
 
 

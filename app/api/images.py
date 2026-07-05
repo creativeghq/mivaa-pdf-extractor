@@ -46,6 +46,7 @@ from ..services.core.supabase_client import get_supabase_client
 from ..dependencies import get_current_user, get_workspace_context, require_image_read, require_image_write
 from ..middleware.jwt_auth import WorkspaceContext, User
 from ..utils.ssrf_guard import assert_safe_url, SSRFError
+from ..utils.credit_metering import meter_operation, refund_operation
 from ..config import get_settings
 
 # Configure logging
@@ -203,7 +204,7 @@ async def analyze_image(
 
             image_data = result.data[0]
             # #250 D23: don't let a caller analyze another workspace's image by id.
-            _assert_user_in_workspace(supabase, current_user.id, image_data.get("workspace_id"))
+            _assert_user_in_workspace(supabase, current_user.get("user_id"), image_data.get("workspace_id"))
             image_url = image_data.get("image_url")
         elif request.image_url:
             # #250 E2: caller-supplied URL is downloaded server-side → SSRF-guard it.
@@ -223,6 +224,7 @@ async def analyze_image(
             )
         
         # Perform real analysis using Material Kai service
+        _billed = await meter_operation(current_user, "image-analyze", "image_analyze")  # #250 H1
         try:
             analysis_result = await material_kai.analyze_image(
                 image_url=image_url,
@@ -253,7 +255,8 @@ async def analyze_image(
             
         except Exception as service_error:
             logger.warning(f"Material Kai service failed: {str(service_error)}, using database fallback")
-            
+            refund_operation(current_user, _billed, "image_analyze")  # #250 H1: fell back to free DB data
+
             # Fallback to database data
             # Create proper metadata
             metadata = ImageMetadata(
@@ -331,7 +334,7 @@ async def analyze_batch_images(
                     _img_ws = img_data.get("workspace_id")
                     if _img_ws:
                         _mem = supabase.client.table("workspace_members").select("id")\
-                            .eq("user_id", current_user.id).eq("workspace_id", _img_ws)\
+                            .eq("user_id", current_user.get("user_id")).eq("workspace_id", _img_ws)\
                             .eq("status", "active").limit(1).execute()
                         if not _mem.data:
                             batch_results.append(ImageBatchResult(
@@ -775,10 +778,10 @@ async def export_document_images(
     - **Rate limit**: 5 exports/hour per user
     """
     try:
-        logger.info(f"📦 Starting image export for document {document_id} by user {current_user.id}")
+        logger.info(f"📦 Starting image export for document {document_id} by user {current_user.get("user_id")}")
 
         # Check rate limit (5 exports/hour per user)
-        if not check_export_rate_limit(current_user.id):
+        if not check_export_rate_limit(current_user.get("user_id")):
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail=f"Rate limit exceeded. Maximum {EXPORT_RATE_LIMIT} exports per hour allowed."
@@ -809,7 +812,7 @@ async def export_document_images(
         _img_ws_id = result.data[0].get("workspace_id")
         if _img_ws_id:
             _mem = supabase.client.table("workspace_members").select("id")\
-                .eq("user_id", current_user.id).eq("workspace_id", _img_ws_id)\
+                .eq("user_id", current_user.get("user_id")).eq("workspace_id", _img_ws_id)\
                 .eq("status", "active").limit(1).execute()
             if not _mem.data:
                 raise HTTPException(
@@ -968,7 +971,7 @@ async def reclassify_image(
             )
 
         image_data = result.data[0]
-        _assert_user_in_workspace(supabase, current_user.id, image_data.get('workspace_id'))  # #250 D22
+        _assert_user_in_workspace(supabase, current_user.get("user_id"), image_data.get('workspace_id'))  # #250 D22
         image_url = image_data.get('image_url')
 
         if not image_url:
@@ -1060,6 +1063,7 @@ class SegmentRequest(_BaseModel):
 @router.post("/segment", response_model=SegmentResponse)
 async def segment_image(
     request: SegmentRequest,
+    current_user: User = Depends(get_current_user),
 ):
     """
     **🔍 Material Zone Segmentation**
@@ -1098,6 +1102,7 @@ async def segment_image(
     if not image_base64:
         raise HTTPException(status_code=400, detail="Provide image_url or image_base64")
 
+    _billed = await meter_operation(current_user, "sam-segment", "image_segment")  # #250 H1
     try:
         service = get_segmentation_service()
         zones = await service.segment_image(image_base64)
@@ -1108,6 +1113,7 @@ async def segment_image(
             "processing_time_ms": elapsed,
         }
     except Exception as e:
+        refund_operation(current_user, _billed, "image_segment")  # #250 H1
         logger.error(f"Segmentation failed: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
