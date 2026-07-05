@@ -9,7 +9,7 @@ Provides real-time monitoring of background job health:
 - Health alerts
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any, List, Optional
 import logging
 from datetime import datetime, timedelta
@@ -21,9 +21,12 @@ from app.utils.timestamp_utils import normalize_timestamp
 from app.schemas.api_responses import (
     JobDashboardResponse, StuckJobListResponse, JobDiagnosticsResponse,
 )
+from app.dependencies import require_admin
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/job-health", tags=["Job Health"])
+# Pentest #250 D41: dashboard/stuck-jobs expose all-tenant background_jobs, and
+# /job/{job_id} returns any job's full row by id (IDOR) — platform ops → admin-only.
+router = APIRouter(prefix="/api/job-health", tags=["Job Health"], dependencies=[Depends(require_admin)])
 
 
 @router.get("/dashboard", response_model=JobDashboardResponse)

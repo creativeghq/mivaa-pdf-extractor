@@ -19,12 +19,15 @@ from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
 from app.schemas.api_responses import DataResponse
+from app.dependencies import require_admin
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-# Create router
-router = APIRouter(prefix="/api/v1/ai-metrics", tags=["AI Metrics"])
+# Pentest #250 D33/D34: every endpoint here exposes cross-tenant data (all-workspace AI
+# spend, per-user credits, per-job metrics by arbitrary job_id) and had no role gate.
+# Platform observability → admin-only.
+router = APIRouter(prefix="/api/v1/ai-metrics", tags=["AI Metrics"], dependencies=[Depends(require_admin)])
 
 
 # ============================================================================

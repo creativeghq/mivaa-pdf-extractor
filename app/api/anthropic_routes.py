@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
+from ..dependencies import get_current_user
 from ..services.core.ai_call_logger import AICallLogger
 from ..services.core.ai_client_service import get_ai_client_service
 from ..schemas.api_responses import DataResponse
@@ -83,7 +84,8 @@ class ProductEnrichmentResponse(BaseModel):
 @router.post("/images/validate", response_model=ImageValidationResponse)
 async def validate_image_with_claude(
     request: ImageValidationRequest,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: dict = Depends(get_current_user),
 ) -> ImageValidationResponse:
     """
     **🔍 Image Validation - Claude Opus 4.7 Vision**
@@ -151,6 +153,10 @@ async def validate_image_with_claude(
     - **Model**: claude-opus-4-8
     """
     try:
+        # Pentest #250 D35: bind the caller to the target workspace — this endpoint wrote
+        # image_validations stamped with a body-supplied workspace_id under no auth check.
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         import time
         start_time = time.time()
 
@@ -270,7 +276,8 @@ Respond in JSON format:
 @router.post("/products/enrich", response_model=ProductEnrichmentResponse)
 async def enrich_product_with_claude(
     request: ProductEnrichmentRequest,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: dict = Depends(get_current_user),
 ) -> ProductEnrichmentResponse:
     """
     Enrich product data using Claude Opus 4.7.
@@ -278,6 +285,10 @@ async def enrich_product_with_claude(
     Generates descriptions, extracts specifications, and identifies related products.
     """
     try:
+        # Pentest #250 D36: bind the caller to the target workspace — this endpoint wrote
+        # product_enrichments stamped with a body-supplied workspace_id under no auth check.
+        await authorize_rag_workspace(claims, request.workspace_id)
+
         import time
         start_time = time.time()
 
@@ -493,5 +504,10 @@ async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabas
             "error": str(e),
             "api_key_available": bool(settings.anthropic_api_key)
         }
+
+
+# Imported at the bottom to avoid a circular import (query_routes → app.orchestration
+# → back into the api package). Pentest #250 D35/D36.
+from app.api.documents.query_routes import authorize_rag_workspace  # noqa: E402
 
 
