@@ -661,7 +661,8 @@ async def create_relationships(
 @router.post("/extract-metadata/{job_id}", response_model=ExtractMetadataResponse)
 async def extract_metadata(
     job_id: str,
-    request: ExtractMetadataRequest
+    request: ExtractMetadataRequest,
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Extract comprehensive metadata from PDF text for products.
@@ -701,6 +702,14 @@ async def extract_metadata(
         supabase = get_supabase_client()
         products_response = supabase.client.table('products').select('*').in_('id', request.product_ids).execute()
         products = products_response.data
+
+        # Pentest #250 D17: this route is on the auth-excluded /api/internal prefix and
+        # previously had no auth — it read + OVERWROTE products.metadata by id with no
+        # workspace bind, so any caller could corrupt another tenant's catalog. Require the
+        # caller to be authorized for every workspace the referenced products belong to
+        # (mirrors the sibling endpoints' authorize_rag_workspace pattern).
+        for _ws_id in {p.get('workspace_id') for p in (products or []) if p.get('workspace_id')}:
+            await authorize_rag_workspace(claims, _ws_id)
 
         total_metadata_fields = 0
         enriched_count = 0

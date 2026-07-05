@@ -753,6 +753,20 @@ async def export_document_images(
                 detail=f"No images found for document {document_id}"
             )
 
+        # Pentest #250 D21: this endpoint streamed ALL images of a document by id to any
+        # authenticated user (cross-tenant bulk exfiltration). Require the caller to be an
+        # active member of the document's workspace (404 to avoid id enumeration).
+        _img_ws_id = result.data[0].get("workspace_id")
+        if _img_ws_id:
+            _mem = supabase.client.table("workspace_members").select("id")\
+                .eq("user_id", current_user.id).eq("workspace_id", _img_ws_id)\
+                .eq("status", "active").limit(1).execute()
+            if not _mem.data:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"No images found for document {document_id}"
+                )
+
         images = result.data
 
         # Safety check: image count limit
