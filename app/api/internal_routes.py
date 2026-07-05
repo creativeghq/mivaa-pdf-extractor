@@ -1313,7 +1313,8 @@ class ResetJobResponse(BaseModel):
 async def reset_job(
     job_id: str,
     force: bool = False,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Reset a stuck / failed / stale job back to `pending` so the scheduler
@@ -1338,9 +1339,15 @@ async def reset_job(
         from datetime import datetime
 
         # Fetch current status
-        job_resp = supabase.client.table('background_jobs').select('status').eq('id', job_id).single().execute()
+        job_resp = supabase.client.table('background_jobs').select('status, workspace_id').eq('id', job_id).single().execute()
         if not job_resp.data:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+        # Pentest #250 D18: bind the caller to the job's workspace before resetting it
+        # (this endpoint had no auth and could flip any tenant's job back to pending).
+        _job_ws = job_resp.data.get('workspace_id')
+        if _job_ws:
+            await authorize_rag_workspace(claims, _job_ws)
 
         previous_status = job_resp.data.get('status')
 
