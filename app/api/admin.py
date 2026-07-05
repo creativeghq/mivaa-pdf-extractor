@@ -842,7 +842,8 @@ async def get_system_metrics():
 @router.delete("/data/cleanup", response_model=CleanupResponse)
 async def cleanup_old_data(
     days_old: int = Query(30, description="Delete data older than this many days"),
-    dry_run: bool = Query(True, description="Preview what would be deleted without actually deleting")
+    dry_run: bool = Query(True, description="Preview what would be deleted without actually deleting"),
+    _admin: User = Depends(require_admin),  # #250 D8: destructive op → admin-only
 ):
     """
     Clean up old data from the system
@@ -886,7 +887,7 @@ async def cleanup_old_data(
         raise HTTPException(status_code=500, detail=f"Failed to cleanup data: {str(e)}")
 
 @router.post("/data/backup", response_model=CleanupResponse)
-async def create_data_backup():
+async def create_data_backup(_admin: User = Depends(require_admin)):  # #250 D9: admin-only
     """
     Create a backup of system data
     """
@@ -924,7 +925,8 @@ async def create_data_backup():
 @router.get("/data/export", responses={200: {"model": CleanupResponse}})
 async def export_system_data(
     format: str = Query("json", description="Export format (json, csv)"),
-    data_type: str = Query("jobs", description="Type of data to export (jobs, metrics)")
+    data_type: str = Query("jobs", description="Type of data to export (jobs, metrics)"),
+    _admin: User = Depends(require_admin),  # #250 D10: cross-tenant data export → admin-only
 ):
     """
     Export system data in various formats
@@ -972,7 +974,8 @@ async def export_system_data(
 @router.post("/system/cleanup-temp-files", response_model=CleanupResponse)
 async def cleanup_temp_files(
     max_age_hours: int = Query(24, description="Maximum age of files to keep in hours"),
-    dry_run: bool = Query(True, description="Preview what would be deleted without actually deleting")
+    dry_run: bool = Query(True, description="Preview what would be deleted without actually deleting"),
+    _admin: User = Depends(require_admin),  # #250 D11: destructive op → admin-only
 ):
     """
     Clean up temporary files system-wide.
