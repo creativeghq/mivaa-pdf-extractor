@@ -137,6 +137,21 @@ async def websocket_endpoint(websocket: WebSocket, room: str = "default"):
     - progress_update: Job progress updates
     - status_update: System status updates
     """
+    # #250 D29: require a valid token before accepting the connection. Previously ANY
+    # anonymous client could connect to any room (job progress) AND broadcast into it.
+    # The token is passed as a query param (browsers can't set WS Authorization headers).
+    token = websocket.query_params.get("token")
+    claims = None
+    if token:
+        try:
+            from app.dependencies import _get_jwt_middleware
+            claims = await _get_jwt_middleware()._validate_token(token)
+        except Exception:
+            claims = None
+    if not claims:
+        await websocket.close(code=1008)  # 1008 = policy violation
+        return
+
     await manager.connect(websocket, room)
     
     try:
@@ -170,12 +185,10 @@ async def websocket_endpoint(websocket: WebSocket, room: str = "default"):
                 }, websocket)
             
             elif message_type == "broadcast":
-                # Broadcast message to room
-                await manager.broadcast_to_room({
-                    "type": "broadcast",
-                    "payload": message.get("payload", {}),
-                    "timestamp": datetime.utcnow().isoformat()
-                }, room)
+                # #250 D29: clients may NOT broadcast into a room — only the server pushes
+                # progress. Previously any connected client could inject messages to every
+                # other client in the room. Ignore client-initiated broadcasts.
+                logger.warning("Ignored client-initiated broadcast on room '%s'", room)
             
             else:
                 # Echo message back
