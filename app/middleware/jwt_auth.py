@@ -120,7 +120,6 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/v1/prices/lookup",  # Public price lookup — route-level api_keys-table auth
             "/api/v1/prices/track",   # Public price tracking (external projects) — route-level api_keys-table auth
             "/api/v1/modules",        # Feature modules — route-level Supabase-token auth + admin role check
-            "/"
         ]
         
         # Initialize Supabase client for token validation (lazy initialization)
@@ -150,6 +149,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         Returns:
             HTTP response with security headers
         """
+        # CORS preflight carries no Authorization header and must never be gated.
+        # This middleware runs OUTSIDE CORSMiddleware, so it sees OPTIONS first —
+        # previously the "/" catch-all (removed, pentest #250 A1) let it through.
+        if request.method == "OPTIONS":
+            response = await call_next(request)
+            return self._add_security_headers(response)
+
         # Skip authentication for excluded paths
         if self._is_excluded_path(request.url.path):
             response = await call_next(request)
@@ -227,6 +233,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
     
     def _is_excluded_path(self, path: str) -> bool:
         """Check if path should be excluded from authentication."""
+        # Pentest #250 A1: the root "/" must be matched EXACTLY, never as a prefix.
+        # It used to live in exclude_paths, and because matching is startswith(),
+        # every path starts with "/" — so the entire API was silently excluded from
+        # auth. Root (welcome/health) stays public here by exact match; all other
+        # non-excluded paths now actually flow through JWT validation.
+        if path == "/":
+            return True
         return any(path.startswith(excluded) for excluded in self.exclude_paths)
     
     async def _extract_token(self, request: Request) -> Optional[str]:
