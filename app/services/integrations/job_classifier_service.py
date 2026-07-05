@@ -30,6 +30,7 @@ import httpx
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations import job_cost_logger as costs
 from app.services.integrations.job_search_service import JobHit
+from app.utils.llm_fence import UNTRUSTED_DATA_SYSTEM, fence_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -378,11 +379,11 @@ def _build_user_prompt(facets: JobFacets, batch: List[JobHit], corrections: Opti
         examples = []
         for c in corrections[:8]:
             inner = (c.get("job_listings") or {})
-            t = inner.get("title") or ""
-            co = inner.get("company") or ""
+            t = fence_untrusted(inner.get("title"), 120)
+            co = fence_untrusted(inner.get("company"), 120)
             orig = c.get("original_relevance") or "?"
             corr = c.get("corrected_relevance") or "?"
-            reason = (c.get("reason") or "")[:140]
+            reason = fence_untrusted(c.get("reason"), 140)
             examples.append(
                 f"  - We classified '{t}' at '{co}' as {orig}; user corrected to {corr}"
                 + (f" (reason: {reason})" if reason else "")
@@ -394,10 +395,12 @@ def _build_user_prompt(facets: JobFacets, batch: List[JobHit], corrections: Opti
 
     items = []
     for i, h in enumerate(batch):
+        # #250 F1: fence scraped fields so a hostile listing can't break the
+        # 'quoted' delimiters and inject pseudo-instructions into the prompt.
         items.append(
-            f"[{i}] title='{h.title or ''}' company='{h.company or ''}' "
-            f"location='{h.location or ''}' "
-            f"excerpt='{(h.description_excerpt or '')[:300]}'"
+            f"[{i}] title='{fence_untrusted(h.title)}' company='{fence_untrusted(h.company)}' "
+            f"location='{fence_untrusted(h.location)}' "
+            f"excerpt='{fence_untrusted(h.description_excerpt)}'"
         )
     return (
         f"{facets_block}\n"
@@ -489,6 +492,7 @@ async def classify_batch(
                     "max_tokens": 2000,
                     "tools": [_CLASSIFY_TOOL],
                     "tool_choice": {"type": "tool", "name": "submit_classifications"},
+                    "system": UNTRUSTED_DATA_SYSTEM,  # #250 F1: data-fencing guard
                     "messages": [{"role": "user", "content": _build_user_prompt(facets, batch_hits, corrections)}],
                 }
                 resp = await http.post(_ANTHROPIC_URL, headers=headers, json=payload)

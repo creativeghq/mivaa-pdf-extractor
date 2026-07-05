@@ -901,12 +901,21 @@ class Settings(BaseSettings):
         return config
     
     def get_cors_config(self) -> Dict[str, Any]:
-        """Get CORS configuration."""
+        """Get CORS configuration.
+
+        Pentest #250 A2: a wildcard origin combined with credentials is unsafe —
+        Starlette reflects the caller's Origin back with `Allow-Credentials: true`,
+        letting ANY site make credentialed cross-origin calls. MIVAA authenticates
+        with Bearer JWTs (not cookies), so credentials mode isn't needed for the API
+        to work; force it off whenever origins aren't explicitly pinned. Deployments
+        that set an explicit CORS_ORIGINS allowlist still get credentials support.
+        """
+        wildcard = "*" in self.cors_origins
         return {
             "allow_origins": self.cors_origins,
             "allow_methods": self.cors_methods,
             "allow_headers": self.cors_headers,
-            "allow_credentials": True,
+            "allow_credentials": (not wildcard),
         }
 
     def get_rag_config(self) -> Dict[str, Any]:
