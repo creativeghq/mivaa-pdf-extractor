@@ -103,7 +103,7 @@ class CanonicalRow(BaseModel):
     last_seen_at: Optional[str]
 
 
-@router.get("/canonicals", response_model=List[CanonicalRow])
+@router.get("/canonicals", response_model=List[CanonicalRow], dependencies=[Depends(require_admin)])
 async def list_canonicals(
     facet_key: Optional[str] = Query(None, description="Filter by facet_key (color, material, finish, ...)"),
     limit: int = Query(200, ge=1, le=1000),
@@ -151,7 +151,7 @@ class MergeLogRow(BaseModel):
     occurred_at: str
 
 
-@router.get("/merge-log", response_model=List[MergeLogRow])
+@router.get("/merge-log", response_model=List[MergeLogRow], dependencies=[Depends(require_admin)])
 async def merge_log(
     facet_key: Optional[str] = Query(None),
     action: Optional[str] = Query(None, description="Filter to one of: exact_alias, embedding_merge, new, rejected_non_english"),

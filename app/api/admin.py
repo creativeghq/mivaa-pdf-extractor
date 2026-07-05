@@ -1230,7 +1230,8 @@ async def get_job_product_progress(job_id: str, supabase: SupabaseClient = Depen
 @router.post("/test-product-creation", response_model=ProductTestResponse)
 async def test_product_creation(
     document_id: str,
-    workspace_id: str = None
+    workspace_id: str = None,
+    _admin: User = Depends(require_admin),  # #250 D14: test/write endpoint → admin-only
 ):
     """
     Test endpoint for enhanced product creation.
