@@ -1027,16 +1027,33 @@ async def upload_document(
             # Download from URL
             logger.info(f"📥 Downloading PDF from URL: {file_url}")
 
+            # #250 H7/E: SSRF-guard the user-supplied URL (block internal/metadata hosts),
+            # don't follow redirects, and cap the download size (memory-exhaustion defense).
+            from app.utils.ssrf_guard import assert_safe_url, SSRFError
+            try:
+                file_url = assert_safe_url(file_url)
+            except SSRFError as _e:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"file_url is not allowed: {_e}")
+            _MAX_PDF_BYTES = 100 * 1024 * 1024  # 100MB (matches the documented cap)
+
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(file_url, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                    async with session.get(file_url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=False) as response:
                         if response.status != 200:
                             raise HTTPException(
                                 status_code=status.HTTP_400_BAD_REQUEST,
                                 detail=f"Failed to download PDF from URL: HTTP {response.status}"
                             )
+                        if response.content_length and response.content_length > _MAX_PDF_BYTES:
+                            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                                detail="PDF exceeds the 100MB limit")
 
-                        file_content = await response.read()
+                        # Read at most _MAX_PDF_BYTES+1 so an unset/lied Content-Length can't
+                        # blow memory; reject if it overflows.
+                        file_content = await response.content.read(_MAX_PDF_BYTES + 1)
+                        if len(file_content) > _MAX_PDF_BYTES:
+                            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                                detail="PDF exceeds the 100MB limit")
 
                         # Extract filename from URL or use default
                         from urllib.parse import urlparse
@@ -1088,6 +1105,16 @@ async def upload_document(
         else:
              # For file upload case, get file size from file_path
              file_size = os.path.getsize(file_path)
+
+        # #250 H7: enforce the 100MB cap for BOTH paths (the streamed upload had no cap).
+        if file_size > 100 * 1024 * 1024:
+            try:
+                if file_path and os.path.exists(file_path):
+                    os.unlink(file_path)
+            except Exception:
+                pass
+            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                detail="PDF exceeds the 100MB limit")
 
         # Register temp file with ResourceManager for cleanup tracking
         resource_manager = get_resource_manager()
