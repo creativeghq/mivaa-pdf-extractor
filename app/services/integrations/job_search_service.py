@@ -1488,8 +1488,15 @@ async def search_via_rss_feeds(
         started = time.time()
         out: List[JobHit] = []
         try:
+            # Pentest #250 E5/E6: user-supplied RSS feed URL — block SSRF to internal hosts.
+            from app.utils.ssrf_guard import assert_safe_url, SSRFError
+            try:
+                assert_safe_url(url)
+            except SSRFError as _e:
+                logger.warning(f"rss feed blocked (ssrf): {url} — {_e}")
+                return out
             async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
-                resp = await client.get(url, headers={"User-Agent": "MaterialKAI-JobBot/1.0"})
+                resp = await client.get(url, headers={"User-Agent": "MaterialKAI-JobBot/1.0"}, follow_redirects=False)
                 resp.raise_for_status()
                 body = resp.text
 

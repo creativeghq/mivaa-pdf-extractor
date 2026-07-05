@@ -368,6 +368,8 @@ class MentionAlertDispatcher:
         if not url:
             return False
         try:
+            from app.utils.ssrf_guard import assert_safe_url
+            assert_safe_url(url)  # pentest #250 E4/E6: block SSRF to internal hosts
             with httpx.Client(timeout=self._http_timeout) as client:
                 resp = client.post(url, json={
                     "alert_type": cand.alert_type,

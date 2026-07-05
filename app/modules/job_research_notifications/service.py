@@ -578,8 +578,10 @@ class JobDigestDispatcher:
 
     async def _send_webhook(self, url: str, payload: Dict[str, Any]) -> bool:
         try:
+            from app.utils.ssrf_guard import assert_safe_url
+            assert_safe_url(url)  # pentest #250 E4/E6: block SSRF to internal hosts
             async with httpx.AsyncClient(timeout=self._http_timeout) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, json=payload, follow_redirects=False)
                 return 200 <= resp.status_code < 300
         except Exception as e:
             logger.warning(f"job-digest webhook send: {e}")

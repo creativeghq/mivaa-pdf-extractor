@@ -612,7 +612,10 @@ class MentionSearchService:
 
         async def _fetch(feed_url: str) -> List[MentionHit]:
             try:
-                async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                # Pentest #250 E5/E6: user-supplied RSS feed URL — block SSRF to internal hosts.
+                from app.utils.ssrf_guard import assert_safe_url
+                assert_safe_url(feed_url)
+                async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
                     resp = await client.get(feed_url)
                     resp.raise_for_status()
                     body = resp.text

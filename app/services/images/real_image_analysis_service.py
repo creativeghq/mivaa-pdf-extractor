@@ -340,9 +340,11 @@ class RealImageAnalysisService:
             raise
 
     async def _download_image(self, image_url: str) -> bytes:
-        """Download image from URL"""
+        """Download image from URL (SSRF-guarded — pentest #250 E2/E6)."""
+        from app.utils.ssrf_guard import assert_safe_url  # local import: avoid load cycle
+        assert_safe_url(image_url)  # raises SSRFError on internal/metadata targets
         async with httpx.AsyncClient() as client:
-            response = await client.get(image_url, timeout=30.0)
+            response = await client.get(image_url, timeout=30.0, follow_redirects=False)
             response.raise_for_status()
             return response.content
     

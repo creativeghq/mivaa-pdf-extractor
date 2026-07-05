@@ -22,6 +22,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.ssrf_guard import assert_safe_url, SSRFError
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,15 @@ async def generate_sam_mask(request: SAMMaskRequest) -> SAMMaskResponse:
         from PIL import Image
         import numpy as np
 
+        # Pentest #250 E1/E6: block SSRF — a user-supplied image_url must not resolve to an
+        # internal/metadata address (e.g. 169.254.169.254). Validate once up-front so it
+        # can't reach our dimension fetch OR be forwarded to Replicate.
+        if request.image_url:
+            try:
+                assert_safe_url(request.image_url)
+            except SSRFError as _e:
+                raise HTTPException(status_code=400, detail=f"Invalid image_url: {_e}")
+
         replicate_token = os.getenv("REPLICATE_API_TOKEN", "")
 
         # ── Determine image dimensions ─────────────────────────────────────
@@ -171,7 +181,7 @@ async def generate_sam_mask(request: SAMMaskRequest) -> SAMMaskResponse:
             # Fetch just enough bytes to decode dimensions without full download
             try:
                 async with httpx.AsyncClient(timeout=15) as client:
-                    head = await client.get(request.image_url, follow_redirects=True)
+                    head = await client.get(request.image_url, follow_redirects=False)
                     img_bytes = head.content
                 img_pil = Image.open(io.BytesIO(img_bytes))
                 src_w, src_h = img_pil.size
@@ -318,6 +328,15 @@ async def inpaint_region(request: InpaintRequest) -> InpaintResponse:
     """
     import time
     start = time.time()
+
+    # Pentest #250 E1/E6: SSRF guard on both user-supplied image URLs (fetched by us in
+    # _upload_to_storage and forwarded to Replicate).
+    for _u in (request.image_url, request.reference_image_url):
+        if _u:
+            try:
+                assert_safe_url(_u)
+            except SSRFError as _e:
+                raise HTTPException(status_code=400, detail=f"Invalid image url: {_e}")
 
     replicate_token = os.getenv("REPLICATE_API_TOKEN")
     if not replicate_token:
