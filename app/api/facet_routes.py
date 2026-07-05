@@ -19,11 +19,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.facets import canonicalize_product_attributes
+from app.dependencies import require_admin
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/facets", tags=["Admin - Facets"])
@@ -202,7 +203,7 @@ class LockRequest(BaseModel):
     is_locked: bool
 
 
-@router.post("/lock")
+@router.post("/lock", dependencies=[Depends(require_admin)])
 async def set_lock(req: LockRequest):
     supabase = get_supabase_client()
     try:

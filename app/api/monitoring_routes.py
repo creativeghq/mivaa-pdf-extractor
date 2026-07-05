@@ -8,12 +8,13 @@ Provides real-time monitoring of:
 - System health status
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any, List
 import logging
 from datetime import datetime
 
 from app.services.core.supabase_client import get_supabase_client
+from app.dependencies import require_admin
 from app.schemas.api_responses import (
     PerformanceMetricsResponse, ServiceHealthResponse,
     StorageEstimateResponse, PDFHealthResponse,
@@ -112,6 +113,7 @@ async def get_bucket_stats(bucket_name: str) -> Dict[str, Any]:
 @router.get(
     "/supabase-status",
     response_model=PerformanceMetricsResponse,
+    dependencies=[Depends(require_admin)],
     summary="Get comprehensive Supabase resource usage and health status",
     description="""
     Monitor all Supabase resources including database, storage, and usage limits.
@@ -363,7 +365,7 @@ async def health_check() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
 
 
-@router.get("/storage-estimate", response_model=StorageEstimateResponse)
+@router.get("/storage-estimate", response_model=StorageEstimateResponse, dependencies=[Depends(require_admin)])
 async def estimate_storage_for_upload(
     file_size_mb: float,
     estimated_images: int = 50
