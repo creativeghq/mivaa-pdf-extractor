@@ -53,6 +53,26 @@ logger = logging.getLogger(__name__)
 # Create router
 router = APIRouter(prefix="/api/images", tags=["Image Analysis"])
 
+
+def _assert_user_in_workspace(supabase, user_id, row_workspace_id) -> None:
+    """Pentest #250 D22: id-addressed admin routes read/write a document_images row by
+    id with a service-role client (RLS-bypassing) and had no tenancy check — a
+    workspace-A admin could reclassify a workspace-B image by id. Require the caller to
+    be an active member of the row's workspace (mirrors the /export D21 check; 404 to
+    avoid id enumeration). Multi-workspace admins pass for any workspace they belong to."""
+    if not row_workspace_id:
+        return  # legacy row with no workspace — nothing to scope against
+    mem = (
+        supabase.client.table("workspace_members").select("id")
+        .eq("user_id", user_id).eq("workspace_id", row_workspace_id)
+        .eq("status", "active").limit(1).execute()
+    )
+    if not mem.data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found",
+        )
+
 # Get settings
 settings = get_settings()
 
@@ -877,7 +897,8 @@ async def export_document_images(
 @router.post("/reclassify/{image_id}", responses={200: {"model": ImageReclassifyResponse}})
 async def reclassify_image(
     image_id: str,
-    force_validation: bool = Query(False, description="Force validation with secondary model regardless of confidence")
+    force_validation: bool = Query(False, description="Force validation with secondary model regardless of confidence"),
+    current_user: User = Depends(get_current_user),
 ):
     """
     **🔄 Re-classify Image - Trigger AI Re-classification**
@@ -917,6 +938,7 @@ async def reclassify_image(
             )
 
         image_data = result.data[0]
+        _assert_user_in_workspace(supabase, current_user.id, image_data.get('workspace_id'))  # #250 D22
         image_url = image_data.get('image_url')
 
         if not image_url:
