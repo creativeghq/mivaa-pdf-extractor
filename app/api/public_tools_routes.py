@@ -159,10 +159,16 @@ PublicMentionScanResponse.model_rebuild()
 # ============================================================================
 
 def _extract_ip(request: Request) -> Optional[str]:
-    """Resolve client IP, honoring CF / proxy headers."""
-    fwd = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for")
-    if fwd:
-        return fwd.split(",")[0].strip()
+    """Resolve the client IP for quota keying.
+
+    Pentest #250 H3: only trust `cf-connecting-ip` (set by Cloudflare, our fronting proxy)
+    — NEVER the client-controllable left-most `X-Forwarded-For` entry, which let an attacker
+    mint a fresh 'IP' per request to bypass the anonymous 2/day cap. Fall back to the direct
+    socket peer.
+    """
+    cf = request.headers.get("cf-connecting-ip")
+    if cf:
+        return cf.strip()
     if request.client:
         return request.client.host
     return None
@@ -226,6 +232,22 @@ def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: 
     except Exception as e:
         logger.warning(f"public-tools: debit_user_credits failed: {e}")
         return False, None, str(e)[:200]
+
+
+def _refund_credits(user_id: str, *, qhash: str, scan_type: str) -> None:
+    """Best-effort refund (pentest #250 H4/H5): credits are debited BEFORE the paid upstream
+    call; if that call produces no result we return the credit."""
+    sb = get_supabase_client().client
+    try:
+        sb.rpc("credit_user_credits", {
+            "p_user_id": user_id,
+            "p_amount": SCAN_CREDIT_COST,
+            "p_operation_type": f"public_{scan_type}_scan_refund",
+            "p_description": f"Refund: public {scan_type} scan produced no result",
+            "p_metadata": {"query_hash": qhash, "scan_type": scan_type, "refund": True},
+        }).execute()
+    except Exception as e:
+        logger.warning(f"public-tools: refund credit_user_credits failed: {e}")
 
 
 def _quota_to_response(
@@ -365,6 +387,31 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
         ).model_dump(mode="json")
         return PublicPriceScanResponse(**cached)
 
+    # 3b. Pentest #250 H4/H5: DEBIT BEFORE the paid upstream call. The debit RPC is atomic,
+    #     so two concurrent requests can't both get a scan for one credit (the 2nd fails),
+    #     and a scan result is never returned when the debit didn't land. Refunded below if
+    #     the scan fails. (Authenticated path only; anonymous is capped by the 2/day quota.)
+    balance_after = balance_before
+    if user_id:
+        _debited, _new_balance, _derr = _debit_credits(
+            user_id, operation_type="public_price_scan", qhash=qhash, scan_type="price",
+        )
+        if not _debited:
+            log_scan(
+                scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                error_message=_derr or "debit_failed", user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "message": "Insufficient credits.",
+                    "quota": _quota_to_response(check_quota(ip_address=ip, user_id=user_id), is_authenticated=True, credits_balance=balance_before).model_dump(mode="json"),
+                },
+            )
+        balance_after = _new_balance if _new_balance is not None else balance_before
+
     # 4. Fresh scan
     query_text = body.product_name.strip()
     if body.manufacturer and body.manufacturer.lower() not in query_text.lower():
@@ -386,6 +433,8 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
         )
     except Exception as e:
         logger.warning(f"public price-scan failed: {e}")
+        if user_id:
+            _refund_credits(user_id, qhash=qhash, scan_type="price")  # H4/H5: scan failed → refund
         log_scan(
             scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
             query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
@@ -398,6 +447,9 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
         )
 
     if not result.success:
+        if user_id:
+            _refund_credits(user_id, qhash=qhash, scan_type="price")  # H4/H5: no result → refund
+            balance_after = balance_before
         log_scan(
             scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
             query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
@@ -405,9 +457,6 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
             outcome="failed", error_message=(result.error or "")[:500],
             user_agent=user_agent,
         )
-        # Failure → no credit debit for authenticated users; anonymous quota
-        # already burned at the log_scan above only counts success rows, so
-        # failure is implicitly free for them too.
         q_after = check_quota(ip_address=ip, user_id=user_id)
         return PublicPriceScanResponse(
             success=False, query=query_text, country_code=body.country_code,
@@ -451,15 +500,7 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
         latency_ms=result.latency_ms, outcome="success", user_agent=user_agent,
     )
 
-    # Debit credits AFTER successful scan (authenticated users only).
-    balance_after = balance_before
-    if user_id:
-        debited, new_balance, _err = _debit_credits(
-            user_id, operation_type="public_price_scan", qhash=qhash, scan_type="price",
-        )
-        if debited and new_balance is not None:
-            balance_after = new_balance
-
+    # Credits were already debited up-front (pentest #250 H4/H5); balance_after is set.
     q_after = check_quota(ip_address=ip, user_id=user_id)
     return PublicPriceScanResponse(
         **response_payload,
@@ -559,6 +600,30 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
     sources_enabled = {"news": True, "blogs": True, "rss": False, "youtube": False}
     country_codes = [body.country_code.upper()] if body.country_code else []
 
+    # Pentest #250 H4/H5: debit BEFORE the paid upstream call (atomic → no double-scan for
+    # one credit; a result is never returned when the debit didn't land). Refunded in the
+    # except below.
+    balance_after = balance_before
+    if user_id:
+        _debited, _new_balance, _derr = _debit_credits(
+            user_id, operation_type="public_mention_scan", qhash=qhash, scan_type="mention",
+        )
+        if not _debited:
+            log_scan(
+                scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                error_message=_derr or "debit_failed", user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "message": "Insufficient credits.",
+                    "quota": _quota_to_response(check_quota(ip_address=ip, user_id=user_id), is_authenticated=True, credits_balance=balance_before).model_dump(mode="json"),
+                },
+            )
+        balance_after = _new_balance if _new_balance is not None else balance_before
+
     search_service = MentionSearchService()
     try:
         result = await search_service.search(
@@ -572,6 +637,8 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
         )
     except Exception as e:
         logger.warning(f"public mention-scan failed: {e}")
+        if user_id:
+            _refund_credits(user_id, qhash=qhash, scan_type="mention")  # H4/H5: scan failed → refund
         log_scan(
             scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
             query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
@@ -623,14 +690,7 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
         latency_ms=result.latency_ms, outcome="success", user_agent=user_agent,
     )
 
-    balance_after = balance_before
-    if user_id:
-        debited, new_balance, _err = _debit_credits(
-            user_id, operation_type="public_mention_scan", qhash=qhash, scan_type="mention",
-        )
-        if debited and new_balance is not None:
-            balance_after = new_balance
-
+    # Credits were already debited up-front (pentest #250 H4/H5); balance_after is set.
     q_after = check_quota(ip_address=ip, user_id=user_id)
     return PublicMentionScanResponse(
         **response_payload,

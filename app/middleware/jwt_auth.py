@@ -109,8 +109,10 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/semantic-analysis",
             "/api/jobs",
             "/api/bulk/process",
-            "/api/analyze/multimodal",
-            "/api/query/multimodal",
+            # Pentest #250 H2: /api/analyze/multimodal + /api/query/multimodal were excluded
+            # and thus fully UNAUTHENTICATED LLM spend. The only caller (mivaaApiClient) sends
+            # the user's Supabase JWT, so remove them from the exclude list → the middleware
+            # now enforces auth (anonymous callers get 401).
             "/api/interior",        # Interior design — called by edge function (no user JWT)
             "/api/rag",             # RAG endpoints — called by edge functions with service-role JWT
                                     # (aud="service_role", NOT "authenticated"). Cannot narrow this
