@@ -1445,7 +1445,10 @@ async def search_via_firecrawl_careers(
 # so the parse is microseconds even on the slow path.
 # ────────────────────────────────────────────────────────────────────────────
 
-import xml.etree.ElementTree as _ET
+# Pentest #250 I1: defusedxml forbids DTDs/entity expansion, so a hostile RSS feed
+# URL can't billion-laughs the worker. Drop-in for stdlib ElementTree (same
+# fromstring + ParseError surface); feeds never carry a legitimate DTD.
+import defusedxml.ElementTree as _ET
 from datetime import datetime, timezone
 
 

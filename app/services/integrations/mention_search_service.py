@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import time
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET  # pentest #250 I1: DTD/entity-expansion-safe RSS parse
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple

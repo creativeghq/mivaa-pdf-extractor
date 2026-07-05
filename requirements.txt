@@ -89,3 +89,6 @@ PyJWT>=2.8.0
 
 # Price scraping / competitor monitoring
 price-parser>=0.3.4
+
+# XML hardening — DTD/entity-expansion-safe RSS/Atom parsing (pentest #250 I1)
+defusedxml>=0.7.1
