@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, require_admin
 from ..services.core.ai_call_logger import AICallLogger
 from ..services.core.ai_client_service import get_ai_client_service
 from ..schemas.api_responses import DataResponse
@@ -395,7 +395,10 @@ Focus on:
 # ============================================================================
 
 @router.post("/test/claude-integration", responses={200: {"model": DataResponse}})
-async def test_claude_integration(supabase: SupabaseClient = Depends(get_supabase_client)):
+async def test_claude_integration(
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    _admin: dict = Depends(require_admin),  # #250 D36: test endpoint burns Claude cost → admin-only
+):
     """Test Claude Vision API integration."""
     ai_logger = AICallLogger(supabase)
     start_time = time.time()
