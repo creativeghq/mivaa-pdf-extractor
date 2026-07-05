@@ -134,6 +134,14 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/v1/job-research",       # Internal (session JWT, route-level) + cron (x-cron-secret)
             "/api/v1/seo-agent",          # x-cron-secret gated (route-level)
             "/api/internal",              # Service-to-service (edge) incl. /api/internal/catalog cron
+            # Internal compute endpoints called by edge fns without a Supabase JWT
+            # (kb-generate-embedding / kb-embedding-backfill hit /api/embeddings with
+            # no auth; generate-pbr-maps hits /api/svbrdf with a service_role token the
+            # middleware rejects). They were always open pre-A1. Excluded to restore
+            # them; FOLLOW-UP (#250): send the mk_ key from those callers + add a
+            # route-level guard, then remove these two lines.
+            "/api/embeddings",            # SLIG/Voyage text+image embeddings (edge callers)
+            "/api/svbrdf",                # SVBRDF/PBR extraction (generate-pbr-maps)
         ]
         
         # Initialize Supabase client for token validation (lazy initialization)
