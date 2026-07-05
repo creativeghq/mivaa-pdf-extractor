@@ -411,15 +411,17 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                     logger.warning(f"Missing required Supabase claim: {claim}")
                     return None
 
-            # Check if audience is "authenticated" — handle both string and list formats
+            # Check if audience is "authenticated" — handle both string and list formats.
+            # #250 A5: require the aud claim explicitly (don't skip the check when it's
+            # missing) so the verify_aud=False fallback above can't wave through a
+            # signed-but-audience-less/other-audience token.
             aud = claims.get("aud")
-            if aud is not None:
-                aud_ok = aud == "authenticated" or aud == ["authenticated"] or (
-                    isinstance(aud, list) and "authenticated" in aud
-                )
-                if not aud_ok:
-                    logger.warning(f"Invalid Supabase audience: {aud!r}")
-                    return None
+            aud_ok = aud == "authenticated" or aud == ["authenticated"] or (
+                isinstance(aud, list) and "authenticated" in aud
+            )
+            if not aud_ok:
+                logger.warning(f"Invalid or missing Supabase audience: {aud!r}")
+                return None
 
             # Extract user information from Supabase token
             user_id = claims.get("sub")
