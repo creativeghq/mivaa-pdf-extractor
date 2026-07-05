@@ -539,7 +539,8 @@ async def get_job_status_alt(
 @router.delete("/jobs/{job_id}", response_model=StatusResponse)
 async def cancel_job(
     job_id: str,
-    cleanup: bool = Query(True, description="Clean up partial data created by the job")
+    cleanup: bool = Query(True, description="Clean up partial data created by the job"),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
 ):
     """
     Cancel a running job and optionally clean up partial data.
@@ -573,6 +574,16 @@ async def cancel_job(
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
         job_data = job_response.data[0]
+
+        # Pentest #250 D2: this route lives on the auth-excluded /api/jobs prefix and
+        # previously had NO auth — an anonymous DELETE by job UUID wiped a tenant's job
+        # plus all partial data (chunks/embeddings/images/products/files). Platform
+        # admins may cancel any job; a non-admin caller is restricted to jobs in their
+        # own workspace. 404 (not 403) to avoid id enumeration.
+        if not workspace_context.has_permission("admin:all") \
+                and str(job_data.get('workspace_id')) != str(workspace_context.workspace_id):
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
         current_status = job_data.get('status')
 
         # Check if job can be cancelled

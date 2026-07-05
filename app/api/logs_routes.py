@@ -4,7 +4,7 @@ Logs API Routes
 Endpoints for fetching and managing system logs from the database.
 """
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from typing import Optional, List
 from datetime import datetime, timedelta
 from pydantic import BaseModel
@@ -12,6 +12,7 @@ import uuid
 
 from app.services.core.supabase_client import get_supabase_client
 from app.schemas.api_responses import StatusResponse, LogStatsResponse
+from app.dependencies import require_admin
 
 
 router = APIRouter(prefix="/api/admin/logs", tags=["Admin", "Logs"])
@@ -100,7 +101,7 @@ async def log_frontend_error(log_request: FrontendLogRequest, request: Request):
         }
 
 
-@router.get("", response_model=LogsResponse)
+@router.get("", response_model=LogsResponse, dependencies=[Depends(require_admin)])
 async def get_logs(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(100, ge=1, le=1000, description="Number of logs per page"),
@@ -178,7 +179,7 @@ async def get_logs(
         raise HTTPException(status_code=500, detail=f"Failed to fetch logs: {str(e)}")
 
 
-@router.delete("", responses={200: {"model": StatusResponse}})
+@router.delete("", responses={200: {"model": StatusResponse}}, dependencies=[Depends(require_admin)])
 async def clear_logs(
     hours: Optional[int] = Query(None, description="Clear logs older than N hours (if not specified, clears all)")
 ):
@@ -211,7 +212,7 @@ async def clear_logs(
         raise HTTPException(status_code=500, detail=f"Failed to clear logs: {str(e)}")
 
 
-@router.get("/stats", responses={200: {"model": LogStatsResponse}})
+@router.get("/stats", responses={200: {"model": LogStatsResponse}}, dependencies=[Depends(require_admin)])
 async def get_log_stats(
     hours: int = Query(24, description="Number of hours to analyze")
 ):
