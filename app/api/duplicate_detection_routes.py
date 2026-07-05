@@ -22,6 +22,16 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/duplicates", tags=["Duplicate Detection"])
 
 
+def _reconcile_ws(ctx: WorkspaceContext, body_ws) -> None:
+    """Pentest #250 D38: these routes (incl. the destructive /merge and /undo-merge)
+    trusted a body/query workspace_id and passed it straight to the merge service —
+    a workspace-A user could merge or read workspace-B products by passing B's id. The
+    workspace context was resolved but never enforced. Reconcile it (invariant #9)."""
+    ctx_ws = getattr(ctx, "workspace_id", None)
+    if not ctx_ws or not body_ws or str(ctx_ws) != str(body_ws):
+        raise HTTPException(status_code=403, detail="workspace_id does not match your session")
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -120,12 +130,13 @@ async def detect_duplicates_for_product(
     Returns:
         List of potential duplicate products with similarity scores
     """
+    _reconcile_ws(workspace, request.workspace_id)
     try:
         logger.info(
             f"Detecting duplicates for product {request.product_id} "
             f"(threshold: {request.similarity_threshold})"
         )
-        
+
         duplicates = await service.detect_duplicates_for_product(
             product_id=request.product_id,
             workspace_id=request.workspace_id,
@@ -162,12 +173,13 @@ async def batch_detect_duplicates(
     Returns:
         List of duplicate pairs with similarity scores
     """
+    _reconcile_ws(workspace, request.workspace_id)
     try:
         logger.info(
             f"Starting batch duplicate detection for workspace {request.workspace_id} "
             f"(threshold: {request.similarity_threshold})"
         )
-        
+
         duplicate_pairs = await service.batch_detect_duplicates(
             workspace_id=request.workspace_id,
             similarity_threshold=request.similarity_threshold,
@@ -192,8 +204,10 @@ async def get_cached_duplicates(
     workspace_id: str,
     status: Optional[str] = None,
     min_similarity: float = 0.60,
-    service: DuplicateDetectionService = Depends(get_duplicate_service)
+    service: DuplicateDetectionService = Depends(get_duplicate_service),
+    workspace: WorkspaceContext = Depends(get_current_workspace_context),
 ):
+    _reconcile_ws(workspace, workspace_id)
     """
     Get cached duplicate detections.
     
@@ -227,17 +241,25 @@ async def get_cached_duplicates(
 @router.post("/update-status", responses={200: {"model": StatusResponse}})
 async def update_duplicate_status(
     request: UpdateDuplicateStatusRequest,
-    service: DuplicateDetectionService = Depends(get_duplicate_service)
+    service: DuplicateDetectionService = Depends(get_duplicate_service),
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    workspace: WorkspaceContext = Depends(get_current_workspace_context),
 ):
     """
     Update the status of a cached duplicate detection.
-    
+
     Statuses:
     - 'pending': Not yet reviewed
     - 'reviewed': Admin has reviewed
     - 'merged': Products have been merged
     - 'dismissed': Not actually duplicates
     """
+    # #250 D38: cache_id is opaque — verify the cache row belongs to the caller's workspace.
+    _row = supabase.client.table('duplicate_detection_cache').select('workspace_id')\
+        .eq('id', request.cache_id).limit(1).execute()
+    if not _row.data:
+        raise HTTPException(status_code=404, detail="Duplicate record not found")
+    _reconcile_ws(workspace, _row.data[0].get('workspace_id'))
     try:
         success = await service.update_duplicate_status(
             cache_id=request.cache_id,
@@ -276,11 +298,12 @@ async def merge_products(
     Returns:
         Merge result with history ID and updated product
     """
+    _reconcile_ws(workspace, request.workspace_id)
     try:
         logger.info(
             f"Merging {len(request.source_product_ids)} products into {request.target_product_id}"
         )
-        
+
         result = await service.merge_products(
             target_product_id=request.target_product_id,
             source_product_ids=request.source_product_ids,
@@ -306,13 +329,22 @@ async def merge_products(
 @router.post("/undo-merge", responses={200: {"model": MergeResponse}})
 async def undo_merge(
     request: UndoMergeRequest,
-    service: ProductMergeService = Depends(get_merge_service)
+    service: ProductMergeService = Depends(get_merge_service),
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    workspace: WorkspaceContext = Depends(get_current_workspace_context),
 ):
     """
     Undo a product merge operation.
-    
+
     Restores source products and reverts target product to pre-merge state.
     """
+    # #250 D38: history_id is opaque — verify the merge belongs to the caller's workspace
+    # before restoring/deleting products (destructive, cross-tenant otherwise).
+    _row = supabase.client.table('product_merge_history').select('workspace_id')\
+        .eq('id', request.history_id).limit(1).execute()
+    if not _row.data:
+        raise HTTPException(status_code=404, detail="Merge record not found")
+    _reconcile_ws(workspace, _row.data[0].get('workspace_id'))
     try:
         logger.info(f"Undoing merge {request.history_id}")
         
@@ -338,8 +370,10 @@ async def undo_merge(
 async def get_merge_history(
     workspace_id: str,
     limit: int = 50,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    workspace: WorkspaceContext = Depends(get_current_workspace_context),
 ):
+    _reconcile_ws(workspace, workspace_id)
     """
     Get merge history for a workspace.
     
