@@ -16,6 +16,8 @@ from ..services.core.supabase_client import get_supabase_client, SupabaseClient
 from ..services.integrations.sentiment_analysis_service import SentimentAnalysisService
 from ..schemas.api_responses import StatusResponse, ServiceHealthResponse
 from ..config import get_settings
+from ..dependencies import get_current_user, get_workspace_context
+from ..middleware.jwt_auth import WorkspaceContext
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/feedback", tags=["User Feedback"])
@@ -73,7 +75,9 @@ class SentimentTrendsResponse(BaseModel):
 @router.post("/submit", response_model=FeedbackResponse)
 async def submit_feedback(
     request: SubmitFeedbackRequest,
-    supabase_client: SupabaseClient = Depends(get_supabase_client)
+    supabase_client: SupabaseClient = Depends(get_supabase_client),
+    current_user: dict = Depends(get_current_user),
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
 ) -> FeedbackResponse:
     """
     Submit user feedback with automatic sentiment analysis
@@ -99,17 +103,22 @@ async def submit_feedback(
             rating=request.rating
         )
         
-        # Insert feedback into database
+        # Pentest #250 D25/G1 (BOPLA): identity + the trust flag must come from the
+        # verified JWT, never the request body. Previously a caller could POST
+        # {is_verified: true, user_id: <anyone>, workspace_id: <any>} to forge a
+        # "verified purchase" review attributed to another user in another tenant.
+        # is_verified is set server-side only (a real purchase/order check can set it
+        # later); user_id + workspace_id are derived from the authenticated principal.
         feedback_data = {
-            "workspace_id": request.workspace_id,
-            "user_id": request.user_id,
+            "workspace_id": str(workspace_context.workspace_id),
+            "user_id": str(current_user.get("sub")),
             "material_id": request.material_id,
             "feedback_text": request.feedback_text,
             "feedback_type": request.feedback_type,
             "rating": request.rating,
             "sentiment_analysis": sentiment_result,
-            "is_verified": request.is_verified,
-            "is_public": request.is_public,
+            "is_verified": False,
+            "is_public": bool(request.is_public),
             "context": request.context or {},
             "analyzed_at": datetime.utcnow().isoformat()
         }
