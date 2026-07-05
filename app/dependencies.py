@@ -221,10 +221,16 @@ async def get_workspace_context(
 
         return workspace_context
 
+    except HTTPException:
+        raise  # already a clean client-facing status (e.g. the 403 above)
     except Exception as e:
+        # #250 J3: don't leak internal exception text (DB/JWT internals) to the
+        # client — log it server-side, return a generic 403.
+        import logging
+        logging.getLogger(__name__).warning("Workspace validation failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Workspace validation failed: {str(e)}"
+            detail="Invalid or missing workspace context",
         )
 
 
