@@ -117,9 +117,23 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                                     # prefix until _validate_supabase_jwt accepts aud="service_role".
                                     # Routes like /api/rag/documents/upload have their own
                                     # Depends(get_workspace_context) route-level auth as defense-in-depth.
-            "/api/v1/prices/lookup",  # Public price lookup — route-level api_keys-table auth
-            "/api/v1/prices/track",   # Public price tracking (external projects) — route-level api_keys-table auth
+            "/api/v1/prices",         # Price lookup + track (external projects) — route-level api_keys (kai_) auth
             "/api/v1/modules",        # Feature modules — route-level Supabase-token auth + admin role check
+            # Pentest #250 A1 follow-up (#2): these prefixes authenticate by NON-JWT
+            # means at the route level — public Turnstile, kai_ partner API keys, or
+            # x-cron-secret — so they CANNOT pass this Supabase-JWT middleware. They
+            # must be excluded here; their own route-level guards stay in force. (Safe:
+            # the middleware was a no-op until A1, so nothing relied on it — excluding
+            # cannot regress current auth, it only stops A1 from 401'ing these flows.)
+            "/api/v1/public",             # Public lead-gen tools — anonymous + Turnstile + quota
+            "/api/v1/mentions/track",     # Mention tracking — kai_ partner API keys
+            "/api/v1/jobs/track",         # Job tracking — kai_ partner API keys
+            "/api/v1/projects",           # Project tracking — kai_ partner API keys
+            "/api/v1/price-monitoring",   # Internal (session JWT, route-level) + cron (x-cron-secret)
+            "/api/v1/mention-monitoring", # Internal (session JWT, route-level) + cron (x-cron-secret)
+            "/api/v1/job-research",       # Internal (session JWT, route-level) + cron (x-cron-secret)
+            "/api/v1/seo-agent",          # x-cron-secret gated (route-level)
+            "/api/internal",              # Service-to-service (edge) incl. /api/internal/catalog cron
         ]
         
         # Initialize Supabase client for token validation (lazy initialization)
