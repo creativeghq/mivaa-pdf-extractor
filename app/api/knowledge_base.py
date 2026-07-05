@@ -15,10 +15,21 @@ from datetime import datetime
 from app.services.core.supabase_client import SupabaseClient
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.schemas.api_responses import KBHealthResponse
+from app.dependencies import get_workspace_context, WorkspaceContext
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/kb", tags=["Knowledge Base"])
+
+
+def _assert_own_workspace(ctx: WorkspaceContext, body_workspace_id: str) -> None:
+    """Pentest #250 G2: these routes insert with a service-role client (RLS-bypassing)
+    and trust a body-supplied workspace_id. Reconcile it against the caller's JWT
+    workspace (CLAUDE.md invariant #9) so an authenticated user of workspace A can't
+    write into workspace B by passing its id. Admins of the target workspace pass."""
+    caller_ws = getattr(ctx, "workspace_id", None)
+    if not caller_ws or str(caller_ws) != str(body_workspace_id):
+        raise HTTPException(status_code=403, detail="workspace_id does not match your session")
 
 
 def _require_uuid(doc_id: str) -> None:
@@ -475,9 +486,11 @@ class CategoryResponse(BaseModel):
 )
 async def create_category(
     request: CreateCategoryRequest,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
 ) -> CategoryResponse:
     """Create a new category."""
+    _assert_own_workspace(ctx, request.workspace_id)
     try:
         result = supabase_client.client.table("kb_categories").insert(request.dict()).execute()
 
@@ -545,9 +558,11 @@ class AttachmentResponse(BaseModel):
 )
 async def attach_document_to_product(
     request: AttachProductRequest,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
 ) -> AttachmentResponse:
     """Attach a document to a product."""
+    _assert_own_workspace(ctx, request.workspace_id)
     try:
         result = supabase_client.client.table("kb_doc_attachments").insert(request.dict()).execute()
 
