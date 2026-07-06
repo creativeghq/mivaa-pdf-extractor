@@ -6054,7 +6054,10 @@ async def search_knowledge_base(
                 embeddings_service = RealEmbeddingsService()
                 embedding_result = await embeddings_service.generate_all_embeddings(
                     entity_id="kb_search_query",
-                    entity_type="search",
+                    # "query" → Voyage input_type="query" (optimized for retrieval).
+                    # Was "search", which fell through to input_type="document" and
+                    # slightly degraded match quality against document-side vectors.
+                    entity_type="query",
                     text_content=request.query
                 )
 
@@ -6067,7 +6070,14 @@ async def search_knowledge_base(
                             "match_threshold": 0.5,
                             "match_count": request.top_k * 2,  # fetch extra, will post-filter
                             "allowed_access_levels": allowed_access_levels,
-                            "include_private": caller == "admin",
+                            # 'private' visibility means "not published to the public KB
+                            # website" — it is NOT an agent gate. Agent readability is
+                            # governed by category access_level (agent/public) + per-doc
+                            # allowed_agents, both applied above/below. So admin AND agent
+                            # callers include private docs; only the public-website caller
+                            # ('public') is restricted to visibility='public'. Without this,
+                            # every "private but agent-allowed" doc was invisible to the agent.
+                            "include_private": caller in ("admin", "agent"),
                         }
                         # Per-agent allow-list: only agent callers filter by identity.
                         # Admin/public callers pass no agent_id, so allowed_agents is ignored.
