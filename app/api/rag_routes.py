@@ -5809,6 +5809,69 @@ class KnowledgeBaseSearchResponse(BaseModel):
     search_metadata: Dict[str, Any]
 
 
+class KBRechunkRequest(BaseModel):
+    doc_id: Optional[str] = Field(default=None, description="Rechunk a single kb_doc")
+    doc_ids: Optional[List[str]] = Field(default=None, description="Rechunk an explicit set")
+    all: bool = Field(default=False, description="Backfill mode: page through all kb_docs")
+    workspace_id: Optional[str] = Field(default=None, description="Restrict backfill to a workspace")
+    limit: int = Field(default=25, description="Max docs per call (backfill paging)")
+    offset: int = Field(default=0, description="Backfill paging offset")
+
+
+@router.post("/kb-docs/rechunk")
+async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
+    """Chunk + embed kb_docs into kb_doc_chunks (section-level retrieval). Idempotent
+    (delete+reinsert per doc). Internal/admin only — gated on x-cron-secret, since the
+    /api/rag prefix is excluded from the JWT middleware. Called on-write (per doc) and by
+    the one-time backfill (all=true, paged by limit/offset)."""
+    secret = (http_request.headers.get("x-cron-secret") or "").strip()
+    expected = (os.getenv("CRON_SECRET") or "").strip()
+    authz = (http_request.headers.get("authorization") or "").strip()
+    svc = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or "").strip()
+    # Trusted internal callers only: the x-cron-secret (backfill/cron) OR the service-role
+    # bearer (the kb-generate-embedding edge fn already holds it). Not user-reachable.
+    ok = (expected and secret == expected) or (svc and authz == f"Bearer {svc}")
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="x-cron-secret or service-role bearer required for kb-docs/rechunk")
+
+    sb = get_supabase_client()
+    from app.services.kb.kb_chunk_service import rechunk_doc
+
+    ids: List[str] = []
+    total_remaining = None
+    if request.doc_id:
+        ids = [request.doc_id]
+    elif request.doc_ids:
+        ids = request.doc_ids
+    elif request.all:
+        q = sb.client.table("kb_docs").select("id").neq("content", "").order("id")
+        if request.workspace_id:
+            q = q.eq("workspace_id", request.workspace_id)
+        rows = q.range(request.offset, request.offset + request.limit - 1).execute()
+        ids = [r["id"] for r in (rows.data or [])]
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Provide doc_id, doc_ids, or all=true")
+
+    results = []
+    for did in ids:
+        try:
+            results.append(await rechunk_doc(sb, did))
+        except Exception as e:  # per-doc isolation — one bad doc can't abort the batch
+            logger.warning("rechunk failed for %s: %s", did, e)
+            results.append({"doc_id": did, "error": str(e)[:200], "chunks": 0})
+
+    return {
+        "processed": len(results),
+        "chunks_total": sum(r.get("chunks", 0) for r in results),
+        "failed_embeds": sum(r.get("failed", 0) for r in results),
+        "errors": [r for r in results if r.get("error")],
+        "next_offset": (request.offset + request.limit) if request.all else None,
+        "results": results,
+    }
+
+
 @router.post("/search/knowledge-base", response_model=KnowledgeBaseSearchResponse)
 async def search_knowledge_base(
     request: KnowledgeBaseSearchRequest,
@@ -6097,64 +6160,47 @@ async def search_knowledge_base(
                         if request.price_doc_type:
                             rpc_args["match_price_doc_type"] = request.price_doc_type
 
-                        kb_response = supabase.client.rpc("kb_match_docs", rpc_args).execute()
+                        # Section-level retrieval: match on kb_doc_chunks (each ~1.3k-char
+                        # section), gated via the parent doc INSIDE the RPC (workspace,
+                        # published, category access_level, visibility, per-doc allowed_agents
+                        # via match_agent_id). So a big manual returns its most relevant
+                        # SECTIONS in full instead of a truncated head, and matching is
+                        # per-section rather than one weak whole-doc vector.
+                        kb_response = supabase.client.rpc("kb_match_doc_chunks", rpc_args).execute()
 
                         if kb_response.data:
-                            # Per-doc agent allow-list enforcement. Non-admin caller
-                            # with an agent_id: fetch allowed_agents for the matched
-                            # docs and skip any whose (non-empty) allow-list excludes
-                            # this agent. Admin bypasses. kb_match_docs doesn't return
-                            # allowed_agents, so we look them up in one extra query.
-                            doc_allowed_agents: Dict[str, Any] = {}
-                            if caller != "admin" and request.agent_id:
-                                match_ids = [d.get("id") for d in kb_response.data if d.get("id")]
-                                if match_ids:
-                                    aa_resp = supabase.client.table("kb_docs").select(
-                                        "id, allowed_agents"
-                                    ).in_("id", match_ids).execute()
-                                    doc_allowed_agents = {
-                                        r["id"]: r.get("allowed_agents")
-                                        for r in (aa_resp.data or [])
-                                    }
-
                             kb_count = 0
-                            for doc in kb_response.data:
-                                cat_id = doc.get("category_id")
-                                # Post-filter: skip if we have an accessible set and this cat isn't in it
+                            for ch in kb_response.data:
+                                cat_id = ch.get("category_id")
+                                # Trigger-keyword gate: agent-level categories only unlock when
+                                # their keyword is in the query (public categories always in set).
                                 if (
                                     accessible_category_ids is not None
                                     and cat_id is not None
                                     and cat_id not in accessible_category_ids
                                 ):
                                     continue
-                                # Agent allow-list: non-empty list that excludes this agent ⇒ skip.
-                                if caller != "admin" and request.agent_id:
-                                    allow = doc_allowed_agents.get(doc.get("id"))
-                                    if allow and request.agent_id not in allow:
-                                        continue
+                                heading = ch.get("heading")
                                 results["chunks"].append({
-                                    "id": doc.get("id"),
-                                    # 8000, not 800. kb_docs are full authored articles, not
-                                    # short PDF chunks — an 800-char cap truncated answers mid
-                                    # section (e.g. cut a company overview off at "Core
-                                    # Positioning"), so the agent couldn't quote the full doc.
-                                    # 8000 chars (~2k tokens) covers a typical article whole
-                                    # while still capping pathological giants (e.g. a 130KB
-                                    # manual). top_k bounds the number of docs returned.
-                                    "content": (doc.get("content") or "")[:8000],
-                                    "document_title": doc.get("title"),
+                                    "id": ch.get("kb_doc_id"),
+                                    "chunk_id": ch.get("chunk_id"),
+                                    "chunk_index": ch.get("chunk_index"),
+                                    "heading": heading,
+                                    # Full section content — no truncation (chunks are section-sized).
+                                    "content": ch.get("content") or "",
+                                    "document_title": ch.get("document_title"),
                                     "category": cat_id,
-                                    "category_slug": doc.get("category_slug"),
-                                    "category_name": doc.get("category_name"),
-                                    "price_doc_type": doc.get("price_doc_type"),
-                                    "metadata": {"source": "kb_docs", "visibility": doc.get("visibility")},
-                                    "relevance_score": doc.get("similarity", 0.0),
+                                    "category_slug": ch.get("category_slug"),
+                                    "category_name": ch.get("category_name"),
+                                    "price_doc_type": ch.get("price_doc_type"),
+                                    "metadata": {"source": "kb_doc_chunks", "visibility": ch.get("visibility"), "heading": heading},
+                                    "relevance_score": ch.get("similarity", 0.0),
                                     "type": "kb_doc",
                                 })
                                 kb_count += 1
                                 if kb_count >= request.top_k:
                                     break
-                            logger.info(f"   ✅ Found {kb_count} KB docs after keyword filtering")
+                            logger.info(f"   ✅ Found {kb_count} KB doc sections after keyword filtering")
 
             except Exception as e:
                 logger.warning(f"KB docs search failed: {e}")
