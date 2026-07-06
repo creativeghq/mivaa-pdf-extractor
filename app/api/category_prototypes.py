@@ -186,7 +186,7 @@ async def populate_category_prototypes(background_tasks: BackgroundTasks):
     )
 
 
-@router.get("/verify", responses={200: {"model": PrototypeVerifyResponse}})
+@router.get("/verify", responses={200: {"model": PrototypeVerifyResponse}}, dependencies=[Depends(require_admin)])  # #250 D28
 async def verify_prototypes():
     """
     Verify that prototypes were populated correctly
