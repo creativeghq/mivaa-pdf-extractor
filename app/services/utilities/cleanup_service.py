@@ -984,43 +984,9 @@ class CleanupService:
                 self.logger.warning(f"⚠️ XML companion table cleanup skipped: {e}")
                 stats['errors'].append(f"XML companion cleanup failed: {str(e)}")
 
-            # 9c. Delete web-scraping companion tables.
-            #   scraping_sessions.background_job_id → background_jobs.id
-            #   scraping_pages.session_id           → scraping_sessions.id
-            try:
-                scrape_sessions_resp = supabase_client.client.table('scraping_sessions')\
-                    .select('id')\
-                    .eq('background_job_id', job_id)\
-                    .execute()
-                scrape_session_ids = [r['id'] for r in (scrape_sessions_resp.data or []) if r.get('id')]
-
-                if scrape_session_ids:
-                    try:
-                        sp_resp = supabase_client.client.table('scraping_pages')\
-                            .delete()\
-                            .in_('session_id', scrape_session_ids)\
-                            .execute()
-                        stats['scraping_pages_deleted'] = len(sp_resp.data) if sp_resp.data else 0
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to clean scraping_pages: {e}")
-                        stats['errors'].append(f"scraping_pages deletion failed: {str(e)}")
-
-                    try:
-                        ss_resp = supabase_client.client.table('scraping_sessions')\
-                            .delete()\
-                            .in_('id', scrape_session_ids)\
-                            .execute()
-                        stats['scraping_sessions_deleted'] = len(ss_resp.data) if ss_resp.data else 0
-                        self.logger.info(
-                            f"✅ Deleted {stats['scraping_sessions_deleted']} scraping "
-                            f"session(s) + their pages"
-                        )
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to clean scraping_sessions: {e}")
-                        stats['errors'].append(f"scraping_sessions deletion failed: {str(e)}")
-            except Exception as e:
-                self.logger.warning(f"⚠️ Scraping companion table cleanup skipped: {e}")
-                stats['errors'].append(f"Scraping companion cleanup failed: {str(e)}")
+            # 9c. (removed) web-scraping companion-table cleanup — the scraping_sessions /
+            # scraping_pages tables were dropped with the web-scraping feature; nothing
+            # writes them and they no longer exist, so there is nothing to clean up.
 
             # 10. Delete job record.
             # NOTE: deleting the document in step 9 CASCADEs to background_jobs

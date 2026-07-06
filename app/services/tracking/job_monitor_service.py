@@ -122,8 +122,10 @@ class JobMonitorService:
                 timeout_minutes=self.stuck_timeout
             )
 
-            # 3. Detect stuck web scraping sessions
-            stuck_scraping_sessions = await self._detect_stuck_scraping_sessions()
+            # 3. (removed) stuck web-scraping session detection — the scraping_sessions
+            # table was dropped with the web-scraping feature; the detector queried a
+            # non-existent table and spammed Sentry ~387×/6h (PGRST205). Nothing writes
+            # those tables anymore, so there is nothing to monitor.
 
             # 4. Detect stuck XML import jobs
             stuck_import_jobs = await self._detect_stuck_import_jobs()
@@ -144,12 +146,6 @@ class JobMonitorService:
                 # Try to recover each stuck PDF job
                 for job in all_stuck_jobs:
                     await self._recover_stuck_job(job)
-
-            # Handle stuck scraping sessions
-            if stuck_scraping_sessions:
-                logger.warning(f"🛑 Found {len(stuck_scraping_sessions)} stuck scraping sessions")
-                for session in stuck_scraping_sessions:
-                    await self._recover_stuck_scraping_session(session)
 
             # Handle stuck import jobs
             if stuck_import_jobs:
@@ -271,40 +267,6 @@ class JobMonitorService:
             # Demoted to warning — transient Supabase REST 5xx errors are expected
             # and the next polling cycle will retry. Returning [] is graceful degradation.
             logger.warning(f"⚠️ Heartbeat timeout detection failed (will retry next cycle): {e}")
-            return []
-
-    async def _detect_stuck_scraping_sessions(self, timeout_minutes: int = 30) -> List[Dict[str, Any]]:
-        """
-        Detect stuck web scraping sessions.
-
-        A scraping session is considered stuck if:
-        - Status is 'processing' or 'scraping'
-        - No update in timeout_minutes (default: 30 minutes)
-
-        Args:
-            timeout_minutes: Consider session stuck if no update for this long
-
-        Returns:
-            List of stuck scraping sessions
-        """
-        try:
-            cutoff_time = datetime.utcnow() - timedelta(minutes=timeout_minutes)
-
-            result = self.supabase_client.client.table("scraping_sessions")\
-                .select("*")\
-                .in_("status", ["processing", "scraping"])\
-                .lt("updated_at", cutoff_time.isoformat())\
-                .execute()
-
-            stuck_sessions = result.data or []
-
-            if stuck_sessions:
-                logger.warning(f"🕷️ Detected {len(stuck_sessions)} stuck scraping sessions (>{timeout_minutes}min)")
-
-            return stuck_sessions
-
-        except Exception as e:
-            logger.error(f"❌ Error detecting stuck scraping sessions: {e}")
             return []
 
     async def _detect_stuck_import_jobs(self, timeout_minutes: int = 20) -> List[Dict[str, Any]]:
@@ -458,89 +420,6 @@ class JobMonitorService:
             logger.info(f"❌ Marked job {job_id} as failed: {reason}")
         except Exception as e:
             logger.error(f"Failed to mark job as failed: {e}")
-
-    async def _recover_stuck_scraping_session(self, session: Dict[str, Any]):
-        """
-        Attempt to recover a stuck scraping session.
-
-        Strategy:
-        1. Mark session as failed
-        2. Send Sentry alert with session details
-        3. Update background_jobs if linked
-        """
-        session_id = session["id"]
-        source_url = session.get("source_url", "unknown")
-
-        logger.info(f"🕷️ Recovering stuck scraping session: {session_id} ({source_url})")
-
-        try:
-            # Prepare failure reason
-            stuck_duration = (
-                datetime.utcnow() -
-                datetime.fromisoformat(session["updated_at"].replace("Z", "+00:00")).replace(tzinfo=None)
-            ).total_seconds() / 60
-
-            reason = f"Scraping session stuck for {stuck_duration:.1f} minutes without progress"
-
-            # 🚨 SENTRY ALERT: Send stuck scraping session alert
-            if SENTRY_AVAILABLE:
-                try:
-                    with sentry_sdk.configure_scope() as scope:
-                        scope.set_tag("session_id", session_id)
-                        scope.set_tag("job_type", "web_scraping")
-                        scope.set_tag("error_type", "stuck_scraping_session")
-                        scope.set_tag("source_url", source_url)
-
-                        scope.set_context("stuck_scraping_session", {
-                            "session_id": session_id,
-                            "source_url": source_url,
-                            "status": session.get("status"),
-                            "total_pages": session.get("total_pages", 0),
-                            "completed_pages": session.get("completed_pages", 0),
-                            "failed_pages": session.get("failed_pages", 0),
-                            "created_at": session.get("created_at"),
-                            "updated_at": session.get("updated_at"),
-                            "stuck_duration_minutes": stuck_duration,
-                            "failure_reason": reason
-                        })
-
-                    sentry_sdk.capture_message(
-                        f"Stuck scraping session detected: {session_id}",
-                        level="warning",
-                        fingerprint=["stuck-scraping-session", source_url]
-                    )
-
-                    logger.info(f"📊 Sent stuck scraping session alert to Sentry")
-
-                except Exception as sentry_error:
-                    logger.warning(f"Failed to send Sentry alert: {sentry_error}")
-
-            # Mark session as failed
-            self.supabase_client.client.table("scraping_sessions")\
-                .update({
-                    "status": "failed",
-                    "error_message": reason,
-                    "updated_at": datetime.utcnow().isoformat()
-                })\
-                .eq("id", session_id)\
-                .execute()
-
-            # Update linked background_job if exists
-            if session.get("background_job_id"):
-                self.supabase_client.client.table("background_jobs")\
-                    .update({
-                        "status": "failed",
-                        "error": reason,
-                        "failed_at": datetime.utcnow().isoformat(),
-                        "updated_at": datetime.utcnow().isoformat()
-                    })\
-                    .eq("id", session["background_job_id"])\
-                    .execute()
-
-            logger.info(f"❌ Marked scraping session {session_id} as failed")
-
-        except Exception as e:
-            logger.error(f"Failed to recover stuck scraping session: {e}")
 
     async def _recover_stuck_import_job(self, job: Dict[str, Any]):
         """
