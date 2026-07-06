@@ -6066,6 +6066,7 @@ async def search_knowledge_base(
                     if query_embedding:
                         rpc_args: Dict[str, Any] = {
                             "query_embedding": query_embedding,
+                            "match_workspace_id": request.workspace_id,
                             # 0.4, not 0.5. A long KB doc (e.g. a 7k-char company
                             # overview) has ONE averaged embedding, so even a bull's-eye
                             # query ("Materials Hub") lands ~0.50 — right on a 0.5 cutoff,
