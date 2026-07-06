@@ -6134,7 +6134,14 @@ async def search_knowledge_base(
                                         continue
                                 results["chunks"].append({
                                     "id": doc.get("id"),
-                                    "content": (doc.get("content") or "")[:800],
+                                    # 8000, not 800. kb_docs are full authored articles, not
+                                    # short PDF chunks — an 800-char cap truncated answers mid
+                                    # section (e.g. cut a company overview off at "Core
+                                    # Positioning"), so the agent couldn't quote the full doc.
+                                    # 8000 chars (~2k tokens) covers a typical article whole
+                                    # while still capping pathological giants (e.g. a 130KB
+                                    # manual). top_k bounds the number of docs returned.
+                                    "content": (doc.get("content") or "")[:8000],
                                     "document_title": doc.get("title"),
                                     "category": cat_id,
                                     "category_slug": doc.get("category_slug"),
