@@ -6066,8 +6066,14 @@ async def search_knowledge_base(
                     if query_embedding:
                         rpc_args: Dict[str, Any] = {
                             "query_embedding": query_embedding,
-                            "match_workspace_id": request.workspace_id,
-                            "match_threshold": 0.5,
+                            # 0.4, not 0.5. A long KB doc (e.g. a 7k-char company
+                            # overview) has ONE averaged embedding, so even a bull's-eye
+                            # query ("Materials Hub") lands ~0.50 — right on a 0.5 cutoff,
+                            # flickering in/out with float noise. Measured separation is
+                            # clean: the true match sits ~0.50 while the next-best
+                            # unrelated docs sit ≤0.33, so 0.4 admits the real hit without
+                            # letting noise in. (Proper long-term fix: chunk long KB docs.)
+                            "match_threshold": 0.4,
                             "match_count": request.top_k * 2,  # fetch extra, will post-filter
                             "allowed_access_levels": allowed_access_levels,
                             # 'private' visibility means "not published to the public KB
