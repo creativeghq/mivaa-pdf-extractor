@@ -365,9 +365,11 @@ MENTION_OP_CREDIT_COST: Dict[str, int] = {
 
 
 def debit_credits(
-    *, user_id: str, amount: int, operation_type: str,
+    *, user_id: str, amount: int, operation_type: str, workspace_id: Optional[str] = None,
 ) -> bool:
-    """Atomic credit debit via the platform's existing RPC.
+    """Atomic credit debit via the shared credit router.
+    Routes to the workspace pool when funded (workspace_id set + pool exists), else the
+    personal wallet. Partner (api_key) callers pass no workspace_id → personal (unchanged).
     Returns True on success, False on insufficient balance / failure.
     """
     if amount <= 0:
@@ -376,10 +378,11 @@ def debit_credits(
         return False
     try:
         sb = get_supabase_client().client
-        result = sb.rpc("debit_user_credits", {
+        result = sb.rpc("debit_credits", {
             "p_user_id": user_id,
             "p_amount": amount,
             "p_operation_type": operation_type,
+            "p_workspace_id": workspace_id,
         }).execute()
         # The RPC returns [{success: bool, ...}] — insufficient balance yields
         # success=false (a non-empty, truthy row). bool(data) would treat that as a
@@ -395,17 +398,18 @@ def debit_credits(
 
 
 def refund_credits(
-    *, user_id: str, amount: int, operation_type: str,
+    *, user_id: str, amount: int, operation_type: str, workspace_id: Optional[str] = None,
 ) -> None:
-    """Best-effort refund via credit_user_credits RPC. Never raises."""
+    """Best-effort refund via the shared credit router. Never raises."""
     if amount <= 0 or not user_id:
         return
     try:
         sb = get_supabase_client().client
-        sb.rpc("credit_user_credits", {
+        sb.rpc("refund_credits", {
             "p_user_id": user_id,
             "p_amount": amount,
             "p_operation_type": f"{operation_type}.refund",
+            "p_workspace_id": workspace_id,
         }).execute()
     except Exception as e:
         logger.info(f"mention-cost: refund failed (non-fatal): {e}")

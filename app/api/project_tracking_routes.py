@@ -175,12 +175,13 @@ def _debit(user_id: str, op: str) -> int:
     if cost <= 0:
         return 0
     sb = get_supabase_client().client
-    res = sb.rpc("debit_user_credits", {
+    res = sb.rpc("debit_credits", {
         "p_user_id": user_id,
         "p_amount": cost,
         "p_operation_type": f"projects.{op}",
         "p_description": f"Projects API: {op}",
         "p_metadata": {"feature": "projects_api"},
+        "p_workspace_id": None,  # partner (api_key) billing → personal wallet
     }).execute()
     row = (res.data[0] if isinstance(res.data, list) else res.data) or {}
     if not row.get("success"):
@@ -193,12 +194,13 @@ def _refund(user_id: str, op: str, amount: int) -> None:
         return
     sb = get_supabase_client().client
     try:
-        sb.rpc("credit_user_credits", {
+        sb.rpc("refund_credits", {
             "p_user_id": user_id,
             "p_amount": amount,
             "p_operation_type": f"projects.{op}.refund",
             "p_description": f"Projects API: {op} refund",
             "p_metadata": {"feature": "projects_api", "reason": "operation_failed"},
+            "p_workspace_id": None,
         }).execute()
     except Exception:
         # best-effort

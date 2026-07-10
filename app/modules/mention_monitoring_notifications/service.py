@@ -406,10 +406,11 @@ class MentionAlertDispatcher:
 
     def _charge_credits(self, *, user_id: str, amount: int, operation_type: str) -> bool:
         try:
-            result = self.supabase.client.rpc("debit_user_credits", {
+            result = self.supabase.client.rpc("debit_credits", {
                 "p_user_id": user_id,
                 "p_amount": amount,
                 "p_operation_type": operation_type,
+                "p_workspace_id": None,  # alert recipient's own wallet (email channel charge)
             }).execute()
             return bool(result.data) if hasattr(result, "data") else True
         except Exception as e:
@@ -423,10 +424,11 @@ class MentionAlertDispatcher:
         if amount <= 0 or not user_id:
             return
         try:
-            self.supabase.client.rpc("credit_user_credits", {
+            self.supabase.client.rpc("refund_credits", {
                 "p_user_id": user_id,
                 "p_amount": amount,
                 "p_operation_type": operation_type,
+                "p_workspace_id": None,
             }).execute()
         except Exception as e:
             logger.info(f"mention-alerts: refund failed (non-fatal): {e}")

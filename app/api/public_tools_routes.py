@@ -217,12 +217,13 @@ def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: 
     """Call the debit_user_credits RPC. Returns (success, new_balance, error)."""
     sb = get_supabase_client().client
     try:
-        resp = sb.rpc("debit_user_credits", {
+        resp = sb.rpc("debit_credits", {
             "p_user_id": user_id,
             "p_amount": SCAN_CREDIT_COST,
             "p_operation_type": operation_type,
             "p_description": f"Public {scan_type} scan",
             "p_metadata": {"query_hash": qhash, "scan_type": scan_type},
+            "p_workspace_id": None,  # public lead-gen scan → the scanning user's personal wallet
         }).execute()
         row = (resp.data or [None])[0]
         if not row:
@@ -239,12 +240,13 @@ def _refund_credits(user_id: str, *, qhash: str, scan_type: str) -> None:
     call; if that call produces no result we return the credit."""
     sb = get_supabase_client().client
     try:
-        sb.rpc("credit_user_credits", {
+        sb.rpc("refund_credits", {
             "p_user_id": user_id,
             "p_amount": SCAN_CREDIT_COST,
             "p_operation_type": f"public_{scan_type}_scan_refund",
             "p_description": f"Refund: public {scan_type} scan produced no result",
             "p_metadata": {"query_hash": qhash, "scan_type": scan_type, "refund": True},
+            "p_workspace_id": None,
         }).execute()
     except Exception as e:
         logger.warning(f"public-tools: refund credit_user_credits failed: {e}")

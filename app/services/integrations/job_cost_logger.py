@@ -225,15 +225,18 @@ JOB_OP_CREDIT_COST: Dict[str, int] = {
 }
 
 
-def debit_credits(*, user_id: str, amount: int, operation_type: str) -> bool:
+def debit_credits(*, user_id: str, amount: int, operation_type: str, workspace_id: Optional[str] = None) -> bool:
     if amount <= 0 or not user_id:
         return amount <= 0
     try:
         sb = get_supabase_client().client
-        result = sb.rpc("debit_user_credits", {
+        # Route through the shared credit router: workspace pool when funded, else personal.
+        # Partner (api_key) callers pass no workspace_id → personal wallet (unchanged).
+        result = sb.rpc("debit_credits", {
             "p_user_id": user_id,
             "p_amount": amount,
             "p_operation_type": operation_type,
+            "p_workspace_id": workspace_id,
         }).execute()
         # The RPC returns a row [{success: bool, ...}] — on insufficient balance it
         # returns success=false (NOT an empty result). Reading bool(data) treats that
@@ -248,15 +251,16 @@ def debit_credits(*, user_id: str, amount: int, operation_type: str) -> bool:
         return False
 
 
-def refund_credits(*, user_id: str, amount: int, operation_type: str) -> None:
+def refund_credits(*, user_id: str, amount: int, operation_type: str, workspace_id: Optional[str] = None) -> None:
     if amount <= 0 or not user_id:
         return
     try:
         sb = get_supabase_client().client
-        sb.rpc("credit_user_credits", {
+        sb.rpc("refund_credits", {
             "p_user_id": user_id,
             "p_amount": amount,
             "p_operation_type": f"{operation_type}.refund",
+            "p_workspace_id": workspace_id,
         }).execute()
     except Exception as e:
         logger.info(f"job-cost: refund failed (non-fatal): {e}")

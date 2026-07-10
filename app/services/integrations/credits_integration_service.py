@@ -95,13 +95,14 @@ class CreditsIntegrationService:
 
             # Debit credits using database function
             response = self.supabase.client.rpc(
-                'debit_user_credits',
+                'debit_credits',
                 {
                     'p_user_id': user_id,
                     'p_amount': costs['credits_debited'],
                     'p_operation_type': operation_type,
                     'p_description': f"{operation_type} using {model_name}",
-                    'p_metadata': metadata or {}
+                    'p_metadata': metadata or {},
+                    'p_workspace_id': workspace_id
                 }
             ).execute()
 
@@ -209,7 +210,7 @@ class CreditsIntegrationService:
 
             # Debit credits using database function
             response = self.supabase.client.rpc(
-                'debit_user_credits',
+                'debit_credits',
                 {
                     'p_user_id': user_id,
                     'p_amount': platform_credits,
@@ -220,7 +221,8 @@ class CreditsIntegrationService:
                         'firecrawl_credits': credits_used,
                         'url': url,
                         'pages_scraped': pages_scraped
-                    }
+                    },
+                    'p_workspace_id': workspace_id
                 }
             ).execute()
 
@@ -337,13 +339,14 @@ class CreditsIntegrationService:
 
             # Debit credits using database function
             response = self.supabase.client.rpc(
-                'debit_user_credits',
+                'debit_credits',
                 {
                     'p_user_id': user_id,
                     'p_amount': credits_to_debit,
                     'p_operation_type': operation_type,
                     'p_description': f"{operation_type} using {model_name} ({inference_seconds:.2f}s)",
-                    'p_metadata': metadata or {}
+                    'p_metadata': metadata or {},
+                    'p_workspace_id': workspace_id
                 }
             ).execute()
 
@@ -465,7 +468,7 @@ class CreditsIntegrationService:
 
             # Debit credits using database function
             response = self.supabase.client.rpc(
-                'debit_user_credits',
+                'debit_credits',
                 {
                     'p_user_id': user_id,
                     'p_amount': credits_to_debit,
@@ -476,7 +479,8 @@ class CreditsIntegrationService:
                         'service': service_name,
                         'units': units,
                         'unit_type': str(costs['unit_type']),
-                    }
+                    },
+                    'p_workspace_id': workspace_id
                 }
             ).execute()
 
@@ -592,13 +596,14 @@ class CreditsIntegrationService:
 
             # Debit credits using database function
             response = self.supabase.client.rpc(
-                'debit_user_credits',
+                'debit_credits',
                 {
                     'p_user_id': user_id,
                     'p_amount': credits_to_debit,
                     'p_operation_type': operation_type,
                     'p_description': f"{operation_type} using {model_name} ({num_generations} images)",
-                    'p_metadata': metadata or {}
+                    'p_metadata': metadata or {},
+                    'p_workspace_id': workspace_id
                 }
             ).execute()
 
