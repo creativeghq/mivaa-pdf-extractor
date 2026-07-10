@@ -214,7 +214,7 @@ def _read_credit_balance(user_id: str) -> Optional[int]:
 
 
 def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: str) -> tuple[bool, Optional[int], Optional[str]]:
-    """Call the debit_user_credits RPC. Returns (success, new_balance, error)."""
+    """Call the shared debit_credits router (public scan → personal). Returns (success, new_balance, error)."""
     sb = get_supabase_client().client
     try:
         resp = sb.rpc("debit_credits", {
@@ -231,7 +231,7 @@ def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: 
         success = bool(row.get("success"))
         return success, (int(row["new_balance"]) if row.get("new_balance") is not None else None), row.get("error_message")
     except Exception as e:
-        logger.warning(f"public-tools: debit_user_credits failed: {e}")
+        logger.warning(f"public-tools: debit_credits failed: {e}")
         return False, None, str(e)[:200]
 
 
@@ -249,7 +249,7 @@ def _refund_credits(user_id: str, *, qhash: str, scan_type: str) -> None:
             "p_workspace_id": None,
         }).execute()
     except Exception as e:
-        logger.warning(f"public-tools: refund credit_user_credits failed: {e}")
+        logger.warning(f"public-tools: refund_credits failed: {e}")
 
 
 def _quota_to_response(

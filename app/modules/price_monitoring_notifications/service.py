@@ -601,7 +601,7 @@ class PriceAlertDispatcher:
             return False
 
     def _refund_credits(self, *, user_id: str, amount: int, operation_type: str) -> None:
-        """Best-effort refund via credit_user_credits RPC. Never raises.
+        """Best-effort refund via the shared refund_credits router. Never raises.
         Used when a channel was charged but its send failed — the user paid
         for an alert that never reached them.
         """
