@@ -67,14 +67,55 @@ class PromptTemplateService:
     ) -> List[Dict[str, Any]]:
         """List all prompt templates with optional filtering."""
         try:
-            return await self.prompt_service.get_template_prompts(
+            rows = await self.prompt_service.get_template_prompts(
                 workspace_id=workspace_id,
                 stage=stage,
                 industry=industry
             )
+            # get_template_prompts returns raw `prompts` table rows (prompt_text,
+            # configuration, subcategory, ...). The admin API contract (and the frontend)
+            # expect the legacy prompt_templates shape (prompt_template, model_preference,
+            # temperature, max_tokens). Reshape here so response validation doesn't 500
+            # (Sentry MIVAA-5JG).
+            return [self._to_template_response(r) for r in rows]
         except Exception as e:
             logger.error(f"Failed to list templates: {str(e)}")
             return []
+
+    @staticmethod
+    def _to_template_response(row: Dict[str, Any]) -> Dict[str, Any]:
+        """Map a raw `prompts` row onto the PromptTemplateResponse contract."""
+        config = row.get('configuration') or {}
+        if not isinstance(config, dict):
+            config = {}
+
+        def _num(value, default):
+            try:
+                return type(default)(value)
+            except (TypeError, ValueError):
+                return default
+
+        return {
+            'id': str(row.get('id') or ''),
+            'workspace_id': str(row.get('workspace_id') or ''),
+            'name': row.get('name') or '',
+            'description': row.get('description'),
+            'industry': row.get('industry'),
+            'stage': row.get('stage') or '',
+            'category': row.get('category'),
+            # `prompts` stores the body in prompt_text; the admin API calls it prompt_template.
+            'prompt_template': row.get('prompt_text') or row.get('prompt_template') or '',
+            'system_prompt': row.get('system_prompt'),
+            'model_preference': config.get('model_preference') or config.get('model'),
+            'temperature': _num(config.get('temperature', 0.1), 0.1),
+            'max_tokens': _num(config.get('max_tokens', 4096), 4096),
+            'is_default': bool(row.get('is_default', False)),
+            'is_active': bool(row.get('is_active', True)),
+            'version': _num(row.get('version', 1), 1),
+            'created_by': row.get('created_by'),
+            'created_at': str(row.get('created_at') or ''),
+            'updated_at': str(row.get('updated_at') or ''),
+        }
 
     async def create_template(
         self,

@@ -27,18 +27,21 @@ class PromptTemplateResponse(BaseModel):
     description: Optional[str]
     industry: Optional[str]
     stage: str
-    category: Optional[str]
-    prompt_template: str
-    system_prompt: Optional[str]
-    model_preference: Optional[str]
-    temperature: float
-    max_tokens: int
-    is_default: bool
-    is_active: bool
-    version: int
-    created_by: Optional[str]
-    created_at: str
-    updated_at: str
+    category: Optional[str] = None
+    # Defensive defaults: list_templates reshapes raw `prompts` rows onto this contract;
+    # keeping these optional/defaulted means future column drift degrades gracefully
+    # instead of raising a ResponseValidationError 500 (Sentry MIVAA-5JG).
+    prompt_template: str = ""
+    system_prompt: Optional[str] = None
+    model_preference: Optional[str] = None
+    temperature: float = 0.1
+    max_tokens: int = 4096
+    is_default: bool = False
+    is_active: bool = True
+    version: int = 1
+    created_by: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class CreatePromptTemplateRequest(BaseModel):
