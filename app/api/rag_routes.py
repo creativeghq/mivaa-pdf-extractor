@@ -6073,6 +6073,11 @@ async def search_knowledge_base(
             try:
                 caller = request.caller or "agent"
                 query_lower = request.query.lower()
+                # Operator root workspace = the platform-default / shared KB (all KB docs
+                # currently live here). Tenant callers (agent/admin) also retrieve its
+                # published + non-private, agent/public docs so the shared KB reaches every
+                # workspace's agent. Cross-workspace exposure is gated inside kb_match_doc_chunks.
+                _KB_SHARED_WS = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
 
                 if caller == "admin":
                     # Admin sees everything — no keyword restriction
@@ -6086,9 +6091,15 @@ async def search_knowledge_base(
                     # agent-level categories only if trigger_keyword matches (or no keyword set)
                     allowed_access_levels = ["agent", "public"]
 
+                    # Include the shared root workspace's categories so root docs are gated
+                    # by the SAME access_level + trigger_keyword rules (below) instead of being
+                    # dropped by the post-filter for not belonging to the caller's workspace.
+                    kb_ws_scope = [request.workspace_id]
+                    if request.workspace_id != _KB_SHARED_WS:
+                        kb_ws_scope.append(_KB_SHARED_WS)
                     cats_resp = supabase.client.table("kb_categories").select(
                         "id, access_level, trigger_keyword"
-                    ).eq("workspace_id", request.workspace_id).in_(
+                    ).in_("workspace_id", kb_ws_scope).in_(
                         "access_level", ["agent", "public"]
                     ).execute()
 
@@ -6159,6 +6170,13 @@ async def search_knowledge_base(
                             rpc_args["match_category_slug"] = request.category_slug
                         if request.price_doc_type:
                             rpc_args["match_price_doc_type"] = request.price_doc_type
+                        # Cross-workspace shared KB: tenant callers (agent/admin — NOT the
+                        # public-website caller) also pull the operator root workspace's
+                        # published + non-private docs. The RPC forces published+non-private on
+                        # the shared branch and no-ops when shared == caller, so an operator
+                        # (root) caller never bleeds its own drafts/private through this path.
+                        if caller != "public" and request.workspace_id != _KB_SHARED_WS:
+                            rpc_args["shared_workspace_id"] = _KB_SHARED_WS
 
                         # Section-level retrieval: match on kb_doc_chunks (each ~1.3k-char
                         # section), gated via the parent doc INSIDE the RPC (workspace,
