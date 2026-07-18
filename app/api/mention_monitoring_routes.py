@@ -115,6 +115,22 @@ def _resolve_product(sb, product_id: str) -> Dict[str, Any]:
     return row
 
 
+def _module_enabled(sb, slug: str) -> bool:
+    """Is a platform module enabled in public.modules? Mirrors the edge-side isModuleEnabled.
+
+    FAIL-OPEN on a missing row / read error: the edge cron already gates on this flag
+    (fail-closed) before it ever calls us, so this defense-in-depth chokepoint check must
+    never break a legitimately-enabled run — it only exists to stop a FUTURE internal
+    caller of the cron endpoints from bypassing the toggle.
+    """
+    try:
+        res = sb.table("modules").select("enabled").eq("slug", slug).maybe_single().execute()
+        row = res.data if res else None
+        return True if row is None else bool(row.get("enabled"))
+    except Exception:
+        return True
+
+
 def _check_owner_or_admin(sb, *, tracked_mention_id: str, user_id: str) -> Dict[str, Any]:
     r = (
         sb.table("tracked_mentions")
@@ -820,6 +836,11 @@ async def cron_refresh(
     if not expected or secret != expected:
         raise HTTPException(status_code=401, detail="bad cron secret")
     sb = get_supabase_client().client
+    # Honor the module toggle (defense-in-depth; the edge cron gates too). A disabled
+    # module must not run paid discovery.
+    if not _module_enabled(sb, "mention-monitoring"):
+        return {"success": True, "skipped": "module_disabled", "due_count": 0,
+                "processed": 0, "succeeded": 0, "failed": 0, "results": []}
     try:
         r = sb.rpc("get_internal_tracked_mentions_due", {"p_limit": limit}).execute()
         due = r.data or []
@@ -859,6 +880,11 @@ async def cron_probe_llm(
     if not expected or secret != expected:
         raise HTTPException(status_code=401, detail="bad cron secret")
     sb = get_supabase_client().client
+    # Honor the module toggle (defense-in-depth; the edge cron gates too). A disabled
+    # module must not run paid LLM probes.
+    if not _module_enabled(sb, "mention-monitoring"):
+        return {"success": True, "skipped": "module_disabled", "due_count": 0,
+                "processed": 0, "succeeded": 0, "failed": 0}
     try:
         r = sb.rpc("get_tracked_mentions_due_for_llm_probe", {
             "p_limit": limit, "p_min_age_days": min_age_days,
