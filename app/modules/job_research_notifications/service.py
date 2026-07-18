@@ -133,7 +133,7 @@ class JobDigestDispatcher:
             since = tj.get("last_digest_sent_at") or _iso(_utcnow() - timedelta(hours=26))
             listings = (
                 self.sb.table("job_listings")
-                .select("id, url, title, company, company_domain, location, is_remote, "
+                .select("id, content_hash, url, title, company, company_domain, location, is_remote, "
                         "salary_min, salary_max, salary_currency, employment_type, posted_at, source")
                 .eq("tracked_job_id", tj["id"])
                 .eq("relevance", "match")
@@ -217,13 +217,31 @@ class JobDigestDispatcher:
             await asyncio.gather(*[self._send_webhook(url, {"tracked_job_id": tj["id"], "label": tj["label"], "listings": [s["listings"] for s in sections if s["tracked_job"]["id"] == tj["id"]]}) for tj, url in webhooks_to_call])
             channels_attempted.append("webhook")
 
-        # 4. Mark listings as digest-included
+        # 4. Purge after send — "keep the search, not the data". Record each
+        #    delivered job's content_hash in job_research_sent (compact tombstone
+        #    so it's never re-delivered), then DELETE the full listing rows. The
+        #    ledger is consulted by the refresh dedup, so no re-sends.
         listing_ids = [l["id"] for s in sections for l in s["listings"]]
         if listing_ids:
+            ledger_rows = [
+                {"tracked_job_id": s["tracked_job"]["id"], "content_hash": l.get("content_hash")}
+                for s in sections for l in s["listings"] if l.get("content_hash")
+            ]
             try:
-                self.sb.table("job_listings").update({"digest_included_at": _iso(_utcnow())}).in_("id", listing_ids).execute()
+                if ledger_rows:
+                    self.sb.table("job_research_sent").upsert(
+                        ledger_rows, on_conflict="tracked_job_id,content_hash"
+                    ).execute()
             except Exception as e:
-                logger.warning(f"job-digest: mark digest_included_at failed: {e}")
+                logger.warning(f"job-digest: sent-ledger upsert failed (will not purge): {e}")
+                ledger_rows = []
+            # Only delete once the tombstones are safely recorded, so a failure
+            # never loses dedup memory (worst case: rows linger, re-sent never).
+            if ledger_rows:
+                try:
+                    self.sb.table("job_listings").delete().in_("id", listing_ids).execute()
+                except Exception as e:
+                    logger.warning(f"job-digest: post-send listing purge failed: {e}")
 
         # 5. Log + stamp last_digest_sent_at on each tracked_job
         for tj in tracked_jobs:

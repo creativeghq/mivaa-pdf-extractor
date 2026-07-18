@@ -1078,6 +1078,7 @@ class JobResearchService:
     def _existing_content_hashes(self, tracked_job_id: str, hashes: List[str]) -> set:
         if not hashes:
             return set()
+        seen: set = set()
         try:
             rows = (
                 self.sb.table("job_listings")
@@ -1088,9 +1089,27 @@ class JobResearchService:
                 .data
                 or []
             )
-            return {r["content_hash"] for r in rows}
+            seen |= {r["content_hash"] for r in rows}
         except Exception:
-            return set()
+            pass
+        # Also treat already-DELIVERED jobs as existing. After a digest/manual
+        # send we purge the full listing rows ("keep the search, not the data")
+        # but keep their hashes in job_research_sent so the same job is never
+        # re-delivered on a later refresh.
+        try:
+            sent = (
+                self.sb.table("job_research_sent")
+                .select("content_hash")
+                .eq("tracked_job_id", tracked_job_id)
+                .in_("content_hash", hashes)
+                .execute()
+                .data
+                or []
+            )
+            seen |= {r["content_hash"] for r in sent}
+        except Exception:
+            pass
+        return seen
 
     def _existing_canonical_urls(self, tracked_job_id: str, urls: List[str]) -> set:
         """v0.4.6: returns the set of canonical_url values already persisted for
