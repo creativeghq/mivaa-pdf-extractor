@@ -148,6 +148,19 @@ def _is_admin(sb, user_id: str) -> bool:
         return False
 
 
+def _module_enabled(sb, slug: str) -> bool:
+    """Is a platform module enabled in public.modules? Mirrors the edge-side isModuleEnabled.
+    FAIL-OPEN on missing row / read error — the edge cron is the authoritative fail-closed
+    gate, so this chokepoint check only converts an explicit enabled=false into a skip.
+    """
+    try:
+        res = sb.table("modules").select("enabled").eq("slug", slug).maybe_single().execute()
+        row = res.data if res else None
+        return True if row is None else bool(row.get("enabled"))
+    except Exception:
+        return True
+
+
 def _require_admin(user: User) -> None:
     if not _is_admin(get_supabase_client().client, str(user.id)):
         raise HTTPException(status_code=403, detail="admin role required")
@@ -869,6 +882,11 @@ async def cron_refresh_tracked_queries(request: Request, limit: int = Query(defa
     provided = request.headers.get("x-cron-secret") or ""
     if not expected or provided != expected:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or missing x-cron-secret")
+
+    # Honor the module toggle (defense-in-depth; the edge cron gates too).
+    if not _module_enabled(get_supabase_client().client, "price-monitoring"):
+        return {"success": True, "skipped": "module_disabled", "due_count": 0,
+                "processed": 0, "succeeded": 0, "failed": 0, "total_credits_used": 0, "results": []}
 
     service = get_tracked_queries_service()
     due = await service.due_for_refresh(limit=limit)

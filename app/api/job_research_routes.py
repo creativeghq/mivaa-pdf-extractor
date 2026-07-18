@@ -383,6 +383,19 @@ async def correct_match(
 
 # ─── Cron endpoints (x-cron-secret) ──────────────────────────────────────
 
+def _module_enabled(sb, slug: str) -> bool:
+    """Is a platform module enabled in public.modules? Mirrors the edge-side isModuleEnabled.
+    FAIL-OPEN on missing row / read error — the edge cron is the authoritative fail-closed
+    gate, so this chokepoint check only converts an explicit enabled=false into a skip.
+    """
+    try:
+        res = sb.table("modules").select("enabled").eq("slug", slug).maybe_single().execute()
+        row = res.data if res else None
+        return True if row is None else bool(row.get("enabled"))
+    except Exception:
+        return True
+
+
 def _verify_cron_secret(x_cron_secret: Optional[str] = Header(default=None)) -> None:
     expected = os.getenv("CRON_SECRET") or os.getenv("PRICE_MONITORING_CRON_SECRET") or ""
     if not expected:
@@ -569,6 +582,9 @@ async def cron_refresh(
 ):
     """Pick due tracked_jobs and run refresh for each."""
     svc = get_job_research_service()
+    # Honor the module toggle (defense-in-depth; the edge cron gates too).
+    if not _module_enabled(svc.sb, "job-research"):
+        return {"skipped": "module_disabled", "due": 0, "outcomes": []}
     try:
         res = svc.sb.rpc("get_internal_tracked_jobs_due", {"p_limit": limit}).execute()
         rows = res.data or []
