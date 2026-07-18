@@ -1417,8 +1417,25 @@ async def search_via_firecrawl_careers(
                     headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                     json={
                         "url": url,
-                        "formats": [{"type": "json", "schema": schema}],
-                        "onlyMainContent": True,
+                        # A guiding prompt is REQUIRED — pure-schema extraction
+                        # silently returned 0 listings on most board layouts
+                        # (4dayWeek/TheProductFolks/ChoppingBlock etc. all yielded
+                        # nothing despite the jobs being right there in the HTML).
+                        # With this prompt 4dayWeek went 0 → 50. onlyMainContent
+                        # off + a short render wait so JS-built boards populate.
+                        "formats": [{
+                            "type": "json",
+                            "schema": schema,
+                            "prompt": (
+                                "Extract EVERY job posting listed on this careers / job-board page. "
+                                "For each posting return: url (the direct link to that specific job), "
+                                "title, company, location, and when shown employment_type, seniority, "
+                                "posted_at, and whether it is remote. Return ALL postings on the page, "
+                                "not just the first few."
+                            ),
+                        }],
+                        "onlyMainContent": False,
+                        "waitFor": 3500,
                     },
                 )
                 resp.raise_for_status()
