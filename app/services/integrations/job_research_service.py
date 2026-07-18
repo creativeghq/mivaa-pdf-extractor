@@ -791,10 +791,22 @@ class JobResearchService:
             # title and company are present so distinct-but-untitled rows aren't merged.
             def _norm_key(s: str) -> str:
                 return re.sub(r"[\s\-_/|]+", " ", (s or "").strip().lower()).strip()
+            # Strip trailing location parenthetical(s) from the title so the SAME
+            # role reposted per city collapses to one — e.g. LawnStarter "Staff
+            # Product Engineer (Belo Horizonte)" / "(Montevideo)" / "(São Paulo)"
+            # are one job, not six. Only the trailing group(s) are stripped so a
+            # meaningful "(Remote)"-less title core remains the identity.
+            def _role_title_key(s: str) -> str:
+                s = (s or "").strip()
+                prev = None
+                while s != prev:  # peel repeated trailing "(...)" groups
+                    prev = s
+                    s = re.sub(r"\s*\([^()]*\)\s*$", "", s).strip()
+                return _norm_key(s)
             _seen_role: set = set()
             role_unique: List[JobHit] = []
             for h in deduped:
-                t = _norm_key(h.title or "")
+                t = _role_title_key(h.title or "")
                 co = _norm_key(h.company or "")
                 if t and co:
                     rkey = f"{t}|{co}"

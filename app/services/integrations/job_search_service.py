@@ -4,7 +4,8 @@ and Firecrawl careers-page scraping.
 
 Three sources, each implemented as a separate async method:
 
-  1. DataForSEO Google Jobs (`/serp/google_jobs/live/advanced`)
+  1. DataForSEO Google Jobs (task-based: `/serp/google/jobs/task_post` →
+     `/serp/google/jobs/task_get/advanced/{id}`; there is NO live endpoint).
      Cheapest, broadest coverage (Google for Jobs aggregates Indeed, LinkedIn,
      Glassdoor, ZipRecruiter etc.). Flat ~$0.0006/req.
 
@@ -240,6 +241,12 @@ def _looks_hallucinated_url(url: str) -> bool:
         # All same digit
         if len(set(digits)) == 1:
             return True
+    # Indeed job keys (jk=) are always exactly 16 hex chars. Sonar fabricates
+    # readable placeholders like jk=xyz789sardine_ai_pm — reject any jk that
+    # isn't 16 hex. (Caught a hallucinated "Sardine — Technical PM, AI" listing.)
+    m = re.search(r"[?&]jk=([^&#]+)", url)
+    if m and not re.fullmatch(r"[0-9a-fA-F]{16}", m.group(1)):
+        return True
     return False
 
 
@@ -375,15 +382,49 @@ async def search_via_dataforseo_jobs(
     hits: List[JobHit] = []
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
-            # DataForSEO Google Jobs endpoint: /v3/serp/google/jobs/live/advanced
-            # (the path uses /google/jobs/, NOT /google_jobs/ — common confusion)
-            resp = await client.post(
-                f"{_DATAFORSEO_BASE}/serp/google/jobs/live/advanced",
-                headers={"Authorization": auth, "Content-Type": "application/json"},
-                json=body,
+            # DataForSEO Google Jobs is TASK-BASED ONLY — there is no
+            # /serp/google/jobs/live/advanced (calling it returns task
+            # status_code 40402 "Invalid Path"). Flow: task_post → poll
+            # task_get/advanced until the task resolves (status_code 20000).
+            hdrs = {"Authorization": auth, "Content-Type": "application/json"}
+            post_resp = await client.post(
+                f"{_DATAFORSEO_BASE}/serp/google/jobs/task_post",
+                headers=hdrs, json=body,
             )
-            resp.raise_for_status()
-            data = resp.json()
+            post_resp.raise_for_status()
+            post_data = post_resp.json() or {}
+            task_id = next(
+                (t.get("id") for t in (post_data.get("tasks") or []) if t.get("id")),
+                None,
+            )
+            if not task_id:
+                raise RuntimeError(
+                    f"google_jobs task_post returned no task id "
+                    f"({post_data.get('status_code')}: {post_data.get('status_message')})"
+                )
+            # Poll for the result. Jobs tasks usually resolve in a few seconds;
+            # cap total wait so a single stuck task can't stall the refresh.
+            data = None
+            for _ in range(16):  # ~40s max (16 × 2.5s)
+                await asyncio.sleep(2.5)
+                get_resp = await client.get(
+                    f"{_DATAFORSEO_BASE}/serp/google/jobs/task_get/advanced/{task_id}",
+                    headers=hdrs,
+                )
+                get_resp.raise_for_status()
+                gd = get_resp.json() or {}
+                task0 = (gd.get("tasks") or [{}])[0]
+                sc = task0.get("status_code")
+                if sc == 20000:
+                    data = gd
+                    break
+                # 40602 "Task In Queue" / 40100 "Task Handed" → keep waiting.
+                if sc in (40602, 40100, 40101, 20100):
+                    continue
+                # Anything else at task level is a real error — stop polling.
+                raise RuntimeError(f"google_jobs task_get {sc}: {task0.get('status_message')}")
+            if data is None:
+                raise RuntimeError("google_jobs task did not complete within the poll window")
 
         tasks = ((data or {}).get("tasks") or [])
         for task in tasks:

@@ -135,6 +135,14 @@ def _is_non_posting(hit: JobHit) -> bool:
     # Generic search-results URL shapes.
     if re.search(r"/(search|srch|q-|browse)(/|$)", url) or "/jobs/q-" in url or "?q=" in url or "&q=" in url:
         return True
+
+    # Editorial / marketing content — a blog, insight, press, or resource article
+    # is not an applyable posting. These slip in when a careers-page scrape follows
+    # an "insights"/"blog" link (e.g. curinos.com/our-insights/...-risk-advantage/).
+    # Guard: only trip when the path is clearly editorial AND not under a jobs path.
+    if not re.search(r"/(jobs?|careers?|positions?|openings?|vacanc|apply)(/|$)", url):
+        if re.search(r"/(insights?|our-insights|blog|news|press|newsroom|article|articles|resources?|guides?|stories|learn|whitepaper|report|webinar|podcast|events?)(/|$)", url):
+            return True
     # Listing-page titles: "<N> jobs/θέσεις/vacancies …" or "… jobs in <place>".
     if re.match(r"^\s*\d[\d.,]*\s+(jobs|θέσεις|θεσεις|vacancies|positions|offers|empleos)\b", title_l):
         return True
@@ -203,15 +211,29 @@ def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
         # not what the user wants. Fast-drop without spending Haiku credits.
         return ("mismatch", "no distinctive keyword tokens in title/description")
 
-    # Fast-path match: at least one distinctive keyword token in the TITLE
-    # AND every required token (after stoplist removal) is somewhere in the blob.
-    # BUT never fast-promote from untrusted SERP sources — a title sharing a
-    # keyword token ("...AI Product...") is not proof it's an applyable job
-    # (could be a listicle/guide). Those fall through to Haiku to confirm.
-    if distinctive_overlap and hit.source not in _UNTRUSTED_FAST_PROMOTE_SOURCES:
+    # Fast-path match requires a keyword PHRASE hit in the TITLE — not just one
+    # shared token. A lone token was fast-promoting firehose RSS/board noise that
+    # merely shared a word: "Product Sales Specialist", "Amazon Product
+    # Researcher", "Wireless Technical Support Engineer" all share product/
+    # technical with "Product Manager" but are not the role. For a multi-word
+    # keyword we now require the whole phrase (contiguous) in the title; a
+    # single-word distinctive keyword still matches on the token. Anything that
+    # only overlaps loosely falls through to Haiku rather than auto-matching.
+    # Untrusted SERP sources never fast-promote at all.
+    if hit.source not in _UNTRUSTED_FAST_PROMOTE_SOURCES:
+        title_norm = _normalize(hit.title or "")
         title_tokens = _tokens(hit.title or "")
-        if distinctive_keyword_tokens & title_tokens:
-            return ("match", f"keyword token(s) hit title: {sorted(distinctive_keyword_tokens & title_tokens)[:3]}")
+        for k in (facets.keywords or []):
+            k_norm = _normalize(k)
+            k_tokens = _tokens(k)
+            k_distinctive = k_tokens - _STOPLIST
+            if not k_distinctive:
+                continue  # keyword is only generic role-words → needs Haiku
+            if len(k_tokens) >= 2:
+                if k_norm and k_norm in title_norm:
+                    return ("match", f"keyword phrase in title: {k}")
+            elif k_distinctive & title_tokens:
+                return ("match", f"keyword token in title: {sorted(k_distinctive)[:2]}")
 
     return None  # ambiguous → Haiku
 
@@ -407,9 +429,16 @@ def _build_user_prompt(facets: JobFacets, batch: List[JobHit], corrections: Opti
         f"{few_shot_block}"
         f"Classify each listing below. Each MUST be an actual, applyable job "
         f"posting for a specific open role. "
-        f"'match' = a real job posting that clearly hits the user's intent. "
-        f"'tangential' = a real job posting in the same field but wrong specialization. "
-        f"'mismatch' = an entirely different role, an excluded one, OR anything "
+        f"'match' = a real job posting whose CORE ROLE FUNCTION is what the user "
+        f"wants. Judge the role's actual function, NOT shared words: a title "
+        f"merely containing a keyword word is not a match. A Sales, Customer "
+        f"Support, Administrative/Assistant, Marketing, Brand, Recruiting, "
+        f"Operations, or generic non-role posting is a 'mismatch' even if its "
+        f"title shares a word with the keywords (e.g. 'Product Sales Specialist', "
+        f"'Technical Support Engineer', or 'Brand Executive' when the user wants a "
+        f"Product Manager). "
+        f"'tangential' = a real job posting in the same function but wrong specialization. "
+        f"'mismatch' = a different role FUNCTION, an excluded one, OR anything "
         f"that is NOT a job posting — a blog/news article, a Reddit or forum "
         f"discussion, a YouTube video, a salary/career guide, a course, or a "
         f"'companies hiring' listicle. When in doubt about whether it is even a "
