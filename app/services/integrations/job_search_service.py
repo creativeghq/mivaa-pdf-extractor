@@ -430,19 +430,26 @@ async def search_via_dataforseo_jobs(
         for task in tasks:
             for result in (task.get("result") or []):
                 for item in (result.get("items") or []):
-                    # DataForSEO returns `type` either as 'google_jobs_serp' (older) or
-                    # 'jobs_element' (current). Accept both for forward compat.
+                    # task_get/advanced returns type 'google_jobs_item'. Accept the
+                    # older 'google_jobs_serp'/'jobs_element' shapes too for safety.
                     item_type = (item.get("type") or "").lower()
-                    if item_type not in ("google_jobs_serp", "jobs_element"):
+                    if item_type not in ("google_jobs_item", "google_jobs_serp", "jobs_element"):
                         continue
-                    url = (item.get("apply_link") or {}).get("link") or item.get("url") or ""
+                    # Real items expose the posting URL as `source_url` ("via
+                    # LinkedIn/Indeed/…"); older shapes used apply_link.link / url.
+                    apply_link = item.get("apply_link")
+                    apply_url = apply_link.get("link") if isinstance(apply_link, dict) else None
+                    url = item.get("source_url") or apply_url or item.get("url") or ""
                     if not url:
                         continue
                     canonical = canonicalize_url(url)
                     title = item.get("title")
-                    company = item.get("company_name")
-                    salary = item.get("salary") or {}
+                    company = item.get("employer_name") or item.get("company_name")
+                    salary = item.get("salary")
+                    if not isinstance(salary, dict):
+                        salary = {}
                     contract = item.get("contract_type") or item.get("schedule_type")
+                    location = item.get("location")
                     hits.append(JobHit(
                         url=url,
                         canonical_url=canonical,
@@ -450,17 +457,18 @@ async def search_via_dataforseo_jobs(
                         title=title,
                         company=company,
                         company_domain=domain_of(url),
-                        location=item.get("location"),
-                        is_remote=("remote" in (item.get("location") or "").lower()) or None,
+                        location=location,
+                        is_remote=("remote" in (location or "").lower()) or None,
                         salary_min=_to_int(salary.get("min_value")),
                         salary_max=_to_int(salary.get("max_value")),
                         salary_currency=salary.get("currency"),
                         salary_period=salary.get("type"),
                         employment_type=contract,
                         description_excerpt=(item.get("description") or "")[:600] or None,
-                        posted_at=item.get("date_posted"),
+                        posted_at=item.get("timestamp") or item.get("date_posted"),
                         source="google_jobs",
-                        raw_payload={"thumbnail": item.get("thumbnail"), "via": item.get("via")},
+                        raw_payload={"thumbnail": item.get("employer_image_url") or item.get("thumbnail"),
+                                     "via": item.get("source_name") or item.get("via")},
                     ))
     except Exception as e:
         success = False
