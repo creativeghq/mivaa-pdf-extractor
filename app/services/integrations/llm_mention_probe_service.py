@@ -249,13 +249,24 @@ class LlmMentionProbeService:
         positions: List[int] = []
         for row in rows:
             m = row.get("model")
-            d = per_model.setdefault(m, {"probes": 0, "mentioned": 0, "positions": []})
+            d = per_model.setdefault(m, {"probes": 0, "mentioned": 0, "positions": [], "samples": []})
             d["probes"] += 1
             if row.get("mentioned"):
                 d["mentioned"] += 1
                 if row.get("position"):
                     d["positions"].append(int(row["position"]))
                     positions.append(int(row["position"]))
+            # Keep the raw probe answer (trimmed) so the UI can let users read exactly
+            # what each model said, not just the aggregate counts. Capped per model.
+            if len(d["samples"]) < 4:
+                d["samples"].append({
+                    "template": row.get("probe_template_key"),
+                    "response": (row.get("response_text") or "")[:800],
+                    "mentioned": bool(row.get("mentioned")),
+                    "position": row.get("position"),
+                    "sentiment": row.get("sentiment"),
+                    "context_snippet": row.get("context_snippet"),
+                })
             for c in row.get("competitors_mentioned") or []:
                 cn = (c or "").strip()
                 if cn:

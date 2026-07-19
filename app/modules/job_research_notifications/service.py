@@ -134,7 +134,8 @@ class JobDigestDispatcher:
             listings = (
                 self.sb.table("job_listings")
                 .select("id, content_hash, url, title, company, company_domain, location, is_remote, "
-                        "salary_min, salary_max, salary_currency, employment_type, posted_at, source")
+                        "salary_min, salary_max, salary_currency, employment_type, posted_at, source, "
+                        "seniority, description_excerpt, relevance_score, match_note")
                 .eq("tracked_job_id", tj["id"])
                 .eq("relevance", "match")
                 .is_("digest_included_at", "null")
@@ -409,7 +410,7 @@ class JobDigestDispatcher:
                 self.sb.table("job_listings")
                 .select("id, url, title, company, company_domain, location, is_remote, "
                         "salary_min, salary_max, salary_currency, salary_annual_min_usd, salary_annual_max_usd, "
-                        "employment_type, posted_at, source")
+                        "employment_type, posted_at, source, seniority, description_excerpt, relevance_score, match_note")
                 .eq("tracked_job_id", tracked_job_id)
                 .eq("relevance", "match")
                 .gte("discovered_at", since)
@@ -504,6 +505,10 @@ class JobDigestDispatcher:
                         "employment_type": l.get("employment_type"),
                         "posted_at": l.get("posted_at"),
                         "source": l.get("source"),
+                        "seniority": l.get("seniority"),
+                        "description_excerpt": l.get("description_excerpt"),
+                        "relevance_score": l.get("relevance_score"),
+                        "match_note": l.get("match_note"),
                     }
                     for l in listings
                 ],
