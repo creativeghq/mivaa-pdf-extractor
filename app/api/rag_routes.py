@@ -512,6 +512,13 @@ class SearchRequest(BaseModel):
     enable_mmr: bool = Field(False, description="Enable MMR diversity re-ranking on results")
     mmr_lambda: float = Field(0.7, ge=0.0, le=1.0, description="MMR relevance/diversity balance (1.0=pure relevance, 0.0=pure diversity)")
 
+    # Aspect bias (#277) — when set, the multi_vector fusion is re-weighted to
+    # emphasize this one visual aspect's per-aspect embedding collection
+    # (color/texture/style/material) instead of the balanced 7-vector blend, so
+    # "find similar colors / textures / styles / materials" biases toward it.
+    # Explicit user intent → overrides the query-understanding weight profile.
+    aspect: Optional[str] = Field(None, pattern="^(color|texture|style|material)$", description="Bias multi-vector fusion toward one visual aspect: color|texture|style|material (#277)")
+
 class SearchResponse(BaseModel):
     """Response model for semantic search."""
     query: str = Field(..., description="Original search query")
@@ -5101,6 +5108,19 @@ async def search_documents(
             if getattr(request, 'enable_mmr', False):
                 sc["enable_mmr"] = True
                 sc["mmr_lambda"] = getattr(request, 'mmr_lambda', 0.7)
+            # Aspect bias (#277) — explicit user aspect wins over the balanced /
+            # query-understanding weights: emphasize the chosen per-aspect vector.
+            _aspect = getattr(request, 'aspect', None)
+            if _aspect in ('color', 'texture', 'style', 'material'):
+                aspect_weights = {
+                    "visual": 0.10, "chunk": 0.05, "understanding": 0.15,
+                    "product": 0.05, "keyword": 0.05,
+                    "color": 0.025, "texture": 0.025, "style": 0.025, "material": 0.025,
+                }
+                aspect_weights[_aspect] = 0.55
+                sc["weights"] = aspect_weights
+                weight_profile = f"aspect:{_aspect}"
+                logger.info(f"🎨 Aspect bias applied: {_aspect} (weight 0.55)")
             results = await rag_service.multi_vector_search(
                 query=query_to_use,
                 workspace_id=request.workspace_id,
