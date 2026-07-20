@@ -51,6 +51,7 @@ from app.services.integrations.job_salary_normalizer import normalize_listing_in
 from app.services.integrations.job_search_service import (
     JobHit, build_query_variations, build_site_targeted_queries, dedupe_hits,
     discover_local_job_boards, load_manual_review_boards, search_via_dataforseo_jobs,
+    parse_ats_entry, search_via_ats_boards,
     search_via_dataforseo_serp, search_via_firecrawl_careers,
     search_via_perplexity, search_via_rss_feeds, verify_job_listings,
 )
@@ -714,6 +715,23 @@ class JobResearchService:
             # configured board/feed — including the ones that returned nothing.
             merged_careers: List[str] = []
             merged_rss: List[str] = []
+            merged_ats: List[str] = []
+
+            # ATS boards (Greenhouse/Lever/Ashby public JSON). Enabled whenever any
+            # are configured — it's free, structured, and earlier than any board,
+            # so there's no reason to gate it behind an opt-in flag.
+            if sources_enabled.get("ats_boards", True):
+                from app.services.integrations.job_search_service import load_site_defaults_from_db as _lsd
+                _per_tracked_ats = [u for u in (tj.get("ats_boards") or []) if u]
+                _seen_ats: set = set()
+                for u in _per_tracked_ats + _lsd("ats_board"):
+                    k = u.strip().lower()
+                    if k and k not in _seen_ats:
+                        _seen_ats.add(k)
+                        merged_ats.append(u.strip())
+                if merged_ats:
+                    sources_called.append("ats_boards")
+                    tasks.append(search_via_ats_boards(entries=merged_ats, attribution=attribution))
             if sources_enabled.get("careers_pages", False):
                 # UNION per-tracked URLs with operator-curated global defaults from
                 # job_research_sites (site_type='careers_page_default'). De-dup,
@@ -834,6 +852,7 @@ class JobResearchService:
             # and surface them so a silently-dead source is never invisible.
             _careers_hits = _count_by("careers_page")
             _rss_hits = _count_by("feed_url")
+            _ats_hits = _count_by("ats")
             source_report: Dict[str, int] = {}
             sources_empty: List[str] = []
             for _u in merged_careers:
@@ -853,6 +872,15 @@ class JobResearchService:
                     sources_empty.append(
                         _u + (" (rss AND firecrawl fallback both empty)" if _u in fallback_counts else "")
                     )
+            for _u in merged_ats:
+                _key = None
+                _p = parse_ats_entry(_u)
+                if _p:
+                    _key = f"{_p[0]}:{_p[1]}"
+                _n = _ats_hits.get(_key or _u, 0)
+                source_report[f"ats:{_key or _u}"] = _n
+                if _n == 0:
+                    sources_empty.append(f"ats:{_key or _u}")
             # API sources (google_jobs / serp / perplexity) come back aggregated
             # already; a -1 means the call raised.
             for _name, _n in per_source_counts.items():

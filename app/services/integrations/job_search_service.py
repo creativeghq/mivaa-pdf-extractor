@@ -31,7 +31,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import httpx
@@ -1444,6 +1444,44 @@ async def search_via_firecrawl_careers(
             payload = (data.get("data") or {})
             credits = int(data.get("creditsUsed") or 1)
             extracted = (payload.get("json") or {}) or {}
+
+            # Retry-on-empty: Firecrawl's LLM extraction is intermittently flaky —
+            # the same board yields 12 one run and 0 the next (observed on
+            # theproductfolks / remotive). A zero from a page that *does* have
+            # jobs is indistinguishable from a genuinely dead board, so retry once
+            # with a longer render wait before accepting the zero.
+            if not (extracted.get("listings") or []):
+                await asyncio.sleep(1.5)
+                async with httpx.AsyncClient(timeout=httpx.Timeout(75.0, connect=10.0)) as client2:
+                    resp2 = await client2.post(
+                        "https://api.firecrawl.dev/v2/scrape",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "url": url,
+                            "formats": [{
+                                "type": "json",
+                                "schema": schema,
+                                "prompt": (
+                                    "Extract EVERY job posting listed on this careers / job-board page. "
+                                    "For each posting return: url (the direct link to that specific job), "
+                                    "title, company, location, and when shown employment_type, seniority, "
+                                    "posted_at, and whether it is remote. Return ALL postings on the page, "
+                                    "not just the first few."
+                                ),
+                            }],
+                            "onlyMainContent": False,
+                            "waitFor": 8000,
+                        },
+                    )
+                    resp2.raise_for_status()
+                    data2 = resp2.json()
+                payload2 = (data2.get("data") or {})
+                extracted2 = (payload2.get("json") or {}) or {}
+                credits += int(data2.get("creditsUsed") or 1)
+                if extracted2.get("listings"):
+                    logger.info(f"job-search firecrawl ({url}): retry recovered {len(extracted2['listings'])} listings")
+                    extracted = extracted2
+
             page_company = company_hint or domain_of(url).split(".")[0].title()
 
             for item in (extracted.get("listings") or []):
@@ -1683,9 +1721,175 @@ def dedupe_hits(hits: List[JobHit]) -> List[JobHit]:
     seen: Dict[str, JobHit] = {}
     # source priority: firecrawl_careers (direct from company) > rss_feed (also direct, often
     # the same data) > perplexity (read page) > google_jobs (feed of feeds)
-    priority = {"firecrawl_careers": 4, "rss_feed": 3, "perplexity_sonar": 2, "google_jobs": 1}
+    priority = {"ats_board": 5, "firecrawl_careers": 4, "rss_feed": 3, "perplexity_sonar": 2, "google_jobs": 1}
     for h in hits:
         existing = seen.get(h.content_hash)
         if not existing or priority.get(h.source, 0) > priority.get(existing.source, 0):
             seen[h.content_hash] = h
     return list(seen.values())
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Source 5 — ATS boards (Greenhouse / Lever / Ashby public JSON)
+#
+# Roles are published to the company's ATS FIRST and only sometimes syndicate
+# out to job boards, so this is the earliest + most complete source we have.
+# All three expose documented, unauthenticated JSON — no scraping, no Firecrawl
+# credits, no anti-bot fragility:
+#   greenhouse : GET boards-api.greenhouse.io/v1/boards/{slug}/jobs
+#   lever      : GET api.lever.co/v0/postings/{slug}?mode=json
+#   ashby      : GET api.ashbyhq.com/posting-api/job-board/{slug}
+# Configured in job_research_sites as site_type='ats_board',
+# url_or_domain='<provider>:<slug>' (a full board URL is also accepted).
+# ────────────────────────────────────────────────────────────────────────────
+
+_ATS_PROVIDERS = ("greenhouse", "lever", "ashby")
+
+
+def parse_ats_entry(entry: str) -> Optional[Tuple[str, str]]:
+    """'greenhouse:stripe' -> ('greenhouse','stripe'). Full board URLs also work."""
+    e = (entry or "").strip()
+    if not e:
+        return None
+    if not e.lower().startswith("http") and ":" in e:
+        prov, _, slug = e.partition(":")
+        prov, slug = prov.strip().lower(), slug.strip().strip("/")
+        if prov in _ATS_PROVIDERS and slug:
+            return prov, slug
+    m = re.search(r"greenhouse\.io/(?:v1/boards/)?([^/?#]+)", e, re.I)
+    if m:
+        return "greenhouse", m.group(1)
+    m = re.search(r"lever\.co/(?:v0/postings/)?([^/?#]+)", e, re.I)
+    if m:
+        return "lever", m.group(1)
+    m = re.search(r"ashbyhq\.com/(?:posting-api/job-board/)?([^/?#]+)", e, re.I)
+    if m:
+        return "ashby", m.group(1)
+    return None
+
+
+def _ats_epoch_ms_to_iso(v: Any) -> Optional[str]:
+    try:
+        return datetime.fromtimestamp(int(v) / 1000.0, tz=timezone.utc).isoformat()
+    except Exception:
+        return None
+
+
+async def search_via_ats_boards(*, entries: List[str], attribution) -> List[JobHit]:
+    """Poll each configured company ATS board. Returns JobHit list (source='ats_board')."""
+    parsed: List[Tuple[str, str, str]] = []
+    seen_keys: set = set()
+    for e in (entries or []):
+        p = parse_ats_entry(e)
+        if not p:
+            logger.info(f"job-search ats: unrecognised entry '{e}' — skipping")
+            continue
+        key = f"{p[0]}:{p[1]}".lower()
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        parsed.append((p[0], p[1], e))
+    if not parsed:
+        return []
+
+    sem = asyncio.Semaphore(8)
+
+    async def _one(provider: str, slug: str, entry: str) -> List[JobHit]:
+        out: List[JobHit] = []
+        started = time.time()
+        success = True
+        err: Optional[str] = None
+        try:
+            if provider == "greenhouse":
+                url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
+            elif provider == "lever":
+                url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
+            else:
+                url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
+            async with sem:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as client:
+                    resp = await client.get(url, headers={"Accept": "application/json"})
+                    resp.raise_for_status()
+                    data = resp.json()
+
+            rows: List[Dict[str, Any]] = []
+            if provider == "greenhouse":
+                rows = (data or {}).get("jobs") or []
+            elif provider == "lever":
+                rows = data if isinstance(data, list) else []
+            else:
+                rows = (data or {}).get("jobs") or []
+
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                if provider == "greenhouse":
+                    title = r.get("title")
+                    link = r.get("absolute_url") or ""
+                    loc = ((r.get("location") or {}) or {}).get("name")
+                    posted = r.get("first_published") or r.get("updated_at")
+                    company = r.get("company_name") or slug
+                    remote = ("remote" in (loc or "").lower()) or None
+                    emp = None
+                elif provider == "lever":
+                    title = r.get("text")
+                    link = r.get("hostedUrl") or r.get("applyUrl") or ""
+                    cats = r.get("categories") or {}
+                    loc = cats.get("location")
+                    posted = _ats_epoch_ms_to_iso(r.get("createdAt"))
+                    company = slug
+                    wt = (r.get("workplaceType") or "").lower()
+                    remote = True if wt == "remote" else (False if wt in ("onsite", "on-site") else None)
+                    emp = cats.get("commitment")
+                else:  # ashby
+                    if r.get("isListed") is False:
+                        continue
+                    title = r.get("title")
+                    link = r.get("jobUrl") or r.get("applyUrl") or ""
+                    loc = r.get("location")
+                    posted = r.get("publishedAt")
+                    company = slug
+                    remote = r.get("isRemote")
+                    emp = r.get("employmentType")
+                if not link or not title:
+                    continue
+                canonical = canonicalize_url(link)
+                out.append(JobHit(
+                    url=link,
+                    canonical_url=canonical,
+                    content_hash=content_hash(canonical, title, company),
+                    title=title,
+                    company=(company or "").replace("-", " ").title() if provider != "greenhouse" else company,
+                    company_domain=domain_of(link),
+                    location=loc,
+                    is_remote=remote,
+                    employment_type=emp,
+                    posted_at=posted,
+                    source="ats_board",
+                    raw_payload={"ats": f"{provider}:{slug}", "entry": entry},
+                ))
+        except Exception as e:
+            success = False
+            err = str(e)[:200]
+            logger.warning(f"job-search ats ({provider}:{slug}): {err}")
+
+        try:
+            costs.log_external_call(
+                operation_type="job_research.discovery.ats_board",
+                model_name=f"ats-{provider}",
+                raw_cost_usd=0.0,  # public JSON — free
+                attribution=attribution,
+                latency_ms=int((time.time() - started) * 1000),
+                extra_metadata={"ats": f"{provider}:{slug}", "hits_returned": len(out)},
+                success=success, error_message=err,
+            )
+        except Exception:
+            pass
+        return out
+
+    results = await asyncio.gather(*[_one(p, s, e) for p, s, e in parsed], return_exceptions=True)
+    hits: List[JobHit] = []
+    for r in results:
+        if isinstance(r, list):
+            hits.extend(r)
+    return hits
