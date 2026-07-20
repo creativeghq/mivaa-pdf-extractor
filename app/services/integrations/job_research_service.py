@@ -147,6 +147,23 @@ def normalize_posted_at(v: Any) -> Optional[str]:
     return None
 
 
+def _feed_to_page_url(feed_url: str) -> Optional[str]:
+    """Best-effort HTML listing page for an RSS feed, so a dead/changed feed can
+    still be harvested by the scraper instead of the source being lost:
+      remoteok.com/remote-jobs.rss      → remoteok.com/remote-jobs
+      remotive.com/remote-jobs/feed     → remotive.com/remote-jobs
+      jobspresso.co/?feed=job_feed      → jobspresso.co
+    """
+    u = (feed_url or "").strip()
+    if not u:
+        return None
+    u = re.sub(r"[?#].*$", "", u)          # drop ?feed=job_feed
+    u = re.sub(r"\.(rss|xml|atom)$", "", u, flags=re.I)
+    u = re.sub(r"/(feed|rss|atom)/?$", "", u, flags=re.I)
+    u = u.rstrip("/")
+    return u or None
+
+
 class JobResearchService:
     def __init__(self) -> None:
         self.sb = get_supabase_client().client
@@ -760,10 +777,6 @@ class JobResearchService:
                     message=f"{source_name}: {len(r)} hits",
                 )
 
-            # PER-SOURCE TRANSPARENCY (rule): aggregate counts like
-            # "careers_pages: 159" hide a board that returned nothing, so report
-            # EVERY configured board/feed individually — especially the zeros —
-            # and surface them so a silently-dead source is never invisible.
             def _count_by(payload_key: str) -> Dict[str, int]:
                 counts: Dict[str, int] = {}
                 for h in hits:
@@ -772,6 +785,53 @@ class JobResearchService:
                         counts[u] = counts.get(u, 0) + 1
                 return counts
 
+            # CROSS-METHOD FALLBACK: a source must not be lost because ONE
+            # retrieval method broke. Any configured feed that returned nothing
+            # (dead/changed/rate-limited RSS) is retried via Firecrawl against its
+            # HTML listing page — e.g. remoteok.com/remote-jobs.rss →
+            # remoteok.com/remote-jobs. Applies to every feed on the platform, not
+            # a hand-picked list.
+            fallback_counts: Dict[str, int] = {}
+            _empty_feeds = [u for u in merged_rss if _count_by("feed_url").get(u, 0) == 0]
+            if _empty_feeds:
+                _page_for: Dict[str, str] = {}
+                _already = {c.strip().lower() for c in merged_careers}
+                for _f in _empty_feeds:
+                    _p = _feed_to_page_url(_f)
+                    if _p and _p.lower() not in _already and _p not in _page_for.values():
+                        _page_for[_f] = _p
+                if _page_for:
+                    bookkeeping.append_log(
+                        run_id=agent_run_id, level="info",
+                        message=f"RSS empty for {len(_page_for)} feed(s) — retrying via Firecrawl: "
+                                + ", ".join(_page_for.values()),
+                    )
+                    try:
+                        _fb = await search_via_firecrawl_careers(
+                            careers_urls=list(_page_for.values()),
+                            company_hint=None,
+                            attribution=attribution,
+                        )
+                        hits.extend(_fb)
+                        _fb_by_page: Dict[str, int] = {}
+                        for _h in _fb:
+                            _pg = (getattr(_h, "raw_payload", None) or {}).get("careers_page")
+                            if _pg:
+                                _fb_by_page[_pg] = _fb_by_page.get(_pg, 0) + 1
+                        for _f, _p in _page_for.items():
+                            fallback_counts[_f] = _fb_by_page.get(_p, 0)
+                        per_source_counts["rss_firecrawl_fallback"] = len(_fb)
+                        bookkeeping.append_log(
+                            run_id=agent_run_id, level="info",
+                            message=f"Firecrawl fallback recovered {len(_fb)} hits from dead feeds",
+                        )
+                    except Exception as e:
+                        logger.warning(f"job-research: RSS→Firecrawl fallback failed: {e}")
+
+            # PER-SOURCE TRANSPARENCY (rule): aggregate counts like
+            # "careers_pages: 159" hide a board that returned nothing, so report
+            # EVERY configured board/feed individually — especially the zeros —
+            # and surface them so a silently-dead source is never invisible.
             _careers_hits = _count_by("careers_page")
             _rss_hits = _count_by("feed_url")
             source_report: Dict[str, int] = {}
@@ -783,9 +843,16 @@ class JobResearchService:
                     sources_empty.append(_u)
             for _u in merged_rss:
                 _n = _rss_hits.get(_u, 0)
+                _fb = fallback_counts.get(_u, 0)
+                if _n == 0 and _fb > 0:
+                    # Feed was dead but the scraper recovered the source.
+                    source_report[f"{_u} (recovered via firecrawl)"] = _fb
+                    continue
                 source_report[_u] = _n
                 if _n == 0:
-                    sources_empty.append(_u)
+                    sources_empty.append(
+                        _u + (" (rss AND firecrawl fallback both empty)" if _u in fallback_counts else "")
+                    )
             # API sources (google_jobs / serp / perplexity) come back aggregated
             # already; a -1 means the call raised.
             for _name, _n in per_source_counts.items():
