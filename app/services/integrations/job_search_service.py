@@ -1529,7 +1529,26 @@ async def search_via_firecrawl_careers(
         )
         return out
 
-    results = await asyncio.gather(*[_scrape_one(u) for u in careers_urls[:10]], return_exceptions=False)
+    # Cap raised 10 → 40. At 10, boards past the tenth were NEVER scraped yet were
+    # reported as "returned nothing" — indistinguishable from a dead board (12 of
+    # our boards silently vanished this way once the list grew past 10). Any
+    # truncation is now logged by name. A semaphore keeps Firecrawl concurrency
+    # sane now that the list is long (each miss can also trigger one retry).
+    _MAX_BOARDS = 40
+    if len(careers_urls) > _MAX_BOARDS:
+        logger.warning(
+            f"job-search firecrawl: {len(careers_urls)} boards configured, only the first "
+            f"{_MAX_BOARDS} scraped this run — skipped: {careers_urls[_MAX_BOARDS:]}"
+        )
+    _board_sem = asyncio.Semaphore(6)
+
+    async def _scrape_guarded(u: str) -> List[JobHit]:
+        async with _board_sem:
+            return await _scrape_one(u)
+
+    results = await asyncio.gather(
+        *[_scrape_guarded(u) for u in careers_urls[:_MAX_BOARDS]], return_exceptions=False
+    )
     flat: List[JobHit] = []
     for batch in results:
         flat.extend(batch)
