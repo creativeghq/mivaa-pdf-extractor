@@ -7,6 +7,7 @@ Provides async and sync logging capabilities with batching for performance.
 
 import logging
 import json
+import os
 import traceback
 from datetime import datetime
 from typing import Optional, Dict, Any
@@ -15,6 +16,27 @@ from threading import Thread, Event
 import time
 
 from app.services.core.supabase_client import get_supabase_client
+
+
+# Loggers whose INFO output is pure request chatter. The handler is attached to
+# the ROOT logger, so without this every third-party library that logs at INFO
+# writes a row to Postgres. Measured 2026-07-20: httpx/middleware/error_logging
+# accounted for 289k of 299k rows over 7 days (99.8% INFO, 714 rows of real
+# signal). WARNING and above is never dropped, from any logger.
+_DEFAULT_DENY_PREFIXES = (
+    'httpx', 'httpcore', 'urllib3', 'hpack', 'asyncio',
+    'openai', 'anthropic', 'botocore',
+    'middleware', 'app.middleware.error_logging',
+)
+
+
+def _load_deny_prefixes() -> tuple:
+    """Denylist is env-tunable (comma-separated) so it can change without a deploy."""
+    raw = os.getenv('SUPABASE_LOG_DENY_PREFIXES')
+    if raw is None:
+        return _DEFAULT_DENY_PREFIXES
+    parsed = tuple(p.strip() for p in raw.split(',') if p.strip())
+    return parsed or _DEFAULT_DENY_PREFIXES
 
 
 class SupabaseLoggingHandler(logging.Handler):
@@ -45,6 +67,7 @@ class SupabaseLoggingHandler(logging.Handler):
         super().__init__(level)
         self.batch_size = batch_size
         self.flush_interval = flush_interval
+        self.deny_prefixes = _load_deny_prefixes()
         self.queue: Queue = Queue()
         self.stop_event = Event()
         
@@ -60,9 +83,14 @@ class SupabaseLoggingHandler(logging.Handler):
             record: The log record to emit
         """
         try:
+            # Drop low-signal chatter before formatting — skips the format cost
+            # as well as the insert. Signal (WARNING+) is never dropped.
+            if self._is_noise(record):
+                return
+
             # Format the log record
             log_entry = self._format_log_entry(record)
-            
+
             # Add to queue for batch processing
             self.queue.put(log_entry)
             
@@ -70,6 +98,18 @@ class SupabaseLoggingHandler(logging.Handler):
             # Don't let logging errors crash the application
             self.handleError(record)
     
+    def _is_noise(self, record: logging.LogRecord) -> bool:
+        """
+        Should this record be kept out of the database sink?
+
+        The DB sink is for signal an operator would act on, not a request trace.
+        WARNING and above always survives regardless of logger; below that, the
+        denylisted loggers are dropped. Everything else is kept.
+        """
+        if record.levelno >= logging.WARNING:
+            return False
+        return record.name.startswith(self.deny_prefixes)
+
     def _format_log_entry(self, record: logging.LogRecord) -> Dict[str, Any]:
         """
         Format a log record into a dictionary for Supabase.
