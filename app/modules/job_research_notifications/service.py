@@ -325,7 +325,32 @@ class JobDigestDispatcher:
             lines.append("\n=== Browse these manually (great boards our scraper can't read) ===")
             for b in manual:
                 lines.append(f"• {b['name']}: {b['url']}")
+        # RULE: ALWAYS close with the sources that returned nothing this run, so a
+        # silently-dead board/feed is visible instead of hidden in a total.
+        empty = self._empty_sources([s["tracked_job"]["id"] for s in sections])
+        if empty:
+            lines.append(f"\n=== Sources that returned NOTHING this run ({len(empty)}) ===")
+            for u in empty:
+                lines.append(f"• {u}")
         return "\n".join(lines)
+
+    def _empty_sources(self, tracked_job_ids: List[str]) -> List[str]:
+        """Sources (boards/feeds/APIs) that yielded zero on the latest refresh."""
+        out: List[str] = []
+        try:
+            rows = (
+                self.sb.table("tracked_jobs")
+                .select("last_sources_empty")
+                .in_("id", [i for i in tracked_job_ids if i])
+                .execute().data or []
+            )
+            for r in rows:
+                for u in (r.get("last_sources_empty") or []):
+                    if u and u not in out:
+                        out.append(u)
+        except Exception as e:
+            logger.debug(f"job-digest: empty-source lookup failed: {e}")
+        return out
 
     def _manual_boards(self) -> List[Dict[str, str]]:
         try:

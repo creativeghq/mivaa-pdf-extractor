@@ -1660,7 +1660,15 @@ async def search_via_rss_feeds(
             )
         return out
 
-    results = await asyncio.gather(*[_fetch_one(u) for u in feed_urls[:10]], return_exceptions=False)
+    # Cap raised 10 → 30, and any truncation is LOGGED rather than silent: a feed
+    # dropped past the cap used to look identical to a feed that returned nothing.
+    _MAX_FEEDS = 30
+    if len(feed_urls) > _MAX_FEEDS:
+        logger.warning(
+            f"job-search rss: {len(feed_urls)} feeds configured, only the first {_MAX_FEEDS} "
+            f"will be polled this run — skipped: {feed_urls[_MAX_FEEDS:]}"
+        )
+    results = await asyncio.gather(*[_fetch_one(u) for u in feed_urls[:_MAX_FEEDS]], return_exceptions=False)
     flat: List[JobHit] = []
     for batch in results:
         flat.extend(batch)

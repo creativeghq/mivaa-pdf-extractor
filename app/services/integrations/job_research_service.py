@@ -693,6 +693,10 @@ class JobResearchService:
                         extra_domains=discovered_domains or None,
                         limit=5,
                     ))
+            # Declared up-front so the per-source report below can list EVERY
+            # configured board/feed — including the ones that returned nothing.
+            merged_careers: List[str] = []
+            merged_rss: List[str] = []
             if sources_enabled.get("careers_pages", False):
                 # UNION per-tracked URLs with operator-curated global defaults from
                 # job_research_sites (site_type='careers_page_default'). De-dup,
@@ -754,6 +758,48 @@ class JobResearchService:
                 bookkeeping.append_log(
                     run_id=agent_run_id, level="info",
                     message=f"{source_name}: {len(r)} hits",
+                )
+
+            # PER-SOURCE TRANSPARENCY (rule): aggregate counts like
+            # "careers_pages: 159" hide a board that returned nothing, so report
+            # EVERY configured board/feed individually — especially the zeros —
+            # and surface them so a silently-dead source is never invisible.
+            def _count_by(payload_key: str) -> Dict[str, int]:
+                counts: Dict[str, int] = {}
+                for h in hits:
+                    u = (getattr(h, "raw_payload", None) or {}).get(payload_key)
+                    if u:
+                        counts[u] = counts.get(u, 0) + 1
+                return counts
+
+            _careers_hits = _count_by("careers_page")
+            _rss_hits = _count_by("feed_url")
+            source_report: Dict[str, int] = {}
+            sources_empty: List[str] = []
+            for _u in merged_careers:
+                _n = _careers_hits.get(_u, 0)
+                source_report[_u] = _n
+                if _n == 0:
+                    sources_empty.append(_u)
+            for _u in merged_rss:
+                _n = _rss_hits.get(_u, 0)
+                source_report[_u] = _n
+                if _n == 0:
+                    sources_empty.append(_u)
+            # API sources (google_jobs / serp / perplexity) come back aggregated
+            # already; a -1 means the call raised.
+            for _name, _n in per_source_counts.items():
+                if _name in ("careers_pages", "rss_feeds"):
+                    continue
+                source_report[_name] = _n
+                if _n == 0:
+                    sources_empty.append(_name)
+                elif _n == -1:
+                    sources_empty.append(f"{_name} (failed)")
+            if sources_empty:
+                bookkeeping.append_log(
+                    run_id=agent_run_id, level="info",
+                    message=f"Sources returning nothing ({len(sources_empty)}): " + ", ".join(sources_empty[:20]),
                 )
 
             if not hits:
@@ -1005,11 +1051,28 @@ class JobResearchService:
                 "persisted": persisted,
                 "matches": new_match_count,
                 "by_source": per_source_counts,
+                # Per-board / per-feed counts, every configured source listed.
+                "source_report": source_report,
+                # RULE: always report which sources returned NOTHING this run, so a
+                # silently-dead board/feed is visible instead of hidden inside an
+                # aggregate total. Consumers must surface this at the bottom of any
+                # job output.
+                "sources_empty": sources_empty,
                 "burst_alert": burst_outcome,
                 # Good boards our scraper can't read (JS/anti-bot) — surfaced for
                 # the user to browse by hand instead of being scraped or dropped.
                 "browse_manually": load_manual_review_boards(),
             }
+            # Persist the source report so the digest (and any consumer) can list
+            # the sources that returned nothing at the bottom of its output.
+            try:
+                self.sb.table("tracked_jobs").update({
+                    "last_source_report": source_report,
+                    "last_sources_empty": sources_empty,
+                }).eq("id", tracked_job_id).execute()
+            except Exception as e:
+                logger.debug(f"job-research: persist source_report failed: {e}")
+
             bookkeeping.complete_run(
                 run_id=agent_run_id, output_data=outcome,
                 duration_ms=int((_utcnow() - started_at).total_seconds() * 1000),
