@@ -203,10 +203,11 @@ def _is_category_page_url(url: str) -> bool:
         return False
 
 
+# Names that indicate the model INVENTED an employer → drop the whole listing.
 _PLACEHOLDER_COMPANY_PATTERNS = re.compile(
     r"^\s*(acme|companyxyz|example|sample|placeholder|fictional|fake|"
     r"company\s*[a-z]?|your\s+company|test\s*co|demo\s*co|"
-    r"\[?company\s*name\]?|\[?employer\]?|n/?a|tbd|unknown|undisclosed)"
+    r"\[?company\s*name\]?|\[?employer\]?)"
     r"(\s|\.|,|$|inc|llc|co|ltd)",
     re.I,
 )
@@ -215,10 +216,27 @@ _PALINDROMIC_ID_RE = re.compile(r"\b(\d{6,})\b")
 
 
 def _is_placeholder_company(name: Optional[str]) -> bool:
-    """v0.4.4: Reject Sonar-fabricated placeholder company names."""
+    """v0.4.4: Reject Sonar-FABRICATED company names ('Acme Inc.', 'CompanyXYZ')."""
     if not name:
         return False
     return bool(_PLACEHOLDER_COMPANY_PATTERNS.match(name.strip()))
+
+
+# "I don't know the employer" is NOT fabrication — and plenty of REAL postings
+# genuinely list the employer as Undisclosed/Confidential (recruiter-run ads).
+# These used to sit in the fabrication regex, so a verifiable job with a real URL
+# was discarded outright just because the company field said "Unknown". Blank the
+# field and keep the listing; page verification fills/confirms it downstream.
+_MISSING_COMPANY_PATTERNS = re.compile(
+    r"^\s*(n/?a|tbd|tba|unknown|undisclosed|confidential|not\s+specified|none)\s*$",
+    re.I,
+)
+
+
+def _is_missing_company(name: Optional[str]) -> bool:
+    if not name:
+        return False
+    return bool(_MISSING_COMPANY_PATTERNS.match(name.strip()))
 
 
 def _looks_hallucinated_url(url: str) -> bool:
@@ -1333,6 +1351,10 @@ async def search_via_perplexity(
             if _is_placeholder_company(company):
                 logger.warning(f"job-search perplexity: dropping placeholder company '{company}' (likely hallucination)")
                 continue
+            # "Unknown"/"Undisclosed"/"N/A" means the employer wasn't stated — that's
+            # missing data, not a fabricated posting. Keep the job, blank the field.
+            if _is_missing_company(company):
+                company = None
             hits.append(JobHit(
                 url=url,
                 canonical_url=canonical,
