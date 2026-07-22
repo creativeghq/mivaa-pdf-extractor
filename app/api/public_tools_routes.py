@@ -52,6 +52,16 @@ logger = logging.getLogger(__name__)
 # (2 scans/day) so users see one consistent number across both modes.
 # Anonymous visitors pay nothing — they hit the 2/day cap instead.
 SCAN_CREDIT_COST = 2
+# The catalog product-search tool is a cheap DB lookup (no paid upstream), so it
+# costs a single credit. Per-scan-type cost is surfaced via /quota?scan_type=product.
+PRODUCT_SCAN_CREDIT_COST = 1
+
+# Per-scan-type credit cost, keyed by the `scan_type` string used in logs/cache.
+SCAN_COST_BY_TYPE = {
+    "price": SCAN_CREDIT_COST,
+    "mention": SCAN_CREDIT_COST,
+    "product": PRODUCT_SCAN_CREDIT_COST,
+}
 
 router = APIRouter(
     prefix="/api/v1/public",
@@ -136,6 +146,30 @@ class PublicMentionScanResponse(BaseModel):
     error: Optional[str] = None
 
 
+class PublicProductSearchRequest(BaseModel):
+    turnstile_token: str = Field(..., min_length=1, max_length=4096)
+    query: str = Field(..., min_length=2, max_length=200)
+
+
+class PublicProductResult(BaseModel):
+    id: str
+    name: str
+    brand: Optional[str] = None
+    category: Optional[str] = None
+    image_url: Optional[str] = None
+    snippet: Optional[str] = None
+
+
+class PublicProductSearchResponse(BaseModel):
+    success: bool
+    query: str
+    results: List[PublicProductResult] = []
+    total_results: int = 0
+    from_cache: bool = False
+    quota: "PublicQuotaResponse"
+    error: Optional[str] = None
+
+
 class PublicQuotaResponse(BaseModel):
     # Anonymous billing surface (still populated for signed-in users so the
     # frontend can show "X free scans converted into Y credits" if it wants):
@@ -152,6 +186,7 @@ class PublicQuotaResponse(BaseModel):
 
 PublicPriceScanResponse.model_rebuild()
 PublicMentionScanResponse.model_rebuild()
+PublicProductSearchResponse.model_rebuild()
 
 
 # ============================================================================
@@ -213,13 +248,13 @@ def _read_credit_balance(user_id: str) -> Optional[int]:
     return 0
 
 
-def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: str) -> tuple[bool, Optional[int], Optional[str]]:
+def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: str, cost: int = SCAN_CREDIT_COST) -> tuple[bool, Optional[int], Optional[str]]:
     """Call the shared debit_credits router (public scan → personal). Returns (success, new_balance, error)."""
     sb = get_supabase_client().client
     try:
         resp = sb.rpc("debit_credits", {
             "p_user_id": user_id,
-            "p_amount": SCAN_CREDIT_COST,
+            "p_amount": cost,
             "p_operation_type": operation_type,
             "p_description": f"Public {scan_type} scan",
             "p_metadata": {"query_hash": qhash, "scan_type": scan_type},
@@ -235,14 +270,14 @@ def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: 
         return False, None, str(e)[:200]
 
 
-def _refund_credits(user_id: str, *, qhash: str, scan_type: str) -> None:
+def _refund_credits(user_id: str, *, qhash: str, scan_type: str, cost: int = SCAN_CREDIT_COST) -> None:
     """Best-effort refund (pentest #250 H4/H5): credits are debited BEFORE the paid upstream
     call; if that call produces no result we return the credit."""
     sb = get_supabase_client().client
     try:
         sb.rpc("refund_credits", {
             "p_user_id": user_id,
-            "p_amount": SCAN_CREDIT_COST,
+            "p_amount": cost,
             "p_operation_type": f"public_{scan_type}_scan_refund",
             "p_description": f"Refund: public {scan_type} scan produced no result",
             "p_metadata": {"query_hash": qhash, "scan_type": scan_type, "refund": True},
@@ -257,6 +292,7 @@ def _quota_to_response(
     *,
     is_authenticated: bool,
     credits_balance: Optional[int] = None,
+    cost: int = SCAN_CREDIT_COST,
 ) -> PublicQuotaResponse:
     site_key = resolve_secret("TURNSTILE_SITE_KEY").value
     return PublicQuotaResponse(
@@ -267,7 +303,7 @@ def _quota_to_response(
         turnstile_site_key=site_key,
         is_authenticated=is_authenticated,
         credits_balance=credits_balance,
-        credits_per_scan=SCAN_CREDIT_COST if is_authenticated else 0,
+        credits_per_scan=cost if is_authenticated else 0,
     )
 
 
@@ -299,12 +335,15 @@ def _compute_stats(hits: List[InternalPriceHit]) -> PublicMarketStats:
     response_model=PublicQuotaResponse,
     summary="Read current quota for this caller (IP-based or user-based).",
 )
-async def get_quota(request: Request) -> PublicQuotaResponse:
+async def get_quota(request: Request, scan_type: Optional[str] = None) -> PublicQuotaResponse:
+    # `scan_type` lets a tool ask for its own per-scan credit cost (e.g. product=1 vs
+    # price/mention=2). Defaults to the standard cost for back-compat with existing callers.
     user_id = _resolve_user_id(request)
     ip = _extract_ip(request) if not user_id else None
     q = check_quota(ip_address=ip, user_id=user_id)
     balance = _read_credit_balance(user_id) if user_id else None
-    return _quota_to_response(q, is_authenticated=bool(user_id), credits_balance=balance)
+    cost = SCAN_COST_BY_TYPE.get((scan_type or "").lower(), SCAN_CREDIT_COST)
+    return _quota_to_response(q, is_authenticated=bool(user_id), credits_balance=balance, cost=cost)
 
 
 @router.post(
@@ -697,4 +736,168 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
     return PublicMentionScanResponse(
         **response_payload,
         quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_after),
+    )
+
+
+@router.post(
+    "/product-search",
+    response_model=PublicProductSearchResponse,
+    summary="Search the public material catalog (public, captcha-gated, 2/day or 1 credit).",
+)
+async def product_search(body: PublicProductSearchRequest, request: Request) -> PublicProductSearchResponse:
+    """Public, metered search over the operator's ROOT-workspace catalog (its public-facing
+    products only — NOT tenant private catalogs; enforced by the `search_public_products` RPC).
+
+    Same billing model as the other public tools: anonymous → 2 free scans/day, authenticated →
+    1 credit each (PRODUCT_SCAN_CREDIT_COST). Turnstile-gated; identical queries within 24h are
+    cache-served free.
+    """
+    start = time.time()
+    cost = PRODUCT_SCAN_CREDIT_COST
+    user_id = _resolve_user_id(request)
+    ip = _extract_ip(request) if not user_id else None
+    user_agent = request.headers.get("user-agent")
+
+    # 1. Turnstile first — cheapest bot filter.
+    verdict = await verify_token(
+        body.turnstile_token,
+        remote_ip=ip,
+        expected_action="product_search",
+    )
+    qhash = query_hash("product", body.query)
+    if not verdict.success:
+        log_scan(
+            scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
+            query_text=body.query, cache_hit=False, upstream_cost_usd=0,
+            latency_ms=int((time.time() - start) * 1000), outcome="captcha_failed",
+            error_message=",".join(verdict.error_codes), user_agent=user_agent,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Captcha verification failed: {','.join(verdict.error_codes) or 'unknown'}",
+        )
+
+    # 2. Quota / credit gate.
+    q = check_quota(ip_address=ip, user_id=user_id)
+    balance_before = _read_credit_balance(user_id) if user_id else None
+    if user_id:
+        if (balance_before or 0) < cost:
+            log_scan(
+                scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.query, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                error_message="insufficient_credits", user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "message": "Insufficient credits.",
+                    "quota": _quota_to_response(q, is_authenticated=True, credits_balance=balance_before, cost=cost).model_dump(mode="json"),
+                },
+            )
+    else:
+        if not q.allowed:
+            log_scan(
+                scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.query, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "message": "Daily scan quota reached.",
+                    "quota": _quota_to_response(q, is_authenticated=False, cost=cost).model_dump(mode="json"),
+                },
+            )
+
+    # 3. Cache lookup — identical query within 24h serves free (no quota burn, no debit).
+    cached = read_cache(scan_type="product", qhash=qhash)
+    if cached:
+        log_scan(
+            scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
+            query_text=body.query, cache_hit=True, upstream_cost_usd=0,
+            latency_ms=int((time.time() - start) * 1000), outcome="success",
+            user_agent=user_agent,
+        )
+        cached["from_cache"] = True
+        cached["quota"] = _quota_to_response(
+            q, is_authenticated=bool(user_id), credits_balance=balance_before, cost=cost
+        ).model_dump(mode="json")
+        return PublicProductSearchResponse(**cached)
+
+    # 3b. Debit BEFORE the work (pentest #250 H4/H5) so a result is never returned unpaid.
+    balance_after = balance_before
+    if user_id:
+        _debited, _new_balance, _derr = _debit_credits(
+            user_id, operation_type="public_product_search", qhash=qhash, scan_type="product", cost=cost,
+        )
+        if not _debited:
+            log_scan(
+                scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
+                query_text=body.query, cache_hit=False, upstream_cost_usd=0,
+                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
+                error_message=_derr or "debit_failed", user_agent=user_agent,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "message": "Insufficient credits.",
+                    "quota": _quota_to_response(check_quota(ip_address=ip, user_id=user_id), is_authenticated=True, credits_balance=balance_before, cost=cost).model_dump(mode="json"),
+                },
+            )
+        balance_after = _new_balance if _new_balance is not None else balance_before
+
+    # 4. Run the search (cheap DB RPC — root-workspace public catalog only).
+    query_text = body.query.strip()
+    sb = get_supabase_client().client
+    try:
+        resp = sb.rpc("search_public_products", {"p_query": query_text, "p_limit": 24}).execute()
+        rows = resp.data or []
+    except Exception as e:
+        logger.warning(f"public product-search failed: {e}")
+        if user_id:
+            _refund_credits(user_id, qhash=qhash, scan_type="product", cost=cost)
+        log_scan(
+            scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
+            query_text=body.query, cache_hit=False, upstream_cost_usd=0,
+            latency_ms=int((time.time() - start) * 1000), outcome="failed",
+            error_message=str(e)[:500], user_agent=user_agent,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Product search failed. Try again in a few minutes.",
+        )
+
+    results = [
+        PublicProductResult(
+            id=str(r.get("id")),
+            name=r.get("name") or "",
+            brand=r.get("brand"),
+            category=r.get("category"),
+            image_url=r.get("image_url"),
+            snippet=r.get("snippet"),
+        )
+        for r in rows
+    ]
+    response_payload = {
+        "success": True,
+        "query": query_text,
+        "results": [r.model_dump(mode="json") for r in results],
+        "total_results": len(results),
+        "from_cache": False,
+    }
+
+    write_cache(scan_type="product", qhash=qhash, result=response_payload)
+    log_scan(
+        scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
+        query_text=body.query, cache_hit=False, upstream_cost_usd=0,
+        latency_ms=int((time.time() - start) * 1000), outcome="success",
+        user_agent=user_agent,
+    )
+
+    q_after = check_quota(ip_address=ip, user_id=user_id)
+    return PublicProductSearchResponse(
+        **response_payload,
+        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_after, cost=cost),
     )
