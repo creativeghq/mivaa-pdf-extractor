@@ -4330,6 +4330,16 @@ async def process_document_with_discovery(
         except Exception as _fe:
             logger.warning(f"⚠️ Factory enrichment trigger failed (non-blocking): {_fe}")
 
+        # ── Rebuild gold-layer product relationship edges ────────────────────
+        # One indexed rebuild per job (not per product) now that Stage 4 has
+        # created + canonicalized this document's products; non-blocking.
+        try:
+            from app.services.products.product_relationship_service import ProductRelationshipService
+            _edge_count = await ProductRelationshipService(supabase.client).rebuild_edges(workspace_id)
+            logger.info(f"🔗 Product edges rebuilt: {_edge_count} for workspace {workspace_id}")
+        except Exception as _ee:
+            logger.warning(f"⚠️ Product edge rebuild failed (non-blocking): {_ee}")
+
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)
         # ============================================================================

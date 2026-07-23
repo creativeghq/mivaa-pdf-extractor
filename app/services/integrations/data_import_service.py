@@ -324,6 +324,15 @@ class DataImportService:
                 except Exception as _fe:
                     logger.warning(f"⚠️ Factory enrichment trigger (non-blocking): {_fe}")
 
+                # ── Rebuild gold-layer product relationship edges ────────────
+                # One indexed rebuild per job (not per product); non-blocking.
+                try:
+                    from app.services.products.product_relationship_service import ProductRelationshipService
+                    _edge_count = await ProductRelationshipService(self.supabase).rebuild_edges(workspace_id)
+                    logger.info(f"🔗 Product edges rebuilt: {_edge_count} for workspace {workspace_id}")
+                except Exception as _ee:
+                    logger.warning(f"⚠️ Product edge rebuild (non-blocking): {_ee}")
+
                 # ✅ Stage: COMPLETED
                 await self._log_stage(job_id, XmlImportStage.COMPLETED, "completed", items=processed_count)
 
