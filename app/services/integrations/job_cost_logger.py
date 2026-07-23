@@ -16,15 +16,18 @@ operation_type prefix and credit table.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from app.services.core.supabase_client import get_supabase_client
+from app.modules._core.cost_logger import (
+    CostAttribution as _CoreCostAttribution,
+    log_external_call as _core_log_external_call,
+    DEFAULT_MARKUP,
+)
 
 logger = logging.getLogger(__name__)
 
 MODULE_SLUG = "job-research"
-DEFAULT_MARKUP = 1.5
 
 # DataForSEO Jobs SERP — flat per-call cost
 DATAFORSEO_JOBS_PER_CALL = 0.0006
@@ -42,80 +45,19 @@ HAIKU_INPUT_PER_1K = 0.001
 HAIKU_OUTPUT_PER_1K = 0.005
 
 
-class CostAttribution:
-    """Bag of identifiers tagged onto every ai_usage_logs row."""
-    __slots__ = ("user_id", "workspace_id", "tracked_job_id", "refresh_run_id", "api_key_id")
+class CostAttribution(_CoreCostAttribution):
+    """Job-research attribution — keeps the `tracked_job_id=` keyword API while
+    delegating storage/serialization to the shared core."""
+    __slots__ = ()
 
-    def __init__(
-        self,
-        *,
-        user_id: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-        tracked_job_id: Optional[str] = None,
-        refresh_run_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
-    ):
-        self.user_id = user_id
-        self.workspace_id = workspace_id
-        self.tracked_job_id = tracked_job_id
-        self.refresh_run_id = refresh_run_id
-        self.api_key_id = api_key_id
-
-    def to_metadata(self) -> Dict[str, Any]:
-        meta: Dict[str, Any] = {}
-        if self.tracked_job_id:
-            meta["tracked_job_id"] = self.tracked_job_id
-        if self.refresh_run_id:
-            meta["refresh_run_id"] = self.refresh_run_id
-        if self.api_key_id:
-            meta["api_key_id"] = self.api_key_id
-        return meta
+    def __init__(self, *, tracked_job_id: Optional[str] = None, **kwargs):
+        super().__init__(subject_key="tracked_job_id", subject_id=tracked_job_id, **kwargs)
 
 
-def log_external_call(
-    *,
-    operation_type: str,
-    model_name: str,
-    raw_cost_usd: float,
-    attribution: Optional[CostAttribution] = None,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    latency_ms: int = 0,
-    credits_debited: int = 0,
-    extra_metadata: Optional[Dict[str, Any]] = None,
-    success: bool = True,
-    error_message: Optional[str] = None,
-    markup_multiplier: float = DEFAULT_MARKUP,
-) -> None:
-    """Best-effort insert into ai_usage_logs. Never raises."""
-    try:
-        sb = get_supabase_client().client
-        billed = round(float(raw_cost_usd) * float(markup_multiplier), 6)
-        meta: Dict[str, Any] = {"latency_ms": latency_ms, "success": success}
-        if error_message:
-            meta["error"] = (error_message or "")[:240]
-        if attribution:
-            meta.update(attribution.to_metadata())
-        if extra_metadata:
-            meta.update(extra_metadata)
-
-        sb.table("ai_usage_logs").insert({
-            "user_id": attribution.user_id if attribution else None,
-            "workspace_id": attribution.workspace_id if attribution else None,
-            "operation_type": operation_type,
-            "model_name": model_name,
-            "input_tokens": int(input_tokens or 0),
-            "output_tokens": int(output_tokens or 0),
-            "raw_cost_usd": round(float(raw_cost_usd), 6),
-            "markup_multiplier": float(markup_multiplier),
-            "billed_cost_usd": billed,
-            "credits_debited": int(credits_debited or 0),
-            "module_slug": MODULE_SLUG,
-            "metadata": meta,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
-    except Exception as e:
-        logger.warning(f"job-cost: ai_usage_logs insert failed: {e}")
+def log_external_call(**kwargs) -> None:
+    """Best-effort insert into ai_usage_logs — delegates to the shared core,
+    stamping module_slug='job-research'. Signature unchanged for callers."""
+    _core_log_external_call(module_slug=MODULE_SLUG, **kwargs)
 
 
 def log_dataforseo_jobs_call(

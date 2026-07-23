@@ -26,64 +26,33 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import httpx
 
 from app.services.core.supabase_client import get_supabase_client
+from app.modules._core.cost_logger import (
+    CostAttribution as _CoreCostAttribution,
+    log_external_call as _core_log_external_call,
+    DEFAULT_MARKUP,
+)
 
 logger = logging.getLogger(__name__)
 
 MODULE_SLUG = "mention-monitoring"
-
-# Default markup multiplier when we don't have a per-call cost calculation
-# from app.services.core.ai_pricing. Mirrors price-monitoring's pricing.
-DEFAULT_MARKUP = 1.5
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # Attribution context — threaded through service callers
 # ────────────────────────────────────────────────────────────────────────────
 
-class CostAttribution:
-    """Bag of identifiers that get tagged onto every ai_usage_logs row.
+class CostAttribution(_CoreCostAttribution):
+    """Mention-monitoring attribution — keeps the `tracked_mention_id=` (+ optional
+    `product_id=`) keyword API while delegating storage to the shared core."""
+    __slots__ = ()
 
-    Only `user_id` and `tracked_mention_id` are required for partner billing.
-    `workspace_id` and `product_id` populate when known (internal-flow rows
-    typically have both; external-API rows have neither).
-    """
-    __slots__ = (
-        "user_id", "workspace_id", "tracked_mention_id",
-        "product_id", "refresh_run_id", "api_key_id",
-    )
-
-    def __init__(
-        self,
-        *,
-        user_id: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-        tracked_mention_id: Optional[str] = None,
-        product_id: Optional[str] = None,
-        refresh_run_id: Optional[str] = None,
-        api_key_id: Optional[str] = None,
-    ):
-        self.user_id = user_id
-        self.workspace_id = workspace_id
-        self.tracked_mention_id = tracked_mention_id
-        self.product_id = product_id
-        self.refresh_run_id = refresh_run_id
-        self.api_key_id = api_key_id
-
-    def to_metadata(self) -> Dict[str, Any]:
-        meta: Dict[str, Any] = {}
-        if self.tracked_mention_id:
-            meta["tracked_mention_id"] = self.tracked_mention_id
-        if self.refresh_run_id:
-            meta["refresh_run_id"] = self.refresh_run_id
-        if self.api_key_id:
-            meta["api_key_id"] = self.api_key_id
-        return meta
+    def __init__(self, *, tracked_mention_id: Optional[str] = None, **kwargs):
+        super().__init__(subject_key="tracked_mention_id", subject_id=tracked_mention_id, **kwargs)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -121,57 +90,14 @@ GEMINI_FLASH_OUTPUT_PER_1K = 0.0004
 # Logging helpers
 # ────────────────────────────────────────────────────────────────────────────
 
-def log_external_call(
-    *,
-    operation_type: str,                # 'mention_monitoring.discovery.dataforseo_news' etc.
-    model_name: str,                    # 'dataforseo-news' / 'sonar' / 'claude-haiku-4-5-20251001' / ...
-    raw_cost_usd: float,                # cost we paid the upstream provider
-    attribution: Optional[CostAttribution] = None,
-    input_tokens: int = 0,
-    output_tokens: int = 0,
-    latency_ms: int = 0,
-    credits_debited: int = 0,
-    extra_metadata: Optional[Dict[str, Any]] = None,
-    success: bool = True,
-    error_message: Optional[str] = None,
-    markup_multiplier: float = DEFAULT_MARKUP,
-) -> None:
-    """Insert one row into ai_usage_logs. Best-effort — never raises.
+def log_external_call(**kwargs) -> None:
+    """Insert one row into ai_usage_logs — delegates to the shared core, stamping
+    module_slug='mention-monitoring'. Signature unchanged for callers.
 
-    Tag with module_slug='mention-monitoring' + (when known) tracked_mention_id
-    in metadata + product_id at the column level. Per-row cost rollups (Layer C
-    `recompute_mention_cost`) sum these by tracked_mention_id.
+    Per-row cost rollups (Layer C `recompute_mention_cost`) still sum these by
+    tracked_mention_id; product_id is set at the column level from attribution.
     """
-    try:
-        sb = get_supabase_client().client
-        billed = round(float(raw_cost_usd) * float(markup_multiplier), 6)
-
-        meta: Dict[str, Any] = {"latency_ms": latency_ms, "success": success}
-        if error_message:
-            meta["error"] = (error_message or "")[:240]
-        if attribution:
-            meta.update(attribution.to_metadata())
-        if extra_metadata:
-            meta.update(extra_metadata)
-
-        sb.table("ai_usage_logs").insert({
-            "user_id": attribution.user_id if attribution else None,
-            "workspace_id": attribution.workspace_id if attribution else None,
-            "operation_type": operation_type,
-            "model_name": model_name,
-            "input_tokens": int(input_tokens or 0),
-            "output_tokens": int(output_tokens or 0),
-            "raw_cost_usd": round(float(raw_cost_usd), 6),
-            "markup_multiplier": float(markup_multiplier),
-            "billed_cost_usd": billed,
-            "credits_debited": int(credits_debited or 0),
-            "module_slug": MODULE_SLUG,
-            "product_id": attribution.product_id if attribution else None,
-            "metadata": meta,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }).execute()
-    except Exception as e:
-        logger.warning(f"mention-cost: ai_usage_logs insert failed: {e}")
+    _core_log_external_call(module_slug=MODULE_SLUG, **kwargs)
 
 
 def log_dataforseo_news_call(
