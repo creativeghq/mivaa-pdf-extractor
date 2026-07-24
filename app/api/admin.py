@@ -1748,6 +1748,86 @@ async def backfill_understanding_embeddings_endpoint(
     return JSONResponse(content=summary)
 
 
+class ProductEdgesBackfillRequest(BaseModel):
+    """Request body for the product-relationship-edges backfill.
+
+    New ingests build `product_edges` automatically at Stage 4 / XML completion;
+    this backfills workspaces whose products predate that wiring.
+
+    Defaults are safe: `include_llm=False` runs ONLY the free SQL rule derivation.
+    Set `include_llm=True` to also run the schema-locked Haiku text-edge pass
+    (real Haiku spend — bounded by `max_products_per_workspace`). `workspace_id`
+    targets one workspace; omit to sweep every workspace that has products.
+    """
+    workspace_id: Optional[str] = None
+    include_llm: bool = False
+    max_products_per_workspace: int = 300
+    max_workspaces: int = 1000
+
+
+@router.post("/admin/product-edges/backfill")
+async def backfill_product_edges_endpoint(
+    request: ProductEdgesBackfillRequest,
+    user: User = Depends(require_admin),
+):
+    """Rebuild gold-layer `product_edges` for existing catalogs.
+
+    Per targeted workspace: `rebuild_product_edges` (SQL rule edges — cheap) then,
+    if `include_llm`, `extract_llm_edges` (Haiku text-stated complementary/
+    alternative edges). Idempotent and safe to re-run. Returns per-workspace
+    counts plus totals.
+    """
+    from app.services.core.supabase_client import get_supabase_client
+    from app.services.products.product_relationship_service import ProductRelationshipService
+
+    sb = get_supabase_client().client
+    rel_service = ProductRelationshipService(sb)
+
+    if request.workspace_id:
+        workspace_ids = [request.workspace_id]
+    else:
+        ws_resp = sb.rpc(
+            'list_workspaces_with_products', {'p_limit': request.max_workspaces}
+        ).execute()
+        # setof uuid comes back as a list of scalars or {'list_workspaces_with_products': uuid}.
+        workspace_ids = [
+            (r if isinstance(r, str) else r.get('list_workspaces_with_products'))
+            for r in (ws_resp.data or [])
+        ]
+        workspace_ids = [w for w in workspace_ids if w]
+
+    results: List[Dict[str, Any]] = []
+    for ws in workspace_ids:
+        entry: Dict[str, Any] = {'workspace_id': ws}
+        try:
+            entry['rule_edges'] = await rel_service.rebuild_edges(ws)
+        except Exception as e:
+            entry['error'] = f'rebuild: {e}'
+            results.append(entry)
+            continue
+        if request.include_llm:
+            try:
+                entry['llm_edges'] = await rel_service.extract_llm_edges(
+                    ws, max_products=request.max_products_per_workspace
+                )
+            except Exception as e:
+                entry['llm_error'] = str(e)
+        results.append(entry)
+
+    summary = {
+        'workspaces_processed': len(results),
+        'include_llm': request.include_llm,
+        'total_rule_edges': sum(r.get('rule_edges', 0) for r in results),
+        'total_llm_edges': sum(r.get('llm_edges', 0) for r in results),
+        'per_workspace': results,
+    }
+    logger.info(
+        f"🔗 Product-edges backfill: {summary['workspaces_processed']} workspaces, "
+        f"{summary['total_rule_edges']} rule + {summary['total_llm_edges']} llm edges"
+    )
+    return JSONResponse(content=summary)
+
+
 class TextEmbeddingBackfillRequest(BaseModel):
     """Request body for the product/chunk text-embedding backfill.
 
