@@ -325,11 +325,23 @@ class DataImportService:
                     logger.warning(f"⚠️ Factory enrichment trigger (non-blocking): {_fe}")
 
                 # ── Rebuild gold-layer product relationship edges ────────────
-                # One indexed rebuild per job (not per product); non-blocking.
+                # SQL rule-derived edges (whole workspace) + LLM text-stated edges
+                # over this job's products. Both non-blocking.
                 try:
                     from app.services.products.product_relationship_service import ProductRelationshipService
-                    _edge_count = await ProductRelationshipService(self.supabase).rebuild_edges(workspace_id)
-                    logger.info(f"🔗 Product edges rebuilt: {_edge_count} for workspace {workspace_id}")
+                    _rel_service = ProductRelationshipService(self.supabase)
+                    _edge_count = await _rel_service.rebuild_edges(workspace_id)
+                    logger.info(f"🔗 Product edges rebuilt (rules): {_edge_count} for workspace {workspace_id}")
+
+                    _job_pids_resp = self.supabase.table('products').select('id').eq(
+                        'source_job_id', job_id
+                    ).execute()
+                    _job_pids = [r['id'] for r in (_job_pids_resp.data or [])]
+                    if _job_pids:
+                        _llm_edges = await _rel_service.extract_llm_edges(
+                            workspace_id, product_ids=_job_pids, job_id=job_id
+                        )
+                        logger.info(f"🔗 Product edges extracted (LLM): {_llm_edges} for {len(_job_pids)} products")
                 except Exception as _ee:
                     logger.warning(f"⚠️ Product edge rebuild (non-blocking): {_ee}")
 
