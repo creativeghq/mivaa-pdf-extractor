@@ -1128,7 +1128,7 @@ class RAGService:
             # Apply metadata prototype validation scoring (if available)
             if material_filters and results:
                 try:
-                    from .metadata_prototype_validator import get_metadata_validator
+                    from app.services.metadata.metadata_prototype_validator import get_metadata_validator
                     validator = get_metadata_validator()
                     await validator.load_prototypes()
 

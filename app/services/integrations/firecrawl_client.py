@@ -2,7 +2,7 @@
 Shared Firecrawl v2 HTTP client.
 
 Used by:
-- Competitor price monitoring (`competitor_scraper_service.py`)
+- Price monitoring URL verification (`price_monitoring` refresh path)
 - Public price lookup API (`/api/v1/prices/lookup`)
 - Future consumers that need structured extraction from a URL
 
