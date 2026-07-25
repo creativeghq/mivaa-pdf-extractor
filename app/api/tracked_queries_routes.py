@@ -19,6 +19,9 @@ from pydantic import BaseModel, Field
 
 from app.api.price_lookup_routes import ApiKeyContext, authenticate_api_key
 from app.services.integrations.tracked_queries_service import get_tracked_queries_service
+from app.services.integrations.price_cost_logger import (
+    PRICE_OP_CREDIT_COST, debit_credits, refund_credits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -250,23 +253,46 @@ async def create_tracked_query(
     ctx: ApiKeyContext = Depends(authenticate_api_key),
 ) -> TrackedQueryResponse:
     service = get_tracked_queries_service()
-    created = await service.create(
-        api_key_id=ctx.api_key_id,
-        user_id=ctx.user_id,
-        workspace_id=ctx.workspace_id,
-        search_query=body.search_query,
-        dimensions=body.dimensions,
-        country_code=body.country_code,
-        manufacturer=body.manufacturer,
-        preferred_retailer_domains=body.preferred_retailer_domains,
-        refresh_interval_hours=body.refresh_interval_hours,
-        verify_prices=body.verify_prices,
-        alert_channels=body.alert_channels,
-        alert_on_price_drop=body.alert_on_price_drop,
-        alert_on_new_retailer=body.alert_on_new_retailer,
-        alert_on_promo=body.alert_on_promo,
-        alert_webhook_url=body.alert_webhook_url,
-    )
+
+    # Layer B: debit credits before the synchronous first refresh (full
+    # Perplexity + DataForSEO + Firecrawl discovery). Refund on hard failure or
+    # when the refresh errored out (no usable data was persisted). A successful
+    # refresh keeps the credit even if 0 retailers land — the upstream calls ran.
+    user_id = getattr(ctx, "user_id", None)
+    cost = PRICE_OP_CREDIT_COST["track"]
+    if user_id and not debit_credits(
+        user_id=user_id, amount=cost, operation_type="price_monitoring.track"
+    ):
+        raise HTTPException(status_code=402, detail="Insufficient credits")
+
+    try:
+        created = await service.create(
+            api_key_id=ctx.api_key_id,
+            user_id=ctx.user_id,
+            workspace_id=ctx.workspace_id,
+            search_query=body.search_query,
+            dimensions=body.dimensions,
+            country_code=body.country_code,
+            manufacturer=body.manufacturer,
+            preferred_retailer_domains=body.preferred_retailer_domains,
+            refresh_interval_hours=body.refresh_interval_hours,
+            verify_prices=body.verify_prices,
+            alert_channels=body.alert_channels,
+            alert_on_price_drop=body.alert_on_price_drop,
+            alert_on_new_retailer=body.alert_on_new_retailer,
+            alert_on_promo=body.alert_on_promo,
+            alert_webhook_url=body.alert_webhook_url,
+        )
+    except Exception:
+        if user_id:
+            refund_credits(user_id=user_id, amount=cost, operation_type="price_monitoring.track")
+        raise
+
+    # No-op refund: the first refresh errored (row carries last_error, never got a
+    # successful last_refreshed_at) → the partner paid but got no usable data.
+    if user_id and (created.get("last_error") or not created.get("last_refreshed_at")):
+        refund_credits(user_id=user_id, amount=cost, operation_type="price_monitoring.track")
+
     results = await service.latest_results(created["id"])
     return _to_response(created, results)
 
@@ -364,7 +390,27 @@ async def refresh_tracked_query(
 ) -> RefreshResponse:
     service = get_tracked_queries_service()
     _ensure_owner(await service.get(tracking_id), ctx)
-    outcome = await service.refresh(tracking_id, force=True)
+
+    # Layer B: debit before the paid discovery; refund on hard failure or when the
+    # refresh short-circuits (throttled / inactive / not_found / error) — no usable
+    # work happened. A successful refresh keeps the credit even with 0 hits.
+    user_id = getattr(ctx, "user_id", None)
+    cost = PRICE_OP_CREDIT_COST["refresh"]
+    if user_id and not debit_credits(
+        user_id=user_id, amount=cost, operation_type="price_monitoring.refresh"
+    ):
+        raise HTTPException(status_code=402, detail="Insufficient credits")
+
+    try:
+        outcome = await service.refresh(tracking_id, force=True)
+    except Exception:
+        if user_id:
+            refund_credits(user_id=user_id, amount=cost, operation_type="price_monitoring.refresh")
+        raise
+
+    if user_id and outcome.get("status") in ("throttled", "inactive", "not_found", "error"):
+        refund_credits(user_id=user_id, amount=cost, operation_type="price_monitoring.refresh")
+
     return RefreshResponse(
         tracking_id=tracking_id,
         status=outcome.get("status", "unknown"),

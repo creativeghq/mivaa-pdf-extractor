@@ -28,6 +28,9 @@ from app.services.integrations.perplexity_price_search_service import (
     get_perplexity_price_search_service,
     PriceHit,
 )
+from app.services.integrations.price_cost_logger import (
+    PRICE_OP_CREDIT_COST, debit_credits, refund_credits,
+)
 from app.utils.price_parsing import parse_price
 
 logger = logging.getLogger(__name__)
@@ -311,10 +314,30 @@ async def lookup_price(
             headers={"Retry-After": "60"},
         )
 
-    if body.url:
-        response, log_payload = await _firecrawl_mode(body, ctx)
-    else:
-        response, log_payload = await _claude_mode(body, ctx)
+    # Layer B: debit before the paid upstream call (Firecrawl scrape in url mode,
+    # Perplexity + DataForSEO + Firecrawl verify in search mode). Refund on hard
+    # failure or exception — the partner shouldn't pay for a lookup that returned
+    # no data.
+    user_id = getattr(ctx, "user_id", None)
+    op = "lookup_url" if body.url else "lookup_search"
+    cost = PRICE_OP_CREDIT_COST[op]
+    if user_id and not debit_credits(
+        user_id=user_id, amount=cost, operation_type=f"price_monitoring.{op}"
+    ):
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED, detail="Insufficient credits")
+
+    try:
+        if body.url:
+            response, log_payload = await _firecrawl_mode(body, ctx)
+        else:
+            response, log_payload = await _claude_mode(body, ctx)
+    except Exception:
+        if user_id:
+            refund_credits(user_id=user_id, amount=cost, operation_type=f"price_monitoring.{op}")
+        raise
+
+    if user_id and not response.success:
+        refund_credits(user_id=user_id, amount=cost, operation_type=f"price_monitoring.{op}")
 
     _log_lookup(sb, ctx, body, response, log_payload)
     return response

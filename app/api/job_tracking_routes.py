@@ -343,6 +343,14 @@ async def regenerate_keywords(
         if user_id:
             costs.refund_credits(user_id=user_id, amount=debit_amount, operation_type="job_research.regenerate_keywords")
         raise HTTPException(status_code=500, detail=str(e)[:200])
+
+    # No-op refund: expand_keywords() swallows HTTP/parse errors and returns
+    # {expanded: []} without raising — so a silent Haiku failure produces an empty
+    # result. The partner paid 2cr and got nothing; refund when nothing came back.
+    if user_id and not result.get("expanded") and not result.get("query_phrasings"):
+        costs.refund_credits(user_id=user_id, amount=debit_amount, operation_type="job_research.regenerate_keywords")
+        return {"data": result, "partner_credits_debited": 0}
+
     return {"data": result, "partner_credits_debited": debit_amount}
 
 

@@ -6,7 +6,7 @@ Frontend polls database for real-time updates
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 import asyncio
 import json
 import os
@@ -16,6 +16,8 @@ import uuid
 import io
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.credits_integration_service import get_credits_service
+from app.dependencies import get_current_user
+from app.utils.credit_metering import refund_operation
 from app.schemas.api_responses import InteriorDesignResponse
 
 router = APIRouter(prefix="/api", tags=["Interior Design"])
@@ -562,14 +564,8 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                         return
 
                     # Replicate path
-                    temp_image_url = await generate_with_replicate(
-                        model, enhanced_prompt, request.width, request.height,
-                        request.image, replicate_token, max_retries=3,
-                        room_type=request.room_type, style=request.style,
-                    )
-                    print(f"✅ {model['name']} generation completed, uploading to Supabase Storage...")
-                    permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
-
+                    # #250 H1/invariant #10: debit this Replicate model call BEFORE it runs;
+                    # on insufficient credits do NOT perform the paid work; refund if it fails.
                     cost = 0.0
                     credits_service = get_credits_service()
                     debit_result = await credits_service.debit_credits_for_replicate(
@@ -588,11 +584,33 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                             'generation_3d_job_id': job_id,
                         }
                     )
+                    if not debit_result.get('success'):
+                        # Insufficient balance / debit failure — skip the upstream call entirely.
+                        print(f"⛔ {model['name']} skipped — credit debit failed: {debit_result.get('error')}")
+                        await atomic_update_model_result(
+                            job_id, model['id'], False, None, 0.0,
+                            f"Credit debit failed: {debit_result.get('error', 'insufficient credits')}",
+                        )
+                        return
                     cost = debit_result.get('billed_cost_usd', model.get('cost_per_generation', 0.0))
-                    if debit_result.get('success'):
-                        print(f"✅ {model['name']} completed + credits debited (${cost:.3f}, {debit_result.get('credits_debited', 0):.1f} credits)")
-                    else:
-                        print(f"⚠️ {model['name']} completed but credit debit failed: {debit_result.get('error')}")
+                    credits_debited = debit_result.get('credits_debited', 0.0)
+                    print(f"✅ {model['name']} pre-debited (${cost:.3f}, {credits_debited:.1f} credits)")
+
+                    try:
+                        temp_image_url = await generate_with_replicate(
+                            model, enhanced_prompt, request.width, request.height,
+                            request.image, replicate_token, max_retries=3,
+                            room_type=request.room_type, style=request.style,
+                        )
+                    except Exception:
+                        # Paid upstream produced no result — refund the pre-debit.
+                        refund_operation(
+                            {"user_id": request.user_id, "workspace_id": request.workspace_id},
+                            credits_debited, "interior_design",
+                        )
+                        raise
+                    print(f"✅ {model['name']} generation completed, uploading to Supabase Storage...")
+                    permanent_url = await download_and_upload_to_supabase(temp_image_url, job_id, model['id'])
 
                     await atomic_update_model_result(job_id, model['id'], True, permanent_url, cost, None)
                 except Exception as e:
@@ -629,12 +647,24 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
 
 
 @router.post("/interior", responses={200: {"model": InteriorDesignResponse}})
-async def create_interior_design(request: InteriorRequest):
+async def create_interior_design(
+    request: InteriorRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+):
     """
     Generate interior design images using multiple AI models.
     Creates job in database and processes in background.
     Frontend polls database for updates.
     """
+    # #250 invariant #1 (BOLA): derive identity from the verified JWT — never trust the
+    # user_id/workspace_id the client put in the request body. Overwrite them so every
+    # downstream reader (job insert, per-model debit, refunds) uses the trusted values.
+    _uid = user.get("sub") or user.get("user_id")
+    if not _uid:
+        raise HTTPException(status_code=401, detail="Unauthenticated")
+    request.user_id = _uid
+    request.workspace_id = user.get("workspace_id") or user.get("active_workspace_id")
+
     # Determine which models to use based on request type
     if request.models:
         # User specified specific models

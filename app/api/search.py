@@ -59,8 +59,9 @@ from ..services.search.unified_search_service import (
 )
 
 # Import centralized dependencies
-from ..dependencies import get_rag_service, get_supabase_client, get_workspace_context
+from ..dependencies import get_rag_service, get_supabase_client, get_workspace_context, get_current_user
 from ..schemas.auth import WorkspaceContext
+from ..utils.credit_metering import meter_operation, refund_operation
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -961,11 +962,12 @@ async def get_material_visual_search_service() -> MaterialVisualSearchService:
 )
 async def material_visual_search(
     request: MaterialSearchRequest,
-    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
+    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service),
+    user: Dict[str, Any] = Depends(get_current_user),
 ) -> MaterialSearchResponse:
     """
     Perform material-specific visual search with advanced filtering and analysis.
-    
+
     This endpoint provides:
     - Visual similarity search using SLIG embeddings
     - Material property filtering (spectral, chemical, mechanical, thermal)
@@ -975,19 +977,26 @@ async def material_visual_search(
     """
     try:
         logger.info(f"Material visual search requested: {request.search_type}")
-        
-        # Execute material visual search
-        result = await material_search_service.search_materials(request)
-        
+
+        # #250 H1: debit the Claude-vision material search BEFORE it runs; refund on failure.
+        _billed = await meter_operation(user, "image-analyze", "material_visual_search")
+        try:
+            # Execute material visual search
+            result = await material_search_service.search_materials(request)
+        except Exception:
+            refund_operation(user, _billed, "material_visual_search")
+            raise
+
         if not result.success:
+            refund_operation(user, _billed, "material_visual_search")  # #250 H1: no result produced
             raise HTTPException(
                 status_code=400,
                 detail="Material visual search failed"
             )
-        
+
         logger.info(f"Material search completed: {result.total_results} results")
         return result
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1006,11 +1015,12 @@ async def material_visual_search(
 )
 async def analyze_material_image(
     request: Dict[str, Any],
-    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
+    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service),
+    user: Dict[str, Any] = Depends(get_current_user),
 ) -> SuccessResponse:
     """
     Analyze a material image using integrated visual analysis.
-    
+
     This endpoint provides comprehensive material analysis including:
     - Visual feature extraction
     - Material identification and classification
@@ -1021,31 +1031,38 @@ async def analyze_material_image(
     try:
         image_data = request.get("image_data")
         analysis_types = request.get("analysis_types", ["visual", "spectral", "chemical"])
-        
+
         if not image_data:
             raise HTTPException(
                 status_code=400,
                 detail="image_data is required"
             )
-        
-        # Analyze material image
-        result = await material_search_service.analyze_material_image(
-            image_data=image_data,
-            analysis_types=analysis_types
-        )
-        
+
+        # #250 H1: debit the Claude-vision analysis BEFORE it runs; refund on failure.
+        _billed = await meter_operation(user, "image-analyze", "analyze_material_image")
+        try:
+            # Analyze material image
+            result = await material_search_service.analyze_material_image(
+                image_data=image_data,
+                analysis_types=analysis_types
+            )
+        except Exception:
+            refund_operation(user, _billed, "analyze_material_image")
+            raise
+
         if not result.get("success", False):
+            refund_operation(user, _billed, "analyze_material_image")  # #250 H1: no result produced
             raise HTTPException(
                 status_code=400,
                 detail=f"Material image analysis failed: {result.get('error', 'Unknown error')}"
             )
-        
+
         return SuccessResponse(
             success=True,
             message="Material image analysis completed",
             data=result.get("analysis", {})
         )
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1371,16 +1388,29 @@ async def _build_aspect_query_embedding(
 async def _run_aspect_search(
     aspect: str,
     request: AspectSearchRequest,
+    user: Optional[Dict[str, Any]] = None,
 ) -> AspectSearchResponse:
     """Shared body for the four /search/by-<aspect> endpoints."""
     from app.services.embeddings.vecs_service import get_vecs_service
 
-    embedding, source_text, error = await _build_aspect_query_embedding(
-        aspect=aspect,
-        query_image=request.query_image,
-        query_text=request.query_text,
-    )
+    # #250 H1: only the query_image path runs Opus vision — meter it BEFORE the call,
+    # refund on failure. Text-only queries skip Opus entirely and stay free.
+    _billed = 0.0
+    if request.query_image:
+        _billed = await meter_operation(user, "image-analyze", f"aspect_search_{aspect}")
+    try:
+        embedding, source_text, error = await _build_aspect_query_embedding(
+            aspect=aspect,
+            query_image=request.query_image,
+            query_text=request.query_text,
+        )
+    except Exception:
+        if request.query_image:
+            refund_operation(user, _billed, f"aspect_search_{aspect}")
+        raise
     if error:
+        if request.query_image:
+            refund_operation(user, _billed, f"aspect_search_{aspect}")
         raise HTTPException(status_code=400, detail=error)
 
     vecs_svc = get_vecs_service()
@@ -1434,8 +1464,11 @@ async def _run_aspect_search(
         "space as the rows it's compared against."
     ),
 )
-async def search_by_color(request: AspectSearchRequest) -> AspectSearchResponse:
-    return await _run_aspect_search("color", request)
+async def search_by_color(
+    request: AspectSearchRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> AspectSearchResponse:
+    return await _run_aspect_search("color", request, user)
 
 
 @router.post(
@@ -1448,8 +1481,11 @@ async def search_by_color(request: AspectSearchRequest) -> AspectSearchResponse:
         "model — same shape across the four aspect endpoints."
     ),
 )
-async def search_by_texture(request: AspectSearchRequest) -> AspectSearchResponse:
-    return await _run_aspect_search("texture", request)
+async def search_by_texture(
+    request: AspectSearchRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> AspectSearchResponse:
+    return await _run_aspect_search("texture", request, user)
 
 
 @router.post(
@@ -1461,8 +1497,11 @@ async def search_by_texture(request: AspectSearchRequest) -> AspectSearchRespons
         "VisionAnalysis.style + surface_pattern + applications."
     ),
 )
-async def search_by_style(request: AspectSearchRequest) -> AspectSearchResponse:
-    return await _run_aspect_search("style", request)
+async def search_by_style(
+    request: AspectSearchRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> AspectSearchResponse:
+    return await _run_aspect_search("style", request, user)
 
 
 @router.post(
@@ -1474,7 +1513,10 @@ async def search_by_style(request: AspectSearchRequest) -> AspectSearchResponse:
         "VisionAnalysis.material_type + category + subcategory."
     ),
 )
-async def search_by_material(request: AspectSearchRequest) -> AspectSearchResponse:
-    return await _run_aspect_search("material", request)
+async def search_by_material(
+    request: AspectSearchRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
+) -> AspectSearchResponse:
+    return await _run_aspect_search("material", request, user)
 
 

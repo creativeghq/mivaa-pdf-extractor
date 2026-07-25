@@ -547,5 +547,13 @@ async def get_opportunities(
         refund_credits(user_id=ctx.user_id or "", amount=cost,
                        operation_type=f"mention_monitoring.{cost_key}")
         raise
-    out["partner_credits_debited"] = cost
+
+    # No-op refund: generate() returns {opportunities: []} WITHOUT raising when the
+    # subject is missing / has no mentions / every source failed. The partner paid
+    # but got nothing actionable — mirror how /refresh refunds a no-op outcome.
+    if not out.get("opportunities"):
+        refund_credits(user_id=ctx.user_id or "", amount=cost,
+                       operation_type=f"mention_monitoring.{cost_key}")
+    else:
+        out["partner_credits_debited"] = cost
     return {"success": True, "data": out}

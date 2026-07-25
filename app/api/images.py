@@ -346,13 +346,15 @@ async def analyze_batch_images(
                             continue
 
                     # Try Material Kai service first
+                    # #250 H1/H6: debit one Opus-vision call per image BEFORE it runs; refund on failure.
+                    _billed = await meter_operation(current_user, "image-analyze", "image_analyze_batch")
                     try:
                         analysis_result = await material_kai.analyze_image(
                             image_url=img_data.get("image_url"),
                             analysis_types=request.analysis_types,
                             confidence_threshold=request.confidence_threshold
                         )
-                        
+
                         # Create proper metadata
                         metadata = ImageMetadata(
                             width=img_data.get("width", 0),
@@ -380,7 +382,8 @@ async def analyze_batch_images(
                         ))
                         
                     except Exception as service_error:
-                        # Fallback to database data
+                        # Fallback to database data — the paid vision call didn't produce a result.
+                        refund_operation(current_user, _billed, "image_analyze_batch")  # #250 H1
                         # Create proper metadata
                         metadata = ImageMetadata(
                             width=img_data.get("width", 0),
@@ -554,7 +557,8 @@ async def upload_and_analyze_image(
     file: UploadFile = File(...),
     analysis_types: str = Form(default="description,ocr"),
     confidence_threshold: float = Form(default=0.5),
-    material_kai: MaterialKaiService = Depends(get_material_kai_service)
+    material_kai: MaterialKaiService = Depends(get_material_kai_service),
+    current_user: User = Depends(get_current_user),
 ) -> ImageAnalysisResponse:
     """
     Upload and analyze an image file in a single request.
@@ -584,6 +588,8 @@ async def upload_and_analyze_image(
         temp_image_id = f"upload_{uuid.uuid4().hex[:12]}"
 
         # Try Material Kai service first
+        # #250 H1: debit the Opus-vision call BEFORE it runs; refund on failure.
+        _billed = await meter_operation(current_user, "image-analyze", "image_upload_analyze")
         try:
             analysis_result = await material_kai.analyze_image_data(
                 image_data=file_content,
@@ -611,6 +617,7 @@ async def upload_and_analyze_image(
 
         except Exception as service_error:
             logger.warning(f"Material Kai service failed: {str(service_error)}, using basic analysis")
+            refund_operation(current_user, _billed, "image_upload_analyze")  # #250 H1: fell back to free basic analysis
 
             # Basic analysis fallback
             return ImageAnalysisResponse(
@@ -989,11 +996,17 @@ async def reclassify_image(
         rag_service = RAGService()
 
         # Run primary classification
+        # #250 H1: debit the Opus-vision classification BEFORE it runs; refund on failure.
+        _billed = await meter_operation(current_user, "image-analyze", "image_reclassify")
         logger.info("🤖 Running primary classification (Claude Opus 4.7 vision)")
-        primary_classification = await rag_service._classify_image_material(
-            image_base64=image_base64,
-            confidence_threshold=0.6
-        )
+        try:
+            primary_classification = await rag_service._classify_image_material(
+                image_base64=image_base64,
+                confidence_threshold=0.6
+            )
+        except Exception:
+            refund_operation(current_user, _billed, "image_reclassify")
+            raise
 
         final_classification = primary_classification
 
