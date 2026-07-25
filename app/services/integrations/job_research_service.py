@@ -645,8 +645,13 @@ class JobResearchService:
             sources_called: List[str] = []
             if sources_enabled.get("google_jobs", True):
                 sources_called.append("google_jobs")
+                # Pass the user's ORIGINAL keywords (each becomes its own Google
+                # Jobs task) — NOT all_search_terms. The expanded set is 17 PM
+                # synonyms that Google already matches via its own synonym engine;
+                # searching the distinct intents (Product Manager, Vibe Coder,
+                # Product Builder, …) is what actually surfaces the niche roles.
                 tasks.append(search_via_dataforseo_jobs(
-                    keywords=all_search_terms,
+                    keywords=keywords,
                     location=location,
                     country_code=country_code,
                     remote_only=remote_only,
@@ -678,25 +683,31 @@ class JobResearchService:
                     limit_per_query=10,
                 ))
             if sources_enabled.get("perplexity", True):
-                # v0.4.5: fan out Perplexity across query phrasings instead of one call.
-                # Primary call uses sonar-pro on the original keyword set (best for
-                # the user's intent); up to 3 variation calls use cheap sonar with one
-                # Haiku-generated phrasing each. anti-hallucination guard catches any
-                # fakes; content_hash dedupes overlap.
+                # Fan out Perplexity across ALL keywords (fix 2026-07-25).
+                # search_via_perplexity ORs at most ~3-4 keywords per call (Sonar
+                # handles long OR-lists poorly), so a single primary call silently
+                # searched only keywords[:3] — every keyword after the third
+                # (Product AI Builder, Vibe Coder, …) was never queried. Now we
+                # CHUNK the user's original keywords into groups of 3 and run one
+                # call per chunk, so nothing is dropped. Plus the Haiku phrasing
+                # variants. content_hash dedupes the overlap.
                 model_primary = "sonar-pro" if (force_full_discovery or not tj.get("last_refreshed_at")) else "sonar"
-                sources_called.append("perplexity_primary")
-                tasks.append(search_via_perplexity(
-                    keywords=all_search_terms,
-                    location=location,
-                    remote_only=remote_only,
-                    seniority=seniority,
-                    excluded_keywords=excluded_keywords,
-                    excluded_companies=excluded_companies,
-                    attribution=attribution,
-                    model=model_primary,
-                    extra_domains=discovered_domains or None,
-                    limit=7,
-                ))
+                _kw_chunks = [keywords[i:i + 3] for i in range(0, len(keywords), 3)] or [all_search_terms[:3]]
+                _kw_chunks = _kw_chunks[:6]  # generous ceiling: up to 18 keywords
+                for ci, chunk in enumerate(_kw_chunks):
+                    sources_called.append("perplexity_primary" if ci == 0 else f"perplexity_kw_{ci+1}")
+                    tasks.append(search_via_perplexity(
+                        keywords=chunk,
+                        location=location,
+                        remote_only=remote_only,
+                        seniority=seniority,
+                        excluded_keywords=excluded_keywords,
+                        excluded_companies=excluded_companies,
+                        attribution=attribution,
+                        model=model_primary,
+                        extra_domains=discovered_domains or None,
+                        limit=7,
+                    ))
                 for i, phrasing in enumerate(all_query_variations[:3] if all_query_variations else []):
                     sources_called.append(f"perplexity_var_{i+1}")
                     tasks.append(search_via_perplexity(

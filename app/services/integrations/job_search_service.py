@@ -363,10 +363,21 @@ async def search_via_dataforseo_jobs(
     # 100+ char query that matches nothing. Use ONLY the user's primary
     # keyword (first in the list); rely on Google's own synonym matching for
     # nearby titles.
-    primary_keyword = (keywords[0] if keywords else "").strip()
-    keyword_str = primary_keyword
-    if remote_only and "remote" not in keyword_str.lower():
-        keyword_str = f"{keyword_str} remote"
+    # FAN-OUT ACROSS ALL KEYWORDS (fix 2026-07-25). Google Jobs takes ONE literal
+    # search phrase per task, so the old code searched keywords[0] only — every
+    # keyword after the first (e.g. "Vibe Coder", "Product Builder") was never
+    # queried. Now we post one task PER keyword and merge, so nothing is dropped.
+    # Bounded by max_keywords (generous, not 1) with truncation logged by name.
+    kw_list = [k.strip() for k in (keywords or []) if k and k.strip()]
+    if not kw_list:
+        return []
+    max_keywords = 15
+    if len(kw_list) > max_keywords:
+        logger.warning(
+            f"job-search google_jobs: {len(kw_list)} keywords, querying first {max_keywords} "
+            f"— skipped: {kw_list[max_keywords:]}"
+        )
+        kw_list = kw_list[:max_keywords]
 
     # v0.3.6: DataForSEO requires a real geographic location_name (city / region /
     # country); "remote" or empty silently returns 0 hits. Map the user's location
@@ -383,125 +394,120 @@ async def search_via_dataforseo_jobs(
     else:
         resolved_location = location
 
-    body = [{
-        "keyword": keyword_str,
-        "language_code": "en",
-        "location_name": resolved_location,
-        "depth": min(max(limit, 10), 100),
-    }]
-    if country_code:
-        body[0]["location_country_code"] = country_code.upper()
-    if employment_type:
-        body[0]["employment_type"] = ",".join(employment_type)
+    def _build_body(kw: str) -> List[Dict[str, Any]]:
+        ks = kw
+        if remote_only and "remote" not in ks.lower():
+            ks = f"{ks} remote"
+        b: Dict[str, Any] = {
+            "keyword": ks, "language_code": "en",
+            "location_name": resolved_location, "depth": min(max(limit, 10), 100),
+        }
+        if country_code:
+            b["location_country_code"] = country_code.upper()
+        if employment_type:
+            b["employment_type"] = ",".join(employment_type)
+        return [b]
 
+    hdrs = {"Authorization": auth, "Content-Type": "application/json"}
     started = time.time()
-    success = True
-    err: Optional[str] = None
-    hits: List[JobHit] = []
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
-            # DataForSEO Google Jobs is TASK-BASED ONLY — there is no
-            # /serp/google/jobs/live/advanced (calling it returns task
-            # status_code 40402 "Invalid Path"). Flow: task_post → poll
-            # task_get/advanced until the task resolves (status_code 20000).
-            hdrs = {"Authorization": auth, "Content-Type": "application/json"}
-            post_resp = await client.post(
-                f"{_DATAFORSEO_BASE}/serp/google/jobs/task_post",
-                headers=hdrs, json=body,
-            )
-            post_resp.raise_for_status()
-            post_data = post_resp.json() or {}
-            task_id = next(
-                (t.get("id") for t in (post_data.get("tasks") or []) if t.get("id")),
-                None,
-            )
-            if not task_id:
-                raise RuntimeError(
-                    f"google_jobs task_post returned no task id "
-                    f"({post_data.get('status_code')}: {post_data.get('status_message')})"
-                )
-            # Poll for the result. Jobs tasks usually resolve in a few seconds;
-            # cap total wait so a single stuck task can't stall the refresh.
-            data = None
-            for _ in range(16):  # ~40s max (16 × 2.5s)
-                await asyncio.sleep(2.5)
-                get_resp = await client.get(
-                    f"{_DATAFORSEO_BASE}/serp/google/jobs/task_get/advanced/{task_id}",
-                    headers=hdrs,
-                )
-                get_resp.raise_for_status()
-                gd = get_resp.json() or {}
-                task0 = (gd.get("tasks") or [{}])[0]
-                sc = task0.get("status_code")
-                if sc == 20000:
-                    data = gd
-                    break
-                # 40602 "Task In Queue" / 40100 "Task Handed" → keep waiting.
-                if sc in (40602, 40100, 40101, 20100):
-                    continue
-                # Anything else at task level is a real error — stop polling.
-                raise RuntimeError(f"google_jobs task_get {sc}: {task0.get('status_message')}")
-            if data is None:
-                raise RuntimeError("google_jobs task did not complete within the poll window")
+    errors: List[str] = []
+    sem = asyncio.Semaphore(6)
 
-        tasks = ((data or {}).get("tasks") or [])
-        for task in tasks:
-            for result in (task.get("result") or []):
-                for item in (result.get("items") or []):
-                    # task_get/advanced returns type 'google_jobs_item'. Accept the
-                    # older 'google_jobs_serp'/'jobs_element' shapes too for safety.
-                    item_type = (item.get("type") or "").lower()
-                    if item_type not in ("google_jobs_item", "google_jobs_serp", "jobs_element"):
-                        continue
-                    # Real items expose the posting URL as `source_url` ("via
-                    # LinkedIn/Indeed/…"); older shapes used apply_link.link / url.
-                    apply_link = item.get("apply_link")
-                    apply_url = apply_link.get("link") if isinstance(apply_link, dict) else None
-                    url = item.get("source_url") or apply_url or item.get("url") or ""
-                    if not url:
-                        continue
-                    canonical = canonicalize_url(url)
-                    title = item.get("title")
-                    company = item.get("employer_name") or item.get("company_name")
-                    salary = item.get("salary")
-                    if not isinstance(salary, dict):
-                        salary = {}
-                    contract = item.get("contract_type") or item.get("schedule_type")
-                    location = item.get("location")
-                    hits.append(JobHit(
-                        url=url,
-                        canonical_url=canonical,
-                        content_hash=content_hash(canonical, title, company),
-                        title=title,
-                        company=company,
-                        company_domain=domain_of(url),
-                        location=location,
-                        is_remote=("remote" in (location or "").lower()) or None,
-                        salary_min=_to_int(salary.get("min_value")),
-                        salary_max=_to_int(salary.get("max_value")),
-                        salary_currency=salary.get("currency"),
-                        salary_period=salary.get("type"),
-                        employment_type=contract,
-                        description_excerpt=(item.get("description") or "")[:600] or None,
-                        posted_at=item.get("timestamp") or item.get("date_posted"),
-                        source="google_jobs",
-                        raw_payload={"thumbnail": item.get("employer_image_url") or item.get("thumbnail"),
-                                     "via": item.get("source_name") or item.get("via")},
-                    ))
-    except Exception as e:
-        success = False
-        err = str(e)[:200]
-        logger.warning(f"job-search dataforseo: {err}")
+    async def _one_keyword(kw: str) -> List[JobHit]:
+        out: List[JobHit] = []
+        try:
+            async with sem:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
+                    # Task-based only (no live endpoint): task_post → poll task_get.
+                    post_resp = await client.post(
+                        f"{_DATAFORSEO_BASE}/serp/google/jobs/task_post", headers=hdrs, json=_build_body(kw),
+                    )
+                    post_resp.raise_for_status()
+                    post_data = post_resp.json() or {}
+                    task_id = next((t.get("id") for t in (post_data.get("tasks") or []) if t.get("id")), None)
+                    if not task_id:
+                        raise RuntimeError(f"task_post no id ({post_data.get('status_code')}: {post_data.get('status_message')})")
+                    data = None
+                    for _ in range(16):  # ~40s max
+                        await asyncio.sleep(2.5)
+                        get_resp = await client.get(
+                            f"{_DATAFORSEO_BASE}/serp/google/jobs/task_get/advanced/{task_id}", headers=hdrs,
+                        )
+                        get_resp.raise_for_status()
+                        gd = get_resp.json() or {}
+                        task0 = (gd.get("tasks") or [{}])[0]
+                        sc = task0.get("status_code")
+                        if sc == 20000:
+                            data = gd
+                            break
+                        if sc in (40602, 40100, 40101, 20100):
+                            continue
+                        raise RuntimeError(f"task_get {sc}: {task0.get('status_message')}")
+                    if data is None:
+                        raise RuntimeError("task did not complete within poll window")
+            out = _parse_google_jobs_items(data)
+        except Exception as e:
+            errors.append(f"{kw}: {str(e)[:80]}")
+            logger.warning(f"job-search dataforseo ({kw}): {str(e)[:160]}")
+        return out
+
+    per_kw = await asyncio.gather(*[_one_keyword(k) for k in kw_list])
+    hits: List[JobHit] = [h for sub in per_kw for h in sub]
 
     costs.log_dataforseo_jobs_call(
         attribution=attribution,
-        query=keyword_str,
+        query="; ".join(kw_list),
         location=location or "",
         hits_returned=len(hits),
         latency_ms=int((time.time() - started) * 1000),
-        success=success,
-        error_message=err,
+        success=(len(hits) > 0 or not errors),
+        error_message=("; ".join(errors)[:200] or None),
     )
+    return hits
+
+
+def _parse_google_jobs_items(data: Optional[Dict[str, Any]]) -> List[JobHit]:
+    """Map a DataForSEO Google Jobs task_get/advanced response → JobHit list."""
+    hits: List[JobHit] = []
+    for task in ((data or {}).get("tasks") or []):
+        for result in (task.get("result") or []):
+            for item in (result.get("items") or []):
+                item_type = (item.get("type") or "").lower()
+                if item_type not in ("google_jobs_item", "google_jobs_serp", "jobs_element"):
+                    continue
+                apply_link = item.get("apply_link")
+                apply_url = apply_link.get("link") if isinstance(apply_link, dict) else None
+                url = item.get("source_url") or apply_url or item.get("url") or ""
+                if not url:
+                    continue
+                canonical = canonicalize_url(url)
+                title = item.get("title")
+                company = item.get("employer_name") or item.get("company_name")
+                salary = item.get("salary")
+                if not isinstance(salary, dict):
+                    salary = {}
+                contract = item.get("contract_type") or item.get("schedule_type")
+                loc = item.get("location")
+                hits.append(JobHit(
+                    url=url,
+                    canonical_url=canonical,
+                    content_hash=content_hash(canonical, title, company),
+                    title=title,
+                    company=company,
+                    company_domain=domain_of(url),
+                    location=loc,
+                    is_remote=("remote" in (loc or "").lower()) or None,
+                    salary_min=_to_int(salary.get("min_value")),
+                    salary_max=_to_int(salary.get("max_value")),
+                    salary_currency=salary.get("currency"),
+                    salary_period=salary.get("type"),
+                    employment_type=contract,
+                    description_excerpt=(item.get("description") or "")[:600] or None,
+                    posted_at=item.get("timestamp") or item.get("date_posted"),
+                    source="google_jobs",
+                    raw_payload={"thumbnail": item.get("employer_image_url") or item.get("thumbnail"),
+                                 "via": item.get("source_name") or item.get("via")},
+                ))
     return hits
 
 
@@ -1208,7 +1214,12 @@ async def search_via_perplexity(
     # v0.3.7: Sonar handles long OR-lists poorly. Cap at the user's primary 3
     # keywords (originals + a couple expansions). The classifier downstream
     # accepts the broader keyword set, but the DISCOVERY query stays tight.
-    top_keywords = keywords[:3] if len(keywords) > 3 else keywords
+    # Sonar handles ~4 OR-terms well; beyond that recall drops. Callers now CHUNK
+    # keywords (≤3 each) so this is normally a no-op — but if a bigger set is
+    # passed, log the truncation instead of silently dropping keywords.
+    if len(keywords) > 4:
+        logger.info(f"job-search perplexity: {len(keywords)} keywords in one call, OR-ing first 4: {keywords[:4]}")
+    top_keywords = keywords[:4]
     keyword_str = " OR ".join(f'"{k}"' for k in top_keywords)
     excl_kw = " ".join(f"NOT {k}" for k in (excluded_keywords or []))
     excl_co = " ".join(f"NOT {c}" for c in (excluded_companies or []))
