@@ -62,6 +62,7 @@ from app.services.integrations.product_identity_service import (
     normalize_model_token,
 )
 from app.services.integrations.tracked_queries_service import get_tracked_queries_service
+from app.services.integrations.cron_billing import charge_cron
 
 logger = logging.getLogger(__name__)
 
@@ -896,9 +897,21 @@ async def cron_refresh_tracked_queries(request: Request, limit: int = Query(defa
     total_credits = 0
     results: List[Dict[str, Any]] = []
 
+    skipped_unpaid = 0
     for row in due:
         tracking_id = row.get("id")
         if not tracking_id:
+            continue
+        # Meter the owner BEFORE the paid discovery refresh. Registered cron_key
+        # 'price-monitoring' (3 cr/refresh); fails OPEN, returns False only when the
+        # owner is genuinely out of credits → skip that subject.
+        if not charge_cron(
+            service.supabase.client, "price-monitoring",
+            workspace_id=row.get("workspace_id"), user_id=row.get("user_id"),
+            description="Tracked-product price refresh",
+        ):
+            skipped_unpaid += 1
+            results.append({"tracking_id": tracking_id, "status": "skipped_insufficient_credits"})
             continue
         try:
             outcome = await service.refresh(tracking_id, force=False)
@@ -927,6 +940,7 @@ async def cron_refresh_tracked_queries(request: Request, limit: int = Query(defa
         "processed": processed,
         "succeeded": succeeded,
         "failed": failed,
+        "skipped_insufficient_credits": skipped_unpaid,
         "total_credits_used": total_credits,
         "results": results,
         "timestamp": datetime.utcnow().isoformat() + "Z",

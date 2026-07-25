@@ -1215,7 +1215,7 @@ class TrackedQueriesService:
         now_iso = datetime.now(timezone.utc).isoformat()
         candidates = (
             self.supabase.client.table("tracked_queries")
-            .select("id, last_refreshed_at, refresh_interval_hours, next_check_at")
+            .select("id, workspace_id, user_id, last_refreshed_at, refresh_interval_hours, next_check_at")
             .eq("is_active", True)
             .is_("api_key_id", "null")
             .or_(f"next_check_at.is.null,next_check_at.lt.{now_iso}")

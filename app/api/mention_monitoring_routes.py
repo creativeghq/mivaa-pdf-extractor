@@ -55,6 +55,7 @@ from app.services.integrations.llm_mention_probe_service import (
     build_probes, get_llm_mention_probe_service,
 )
 from app.services.integrations.mention_identity_service import SubjectFacets
+from app.services.integrations.cron_billing import charge_cron
 from app.services.integrations.mention_opportunity_service import (
     get_mention_opportunity_service,
 )
@@ -848,8 +849,29 @@ async def cron_refresh(
         return {"success": False, "error": str(e)}
     svc = get_tracked_mentions_service()
     processed = succeeded = failed = 0
+    skipped_unpaid = 0
     results: List[Dict[str, Any]] = []
+    # Resolve owners for metering (the due RPC doesn't return them).
+    ids = [row["id"] for row in due if row.get("id")]
+    owner_by_id: Dict[str, Dict[str, Any]] = {}
+    if ids:
+        try:
+            ores = sb.table("tracked_mentions").select("id, workspace_id, user_id").in_("id", ids).execute()
+            owner_by_id = {o["id"]: o for o in (ores.data or [])}
+        except Exception as e:
+            logger.warning(f"mention-cron: owner lookup failed (metering fails open): {e}")
     for row in due:
+        owner = owner_by_id.get(row["id"], {})
+        # Meter the owner BEFORE the paid discovery refresh. Registered cron_key
+        # 'mention-monitoring' (3 cr); fails open, False only when out of credits.
+        if not charge_cron(
+            sb, "mention-monitoring",
+            workspace_id=owner.get("workspace_id"), user_id=owner.get("user_id"),
+            description="Tracked-subject mention refresh",
+        ):
+            skipped_unpaid += 1
+            results.append({"id": row["id"], "status": "skipped_insufficient_credits"})
+            continue
         try:
             outcome = await svc.refresh(row["id"], force=False)
             processed += 1
@@ -866,6 +888,7 @@ async def cron_refresh(
             results.append({"id": row["id"], "status": "error", "error": str(e)[:200]})
     return {"success": True, "due_count": len(due),
             "processed": processed, "succeeded": succeeded, "failed": failed,
+            "skipped_insufficient_credits": skipped_unpaid,
             "results": results}
 
 
@@ -895,11 +918,22 @@ async def cron_probe_llm(
     svc = get_tracked_mentions_service()
     probe = get_llm_mention_probe_service()
     processed = succeeded = failed = 0
+    skipped_unpaid = 0
     from app.services.integrations.mention_cost_logger import CostAttribution as _CA
     for row in due:
         tm_id = row["id"]
         try:
             full = svc.get(tm_id) or {}
+            # Meter the owner BEFORE the paid LLM probe. Registered cron_key
+            # 'llm-mention-probe' (3 cr); fails open, False only when out of credits.
+            if not charge_cron(
+                sb, "llm-mention-probe",
+                workspace_id=full.get("workspace_id"), user_id=full.get("user_id"),
+                description="LLM-visibility probe run",
+            ):
+                skipped_unpaid += 1
+                logger.info(f"cron-probe-llm: skipped {tm_id} (insufficient credits)")
+                continue
             facets = SubjectFacets.from_dict(full.get("subject_facets") or {
                 "label": full.get("subject_label"),
                 "aliases": full.get("aliases") or [],
@@ -919,7 +953,8 @@ async def cron_probe_llm(
             logger.warning(f"cron-probe-llm subject {tm_id} failed: {e}")
         processed += 1
     return {"success": True, "due_count": len(due), "processed": processed,
-            "succeeded": succeeded, "failed": failed}
+            "succeeded": succeeded, "failed": failed,
+            "skipped_insufficient_credits": skipped_unpaid}
 
 
 # ============================================================================

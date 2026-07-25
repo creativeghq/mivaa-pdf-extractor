@@ -36,6 +36,7 @@ from app.dependencies import get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
 from app.modules.job_research_notifications.service import get_job_digest_dispatcher
 from app.services.integrations.job_research_service import get_job_research_service
+from app.services.integrations.cron_billing import charge_cron
 from app.services.integrations.job_sites_kb_sync import sync_one_site_type as _sync_kb
 
 logger = logging.getLogger(__name__)
@@ -592,8 +593,30 @@ async def cron_refresh(
         logger.warning(f"job-cron: get_internal_tracked_jobs_due failed: {e}")
         return {"error": str(e)[:200]}
 
+    # Resolve owners for metering (the due RPC doesn't return them).
+    ids = [r["id"] for r in rows if r.get("id")]
+    owner_by_id: Dict[str, Dict[str, Any]] = {}
+    if ids:
+        try:
+            ores = svc.sb.table("tracked_jobs").select("id, workspace_id, user_id").in_("id", ids).execute()
+            owner_by_id = {o["id"]: o for o in (ores.data or [])}
+        except Exception as e:
+            logger.warning(f"job-cron: owner lookup failed (metering fails open): {e}")
+
     outcomes: List[Dict[str, Any]] = []
+    skipped_unpaid = 0
     for r in rows:
+        owner = owner_by_id.get(r["id"], {})
+        # Meter the owner BEFORE the paid refresh. Registered cron_key
+        # 'job-research-refresh' (3 cr); fails open, False only when out of credits.
+        if not charge_cron(
+            svc.sb, "job-research-refresh",
+            workspace_id=owner.get("workspace_id"), user_id=owner.get("user_id"),
+            description="Tracked-job search refresh",
+        ):
+            skipped_unpaid += 1
+            outcomes.append({"tracked_job_id": r["id"], "status": "skipped_insufficient_credits"})
+            continue
         try:
             o = await svc.refresh(r["id"])
             outcomes.append({"tracked_job_id": r["id"], **o})
@@ -601,7 +624,7 @@ async def cron_refresh(
             logger.warning(f"job-cron: refresh {r.get('id')} failed: {e}")
             outcomes.append({"tracked_job_id": r["id"], "error": str(e)[:200]})
 
-    return {"due": len(rows), "outcomes": outcomes}
+    return {"due": len(rows), "skipped_insufficient_credits": skipped_unpaid, "outcomes": outcomes}
 
 
 @router.post("/cron-digest")
