@@ -53,15 +53,26 @@ def query_hash(scan_type: str, query: str, country_code: Optional[str] = None) -
 def check_quota(*, ip_address: Optional[str], user_id: Optional[str]) -> QuotaStatus:
     """Return current quota usage for this IP (or user_id).
 
-    Counts ONLY successful scans — rate-limited / captcha-failed / errored
-    attempts don't burn quota. A user who hits the limit then refreshes the
-    page should not be punished for failed bot-check attempts.
+    Counts ONLY successful, NON-cached scans — rate-limited / captcha-failed /
+    errored attempts don't burn quota, and neither do cache hits. An identical
+    repeat query is served free from public_lookup_cache (no upstream spend), so
+    it must not consume one of the 2 free daily scans. A user who hits the limit
+    then refreshes the page should not be punished for failed bot-check attempts
+    or for re-running a query that was already answered from cache.
     """
     sb = get_supabase_client().client
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     since_iso = since.isoformat()
 
-    q = sb.table("public_lookup_log").select("created_at", count="exact").eq("outcome", "success").gte("created_at", since_iso)
+    # cache_hit rows are free (served from public_lookup_cache with zero upstream cost),
+    # so they must NOT count against the daily quota — only real upstream-spending scans do.
+    q = (
+        sb.table("public_lookup_log")
+        .select("created_at", count="exact")
+        .eq("outcome", "success")
+        .eq("cache_hit", False)
+        .gte("created_at", since_iso)
+    )
     if user_id:
         q = q.eq("user_id", user_id)
     elif ip_address:
