@@ -5914,6 +5914,95 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
     }
 
 
+# Operator root workspace = the platform-default / shared KB (all KB docs currently
+# live here). Tenant callers also retrieve its published + non-private, agent/public
+# docs so the shared KB reaches every workspace's agent.
+KB_SHARED_WORKSPACE_ID = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
+
+
+def _resolve_kb_access_scope(
+    supabase: SupabaseClient,
+    workspace_id: str,
+    caller: str,
+    query: str,
+) -> Dict[str, Any]:
+    """
+    Resolve what a caller may read from the KB: access levels, the trigger-keyword
+    gated category allow-list, and whether the shared root workspace is in scope.
+
+    ONE definition, shared by /search/knowledge-base and /search/read-section. A
+    read-by-id endpoint that re-derived this gate slightly differently would be a
+    BOLA hole (the caller supplies the kb_doc_id), so both paths call this.
+
+    Returns `accessible_category_ids=None` when no post-filter is needed (admin/public).
+    """
+    query_lower = (query or "").lower()
+
+    if caller == "admin":
+        # Admin sees everything — no keyword restriction
+        return {
+            "allowed_access_levels": ["admin", "agent", "public"],
+            "accessible_category_ids": None,
+            "shared_workspace_id": (
+                KB_SHARED_WORKSPACE_ID if workspace_id != KB_SHARED_WORKSPACE_ID else None
+            ),
+            "include_private": True,
+        }
+
+    if caller == "public":
+        return {
+            "allowed_access_levels": ["public"],
+            "accessible_category_ids": None,
+            # The public-website caller never reaches across workspaces.
+            "shared_workspace_id": None,
+            "include_private": False,
+        }
+
+    # Agent caller: public categories always accessible; agent-level categories only if
+    # trigger_keyword matches (or no keyword set).
+    # Include the shared root workspace's categories so root docs are gated by the SAME
+    # access_level + trigger_keyword rules instead of being dropped by the post-filter
+    # for not belonging to the caller's workspace.
+    kb_ws_scope = [workspace_id]
+    if workspace_id != KB_SHARED_WORKSPACE_ID:
+        kb_ws_scope.append(KB_SHARED_WORKSPACE_ID)
+    cats_resp = supabase.client.table("kb_categories").select(
+        "id, access_level, trigger_keyword"
+    ).in_("workspace_id", kb_ws_scope).in_(
+        "access_level", ["agent", "public"]
+    ).execute()
+
+    accessible_category_ids: List[str] = []
+    for cat in (cats_resp.data or []):
+        if cat["access_level"] == "public":
+            # Public categories: always accessible to agent
+            accessible_category_ids.append(cat["id"])
+        else:
+            # Agent-level: check trigger_keyword
+            kw = cat.get("trigger_keyword")
+            if kw is None or kw.strip() == "":
+                # No keyword restriction — always accessible
+                accessible_category_ids.append(cat["id"])
+            elif kw.lower() in query_lower:
+                # Keyword present in query — grant access
+                accessible_category_ids.append(cat["id"])
+            # else: keyword required but not found — skip this category
+
+    logger.info(f"   🔑 Accessible KB categories for query: {len(accessible_category_ids)}")
+
+    return {
+        "allowed_access_levels": ["agent", "public"],
+        "accessible_category_ids": accessible_category_ids,
+        "shared_workspace_id": (
+            KB_SHARED_WORKSPACE_ID if workspace_id != KB_SHARED_WORKSPACE_ID else None
+        ),
+        # 'private' visibility means "not published to the public KB website" — it is
+        # NOT an agent gate. Agent readability is governed by category access_level +
+        # per-doc allowed_agents.
+        "include_private": True,
+    }
+
+
 @router.post("/search/knowledge-base", response_model=KnowledgeBaseSearchResponse)
 async def search_knowledge_base(
     request: KnowledgeBaseSearchRequest,
@@ -6114,56 +6203,14 @@ async def search_knowledge_base(
             logger.info("   📚 Searching KB docs...")
             try:
                 caller = request.caller or "agent"
-                query_lower = request.query.lower()
-                # Operator root workspace = the platform-default / shared KB (all KB docs
-                # currently live here). Tenant callers (agent/admin) also retrieve its
-                # published + non-private, agent/public docs so the shared KB reaches every
-                # workspace's agent. Cross-workspace exposure is gated inside kb_match_doc_chunks.
-                _KB_SHARED_WS = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
-
-                if caller == "admin":
-                    # Admin sees everything — no keyword restriction
-                    allowed_access_levels = ["admin", "agent", "public"]
-                    accessible_category_ids = None  # no post-filter needed
-                elif caller == "public":
-                    allowed_access_levels = ["public"]
-                    accessible_category_ids = None
-                else:
-                    # Agent caller: public categories always accessible;
-                    # agent-level categories only if trigger_keyword matches (or no keyword set)
-                    allowed_access_levels = ["agent", "public"]
-
-                    # Include the shared root workspace's categories so root docs are gated
-                    # by the SAME access_level + trigger_keyword rules (below) instead of being
-                    # dropped by the post-filter for not belonging to the caller's workspace.
-                    kb_ws_scope = [request.workspace_id]
-                    if request.workspace_id != _KB_SHARED_WS:
-                        kb_ws_scope.append(_KB_SHARED_WS)
-                    cats_resp = supabase.client.table("kb_categories").select(
-                        "id, access_level, trigger_keyword"
-                    ).in_("workspace_id", kb_ws_scope).in_(
-                        "access_level", ["agent", "public"]
-                    ).execute()
-
-                    accessible_category_ids: list[str] = []
-                    for cat in (cats_resp.data or []):
-                        if cat["access_level"] == "public":
-                            # Public categories: always accessible to agent
-                            accessible_category_ids.append(cat["id"])
-                        else:
-                            # Agent-level: check trigger_keyword
-                            kw = cat.get("trigger_keyword")
-                            if kw is None or kw.strip() == "":
-                                # No keyword restriction — always accessible
-                                accessible_category_ids.append(cat["id"])
-                            elif kw.lower() in query_lower:
-                                # Keyword present in query — grant access
-                                accessible_category_ids.append(cat["id"])
-                            # else: keyword required but not found — skip this category
-
-                    logger.info(
-                        f"   🔑 Accessible KB categories for query: {len(accessible_category_ids)}"
-                    )
+                # Access gate (levels + trigger-keyword category allow-list + shared-KB
+                # scope) is resolved by the SAME helper the read-section endpoint uses.
+                # Cross-workspace exposure is additionally gated inside kb_match_doc_chunks.
+                kb_scope = _resolve_kb_access_scope(
+                    supabase, request.workspace_id, caller, request.query
+                )
+                allowed_access_levels = kb_scope["allowed_access_levels"]
+                accessible_category_ids = kb_scope["accessible_category_ids"]
 
                 # Generate text_1024 embedding for the query
                 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
@@ -6200,7 +6247,7 @@ async def search_knowledge_base(
                             # callers include private docs; only the public-website caller
                             # ('public') is restricted to visibility='public'. Without this,
                             # every "private but agent-allowed" doc was invisible to the agent.
-                            "include_private": caller in ("admin", "agent"),
+                            "include_private": kb_scope["include_private"],
                         }
                         # Per-agent allow-list: only agent callers filter by identity.
                         # Admin/public callers pass no agent_id, so allowed_agents is ignored.
@@ -6217,8 +6264,8 @@ async def search_knowledge_base(
                         # published + non-private docs. The RPC forces published+non-private on
                         # the shared branch and no-ops when shared == caller, so an operator
                         # (root) caller never bleeds its own drafts/private through this path.
-                        if caller != "public" and request.workspace_id != _KB_SHARED_WS:
-                            rpc_args["shared_workspace_id"] = _KB_SHARED_WS
+                        if kb_scope["shared_workspace_id"]:
+                            rpc_args["shared_workspace_id"] = kb_scope["shared_workspace_id"]
 
                         # Section-level retrieval: match on kb_doc_chunks (each ~1.3k-char
                         # section), gated via the parent doc INSIDE the RPC (workspace,
@@ -6293,6 +6340,168 @@ async def search_knowledge_base(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Knowledge base search failed: {str(e)}"
+        )
+
+
+class ReadSectionRequest(BaseModel):
+    """Request model for contiguous section reading (locate-then-read)."""
+    kb_doc_id: str = Field(..., description="kb_doc to read from (as returned by knowledge-base search)")
+    workspace_id: str = Field(..., description="Caller's workspace ID")
+    from_chunk_index: int = Field(default=0, ge=0, description="First section index to read (inclusive)")
+    to_chunk_index: Optional[int] = Field(
+        default=None,
+        description="Last section index to read (inclusive). Defaults to from_chunk_index + 3."
+    )
+    query: str = Field(
+        default="",
+        description=(
+            "The user's original question. Required for parity with search: agent-level "
+            "categories are trigger_keyword-gated against it, so passing an empty query "
+            "can make a keyword-gated document unreadable."
+        )
+    )
+    caller: str = Field(default="agent", description="Caller context: 'admin' | 'agent' | 'public'")
+    agent_id: Optional[str] = Field(default=None, description="Querying agent identity (allowed_agents gate)")
+    max_tokens: int = Field(
+        default=6000, ge=200, le=20000,
+        description="Token budget for the returned span. Over budget, the span is cut short and truncated=true."
+    )
+
+
+class ReadSectionResponse(BaseModel):
+    """Response model for contiguous section reading."""
+    kb_doc_id: str
+    document_title: Optional[str] = None
+    chunks: List[Dict[str, Any]] = []
+    doc_chunk_count: int = 0
+    returned_chunk_indexes: List[int] = []
+    token_total: int = 0
+    truncated: bool = False
+    outline: List[Dict[str, Any]] = []
+
+
+@router.post("/search/read-section", response_model=ReadSectionResponse)
+async def read_document_section(
+    request: ReadSectionRequest,
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Dict[str, Any] = Depends(get_current_user),
+):
+    """
+    📖 Read a contiguous run of sections from ONE knowledge-base document, in order.
+
+    The companion to `/search/knowledge-base`: search **locates** a section (it returns
+    `kb_doc_id` + `chunk_index` + `heading` per hit), this **reads outward** from it.
+    Answers that straddle a section boundary — a spec continued under the next heading,
+    a table whose caption sits in the previous chunk — are otherwise unreachable except
+    by guessing new keywords and hoping the missing part scores above threshold.
+
+    Access is gated by `_resolve_kb_access_scope` + `kb_read_doc_section`, the SAME
+    predicate `/search/knowledge-base` uses. The caller supplies `kb_doc_id`, so a
+    document it cannot read returns **404** (not 403 — a 403 would confirm the id).
+
+    Cheap by construction: pure SQL over `kb_doc_chunks`, no embedding and no LLM call.
+    """
+    try:
+        await authorize_rag_workspace(claims, request.workspace_id)
+
+        caller = request.caller or "agent"
+        from_idx = max(0, request.from_chunk_index)
+        # Default span: the located section plus a little either side of it.
+        to_idx = request.to_chunk_index if request.to_chunk_index is not None else from_idx + 3
+        if to_idx < from_idx:
+            to_idx = from_idx
+
+        scope = _resolve_kb_access_scope(supabase, request.workspace_id, caller, request.query)
+
+        rpc_args: Dict[str, Any] = {
+            "p_kb_doc_id": request.kb_doc_id,
+            "match_workspace_id": request.workspace_id,
+            "p_from_chunk_index": from_idx,
+            "p_to_chunk_index": to_idx,
+            "allowed_access_levels": scope["allowed_access_levels"],
+            "include_private": scope["include_private"],
+        }
+        if caller != "admin" and request.agent_id:
+            rpc_args["match_agent_id"] = request.agent_id
+        if scope["shared_workspace_id"]:
+            rpc_args["shared_workspace_id"] = scope["shared_workspace_id"]
+
+        resp = supabase.client.rpc("kb_read_doc_section", rpc_args).execute()
+        rows = resp.data or []
+
+        if not rows:
+            # Either the doc is invisible to this caller, or the span is out of range.
+            # Both answer 404 so the endpoint can't be used to probe for doc ids.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Section not found or not accessible",
+            )
+
+        # Trigger-keyword gate — the same post-filter search applies to its RPC rows.
+        accessible = scope["accessible_category_ids"]
+        cat_id = rows[0].get("category_id")
+        if accessible is not None and cat_id is not None and cat_id not in accessible:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Section not found or not accessible",
+            )
+
+        # Token budget. Sections are returned whole (a half-section is worse than a
+        # missing one), so the budget cuts at a section boundary and reports it.
+        budget = request.max_tokens
+        spent = 0
+        kept: List[Dict[str, Any]] = []
+        truncated = False
+        for row in rows:
+            tokens = row.get("token_count") or 0
+            if kept and spent + tokens > budget:
+                truncated = True
+                break
+            kept.append({
+                "chunk_id": row.get("chunk_id"),
+                "chunk_index": row.get("chunk_index"),
+                "heading": row.get("heading"),
+                "content": row.get("content") or "",
+                "token_count": tokens,
+            })
+            spent += tokens
+
+        doc_chunk_count = int(rows[0].get("doc_chunk_count") or 0)
+
+        # Outline of the whole requested span (including anything the budget cut), so the
+        # agent can narrow its next call instead of blindly re-reading.
+        outline = [
+            {
+                "chunk_index": r.get("chunk_index"),
+                "heading": r.get("heading"),
+                "token_count": r.get("token_count") or 0,
+            }
+            for r in rows
+        ]
+
+        logger.info(
+            f"📖 read-section doc={request.kb_doc_id} span=[{from_idx}..{to_idx}] "
+            f"returned={len(kept)}/{len(rows)} tokens={spent} truncated={truncated}"
+        )
+
+        return ReadSectionResponse(
+            kb_doc_id=request.kb_doc_id,
+            document_title=rows[0].get("document_title"),
+            chunks=kept,
+            doc_chunk_count=doc_chunk_count,
+            returned_chunk_indexes=[c["chunk_index"] for c in kept],
+            token_total=spent,
+            truncated=truncated,
+            outline=outline,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Read section failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Read section failed: {str(e)}"
         )
 
 
