@@ -119,7 +119,7 @@ async def analyze_image(
     **🔍 Image Analysis - AI-Powered Visual Understanding**
 
     Analyze images using Claude Opus 4.7 Vision (via Anthropic tool use) for
-    comprehensive visual understanding. Post-Qwen-removal (2026-05-01) all
+    comprehensive visual understanding. All
     vision tasks run on Claude — same schema, same tool-use guarantees.
 
     ## 🎯 Analysis Types

@@ -600,7 +600,7 @@ async def process_product_images(
             f"understanding={vector_stats.get('understanding', 0)}"
         )
         # Vision is Claude-only post-2026-05-01 — the live primary count is
-        # vision_analysis_claude (vision_analysis_qwen/claude_fallback are legacy
+        # vision_analysis_claude (vision_analysis_claude_fallback is the retry-rescue
         # keys that stay 0 for new analyses).
         claude_count = vector_stats.get('vision_analysis_claude', 0)
         failed_count = vector_stats.get('vision_analysis_failed', 0)

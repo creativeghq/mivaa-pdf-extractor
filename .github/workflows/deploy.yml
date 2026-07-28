@@ -536,7 +536,7 @@ jobs:
           python -c 'import supabase; print(f\"| **supabase** | Database | Database client | 🟢 Installed | {supabase.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **supabase** | Database | Database client | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import numpy; print(f\"| **numpy** | Computing | Numerical computing | 🟢 Installed | {numpy.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **numpy** | Computing | Numerical computing | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import pandas; print(f\"| **pandas** | Data | Data manipulation | 🟢 Installed | {pandas.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **pandas** | Data | Data manipulation | 🔴 Missing | N/A |' >> package_status_report.txt
-          # PyTorch removed - using cloud-only architecture (SLIG + Qwen endpoints)
+          # PyTorch removed - using cloud-only architecture (Modal GPU endpoints)
           python -c 'import openai; print(f\"| **openai** | AI/ML | OpenAI API client | 🟢 Installed | {openai.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **openai** | AI/ML | OpenAI API client | 🔴 Missing | N/A |' >> package_status_report.txt
           python -c 'import anthropic; print(f\"| **anthropic** | AI/ML | Anthropic API client | 🟢 Installed | {anthropic.__version__} |\")' >> package_status_report.txt 2>/dev/null || echo '| **anthropic** | AI/ML | Anthropic API client | 🔴 Missing | N/A |' >> package_status_report.txt
 
@@ -849,7 +849,7 @@ jobs:
           # paddleocr-api-key Modal secret). The others fall back to code
           # defaults when their GH secret is empty.
           # Deploy/redeploy: mivaa-pdf-extractor/modal_app/paddleocr_vl.py
-          # (see modal_app/README.md). Legacy SURYA_*/YOLO_*/CHANDRA_*/QWEN_*
+          # (see modal_app/README.md). Legacy SURYA_*/YOLO_*/CHANDRA_*
           # secrets have no consumer and may be deleted from GitHub Actions.
           Environment=PADDLEOCR_MODAL_API_KEY=${{ secrets.PADDLEOCR_MODAL_API_KEY }}
           Environment=PADDLEOCR_MODAL_URL=${{ secrets.PADDLEOCR_MODAL_URL }}

@@ -20,7 +20,7 @@ Understanding Embedding Strategy:
 - Embeds Claude Opus 4.7's structured vision_analysis JSON (via Anthropic tool
   use, schema-locked) as descriptive text → Voyage AI (1024D).
 - Enables spec-based search (e.g., "porcelain tile 60x120cm", "R10 slip rating").
-- Post-Qwen-removal (2026-05-01) Claude is the sole vision producer.
+- Claude is the sole vision producer.
 """
 
 import logging
@@ -304,7 +304,7 @@ class RealEmbeddingsService:
 
             # 3. Understanding Embedding (1024D) — vision_analysis JSON → Voyage AI.
             # Source vision_analysis comes from Claude Opus 4.7 via Anthropic
-            # tool use (post-Qwen-removal). Returns a dict with embedding +
+            # tool use. Returns a dict with embedding +
             # provenance so vecs_service can persist embedding_model and
             # schema_version for fallback-drift detection.
             if vision_analysis:

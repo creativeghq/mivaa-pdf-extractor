@@ -173,13 +173,6 @@ class AIPricingConfig:
         "nvidia-t4": Decimal("0.60"),        # ~$0.60/hour (16GB VRAM)
     }
 
-    # Qwen Vision Model — REMOVED 2026-05-01.
-    # All vision tasks moved to Anthropic Claude Opus 4.7. The QWEN_PRICING
-    # dict is kept as an empty placeholder so any downstream code that
-    # iterates over `[QWEN_PRICING, VISUAL_EMBEDDING_PRICING, ...]` still
-    # works without raising KeyError on the dict itself.
-    QWEN_PRICING: dict = {}
-
     # SLIG Visual Embedding Model (Modal GPU)
     VISUAL_EMBEDDING_PRICING = {
         "slig-768d": {
@@ -432,7 +425,6 @@ class AIPricingConfig:
             **cls.EMBEDDING_PRICING,
             **cls.VOYAGE_PRICING,
             **cls.VISION_PRICING,
-            **cls.QWEN_PRICING,
             **cls.VISUAL_EMBEDDING_PRICING,
             **cls.PADDLEOCR_PRICING,
             **cls.REPLICATE_PRICING,
@@ -618,7 +610,7 @@ class AIPricingConfig:
         """
         # Find the model in any time-based pricing dictionary
         pricing = None
-        for pricing_dict in [cls.QWEN_PRICING, cls.VISUAL_EMBEDDING_PRICING, cls.PADDLEOCR_PRICING]:
+        for pricing_dict in [cls.VISUAL_EMBEDDING_PRICING, cls.PADDLEOCR_PRICING]:
             if model in pricing_dict and pricing_dict[model].get("billing_type") == "time_based":
                 pricing = pricing_dict[model]
                 break
@@ -705,7 +697,6 @@ class AIPricingConfig:
         """Check if a model uses time-based billing (HuggingFace endpoints)."""
         # Check all time-based pricing dictionaries
         time_based_dicts = [
-            cls.QWEN_PRICING,
             cls.VISUAL_EMBEDDING_PRICING,
             cls.PADDLEOCR_PRICING,
         ]

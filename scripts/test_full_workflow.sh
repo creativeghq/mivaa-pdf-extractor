@@ -134,7 +134,6 @@ check_health() {
 
     if [ "$db_status" = "healthy" ] && [ "$storage_status" = "healthy" ] && [ "$anthropic_status" = "healthy" ]; then
         print_success "Service is healthy (critical services: database, storage, anthropic)"
-        print_warning "Note: Qwen endpoint may be unhealthy but not required for this test (using Claude)"
         return 0
     else
         print_error "Critical services unhealthy - DB: $db_status, Storage: $storage_status, Anthropic: $anthropic_status"

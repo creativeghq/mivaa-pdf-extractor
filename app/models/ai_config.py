@@ -38,7 +38,7 @@ class AIModelConfig(BaseModel):
         description="Input type for Voyage AI: 'document' for indexing, 'query' for search"
     )
     
-    # Image Classification Models — Anthropic Claude Opus 4.7 (Qwen
+    # Image Classification Models — Anthropic Claude Opus 4.7 (the
     # removed 2026-05-01). Tool use guarantees schema-conformant output.
     classification_primary_model: str = Field(
         default="claude-opus-4-8",
@@ -46,7 +46,7 @@ class AIModelConfig(BaseModel):
     )
     classification_validation_model: str = Field(
         default="claude-opus-4-8",
-        description="Validation model — same as primary now that Qwen is gone."
+        description="Validation model — same as the primary vision model."
     )
     classification_confidence_threshold: float = Field(
         default=0.7,

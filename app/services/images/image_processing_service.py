@@ -169,7 +169,7 @@ class ImageProcessingService:
 
         Models default to Anthropic Claude Opus 4.7 (vision). The
         primary/validation parameters are kept for call-site compatibility
-        but both flow into the same Anthropic call site post-Qwen-removal.
+        but both flow into the same Anthropic call site.
 
         Args:
             extracted_images: List of extracted image data
@@ -189,7 +189,7 @@ class ImageProcessingService:
 
         _cfg = _get_settings()
         # Both "primary" and "validation" now point at the same Anthropic
-        # model — Stage 3 has been single-tier since Qwen was removed
+        # model — Stage 3 is single-tier
         # (2026-05-01). The primary/validation parameters are kept for
         # call-site compatibility but the values flow into telemetry only.
         primary_model = primary_model or 'claude-opus-4-8'
@@ -210,7 +210,7 @@ class ImageProcessingService:
         ai_service = get_ai_client_service()
 
         # Stage 3 image classification runs on Anthropic Claude Opus 4.7 via
-        # tool use (post-Qwen-removal, 2026-05-01). The deployed Qwen3.6-A3B
+        # tool use. The deployed
         # endpoint was a text-only MoE model that 404'd on every vision call,
         # so the system was already silently 100% Claude — this just makes
         # the architecture honest. Tool use guarantees schema-conformant
@@ -227,7 +227,7 @@ class ImageProcessingService:
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
             """Image classification via Anthropic Claude Opus 4.7 + tool use.
 
-            Despite the legacy name, this no longer routes through any HF/Qwen
+            Despite the legacy name, this no longer routes through any HF
             endpoint — Stage 3 has been Anthropic-only since 2026-05-01.
             Tool use guarantees schema-conformant JSON output (no regex
             recovery, no markdown stripping, no `_invalid_response` branch).
@@ -1025,7 +1025,7 @@ class ImageProcessingService:
     # The flow is:
     #   1. Run Claude Opus 4.7 via Anthropic tool use (schema-locked
     #      VisionAnalysis Pydantic model) — the sole vision producer post
-    #      the 2026-05-01 Qwen removal.
+    #      the sole vision producer.
     #   2. Tool use eliminates JSON regex recovery and provides a hard
     #      guarantee of schema adherence.
     #   3. Parse the response into a dict, validate against the expected
@@ -1188,7 +1188,7 @@ class ImageProcessingService:
         Every exit point stamps document_images.vision_analysis_failed +
         vision_analysis_attempts so per-image failures are queryable.
 
-        Post 2026-05-01 (Qwen removal), this is the only vision path. The
+        This is the only vision path. The
         function name is retained to avoid churn across call sites.
         """
         try:
@@ -1314,15 +1314,15 @@ class ImageProcessingService:
         Strategy:
           1. Run Claude Opus 4.7 via Anthropic tool use (schema-locked
              VisionAnalysis) — the sole vision producer since the
-             2026-05-01 Qwen removal.
+             sole vision producer.
           2. On failure, return (None, FAILED) so the caller can record the
              failure in job-level stats and the image gets all other
              vectors except `understanding_1024`.
 
         Returns:
             (vision_analysis_dict, source) where source is the string value
-            of a `VisionProvider` enum member: QWEN | CLAUDE_FALLBACK | SKIPPED | FAILED.
-            Only QWEN and CLAUDE_FALLBACK are persistable (DB CHECK constraint);
+            of a `VisionProvider` enum member: CLAUDE | CLAUDE_FALLBACK | SKIPPED | FAILED.
+            Only CLAUDE and CLAUDE_FALLBACK are persistable (DB CHECK constraint);
             SKIPPED and FAILED are in-memory only — the caller never writes a
             row when one of those is returned.
         """
@@ -1513,7 +1513,7 @@ class ImageProcessingService:
                     vision_base64_raw = base64.b64encode(image_bytes).decode('utf-8')
 
                 # Run rich material analysis (Claude Opus 4.7 via Anthropic
-                # tool use, post-Qwen-removal) to produce the structured
+                # tool use) to produce the structured
                 # `vision_analysis` JSON. This is the input the Voyage
                 # understanding embedding consumes — without it, the 1024D
                 # understanding branch is skipped and we lose the 7th vector.
@@ -1532,7 +1532,7 @@ class ImageProcessingService:
                 # failure to block embedding generation.
                 #
                 # Defensive gate: only persist if BOTH vision_analysis is present
-                # AND the source value is in the persistable set (`qwen` or
+                # AND the source value is in the persistable set (`claude` or
                 # `claude_fallback`). The DB CHECK constraint enforces the same
                 # rule, so writing a non-persistable value would fail anyway.
                 try:
@@ -2083,7 +2083,7 @@ class ImageProcessingService:
                 logger.debug(f"   ⚠️ Tracker init update failed (non-critical): {tracker_init_err}")
 
         # Run per-image work concurrently behind a semaphore. Per-image work
-        # has no cross-image state. Post-Qwen-removal (2026-05-01) the cap
+        # has no cross-image state. The cap
         # is governed by the Anthropic concurrency limit on the API key,
         # not an HF replica count — 32 in-flight is comfortable for Opus
         # vision. The outer batching loop bounds memory.

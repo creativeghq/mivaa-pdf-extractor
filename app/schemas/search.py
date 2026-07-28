@@ -639,7 +639,7 @@ class MultiModalAnalysisRequest(BaseModel):
     material_analysis_types: List[str] = Field(default_factory=list, description="Types of material analysis (spectral, chemical, mechanical, thermal)")
     # Field name retained for API stability — actual model is SLIG (SigLIP2 768D), not CLIP.
     enable_clip_embeddings: bool = Field(False, description="Generate SLIG (SigLIP2 768D) embeddings for visual similarity")
-    # Vision now runs on Claude Opus 4.7 via Anthropic tool use (post-Qwen-removal 2026-05-01).
+    # Vision runs on Claude Opus 4.7 via Anthropic tool use.
     enable_vision_analysis: bool = Field(False, description="Use Claude Opus 4.7 vision for material understanding")
     
     # Advanced material analysis

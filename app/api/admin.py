@@ -1706,7 +1706,7 @@ async def process_image_embedding_regeneration_job(
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Understanding-embedding backfill (post-Qwen-removal, 2026-05-01)
+# Understanding-embedding backfill
 # ──────────────────────────────────────────────────────────────────────
 
 class UnderstandingBackfillRequest(BaseModel):

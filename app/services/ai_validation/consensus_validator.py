@@ -41,7 +41,7 @@ class ConsensusValidator:
     LOW_AGREEMENT = 0.3    # Low consensus - flag for human review
     
     # Model weights (based on general performance). Anthropic-only since
-    # the 2026-05-01 Qwen removal — kept the dict structure so future model
+    # a single vision provider — kept the dict structure so future model
     # additions (Sonnet, Haiku 4.6, etc.) can slot in easily.
     MODEL_WEIGHTS = {
         "claude-haiku-4-5": 0.85,

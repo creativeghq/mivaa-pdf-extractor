@@ -137,7 +137,7 @@ def get_claude_concurrency_limit() -> int:
     """
     Get safe concurrency limit for Claude API requests.
 
-    Post-Qwen-removal (2026-05-01) Stage 3 image classification AND
+    Stage 3 image classification AND
     vision_analysis both run through Anthropic Claude Opus 4.7. The
     previous hardcoded `2` was set when Claude was a rare fallback —
     leaving it at 2 now serializes ~80 images/product behind a 2-wide

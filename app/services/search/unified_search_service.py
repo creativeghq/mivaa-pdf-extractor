@@ -956,7 +956,7 @@ class UnifiedSearchService:
         Haiku 4.5 (fast, cheap, structured-output friendly). Returns the
         parsed dict or raises on failure (caller falls back to GPT-4o-mini).
 
-        Renamed from `_parse_query_with_qwen` post-2026-05-01 — Qwen was
+        Query parsing runs on Claude —
         removed from the platform but this method retained the legacy
         name + log strings, which were misleading to operators reading
         the search-side logs.

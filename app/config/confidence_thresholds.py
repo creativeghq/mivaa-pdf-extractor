@@ -189,7 +189,7 @@ class EscalationRules:
     Rules for escalating AI tasks to more powerful (and expensive) models.
     """
     
-    # Model escalation chain (cheapest to most expensive). Post-Qwen-removal
+    # Model escalation chain (cheapest to most expensive).
     # 2026-05-01: vision is Anthropic-only.
     MODEL_CHAIN = [
         "claude-haiku-4-5",   # Cheapest vision-capable
@@ -197,7 +197,7 @@ class EscalationRules:
         "claude-opus-4-8",    # Most powerful (for critical tasks)
     ]
 
-    # Cost multipliers (Haiku 4.5 = baseline post-Qwen-removal).
+    # Cost multipliers (Haiku 4.5 = baseline).
     COST_MULTIPLIERS = {
         "claude-haiku-4-5": 1.0,       # Baseline
         "claude-sonnet-4-6": 4.0,

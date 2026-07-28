@@ -4,7 +4,7 @@ Claude Validation Service
 Provides async background validation for images with low quality scores, to
 enhance image analysis quality.
 
-ARCHITECTURE (vision is Anthropic-only since the Qwen removal, 2026-05-01):
+ARCHITECTURE (vision is Anthropic-only):
 - Initial per-image analysis runs on Claude Opus during sync processing
 - Claude validation queued for low-quality images (score < 0.7)
 - Updates image records with enhanced analysis

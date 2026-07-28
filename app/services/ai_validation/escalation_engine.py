@@ -54,7 +54,7 @@ class EscalationEngine:
         task_type: str,
         task_function: Callable,
         task_data: Dict[str, Any],
-        # Default model post Qwen-removal (2026-05-01) is Claude Haiku 4.5
+        # Default model is Claude Haiku 4.5
         # (fast vision-capable). Callers can override per-task.
         initial_model: str = "claude-haiku-4-5",
         job_id: Optional[str] = None,

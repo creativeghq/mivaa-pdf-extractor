@@ -75,10 +75,10 @@ class ChunkTypeClassificationService:
                 and len(content) >= 50  # Not worth LLM call for tiny chunks
             )
             if is_ambiguous:
-                qwen_result = await self._classify_with_qwen(content)
-                if qwen_result and qwen_result.confidence > classification['confidence']:
-                    logger.info(f"   🤖 Claude upgraded classification: {classification['chunk_type'].value} → {qwen_result.chunk_type.value} ({qwen_result.confidence:.2f})")
-                    return qwen_result
+                llm_result = await self._classify_with_claude(content)
+                if llm_result and llm_result.confidence > classification['confidence']:
+                    logger.info(f"   🤖 Claude upgraded classification: {classification['chunk_type'].value} → {llm_result.chunk_type.value} ({llm_result.confidence:.2f})")
+                    return llm_result
 
             # Extract structured metadata based on final classification
             metadata = self._extract_structured_metadata(content, classification['chunk_type'])
@@ -99,11 +99,10 @@ class ChunkTypeClassificationService:
                 reasoning=f"Classification failed: {error}"
             )
 
-    async def _classify_with_qwen(self, content: str) -> Optional[ChunkClassificationResult]:
+    async def _classify_with_claude(self, content: str) -> Optional[ChunkClassificationResult]:
         """
         Use Anthropic Claude Sonnet 4.6 to classify chunks that pattern matching
-        couldn't confidently resolve. Method name retained for call-site
-        compatibility — actual model is Sonnet 4.6 + tool use.
+        couldn't confidently resolve (tool use, schema-locked).
         """
         try:
             import os

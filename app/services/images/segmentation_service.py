@@ -92,13 +92,12 @@ Return ONLY the JSON array. Example:
 class SegmentationService:
     """Detects material zones in 3D renders via Anthropic Claude Opus.
 
-    Note (2026-05-01): we used to attempt Qwen3-VL on an HF endpoint as a
-    speed-optimised primary, but the configured endpoint serves a text-only
-    model (Qwen3.6-35B-A3B-FP8) so every Qwen call 404'd in 0.7s and fell
-    through to Anthropic. Qwen has been removed entirely until/unless a real
-    Qwen-VL endpoint is provisioned. Claude Opus 4.7 is the only path now,
-    and quality on this task is already excellent (22 well-described zones
-    on a bathroom render in ~40s with catalog-grade material names).
+    Claude Opus 4.7 is the only path, and quality on this task is excellent
+    (22 well-described zones on a bathroom render in ~40s with catalog-grade
+    material names). Do NOT add a second vision provider here without a
+    measured quality/cost case AND a health probe that fails loudly - the
+    last attempt silently 404'd on every call for months while quietly
+    falling through to Anthropic, so nothing ever looked broken.
     """
 
     def __init__(self):

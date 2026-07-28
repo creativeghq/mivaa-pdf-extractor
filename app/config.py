@@ -429,7 +429,7 @@ class Settings(BaseSettings):
     vision_guided_provider: str = Field(
         default="anthropic",
         env="VISION_GUIDED_PROVIDER",
-        description="Vision model provider: 'anthropic' (Claude — primary post-Qwen-removal), 'openai' (GPT-4o, fallback only)"
+        description="Vision model provider: 'anthropic' (Claude — primary), 'openai' (GPT-4o, fallback only)"
     )
     vision_guided_model: str = Field(
         default="claude-opus-4-8",
@@ -591,7 +591,7 @@ class Settings(BaseSettings):
         description="Fallback to OpenAI if Voyage AI fails"
     )
 
-    # Document Chunking Models — Sonnet 4.6 chosen post-Qwen-removal
+    # Document Chunking Models — Sonnet 4.6
     # (2026-05-01). Chunking is a pure text task where Sonnet sits at the
     # quality ceiling; Opus would be 5× more expensive on the most
     # token-heavy step in the pipeline for a marginal accuracy gain.

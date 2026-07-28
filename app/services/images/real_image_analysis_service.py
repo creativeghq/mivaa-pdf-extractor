@@ -6,7 +6,7 @@ Real Image Analysis Service - Stage 4 Implementation
 3. Material property extraction
 4. Quality scoring
 
-Post-Qwen-removal (2026-05-01) all vision tasks run on Claude — same schema,
+All vision tasks run on Claude — same schema,
 same tool-use guarantees. No HF vision endpoint involved.
 """
 
