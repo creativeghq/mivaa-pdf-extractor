@@ -21,7 +21,15 @@ from app.middleware.jwt_auth import WorkspaceContext
 
 logger = logging.getLogger(__name__)
 
+from app.services.integrations.mention_cost_logger import debit_credits, refund_credits
+
 router = APIRouter(prefix="/api/products", tags=["Products"])
+
+# Cost of a manual product creation. The base covers the Voyage text embedding and facet
+# canonicalization; the per-image charge covers the image suite (Claude vision_analysis →
+# Voyage understanding + 4 aspect vectors), which is what actually costs money.
+CREATE_MANUAL_BASE_CREDITS = 1
+CREATE_MANUAL_IMAGE_CREDITS = 1
 
 
 # ============================================================================
@@ -503,9 +511,36 @@ async def create_manual_product(
     SAME ingest core as XML import (facet canonicalization → Voyage text_embedding_1024 →
     full image suite). Attributed to the dealer through factory_name = their business name.
     Price + supply_mode seed the marketplace cascade (product_prices on the dealer's row).
+
+    Credit-metered. The image suite is the expensive part — every photo runs Claude vision
+    (`vision_analysis`) plus Voyage for the understanding and four aspect vectors — and this
+    route is reachable by any authenticated workspace member, so it ran that for free on
+    every dealer-added product. Debited BEFORE the work per invariant #10, and refunded if
+    creation fails.
     """
     svc = DataImportService()
     ws = ctx.workspace_id
+
+    # 1 credit for the product itself, 1 per image analysed. Root/operator is not billed —
+    # it owns the platform, same rule as the inbound sync and the other metered routes.
+    user_id = getattr(ctx, "user_id", None)
+    n_images = len(request.images or [])
+    debit_amount = 0
+    if user_id:
+        try:
+            wsrow = svc.supabase.table('workspaces').select('is_root') \
+                .eq('id', ws).limit(1).execute()
+            is_root = bool(wsrow.data and wsrow.data[0].get('is_root'))
+        except Exception:
+            is_root = False
+        if not is_root:
+            debit_amount = CREATE_MANUAL_BASE_CREDITS + n_images * CREATE_MANUAL_IMAGE_CREDITS
+
+    if debit_amount and not debit_credits(
+        user_id=user_id, amount=debit_amount,
+        operation_type="product.create_manual", workspace_id=ws,
+    ):
+        raise HTTPException(status_code=402, detail="Insufficient credits")
 
     # Attribute the product to the dealer through the existing factory meta field.
     factory_name = None
@@ -551,8 +586,14 @@ async def create_manual_product(
         )
     except Exception as e:
         logger.error(f"create_manual_product failed: {e}")
+        if debit_amount:
+            refund_credits(user_id=user_id, amount=debit_amount,
+                           operation_type="product.create_manual", workspace_id=ws)
         raise HTTPException(status_code=500, detail=str(e))
     if not product_id:
+        if debit_amount:
+            refund_credits(user_id=user_id, amount=debit_amount,
+                           operation_type="product.create_manual", workspace_id=ws)
         raise HTTPException(status_code=500, detail="Product creation failed")
 
     # Passthrough for first-class fields the admin product modal carries that the shared
