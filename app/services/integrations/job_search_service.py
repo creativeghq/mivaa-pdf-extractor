@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 # exponential backoff honouring Retry-After instead of dropping the source.
 _FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 _FIRECRAWL_MAX_CONCURRENCY = int(os.getenv("FIRECRAWL_MAX_CONCURRENCY", "2"))
-_FIRECRAWL_MIN_INTERVAL_S = float(os.getenv("FIRECRAWL_MIN_INTERVAL_S", "0.6"))
+_FIRECRAWL_MIN_INTERVAL_S = float(os.getenv("FIRECRAWL_MIN_INTERVAL_S", "0.8"))
 _firecrawl_sem: Optional[asyncio.Semaphore] = None
 _firecrawl_last_call = [0.0]  # mutable holder for last-request monotonic time
 
@@ -66,7 +66,7 @@ def _get_firecrawl_sem() -> asyncio.Semaphore:
 
 
 async def firecrawl_scrape(payload: Dict[str, Any], *, api_key: str,
-                           timeout: float = 75.0, max_retries: int = 4) -> Dict[str, Any]:
+                           timeout: float = 75.0, max_retries: int = 6) -> Dict[str, Any]:
     """POST to Firecrawl /scrape under the global concurrency cap, retrying on
     429 (and transient 5xx / timeouts) with exponential backoff. Returns the
     parsed JSON body; raises on non-retryable errors or exhausted retries."""
@@ -91,7 +91,9 @@ async def firecrawl_scrape(payload: Dict[str, Any], *, api_key: str,
                     except ValueError:
                         wait = 0.0
                     if wait <= 0:
-                        wait = min(2.0 ** attempt, 20.0)
+                        # 429s need the rate WINDOW to reset, so back off harder
+                        # (ceiling 30s) than for transient errors.
+                        wait = min(2.0 ** (attempt + 1), 30.0)
                     last_exc = RuntimeError("429 Too Many Requests")
                 elif resp.status_code in (408, 500, 502, 503, 504):
                     wait = min(2.0 ** attempt, 15.0)
