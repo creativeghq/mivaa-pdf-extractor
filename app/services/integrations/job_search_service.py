@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -40,6 +41,71 @@ from pydantic import BaseModel, Field
 from app.services.integrations import job_cost_logger as costs
 
 logger = logging.getLogger(__name__)
+
+
+# ─── Shared Firecrawl rate-limiter (fix 2026-07-25) ─────────────────────────
+# EVERY Firecrawl /scrape call — careers-board scraping AND lead verification —
+# must go through this single gate. Previously the two paths used independent
+# semaphores (6 + 5) that ran concurrently within one refresh, so ~11 requests
+# hit Firecrawl at once and it returned 429 for a third of the boards (which
+# then failed with no retry). One global concurrency cap + a minimum spacing
+# between requests keeps us under the plan limit; 429s are retried with
+# exponential backoff honouring Retry-After instead of dropping the source.
+_FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
+_FIRECRAWL_MAX_CONCURRENCY = int(os.getenv("FIRECRAWL_MAX_CONCURRENCY", "2"))
+_FIRECRAWL_MIN_INTERVAL_S = float(os.getenv("FIRECRAWL_MIN_INTERVAL_S", "0.6"))
+_firecrawl_sem: Optional[asyncio.Semaphore] = None
+_firecrawl_last_call = [0.0]  # mutable holder for last-request monotonic time
+
+
+def _get_firecrawl_sem() -> asyncio.Semaphore:
+    global _firecrawl_sem
+    if _firecrawl_sem is None:
+        _firecrawl_sem = asyncio.Semaphore(_FIRECRAWL_MAX_CONCURRENCY)
+    return _firecrawl_sem
+
+
+async def firecrawl_scrape(payload: Dict[str, Any], *, api_key: str,
+                           timeout: float = 75.0, max_retries: int = 4) -> Dict[str, Any]:
+    """POST to Firecrawl /scrape under the global concurrency cap, retrying on
+    429 (and transient 5xx / timeouts) with exponential backoff. Returns the
+    parsed JSON body; raises on non-retryable errors or exhausted retries."""
+    sem = _get_firecrawl_sem()
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    last_exc: Optional[Exception] = None
+    for attempt in range(max_retries):
+        wait = 0.0
+        async with sem:
+            # Space out requests globally to stay under the per-minute limit.
+            gap = time.monotonic() - _firecrawl_last_call[0]
+            if gap < _FIRECRAWL_MIN_INTERVAL_S:
+                await asyncio.sleep(_FIRECRAWL_MIN_INTERVAL_S - gap)
+            _firecrawl_last_call[0] = time.monotonic()
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10.0)) as client:
+                    resp = await client.post(_FIRECRAWL_SCRAPE_URL, headers=headers, json=payload)
+                if resp.status_code == 429:
+                    ra = resp.headers.get("Retry-After")
+                    try:
+                        wait = float(ra) if ra else 0.0
+                    except ValueError:
+                        wait = 0.0
+                    if wait <= 0:
+                        wait = min(2.0 ** attempt, 20.0)
+                    last_exc = RuntimeError("429 Too Many Requests")
+                elif resp.status_code in (408, 500, 502, 503, 504):
+                    wait = min(2.0 ** attempt, 15.0)
+                    last_exc = RuntimeError(f"{resp.status_code} transient")
+                else:
+                    resp.raise_for_status()
+                    return resp.json()
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                wait = min(2.0 ** attempt, 15.0)
+                last_exc = e
+        # Back off OUTSIDE the semaphore so a sleeping request never holds a slot.
+        if attempt < max_retries - 1:
+            await asyncio.sleep(wait + random.uniform(0.0, 0.75))
+    raise last_exc or RuntimeError("firecrawl_scrape failed")
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -796,14 +862,12 @@ async def _verify_firecrawl_one(h: JobHit, attribution) -> Dict[str, Any]:
     err: Optional[str] = None
     verdict: Dict[str, Any] = {"is_valid": False, "is_closed": False, "posted_at_text": None}
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=10.0)) as client:
-            resp = await client.post(
-                "https://api.firecrawl.dev/v2/scrape",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"url": h.url, "formats": [{"type": "json", "schema": _FIRECRAWL_VERIFY_SCHEMA}], "onlyMainContent": True},
-            )
-            resp.raise_for_status()
-            data = resp.json()
+        # Same shared rate-limiter as the careers scraper — verification and
+        # scraping used to hit Firecrawl concurrently and trip its 429s.
+        data = await firecrawl_scrape(
+            {"url": h.url, "formats": [{"type": "json", "schema": _FIRECRAWL_VERIFY_SCHEMA}], "onlyMainContent": True},
+            api_key=api_key, timeout=40.0,
+        )
         credits = int(data.get("creditsUsed") or 1)
         extracted = ((data.get("data") or {}).get("json") or {}) or {}
         is_posting = bool(extracted.get("is_job_posting"))
@@ -1443,71 +1507,41 @@ async def search_via_firecrawl_careers(
         err: Optional[str] = None
         out: List[JobHit] = []
         credits = 1
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-                resp = await client.post(
-                    "https://api.firecrawl.dev/v2/scrape",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={
-                        "url": url,
-                        # A guiding prompt is REQUIRED — pure-schema extraction
-                        # silently returned 0 listings on most board layouts
-                        # (4dayWeek/TheProductFolks/ChoppingBlock etc. all yielded
-                        # nothing despite the jobs being right there in the HTML).
-                        # With this prompt 4dayWeek went 0 → 50. onlyMainContent
-                        # off + a short render wait so JS-built boards populate.
-                        "formats": [{
-                            "type": "json",
-                            "schema": schema,
-                            "prompt": (
-                                "Extract EVERY job posting listed on this careers / job-board page. "
-                                "For each posting return: url (the direct link to that specific job), "
-                                "title, company, location, and when shown employment_type, seniority, "
-                                "posted_at, and whether it is remote. Return ALL postings on the page, "
-                                "not just the first few."
-                            ),
-                        }],
-                        "onlyMainContent": False,
-                        "waitFor": 3500,
-                    },
-                )
-                resp.raise_for_status()
-                data = resp.json()
+        # A guiding prompt is REQUIRED — pure-schema extraction silently returns 0
+        # on most board layouts (4dayWeek/TheProductFolks/ChoppingBlock all yielded
+        # nothing despite the jobs being in the HTML). onlyMainContent off + a
+        # render wait so JS-built boards populate.
+        _EXTRACT_PROMPT = (
+            "Extract EVERY job posting listed on this careers / job-board page. "
+            "For each posting return: url (the direct link to that specific job), "
+            "title, company, location, and when shown employment_type, seniority, "
+            "posted_at, and whether it is remote. Return ALL postings on the page, "
+            "not just the first few."
+        )
 
+        def _body(wait_ms: int) -> Dict[str, Any]:
+            return {
+                "url": url,
+                "formats": [{"type": "json", "schema": schema, "prompt": _EXTRACT_PROMPT}],
+                "onlyMainContent": False,
+                "waitFor": wait_ms,
+            }
+
+        try:
+            # All Firecrawl calls go through the shared rate-limiter (concurrency
+            # cap + 429/backoff). This is what stops the run from self-inflicting
+            # 429s that used to blank ~16 boards.
+            data = await firecrawl_scrape(_body(3500), api_key=api_key)
             payload = (data.get("data") or {})
             credits = int(data.get("creditsUsed") or 1)
             extracted = (payload.get("json") or {}) or {}
 
-            # Retry-on-empty: Firecrawl's LLM extraction is intermittently flaky —
-            # the same board yields 12 one run and 0 the next (observed on
-            # theproductfolks / remotive). A zero from a page that *does* have
-            # jobs is indistinguishable from a genuinely dead board, so retry once
-            # with a longer render wait before accepting the zero.
+            # Retry-on-empty: extraction is intermittently flaky (theproductfolks
+            # 12→0, remotive 35→0). A zero from a page that DOES have jobs looks
+            # identical to a dead board — retry once with a longer render wait.
             if not (extracted.get("listings") or []):
-                await asyncio.sleep(1.5)
-                async with httpx.AsyncClient(timeout=httpx.Timeout(75.0, connect=10.0)) as client2:
-                    resp2 = await client2.post(
-                        "https://api.firecrawl.dev/v2/scrape",
-                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                        json={
-                            "url": url,
-                            "formats": [{
-                                "type": "json",
-                                "schema": schema,
-                                "prompt": (
-                                    "Extract EVERY job posting listed on this careers / job-board page. "
-                                    "For each posting return: url (the direct link to that specific job), "
-                                    "title, company, location, and when shown employment_type, seniority, "
-                                    "posted_at, and whether it is remote. Return ALL postings on the page, "
-                                    "not just the first few."
-                                ),
-                            }],
-                            "onlyMainContent": False,
-                            "waitFor": 8000,
-                        },
-                    )
-                    resp2.raise_for_status()
-                    data2 = resp2.json()
+                await asyncio.sleep(1.0)
+                data2 = await firecrawl_scrape(_body(8000), api_key=api_key)
                 payload2 = (data2.get("data") or {})
                 extracted2 = (payload2.get("json") or {}) or {}
                 credits += int(data2.get("creditsUsed") or 1)
