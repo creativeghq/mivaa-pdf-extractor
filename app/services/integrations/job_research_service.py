@@ -198,6 +198,10 @@ class JobResearchService:
         digest_day_of_week: Optional[int] = None,
         alert_channels: Optional[List[str]] = None,
         alert_webhook_url: Optional[str] = None,
+        # Burst alerting — see the note on ALLOWED in update(). Optional so existing callers
+        # are unaffected; the column defaults (false / 10) still apply when omitted.
+        alert_on_burst: Optional[bool] = None,
+        burst_threshold: Optional[int] = None,
         refresh_interval_hours: int = 24,
         max_age_days: int = 14,
         source_conversation_id: Optional[str] = None,
@@ -262,6 +266,10 @@ class JobResearchService:
             "digest_day_of_week": digest_day_of_week,
             "alert_channels": alert_channels or ["bell", "email"],
             "alert_webhook_url": alert_webhook_url,
+            # Omit when not supplied so the column defaults stand, rather than writing NULL
+            # into a NOT NULL DEFAULT false column.
+            **({"alert_on_burst": bool(alert_on_burst)} if alert_on_burst is not None else {}),
+            **({"burst_threshold": max(1, min(1000, int(burst_threshold)))} if burst_threshold is not None else {}),
             # Daily floor (2026-06-27): never schedule a sub-daily refresh. A
             # job search runs at most once per day; the cadence RPC also floors
             # this at runtime as a backstop.
@@ -425,9 +433,24 @@ class JobResearchService:
             "label", "keywords", "excluded_keywords", "location", "country_code",
             "remote_only", "seniority", "employment_type", "salary_min", "salary_currency",
             "excluded_companies", "preferred_companies", "sources_enabled", "careers_page_urls", "rss_feed_urls",
-            "digest_enabled", "digest_hour_utc", "alert_channels", "alert_webhook_url",
+            # `digest_day_of_week` was validated by UpdateRequest (ge=0, le=6), documented as
+            # "0=Sunday..6=Saturday, NULL = daily", and IS honoured downstream by
+            # get_tracked_jobs_due_for_digest — but it was missing here, so the PATCH returned
+            # 200 with the old value. A user switching from daily to weekly got a success
+            # response and kept receiving it daily. (audit #305)
+            "digest_enabled", "digest_hour_utc", "digest_day_of_week",
+            "alert_channels", "alert_webhook_url",
+            # `alert_on_burst` / `burst_threshold` gate a full ~40-line burst-alert path in
+            # job_research_notifications (threshold, 2h cooldown, last_burst_alert_at). They
+            # had NO write path anywhere — absent from the create payload, from UpdateRequest
+            # and from here — so with a column default of false the guard could never be
+            # false-y and the whole branch was unreachable. (audit #305)
+            "alert_on_burst", "burst_threshold",
             "refresh_interval_hours", "max_age_days", "auto_expand_keywords", "is_active",
         }
+        # NOTE `v is not None` means a nullable field cannot be CLEARED through this path —
+        # digest_day_of_week can be set to a weekday but not reset back to daily. Left as-is
+        # rather than widened blindly: several fields here are non-nullable and would break.
         clean = {k: v for k, v in patch.items() if k in ALLOWED and v is not None}
         # Daily floor (2026-06-27): sub-daily refresh is not allowed.
         if "refresh_interval_hours" in clean:

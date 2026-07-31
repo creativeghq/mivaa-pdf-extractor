@@ -101,6 +101,10 @@ class UpdateTrackedJobRequest(BaseModel):
     digest_day_of_week: Optional[int] = Field(None, ge=0, le=6)
     alert_channels: Optional[List[str]] = None
     alert_webhook_url: Optional[str] = None
+    # Burst alerting. The notifier implements this fully (threshold + 2h cooldown), but the
+    # flags had no write path at all, so the feature was unreachable code. (audit #305)
+    alert_on_burst: Optional[bool] = None
+    burst_threshold: Optional[int] = Field(None, ge=1, le=1000)
     refresh_interval_hours: Optional[int] = Field(None, ge=1, le=168)
     max_age_days: Optional[int] = Field(None, ge=1, le=365)
     is_active: Optional[bool] = None
