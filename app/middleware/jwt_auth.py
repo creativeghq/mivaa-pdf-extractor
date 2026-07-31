@@ -138,12 +138,17 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/internal",              # Service-to-service (edge) incl. /api/internal/catalog cron
             # Internal compute endpoints called by edge fns without a Supabase JWT
             # (kb-generate-embedding / kb-embedding-backfill hit /api/embeddings with
-            # no auth; generate-pbr-maps hits /api/svbrdf with a service_role token the
-            # middleware rejects). They were always open pre-A1. Excluded to restore
-            # them; FOLLOW-UP (#250): send the mk_ key from those callers + add a
-            # route-level guard, then remove these two lines.
+            # no auth). They were always open pre-A1. Excluded to restore them;
+            # FOLLOW-UP (#250): send the mk_ key from those callers + add a
+            # route-level guard, then remove this line.
+            #
+            # "/api/svbrdf" was here for generate-pbr-maps. That edge function was
+            # deleted and this app registers no SVBRDF router, so the entry authenticated
+            # nothing — it just reserved an unauthenticated prefix that the next route
+            # added under /api/svbrdf/* would silently inherit. Removed 2026-07-31
+            # (audit #304 finding 8). Re-adding a PBR route means giving it its own
+            # Depends(...) guard, not restoring this line.
             "/api/embeddings",            # SLIG/Voyage text+image embeddings (edge callers)
-            "/api/svbrdf",                # SVBRDF/PBR extraction (generate-pbr-maps)
             # Deploy/restart infra hooks — called by CI/ops via ADMIN_RESTART_TOKEN or
             # no token (route-level), NOT a Supabase JWT. Specific paths only, so the
             # rest of /api/admin (e.g. /api/admin/logs) stays JWT-enforced. FOLLOW-UP
