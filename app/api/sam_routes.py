@@ -298,6 +298,24 @@ _INPAINT_MODELS = {
 
 _ANYDOOR_VERSION = "ali-vilab/anydoor"
 
+# `ai_model_pricing.model_key` per inpaint model.
+#
+# This used to be ONE flat key, "image-inpaint", for every request (audit #304 finding 6).
+# The quality selector therefore changed neither the price nor — on the reference-image
+# path, which is the normal case for a catalog product photo — the model, because that
+# branch never reads request.model at all. A "Best" FLUX Fill Pro run bills the same as
+# a "Fast" one, which is how the platform came to lose money on every Pro inpaint.
+#
+# The keys are admin-editable rows in ai_model_pricing, and the frontend reads its
+# labels from the same rows, so the displayed price and the debited price cannot drift.
+# Adding a model means adding a row AND an entry here.
+_INPAINT_PRICING_KEYS = {
+    "flux-fill-pro": "inpaint-flux-fill-pro",
+    "flux-fill-dev": "inpaint-flux-fill-dev",
+    "sd-inpainting": "inpaint-sd-inpainting",
+}
+_ANYDOOR_PRICING_KEY = "inpaint-anydoor"
+
 
 class InpaintRequest(BaseModel):
     image_url: str = Field(..., description="Source image URL (must be publicly accessible)")
@@ -364,6 +382,7 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
             },
         }
         model_label = "anydoor"
+        pricing_key = _ANYDOOR_PRICING_KEY
 
     # ── FLUX Fill Pro path: text-guided inpainting ─────────────────────────
     else:
@@ -392,8 +411,15 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
                 },
             }
         model_label = request.model
+        # Fall back on the same key the model_id lookup fell back to, so an unknown
+        # request.model cannot silently bill at someone else's rate.
+        pricing_key = _INPAINT_PRICING_KEYS.get(
+            request.model, _INPAINT_PRICING_KEYS["flux-fill-pro"]
+        )
 
-    _billed = await _meter(user, "image-inpaint", "inpaint")  # #250 H1: debit before Replicate
+    # Debit before Replicate (#250 H1), at the rate for the model actually being run
+    # rather than one flat "image-inpaint" key (audit #304 finding 6).
+    _billed = await _meter(user, pricing_key, "inpaint")
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
             headers = {

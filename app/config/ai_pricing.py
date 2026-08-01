@@ -394,12 +394,48 @@ class AIPricingConfig:
             "source": "internal",
             "note": "Material-zone segmentation via Claude Opus vision"
         },
+        # SUPERSEDED by the per-model inpaint-* keys below (audit #304 finding 6). Kept so
+        # historical usage rows still resolve; nothing meters here any more.
         "image-inpaint": {
             "cost_per_unit": Decimal("0.020"),
             "unit": "inpaint",
             "last_verified": "2026-07-05",
             "source": "internal",
-            "note": "Inpaint / region-edit via Replicate"
+            "note": "SUPERSEDED — flat inpaint rate charged regardless of model choice"
+        },
+        # Per-model inpaint pricing. One flat key used to bill every quality tier the same
+        # 3.00 credits while the UI advertised 40/20/10, so the displayed price was fiction
+        # and a Pro run (~$0.05 upstream) billed $0.03 — a loss on every one.
+        # These mirror the ai_model_pricing rows, which are canonical and admin-editable.
+        "inpaint-flux-fill-pro": {
+            "cost_per_unit": Decimal("0.050"),
+            "unit": "inpaint",
+            "last_verified": "2026-08-01",
+            "source": "https://replicate.com/black-forest-labs/flux-fill-pro",
+            "note": "Best-quality inpaint (FLUX Fill Pro)"
+        },
+        "inpaint-flux-fill-dev": {
+            "cost_per_unit": Decimal("0.025"),
+            "unit": "inpaint",
+            "last_verified": "2026-08-01",
+            "source": "https://replicate.com/pricing",
+            "note": "Standard inpaint (FLUX Fill Dev), at Replicate's published Flux Dev rate"
+        },
+        "inpaint-sd-inpainting": {
+            "cost_per_unit": Decimal("0.003"),
+            "unit": "inpaint",
+            "last_verified": "2026-08-01",
+            "source": "https://replicate.com/pricing",
+            "note": "Fast inpaint (Stable Diffusion), community tier"
+        },
+        "inpaint-anydoor": {
+            "cost_per_unit": Decimal("0.020"),
+            "unit": "inpaint",
+            "last_verified": None,
+            "source": "internal",
+            "note": "Reference-image inpaint (AnyDoor). Deliberately left at the rate it has "
+                    "always billed at — Replicate publishes no price, so this is unverified "
+                    "rather than guessed."
         },
         "image-analyze": {
             "cost_per_unit": Decimal("0.013"),
