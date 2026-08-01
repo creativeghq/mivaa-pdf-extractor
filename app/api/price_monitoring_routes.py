@@ -909,6 +909,7 @@ async def cron_refresh_tracked_queries(request: Request, limit: int = Query(defa
             service.supabase.client, "price-monitoring",
             workspace_id=row.get("workspace_id"), user_id=row.get("user_id"),
             description="Tracked-product price refresh",
+            subject={"tracked_query_id": str(tracking_id)},
         ):
             skipped_unpaid += 1
             results.append({"tracking_id": tracking_id, "status": "skipped_insufficient_credits"})

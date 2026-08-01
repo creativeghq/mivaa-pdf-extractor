@@ -868,6 +868,7 @@ async def cron_refresh(
             sb, "mention-monitoring",
             workspace_id=owner.get("workspace_id"), user_id=owner.get("user_id"),
             description="Tracked-subject mention refresh",
+            subject={"tracked_mention_id": str(row["id"])},
         ):
             skipped_unpaid += 1
             results.append({"id": row["id"], "status": "skipped_insufficient_credits"})

@@ -617,6 +617,11 @@ async def cron_refresh(
             svc.sb, "job-research-refresh",
             workspace_id=owner.get("workspace_id"), user_id=owner.get("user_id"),
             description="Tracked-job search refresh",
+            # Attributes the charge in credit_transactions.metadata so
+            # stamp_job_refresh_cost can total it per subject. Without this the
+            # ledger knew only {cron_key, workspace_id, units} and
+            # total_partner_credits_debited was unfillable (audit #305 finding 6).
+            subject={"tracked_job_id": str(r["id"])},
         ):
             skipped_unpaid += 1
             outcomes.append({"tracked_job_id": r["id"], "status": "skipped_insufficient_credits"})

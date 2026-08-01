@@ -13,7 +13,7 @@ scheduled work -- worst case it silently no-ops.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +26,18 @@ def charge_cron(
     user_id: Optional[str] = None,
     units: int = 1,
     description: Optional[str] = None,
+    subject: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Charge one unit of a metered cron's work; return True to proceed, False to skip.
 
     Pass the RAW supabase client (e.g. ``service.supabase.client``). Workspace subjects bill the
     workspace owner; workspace-less subjects bill ``user_id``. Fails OPEN on any error.
+
+    ``subject`` is merged into ``credit_transactions.metadata`` so the charge can be attributed
+    back to what it paid for -- e.g. ``{"tracked_job_id": "..."}``. Without it the ledger recorded
+    only ``{cron_key, workspace_id, units}``, so per-subject credit totals were unfillable and
+    ``tracked_jobs.total_partner_credits_debited`` read 0 forever while real credits were being
+    spent (audit #305 finding 6).
     """
     try:
         if workspace_id:
@@ -41,6 +48,7 @@ def charge_cron(
                     "p_cron_key": cron_key,
                     "p_units": int(units),
                     "p_description": description,
+                    "p_subject": subject,
                 },
             ).execute()
         elif user_id:
@@ -51,6 +59,7 @@ def charge_cron(
                     "p_cron_key": cron_key,
                     "p_units": int(units),
                     "p_description": description,
+                    "p_subject": subject,
                 },
             ).execute()
         else:
