@@ -124,6 +124,21 @@ def _is_non_posting(hit: JobHit) -> bool:
     if "/comments/" in url and "reddit" in url:
         return True
 
+    # Scraper-farm reposts on free/throwaway hosting (up.railway.app, AWS Amplify
+    # default domains, unaux, liveblog365, …). These re-list real jobs with the
+    # EMPLOYER SCRUBBED (title literally reads "reputed company") and expose NO
+    # apply-out link or employer — a verified dead end, confirmed 2026-07-31.
+    # Legit employers never host a careers page on a free preview domain.
+    if re.search(
+        r"(?:^|\.)(?:up\.railway\.app|amplifyapp\.com|unaux\.com|liveblog365\.com|"
+        r"onrender\.com|vercel\.app|netlify\.app|herokuapp\.com|glitch\.me)$",
+        host,
+    ):
+        return True
+    # Belt-and-braces: the scrubbed-employer placeholder itself, wherever it lands.
+    if "reputed company" in (hit.title or "").lower() or "reputed company" in (hit.company or "").lower():
+        return True
+
     # Aggregator SEARCH / listing pages — NOT a single applyable job. These slip
     # past Haiku because the page TITLE looks job-like ("431 Θέσεις εργασίας ...",
     # "Εργασία trade marketing Θεσσαλονίκη", "Trade Marketing Jobs in Athens").
