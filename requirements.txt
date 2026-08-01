@@ -14,7 +14,11 @@ uvicorn[standard]>=0.24.0
 # PDF processing dependencies
 pymupdf4llm==0.0.12
 PyMuPDF>=1.23.26
-pypdf>=4.0.1,<5.0.0
+# pypdf REMOVED 2026-08-01 (audit #300). pip-audit reported 36 known vulnerabilities against
+# the 4.3.1 this pin forced, and nothing in this repo imports it: its only consumer was
+# llama-index-readers-file, which is no longer a dependency (uv.lock still lists it and is
+# stale). Removing beats bumping — it drops 36 CVEs with zero API-compatibility risk in a
+# library nobody calls. If a PDF-writing need returns, add it back on >=6.14.2,<7.0.0.
 pandas==2.1.4
 
 # Table extraction with pdfplumber
@@ -27,7 +31,11 @@ scipy>=1.11.0
 # Computer Vision libraries (cloud-only architecture - no local ML models)
 scikit-learn>=1.5.0
 opencv-python-headless>=4.8.0
-Pillow>=10.2.0,<11.0.0
+# Pillow 10.4.0 carried 23 known vulnerabilities (audit #300); 12.3.0 clears all of them.
+# Two major versions, so checked first: no use of anything removed in 11 or 12 (ANTIALIAS,
+# ImageDraw.textsize, Image.LINEAR/CUBIC), and a full from-scratch pip resolve of this file
+# lands 12.3.0 alongside opencv-python-headless, scikit-image, imageio and imagehash.
+Pillow>=12.3.0,<13.0.0
 scikit-image>=0.21.0
 imageio>=2.31.0,<2.32.0
 imagehash==4.3.1
@@ -57,7 +65,7 @@ vecs==0.4.5
 websockets>=15.0,<16.0
 
 # Configuration and environment management
-python-dotenv==1.0.0
+python-dotenv>=1.2.2,<2.0.0  # 1.0.0 -> PYSEC-2026-2270 (audit #300)
 pydantic>=2.8.0
 pydantic-settings>=2.0.0; python_version>="3.8"
 
