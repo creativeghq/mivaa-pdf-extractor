@@ -21,8 +21,11 @@ PyMuPDF>=1.23.26
 # library nobody calls. If a PDF-writing need returns, add it back on >=6.14.2,<7.0.0.
 pandas==2.1.4
 
-# Table extraction with pdfplumber
-pdfplumber>=0.10.0
+# pdfplumber REMOVED 2026-08-02. It backed TableExtractor.extract_tables_from_page,
+# which no stage ever called (dead since #248) and which re-derived tables from the
+# raw PDF — a bronze-layer read for something silver already holds. Tables now come
+# from the PaddleOCR-VL Stage 1 structural pass (document_layout_analysis
+# .layout_elements[].metadata.html), parsed by app/services/pdf/table_extraction.py.
 
 # Essential scientific computing
 numpy==1.26.4

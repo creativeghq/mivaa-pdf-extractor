@@ -494,6 +494,40 @@ async def process_single_product(
             logger_instance.info(f"   📌 Created TEXT_EMBEDDINGS_GENERATED checkpoint for {product.name}")
 
         # ========================================================================
+        # STAGE 2.5: Persist VLM-recognized tables → product_tables
+        # ========================================================================
+        # Stage 1 already recognized every TABLE region to markdown/HTML and
+        # cached it on the layout element (metadata.html). Parsing it into
+        # product_tables here is what lets TableMetadataExtractor (Stage 5, via
+        # entity linking) read packaging + performance specs. Before this
+        # wire-up product_tables was never written by any stage — #248 removed
+        # the per-product writer assuming Stage 2 consumed metadata.html, and it
+        # never did — so that extractor mined an always-empty table on every
+        # product and available_sizes/thickness fell through to the Stage 4.6
+        # regex safety net.
+        #
+        # Deliberately NOT gated on skip_chunking: a job resuming from a run
+        # that predates this stage has chunks but no tables and would otherwise
+        # never get them. persist_tables_from_layout_cache is idempotent per
+        # product (it clears this product's rows before inserting).
+        tables_stored = 0
+        if product_db_id:
+            try:
+                from app.services.pdf.table_extraction import TableExtractor
+
+                tables_stored = await TableExtractor().persist_tables_from_layout_cache(
+                    document_id=document_id,
+                    product_id=product_db_id,
+                    physical_pages=physical_pages,
+                    supabase=supabase,
+                    logger=logger_instance,
+                )
+            except Exception as table_err:
+                logger_instance.warning(
+                    f"   ⚠️ Table persistence failed for {product.name} (non-fatal): {table_err}"
+                )
+
+        # ========================================================================
         # STAGE 3: Process Images
         # ========================================================================
         current_stage = ProductStage.IMAGES
@@ -822,9 +856,13 @@ async def process_single_product(
         # 2026-06-14 cutover (stage_1_focused_extraction returns layout_regions=[]),
         # so the old `if layout_regions and product_db_id:` block never executed:
         # no product_layout_regions rows were written and no per-product tables were
-        # extracted. Layout is owned by the PaddleOCR Stage 1 pass; TABLE content is
-        # preserved as metadata.html in document_layout_analysis and consumed by
-        # Stage 2. Deleted the dead block wholesale (issue #248).
+        # extracted. Layout is owned by the PaddleOCR Stage 1 pass. Deleted the dead
+        # block wholesale (issue #248).
+        #
+        # #248 assumed TABLE content (preserved as metadata.html in
+        # document_layout_analysis) was "consumed by Stage 2". It was not — nothing
+        # read that field, so product_tables stayed empty from 2026-07-04 until the
+        # Stage 2.5 wire-up above now parses it.
 
         await product_tracker.mark_stage_complete(
             product_id,
@@ -846,7 +884,7 @@ async def process_single_product(
             },
             metadata={
                 "layout_regions_stored": len(layout_regions) if layout_regions else 0,
-                "tables_extracted": len(table_regions) if 'table_regions' in locals() else 0
+                "tables_extracted": tables_stored
             }
         )
         logger_instance.info(f"   📌 Created PRODUCTS_CREATED checkpoint for {product.name}")

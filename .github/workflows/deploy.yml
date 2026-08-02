@@ -484,8 +484,6 @@ jobs:
             echo '❌ PyMuPDF (fitz): FAILED'
             echo 'Detailed error:'
             python -c 'import fitz' 2>&1 | head -5 || echo 'Import completely failed'
-            echo 'Checking alternative PDF libraries...'
-            python -c 'import pdfplumber; print(\"pdfplumber: OK\")' 2>/dev/null || echo 'pdfplumber: Not available'
           fi
 
           if python -c 'import pymupdf4llm; print(\"PyMuPDF4LLM: OK\"); print(\"PyMuPDF4LLM path:\", pymupdf4llm.__file__)' 2>/dev/null; then

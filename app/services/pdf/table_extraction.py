@@ -1,120 +1,269 @@
 """
-Table Extraction Service using pdfplumber
+Table Extraction Service — VLM-native.
 
-This service extracts tables from PDFs using pdfplumber library, guided by layout regions.
-Tables are extracted as structured JSON and stored in the product_tables database table.
+Tables are recognized by PaddleOCR-VL during the Stage 1 structural pass and
+persisted as markdown/HTML on every TABLE layout element
+(``document_layout_analysis.layout_elements[].metadata.html``). This module
+parses that cached content into rows and writes it to ``product_tables``, which
+:class:`~app.services.metadata.table_metadata_extractor.TableMetadataExtractor`
+then mines for dimensions / packaging / performance specs during Stage 5.
+
+Layering: silver → gold. The VLM already read every table off the page, so this
+NEVER re-derives tables from the PDF. The previous pdfplumber implementation did
+exactly that, was never called by any stage (dead since #248), and failed on the
+borderless spec tables that dominate material catalogs.
 
 Features:
-- Uses TABLE region bounding boxes to guide extraction
-- Converts tables to structured JSON format
-- Stores in product_tables table with metadata
+- Parses both markdown pipe tables and ``<table>`` HTML (the VLM emits either)
+- Classifies table type (multilingual — catalogs are IT/ES/FR as often as EN)
+- Stores in product_tables, idempotently per product
 """
 
 import logging
+import re
+from html import unescape
+from html.parser import HTMLParser
 from typing import List, Dict, Any, Optional
-from pathlib import Path
-import pdfplumber
 
 logger = logging.getLogger(__name__)
 
+#: A grid needs at least a header row + one data row, and 2 columns, to carry
+#: anything TableMetadataExtractor can use.
+MIN_TABLE_ROWS = 2
+MIN_TABLE_COLS = 2
+
+#: Markdown alignment row: |---|:--:|---:|
+_MD_SEPARATOR_CELL = re.compile(r"^:?-{2,}:?$")
+
+#: Header keywords, shared with TableMetadataExtractor so classification and
+#: parsing agree on what a dimensions / packaging table looks like. Multilingual
+#: on purpose — material catalogs are as often IT/ES/FR as EN, and an
+#: English-only classifier routed those tables to the generic parser, throwing
+#: away column mappings the parser already understood.
+DIMENSION_KEYWORDS = (
+    'dimension', 'dimensions', 'dimensioni', 'dimensione',
+    'size', 'sizes', 'misura', 'misure', 'medida', 'medidas', 'taille',
+    'format', 'formato', 'formats', 'formati',
+    'thickness', 'spessore', 'espesor', 'épaisseur', 'epaisseur', 'stärke', 'starke',
+    'width', 'height', 'length', 'diameter',
+    'larghezza', 'altezza', 'lunghezza', 'ancho', 'alto', 'largo',
+)
+
+PACKAGING_KEYWORDS = (
+    'pcs/box', 'pcs/', 'pieces', 'pezzi', 'piezas', 'pièces',
+    'box', 'boxes', 'carton', 'scatola', 'scatole', 'caja', 'cajas',
+    'pallet', 'bancale', 'palet',
+    'coverage', 'mq', 'm2', 'm²', 'sqm',
+    'weight', 'peso', 'poids', 'gewicht', 'kg',
+)
+
+PRICING_KEYWORDS = (
+    'price', 'prezzo', 'precio', 'prix', 'preis',
+    'cost', 'costo', 'rate', 'pricing', 'quote', 'msrp', 'listino',
+)
+
+
+class _TableHTMLParser(HTMLParser):
+    """Collect ``<tr>``/``<td>``/``<th>`` text into a row grid.
+
+    Uses the stdlib parser rather than a regex sweep (or a new bs4/lxml
+    dependency) — VLM-generated table HTML is well-formed but does use nested
+    inline tags, which a naive regex would mangle.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.rows: List[List[str]] = []
+        self._row: Optional[List[str]] = None
+        self._cell: Optional[List[str]] = None
+
+    def handle_starttag(self, tag: str, attrs: Any) -> None:
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th"):
+            self._cell = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("td", "th") and self._cell is not None:
+            if self._row is None:
+                self._row = []
+            self._row.append(" ".join("".join(self._cell).split()))
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
+
+    def handle_data(self, data: str) -> None:
+        if self._cell is not None:
+            self._cell.append(data)
+
+    def close(self) -> None:  # type: ignore[override]
+        super().close()
+        # Tolerate an unclosed trailing <tr>.
+        if self._row:
+            self.rows.append(self._row)
+            self._row = None
+
+
+def parse_html_table(content: str) -> Optional[List[List[str]]]:
+    """Parse ``<table>`` HTML into a row grid. ``None`` when nothing usable."""
+    try:
+        parser = _TableHTMLParser()
+        parser.feed(content)
+        parser.close()
+    except Exception as e:  # noqa: BLE001 — malformed VLM output must not abort a job
+        logger.debug(f"   HTML table parse failed: {e}")
+        return None
+    return _normalize_grid(parser.rows)
+
+
+def parse_markdown_table(content: str) -> Optional[List[List[str]]]:
+    """Parse a markdown pipe table into a row grid. ``None`` when nothing usable."""
+    rows: List[List[str]] = []
+    for line in content.splitlines():
+        line = line.strip()
+        if "|" not in line:
+            continue
+        cells = [unescape(c.strip()) for c in line.strip("|").split("|")]
+        non_empty = [c for c in cells if c]
+        # Drop the |---|:--:| alignment row — it is syntax, not data.
+        if non_empty and all(_MD_SEPARATOR_CELL.match(c) for c in non_empty):
+            continue
+        rows.append(cells)
+    return _normalize_grid(rows)
+
+
+def parse_table_content(content: str) -> Optional[List[List[str]]]:
+    """Parse VLM-recognized table content (markdown OR HTML) into a row grid.
+
+    The layout element field is named ``html`` but PaddleOCR-VL emits markdown
+    for most tables, so dispatch on the content itself rather than the name.
+    Returns ``None`` when the content yields nothing a consumer could use —
+    callers skip the region rather than persisting an empty table.
+    """
+    if not content or not content.strip():
+        return None
+    lowered = content.lower()
+    if "<table" in lowered or "<tr" in lowered:
+        return parse_html_table(content)
+    if "|" in content:
+        return parse_markdown_table(content)
+    return None
+
+
+def _normalize_grid(rows: List[List[str]]) -> Optional[List[List[str]]]:
+    """Drop blank rows, pad ragged rows to a rectangle, enforce the minimums."""
+    cleaned = [
+        [str(c).strip() for c in row]
+        for row in rows
+        if any(str(c).strip() for c in row)
+    ]
+    if len(cleaned) < MIN_TABLE_ROWS:
+        return None
+    width = max(len(r) for r in cleaned)
+    if width < MIN_TABLE_COLS:
+        return None
+    return [r + [""] * (width - len(r)) for r in cleaned]
+
 
 class TableExtractor:
-    """
-    Extract tables from PDFs using pdfplumber, guided by layout regions.
-    """
+    """Persist PaddleOCR-VL–recognized tables into ``product_tables``."""
 
     def __init__(self):
         """Initialize table extractor."""
         self.logger = logger
 
-    def extract_tables_from_page(
+    async def persist_tables_from_layout_cache(
         self,
-        pdf_path: str,
-        page_number: int,
-        table_regions: Optional[List[Dict[str, Any]]] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Extract tables from a specific PDF page.
+        document_id: str,
+        product_id: str,
+        physical_pages: List[int],
+        supabase: Any,
+        logger: Optional[logging.Logger] = None,
+    ) -> int:
+        """Parse this product's cached TABLE regions and store them.
 
-        Args:
-            pdf_path: Path to PDF file
-            page_number: Page number (1-based)
-            table_regions: Optional TABLE regions with bounding boxes
+        Reads the same ``document_layout_analysis`` cache Stage 2 chunking uses,
+        so no PDF is reopened and no inference is re-run — the table content was
+        recognized once, during the Stage 1 structural pass.
 
-        Returns:
-            List of extracted tables as dictionaries
+        Idempotent: every row is fully derived from the cache, so this product's
+        existing rows are cleared first. Safe to call on resume, and it MUST be
+        called on resume — a job that ran before this stage existed has chunks
+        but no tables.
+
+        Returns the number of tables stored.
         """
+        log = logger or self.logger
+        if not document_id or not product_id or not physical_pages:
+            return 0
+
+        # Local import: keeps app.services.pdf free of an app.api dependency at
+        # module load (the codebase's established pattern for stage helpers).
+        from app.api.pdf_processing.stage_1_layout_precompute import (
+            get_layout_from_document_cache_with_status,
+        )
+
         try:
-            # Validate PDF exists
-            if not Path(pdf_path).exists():
-                raise FileNotFoundError(f"PDF not found: {pdf_path}")
+            cached = await get_layout_from_document_cache_with_status(
+                document_id=document_id,
+                physical_pages=sorted({int(p) for p in physical_pages}),
+                supabase=supabase,
+                logger=log,
+            )
+        except Exception as e:  # noqa: BLE001 — never fail the product on this
+            log.debug(f"   layout cache read for tables failed (non-fatal): {e}")
+            return 0
 
-            extracted_tables = []
+        regions_seen = 0
+        tables: List[Dict[str, Any]] = []
+        for page_number, entry in sorted(cached.items()):
+            for region in (entry.get("regions") or []):
+                if not isinstance(region, dict):
+                    continue
+                if str(region.get("region_type") or "").upper() != "TABLE":
+                    continue
+                regions_seen += 1
+                content = ((region.get("metadata") or {}).get("html") or "")
+                grid = parse_table_content(content)
+                if not grid:
+                    continue
+                tables.append(
+                    self._convert_table_to_dict(
+                        table=grid,
+                        page_number=int(page_number),
+                        confidence=float(region.get("confidence") or 0.0),
+                    )
+                )
 
-            # Open PDF with pdfplumber
-            with pdfplumber.open(pdf_path) as pdf:
-                # pdfplumber uses 0-based indexing
-                page = pdf.pages[page_number - 1]
+        if regions_seen and not tables:
+            # Explicit marker, not a silent empty return: the detector found
+            # tables and every one of them failed to parse — that is a bug in
+            # the parser or a change in the VLM's output format, not "no tables".
+            log.warning(
+                f"   ⚠️ {regions_seen} TABLE region(s) detected but none parsed "
+                f"for product {product_id} — check the VLM table content format"
+            )
+            return 0
+        if not tables:
+            log.debug(f"   No TABLE regions on this product's pages ({product_id})")
+            return 0
 
-                # If layout regions provided, use them to guide extraction
-                if table_regions and len(table_regions) > 0:
-                    self.logger.info(f"   📊 Extracting {len(table_regions)} tables from page {page_number} using layout regions")
+        try:
+            supabase.client.table('product_tables') \
+                .delete() \
+                .eq('product_id', product_id) \
+                .execute()
+        except Exception as e:  # noqa: BLE001
+            log.debug(f"   product_tables pre-clean failed (non-fatal): {e}")
 
-                    for region in table_regions:
-                        # Extract bounding box coordinates
-                        bbox = region.get('bbox', {})
-                        x1 = bbox.get('x1', 0)
-                        y1 = bbox.get('y1', 0)
-                        x2 = bbox.get('x2', 0)
-                        y2 = bbox.get('y2', 0)
+        stored = await self.store_tables_in_database(product_id, tables, supabase)
+        log.info(
+            f"   📊 Stored {stored}/{len(tables)} table(s) from "
+            f"{regions_seen} TABLE region(s) for product {product_id}"
+        )
+        return stored
 
-                        try:
-                            # Crop page to table region
-                            cropped_page = page.crop((x1, y1, x2, y2))
-
-                            # Extract tables from cropped region
-                            tables = cropped_page.extract_tables()
-
-                            # Convert each table to structured format
-                            for table in tables:
-                                if table:  # Skip empty tables
-                                    table_dict = self._convert_table_to_dict(
-                                        table=table,
-                                        page_number=page_number,
-                                        layout_region_id=region.get('id'),
-                                        confidence=region.get('confidence', 0.0)
-                                    )
-                                    extracted_tables.append(table_dict)
-
-                        except Exception as e:
-                            self.logger.warning(f"   ⚠️ Failed to extract table from region {region.get('id')}: {e}")
-                            continue
-
-                else:
-                    # No layout regions - extract all tables from page
-                    self.logger.info(f"   📊 Extracting tables from page {page_number} (no layout guidance)")
-
-                    try:
-                        tables = page.extract_tables()
-
-                        for table in tables:
-                            if table:  # Skip empty tables
-                                table_dict = self._convert_table_to_dict(
-                                    table=table,
-                                    page_number=page_number
-                                )
-                                extracted_tables.append(table_dict)
-
-                    except Exception as e:
-                        self.logger.warning(f"   ⚠️ Failed to extract tables from page {page_number}: {e}")
-
-            self.logger.info(f"   ✅ Extracted {len(extracted_tables)} tables from page {page_number}")
-            return extracted_tables
-            
-        except Exception as e:
-            self.logger.error(f"❌ Table extraction failed for page {page_number}: {e}")
-            return []
-    
     def _convert_table_to_dict(
         self,
         table: List[List[str]],
@@ -123,19 +272,20 @@ class TableExtractor:
         confidence: float = 0.0
     ) -> Dict[str, Any]:
         """
-        Convert pdfplumber table to structured dictionary format.
+        Convert a parsed row grid to the structured dictionary format.
 
         Args:
-            table: pdfplumber table (list of lists)
+            table: Row grid (list of lists), first row treated as headers
             page_number: Page number
-            layout_region_id: Optional layout region ID
+            layout_region_id: Optional layout region ID. Always None for the
+                VLM path — layout elements are JSONB array entries, not rows,
+                so there is no UUID to reference (the column is nullable).
             confidence: Region detection confidence
 
         Returns:
             Structured table dictionary
         """
-        # pdfplumber returns table as list of lists
-        # First row is typically headers
+        # First row is the header row
         headers = table[0] if len(table) > 0 else []
 
         # Extract data rows (skip header row)
@@ -155,7 +305,7 @@ class TableExtractor:
             'table_data': table_data,
             'headers': headers,
             'confidence': confidence,
-            'extractor': 'pdfplumber',
+            'extractor': 'paddleocr-vl',
             'metadata': {}
         }
 
@@ -163,32 +313,53 @@ class TableExtractor:
         """
         Classify table type based on headers and content.
 
+        Keywords are multilingual on purpose: material catalogs are as often
+        Italian / Spanish / French as English, and TableMetadataExtractor's
+        column mappings already understand `formato` / `spessore` / `espesor`.
+        An English-only classifier routed those tables to the generic parser and
+        threw the column mapping away.
+
         Args:
             headers: Table headers
             table_data: Table data dictionary
 
         Returns:
-            Table type: 'specifications', 'pricing', 'comparison', 'dimensions', 'other'
+            Table type: 'specifications', 'packaging', 'pricing', 'comparison',
+            'dimensions', or 'other'
         """
         # Convert headers to lowercase for matching
         headers_lower = [str(h).lower() for h in headers]
         headers_text = ' '.join(headers_lower)
 
-        # Specifications table keywords
-        if any(keyword in headers_text for keyword in ['specification', 'property', 'feature', 'characteristic', 'parameter']):
-            return 'specifications'
-
-        # Pricing table keywords
-        if any(keyword in headers_text for keyword in ['price', 'cost', 'rate', 'pricing', 'quote', 'msrp']):
+        # Pricing first — a price column is unambiguous and disqualifying.
+        if any(keyword in headers_text for keyword in PRICING_KEYWORDS):
             return 'pricing'
 
-        # Comparison table keywords
-        if any(keyword in headers_text for keyword in ['comparison', 'vs', 'versus', 'compare', 'model']):
-            return 'comparison'
-
-        # Dimensions table keywords
-        if any(keyword in headers_text for keyword in ['dimension', 'size', 'width', 'height', 'length', 'diameter', 'thickness']):
+        # Dimensions before packaging: the canonical catalog table carries BOTH
+        # (Formato | Spessore | Pz/Scatola | Mq/Scatola | Kg/Scatola), and the
+        # product's own dimensions are the more specific label. The consumer
+        # runs the packaging parser independently of this label, so nothing is
+        # lost — see TableMetadataExtractor.extract_metadata_from_tables.
+        if any(keyword in headers_text for keyword in DIMENSION_KEYWORDS):
             return 'dimensions'
+
+        if any(keyword in headers_text for keyword in PACKAGING_KEYWORDS):
+            return 'packaging'
+
+        # Specifications table keywords
+        if any(keyword in headers_text for keyword in [
+            'specification', 'specifiche', 'especificacion', 'spécification',
+            'property', 'properties', 'proprieta', 'proprietà', 'propiedad',
+            'feature', 'caratteristica', 'caracteristica',
+            'characteristic', 'parameter', 'parametro', 'norm', 'norma', 'standard',
+        ]):
+            return 'specifications'
+
+        # Comparison table keywords
+        if any(keyword in headers_text for keyword in [
+            'comparison', 'versus', 'compare', 'confronto', 'model', 'modello',
+        ]):
+            return 'comparison'
 
         # Default to 'other'
         return 'other'
@@ -232,7 +403,7 @@ class TableExtractor:
                     'headers': table['headers'],
                     'table_type': table_type,
                     'confidence': table.get('confidence', 0.0),
-                    'extractor': table.get('extractor', 'camelot'),
+                    'extractor': table.get('extractor', 'paddleocr-vl'),
                     'metadata': table.get('metadata', {})
                 }
 
@@ -245,11 +416,8 @@ class TableExtractor:
                     stored_count += 1
                     self.logger.debug(f"   ✅ Stored {table_type} table from page {table['page_number']}")
 
-            self.logger.info(f"✅ Stored {stored_count} tables in database for product {product_id}")
             return stored_count
 
         except Exception as e:
             self.logger.error(f"❌ Failed to store tables in database: {e}")
             return 0
-
-

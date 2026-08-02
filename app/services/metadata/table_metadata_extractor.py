@@ -13,6 +13,11 @@ import logging
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 
+from app.services.pdf.table_extraction import (
+    DIMENSION_KEYWORDS,
+    PACKAGING_KEYWORDS,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -107,9 +112,16 @@ class TableMetadataExtractor:
 
                 self.logger.debug(f"   Processing {table_type} table from page {page_num}")
 
-                if table_type == 'dimensions':
+                # Dimensions and packaging are checked INDEPENDENTLY, not as an
+                # elif chain. The canonical catalog table carries both in one
+                # grid (Formato | Spessore | Pz/Scatola | Mq/Scatola | Kg/Sc.),
+                # so a single label would have thrown one of them away.
+                matched = False
+
+                if table_type == 'dimensions' or self._looks_like_dimensions(headers):
                     dims = self._parse_dimensions_table(headers, table_data)
                     if dims:
+                        matched = True
                         result["dimensions"].extend(dims)
                         result["_table_sources"].append({
                             "page": page_num,
@@ -117,18 +129,10 @@ class TableMetadataExtractor:
                             "extracted": len(dims)
                         })
 
-                elif table_type == 'specifications':
-                    specs = self._parse_specifications_table(headers, table_data)
-                    result["specifications"].update(specs)
-                    result["performance"].update(specs.get("performance", {}))
-                    result["_table_sources"].append({
-                        "page": page_num,
-                        "type": "specifications"
-                    })
-
-                elif table_type == 'packaging' or self._looks_like_packaging(headers, table_data):
+                if table_type == 'packaging' or self._looks_like_packaging(headers, table_data):
                     pkg = self._parse_packaging_table(headers, table_data)
                     if pkg:
+                        matched = True
                         # Merge packaging data (may have multiple packaging tables)
                         for key, value in pkg.items():
                             if key not in result["packaging"] or not result["packaging"][key]:
@@ -138,7 +142,17 @@ class TableMetadataExtractor:
                             "type": "packaging"
                         })
 
-                else:
+                if table_type == 'specifications':
+                    specs = self._parse_specifications_table(headers, table_data)
+                    matched = True
+                    result["specifications"].update(specs)
+                    result["performance"].update(specs.get("performance", {}))
+                    result["_table_sources"].append({
+                        "page": page_num,
+                        "type": "specifications"
+                    })
+
+                if not matched:
                     # Try to extract any dimensions or specs from unknown tables
                     generic = self._parse_generic_table(headers, table_data)
                     if generic.get("dimensions"):
@@ -203,12 +217,15 @@ class TableMetadataExtractor:
                     if parsed:
                         dim.update(parsed)
 
-                # Try explicit width/height columns
-                if width_col is not None and width_col < len(row):
+                # Try explicit width/height/thickness columns — but never
+                # overwrite a value the size string already resolved. A size
+                # column ("60x120 cm") is unambiguous; a same-named dimension
+                # column is a fallback for tables that split the axes out.
+                if width_col is not None and width_col < len(row) and not dim.get("width"):
                     dim["width"] = self._extract_number(row[width_col])
-                if height_col is not None and height_col < len(row):
+                if height_col is not None and height_col < len(row) and not dim.get("height"):
                     dim["height"] = self._extract_number(row[height_col])
-                if thickness_col is not None and thickness_col < len(row):
+                if thickness_col is not None and thickness_col < len(row) and not dim.get("thickness"):
                     dim["thickness"] = self._extract_number(row[thickness_col])
 
                 if dim.get("width") or dim.get("height"):
@@ -249,13 +266,16 @@ class TableMetadataExtractor:
         headers_lower = [h.lower() if h else "" for h in headers]
 
         # Define packaging field mappings
+        # Keyword sets are multilingual: the abbreviations that actually appear
+        # on Italian/Spanish catalog headers ('Pz/Scatola', 'Mq/Scatola') were
+        # absent, so pieces-per-box and coverage silently never populated.
         field_mappings = {
-            "pieces_per_box": ['pieces', 'pcs', 'pezzi', 'piezas', 'box', 'caja'],
-            "boxes_per_pallet": ['boxes', 'cartons', 'cajas', 'pallet'],
-            "weight_per_box_kg": ['weight', 'peso', 'kg'],
-            "coverage_per_box_m2": ['coverage', 'm2', 'm2', 'sqm', 'area'],
+            "pieces_per_box": ['pieces', 'pcs', 'pz', 'pezzi', 'piezas', 'pièces', 'box', 'caja'],
+            "boxes_per_pallet": ['boxes', 'cartons', 'cajas', 'scatole', 'pallet', 'bancale'],
+            "weight_per_box_kg": ['weight', 'peso', 'poids', 'kg'],
+            "coverage_per_box_m2": ['coverage', 'm2', 'm²', 'mq', 'sqm', 'area', 'superficie'],
             "pallet_weight_kg": ['pallet weight', 'peso pallet'],
-            "pieces_per_m2": ['pieces/m2', 'pcs/m2', 'piezas/m2']
+            "pieces_per_m2": ['pieces/m2', 'pcs/m2', 'piezas/m2', 'pz/mq']
         }
 
         # Get rows from table_data
@@ -296,14 +316,26 @@ class TableMetadataExtractor:
             rows = table_data
 
         # Spec field mappings
+        # Property names are matched in the row's FIRST cell, which on an
+        # Italian/Spanish catalog is Italian/Spanish. An English-only list meant
+        # 'Resistenza allo scivolamento' never mapped to slip_resistance.
         spec_mappings = {
-            "slip_resistance": ['slip', 'r10', 'r11', 'r12', 'anti-slip', 'antideslizante'],
-            "water_absorption": ['water absorption', 'absorcion', 'assorbimento'],
-            "breaking_strength": ['breaking', 'ruptura', 'rottura'],
-            "frost_resistance": ['frost', 'helada', 'gelo'],
-            "abrasion_resistance": ['abrasion', 'pei', 'abrasion'],
-            "chemical_resistance": ['chemical', 'quimico', 'chimico'],
-            "fire_rating": ['fire', 'fuego', 'fuoco']
+            "slip_resistance": [
+                'slip', 'r10', 'r11', 'r12', 'r13', 'anti-slip', 'dcof',
+                'antideslizante', 'deslizamiento', 'scivolamento', 'scivolosita',
+                'glissance', 'rutschhemmung',
+            ],
+            "water_absorption": [
+                'water absorption', 'absorcion', 'absorción', 'assorbimento',
+                'assorbimento acqua', 'absorption',
+            ],
+            "breaking_strength": [
+                'breaking', 'ruptura', 'rottura', 'flessione', 'flexion', 'bending',
+            ],
+            "frost_resistance": ['frost', 'helada', 'gelo', 'gelivita', 'gelività'],
+            "abrasion_resistance": ['abrasion', 'abrasione', 'pei', 'usura'],
+            "chemical_resistance": ['chemical', 'quimico', 'químico', 'chimico', 'chimica'],
+            "fire_rating": ['fire', 'fuego', 'fuoco', 'reazione al fuoco'],
         }
 
         for row in rows:
@@ -315,9 +347,18 @@ class TableMetadataExtractor:
                             specs["performance"][spec_field] = str(value)
                             break
             elif isinstance(row, list) and len(row) >= 2:
-                # Assume property-value format
+                # Property-value format. Real spec tables are usually THREE
+                # columns — Property | Standard | Value ("Assorbimento acqua |
+                # ISO 10545-3 | < 0,5%") — so the measurement is the last
+                # populated cell. Taking row[1] recorded the ISO reference as
+                # the water-absorption value.
                 prop = str(row[0]).lower()
-                value = str(row[1])
+                value = next(
+                    (str(c).strip() for c in reversed(row[1:]) if str(c).strip()),
+                    ""
+                )
+                if not value:
+                    continue
                 for spec_field, keywords in spec_mappings.items():
                     if any(kw in prop for kw in keywords):
                         specs["performance"][spec_field] = value
@@ -370,16 +411,35 @@ class TableMetadataExtractor:
         return result
 
     def _looks_like_packaging(self, headers: List[str], table_data: Dict[str, Any]) -> bool:
-        """Check if a table looks like packaging info based on content."""
-        headers_text = " ".join(h.lower() for h in headers if h)
-        packaging_keywords = ['box', 'pallet', 'weight', 'coverage', 'pcs', 'pieces', 'kg', 'm2']
-        return any(kw in headers_text for kw in packaging_keywords)
+        """Check if a table looks like packaging info based on its headers."""
+        headers_text = " ".join(str(h).lower() for h in headers if h)
+        return any(kw in headers_text for kw in PACKAGING_KEYWORDS)
+
+    def _looks_like_dimensions(self, headers: List[str]) -> bool:
+        """Check if a table looks like dimension info based on its headers."""
+        headers_text = " ".join(str(h).lower() for h in headers if h)
+        return any(kw in headers_text for kw in DIMENSION_KEYWORDS)
 
     def _find_column(self, headers: List[str], keywords: List[str]) -> Optional[int]:
-        """Find column index matching any of the keywords."""
+        """Find column index matching any of the keywords.
+
+        Short keywords are matched as whole TOKENS, not substrings. The naive
+        substring match this replaces made the single-letter keywords ('w', 'h',
+        'l', 'th') match almost anything: on a real catalog header row
+        ``Formato | Spessore | Pz/Scatola | Mq/Scatola | Kg/Scatola |
+        Scatole/Pallet`` the height keyword ``'l'`` hit ``Pz/Scatola`` and a
+        60x120 tile was recorded as 60x2. Multi-word and longer keywords keep
+        substring matching so 'pallet weight' and 'size' → 'sizes' still work.
+        """
         for idx, header in enumerate(headers):
-            if any(kw in header for kw in keywords):
-                return idx
+            h = str(header).lower()
+            tokens = {t for t in re.split(r'[^a-z0-9²]+', h) if t}
+            for kw in keywords:
+                if len(kw) > 3 or ' ' in kw or '/' in kw:
+                    if kw in h:
+                        return idx
+                elif kw in tokens:
+                    return idx
         return None
 
     def _parse_size_string(self, size_str: str) -> Optional[Dict[str, Any]]:

@@ -933,13 +933,37 @@ class EntityLinkingService:
                         if table_metadata.get('available_sizes'):
                             current_metadata['available_sizes'] = table_metadata['available_sizes']
                         if table_metadata.get('thickness'):
-                            current_metadata['thickness'] = table_metadata['thickness']
-                        if table_metadata.get('packaging'):
-                            current_metadata['packaging'] = table_metadata['packaging']
-                        if table_metadata.get('performance'):
-                            current_metadata['performance'] = table_metadata['performance']
-                        if table_metadata.get('specifications'):
-                            current_metadata['specifications'] = table_metadata['specifications']
+                            # ONE home for thickness. Stages 4.5 (sibling) and 4.6
+                            # (regex) write material_properties.thickness as
+                            # {value, confidence, source} and only fill it when
+                            # EMPTY. Writing a bare metadata['thickness'] here left
+                            # that key untouched, so the regex still fired and the
+                            # product ended up carrying two thickness values that
+                            # could disagree. Same shape + same location = the
+                            # lower-confidence layers correctly stand down.
+                            material_props = current_metadata.get('material_properties')
+                            if not isinstance(material_props, dict):
+                                material_props = {}
+                            material_props['thickness'] = {
+                                'value': table_metadata['thickness'],
+                                'confidence': 0.95,
+                                'source': 'product_table',
+                            }
+                            current_metadata['material_properties'] = material_props
+                        # Merge, don't replace. `packaging` is a shared container —
+                        # stage_4_products also fills packaging.pieces_per_box /
+                        # patterns_count from chunk regex. A wholesale assignment
+                        # here dropped whichever keys the table did not happen to
+                        # carry. The table is the higher-confidence source, so its
+                        # keys win on collision.
+                        for container in ('packaging', 'performance', 'specifications'):
+                            incoming = table_metadata.get(container)
+                            if not incoming:
+                                continue
+                            existing = current_metadata.get(container)
+                            merged = dict(existing) if isinstance(existing, dict) else {}
+                            merged.update(incoming)
+                            current_metadata[container] = merged
                         if table_metadata.get('dimensions'):
                             current_metadata['dimensions_from_tables'] = table_metadata['dimensions']
 
