@@ -20,6 +20,10 @@ from app.dependencies import get_current_user
 from app.utils.credit_metering import refund_operation
 from app.schemas.api_responses import InteriorDesignResponse
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api", tags=["Interior Design"])
 
 # Room type → readable English name
@@ -741,3 +745,91 @@ async def create_interior_design(
     })
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PBR material maps (audit #310 item 2)
+#
+# Lives here because this module already owns the generation-images upload path; the maps are a
+# generation output like any other. `ARPreviewModal` has had `normalMap` / `roughnessMap` /
+# `metalnessMap` wired the whole time and simply never received anything, so every material has
+# been rendering as a flat photograph on a 3D plane.
+#
+# Derivation is deterministic (see pbr_map_service) — no model, no per-image cost, no upstream
+# that can be down — so this endpoint charges no credits. If an ML SVBRDF replaces the service
+# later, THAT is when a credit gate belongs here, and the write contract below does not change.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PbrMapsRequest(BaseModel):
+    product_id: str = Field(..., description="Product to derive maps for and write back to")
+    image_url: Optional[str] = Field(
+        None,
+        description="Albedo source. Defaults to the product's own image when omitted.",
+    )
+    overwrite: bool = Field(
+        False,
+        description="Re-derive even when metadata.pbr_maps already exists.",
+    )
+
+
+@router.post("/pbr/derive")
+async def derive_product_pbr_maps(
+    body: PbrMapsRequest,
+    user=Depends(get_current_user),
+):
+    """Derive normal/roughness/metalness maps for a product and store them on its metadata.
+
+    Writes `products.metadata.pbr_maps = {tileable_url, normal_url, roughness_url, metalness_url}`
+    — the exact shape ARPreviewModal already reads.
+    """
+    from app.services.generation.pbr_map_service import derive_pbr_maps
+
+    supabase = get_supabase_client()
+
+    prod = supabase.client.table("products") \
+        .select("id, workspace_id, metadata") \
+        .eq("id", body.product_id).maybe_single().execute()
+    if not prod or not prod.data:
+        raise HTTPException(status_code=404, detail="product not found")
+    metadata = prod.data.get("metadata") or {}
+
+    if metadata.get("pbr_maps") and not body.overwrite:
+        return {"success": True, "skipped": "already_derived",
+                "pbr_maps": metadata["pbr_maps"]}
+
+    # Source image: explicit override, else whatever the product already shows.
+    albedo_url = body.image_url or metadata.get("image_url") or metadata.get("primary_image_url")
+    if not albedo_url:
+        # Not an error — a product with no image simply cannot have maps derived. Saying so
+        # explicitly beats a 500 that looks like the deriver is broken.
+        return {"success": False, "error": "product has no source image", "pbr_maps": None}
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+            resp = await client.get(albedo_url)
+            resp.raise_for_status()
+            image_bytes = resp.content
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"could not fetch source image: {e}")
+
+    maps = derive_pbr_maps(image_bytes)
+    if not maps:
+        return {"success": False, "error": "source image could not be decoded", "pbr_maps": None}
+
+    stored: Dict[str, str] = {"tileable_url": albedo_url}
+    for kind, (data, content_type) in maps.items():
+        path = f"pbr-maps/{body.product_id}/{kind}-{uuid.uuid4().hex[:8]}.png"
+        try:
+            supabase.client.storage.from_("generation-images").upload(
+                path, data, file_options={"content-type": content_type},
+            )
+            stored[f"{kind}_url"] = supabase.client.storage \
+                .from_("generation-images").get_public_url(path)
+        except Exception as e:  # noqa: BLE001
+            # One failed upload must not discard the maps that DID store — a partial set still
+            # improves the render, and the caller can see exactly which kind is missing.
+            logger.error("[pbr] upload failed for %s of product %s: %s", kind, body.product_id, e)
+
+    metadata["pbr_maps"] = stored
+    supabase.client.table("products").update({"metadata": metadata}) \
+        .eq("id", body.product_id).execute()
+
+    return {"success": True, "product_id": body.product_id, "pbr_maps": stored}
