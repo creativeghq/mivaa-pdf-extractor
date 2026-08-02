@@ -67,7 +67,8 @@ websockets>=15.0,<16.0
 # Configuration and environment management
 python-dotenv>=1.2.2,<2.0.0  # 1.0.0 -> PYSEC-2026-2270 (audit #300)
 pydantic>=2.8.0
-pydantic-settings>=2.0.0; python_version>="3.8"
+# 2.0.0 floor admitted 2.14.1 (PYSEC advisory). Raised to the fixed release (audit #300).
+pydantic-settings>=2.14.2; python_version>="3.8"
 
 # HTTP client for external API calls
 httpx>=0.28.0
@@ -88,7 +89,8 @@ email-validator>=2.1.0
 # removed 2026-05-01 (silent failure surfaces, see audit). Chandra retry handles it.
 
 # NLP Dependencies
-nltk>=3.9.3
+# 3.9.3 floor still admitted 3.9.4, which carries 4 advisories (audit #300, 2026-08-02).
+nltk>=3.10.0
 
 # Additional utilities
 python-dateutil==2.8.2

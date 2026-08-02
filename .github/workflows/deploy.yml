@@ -421,12 +421,19 @@ jobs:
           touch /tmp/pip-install.log
           # Use the clone's own python (-m pip) so installs target .venv_new — its activate
           # script still points at the canonical .venv path, so we must NOT 'source' it.
-          # Reconcile to requirements.txt, but CONSTRAINED to the clone's current exact versions
-          # so existing (working) packages are never surprise-upgraded to a newer broken wheel —
-          # only genuinely-new packages get installed. Deterministic; a no-op when requirements
-          # is unchanged.
-          .venv_new/bin/pip freeze > /tmp/venv_constraints.txt
-          echo 'Reconciling clone to requirements.txt (constrained to current versions)...'
+          # Reconcile to requirements.txt with the TRANSITIVE deps constrained to the clone's
+          # current exact versions, so a working package is never surprise-upgraded to a newer
+          # broken wheel. Packages requirements.txt names are deliberately left free - see below.
+          # pipefail, because the install below ends in a pipe. Without it the pipeline exit
+          # status is tee's, which is 0 even when pip died - and pip DID die, silently, on every
+          # deploy that raised a version floor. See make_constraints.py for the full account.
+          set -o pipefail
+          .venv_new/bin/pip freeze > /tmp/venv_freeze.txt
+          # Constrain ONLY the transitive packages. A package named in requirements.txt is one a
+          # human has an opinion about, and pinning it to whatever is currently installed makes
+          # every floor-raise a ResolutionImpossible that tee then hid.
+          .venv_new/bin/python scripts/deploy/make_constraints.py /tmp/venv_freeze.txt requirements.txt > /tmp/venv_constraints.txt
+          echo 'Reconciling clone to requirements.txt (transitive deps constrained)...'
           .venv_new/bin/python -m pip install -r requirements.txt -c /tmp/venv_constraints.txt 2>&1 | tee -a /tmp/pip-install.log
 
           # Blue-green: import-verify .venv_new and atomically swap it in (rollback on failure).
