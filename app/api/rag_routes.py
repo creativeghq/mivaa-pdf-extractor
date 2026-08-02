@@ -2939,6 +2939,53 @@ async def process_document_with_discovery(
     workspace_id = workspace_id or get_settings().default_workspace_id
     start_time = datetime.utcnow()
 
+    # ── Credit preflight ─────────────────────────────────────────────────────────────
+    # Invariant 10 says debit BEFORE the upstream call. This pipeline cannot: every
+    # debit_credits_* call fires after its Claude-vision / Replicate / Voyage request, so a
+    # failed debit is money already spent and the logger can only record "UNBILLED". A
+    # 0-credit account could therefore upload a large PDF and have the platform absorb the
+    # entire multi-dollar job. (audit #286)
+    #
+    # This is the cheapest correction that actually bounds the loss: refuse to START when the
+    # account is empty. It deliberately does NOT try to predict the job's cost — a preflight
+    # that guesses either blocks paying customers or waves through the expensive jobs it was
+    # meant to stop. It answers one question: is this account funded at all?
+    #
+    # An unreadable balance PROCEEDS. A transient RPC failure must not stop paying customers
+    # from processing documents; the failure being removed is unbounded spend by an unfunded
+    # account, not one job on a flaky read.
+    try:
+        _min_credits = float(os.getenv("PDF_JOB_MIN_CREDITS", "10"))
+        # Own client binding: the module-level name `supabase` is not bound until much later in
+        # this function, so referencing it here would raise NameError, be caught below, and turn
+        # the whole guard into a permanent silent no-op.
+        _sb = get_supabase_client()
+        _job_row = _sb.client.table("background_jobs")             .select("user_id").eq("id", job_id).maybe_single().execute()
+        _job_user = (_job_row.data or {}).get("user_id") if _job_row else None
+        if _job_user:
+            from app.services.integrations.credits_integration_service import get_credits_service
+            _available = await get_credits_service().get_available_credits(
+                user_id=str(_job_user), workspace_id=str(workspace_id) if workspace_id else None,
+            )
+            if _available is not None and _available < _min_credits:
+                logger.error(
+                    "🛑 [CREDIT PREFLIGHT] job=%s user=%s ws=%s has %.2f credits "
+                    "(floor %.2f) — refusing to start rather than running the pipeline unbilled",
+                    job_id, _job_user, workspace_id, _available, _min_credits,
+                )
+                _sb.client.table("background_jobs").update({
+                    "status": "failed",
+                    "error_message": (
+                        f"Insufficient credits: {_available:.2f} available, "
+                        f"{_min_credits:.2f} required to start processing."
+                    ),
+                    "completed_at": datetime.utcnow().isoformat(),
+                }).eq("id", job_id).execute()
+                return
+    except Exception as _preflight_err:  # noqa: BLE001
+        # Never let the guard itself break ingestion — it is a cost bound, not a correctness gate.
+        logger.warning("[CREDIT PREFLIGHT] skipped (non-fatal): %s", _preflight_err)
+
     # Initialize lazy loading for this job
     from app.services.utilities.lazy_loader import get_component_manager
     component_manager = get_component_manager()

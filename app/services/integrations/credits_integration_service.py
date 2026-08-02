@@ -682,6 +682,38 @@ class CreditsIntegrationService:
                 'error': str(e)
             }
 
+    async def get_available_credits(
+        self,
+        user_id: str,
+        workspace_id: Optional[str] = None,
+    ) -> Optional[float]:
+        """Total credits this user can spend right now: workspace pool + personal balance.
+
+        Read-only; reserves nothing. Exists so a paid pipeline can refuse to START rather than
+        discovering it is unfunded one debit at a time. Every debit_credits_* method above runs
+        AFTER its upstream call, so a failed debit is money already spent — the log says
+        "UNBILLED" and that is all it can do. (invariant 10, audit #286)
+
+        Returns None when the balance cannot be read. Callers MUST treat None as "unknown,
+        proceed", never as "empty, block": a transient RPC failure must not stop paying
+        customers from processing documents. The failure being removed is unbounded spend by an
+        account with zero credits, not one job on a flaky read.
+        """
+        try:
+            resp = self.supabase.client.rpc(
+                'get_available_credits',
+                {'p_user_id': user_id, 'p_workspace_id': workspace_id},
+            ).execute()
+            if resp.data is None:
+                return None
+            return float(resp.data)
+        except Exception as e:  # noqa: BLE001
+            self.logger.warning(
+                "[credits] could not read available balance user=%s ws=%s: %s",
+                user_id, workspace_id, e,
+            )
+            return None
+
 
 # Singleton instance
 _credits_service: Optional[CreditsIntegrationService] = None
