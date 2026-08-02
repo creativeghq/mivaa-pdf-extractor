@@ -193,6 +193,10 @@ async def process_product_chunking(
     # [{metadata:{page: 0-indexed}, text: ...}] so chunk_pages() can preserve
     # page_number per chunk and match layout regions correctly.
     page_chunks_data: List[Dict[str, Any]] = []
+    # Distinguishes "the extractor broke" from "this product has no text". Both used
+    # to surface as the same chunks_created: 0 return.
+    extraction_failed = False
+    extraction_error: Optional[str] = None
     chunkable_pages_sorted = sorted(chunkable_pages)
     logger.info(f"   📄 Extracting text from {len(chunkable_pages_sorted)} chunkable physical pages: {chunkable_pages_sorted}")
     try:
@@ -276,8 +280,22 @@ async def process_product_chunking(
             if created_temp and used_temp_path and os.path.exists(used_temp_path):
                 os.unlink(used_temp_path)
     except Exception as e:
-        logger.error(f"   ❌ Failed to extract product text: {e}")
-        page_chunks_data = []
+        # Do NOT discard what was already extracted.
+        #
+        # This used to set `page_chunks_data = []`, throwing away every page the loop
+        # had already read because a LATER page (or the doc.close()) raised. The
+        # per-page loop above deliberately isolates page errors and continues; this
+        # outer handler undid that work wholesale, and the function then returned the
+        # ordinary `chunks_created: 0` shape with nothing to distinguish "the extractor
+        # broke" from "this product genuinely has no text". Combined with the
+        # checkpoint path, the product was recorded complete at 0 chunks and never
+        # retried.
+        extraction_failed = True
+        extraction_error = str(e)
+        logger.error(
+            f"   ❌ Failed to extract product text after {len(page_chunks_data)} page(s): {e} "
+            f"— keeping the pages already extracted"
+        )
 
     if not page_chunks_data:
         # Promoted from WARNING to ERROR (2026-05-01): silent zero-chunk
@@ -306,6 +324,11 @@ async def process_product_chunking(
             'embeddings_generated': 0,
             'pages_chunked': 0,
             'pages_excluded': 0,
+            # The caller cannot otherwise tell these two apart, and they need opposite
+            # handling: 'failed' must not be checkpointed as a completed stage (it is
+            # retryable), while a genuine text-free product is legitimately done.
+            'chunking_status': 'failed' if extraction_failed else 'no_text',
+            'error': extraction_error,
         }
 
     # Create chunks with product-specific metadata

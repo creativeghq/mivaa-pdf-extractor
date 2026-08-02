@@ -1739,6 +1739,24 @@ class ImageProcessingService:
                     + len(specialized_embeddings)
                     + (1 if understanding_embedding else 0)
                 )
+                # ZERO vectors is a failure, not a success with nothing in it.
+                #
+                # This returned (True, True, …) unconditionally, so an image that
+                # produced no vectors at all — SLIG and Voyage both down — was counted
+                # toward clip_embeddings_generated and reported as embedded. Raising
+                # here instead routes it through the retry loop and, on exhaustion, to
+                # the terminal `embedding_metadata.status='failed'` marker written at
+                # the bottom of this function. That marker's own comment describes its
+                # subject as "an image that saved its document_images row but got ZERO
+                # vectors after all retries" — the case was unreachable, because the
+                # only way out of this try was this unconditional success.
+                if total_embeddings == 0:
+                    raise RuntimeError(
+                        f"no_vectors_generated: image {image_id} produced 0 embeddings "
+                        f"(visual={bool(visual_embedding)}, specialized={len(specialized_embeddings)}, "
+                        f"understanding={bool(understanding_embedding)})"
+                    )
+
                 logger.info(
                     f"   ✅ Image {image_id}: saved {total_embeddings} embeddings "
                     f"(visual={per_image_stats['visual_slig']}, "

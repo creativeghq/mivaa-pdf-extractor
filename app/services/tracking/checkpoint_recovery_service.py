@@ -188,6 +188,18 @@ class CheckpointRecoveryService:
             if should_warn:
                 logger.warning(f"⚠️ Checkpoint has empty results (valid for context): stage={stage.value}, data={data}, categories={requested_categories}")
 
+            # A stage that produced NOTHING is checkpointed distinctly from one that
+            # produced something.
+            #
+            # Both used to be written as status='completed', and the resume path adds
+            # any stage found in stage_history to the skip set — so a product that
+            # chunked to 0 once was marked done and could NEVER be chunked again, on
+            # any resume, forever. `should_warn` above already computed exactly this
+            # condition and then only logged it; now it changes the recorded status,
+            # which is what makes it actionable. Mirrors the ocr_failed / page_failed
+            # treatment Stage 1.5 already applies.
+            event_status = 'completed_empty' if should_warn else 'completed'
+
             now_iso = datetime.utcnow().isoformat()
 
             # Audit fix #21: collapsed two-call (table.update + rpc append_stage_history)
@@ -208,7 +220,7 @@ class CheckpointRecoveryService:
                         },
                         'p_event': {
                             'stage': stage.value,
-                            'status': 'completed',
+                            'status': event_status,
                             'completed_at': now_iso,
                             'started_at': now_iso,
                             'attempt': 1,
@@ -233,7 +245,7 @@ class CheckpointRecoveryService:
                 try:
                     self.supabase_client.client.rpc(
                         'append_stage_history',
-                        {'p_job_id': job_id, 'p_event': {'stage': stage.value, 'status': 'completed',
+                        {'p_job_id': job_id, 'p_event': {'stage': stage.value, 'status': event_status,
                                                           'completed_at': now_iso, 'data': data,
                                                           'metadata': metadata or {}}},
                     ).execute()

@@ -727,9 +727,15 @@ async def process_stage_0_discovery(
             return f"{nm}::{first_page}" if first_page is not None else nm
 
         existing_by_name: Dict[str, str] = {}
+        # Products that exist but carry NO usable text vector. The reuse branch below
+        # skips creation for them (creating again would duplicate the product), so
+        # without this set their text_embedding_1024 stays NULL FOREVER — invisible to
+        # vector search — and the embedding_failure marker written at create time is
+        # never read by anything. Reuse the row, repair the vector.
+        needs_reembed: Dict[str, Dict[str, Any]] = {}
         try:
             existing_resp = supabase.client.table('products') \
-                .select('id, name, metadata') \
+                .select('id, name, description, metadata, text_embedding_1024') \
                 .eq('source_document_id', document_id) \
                 .execute()
             for row in (existing_resp.data or []):
@@ -741,6 +747,13 @@ async def process_stage_0_discovery(
                 key = _idem_key(row.get('name') or '', pr)
                 if key and key not in existing_by_name:
                     existing_by_name[key] = row['id']
+                    if row.get('text_embedding_1024') is None or meta.get('embedding_failure'):
+                        needs_reembed[row['id']] = row
+            if needs_reembed:
+                logger.warning(
+                    f"⚠️ {len(needs_reembed)} existing product(s) for document {document_id} "
+                    f"have no text embedding — will re-embed on reuse instead of skipping"
+                )
             if existing_by_name:
                 logger.info(
                     f"♻️  Stage 0 idempotency: found {len(existing_by_name)} "
@@ -779,6 +792,46 @@ async def process_stage_0_discovery(
                         f"   ♻️  [{i}/{len(catalog.products)}] Reusing existing product: "
                         f"{product.name} (DB ID: {product_db_id})"
                     )
+                    # Repair-on-reuse. The row is kept (recreating it would duplicate
+                    # the product), but a NULL text_embedding_1024 is not something a
+                    # resume should carry forward silently — the flagging code that
+                    # exists to recover it lives in the create branch, which a resume
+                    # never reaches again.
+                    _broken = needs_reembed.pop(product_db_id, None)
+                    if _broken is not None:
+                        try:
+                            from app.api.pdf_processing.stage_4_products import reembed_product_text
+                            _ok = await reembed_product_text(
+                                supabase=supabase,
+                                document_id=document_id,
+                                product_id=product_db_id,
+                                name=_broken.get('name') or product.name,
+                                description=_broken.get('description'),
+                                metadata=_broken.get('metadata') or {},
+                                known_spec_fields=[],
+                                logger=logger,
+                            )
+                            if _ok:
+                                logger.info(
+                                    f"   🧠 Re-embedded reused product {product.name} "
+                                    f"(DB ID: {product_db_id}) — was NULL"
+                                )
+                                # Clear the stale failure marker so the backfill cron
+                                # stops targeting a row that is now healthy.
+                                _m = dict(_broken.get('metadata') or {})
+                                if _m.pop('embedding_failure', None) is not None:
+                                    supabase.client.table('products') \
+                                        .update({'metadata': _m}) \
+                                        .eq('id', product_db_id).execute()
+                            else:
+                                logger.error(
+                                    f"   ❌ Re-embed on reuse FAILED for {product.name} "
+                                    f"(DB ID: {product_db_id}) — stays flagged for backfill"
+                                )
+                        except Exception as _re_err:
+                            logger.error(
+                                f"   ❌ Re-embed on reuse errored for {product.name}: {_re_err}"
+                            )
                 else:
                     logger.info(f"   🏭 [{i}/{len(catalog.products)}] Creating product in DB: {product.name}")
                     product_creation_result = await create_single_product(

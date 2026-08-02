@@ -603,6 +603,24 @@ async def create_single_product(
             attributes={},
             attributes_raw=collect_raw_attributes(metadata),
             resolutions=[],
+            status='degraded',
+        )
+    # Stamp the degraded verdict onto the product's metadata so the
+    # re-canonicalization pass can FIND these rows. attributes_raw being preserved is
+    # only half the replay contract — something has to say which products need
+    # replaying, or an outage's worth of empty-attribute products is indistinguishable
+    # from products that genuinely have no facets.
+    if getattr(canonical, 'status', 'ok') != 'ok':
+        from datetime import datetime as _dt
+        metadata['facet_canonicalization'] = {
+            'status': canonical.status,
+            'at': _dt.utcnow().isoformat(),
+            'stage': 'pdf_stage_4',
+        }
+        logger.error(
+            f"   ❌ Facet canonicalization DEGRADED for {product.name} — "
+            f"attributes are empty because a dependency failed, not because the "
+            f"product has no facets; flagged via metadata.facet_canonicalization"
         )
     if canonical.resolutions:
         logger.info(

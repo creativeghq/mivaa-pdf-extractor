@@ -850,6 +850,35 @@ class ProductDiscoveryService:
                 max_tokens=8000,
                 messages=[{"role": "user", "content": content_blocks}],
             )
+            # Log the cost HERE — the call has completed and Anthropic has billed for
+            # it. This used to sit after json.loads/_repair_json, so every response
+            # that failed to parse (and every empty/no-text-block response above)
+            # returned without writing an ai_usage_logs row. That lost attribution
+            # precisely on the failures, on the path that only runs when a catalog is
+            # already hard — image-baked product names. Cost accounting must not
+            # depend on whether the payload turned out to be usable.
+            _latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
+            try:
+                await self.ai_logger.log_claude_call(
+                    task="product_discovery_vision_retry",
+                    model=model_to_use,
+                    response=response,
+                    latency_ms=_latency_ms,
+                    # 0.0, not None: log_claude_call does round(confidence_score, 2)
+                    # and f"{confidence_score:.2f}", both of which raise TypeError on
+                    # None — inside a try/except that only warns, so the cost row would
+                    # be lost again, which is the exact bug this move exists to fix.
+                    # The real confidence is not knowable before the payload is parsed.
+                    confidence_score=0.0,
+                    confidence_breakdown={},
+                    action="vision_fallback",
+                    job_id=job_id,
+                )
+            except Exception as _log_err:
+                self.logger.warning(
+                    f"   vision retry: cost logging failed (call still billed): {_log_err}"
+                )
+
             if not getattr(response, "content", None):
                 self.logger.error("   vision retry: Claude returned empty content (no blocks)")
                 return None
@@ -883,20 +912,8 @@ class ProductDiscoveryService:
             except json.JSONDecodeError:
                 result = json.loads(self._repair_json(raw))
 
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            try:
-                await self.ai_logger.log_claude_call(
-                    task="product_discovery_vision_retry",
-                    model=model_to_use,
-                    response=response,
-                    latency_ms=latency_ms,
-                    confidence_score=result.get("confidence_score", 0.7),
-                    confidence_breakdown={},
-                    action="vision_fallback",
-                    job_id=job_id,
-                )
-            except Exception:
-                pass
+            # (cost already logged immediately after the call returned — logging it
+            # again here would double-count the spend)
 
             raw_products = result.get("products", []) or []
             valid_products = self._filter_validated_items(

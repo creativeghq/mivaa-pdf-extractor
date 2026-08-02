@@ -308,9 +308,18 @@ class RealEmbeddingsService:
             # provenance so vecs_service can persist embedding_model and
             # schema_version for fallback-drift detection.
             if vision_analysis:
+                # Thread the ids, like every sibling embed call in this method does.
+                # This one passed none, so its Voyage cost landed in ai_usage_logs with
+                # job_id NULL — and progress_tracker.complete_job sums billed_cost_usd
+                # FILTERED BY job_id. One Voyage call per image (the 7th fusion vector,
+                # on every image in the catalog) was therefore missing from
+                # background_jobs.total_ai_cost_usd and from all per-product attribution.
                 ue_result = await self.generate_understanding_embedding(
                     vision_analysis=vision_analysis,
-                    material_properties=material_properties
+                    material_properties=material_properties,
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
                 )
                 if ue_result and ue_result.get("embedding"):
                     embeddings["embeddings"]["understanding_1024"] = ue_result["embedding"]
@@ -320,10 +329,21 @@ class RealEmbeddingsService:
                     embeddings["metadata"]["confidence_scores"]["understanding"] = 0.93
                     self.logger.info("✅ Understanding embedding generated (1024D)")
 
-            self.logger.info(f"✅ All embeddings generated: {len(embeddings['embeddings'])} types")
-
-            # Add success flag
-            embeddings["success"] = True
+            # `success` must mean "vectors came back", not "no exception was raised".
+            # It was set to True unconditionally, so with every provider down this
+            # returned success alongside an EMPTY embeddings dict and callers counted
+            # the entity as embedded. An empty result is a failure the caller has to be
+            # able to see — it is the difference between "retry this" and "done".
+            _produced = len(embeddings.get("embeddings") or {})
+            embeddings["success"] = _produced > 0
+            if not _produced:
+                embeddings["error"] = "no_vectors_generated"
+                self.logger.error(
+                    f"❌ No embeddings generated for {entity_type} {entity_id} — "
+                    f"every embedding path returned empty"
+                )
+            else:
+                self.logger.info(f"✅ All embeddings generated: {_produced} types")
 
             return embeddings
 
@@ -455,7 +475,9 @@ class RealEmbeddingsService:
         self,
         vision_analysis: Dict[str, Any],
         material_properties: Optional[Dict[str, Any]] = None,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Generate understanding embedding from a structured vision_analysis dict.
@@ -540,6 +562,8 @@ class RealEmbeddingsService:
                 text=text,
                 input_type="document",
                 job_id=job_id,
+                product_id=product_id,
+                image_id=image_id,
                 allow_openai_fallback=False,
             )
 

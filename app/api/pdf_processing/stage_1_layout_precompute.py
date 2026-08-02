@@ -45,6 +45,16 @@ from PIL import Image
 # background_jobs.stage_history. Keep stable so the frontend can match.
 STAGE_NAME = "stage_1_5_layout_precompute"
 
+# Cache statuses that mean "the OCR pass returned a verdict for this page".
+#
+# Every page gets a `document_layout_analysis` row regardless of outcome — failures
+# are written on purpose so the resume filter can retry them (_RETRY_CACHE_STATUSES).
+# So "a row exists" says nothing about whether PaddleOCR is alive, and the circuit
+# breaker must count THESE statuses rather than rows written. Deliberately the exact
+# complement of _RETRY_CACHE_STATUSES: a status is either evidence the endpoint
+# worked, or a marker to retry — never both, and never neither.
+_OCR_PRODUCTIVE_STATUSES = frozenset({"success", "paddleocr_no_text", "empty_page"})
+
 
 class LayoutPrecomputeFatalError(RuntimeError):
     """Raised when the structural pass hits a condition that must ABORT the job
@@ -157,6 +167,34 @@ def _render_physical_page(
     return img, bound_rect
 
 
+def _rendered_page_is_blank(image: "Image.Image") -> bool:
+    """True when the RENDER itself carries no ink — a genuinely empty page.
+
+    This is the discriminator between the two reasons PaddleOCR returns zero
+    regions, which were previously indistinguishable and both cached as
+    ``empty_page`` (a status the resume filter never retries):
+
+      • the page really is blank (separator sheets, trailing pages) — terminal,
+        retrying it forever would burn GPU-seconds on every run and never settle;
+      • the page has content and the VLM produced nothing — a hiccup that MUST be
+        retryable, or a dense spec page is permanently stored as blank with no
+        chunks, no crops and no discovery text.
+
+    A single-channel extrema check is enough and costs microseconds: a uniform
+    image (min == max) has exactly one tone across the whole page, which no page
+    carrying text or figures ever does. Deliberately conservative — anything with
+    any variation at all is treated as "has content", so the failure direction is
+    a wasted retry rather than silently-lost content.
+    """
+    try:
+        lo, hi = image.convert("L").getextrema()
+        return lo == hi
+    except Exception:
+        # Never let a blankness heuristic decide a page is done. If we cannot tell,
+        # assume there is content, which routes to the retryable marker.
+        return False
+
+
 def _pymupdf_spans_in_clip(
     page: "fitz.Page",
     clip: Optional["fitz.Rect"],
@@ -240,14 +278,20 @@ async def precompute_document_layout(
         from app.utils.pdf_to_images import analyze_pdf_layout
         layout = await asyncio.to_thread(analyze_pdf_layout, pdf_path)
     except Exception as e:
-        logger.warning(f"   ⚠️ [STAGE 1.5] analyze_pdf_layout failed: {e}")
+        logger.error(f"   ❌ [STAGE 1.5] analyze_pdf_layout failed: {e}")
         _emit_stage_event(
             supabase, job_id, "failed",
             {**summary, "error": f"analyze_pdf_layout failed: {e}",
              "duration_ms": int((time.time() - started_at) * 1000)},
             logger,
         )
-        return summary
+        # RAISE, don't return. The layout map is the physical→PDF page mapping every
+        # downstream consumer keys on; without it the structural pass cannot run at
+        # all. The orchestrator re-raises only LayoutPrecomputeFatalError, so a plain
+        # `return summary` here was indistinguishable from success — the whole
+        # structural backbone got skipped and the job completed green on PyMuPDF
+        # text. "The pass cannot run" is fatal; "a page failed" is not.
+        raise LayoutPrecomputeFatalError(f"analyze_pdf_layout failed: {e}") from e
 
     physical_to_pdf = dict(layout.physical_to_pdf_map or {})
     total_physical = (
@@ -405,7 +449,11 @@ async def precompute_document_layout(
              "duration_ms": int((time.time() - started_at) * 1000)},
             logger,
         )
-        return summary
+        # Same reasoning as the analyze_pdf_layout path above: with no manager there
+        # is no structural pass at all, which is a fatal precondition rather than a
+        # per-page failure. Returning here emitted a `failed` event that nothing
+        # acted on and let the job finish green.
+        raise LayoutPrecomputeFatalError("PaddleOCR manager unavailable")
 
     extraction_paths: Dict[str, int] = {
         "paddleocr": 0,
@@ -429,7 +477,16 @@ async def precompute_document_layout(
     # every page against a dead endpoint.
     import os as _os_s15
     PARALLELISM = max(1, int(_os_s15.environ.get("STAGE_1_5_CONCURRENCY", "6")))
-    _state = {"persisted": 0, "http_failures": 0, "config_error": None}
+    # `persisted` counts ROWS WRITTEN; `ocr_ok` counts pages the OCR pass actually
+    # produced a verdict for. They are not the same number, and conflating them is
+    # what made the circuit breaker below unable to fire: a failed page is
+    # DELIBERATELY upserted with cache_status="ocr_failed" (so it can be retried),
+    # so `persisted` is >= 1 from the first page even with the endpoint completely
+    # down. The breaker's `persisted == 0` condition was therefore false always.
+    # With PaddleOCR dead that meant every page ran its full retry budget, the log
+    # read "Cached 140/140 pages", a `completed` event fired, and the job finished
+    # on zero VLM text — chunking and discovery silently degrading to PyMuPDF.
+    _state = {"persisted": 0, "ocr_ok": 0, "http_failures": 0, "config_error": None}
     _state_lock = asyncio.Lock()
 
     async def _process_one_page(physical_page: int) -> None:
@@ -462,8 +519,25 @@ async def precompute_document_layout(
                     cache_status = "success" if has_text else "paddleocr_no_text"
                     extraction_path = "paddleocr" if has_text else "paddleocr_no_text"
                 else:
-                    cache_status = "empty_page"
-                    extraction_path = "none"
+                    # Zero regions. Only call it an empty page if the RENDER is
+                    # blank; otherwise the VLM returned nothing for a page that
+                    # visibly has content, which is a failure and must stay
+                    # retryable. "empty_page" is terminal (not in
+                    # _RETRY_CACHE_STATUSES), so getting this wrong permanently
+                    # stores a dense page as blank.
+                    if _rendered_page_is_blank(image):
+                        cache_status = "empty_page"
+                        extraction_path = "none"
+                    else:
+                        cache_status = "ocr_failed"
+                        extraction_path = "none"
+                        async with _state_lock:
+                            _state["http_failures"] += 1
+                        logger.warning(
+                            f"   ⚠️ [STAGE 1.5] physical page {physical_page} rendered "
+                            f"with content but PaddleOCR returned 0 regions — marking "
+                            f"retryable (was silently cached as blank)"
+                        )
             except PaddleOCRConfigError as cfg_err:
                 cache_status = "ocr_failed"
                 async with _state_lock:
@@ -529,6 +603,12 @@ async def precompute_document_layout(
             )
             async with _state_lock:
                 _state["persisted"] += 1
+                # Only a page the OCR pass returned a real verdict for counts as
+                # evidence the endpoint is alive. "ocr_failed" / "page_failed" rows
+                # are written precisely so they can be retried — they are the
+                # opposite of a success and must never keep the breaker open.
+                if cache_status in _OCR_PRODUCTIVE_STATUSES:
+                    _state["ocr_ok"] += 1
                 extraction_paths[extraction_path] = (
                     extraction_paths.get(extraction_path, 0) + 1
                 )
@@ -579,7 +659,7 @@ async def precompute_document_layout(
                 logger,
             )
             raise LayoutPrecomputeFatalError(f"PaddleOCR endpoint misconfigured: {_cfg}")
-        if _state["http_failures"] >= CIRCUIT_BREAKER_THRESHOLD and _state["persisted"] == 0:
+        if _state["http_failures"] >= CIRCUIT_BREAKER_THRESHOLD and _state["ocr_ok"] == 0:
             _msg = (
                 f"PaddleOCR endpoint failed {_state['http_failures']} pages with zero "
                 f"successes — aborting job (endpoint down/too slow)."
@@ -616,15 +696,27 @@ async def precompute_document_layout(
                     logger.debug(f"   clear_slow_operation (fallback) failed (non-fatal): {_clear_err}")
 
     persisted = _state["persisted"]
+    ocr_ok = _state["ocr_ok"]
 
     summary["pages_processed"] = len(pages_to_process)
     summary["pages_persisted"] = persisted
+    # The number that actually says whether this stage did its job. `pages_persisted`
+    # counts rows and reads 140/140 even when every page failed, which is how a fully
+    # dead endpoint used to produce a reassuring "✅ Cached 140/140" line.
+    summary["pages_ocr_ok"] = ocr_ok
     summary["extraction_paths"] = extraction_paths
 
-    logger.info(
-        f"✅ [STAGE 1.5] Cached {persisted}/{len(pages_to_process)} pages — "
-        f"extraction paths: {extraction_paths}"
-    )
+    if ocr_ok < persisted:
+        logger.warning(
+            f"⚠️ [STAGE 1.5] Cached {persisted}/{len(pages_to_process)} rows but only "
+            f"{ocr_ok} carry OCR output — {persisted - ocr_ok} page(s) stored a retry "
+            f"marker. Extraction paths: {extraction_paths}"
+        )
+    else:
+        logger.info(
+            f"✅ [STAGE 1.5] Cached {persisted}/{len(pages_to_process)} pages — "
+            f"extraction paths: {extraction_paths}"
+        )
     _emit_stage_event(
         supabase, job_id, "completed",
         {**summary, "duration_ms": int((time.time() - started_at) * 1000)},

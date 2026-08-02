@@ -28,9 +28,35 @@ import fitz  # PyMuPDF
 
 from app.api.pdf_processing.stage_1_layout_precompute import _render_physical_page
 
-# Only IMAGE/FIGURE regions are product-crop sources. PaddleOCR labels product
-# photos / tile-grids as IMAGE or FIGURE; tables/text/titles are not cropped here.
-CROP_REGION_TYPES = ("IMAGE", "FIGURE")
+# Which layout-region classifications become `extraction_layer='region_crop'` rows.
+#
+# This was a hardcoded ("IMAGE", "FIGURE") that silently overrode the configured
+# value. PDF_CONSTANTS.CROP_REGION_TYPES is ("IMAGE", "FIGURE", "TABLE") and carries a
+# comment explaining exactly why TABLE is in it — ceramic catalogs classify a 12-tile
+# colour-swatch grid as a single TABLE region, and those tiles are flattened into
+# render commands so PyMuPDF cannot see them; without a crop they are lost from
+# extraction entirely. It also documents a PDF_CROP_REGION_TYPES env override.
+#
+# Nothing read either. This module's local tuple was the only value in play, so TABLE
+# crops were never produced, the env override did nothing, and the Stage 3 Phase-3 OCR
+# branch for TABLE/TEXT/TITLE/CAPTION region crops could never execute — 100% of region
+# crops took its skip path. Read the configured value so all three come back to life.
+def _crop_region_types() -> tuple:
+    env = os.getenv("PDF_CROP_REGION_TYPES")
+    if env:
+        parsed = tuple(t.strip().upper() for t in env.split(",") if t.strip())
+        if parsed:
+            return parsed
+    try:
+        from app.services.pdf.pdf_processor import PDF_CONSTANTS
+        return tuple(str(t).upper() for t in PDF_CONSTANTS.CROP_REGION_TYPES)
+    except Exception:
+        # Never let a config import failure silently shrink extraction coverage back
+        # to the old hardcoded pair — fall back to the documented default.
+        return ("IMAGE", "FIGURE", "TABLE")
+
+
+CROP_REGION_TYPES = _crop_region_types()
 
 # Degenerate-crop guard: skip crops smaller than this in either dimension (px).
 # Render DPI / clip math is owned entirely by `_render_physical_page` (Stage 1.5),

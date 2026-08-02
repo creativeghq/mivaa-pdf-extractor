@@ -105,6 +105,12 @@ async def process_single_product(
     skip_chunking = False
     skip_images = False
     skip_creation = False
+    # What a completed-stage checkpoint claimed it wrote, so the DB row counts below
+    # can be judged complete-or-partial rather than merely non-zero. None = no
+    # checkpoint recorded a total, which is itself evidence the stage never finished.
+    expected_chunks: Optional[int] = None
+    expected_images: Optional[int] = None
+    partial_image_resume: Optional[Dict[str, Any]] = None
     try:
         prior_status = await product_tracker.get_product_status(product_id)
         prior_db_id = (prior_status.metadata or {}).get('product_db_id') if prior_status else None
@@ -124,7 +130,25 @@ async def process_single_product(
             for entry in (sb_resp.data or {}).get('stage_history', []) or []:
                 ed = entry.get('data') or {}
                 if str(ed.get('product_index')) == str(product_index):
+                    # 'completed_empty' means the stage ran and produced NOTHING. It is
+                    # not a reason to skip the stage forever — it is the reason to run
+                    # it again. Adding it to prior_stages is what made a product that
+                    # chunked to 0 once permanently un-chunkable on every later resume.
+                    if entry.get('status') == 'completed_empty':
+                        logger_instance.info(
+                            f"↻ [RESUME] Product {product_index} stage "
+                            f"'{entry.get('stage')}' previously completed EMPTY — will re-run"
+                        )
+                        continue
                     prior_stages.add(entry.get('stage'))
+                    # Capture what the completed stage SAID it wrote. This is the
+                    # expectation the DB state below is checked against — without it
+                    # "some rows exist" is the only available signal, and that cannot
+                    # tell a finished product from one the worker abandoned partway.
+                    if ed.get('chunks_created') is not None:
+                        expected_chunks = max(expected_chunks or 0, int(ed['chunks_created'] or 0))
+                    if ed.get('images_extracted') is not None:
+                        expected_images = max(expected_images or 0, int(ed['images_extracted'] or 0))
         except Exception as ckpt_err:
             logger_instance.error(
                 f"⚠️ Resume checkpoint read FAILED for product {product_index} — "
@@ -135,6 +159,11 @@ async def process_single_product(
         # because a stage might have been MID-INSERT when the worker died.
         # If chunks/images for this product already exist in DB, treat the
         # corresponding stage as done.
+        # `> 0` is not "done". A worker that died after writing 2 of 30 chunks (or 1
+        # of 40 images) leaves a non-zero count, which used to set the skip flag and
+        # short-circuit the stage on EVERY future resume — the product stayed
+        # permanently under-processed while the job completed green. The count is
+        # compared against what the completed-stage checkpoint said it wrote.
         try:
             if prior_db_id:
                 existing_chunks = supabase.client.table('document_chunks') \
@@ -142,15 +171,55 @@ async def process_single_product(
                     .eq('document_id', document_id) \
                     .eq('product_id', prior_db_id) \
                     .execute()
-                if (existing_chunks.count or 0) > 0:
+                chunk_count = existing_chunks.count or 0
+                if chunk_count > 0 and expected_chunks is not None and chunk_count >= expected_chunks:
                     prior_stages.add('chunks_created')
+                elif chunk_count > 0:
+                    # Partial (or unverifiable — no checkpoint recorded a total).
+                    # Chunks are safe to rebuild: the embedding lives inline on the
+                    # row, so deleting the partial set removes its vectors with it,
+                    # and there is no unique constraint to make a re-run idempotent.
+                    # Leaving them and re-running would DUPLICATE every chunk.
+                    logger_instance.warning(
+                        f"⚠️ [RESUME] Product {product_index} '{product.name}' has {chunk_count} "
+                        f"chunk(s) but the stage never completed"
+                        f"{f' (checkpoint expected {expected_chunks})' if expected_chunks is not None else ' (no checkpoint)'}"
+                        f" — deleting the partial set and re-chunking"
+                    )
+                    supabase.client.table('document_chunks') \
+                        .delete() \
+                        .eq('document_id', document_id) \
+                        .eq('product_id', prior_db_id) \
+                        .execute()
+
                 existing_imgs = supabase.client.table('document_images') \
                     .select('id', count='exact') \
                     .eq('document_id', document_id) \
                     .eq('product_id', prior_db_id) \
                     .execute()
-                if (existing_imgs.count or 0) > 0:
+                image_count = existing_imgs.count or 0
+                if image_count > 0 and expected_images is not None and image_count >= expected_images:
                     prior_stages.add('images_extracted')
+                elif image_count > 0:
+                    # Images are NOT rebuilt the same way. Each row has vectors in the
+                    # VECS collections that a plain row delete would orphan, and a
+                    # re-run would re-bill Claude vision for every image. So the skip
+                    # stands — but it is recorded rather than assumed, so an operator
+                    # or repair pass can find products that resumed on a partial image
+                    # set instead of them silently reading as complete.
+                    prior_stages.add('images_extracted')
+                    partial_image_resume = {
+                        'found': image_count,
+                        'expected': expected_images,
+                        'product_index': product_index,
+                    }
+                    logger_instance.warning(
+                        f"⚠️ [RESUME] Product {product_index} '{product.name}' resuming on "
+                        f"{image_count} image(s) with no completed images checkpoint"
+                        f"{f' (expected {expected_images})' if expected_images is not None else ''} — "
+                        f"reusing them (delete would orphan VECS vectors and re-bill vision); "
+                        f"flagged as resume_incomplete on the product row"
+                    )
         except Exception as db_check_err:
             logger_instance.debug(f"DB state check failed for {product.name}: {db_check_err}")
 
@@ -186,6 +255,31 @@ async def process_single_product(
 
     except Exception as resume_check_err:
         logger_instance.debug(f"Per-product resume check failed (continuing): {resume_check_err}")
+
+    # Persist the partial-resume marker so a product that resumed on an incomplete
+    # image set is DISCOVERABLE, not merely mentioned in a log line that scrolls away.
+    # Same convention as embedding_metadata.status='failed' (S3-8) and
+    # vision_analysis_failed: query for it with
+    #     metadata->'resume_incomplete' is not null
+    if partial_image_resume and prior_db_id:
+        try:
+            _existing = supabase.client.table('products') \
+                .select('metadata').eq('id', prior_db_id).single().execute()
+            _meta = (_existing.data or {}).get('metadata') or {}
+            supabase.client.table('products').update({
+                'metadata': {
+                    **_meta,
+                    'resume_incomplete': {
+                        **partial_image_resume,
+                        'stage': 'images_extracted',
+                        'detected_at': datetime.utcnow().isoformat(),
+                    },
+                }
+            }).eq('id', prior_db_id).execute()
+        except Exception as _mark_err:
+            logger_instance.warning(
+                f"⚠️ could not stamp resume_incomplete on product {prior_db_id}: {_mark_err}"
+            )
 
     try:
         # ========================================================================
@@ -333,6 +427,16 @@ async def process_single_product(
 
             chunks_created = chunk_result.get('chunks_created', 0)
             embeddings_generated = chunk_result.get('embeddings_generated', 0)
+            # 'failed' means the extractor broke, not that the product has no text.
+            # Checkpointing that as a completed stage is what made the outcome
+            # permanent: the resume path would skip chunking for this product on
+            # every subsequent run. Raise so the product is recorded as failed and
+            # stays eligible for a retry.
+            if chunk_result.get('chunking_status') == 'failed':
+                raise RuntimeError(
+                    f"chunking failed for {product.name}: "
+                    f"{chunk_result.get('error') or 'text extraction error'}"
+                )
             logger_instance.info(f"✅ Created {chunks_created} chunks for {product.name} ({embeddings_generated} text embeddings)")
         await product_tracker.mark_stage_complete(
             product_id,

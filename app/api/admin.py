@@ -1347,10 +1347,33 @@ async def reprocess_image_ocr(
             # Step 3: Run PaddleOCR OCR
             logger.info("🔍 Running PaddleOCR OCR...")
             ocr_results = ocr_service.extract_text_from_image(tmp_image_path)
-            
+
+            # extract_text_from_image NEVER raises — retry-exhaustion comes back as an
+            # OCRResult with method='paddleocr_failed', text="" and blocks=[]. The
+            # contract (ocr_service.py:222) is explicit that consumers must check the
+            # METHOD, not emptiness. This endpoint joined `r.text` across results
+            # without looking, so a total OCR failure was stored as empty text and then
+            # written with processing_status='ocr_complete' and can_reprocess=False —
+            # permanently marking a failed image as done and un-retryable, which is the
+            # one outcome a "reprocess" endpoint must never produce.
+            _failed = [r for r in ocr_results if r.method == 'paddleocr_failed']
+            if _failed or not ocr_results:
+                logger.error(
+                    f"❌ OCR failed for image {image_id} "
+                    f"({len(_failed)}/{len(ocr_results) or 0} results carry paddleocr_failed) — "
+                    f"leaving the row retryable"
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "PaddleOCR exhausted its retries for this image. The image row was "
+                        "left untouched so it can be reprocessed once the endpoint recovers."
+                    ),
+                )
+
             extracted_text = ' '.join([r.text for r in ocr_results])
             avg_confidence = sum([r.confidence for r in ocr_results]) / len(ocr_results) if ocr_results else 0.0
-            
+
             logger.info(f"✅ OCR extracted {len(ocr_results)} text regions, avg confidence: {avg_confidence:.2f}")
             
             # Step 4: Update image record
@@ -1377,37 +1400,70 @@ async def reprocess_image_ocr(
             
             chunks_updated = 0
             embeddings_regenerated = 0
+            chunk_errors: List[str] = []
             
             if chunks_response.data:
                 for chunk in chunks_response.data:
                     # Update chunk content with OCR text
                     updated_content = f"{chunk.get('content', '')}\n\n[Image OCR: {extracted_text}]"
                     
-                    # Generate new text embedding
+                    # Generate new text embedding.
+                    #
+                    # This call used to pass `text=` and `model="text-embedding-3-small"`.
+                    # The signature is (query, dimensions=1024, job_id, product_id,
+                    # image_id) — BOTH kwargs were wrong, so every call raised TypeError
+                    # straight into the handler below, `chunks_updated` and
+                    # `embeddings_regenerated` were structurally pinned at 0, and the
+                    # endpoint still returned success: True. The admin re-OCR path had
+                    # never re-embedded a single chunk.
+                    #
+                    # It also assigned the RETURN VALUE into `text_embedding` — that is a
+                    # dict {"success", "embedding", "model"}, not a vector, so even with
+                    # the kwargs fixed the write would have been wrong.
                     try:
-                        embedding = await embeddings_service.generate_text_embedding(
-                            text=updated_content,
-                            model="text-embedding-3-small"
+                        embed_result = await embeddings_service.generate_text_embedding(
+                            updated_content,
+                            job_id=None,
+                            image_id=image_id,
                         )
-                        
-                        # Update chunk
+                        if not (embed_result or {}).get('success') or not embed_result.get('embedding'):
+                            raise RuntimeError(
+                                f"embedding provider returned no vector: "
+                                f"{str(embed_result)[:200]}"
+                            )
+                        vector = embed_result['embedding']
+
+                        # Keep the companion columns in step with the vector. Writing
+                        # text_embedding alone leaves has_text_embedding / embedding_model
+                        # / embedding_dimension describing the PREVIOUS embedding.
                         supabase.client.table('document_chunks').update({
                             'content': updated_content,
-                            'text_embedding': embedding,
+                            'text_embedding': vector,
+                            'has_text_embedding': True,
+                            'embedding_model': embed_result.get('model'),
+                            'embedding_dimension': len(vector),
+                            'embedding_generated_at': datetime.utcnow().isoformat(),
                             'metadata': {
                                 **(chunk.get('metadata') or {}),
                                 'ocr_enriched': True,
                                 'ocr_enriched_at': datetime.utcnow().isoformat()
                             }
                         }).eq('id', chunk['id']).execute()
-                        
+
                         chunks_updated += 1
                         embeddings_regenerated += 1
-                        
+
                     except Exception as e:
                         logger.error(f"Failed to update chunk {chunk['id']}: {str(e)}")
+                        chunk_errors.append(f"{chunk['id']}: {e}")
             
-            logger.info(f"✅ Updated {chunks_updated} chunks, regenerated {embeddings_regenerated} embeddings")
+            if chunk_errors:
+                logger.error(
+                    f"⚠️ Updated {chunks_updated} chunks, regenerated "
+                    f"{embeddings_regenerated} embeddings — {len(chunk_errors)} chunk(s) FAILED"
+                )
+            else:
+                logger.info(f"✅ Updated {chunks_updated} chunks, regenerated {embeddings_regenerated} embeddings")
             
             # Step 6: Extract metadata from OCR text
             metadata_extracted = {
@@ -1420,8 +1476,12 @@ async def reprocess_image_ocr(
             # Step 7: Find potential product associations
             products_associated = 0
             
+            # `success` reflects what actually happened. It was hardcoded True, which is
+            # why a path that re-embedded nothing at all for its entire life still
+            # reported success on every call — the counters sat at 0 in a payload
+            # nobody read as a failure.
             return {
-                'success': True,
+                'success': not chunk_errors,
                 'image_id': image_id,
                 'ocr_results': {
                     'text': extracted_text,
@@ -1433,8 +1493,14 @@ async def reprocess_image_ocr(
                     'embeddings_regenerated': embeddings_regenerated,
                     'products_associated': products_associated
                 },
+                'chunk_errors': chunk_errors,
                 'metadata_extracted': metadata_extracted,
-                'message': f'Successfully reprocessed image with OCR. Extracted {len(ocr_results)} text regions.'
+                'message': (
+                    f'Reprocessed image with OCR ({len(ocr_results)} text regions), but '
+                    f'{len(chunk_errors)} chunk(s) could not be re-embedded.'
+                    if chunk_errors else
+                    f'Successfully reprocessed image with OCR. Extracted {len(ocr_results)} text regions.'
+                )
             }
             
         finally:

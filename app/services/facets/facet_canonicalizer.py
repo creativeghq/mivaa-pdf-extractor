@@ -85,6 +85,15 @@ class CanonicalizedAttributes:
     attributes: Dict[str, Any]              # facet -> canonical (str or list[str])
     attributes_raw: Dict[str, List[str]]    # facet -> raw values seen (cumulative across runs)
     resolutions: List[FacetResolution]
+    # 'ok' | 'degraded' — whether the canonical map is TRUSTWORTHY, not just present.
+    #
+    # Every failure path here degrades to empty: a Voyage batch-embed exception becomes
+    # [None] * n, and resolve_facet_values_batch returns [] on any exception. The product
+    # is then written with attributes={} — byte-identical to a product that genuinely has
+    # no canonicalizable facets. During a Voyage or RPC outage that produces a whole
+    # catalog of empty-attribute products with nothing marking them for re-canonicalization,
+    # and no way to tell them apart afterwards. This field is that marker.
+    status: str = 'ok'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -134,8 +143,12 @@ class FacetCanonicalizer:
             for (facet, raw, norm, canon) in reused
         ]
 
+        degraded = False
         if fresh:
-            resolutions.extend(await self._resolve_fresh(fresh, source=source, product_id=product_id, workspace_id=workspace_id))
+            fresh_resolutions, degraded = await self._resolve_fresh(
+                fresh, source=source, product_id=product_id, workspace_id=workspace_id,
+            )
+            resolutions.extend(fresh_resolutions)
 
         # ── 3. Build canonical + raw maps ────────────────────────────────────
         attributes = self._build_canonical_map(raw_metadata, resolutions)
@@ -145,6 +158,7 @@ class FacetCanonicalizer:
             attributes=attributes,
             attributes_raw=attributes_raw,
             resolutions=resolutions,
+            status='degraded' if degraded else 'ok',
         )
 
     # ── Internals ────────────────────────────────────────────────────────────
@@ -252,7 +266,14 @@ class FacetCanonicalizer:
         source: str,
         product_id: Optional[UUID],
         workspace_id: Optional[str] = None,
-    ) -> List[FacetResolution]:
+    ) -> Tuple[List[FacetResolution], bool]:
+        """Returns (resolutions, degraded).
+
+        `degraded` is True when a dependency failed rather than genuinely returning
+        nothing — a Voyage batch-embed exception, or an RPC that came back empty for a
+        non-empty payload. Both used to be swallowed into an ordinary empty result.
+        """
+        degraded = False
         # ── L0.5: pretranslate non-ASCII norms ────────────────────────────────
         translation_inputs = [(facet, raw) for (facet, raw, norm) in fresh if not is_ascii_english(norm)]
         translations: Dict[Tuple[str, str], str] = {}
@@ -292,8 +313,9 @@ class FacetCanonicalizer:
                     input_type="document",
                 )
             except Exception as e:
-                logger.warning(f"Voyage batch embed failed ({len(needs_embed)} values): {e}")
+                logger.error(f"Voyage batch embed failed ({len(needs_embed)} values): {e}")
                 vectors = [None] * len(needs_embed)
+                degraded = True
             for triple, vec in zip(needs_embed, vectors):
                 embeddings[triple] = vec
 
@@ -311,8 +333,17 @@ class FacetCanonicalizer:
             items_payload.append(item)
 
         results = await self._rpc_batch(items_payload, source=source, product_id=product_id, workspace_id=workspace_id)
+        # _rpc_batch returns [] on ANY exception. An empty result for a non-empty
+        # payload is therefore a failure, not an answer — the RPC never legitimately
+        # drops every item it was given.
+        if items_payload and not results:
+            logger.error(
+                f"resolve_facet_values_batch returned nothing for {len(items_payload)} item(s) "
+                f"(source={source}, product_id={product_id}) — treating as degraded"
+            )
+            degraded = True
 
-        return [
+        return ([
             FacetResolution(
                 facet_key=r.get('facet_key', ''),
                 raw_value=r.get('raw', ''),
@@ -322,7 +353,7 @@ class FacetCanonicalizer:
                 similarity=r.get('similarity'),
             )
             for r in results
-        ]
+        ], degraded)
 
     def _tier1_hit(
         self,
@@ -508,4 +539,8 @@ async def canonicalize_product_attributes(
             attributes={},
             attributes_raw=collect_raw_attributes(raw_metadata),
             resolutions=[],
+            # The raw map is preserved so a re-canonicalization pass can replay — but
+            # only if something TELLS it to. Without this the empty attributes are
+            # indistinguishable from a product that has no facets.
+            status='degraded',
         )

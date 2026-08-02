@@ -45,11 +45,20 @@ def _log_paddleocr_gpu_cost(
     job_id: Optional[str],
     image_id: Optional[str],
     product_id: Optional[str],
+    outcome: str = "success",
 ) -> None:
-    """Log the GPU-seconds cost of a successful PaddleOCR call to ai_usage_logs.
+    """Log the GPU-seconds cost of a PaddleOCR call to ai_usage_logs.
 
     PaddleOCR-VL runs on a Modal GPU endpoint — billed per GPU-second (time-based,
     $1/GPU-hour), NOT per token.
+
+    Called on EVERY attempt that reached the endpoint, not only successful ones.
+    Modal bills for the GPU-seconds a failed attempt consumed exactly as it does for
+    a successful one, and a failing endpoint burns up to _MAX_ATTEMPTS × 180s per
+    page. Logging only the success branch meant `total_ai_cost_usd` read LOWEST
+    precisely when real spend was HIGHEST — a degraded endpoint produced a large
+    bill and zero ai_usage_logs rows. `metadata.outcome` distinguishes the rows so
+    cost dashboards can split successful work from burn.
 
     DIRECT SYNCHRONOUS insert: ``run_structural_pass`` is
     sync (dispatched via ``asyncio.to_thread``), the supabase client is a process
@@ -85,6 +94,7 @@ def _log_paddleocr_gpu_cost(
                 "latency_ms": latency_ms,
                 "billing": "time_based",
                 "gpu_hourly_usd": 1.0,
+                "outcome": outcome,
             },
             "created_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
@@ -271,6 +281,18 @@ class PaddleOCRManager:
                     failure_mode_head=str(he)[:200],
                     latency_ms=int((time.time() - start_time) * 1000),
                 )
+                # An HTTP error still consumed GPU-seconds up to the point it failed
+                # (a timeout consumes the FULL budget). Bill it. The 401/403/404 case
+                # below is the one exception worth noting: it fails before any GPU
+                # work, so it is logged with a near-zero latency and is harmless.
+                _log_paddleocr_gpu_cost(
+                    task="pdf_structural_pass",
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    job_id=job_id,
+                    image_id=image_id,
+                    product_id=product_id,
+                    outcome="failed_config_error" if non_retryable else "failed_http_error",
+                )
                 if non_retryable:
                     # 401/403 = wrong bearer key; 404 = wrong URL. Retrying is
                     # pointless and floods the endpoint — fail fast so Stage 1
@@ -285,17 +307,48 @@ class PaddleOCRManager:
                 raise
 
             latency_ms = int((time.time() - start_time) * 1000)
+            raw_regions = payload.get("regions")
             regions: List[PaddleRegion] = parse_parse_response(payload)
-            if not regions and (payload.get("regions") is None):
-                # Endpoint returned a malformed payload (no regions key) — retry.
+            # Two distinct zero-region causes, previously collapsed into one.
+            #
+            # The retry used to trigger only when the `regions` KEY was absent, so a
+            # response of {"regions": []} — or one whose regions were ALL dropped by
+            # the bbox guard in parse_parse_response — fell straight through to
+            # outcome="success", region_count=0. Stage 1 then cached the page as
+            # "empty_page", which is NOT in _RETRY_CACHE_STATUSES: a dense page the
+            # VLM hiccuped on was permanently stored as blank, with the metrics table
+            # reporting success.
+            #
+            # `raw_regions` truthy but `regions` empty is unambiguous — the endpoint
+            # DID find regions and our parser discarded every one, which is never a
+            # blank page. That is retried here. A genuinely empty `raw_regions` is not
+            # retried at this layer: it is indistinguishable from a blank page from
+            # inside the client, so Stage 1 decides using the rendered image it
+            # already holds (see _OCR_PRODUCTIVE_STATUSES there). Retrying it here
+            # would burn three GPU calls on every separator page of every catalog,
+            # every run, and still never reach a terminal state.
+            _dropped_every_region = bool(raw_regions) and not regions
+            if raw_regions is None or _dropped_every_region:
                 last_error = PaddleOCRResponseError(
-                    f"PaddleOCR /parse returned no 'regions' key. head={str(payload)[:300]!r}"
+                    f"PaddleOCR /parse returned no usable regions "
+                    f"({'all regions dropped in parsing' if _dropped_every_region else 'no regions key'}). "
+                    f"head={str(payload)[:300]!r}"
                 )
                 self._emit_metric(
                     caller=caller, page_number=page_number, image_id=None,
                     job_id=job_id, document_id=document_id, attempt_number=attempt_idx,
-                    outcome="failed_no_regions", region_count=0, chars_count=0,
+                    outcome="failed_all_regions_dropped" if _dropped_every_region else "failed_no_regions",
+                    region_count=0, chars_count=0,
                     failure_mode_head=str(payload)[:200], latency_ms=latency_ms,
+                )
+                # A dropped-everything attempt still consumed real GPU-seconds.
+                _log_paddleocr_gpu_cost(
+                    task="pdf_structural_pass",
+                    latency_ms=latency_ms,
+                    job_id=job_id,
+                    image_id=image_id,
+                    product_id=product_id,
+                    outcome="failed_all_regions_dropped" if _dropped_every_region else "failed_no_regions",
                 )
                 if attempt_idx < self._MAX_ATTEMPTS:
                     time.sleep(2 ** (attempt_idx - 1))
