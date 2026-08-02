@@ -5153,22 +5153,14 @@ async def search_documents(
         _t_search_start = _time.time()
         # All strategies now use the parsed query + extracted filters + dynamic weights
         if strategy == "multi_vector":
-            # 🎯 Enhanced multi-vector search with dynamic weight profiles
-            # Map 7-vector profile to RAG service's 9-source format
-            rag_weights = None
-            if dynamic_weights:
-                text_w = dynamic_weights.get("text", 0.15)
-                rag_weights = {
-                    "visual": dynamic_weights.get("visual", 0.15),
-                    "chunk": text_w * 0.40,
-                    "understanding": dynamic_weights.get("understanding", 0.20),
-                    "product": text_w * 0.35,
-                    "keyword": text_w * 0.25,
-                    "color": dynamic_weights.get("color", 0.125),
-                    "texture": dynamic_weights.get("texture", 0.125),
-                    "style": dynamic_weights.get("style", 0.125),
-                    "material": dynamic_weights.get("material", 0.125),
-                }
+            # 🎯 Enhanced multi-vector search with dynamic weight profiles.
+            # The 7-aspect → 9-source mapping lives in weight_profiles so this route
+            # and /api/documents/query cannot drift apart (they held identical copies).
+            from app.services.search.weight_profiles import (
+                profile_to_source_weights,
+                aspect_bias_weights,
+            )
+            rag_weights = profile_to_source_weights(dynamic_weights) if dynamic_weights else None
             material_filters = getattr(request, 'material_filters', None)
             # Build search config with optional MMR and weight overrides
             sc = {}
@@ -5181,15 +5173,12 @@ async def search_documents(
             # query-understanding weights: emphasize the chosen per-aspect vector.
             _aspect = getattr(request, 'aspect', None)
             if _aspect in ('color', 'texture', 'style', 'material'):
-                aspect_weights = {
-                    "visual": 0.10, "chunk": 0.05, "understanding": 0.15,
-                    "product": 0.05, "keyword": 0.05,
-                    "color": 0.025, "texture": 0.025, "style": 0.025, "material": 0.025,
-                }
-                aspect_weights[_aspect] = 0.55
-                sc["weights"] = aspect_weights
+                sc["weights"] = aspect_bias_weights(_aspect)
                 weight_profile = f"aspect:{_aspect}"
-                logger.info(f"🎨 Aspect bias applied: {_aspect} (weight 0.55)")
+                logger.info(
+                    f"🎨 Aspect bias applied: {_aspect} "
+                    f"(weight {sc['weights'][_aspect]:.3f} of a normalized 1.0)"
+                )
             results = await rag_service.multi_vector_search(
                 query=query_to_use,
                 workspace_id=request.workspace_id,

@@ -663,23 +663,12 @@ async def search_documents(
         # 🔍 STEP 2: Route to appropriate search method based on strategy
         # All strategies now use the parsed query + extracted filters + dynamic weights
         if strategy == "multi_vector":
-            # 🎯 Enhanced multi-vector search with dynamic weight profiles
-            # Map 7-vector profile to RAG service's 9-source format
-            # The "text" weight is distributed across chunk, product, and keyword sources
-            rag_weights = None
-            if dynamic_weights:
-                text_w = dynamic_weights.get("text", 0.15)
-                rag_weights = {
-                    "visual": dynamic_weights.get("visual", 0.15),
-                    "chunk": text_w * 0.40,            # 40% of text weight → chunk search
-                    "understanding": dynamic_weights.get("understanding", 0.20),
-                    "product": text_w * 0.35,           # 35% of text weight → product search
-                    "keyword": text_w * 0.25,           # 25% of text weight → keyword search
-                    "color": dynamic_weights.get("color", 0.125),
-                    "texture": dynamic_weights.get("texture", 0.125),
-                    "style": dynamic_weights.get("style", 0.125),
-                    "material": dynamic_weights.get("material", 0.125),
-                }
+            # 🎯 Enhanced multi-vector search with dynamic weight profiles.
+            # The 7-aspect → 9-source mapping (which fans `text` out across chunk /
+            # product / keyword) lives in weight_profiles — shared with /api/rag/search,
+            # which held a byte-identical copy of it.
+            from app.services.search.weight_profiles import profile_to_source_weights
+            rag_weights = profile_to_source_weights(dynamic_weights) if dynamic_weights else None
             material_filters = getattr(request, 'material_filters', None)
             results = await rag_service.multi_vector_search(
                 query=query_to_use,

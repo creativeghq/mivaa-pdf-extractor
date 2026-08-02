@@ -79,6 +79,21 @@ jobs:
           REPLICATE_API_TOKEN: ${{ secrets.REPLICATE_API_TOKEN }}
           SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
 
+      # 1.5. Unit-test gate. Runs BEFORE anything touches the droplet so a failing
+      # guard blocks the deploy instead of being discovered in production.
+      #
+      # `tests/unit` is deliberately dependency-free — the modules under test import
+      # nothing from `app`, so this needs pytest alone (~1s) rather than the full
+      # 10-minute requirements install. Keep it that way: a gate slow enough to be
+      # tempting to skip is a gate that gets skipped.
+      #
+      # Before this step the repo had pytest configured and zero tests wired into CI,
+      # so any test added would silently never have run.
+      - name: 🧪 Unit tests
+        run: |
+          python -m pip install --quiet pytest==7.4.3
+          python -m pytest tests/unit -q
+
       # 2. Setup SSH
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0

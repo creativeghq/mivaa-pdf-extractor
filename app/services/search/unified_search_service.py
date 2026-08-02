@@ -74,37 +74,15 @@ class SearchResponse:
     metadata: Dict[str, Any]
 
 
-# Dynamic weight profiles keyed by query intent type (all sum to 1.0)
-WEIGHT_PROFILES: Dict[str, Dict[str, float]] = {
-    "product_name": {
-        "text": 0.40, "visual": 0.25, "understanding": 0.15,
-        "color": 0.05, "texture": 0.05, "style": 0.05, "material": 0.05
-    },
-    "color_finish": {
-        "text": 0.10, "visual": 0.20, "understanding": 0.15,
-        "color": 0.30, "texture": 0.05, "style": 0.15, "material": 0.05
-    },
-    "specification": {
-        "text": 0.25, "visual": 0.10, "understanding": 0.40,
-        "color": 0.05, "texture": 0.05, "style": 0.05, "material": 0.10
-    },
-    "texture_pattern": {
-        "text": 0.10, "visual": 0.25, "understanding": 0.15,
-        "color": 0.05, "texture": 0.30, "style": 0.10, "material": 0.05
-    },
-    "style_aesthetic": {
-        "text": 0.10, "visual": 0.25, "understanding": 0.15,
-        "color": 0.10, "texture": 0.10, "style": 0.25, "material": 0.05
-    },
-    "material_search": {
-        "text": 0.15, "visual": 0.15, "understanding": 0.25,
-        "color": 0.05, "texture": 0.10, "style": 0.05, "material": 0.25
-    },
-    "balanced": {
-        "text": 0.15, "visual": 0.15, "understanding": 0.20,
-        "color": 0.125, "texture": 0.125, "style": 0.125, "material": 0.125
-    },
-}
+# Dynamic weight profiles keyed by query intent type (all sum to 1.0).
+# Defined ONCE in weight_profiles.py — see that module for why. Re-exported here so
+# the existing `from ...unified_search_service import WEIGHT_PROFILES` callers keep
+# working; new code should import from weight_profiles directly.
+from app.services.search.weight_profiles import (  # noqa: E402
+    WEIGHT_PROFILES,
+    DEFAULT_PROFILE,
+    EMBEDDING_ASPECTS,
+)
 
 
 class UnifiedSearchService:

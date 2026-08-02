@@ -17,6 +17,10 @@ from typing import List, Dict, Any, Optional, Tuple
 import vecs
 from vecs.collection import Collection, IndexMethod
 
+# Canonical fusion weights. weight_profiles imports nothing from `app`, so this is
+# safe at module level — no cycle with the search services that import vecs_service.
+from app.services.search.weight_profiles import image_only_weights
+
 logger = logging.getLogger(__name__)
 
 
@@ -954,37 +958,18 @@ class VecsService:
             visual_scores_map = {r['image_id']: r for r in visual_results}
 
             has_understanding = bool(understanding_query_embedding and understanding_results)
-            specialized_count = len(specialized_types_to_run)
 
-            # Weights for image-only search across VECS collections. Chosen to
-            # match the image-relevant subset of the documented unified_search
-            # profile (CLAUDE.md → "Search Weight Configurations"):
-            #
-            #     unified_search:
-            #       text 0.15  visual 0.15  understanding 0.20
-            #       color/texture/style/material 0.125 each = 0.50 total
-            #
-            # search_all_collections is image-only (no text channel), so the
-            # 0.15 text weight is folded into visual → 0.30. Understanding +
-            # 4 specialized stay at their documented shares.
-            #
-            # When understanding or specialized aren't queried, weights are
-            # renormalized so the present dimensions still sum to 1.0 —
-            # omitting (say) color doesn't dilute the remaining vectors.
-            base_weights: Dict[str, float] = {'visual': 0.30}
-            if has_understanding:
-                base_weights['understanding'] = 0.20
-            if specialized_count > 0:
-                # 0.50 spread across the queried specialized types (each
-                # full-set member gets 0.125; if some are missing the share
-                # is redistributed evenly).
-                per_specialized = 0.50 / specialized_count
-                for emb_type in specialized_types_to_run:
-                    base_weights[emb_type] = per_specialized
-            # Renormalize so the final weights sum to 1.0 regardless of which
-            # dimensions were queried.
-            _w_total = sum(base_weights.values()) or 1.0
-            base_weights = {k: v / _w_total for k, v in base_weights.items()}
+            # Weights for image-only search across VECS collections. Derived from the
+            # canonical `balanced` profile rather than restated here: this block used to
+            # hardcode 0.30 / 0.20 / 0.50 beside a comment naming the doc it was copied
+            # from, which is exactly how a copied number drifts from its source.
+            # image_only_weights() folds the text share into visual (there is no text
+            # channel in an image-only fan-out) and renormalizes over whichever
+            # collections were actually queried.
+            base_weights: Dict[str, float] = image_only_weights(
+                has_understanding=has_understanding,
+                specialized_types=specialized_types_to_run,
+            )
 
             combined_results = []
             for image_id in all_image_ids:
