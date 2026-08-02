@@ -749,6 +749,13 @@ async def get_product_opportunities(
         }}
     if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
         raise HTTPException(status_code=403, detail="not the owner")
+    # A disabled module must not run paid discovery. The refresh routes below already gate
+    # on this; these three did not, so `mention-monitoring` kept billing DataForSEO Labs
+    # while switched off — 3 calls on 2026-08-02 alone, months after the toggle went false.
+    # (audit #272: "disabled != stopped")
+    if not _module_enabled(sb, "mention-monitoring"):
+        return {"success": True, "data": {"opportunities": [], "errors": {}},
+                "skipped": "module_disabled"}
     body = body or OpportunitiesRequest()
     out = await get_mention_opportunity_service().generate(
         tracked_mention_id=existing["id"],
@@ -769,6 +776,13 @@ async def get_tracked_opportunities(
     """Generate content + outreach opportunities for any tracked subject."""
     sb = get_supabase_client().client
     _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    # A disabled module must not run paid discovery. The refresh routes below already gate
+    # on this; these three did not, so `mention-monitoring` kept billing DataForSEO Labs
+    # while switched off — 3 calls on 2026-08-02 alone, months after the toggle went false.
+    # (audit #272: "disabled != stopped")
+    if not _module_enabled(sb, "mention-monitoring"):
+        return {"success": True, "data": {"opportunities": [], "errors": {}},
+                "skipped": "module_disabled"}
     body = body or OpportunitiesRequest()
     out = await get_mention_opportunity_service().generate(
         tracked_mention_id=tracked_mention_id,
@@ -998,6 +1012,14 @@ async def opportunities_stateless(
     expected = os.getenv("CRON_SECRET")
     if not expected or secret != expected:
         raise HTTPException(status_code=401, detail="bad cron secret")
+    sb = get_supabase_client().client
+    # A disabled module must not run paid discovery. The refresh routes below already gate
+    # on this; these three did not, so `mention-monitoring` kept billing DataForSEO Labs
+    # while switched off — 3 calls on 2026-08-02 alone, months after the toggle went false.
+    # (audit #272: "disabled != stopped")
+    if not _module_enabled(sb, "mention-monitoring"):
+        return {"success": True, "data": {"opportunities": [], "errors": {}},
+                "skipped": "module_disabled"}
     subject_override = {
         "subject_label": body.subject_label,
         "brand_name": body.brand_name,
