@@ -42,6 +42,29 @@ logger = logging.getLogger(__name__)
 MODULE_SLUG = "mention-monitoring"
 
 
+def _slug_for(attribution: Optional["CostAttribution"]) -> str:
+    """Which module's budget a DataForSEO call belongs to.
+
+    The two `log_dataforseo_*` helpers below are called by the SHARED
+    `dataforseo_unified_client`, which is a singleton used by both mention-monitoring and the SEO
+    agent toolkit. They lived in this module and hardcoded MODULE_SLUG, so every SEO DataForSEO
+    call was filed under 'mention-monitoring': `seo-toolkit` had 0 rows in ai_usage_logs over 30
+    days while the operator dashboard summed `seo_research_runs.cost_usd`, which is a hardcoded 0.
+    Real spend, attributed to the wrong module, invisible in both places it was looked for.
+
+    The caller sets `module_slug` on its attribution; anything that doesn't stays on the historical
+    default, so existing mention-monitoring rows keep their slug and remain comparable. (#286)
+    """
+    return getattr(attribution, "module_slug", None) or MODULE_SLUG
+
+
+def _op_prefix(attribution: Optional["CostAttribution"]) -> str:
+    """`operation_type` must agree with `module_slug` — an 'seo-toolkit' row reading
+    `mention_monitoring.opportunities.…` is the same mislabelling one column over."""
+    slug = _slug_for(attribution)
+    return "mention_monitoring.opportunities" if slug == MODULE_SLUG else slug.replace("-", "_")
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Attribution context — threaded through service callers
 # ────────────────────────────────────────────────────────────────────────────
@@ -91,13 +114,22 @@ GEMINI_FLASH_OUTPUT_PER_1K = 0.0004
 # ────────────────────────────────────────────────────────────────────────────
 
 def log_external_call(**kwargs) -> None:
-    """Insert one row into ai_usage_logs — delegates to the shared core, stamping
-    module_slug='mention-monitoring'. Signature unchanged for callers.
+    """Insert one row into ai_usage_logs — delegates to the shared core, defaulting
+    module_slug='mention-monitoring'. Signature unchanged for existing callers.
+
+    `module_slug` is a DEFAULT, not a constant: the two `log_dataforseo_*` helpers below are
+    reached from the SHARED unified client and pass the caller's own slug. Injecting it
+    unconditionally (`_core_log_external_call(module_slug=MODULE_SLUG, **kwargs)`) raised
+    `TypeError: got multiple values for keyword argument 'module_slug'` the moment one of them
+    did — a runtime failure inside a best-effort logger, i.e. swallowed, i.e. cost logging
+    silently stops. `setdefault` keeps every existing caller identical and lets an explicit one
+    win. (#286)
 
     Per-row cost rollups (Layer C `recompute_mention_cost`) still sum these by
     tracked_mention_id; product_id is set at the column level from attribution.
     """
-    _core_log_external_call(module_slug=MODULE_SLUG, **kwargs)
+    kwargs.setdefault("module_slug", MODULE_SLUG)
+    _core_log_external_call(**kwargs)
 
 
 def log_dataforseo_news_call(
@@ -131,7 +163,8 @@ def log_dataforseo_labs_call(
     error_message: Optional[str] = None,
 ) -> None:
     log_external_call(
-        operation_type="mention_monitoring.opportunities.dataforseo_labs",
+        module_slug=_slug_for(attribution),
+        operation_type=f"{_op_prefix(attribution)}.dataforseo_labs",
         model_name="dataforseo-labs-related-keywords",
         raw_cost_usd=DATAFORSEO_LABS_PER_CALL,
         attribution=attribution,
@@ -153,7 +186,8 @@ def log_dataforseo_serp_call(
     error_message: Optional[str] = None,
 ) -> None:
     log_external_call(
-        operation_type=f"mention_monitoring.opportunities.dataforseo_serp.{operation}",
+        module_slug=_slug_for(attribution),
+        operation_type=f"{_op_prefix(attribution)}.dataforseo_serp.{operation}",
         model_name="dataforseo-serp-google-organic",
         raw_cost_usd=DATAFORSEO_NEWS_PER_CALL,  # SERP API priced same as News
         attribution=attribution,

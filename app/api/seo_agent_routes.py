@@ -60,6 +60,10 @@ def _attribution_from(body_attr: Optional[Dict[str, Any]]) -> Optional[CostAttri
         api_key_id=body_attr.get("api_key_id"),
         product_id=body_attr.get("product_id"),
         tracked_mention_id=body_attr.get("tracked_mention_id"),
+        # This router's DataForSEO spend belongs to the SEO toolkit. The unified client is shared
+        # with mention-monitoring, so without this every SEO call was billed to that module's
+        # rollup and `seo-toolkit` reported zero cost forever. (#286)
+        module_slug="seo-toolkit",
     )
 
 

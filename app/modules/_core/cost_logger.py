@@ -35,7 +35,7 @@ class CostAttribution:
     """
     __slots__ = (
         "user_id", "workspace_id", "subject_key", "subject_id",
-        "product_id", "refresh_run_id", "api_key_id",
+        "product_id", "refresh_run_id", "api_key_id", "module_slug",
     )
 
     def __init__(
@@ -48,6 +48,7 @@ class CostAttribution:
         product_id: Optional[str] = None,
         refresh_run_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
+        module_slug: Optional[str] = None,
     ):
         self.subject_key = subject_key
         self.subject_id = subject_id
@@ -56,6 +57,14 @@ class CostAttribution:
         self.product_id = product_id
         self.refresh_run_id = refresh_run_id
         self.api_key_id = api_key_id
+        # Which module's budget this call belongs to. Optional and defaulted by the caller's
+        # logger, because SHARED clients cannot know it: the DataForSEO unified client is a
+        # singleton used by both mention-monitoring and the SEO toolkit, so a module baked into
+        # the client (or into its logger module) files every caller's spend under one slug. That
+        # is exactly what happened — all SEO DataForSEO spend landed under 'mention-monitoring'
+        # and `seo-toolkit` showed 0 rows while the operator dashboard read a hardcoded 0.
+        # It travels with the ATTRIBUTION because the attribution is built by the call site.
+        self.module_slug = module_slug
 
     def to_metadata(self) -> Dict[str, Any]:
         meta: Dict[str, Any] = {}
