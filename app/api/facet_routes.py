@@ -89,6 +89,65 @@ async def canonicalize(req: CanonicalizeRequest) -> CanonicalizeResponse:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Bulk re-canonicalization sweep (#316)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class RecanonicalizeRequest(BaseModel):
+    """Bounded replay of products.attributes_raw through the canonicalizer.
+
+    Without this, a threshold change, a curated alias from /lock, or a golden-set
+    correction could only reach products by re-ingesting every source PDF — and
+    outage-degraded products (empty `attributes`, flagged in
+    metadata.facet_canonicalization, never retried) stayed facet-less forever.
+    """
+    target_version: Optional[int] = Field(
+        None,
+        description="Sweep products below this facet_canonicalization_version. Defaults to the "
+                    "code's CURRENT_FACET_CANONICALIZATION_VERSION; raise that constant to "
+                    "re-sweep the whole catalog after a rules change.",
+    )
+    max_products: int = Field(200, ge=1, le=5000, description="Hard cap for one call. The response's `remaining` says whether to call again.")
+    batch_size: int = Field(25, ge=1, le=200)
+    workspace_id: Optional[str] = Field(None, description="Scope to one tenant. Omit to sweep all.")
+    degraded_only: bool = Field(
+        False,
+        description="Only replay products flagged degraded by a failed canonicalization run. "
+                    "Use for outage recovery; the default also re-sweeps rules-stale products.",
+    )
+
+
+@router.post("/recanonicalize", dependencies=[Depends(require_admin)])
+async def recanonicalize(req: RecanonicalizeRequest):
+    """Replay attributes_raw → canonical attributes for stale/degraded products.
+
+    Idempotent and resumable: `products.facet_canonicalization_version` is the cursor, so a
+    run that dies halfway resumes where it stopped and a completed run is a no-op.
+
+    A DEGRADED result never bumps the version — the product stays eligible and is picked
+    first next time. Bumping it would turn a retryable outage into a permanent empty-facet
+    product while reporting success.
+    """
+    from app.services.facets.facet_recanonicalization import (
+        recanonicalize_products,
+        CURRENT_FACET_CANONICALIZATION_VERSION,
+    )
+
+    try:
+        summary = await recanonicalize_products(
+            target_version=req.target_version or CURRENT_FACET_CANONICALIZATION_VERSION,
+            max_products=req.max_products,
+            batch_size=req.batch_size,
+            workspace_id=req.workspace_id,
+            degraded_only=req.degraded_only,
+        )
+    except Exception as e:
+        logger.exception("recanonicalize sweep failed")
+        raise HTTPException(status_code=500, detail=f"recanonicalize failed: {e}")
+
+    return summary
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Observability — list canonicals (drift watch + dashboard)
 # ─────────────────────────────────────────────────────────────────────────────
 
