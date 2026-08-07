@@ -764,10 +764,37 @@ async def process_stage_0_discovery(
 
         product_db_ids = []  # Store created/reused product IDs
 
+        # Materials quota (#214): resolve the workspace's remaining new-material
+        # allowance once (-1 = unlimited). New rows consume it; reused rows pass.
+        # The enforce_material_quota DB trigger stays the hard boundary — this
+        # pre-flight only avoids burning tracker rows + LLM spend on products
+        # whose insert would be refused.
+        from app.services.products.material_quota import material_quota_remaining_sync
+        quota_remaining = material_quota_remaining_sync(supabase.client, workspace_id)
+        quota_skipped: List[str] = []
+        if quota_remaining == 0:
+            logger.error(
+                f"⛔ quota_exceeded: workspace {workspace_id} is at its materials plan "
+                f"limit — new products in this catalog will be skipped"
+            )
+
         for i, product in enumerate(products_to_create, start=1):
             try:
                 # Generate product_id (same format as in product_processor.py)
                 product_id = f"product_{i}_{product.name.replace(' ', '_')}"
+
+                # Idempotency lookup FIRST so the quota skip below can tell a new
+                # row (consumes allowance) from a resume-reuse (adds nothing).
+                lookup_key = _idem_key(product.name, product.page_range)
+                existing_id = existing_by_name.get(lookup_key)
+
+                if existing_id is None and quota_remaining == 0:
+                    quota_skipped.append(product.name)
+                    logger.error(
+                        f"   ⛔ [{i}/{len(catalog.products)}] quota_exceeded: skipping "
+                        f"'{product.name}' — materials plan limit reached"
+                    )
+                    continue
 
                 # 1. Initialize product_progress tracking
                 await product_tracker.initialize_product(
@@ -783,8 +810,6 @@ async def process_stage_0_discovery(
 
                 # 2. Create product in database — OR reuse existing one from
                 #    a previous attempt if this is an auto-resume.
-                lookup_key = _idem_key(product.name, product.page_range)
-                existing_id = existing_by_name.get(lookup_key)
                 if existing_id:
                     product_db_id = existing_id
                     product_db_ids.append(product_db_id)
@@ -849,6 +874,8 @@ async def process_stage_0_discovery(
                     # Cache so a duplicate name later in the same loop also
                     # collapses (defensive — Stage 0 dedupes already).
                     existing_by_name[lookup_key] = product_db_id
+                    if product_db_id and quota_remaining > 0:
+                        quota_remaining -= 1
 
                     # Audit fix #15 reader half: create_single_product surfaces
                     # `embedding_failed=True` when Voyage retries are exhausted
@@ -906,10 +933,19 @@ async def process_stage_0_discovery(
                 sentry_sdk.capture_exception(e)
                 # Continue with other products even if one fails
 
+        if quota_skipped:
+            logger.error(
+                f"⛔ quota_exceeded: {len(quota_skipped)} product(s) skipped — materials "
+                f"plan limit reached for workspace {workspace_id}: "
+                f"{', '.join(quota_skipped[:10])}{'…' if len(quota_skipped) > 10 else ''}"
+            )
         logger.info(f"✅ {len(product_db_ids)} products ready (created or reused) in database")
 
         # Store product DB IDs in checkpoint for later stages
         checkpoint_data["product_db_ids"] = product_db_ids
+        # Explicit failure marker (#214): downstream/monitoring can tell "quota
+        # clamped this catalog" apart from "the catalog only had N products".
+        checkpoint_data["products_skipped_quota"] = len(quota_skipped)
 
     # ============================================================
     # RETURN DATA: Include comprehensive metrics

@@ -36,6 +36,7 @@ from app.services.embeddings.real_embeddings_service import RealEmbeddingsServic
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
 from app.services.facets import canonicalize_product_attributes
+from app.services.products.material_quota import material_quota_remaining_async
 import sentry_sdk
 
 # Category → default unit mapping (mirrors material_categories.default_unit)
@@ -176,6 +177,18 @@ class DataImportService:
                 # ✅ Stage: PRODUCTS_PARSED
                 await self._log_stage(job_id, XmlImportStage.PRODUCTS_PARSED, "completed", items=total_products)
 
+                # Materials quota (#214): resolve the workspace's remaining new-material
+                # allowance once; create_product_from_payload consumes it and skips NEW
+                # inserts at 0. SKU re-imports update in place and stay unaffected — so
+                # a job is never refused up front (it may be a pure re-import).
+                self._material_quota_remaining = await material_quota_remaining_async(self.db, workspace_id)
+                self._quota_skipped = 0
+                if self._material_quota_remaining == 0:
+                    logger.error(
+                        f"⛔ quota_exceeded: workspace {workspace_id} is at its materials plan "
+                        f"limit — only SKU re-imports will apply; new products will be skipped"
+                    )
+
                 logger.info(f"📦 Processing {total_products} products in batches of {self.batch_size}")
 
                 transaction.set_data("total_products", total_products)
@@ -283,9 +296,17 @@ class DataImportService:
                         'failed': failed_count,
                         'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0,
                         'quality_metrics': chunk_metrics,
+                        # Explicit marker (#214): "quota clamped this import" is
+                        # distinguishable from "the feed only had N products".
+                        'quota_skipped': getattr(self, '_quota_skipped', 0),
                     }
                 )
 
+                if getattr(self, '_quota_skipped', 0):
+                    logger.error(
+                        f"⛔ quota_exceeded: {self._quota_skipped} new product(s) skipped in job "
+                        f"{job_id} — materials plan limit reached for workspace {workspace_id}"
+                    )
                 logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
 
                 try:
@@ -687,6 +708,22 @@ class DataImportService:
                 except Exception as lookup_err:
                     logger.warning(f"   ⚠️ SKU lookup failed for {external_sku}: {lookup_err}")
 
+            # Materials quota (#214): a NEW row consumes the workspace's remaining
+            # allowance — skip BEFORE the canonicalize/embedding spend when exhausted.
+            # Updates (existing_id) pass untouched. Single-create callers outside a
+            # batch job (dealer manual add) fall back to a one-shot lookup; the
+            # enforce_material_quota DB trigger stays the hard boundary either way.
+            if existing_id is None:
+                _remaining = getattr(self, '_material_quota_remaining', None)
+                if _remaining is None:
+                    _remaining = await material_quota_remaining_async(self.db, workspace_id)
+                if _remaining == 0:
+                    self._quota_skipped = getattr(self, '_quota_skipped', 0) + 1
+                    logger.error(
+                        f"   ⛔ quota_exceeded: skipping '{product_name}' — materials plan limit reached"
+                    )
+                    return None
+
             # ── Auto-canonicalize descriptive facets (XML supplier feeds) ────
             # XML has no LLM upstream, so this path relies entirely on the
             # canonicalizer's L0.5 (Haiku pretranslate) + L2 (Voyage cosine).
@@ -744,6 +781,8 @@ class DataImportService:
                 if not insert_response.data:
                     raise ValueError("Failed to insert product - no data returned")
                 product_id = insert_response.data[0]['id']
+                if isinstance(getattr(self, '_material_quota_remaining', None), int) and self._material_quota_remaining > 0:
+                    self._material_quota_remaining -= 1
                 logger.info(f"✅ Created product {product_id}: {product_name}")
 
             # Generate text_embedding_1024 for product-level vector search

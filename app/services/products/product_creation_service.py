@@ -13,6 +13,7 @@ import json
 import time
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.ai_client_service import get_ai_client_service
+from app.services.products.material_quota import material_quota_remaining_sync
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,30 @@ class ProductCreationService:
                 self.logger.warning("No high-quality product candidates found, falling back to chunk-based creation")
                 return await self.create_products_from_chunks(document_id, workspace_id, max_products=None)
 
+            # Materials quota (#214): clamp BEFORE the per-candidate LLM/enrichment
+            # spend. The enforce_material_quota DB trigger stays the hard boundary.
+            products_skipped_quota = 0
+            quota_remaining = material_quota_remaining_sync(self.supabase.client, workspace_id)
+            if quota_remaining == 0:
+                self.logger.error("⛔ quota_exceeded: materials plan limit reached — no products created")
+                return {
+                    "success": False,
+                    "error": "quota_exceeded",
+                    "products_created": 0,
+                    "products_failed": 0,
+                    "candidates_processed": 0,
+                    "total_candidates_found": len(product_candidates),
+                    "method": "layout_based_detection",
+                    "message": "Materials plan limit reached — upgrade to add more products",
+                }
+            if quota_remaining > 0 and len(high_quality_candidates) > quota_remaining:
+                products_skipped_quota = len(high_quality_candidates) - quota_remaining
+                high_quality_candidates = high_quality_candidates[:quota_remaining]
+                self.logger.error(
+                    f"⛔ quota_exceeded: clamping to {quota_remaining} candidate(s) — "
+                    f"{products_skipped_quota} skipped (materials plan limit)"
+                )
+
             # Create products from high-quality candidates
             products_created = 0
             products_failed = 0
@@ -145,6 +170,7 @@ class ProductCreationService:
                 "success": True,
                 "products_created": products_created,
                 "products_failed": products_failed,
+                "products_skipped_quota": products_skipped_quota,
                 "candidates_processed": len(high_quality_candidates),
                 "total_candidates_found": len(product_candidates),
                 "method": "layout_based_detection",
@@ -220,6 +246,27 @@ class ProductCreationService:
                 product_candidates = self._deduplicate_product_chunks(product_candidates)
                 self.logger.info(f"🔄 After deduplication: {len(product_candidates)} unique products")
 
+            # Materials quota (#214): clamp BEFORE the per-candidate Stage-2 LLM spend.
+            products_skipped_quota = 0
+            if product_candidates:
+                quota_remaining = material_quota_remaining_sync(self.supabase.client, workspace_id)
+                if quota_remaining == 0:
+                    self.logger.error("⛔ quota_exceeded: materials plan limit reached — no products created")
+                    return {
+                        "success": False,
+                        "error": "quota_exceeded",
+                        "products_created": 0,
+                        "chunks_processed": 0,
+                        "message": "Materials plan limit reached — upgrade to add more products",
+                    }
+                if quota_remaining > 0 and len(product_candidates) > quota_remaining:
+                    products_skipped_quota = len(product_candidates) - quota_remaining
+                    product_candidates = product_candidates[:quota_remaining]
+                    self.logger.error(
+                        f"⛔ quota_exceeded: clamping to {quota_remaining} candidate(s) — "
+                        f"{products_skipped_quota} skipped (materials plan limit)"
+                    )
+
             # Stage 2 - Deep Enrichment with Claude Opus
             self.logger.info(f"🎯 Stage 2: Deep enrichment with Claude Opus...")
             stage2_start = time.time()
@@ -292,6 +339,7 @@ class ProductCreationService:
                 "success": True,
                 "products_created": products_created,
                 "products_failed": products_failed,
+                "products_skipped_quota": products_skipped_quota,
                 "chunks_processed": chunks_processed,
                 "total_chunks": len(chunks),
                 "eligible_chunks": len(eligible_chunks),

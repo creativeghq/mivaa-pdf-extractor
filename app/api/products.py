@@ -580,6 +580,7 @@ async def create_manual_product(
         ]
 
     try:
+        _quota_skips_before = getattr(svc, '_quota_skipped', 0)
         product_id = await svc.create_product_from_payload(
             ws, payload, source=request.source or 'dealer_manual',
             status=request.status or 'draft',
@@ -594,6 +595,13 @@ async def create_manual_product(
         if debit_amount:
             refund_credits(user_id=user_id, amount=debit_amount,
                            operation_type="product.create_manual", workspace_id=ws)
+        if getattr(svc, '_quota_skipped', 0) > _quota_skips_before:
+            # Canonical quota refusal (#214) — 402 with the quota_exceeded marker the
+            # frontend's useQuotaErrorHandler maps to the plan-upgrade prompt.
+            raise HTTPException(
+                status_code=402,
+                detail="quota_exceeded: materials limit reached on your plan. Upgrade to add more.",
+            )
         raise HTTPException(status_code=500, detail="Product creation failed")
 
     # Passthrough for first-class fields the admin product modal carries that the shared
