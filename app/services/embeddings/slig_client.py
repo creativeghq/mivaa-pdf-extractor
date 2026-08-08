@@ -16,7 +16,12 @@ SLIGEndpointManager passed in from the endpoint registry.
 import httpx
 import logging
 import base64
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Resolves the quoted "SLIGEndpointManager" annotation below. False at runtime,
+    # so no import cost and no cycle with the manager module.
+    from app.services.embeddings.slig_endpoint_manager import SLIGEndpointManager  # noqa: F401
 from PIL import Image
 import io
 

@@ -94,6 +94,26 @@ jobs:
           python -m pip install --quiet pytest==7.4.3
           python -m pytest tests/unit -q
 
+      # The other half of the gate. Tests cannot catch this codebase's characteristic
+      # failure — code on a path nobody calls — because a test never enters that
+      # branch. `JobTracker` was undefined on the first line of six endpoints for
+      # eight months; `vecs_service.search_similar` was a method that never existed;
+      # four modules used `re`/`datetime`/`asyncio` without importing them. Every one
+      # is a one-second ruff finding, and until now nothing ran ruff.
+      #
+      # F821 + syntax errors are gated at ZERO. Everything else is held against
+      # .github/ruff-baseline.json and may only fall. Same dependency-free, ~1s
+      # philosophy as the test step above — see scripts/check_ruff_gate.py.
+      # Ruff is PINNED, and the pin must match the version the baseline was measured
+      # with (0.15.20). Rule coverage shifts between releases, so a floating version
+      # silently re-baselines the gate: counts jump, the build fails for reasons
+      # nobody introduced, and the gate gets deleted rather than debugged. Bump the
+      # pin and re-measure the baseline in the same change, never separately.
+      - name: 🔎 Lint gate (undefined names + ratchet)
+        run: |
+          python -m pip install --quiet ruff==0.15.20
+          python scripts/check_ruff_gate.py
+
       # 2. Setup SSH
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0

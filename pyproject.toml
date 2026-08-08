@@ -30,7 +30,11 @@ classifiers = [
     "Topic :: Text Processing :: Markup",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
 ]
-requires-python = ">=3.9"
+# Must match runtime.txt (python-3.12.13). This is not cosmetic: ruff derives its
+# parse target from requires-python, so ">=3.9" made it parse every file as 3.9 and
+# silently SKIP app/api/images.py, which uses 3.12 f-string quote reuse. The linter
+# reported success on a file it had never read. Bump this and runtime.txt together.
+requires-python = ">=3.12"
 # Dependencies are managed in requirements.txt
 dependencies = []
 

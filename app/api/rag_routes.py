@@ -5829,19 +5829,64 @@ async def get_stuck_job_statistics():
 EXPANDED_CHUNK_CHAR_BUDGET = 6000
 
 # Cosine floor for the Voyage-1024D text searches on this endpoint (chunks, entities).
+#
 # Deliberately NOT `request.similarity_threshold`, which defaults to 0.7: that knob was
 # tuned for the word-count scorer the chunk branch replaced (+0.15 per matched word,
 # 0..1). 0.7 is a different SCALE, not a stricter setting — as a cosine cutoff on
 # Voyage vectors it rejects near enough every real hit, which would swap a
 # wrong-results bug for a no-results one that looks exactly like an empty corpus.
-# 0.4 for the same measured reason the kb_docs branch uses 0.4: a bull's-eye query
-# lands ~0.50 while unrelated text sits <=0.33.
 #
-# NOTE: measured on kb_doc_chunks. document_chunks and document_entities are both
-# empty, so this is a borrowed constant on those two paths — same embedding model and
-# same text-vs-text comparison, but not independently verified. Re-check it against
-# real hits once a PDF has been ingested.
-TEXT_SEARCH_SIMILARITY_FLOOR = 0.4
+# 0.4 is measured on kb_doc_chunks (a bull's-eye query lands ~0.50, unrelated text
+# <=0.33) and BORROWED on document_chunks / document_entities, which are empty. Same
+# model and the same text-vs-text comparison, so it is a reasonable transfer — but it
+# is not a verified one, and a floor is the one parameter whose failure mode is
+# invisible: too high and the endpoint returns nothing, which looks exactly like an
+# empty corpus.
+#
+# So rather than guess again later, this is (a) overridable without a redeploy and
+# (b) self-reporting. `search_metadata.similarity_floor` ships the candidate scores
+# and, critically, the HIGHEST score the floor rejected. One real query then answers
+# "is this value right?" — if the best rejected hit sits just under the floor, it is
+# too high; if nothing is ever rejected, it is doing no work.
+_SIMILARITY_FLOOR_DEFAULT = 0.4
+_SIMILARITY_FLOOR_ENV = "MIVAA_TEXT_SEARCH_SIMILARITY_FLOOR"
+
+
+def text_search_similarity_floor() -> tuple:
+    """Return (floor, source). Env wins so it can be tuned against real data."""
+    raw = os.getenv(_SIMILARITY_FLOOR_ENV)
+    if raw:
+        try:
+            value = float(raw)
+            if 0.0 <= value <= 1.0:
+                return value, "env"
+            logger.warning(
+                f"{_SIMILARITY_FLOOR_ENV}={raw!r} is outside 0..1 — using the default"
+            )
+        except ValueError:
+            logger.warning(f"{_SIMILARITY_FLOOR_ENV}={raw!r} is not a number — using the default")
+    return _SIMILARITY_FLOOR_DEFAULT, "default"
+
+
+def summarize_similarity_floor(scores: List[float], floor: float, source: str) -> Dict[str, Any]:
+    """Describe what the floor actually did to this result set.
+
+    `top_rejected` is the number that matters: the best hit the floor threw away.
+    If it sits just below the floor, the floor is too high; if it is None, the floor
+    did nothing and the ANN limit is the real constraint.
+    """
+    kept = [s for s in scores if s >= floor]
+    rejected = [s for s in scores if s < floor]
+    return {
+        "value": round(floor, 4),
+        "source": source,
+        "candidates": len(scores),
+        "kept": len(kept),
+        "rejected": len(rejected),
+        "best_score": round(max(scores), 4) if scores else None,
+        "worst_kept": round(min(kept), 4) if kept else None,
+        "top_rejected": round(max(rejected), 4) if rejected else None,
+    }
 
 
 class KnowledgeBaseSearchRequest(BaseModel):
@@ -6126,6 +6171,10 @@ async def search_knowledge_base(
         chunk_expansion_stats: Dict[str, Any] = {
             "requested": 0, "hits": 0, "expanded_hits": 0, "neighbors_added": 0,
         }
+        # Populated by the chunk / entity branches; shipped in search_metadata so the
+        # floor can be judged from one real query instead of another investigation.
+        chunk_floor_stats: Optional[Dict[str, Any]] = None
+        entity_floor_stats: Optional[Dict[str, Any]] = None
 
         async def _query_embedding_1024() -> Optional[List[float]]:
             """Voyage 1024D embedding of the query. Memoized; returns None on failure
@@ -6213,19 +6262,28 @@ async def search_knowledge_base(
                         "query_embedding": query_embedding,
                         "p_workspace_id": request.workspace_id,
                         "p_limit": request.top_k,
-                        # Same scale argument as the chunk branch — see the constant.
-                        "p_similarity_threshold": TEXT_SEARCH_SIMILARITY_FLOOR,
+                        # Floor applied in Python for the same reason as the chunk
+                        # branch — see text_search_similarity_floor().
+                        "p_similarity_threshold": 0.0,
                     }
                     if request.entity_types:
                         # Filter in SQL, not after the fact: post-filtering an ANN page
                         # silently shrinks top_k to however many survived.
                         entity_rpc_args["p_entity_types"] = request.entity_types
 
-                    entity_rows = (
+                    entity_candidates = (
                         supabase.client
                         .rpc("search_document_entities_by_embedding", entity_rpc_args)
                         .execute().data
                     ) or []
+
+                    _floor, _floor_src = text_search_similarity_floor()
+                    _escores = [(r.get("similarity_score") or 0.0) for r in entity_candidates]
+                    entity_floor_stats = summarize_similarity_floor(_escores, _floor, _floor_src)
+                    entity_rows = [
+                        r for r in entity_candidates
+                        if (r.get("similarity_score") or 0.0) >= _floor
+                    ]
 
                     for erow in entity_rows:
                         results["entities"].append({
@@ -6266,18 +6324,28 @@ async def search_knowledge_base(
                         "query_embedding": query_embedding,
                         "p_workspace_id": request.workspace_id,
                         "p_limit": request.top_k,
-                        # See TEXT_SEARCH_SIMILARITY_FLOOR — request.similarity_threshold is
-                        # on the retired scorer's scale and would zero this out.
-                        "p_similarity_threshold": TEXT_SEARCH_SIMILARITY_FLOOR,
+                        # 0.0, and the floor is applied below in Python. The RPC could
+                        # do it, but then the rejected scores never leave the database
+                        # and the floor stays unmeasurable — which is how it came to be
+                        # wrong in the first place. See text_search_similarity_floor().
+                        "p_similarity_threshold": 0.0,
                     }
                     if request.categories:
                         chunk_rpc_args["p_categories"] = request.categories
 
-                    chunk_rows = (
+                    chunk_candidates = (
                         supabase.client
                         .rpc("search_document_chunks_by_embedding", chunk_rpc_args)
                         .execute().data
                     ) or []
+
+                    _floor, _floor_src = text_search_similarity_floor()
+                    _scores = [(r.get("similarity_score") or 0.0) for r in chunk_candidates]
+                    chunk_floor_stats = summarize_similarity_floor(_scores, _floor, _floor_src)
+                    chunk_rows = [
+                        r for r in chunk_candidates
+                        if (r.get("similarity_score") or 0.0) >= _floor
+                    ]
                     chunk_expansion_stats["hits"] = len(chunk_rows)
 
                     # Structure expansion, one round trip for the whole result page.
@@ -6506,6 +6574,13 @@ async def search_knowledge_base(
                 # Shipped with the response so "expansion is on" can be verified
                 # from a single call instead of inferred from log archaeology.
                 "chunk_expansion": chunk_expansion_stats,
+                # What the cosine floor did to each corpus. `top_rejected` vs
+                # `worst_kept` is the whole diagnosis: adjacent values mean the floor
+                # is cutting at the margin, a null top_rejected means it never fired.
+                "similarity_floor": {
+                    "chunks": chunk_floor_stats,
+                    "entities": entity_floor_stats,
+                },
             }
         )
 

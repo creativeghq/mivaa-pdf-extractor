@@ -12,7 +12,14 @@ import inspect
 import functools
 import importlib
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Import-time cost is zero and there is no cycle risk: TYPE_CHECKING is False at
+    # runtime. Present so the quoted `-> 'AsyncSupabaseClient'` annotation below
+    # actually resolves — without it the name is undefined to every reader, human or
+    # tool, which is how genuine undefined-name bugs stayed camouflaged in the noise.
+    from app.services.core.async_supabase import AsyncSupabaseClient  # noqa: F401
 from supabase import create_client, Client, ClientOptions
 from app.config import Settings
 

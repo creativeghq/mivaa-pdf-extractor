@@ -17,7 +17,13 @@ Search Strategy:
 
 import logging
 import os
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Resolves the quoted 'Image' annotation on _generate_visual_embedding_for_search.
+    # PIL is imported lazily inside the functions that actually use it, so this stays
+    # type-only and adds nothing at import time.
+    from PIL import Image  # noqa: F401
 import asyncio
 import time
 import io

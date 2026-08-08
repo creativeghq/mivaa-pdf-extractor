@@ -34,9 +34,9 @@ from app.services.chunking.unified_chunking_service import UnifiedChunkingServic
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.search.relevancy_service import RelevancyService
 from app.services.core.supabase_client import get_supabase_client, SupabaseClient
-from app.services.tracking.progress_tracker import ProgressTracker
+from app.services.tracking.progress_tracker import get_progress_service
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
-from app.schemas.jobs import JobStatus
+from app.schemas.jobs import JobStatus, ProcessingStage
 from app.dependencies import get_current_user
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module — importing
 # from `app.api.documents` at the top triggers a circular-import cycle on startup
@@ -44,6 +44,101 @@ from app.dependencies import get_current_user
 # used inside request handlers, so a late binding is safe (see Sentry MIVAA-5HQ).
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Stage progress reporting
+# ============================================================================
+# Every handler below used to open with `tracker = JobTracker(job_id)`. `JobTracker`
+# has not existed since 2025-11-22, when commit 5ee4538 fixed a startup crash by
+# swapping the IMPORT to ProgressTracker and left all six call sites untouched. That
+# traded a loud crash-on-boot for six endpoints that raise NameError on their first
+# line, get swallowed by `except Exception`, and answer 500 having done nothing.
+#
+# A rename would not have worked: ProgressTracker is a dataclass requiring
+# (job_id, document_id, total_pages), while the sites pass only job_id, and its
+# update_stage() takes a ProcessingStage enum with neither `metadata` nor
+# `sync_to_db`.
+#
+# The map exists because ProcessingStage is PAGE-oriented and predates these
+# pipeline stages. `update_stage(stage, stage_name, progress_percentage)` is built
+# for exactly this: the enum supplies the coarse `current_stage`, `stage_name`
+# carries the precise stage into `job_progress`. Nothing is lost.
+_PIPELINE_STAGES: Dict[str, tuple] = {
+    "IMAGE_CLASSIFICATION": (ProcessingStage.EXTRACTING_IMAGES, "image_classification"),
+    "IMAGE_UPLOAD": (ProcessingStage.SAVING_TO_DATABASE, "image_upload"),
+    "IMAGE_SAVE_AND_CLIP": (ProcessingStage.GENERATING_EMBEDDINGS, "image_save_and_embeddings"),
+    "CHUNKING": (ProcessingStage.EXTRACTING_TEXT, "chunking"),
+    "RELATIONSHIPS": (ProcessingStage.FINALIZING, "relationships"),
+    "METADATA_EXTRACTION": (ProcessingStage.ANALYZING_STRUCTURE, "metadata_extraction"),
+}
+
+
+async def report_stage(
+    job_id: str,
+    stage_key: str,
+    percent: int,
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Report a pipeline stage transition for `job_id`. Never raises.
+
+    Uses the LIVE tracker when the job is being driven in this process — it owns the
+    real `total_pages` and the accumulated per-page counters.
+
+    When there is no live tracker (these endpoints are service-to-service, so the
+    caller can be a different process and `ProgressTrackingService.trackers` is an
+    in-process dict) we deliberately do NOT construct one. A fresh
+    ProgressTracker(job_id, document_id, total_pages=0) would look harmless and then
+    `_sync_to_database` would write total_pages and every counter back to
+    `background_jobs` as zero — overwriting real progress with a confident-looking
+    zero, which is the precise failure shape this pipeline keeps producing. Instead
+    we append a boundary event to stage_history: append-only, cannot regress
+    anything, and matches pipeline convention §9.
+
+    Progress reporting is auxiliary. A failure here must never cost the stage's
+    actual work, so everything is best-effort and logged.
+    """
+    mapped = _PIPELINE_STAGES.get(stage_key)
+    if mapped is None:
+        # A typo'd key is a programming error, but not one worth failing a pipeline
+        # stage over — say so loudly and carry on.
+        logger.error(f"report_stage: unknown stage key {stage_key!r} for job {job_id}")
+        return
+    stage, stage_name = mapped
+
+    try:
+        tracker = get_progress_service().get_tracker(job_id)
+    except Exception as e:  # registry unavailable — fall through to history
+        logger.debug(f"report_stage: tracker lookup failed for {job_id}: {e}")
+        tracker = None
+
+    if tracker is not None:
+        try:
+            await tracker.update_stage(stage, stage_name=stage_name, progress_percentage=percent)
+            if details:
+                await tracker.update_progress(percent, details=details)
+            return
+        except Exception as e:
+            logger.warning(f"report_stage: live tracker update failed for {job_id}: {e}")
+            # fall through — the history event below is better than nothing
+
+    try:
+        get_supabase_client().client.rpc(
+            "append_stage_history",
+            {
+                "p_job_id": job_id,
+                "p_event": {
+                    "stage": stage_name,
+                    "status": "completed" if percent >= 100 else "in_progress",
+                    "progress": percent,
+                    "data": details or {},
+                    "occurred_at": datetime.utcnow().isoformat(),
+                },
+            },
+        ).execute()
+    except Exception as e:
+        logger.warning(f"report_stage: stage_history append failed for {job_id}: {e}")
+
 
 router = APIRouter(
     prefix="/api/internal",
@@ -259,9 +354,7 @@ async def classify_images(
         logger.info(f"🤖 [Job {job_id}] Starting image classification for {len(request.extracted_images)} images")
         logger.info(f"   AI Config: Primary={ai_config.classification_primary_model}, Validation={ai_config.classification_validation_model}, Threshold={ai_config.classification_confidence_threshold}")
 
-        # Initialize tracker
-        tracker = JobTracker(job_id)
-        await tracker.update_stage("IMAGE_CLASSIFICATION", 0, sync_to_db=True)
+        await report_stage(job_id, "IMAGE_CLASSIFICATION", 0)
 
         # Initialize service
         image_service = ImageProcessingService()
@@ -274,12 +367,12 @@ async def classify_images(
             validation_model=ai_config.classification_validation_model
         )
 
-        # Update tracker
-        await tracker.update_stage(
+        # Report stage completion
+        await report_stage(
+            job_id,
             "IMAGE_CLASSIFICATION",
             100,
-            metadata={'material_count': len(material_images), 'non_material_count': len(non_material_images)},
-            sync_to_db=True
+            details={'material_count': len(material_images), 'non_material_count': len(non_material_images)}
         )
 
         logger.info(f"✅ [Job {job_id}] Classification complete: {len(material_images)} material, {len(non_material_images)} non-material")
@@ -320,9 +413,7 @@ async def upload_images(
     try:
         logger.info(f"📤 [Job {job_id}] Starting upload for {len(request.material_images)} material images")
 
-        # Initialize tracker
-        tracker = JobTracker(job_id)
-        await tracker.update_stage("IMAGE_UPLOAD", 0, sync_to_db=True)
+        await report_stage(job_id, "IMAGE_UPLOAD", 0)
 
         # Initialize service
         image_service = ImageProcessingService()
@@ -335,12 +426,12 @@ async def upload_images(
 
         failed_count = len(request.material_images) - len(uploaded_images)
 
-        # Update tracker
-        await tracker.update_stage(
+        # Report stage completion
+        await report_stage(
+            job_id,
             "IMAGE_UPLOAD",
             100,
-            metadata={'uploaded_count': len(uploaded_images), 'failed_count': failed_count},
-            sync_to_db=True
+            details={'uploaded_count': len(uploaded_images), 'failed_count': failed_count}
         )
 
         logger.info(f"✅ [Job {job_id}] Upload complete: {len(uploaded_images)} uploaded, {failed_count} failed")
@@ -399,9 +490,7 @@ async def save_images_to_db(
     try:
         logger.info(f"💾 [Job {job_id}] Starting DB save and SLIG generation for {len(request.material_images)} images")
 
-        # Initialize tracker
-        tracker = JobTracker(job_id)
-        await tracker.update_stage("IMAGE_SAVE_AND_CLIP", 0, sync_to_db=True)
+        await report_stage(job_id, "IMAGE_SAVE_AND_CLIP", 0)
 
         # Initialize service
         image_service = ImageProcessingService()
@@ -413,15 +502,15 @@ async def save_images_to_db(
             workspace_id=request.workspace_id
         )
 
-        # Update tracker
-        await tracker.update_stage(
+        # Report stage completion
+        await report_stage(
+            job_id,
             "IMAGE_SAVE_AND_CLIP",
             100,
-            metadata={
+            details={
                 'images_saved': result['images_saved'],
                 'clip_embeddings_generated': result['clip_embeddings_generated']
-            },
-            sync_to_db=True
+            }
         )
 
         logger.info(f"✅ [Job {job_id}] DB save complete: {result['images_saved']} saved, {result['clip_embeddings_generated']} SLIG embeddings")
@@ -471,9 +560,7 @@ async def create_chunks(
         await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
         logger.info(f"📝 [Job {job_id}] Starting chunking for document {request.document_id}")
 
-        # Initialize tracker
-        tracker = JobTracker(job_id)
-        await tracker.update_stage("CHUNKING", 0, sync_to_db=True)
+        await report_stage(job_id, "CHUNKING", 0)
 
         # ✅ Check if chunks already exist for this document (duplicate prevention)
         existing_chunks = supabase_client.client.table('document_chunks')\
@@ -516,7 +603,7 @@ async def create_chunks(
         chunks = await chunking_service.chunk_pages(
             pages=pages,
             document_id=request.document_id,
-            metadata={
+            details={
                 'workspace_id': request.workspace_id,
                 'product_ids': request.product_ids
             }
@@ -584,11 +671,12 @@ async def create_chunks(
                 logger.error(f"   Error processing chunk {chunk.chunk_index}: {e}")
                 continue
 
-        # Update tracker with quality metrics
-        await tracker.update_stage(
+        # Report stage completion with quality metrics
+        await report_stage(
+            job_id,
             "CHUNKING",
             100,
-            metadata={
+            details={
                 'chunks_created': chunks_created,
                 'embeddings_generated': embeddings_generated,
                 'relationships_created': relationships_created,
@@ -599,8 +687,7 @@ async def create_chunks(
                     'low_quality_rejected': quality_metrics.low_quality_rejected,
                     'final_chunks': quality_metrics.final_chunks,
                 }
-            },
-            sync_to_db=True
+            }
         )
 
         logger.info(f"✅ [Job {job_id}] Chunking complete: {chunks_created} chunks, {embeddings_generated} embeddings")
@@ -644,9 +731,7 @@ async def create_relationships(
     try:
         logger.info(f"🔗 [Job {job_id}] Starting relationship creation for document {request.document_id}")
 
-        # Initialize tracker
-        tracker = JobTracker(job_id)
-        await tracker.update_stage("RELATIONSHIPS", 0, sync_to_db=True)
+        await report_stage(job_id, "RELATIONSHIPS", 0)
 
         # Initialize service
         relevancy_service = RelevancyService()
@@ -658,15 +743,15 @@ async def create_relationships(
             similarity_threshold=request.similarity_threshold
         )
 
-        # Update tracker
-        await tracker.update_stage(
+        # Report stage completion
+        await report_stage(
+            job_id,
             "RELATIONSHIPS",
             100,
-            metadata={
+            details={
                 'chunk_image_relationships': result['chunk_image_relationships'],
                 'product_image_associations': result.get('product_image_relationships', result.get('product_image_associations', 0))  # ✅ Support both old and new key names
-            },
-            sync_to_db=True
+            }
         )
 
         logger.info(f"✅ [Job {job_id}] Relationships complete: {result['chunk_image_relationships']} chunk-image, {result.get('product_image_relationships', result.get('product_image_associations', 0))} product-image")
@@ -711,9 +796,7 @@ async def extract_metadata(
         logger.info(f"📋 [Job {job_id}] Starting metadata extraction for {len(request.product_ids)} products")
         logger.info(f"   AI Config: Model={ai_config.metadata_extraction_model}, Temperature={ai_config.metadata_temperature}, MaxTokens={ai_config.metadata_max_tokens}")
 
-        # Initialize tracker
-        tracker = JobTracker(job_id)
-        await tracker.update_stage("METADATA_EXTRACTION", 0, sync_to_db=True)
+        await report_stage(job_id, "METADATA_EXTRACTION", 0)
 
         # Initialize metadata extractor
         from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
@@ -774,22 +857,22 @@ async def extract_metadata(
 
                 # Update progress
                 progress = int((i + 1) / len(products) * 100)
-                await tracker.update_stage("METADATA_EXTRACTION", progress, sync_to_db=True)
+                await report_stage(job_id, "METADATA_EXTRACTION", progress)
 
             except Exception as e:
                 logger.error(f"   ❌ Failed to extract metadata for product {product.get('id')}: {e}")
                 continue
 
-        # Update tracker
-        await tracker.update_stage(
+        # Report stage completion
+        await report_stage(
+            job_id,
             "METADATA_EXTRACTION",
             100,
-            metadata={
+            details={
                 'products_enriched': enriched_count,
                 'metadata_fields_extracted': total_metadata_fields,
                 'model_used': ai_config.metadata_extraction_model
-            },
-            sync_to_db=True
+            }
         )
 
         logger.info(f"✅ [Job {job_id}] Metadata extraction complete: {enriched_count} products enriched, {total_metadata_fields} fields extracted")
@@ -1169,7 +1252,7 @@ async def regenerate_image_embeddings(
                     await vecs_service.upsert_image_embedding(
                         image_id=image_id,
                         siglip_embedding=visual_embedding,
-                        metadata={
+                        details={
                             'document_id': image.get('document_id'),
                             'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)
@@ -1198,7 +1281,7 @@ async def regenerate_image_embeddings(
                     await vecs_service.upsert_specialized_embeddings(
                         image_id=image_id,
                         embeddings=specialized_embeddings,
-                        metadata={
+                        details={
                             'document_id': image.get('document_id'),
                             'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)
@@ -1224,7 +1307,7 @@ async def regenerate_image_embeddings(
                     await vecs_service.upsert_understanding_embedding(
                         image_id=image_id,
                         embedding=understanding_embedding,
-                        metadata={
+                        details={
                             'document_id': image.get('document_id'),
                             'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)

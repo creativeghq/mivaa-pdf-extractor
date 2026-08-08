@@ -1,0 +1,28 @@
+{
+  "_comment": [
+    "Per-rule ceiling for `ruff --select F` over app/, enforced by",
+    "scripts/check_ruff_gate.py in deploy.yml. A count may FALL, never rise.",
+    "Fix findings and ratchet the number down in the same change; do not raise a",
+    "number to make a build pass. Same contract as the platform repo's",
+    ".github/edge-typecheck-baseline.json.",
+    "",
+    "F821 (undefined name) and invalid-syntax are NOT listed here on purpose: they",
+    "are enforced at zero by ZERO_TOLERANCE in the gate script. F821 was 41 across",
+    "app/ before this work — it covered a search path that never searched, six",
+    "pipeline endpoints that always 500'd, and four modules using an unimported",
+    "module. It is 0 now and must stay 0.",
+    "",
+    "The rules below are hygiene debt, not broken code: unused imports (F401),",
+    "f-strings with no placeholders (F541), unused locals (F841), star-import",
+    "fallout (F403/F405), redefinitions (F811). F811 is the one worth attacking",
+    "first — a redefinition silently discards the earlier definition."
+  ],
+  "counts": {
+    "F401": 376,
+    "F541": 139,
+    "F841": 53,
+    "F405": 22,
+    "F811": 10,
+    "F403": 5
+  }
+}

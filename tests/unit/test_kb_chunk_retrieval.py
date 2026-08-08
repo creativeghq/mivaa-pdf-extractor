@@ -104,10 +104,33 @@ def test_chunk_retrieval_does_not_reuse_the_word_count_threshold():
     code_only = "\n".join(
         line for line in chunk_branch.splitlines() if not line.strip().startswith("#")
     )
-    assert "TEXT_SEARCH_SIMILARITY_FLOOR" in code_only
+    assert "text_search_similarity_floor()" in code_only
     assert "request.similarity_threshold" not in code_only, (
         "the retired scorer's threshold is being used as a cosine floor again"
     )
+
+
+def test_similarity_floor_is_tunable_and_reports_what_it_rejected():
+    """A cosine floor is the one parameter whose failure mode is invisible: set it too
+    high and the endpoint returns nothing, which is indistinguishable from an empty
+    corpus. 0.4 is measured on kb_doc_chunks and borrowed here, so it must stay
+    overridable without a redeploy AND report what it threw away — `top_rejected` next
+    to `worst_kept` diagnoses the value from a single real query."""
+    src = _function_source(_RAG_TREE, _RAG_SOURCE, "summarize_similarity_floor")
+    for key in ("top_rejected", "worst_kept", "candidates", "rejected"):
+        assert key in src, f"the floor summary dropped {key}"
+
+    floor_src = _function_source(_RAG_TREE, _RAG_SOURCE, "text_search_similarity_floor")
+    assert "os.getenv" in floor_src, "the floor is hardcoded again — it must be tunable"
+
+    # The RPCs must be asked for everything; filtering inside SQL would keep the
+    # rejected scores in the database and make the floor unmeasurable again.
+    search_src = _function_source(_RAG_TREE, _RAG_SOURCE, "search_knowledge_base")
+    assert search_src.count('"p_similarity_threshold": 0.0') == 2, (
+        "a search branch is filtering by threshold inside SQL, so its rejected "
+        "scores never reach search_metadata.similarity_floor"
+    )
+    assert "similarity_floor" in search_src, "the floor stats are not reported"
 
 
 def test_entity_search_actually_searches():
