@@ -161,7 +161,7 @@ async def validate_image_with_claude(
         # Build Claude Vision prompt
         product_groups_context = ""
         if request.product_groups and len(request.product_groups) > 0:
-            product_groups_context = f"\n\nProduct Groups to match against:\n" + "\n".join(
+            product_groups_context = "\n\nProduct Groups to match against:\n" + "\n".join(
                 [f"- {g}" for g in request.product_groups]
             )
 

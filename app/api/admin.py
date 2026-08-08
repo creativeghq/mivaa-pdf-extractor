@@ -1299,14 +1299,20 @@ async def reprocess_image_ocr(
     """
     try:
         from ..services.pdf.ocr_service import get_ocr_service, OCRConfig
-        from ..services.embeddings.real_embeddings_service import get_embeddings_service
-        
+        # `get_embeddings_service` does not exist in that module and never has — it
+        # exports the RealEmbeddingsService class, which every other caller
+        # instantiates directly. A lazy import of an absent symbol raises ImportError
+        # only when the code path runs, so this endpoint has been dead on arrival
+        # while looking fine to every reader and to ruff (F821 sees the name as bound
+        # BY this import; it cannot know the import fails).
+        from ..services.embeddings.real_embeddings_service import RealEmbeddingsService
+
         logger.info(f"🔄 Admin OCR reprocessing requested for image: {image_id}")
-        
+
         # Initialize services
         supabase = SupabaseClient()
         ocr_service = get_ocr_service(OCRConfig(languages=['en']))
-        embeddings_service = get_embeddings_service()
+        embeddings_service = RealEmbeddingsService()
         
         # Step 1: Get image from database
         image_response = supabase.client.table('document_images').select('*').eq('id', image_id).execute()
@@ -1582,7 +1588,7 @@ async def queue_regenerate_image_embeddings(
             priority=request.priority
         )
 
-        message = f"Image embedding regeneration job queued successfully"
+        message = "Image embedding regeneration job queued successfully"
         if request.document_id:
             message += f" for document {request.document_id}"
         if request.image_ids:

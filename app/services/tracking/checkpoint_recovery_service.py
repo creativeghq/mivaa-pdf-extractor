@@ -436,7 +436,7 @@ class CheckpointRecoveryService:
                 # Verify warmup started checkpoint has endpoint list
                 endpoints_to_warmup = data.get("endpoints_to_warmup", [])
                 if not endpoints_to_warmup:
-                    logger.warning(f"⚠️ WARMUP_STARTED checkpoint missing endpoints_to_warmup list")
+                    logger.warning("⚠️ WARMUP_STARTED checkpoint missing endpoints_to_warmup list")
                     return False
                 logger.info(f"✅ WARMUP_STARTED checkpoint valid: {len(endpoints_to_warmup)} endpoints queued")
                 return True
@@ -455,7 +455,7 @@ class CheckpointRecoveryService:
                 # Warmup is valid even with some failures (we can still proceed with available endpoints)
                 # Only fail if we have 0 endpoints ready AND there were failures
                 if total_ready == 0 and endpoints_failed:
-                    logger.error(f"❌ WARMUP_COMPLETE checkpoint invalid: 0 endpoints ready with failures")
+                    logger.error("❌ WARMUP_COMPLETE checkpoint invalid: 0 endpoints ready with failures")
                     return False
 
                 return True
@@ -468,7 +468,7 @@ class CheckpointRecoveryService:
 
                 # Allow empty chunk_ids if chunks_created is 0 (focused extraction may skip chunking)
                 if chunks_created == 0 and not chunk_ids:
-                    logger.info(f"✅ Checkpoint valid: no chunks created (focused extraction)")
+                    logger.info("✅ Checkpoint valid: no chunks created (focused extraction)")
                     return True
 
                 # If no chunk_ids but we have document_id, verify by document_id instead
@@ -487,7 +487,7 @@ class CheckpointRecoveryService:
                         return False
 
                 if not chunk_ids:
-                    logger.warning(f"⚠️ No chunk_ids and no document_id in checkpoint")
+                    logger.warning("⚠️ No chunk_ids and no document_id in checkpoint")
                     return False
 
                 result = self.supabase_client.client.table("document_chunks")\
@@ -529,7 +529,7 @@ class CheckpointRecoveryService:
                         return False
 
                 if not chunk_ids:
-                    logger.warning(f"⚠️ No chunk_ids and no document_id in checkpoint for TEXT_EMBEDDINGS_GENERATED")
+                    logger.warning("⚠️ No chunk_ids and no document_id in checkpoint for TEXT_EMBEDDINGS_GENERATED")
                     return False
 
                 # Query document_chunks where text_embedding is not null

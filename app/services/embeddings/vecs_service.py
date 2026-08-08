@@ -163,7 +163,7 @@ class VecsService:
         db_user = f"postgres.{project_id}"
 
         connection_string = f"postgresql://{db_user}:{db_password}@{db_host}:5432/postgres"
-        logger.info(f"Using database password for VECS connection (pooler IPv4 mode, port 5432)")
+        logger.info("Using database password for VECS connection (pooler IPv4 mode, port 5432)")
 
         return connection_string
     

@@ -1885,13 +1885,13 @@ class MentionOpportunityService:
                 type="domain_snapshot",
                 title="Domain snapshot not configured",
                 rationale=(
-                    f"`domain_snapshot` requires the subject's `homepage_domain` field "
-                    f"to be set (the brand's primary domain, e.g. `flobali.gr`). "
+                    "`domain_snapshot` requires the subject's `homepage_domain` field "
+                    "to be set (the brand's primary domain, e.g. `flobali.gr`). "
                     "When set, this card surfaces Domain Rank, estimated organic traffic, "
                     "referring-domains count, and total backlinks."
                 ),
                 suggested_action=(
-                    f"Update the subject via PUT /api/v1/mentions/track/{{id}} with "
+                    "Update the subject via PUT /api/v1/mentions/track/{id} with "
                     "`{ \"homepage_domain\": \"yourbrand.com\" }`. Next /opportunities call "
                     "will surface the domain snapshot."
                 ),

@@ -412,7 +412,7 @@ class ProductDiscoveryService:
 
             # Enrich products with metadata using full text
             if "products" in categories and catalog.products:
-                self.logger.info(f"🔍 Extracting detailed metadata for each product...")
+                self.logger.info("🔍 Extracting detailed metadata for each product...")
                 catalog = await self._enrich_products_with_metadata(
                     catalog,
                     markdown_text,
@@ -500,12 +500,12 @@ class ProductDiscoveryService:
             if agent_prompt:
                 self.logger.info(f"   Agent Prompt: '{agent_prompt}'")
             if enable_prompt_enhancement:
-                self.logger.info(f"   Prompt Enhancement: ENABLED")
+                self.logger.info("   Prompt Enhancement: ENABLED")
 
             # ============================================================
             # TEXT-BASED DISCOVERY
             # ============================================================
-            self.logger.info(f"📋 TEXT MODE: Iterative batch discovery with early stopping...")
+            self.logger.info("📋 TEXT MODE: Iterative batch discovery with early stopping...")
 
             # Analyze layout if path is provided to handle spreads correctly
             layout_analysis = None
@@ -526,12 +526,12 @@ class ProductDiscoveryService:
                         if job_data.data and 'layout_analysis' in job_data.data[0].get('metadata', {}):
                             layout_dict = job_data.data[0]['metadata']['layout_analysis']
                             layout_analysis = PDFLayoutAnalysis.from_dict(layout_dict)
-                            self.logger.info(f"♻️  [CHECKPOINT] Reusing existing layout analysis from job metadata")
+                            self.logger.info("♻️  [CHECKPOINT] Reusing existing layout analysis from job metadata")
                     except Exception as cp_err:
                         self.logger.warning(f"⚠️ Failed to load layout checkpoint: {cp_err}")
 
                 if not layout_analysis:
-                    self.logger.info(f"📐 Analyzing PDF layout for spread detection...")
+                    self.logger.info("📐 Analyzing PDF layout for spread detection...")
                     
                     # Define progress callback
                     def layout_progress_callback(current, total):
@@ -560,7 +560,7 @@ class ProductDiscoveryService:
                             self.tracker._supabase.client.table('background_jobs').update({
                                 'metadata': metadata
                             }).eq('id', job_id).execute()
-                            self.logger.info(f"💾 Saved layout analysis checkpoint to job metadata")
+                            self.logger.info("💾 Saved layout analysis checkpoint to job metadata")
                         except Exception as save_err:
                             self.logger.warning(f"⚠️ Failed to save layout checkpoint: {save_err}")
 
@@ -574,7 +574,7 @@ class ProductDiscoveryService:
                 if pdf_path is None:
                     raise ValueError("Either pdf_text or pdf_path must be provided for text-based discovery")
 
-                self.logger.info(f"📄 Extracting PDF text physical-page-by-page with progress tracking...")
+                self.logger.info("📄 Extracting PDF text physical-page-by-page with progress tracking...")
                 import fitz
 
                 # Extract page by page with progress logging
@@ -611,7 +611,7 @@ class ProductDiscoveryService:
                 doc.close()
                 pdf_text = "\n\n".join(pdf_text_parts)
 
-                self.logger.info(f"✅ PDF text extraction complete:")
+                self.logger.info("✅ PDF text extraction complete:")
                 self.logger.info(f"   📝 Total characters: {len(pdf_text):,}")
 
             # Iterative batch discovery
@@ -719,7 +719,7 @@ class ProductDiscoveryService:
             # Claude CAN return page_range - we prioritize it, fallback to text search if not provided
             # ============================================================
             if "products" in categories and catalog.products and pdf_path:
-                self.logger.info(f"🔍 STAGE 0B: Extracting detailed metadata for each product...")
+                self.logger.info("🔍 STAGE 0B: Extracting detailed metadata for each product...")
                 catalog = await self._enrich_products_with_focused_extraction(
                     catalog,
                     pdf_path,
@@ -969,7 +969,7 @@ class ProductDiscoveryService:
                 category="products"
             )
 
-            self.logger.info(f"   ✅ Loaded discovery prompt from database")
+            self.logger.info("   ✅ Loaded discovery prompt from database")
 
             # Replace template variables.
             # #250 F2: the catalog text is untrusted (a hostile/poisoned PDF could embed
@@ -1043,7 +1043,7 @@ class ProductDiscoveryService:
                 category="index_scan"
             )
 
-            self.logger.info(f"   ✅ Loaded index_scan prompt from database")
+            self.logger.info("   ✅ Loaded index_scan prompt from database")
 
             # Replace template variables
             prompt = prompt_template.replace("{total_pages}", str(total_pages))
@@ -1957,7 +1957,7 @@ class ProductDiscoveryService:
             if self.tracker:
                 self.tracker.manual_progress_override = 10
                 await self.tracker._sync_to_database(stage='product_discovery')
-                self.logger.info(f"✅ Stage 0B complete: Metadata extraction finished (10%)")
+                self.logger.info("✅ Stage 0B complete: Metadata extraction finished (10%)")
 
             # Update catalog with enriched products
             catalog.products = enriched_products

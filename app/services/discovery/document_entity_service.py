@@ -324,7 +324,7 @@ class DocumentEntityService:
                     # 3. Name similarity (low priority - 0.1) - using pre-computed lowercase
                     if product['name_lower'] in entity_name_lower or entity_name_lower in product['name_lower']:
                         match_score += 0.1
-                        match_reasons.append(f"Name similarity")
+                        match_reasons.append("Name similarity")
 
                     # Create relationship if match score >= 0.5
                     if match_score >= 0.5:

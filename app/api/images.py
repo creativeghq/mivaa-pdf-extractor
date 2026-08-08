@@ -376,7 +376,7 @@ async def analyze_batch_images(
                             processing_time_ms=analysis_result.get("processing_time_ms", 100.0)
                         ))
                         
-                    except Exception as service_error:
+                    except Exception:
                         # Fallback to database data — the paid vision call didn't produce a result.
                         refund_operation(current_user, _billed, "image_analyze_batch")  # #250 H1
                         # Create proper metadata
@@ -468,7 +468,7 @@ async def search_similar_images(
     if not request.workspace_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="workspace_id is required")
     try:
-        logger.info(f"Starting image similarity search")
+        logger.info("Starting image similarity search")
         start_time = datetime.utcnow()
 
         # Perform real image search using Supabase database

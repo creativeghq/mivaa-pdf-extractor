@@ -137,7 +137,7 @@ class UnifiedChunkingService:
                 chunk.quality_score = self._calculate_chunk_quality(chunk)
 
             # Filter for duplicates and quality
-            self.logger.info(f"   Filtering chunks for duplicates and quality...")
+            self.logger.info("   Filtering chunks for duplicates and quality...")
             filtered_chunks = self.filter_chunks(chunks)
 
             self.logger.info(f"✅ Created {len(filtered_chunks)} chunks for document {document_id} using {self.config.strategy} strategy")
@@ -228,7 +228,7 @@ class UnifiedChunkingService:
                 chunk.quality_score = self._calculate_chunk_quality(chunk)
 
             # Filter for duplicates and quality
-            self.logger.info(f"   Filtering chunks for duplicates and quality...")
+            self.logger.info("   Filtering chunks for duplicates and quality...")
             filtered_chunks = self.filter_chunks(all_chunks)
 
             # Update total_chunks for all chunks
@@ -531,7 +531,7 @@ class UnifiedChunkingService:
             page_number: Optional page number (1-based) to store in chunk metadata
         """
         # Start with semantic chunks
-        self.logger.info(f"      HYBRID: Starting semantic chunking phase...")
+        self.logger.info("      HYBRID: Starting semantic chunking phase...")
         semantic_chunks = self._chunk_semantic(text, document_id, metadata, page_number)
         self.logger.info(f"      HYBRID: Created {len(semantic_chunks)} semantic chunks, refining...")
         refined_chunks = []

@@ -106,7 +106,9 @@ from PIL.ExifTags import TAGS
 import imagehash  # For perceptual hash deduplication (Layer 4)
 
 try:
-    from skimage import filters, morphology, measure
+    # `filters` alone still proves scikit-image is importable, so it carries the
+    # SKIMAGE_AVAILABLE probe; morphology/measure were imported and never used.
+    from skimage import filters
     SKIMAGE_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"scikit-image not available: {e}. Some advanced image processing features will be disabled.")
@@ -955,7 +957,7 @@ class PDFProcessor:
                         f"   📄 [Job: {job_id}] PyMuPDF: PDF page {pdf_page} has NO embedded images"
                     )
                     self.logger.info(
-                        f"      This could mean: text-only page, scanned page, or vector graphics"
+                        "      This could mean: text-only page, scanned page, or vector graphics"
                     )
 
                 # ============================================================

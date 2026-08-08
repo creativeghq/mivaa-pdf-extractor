@@ -158,7 +158,7 @@ class RelevancyService:
                 logger.error(f"   ❌ Error processing product {product_id}: {e}", exc_info=True)
                 continue
 
-        logger.info(f"✅ Product-image relationship creation complete:")
+        logger.info("✅ Product-image relationship creation complete:")
         logger.info(f"   Products processed: {products_processed}/{len(product_ids)}")
         logger.info(f"   Products without page ranges: {products_without_pages}")
         logger.info(f"   Relationships created: {relationships_created}")

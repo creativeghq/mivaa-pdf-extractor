@@ -20,17 +20,21 @@ and survived, some for months:
 
 The gate
 --------
-Two tiers, deliberately:
+Two tiers:
 
-  ZERO_TOLERANCE  Rules currently at zero. Any new occurrence fails the build.
-                  F821 (undefined name) is the entire bug class above; it was 41
-                  across app/ and is now 0. It stays 0.
+  ZERO_TOLERANCE  Any occurrence fails the build. Six rules, all at zero: undefined
+                  names, redefinitions, unused imports, placeholder-free f-strings,
+                  invalid escape sequences, and unparseable files. See the set below
+                  for what each one cost this repo before it was cleared.
 
-  RATCHET         Everything else, held against .github/ruff-baseline.json. A count
-                  may fall, never rise. These are hygiene (unused imports, unused
-                  locals, placeholder-free f-strings) — real debt, but gating them
-                  at zero today would be unlandable, and an unlandable gate gets
-                  disabled within a week.
+  RATCHET         The rest, held against .github/ruff-baseline.json — a count may
+                  fall, never rise. What remains needs human judgement rather than a
+                  fix-all: unused locals where the ignored value came from a call with
+                  side effects, and star-import fallout.
+
+The whole F-class went 605 findings -> 73 to make the zero tier landable. That
+mattered for more than tidiness: 371 unused imports are what made an undefined name
+invisible, because nobody reads a 400-line report looking for the four that matter.
 
 Fix findings; do not edit the baseline upward. Same contract as
 .github/edge-typecheck-baseline.json on the platform side.
@@ -50,20 +54,26 @@ TARGET = "app/"
 
 # At zero today. Keep them there.
 #
-# F811 (redefinition) earned its place here rather than a ratchet. It is not hygiene:
-# a redefinition silently discards the earlier binding, and which one you get depends
-# on your line number. It was hiding three live problems in this repo —
-# MaterialKaiIntegrationError declared twice so main.py's exception handler matched a
-# different class than the one being raised; a `performance_monitor` decorator made
-# unreachable by an instance of the same name; and a service getter imported *and*
-# redefined, where only the Depends() sites below the redefinition got the intended
-# one. Ten findings, three of them real bugs — a poor ratio to leave ratcheting.
-ZERO_TOLERANCE = {"F821", "F811", "invalid-syntax"}
+#   F821  undefined name.        41 -> 0. The whole bug class: a search path that never
+#         searched, six endpoints that always 500'd, four modules using an unimported
+#         module. An undefined name is code that cannot run.
+#   F811  redefinition.          10 -> 0. Not hygiene — it discards the earlier binding
+#         and which one you get depends on your line number. Three of the ten were live
+#         bugs, including an exception handler registered against a different class than
+#         the one being raised.
+#   F401  unused import.        371 -> 0. Individually harmless, but 371 of them are
+#         what made the two rules above invisible: nobody scans a 400-line report. Held
+#         at zero because it is now free to hold there — `ruff --fix` removes them.
+#   F541  f-string, no fields.  139 -> 0. Same argument: pure noise, now absent.
+#   invalid-syntax               A file ruff cannot parse is unchecked AND reports clean,
+#         which is worse than any finding. app/api/images.py sat like that behind a
+#         wrong requires-python.
+ZERO_TOLERANCE = {"F821", "F811", "F401", "F541", "W605", "invalid-syntax"}
 
 
 def run_ruff() -> collections.Counter:
     proc = subprocess.run(
-        [sys.executable, "-m", "ruff", "check", "--select", "F",
+        [sys.executable, "-m", "ruff", "check", "--select", "F,W605",
          "--output-format", "json", TARGET],
         capture_output=True, text=True, cwd=ROOT,
         # Explicit: `text=True` alone decodes with the locale codec, which is cp1252
@@ -99,6 +109,11 @@ def main() -> int:
         "F821": "an undefined name is code that cannot run",
         "F811": "a redefinition silently discards the earlier binding, and which one "
                 "you get depends on your line number",
+        "F401": "unused imports are individually harmless and collectively what hides "
+                "the rules above; `ruff check --select F401 --fix app/` clears them",
+        "F541": "an f-string with no placeholders is noise; drop the f prefix",
+        "W605": "an invalid escape sequence is a DeprecationWarning today and a "
+                "SyntaxError in a future Python; make the string raw (r'...')",
         "invalid-syntax": "ruff cannot parse the file, so it is unchecked AND looks clean",
     }
     for rule in sorted(ZERO_TOLERANCE):
@@ -120,7 +135,7 @@ def main() -> int:
 
     if failures:
         print("Ruff gate FAILED:\n" + "\n".join(failures))
-        print("\nRun: python -m ruff check --select F app/")
+        print("\nRun: python -m ruff check --select F,W605 app/")
         return 1
 
     improved = {

@@ -1076,7 +1076,7 @@ async def upload_document(
         job_id = str(uuid4())
         document_id = str(uuid4())
 
-        logger.info(f"📤 CONSOLIDATED UPLOAD")
+        logger.info("📤 CONSOLIDATED UPLOAD")
         logger.info(f"   Job ID: {job_id}")
         logger.info(f"   Document ID: {document_id}")
         logger.info(f"   Filename: {filename}")
@@ -2997,7 +2997,7 @@ async def process_document_with_discovery(
     _current_document_id.set(document_id)
 
     logger.info("=" * 80)
-    logger.info(f"🔍 [PRODUCT DISCOVERY] STARTING")
+    logger.info("🔍 [PRODUCT DISCOVERY] STARTING")
     logger.info("=" * 80)
     logger.info(f"📋 Job ID: {job_id}")
     logger.info(f"📄 Document ID: {document_id}")
@@ -3073,7 +3073,7 @@ async def process_document_with_discovery(
             f"Re-upload required."
         )
 
-    logger.info(f"🔧 [BACKGROUND TASK] Opening file for reading...")
+    logger.info("🔧 [BACKGROUND TASK] Opening file for reading...")
     with open(file_path, 'rb') as f:
         file_content = f.read()
 
@@ -3489,23 +3489,23 @@ async def process_document_with_discovery(
         # ============================================================================
         # INITIALIZE PROGRESS TRACKING
         # ============================================================================
-        logger.info(f"🔧 [BACKGROUND TASK] Initializing progress tracking components...")
+        logger.info("🔧 [BACKGROUND TASK] Initializing progress tracking components...")
         # Initialize Progress Tracker
         from app.services.tracking.progress_tracker import ProgressTracker
         # ProcessingStage already imported from checkpoint_recovery_service at module level (line 36)
         # checkpoint_recovery_service already imported at module level (line 36)
         from app.services.tracking.job_progress_monitor import JobProgressMonitor
 
-        logger.info(f"🔧 [BACKGROUND TASK] Creating ProgressTracker...")
+        logger.info("🔧 [BACKGROUND TASK] Creating ProgressTracker...")
         tracker = ProgressTracker(
             job_id=job_id,
             document_id=document_id,
             total_pages=0,  # Will update after PDF extraction
             job_storage=job_storage
         )
-        logger.info(f"🔧 [BACKGROUND TASK] Starting processing...")
+        logger.info("🔧 [BACKGROUND TASK] Starting processing...")
         await tracker.start_processing()
-        logger.info(f"✅ [BACKGROUND TASK] Processing started")
+        logger.info("✅ [BACKGROUND TASK] Processing started")
 
         # 🫀 Heartbeat: the JobHeartbeat thread (entered above via async-with)
         # is the canonical heartbeat — it survives blocked event loops, which
@@ -3513,15 +3513,15 @@ async def process_document_with_discovery(
         # `tracker.start_heartbeat` was a second mechanism that wrote to the
         # SAME row (4 selects/min per job for liveness), and was fragile on
         # long sync work. Removed 2026-05-23 per round-3 audit.
-        logger.info(f"🫀 [BACKGROUND TASK] JobHeartbeat thread is the active liveness signal")
+        logger.info("🫀 [BACKGROUND TASK] JobHeartbeat thread is the active liveness signal")
 
-        logger.info(f"🔧 [BACKGROUND TASK] Starting progress monitor...")
+        logger.info("🔧 [BACKGROUND TASK] Starting progress monitor...")
         # 📊 Start detailed progress monitoring (reports every 60s to logs + Sentry)
         progress_monitor = JobProgressMonitor(job_id=job_id, document_id=document_id, total_stages=9)
         await progress_monitor.start()
         logger.info(f"✅ [BACKGROUND TASK] Progress monitoring started for job {job_id}")
 
-        logger.info(f"🔧 [BACKGROUND TASK] Creating INITIALIZED checkpoint...")
+        logger.info("🔧 [BACKGROUND TASK] Creating INITIALIZED checkpoint...")
         # Create INITIALIZED checkpoint
         await checkpoint_recovery_service.create_checkpoint(
             job_id=job_id,
@@ -3552,8 +3552,8 @@ async def process_document_with_discovery(
         # prerequisite for any downstream search use, even without products.
         if extract_only_mode:
             logger.info(
-                f"📄 [EXTRACT-ONLY MODE] Skipping discovery + product pipeline. "
-                f"Running Stage 1.5 layout precompute only, then completing."
+                "📄 [EXTRACT-ONLY MODE] Skipping discovery + product pipeline. "
+                "Running Stage 1.5 layout precompute only, then completing."
             )
             try:
                 from app.api.pdf_processing.stage_1_layout_precompute import precompute_document_layout
@@ -3653,13 +3653,13 @@ async def process_document_with_discovery(
         # ============================================================================
         # STAGE 0: PRODUCT DISCOVERY (MODULAR)
         # ============================================================================
-        logger.info(f"🚀 [BACKGROUND TASK] ========================================")
-        logger.info(f"🚀 [BACKGROUND TASK] STARTING STAGE 0: PRODUCT DISCOVERY")
-        logger.info(f"🚀 [BACKGROUND TASK] ========================================")
+        logger.info("🚀 [BACKGROUND TASK] ========================================")
+        logger.info("🚀 [BACKGROUND TASK] STARTING STAGE 0: PRODUCT DISCOVERY")
+        logger.info("🚀 [BACKGROUND TASK] ========================================")
         progress_monitor.update_stage("product_discovery", {"discovery_model": discovery_model})
         from app.api.pdf_processing.stage_0_discovery import process_stage_0_discovery
 
-        logger.info(f"🔧 [BACKGROUND TASK] Calling process_stage_0_discovery...")
+        logger.info("🔧 [BACKGROUND TASK] Calling process_stage_0_discovery...")
         with pipeline_stage_span("stage_0.product_discovery", extra_data={"discovery_model": discovery_model}):
             stage_0_result = await process_stage_0_discovery(
                 file_content=file_content,
@@ -3912,8 +3912,8 @@ async def process_document_with_discovery(
         # it; the missing compliance/PEI rollups can be backfilled by a full run.
         if test_single_product and _icon_pass_relevant:
             logger.info(
-                f"🔖 Skipping catalog-wide icon pass — test_single_product=True "
-                f"(catalog-level pre-pass would burn the per-product budget)"
+                "🔖 Skipping catalog-wide icon pass — test_single_product=True "
+                "(catalog-level pre-pass would burn the per-product budget)"
             )
             catalog_icon_stats = {
                 'supplementary_pages_scanned': 0,
@@ -4080,7 +4080,7 @@ async def process_document_with_discovery(
 
         # Summary
         logger.info(f"\n{'='*80}")
-        logger.info(f"🏭 PRODUCT-CENTRIC PIPELINE COMPLETE")
+        logger.info("🏭 PRODUCT-CENTRIC PIPELINE COMPLETE")
         logger.info(f"{'='*80}")
         logger.info(f"✅ Products completed: {products_completed}/{total_products}")
         logger.info(f"❌ Products failed: {products_failed}/{total_products}")
@@ -5135,7 +5135,7 @@ async def search_documents(
                 logger.info(f"🧠 Query understanding: '{request.query}' → visual_query='{visual_query}', profile='{weight_profile}', filters={parsed_filters}")
 
             except asyncio.TimeoutError:
-                logger.warning(f"Query understanding timed out after 8s, continuing with original query")
+                logger.warning("Query understanding timed out after 8s, continuing with original query")
             except Exception as e:
                 logger.error(f"Query understanding failed: {e}, continuing with original query")
                 # Continue with original query if parsing fails

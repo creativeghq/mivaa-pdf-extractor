@@ -79,7 +79,7 @@ async def extract_product_pages(
     physical_to_pdf_map = catalog.physical_to_pdf_map if catalog and hasattr(catalog, 'physical_to_pdf_map') else {}
 
     if has_spread_layout:
-        logger.info(f"   📐 Spread layout detected")
+        logger.info("   📐 Spread layout detected")
         logger.info(f"   📐 Physical-to-PDF mapping available: {len(physical_to_pdf_map)} entries")
 
     # ========================================================================

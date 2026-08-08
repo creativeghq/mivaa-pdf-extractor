@@ -656,7 +656,7 @@ class ChunkTypeClassificationService:
         inspiration_keywords = ['inspired by', 'inspiration', 'influenced by']
         inspiration_sources = []
         for keyword in inspiration_keywords:
-            match = re.search(f'{keyword}[:\s]+([^.!?]+)', content, re.IGNORECASE)
+            match = re.search(rf'{keyword}[:\s]+([^.!?]+)', content, re.IGNORECASE)
             if match:
                 inspiration_sources.append(match.group(1).strip())
         if inspiration_sources:

@@ -222,7 +222,7 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
     force_rewrite = bool(cfg.get("force_rewrite", False))
 
     _log(supabase, req.run_id, "info",
-         f"Product enrichment started (Python backend)",
+         "Product enrichment started (Python backend)",
          {"batch_size": batch_size, "category_filter": cat_filter})
 
     # Fetch products
@@ -310,7 +310,7 @@ async def handle_material_tagger(req: AgentRunRequest, supabase) -> Dict[str, An
     batch_size = min(int(cfg.get("batch_size", 20)), 200)
 
     _log(supabase, req.run_id, "info",
-         f"Material tagging started (Python backend)", {"batch_size": batch_size})
+         "Material tagging started (Python backend)", {"batch_size": batch_size})
 
     result = (supabase.table("products")
               .select("id, name, description, material_type, tags, image_url, category")

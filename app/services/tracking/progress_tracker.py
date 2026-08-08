@@ -534,7 +534,7 @@ class ProgressTracker:
             self.images_extracted = actual_images
             self.products_created = actual_products
 
-            logger.info(f"✅ Synced counts from database:")
+            logger.info("✅ Synced counts from database:")
             logger.info(f"   Chunks: {actual_chunks}")
             logger.info(f"   Images: {actual_images}")
             logger.info(f"   Products: {actual_products}")

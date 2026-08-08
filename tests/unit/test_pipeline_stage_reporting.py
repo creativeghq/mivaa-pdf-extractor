@@ -109,20 +109,21 @@ def test_lint_gate_exists_and_holds_undefined_names_at_zero():
         "(JobTracker, vecs_service, four missing imports) this gate was added for"
     )
 
-    assert '"F811"' in gate, (
-        "F811 dropped out of the zero-tolerance set — a redefinition silently "
-        "discards the earlier binding; three of this repo's ten were live bugs"
-    )
+    for rule in ('"F811"', '"F401"', '"F541"'):
+        assert rule in gate, (
+            f"{rule} dropped out of the zero-tolerance set. All of these reached zero "
+            f"and holding them there is free; F811 in particular hid three live bugs."
+        )
 
     baseline = json.loads(_BASELINE.read_text(encoding="utf-8"))["counts"]
-    for rule in ("F821", "F811"):
+    for rule in ("F821", "F811", "F401", "F541"):
         assert rule not in baseline, (
             f"{rule} was moved into the ratchet baseline. It is enforced at zero; "
             f"putting it in the baseline makes new occurrences landable again."
         )
 
     # The ratchet must not be quietly loosened either.
-    assert baseline.get("F401", 0) <= 371 and baseline.get("F841", 0) <= 53, (
+    assert baseline.get("F841", 0) <= 46 and baseline.get("F405", 0) <= 22, (
         "a baseline count was raised instead of ratcheted down — fix the findings"
     )
 

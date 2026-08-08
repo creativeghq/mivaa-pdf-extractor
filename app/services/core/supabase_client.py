@@ -516,7 +516,7 @@ class SupabaseClient:
                     # Log detailed error for debugging (includes embedding detection)
                     bbox_len = len(bbox) if isinstance(bbox, (list, tuple)) else 'N/A'
                     logger.error(f"❌ CRITICAL: Invalid bbox - expected 4 elements, got {bbox_len}. First 5 values: {bbox[:5] if isinstance(bbox, (list, tuple)) else bbox}")
-                    logger.error(f"   This may indicate an embedding was incorrectly assigned to bbox")
+                    logger.error("   This may indicate an embedding was incorrectly assigned to bbox")
             bbox = validated_bbox
 
             # `extraction_layer` is the canonical column-backed enum

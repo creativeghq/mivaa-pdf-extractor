@@ -160,7 +160,7 @@ class SearchQueryTracker:
                 }
             ).execute()
 
-        except Exception as e:
+        except Exception:
             # If RPC doesn't exist, do manual upsert
             try:
                 existing = self.supabase.client.table('unmatched_term_frequency').select('*').eq(

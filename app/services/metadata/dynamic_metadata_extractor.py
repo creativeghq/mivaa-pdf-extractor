@@ -603,7 +603,7 @@ class DynamicMetadataExtractor:
                 self.logger.info(f"📦 Packaging fields extracted: {list(packaging_fields.keys())}")
                 self.logger.debug(f"   Packaging data: {packaging_fields}")
             else:
-                self.logger.warning(f"⚠️ No packaging fields extracted (check for Iconography/Packing sections)")
+                self.logger.warning("⚠️ No packaging fields extracted (check for Iconography/Packing sections)")
 
             # Log compliance/safety extraction results
             compliance_fields = extracted_data.get("compliance", {})
@@ -614,13 +614,13 @@ class DynamicMetadataExtractor:
                 self.logger.info(f"✅ Compliance/Safety fields extracted: {list(compliance_fields.keys())}")
                 self.logger.debug(f"   Compliance data: {compliance_fields}")
             else:
-                self.logger.warning(f"⚠️ No compliance/safety fields extracted (check for Regulation/Certifications sections)")
+                self.logger.warning("⚠️ No compliance/safety fields extracted (check for Regulation/Certifications sections)")
 
             if care_fields:
                 self.logger.info(f"🧼 Care/Maintenance fields extracted: {list(care_fields.keys())}")
                 self.logger.debug(f"   Care data: {care_fields}")
             else:
-                self.logger.warning(f"⚠️ No care/maintenance fields extracted (check for Cleaning/Handling sections)")
+                self.logger.warning("⚠️ No care/maintenance fields extracted (check for Cleaning/Handling sections)")
 
             # Step 7: Add metadata
             extracted_data["metadata"] = {

@@ -620,11 +620,11 @@ class ValidationMiddleware(BaseHTTPMiddleware):
                             if not re.match(rule['pattern'], validated_params[param_name]):
                                 errors.append({
                                     'field': f'query.{param_name}',
-                                    'message': f'Value does not match required pattern',
+                                    'message': 'Value does not match required pattern',
                                     'type': 'value_error'
                                 })
                     
-                    except (ValueError, TypeError) as e:
+                    except (ValueError, TypeError):
                         errors.append({
                             'field': f'query.{param_name}',
                             'message': f'Invalid {param_type.__name__} value: {param_value}',
@@ -710,7 +710,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
                             if not re.match(rule['pattern'], validated_params[param_name]):
                                 errors.append({
                                     'field': f'path.{param_name}',
-                                    'message': f'Value does not match required pattern',
+                                    'message': 'Value does not match required pattern',
                                     'type': 'value_error'
                                 })
                         
@@ -730,7 +730,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
                                     'type': 'validation_error'
                                 })
                     
-                    except (ValueError, TypeError) as e:
+                    except (ValueError, TypeError):
                         errors.append({
                             'field': f'path.{param_name}',
                             'message': f'Invalid {param_type.__name__} value: {param_value}',
@@ -798,7 +798,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
                         if not re.match(rule['pattern'], header_value):
                             errors.append({
                                 'field': f'headers.{header_name}',
-                                'message': f'Header value does not match required pattern',
+                                'message': 'Header value does not match required pattern',
                                 'type': 'value_error'
                             })
                     
@@ -815,7 +815,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
                         if self.security_validator.contains_malicious_patterns(header_value):
                             errors.append({
                                 'field': f'headers.{header_name}',
-                                'message': f'Header contains potentially malicious content',
+                                'message': 'Header contains potentially malicious content',
                                 'type': 'security_error'
                             })
                     
@@ -1114,7 +1114,7 @@ class ValidationMiddleware(BaseHTTPMiddleware):
             
             for pattern in sensitive_patterns:
                 if re.search(pattern, content, re.IGNORECASE):
-                    logger.warning(f"Potential sensitive data detected in response")
+                    logger.warning("Potential sensitive data detected in response")
                     
                     # Add security warning header
                     response.headers['x-security-warning'] = 'potential-sensitive-data'

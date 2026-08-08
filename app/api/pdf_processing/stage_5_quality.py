@@ -140,7 +140,7 @@ async def process_stage_5_quality(
         )
     
     logger.info("=" * 80)
-    logger.info(f"✅ [PRODUCT DISCOVERY PIPELINE] COMPLETED")
+    logger.info("✅ [PRODUCT DISCOVERY PIPELINE] COMPLETED")
     logger.info(f"   Products: {products_created}")
     logger.info(f"   Chunks: {tracker.chunks_created}")
     logger.info(f"   Images: {images_processed}")

@@ -736,7 +736,7 @@ class EntityLinkingService:
                 document_id=document_id
             )
 
-            self.logger.info(f"Entity linking complete:")
+            self.logger.info("Entity linking complete:")
             self.logger.info(f"   - Image -> Product: {stats['image_product_links']}")
             self.logger.info(f"   - Image -> Chunk: {stats['image_chunk_links']}")
             self.logger.info(f"   - Chunk -> Product: {stats['chunk_product_links']}")
@@ -983,7 +983,7 @@ class EntityLinkingService:
                     logger.warning(f"   Table metadata extraction failed: {e}")
                     stats['table_metadata_extracted'] = False
             else:
-                logger.debug(f"   No tables found for product")
+                logger.debug("   No tables found for product")
 
             # Enhance image associations with multi-modal analysis (SLIG embeddings)
             multimodal_result = await self._enhance_image_associations_multimodal(

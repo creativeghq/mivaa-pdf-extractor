@@ -239,7 +239,7 @@ class SLIGClient:
             return embeddings
         else:
             embedding = result[0]["embedding"]
-            logger.info(f"✅ SLIG image embedding: 768D")
+            logger.info("✅ SLIG image embedding: 768D")
             return embedding
 
     async def get_text_embedding(
@@ -271,7 +271,7 @@ class SLIGClient:
             return embeddings
         else:
             embedding = result[0]["embedding"]
-            logger.info(f"✅ SLIG text embedding: 768D")
+            logger.info("✅ SLIG text embedding: 768D")
             return embedding
 
     async def calculate_similarity(

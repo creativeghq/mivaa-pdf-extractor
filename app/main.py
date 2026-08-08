@@ -2041,7 +2041,7 @@ async def custom_redoc():
     Fixes the "ReDoc requires Javascript" error by using a stable CDN version
     instead of @next which may have compatibility issues.
     """
-    return HTMLResponse(content=f"""
+    return HTMLResponse(content="""
     <!DOCTYPE html>
     <html>
     <head>
@@ -2050,10 +2050,10 @@ async def custom_redoc():
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet">
         <style>
-            body {{
+            body {
                 margin: 0;
                 padding: 0;
-            }}
+            }
         </style>
     </head>
     <body>

@@ -553,7 +553,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         try:
             # Check against configured Material Kai API key
             if api_key == self.settings.material_kai_api_key:
-                logger.info(f"Valid Material Kai API key authenticated")
+                logger.info("Valid Material Kai API key authenticated")
                 return {
                     "sub": "material-kai-platform",
                     "api_key": api_key,

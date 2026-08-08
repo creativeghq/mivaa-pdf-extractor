@@ -234,7 +234,7 @@ class ProductCreationService:
             self.logger.info(f"📋 {len(eligible_chunks)} chunks meet minimum length requirement ({min_chunk_length} chars)")
 
             # Stage 1 - Fast Classification with Claude Haiku
-            self.logger.info(f"🚀 Stage 1: Fast classification with Claude Haiku...")
+            self.logger.info("🚀 Stage 1: Fast classification with Claude Haiku...")
             stage1_start = time.time()
 
             product_candidates = await self._stage1_fast_classification(eligible_chunks)
@@ -269,7 +269,7 @@ class ProductCreationService:
                     )
 
             # Stage 2 - Deep Enrichment with Claude Opus
-            self.logger.info(f"🎯 Stage 2: Deep enrichment with Claude Opus...")
+            self.logger.info("🎯 Stage 2: Deep enrichment with Claude Opus...")
             stage2_start = time.time()
 
             products_created = 0
@@ -1599,7 +1599,7 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 if start_idx == -1:
                     start_idx = json_str.find('[')
                     if start_idx == -1:
-                        raise ValueError(f"No JSON object found in response")
+                        raise ValueError("No JSON object found in response")
 
                 for i in range(start_idx, len(json_str)):
                     if json_str[i] == '{' or json_str[i] == '[':

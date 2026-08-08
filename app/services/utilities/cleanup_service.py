@@ -669,7 +669,7 @@ class CleanupService:
                         .eq('id', job_id)\
                         .execute()
                     stats['job_deleted'] = len(job_del_response.data) > 0 if job_del_response.data else False
-                    self.logger.info(f"✅ Deleted job tracking row (preserve_outputs)")
+                    self.logger.info("✅ Deleted job tracking row (preserve_outputs)")
                 except Exception as e:
                     self.logger.error(f"Failed to delete job row: {e}")
                     stats['errors'].append(f"Job deletion failed: {str(e)}")
@@ -914,7 +914,7 @@ class CleanupService:
                     self.logger.error(f"Failed to delete storage files: {e}")
                     stats['errors'].append(f"Storage deletion failed: {str(e)}")
             elif document_id and not delete_storage_files:
-                self.logger.info(f"⏭️ Skipping storage file deletion (automatic cleanup mode)")
+                self.logger.info("⏭️ Skipping storage file deletion (automatic cleanup mode)")
 
             # Checkpoints now live on background_jobs.stage_history; deleted
             # automatically when the job row is removed in step 10.
@@ -929,7 +929,7 @@ class CleanupService:
                         .execute()
 
                     stats['document_deleted'] = len(doc_response.data) > 0 if doc_response.data else False
-                    self.logger.info(f"✅ Deleted document record")
+                    self.logger.info("✅ Deleted document record")
                 except Exception as e:
                     self.logger.error(f"Failed to delete document: {e}")
                     stats['errors'].append(f"Document deletion failed: {str(e)}")

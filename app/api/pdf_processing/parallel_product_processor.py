@@ -375,7 +375,7 @@ async def process_products_parallel(
 
     # Log summary
     logger_instance.info(f"\n{'='*80}")
-    logger_instance.info(f"🚀 PARALLEL PROCESSING COMPLETE")
+    logger_instance.info("🚀 PARALLEL PROCESSING COMPLETE")
     logger_instance.info(f"{'='*80}")
     logger_instance.info(f"✅ Products completed: {result.products_completed}/{total_products}")
     logger_instance.info(f"❌ Products failed: {result.products_failed}/{total_products}")

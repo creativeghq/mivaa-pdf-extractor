@@ -472,7 +472,7 @@ class JobMonitorService:
                         fingerprint=["stuck-import-job", source_name]
                     )
 
-                    logger.info(f"📊 Sent stuck import job alert to Sentry")
+                    logger.info("📊 Sent stuck import job alert to Sentry")
 
                 except Exception as sentry_error:
                     logger.warning(f"Failed to send Sentry alert: {sentry_error}")

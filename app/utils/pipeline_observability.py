@@ -113,7 +113,7 @@ def pipeline_job_scope(
     doc_token = _current_document_id.set(document_id)
     transaction = sentry_sdk.start_transaction(
         op="pdf.pipeline",
-        name=f"pdf_pipeline_job",
+        name="pdf_pipeline_job",
     )
     transaction.set_tag("job_id", job_id)
     transaction.set_tag("document_id", document_id)

@@ -907,7 +907,7 @@ async def process_single_product(
             if kb_docs_created > 0:
                 logger_instance.info(f"   ✅ Created {kb_docs_created} KB documents")
             else:
-                logger_instance.info(f"   ℹ️ No KB documents created (no eligible metadata)")
+                logger_instance.info("   ℹ️ No KB documents created (no eligible metadata)")
         except Exception as e:
             logger_instance.warning(f"   ⚠️ KB creation failed: {e}")
 

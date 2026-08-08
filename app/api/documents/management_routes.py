@@ -15,7 +15,6 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Query, status
 from fastapi.responses import JSONResponse
 
-from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.tracking.checkpoint_recovery_service import CheckpointRecoveryService

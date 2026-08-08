@@ -241,7 +241,7 @@ class AICallLogger:
 
                 return True
             else:
-                self.logger.error(f"❌ Failed to log AI call: No data returned")
+                self.logger.error("❌ Failed to log AI call: No data returned")
                 return False
 
         except Exception as e:
@@ -826,7 +826,7 @@ class AICallLogger:
                 )
                 return True
             else:
-                self.logger.error(f"❌ Failed to log vision extraction: No data returned")
+                self.logger.error("❌ Failed to log vision extraction: No data returned")
                 return False
 
         except Exception as e:

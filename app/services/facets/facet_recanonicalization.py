@@ -168,7 +168,7 @@ async def recanonicalize_products(
                         embedding_service=embedding_service,
                         workspace_id=product.get('workspace_id'),
                     )
-                except Exception as e:
+                except Exception:
                     logger.exception(f"facet sweep: canonicalize raised for {pid}")
                     summary['failed'] += 1
                     continue
@@ -196,7 +196,7 @@ async def recanonicalize_products(
                         'facet_canonicalization_version': target_version,
                     }).eq('id', pid).execute()
                     summary['updated'] += 1
-                except Exception as e:
+                except Exception:
                     logger.exception(f"facet sweep: write failed for {pid}")
                     summary['failed'] += 1
 

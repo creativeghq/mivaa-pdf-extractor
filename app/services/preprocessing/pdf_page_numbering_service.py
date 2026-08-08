@@ -119,7 +119,7 @@ class PDFPageNumberingService:
                     self.logger.info(f"♻️ [CHECKPOINT] Reusing numbered PDF from checkpoint: {numbered_pdf_path}")
                     return numbered_pdf_path, checkpoint_data
                 else:
-                    self.logger.warning(f"⚠️ Checkpoint exists but file not found, re-processing")
+                    self.logger.warning("⚠️ Checkpoint exists but file not found, re-processing")
 
         self.logger.info(f"📝 Starting page numbering: {input_path}")
 
@@ -205,7 +205,7 @@ class PDFPageNumberingService:
                         page_to_product[page] = product_name
 
             # First, analyze the PDF layout to detect spreads
-            self.logger.info(f"📐 Analyzing PDF layout...")
+            self.logger.info("📐 Analyzing PDF layout...")
             layout = analyze_pdf_layout(input_path)
 
             stats["total_pdf_pages"] = layout.total_pdf_pages

@@ -132,7 +132,7 @@ async def process_product_images(
     physical_to_pdf_map = catalog.physical_to_pdf_map if catalog and hasattr(catalog, 'physical_to_pdf_map') else {}
 
     if has_spread_layout:
-        logger.info(f"   📐 Spread layout detected")
+        logger.info("   📐 Spread layout detected")
 
     # Build layout region lookup by physical page for better bbox data
     region_layout_by_page: Dict[int, List[Any]] = {}
@@ -165,7 +165,7 @@ async def process_product_images(
             pdf_sheets_to_extract[pdf_idx] = []
         pdf_sheets_to_extract[pdf_idx].append(physical_page)
 
-    logger.info(f"   📋 Physical pages grouped by PDF sheet:")
+    logger.info("   📋 Physical pages grouped by PDF sheet:")
     for pdf_idx, pages in sorted(pdf_sheets_to_extract.items()):
         logger.info(f"      PDF sheet {pdf_idx} (1-based: {pdf_idx + 1}) -> physical pages {pages}")
 
@@ -412,12 +412,12 @@ async def process_product_images(
         logger.info(f"      Extraction layers: {extraction_layers}")
 
     if total_images == 0:
-        logger.warning(f"   ⚠️ NO IMAGES EXTRACTED!")
+        logger.warning("   ⚠️ NO IMAGES EXTRACTED!")
         logger.warning(f"      Physical pages requested: {sorted(physical_pages)}")
-        logger.warning(f"      This could mean:")
-        logger.warning(f"      1. Pages are text-only (no embedded images)")
-        logger.warning(f"      2. Images were filtered out by size/quality thresholds")
-        logger.warning(f"      3. The layout structural pass returned errors")
+        logger.warning("      This could mean:")
+        logger.warning("      1. Pages are text-only (no embedded images)")
+        logger.warning("      2. Images were filtered out by size/quality thresholds")
+        logger.warning("      3. The layout structural pass returned errors")
         if tracker is not None:
             try:
                 await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
@@ -430,7 +430,7 @@ async def process_product_images(
     # ========================================================================
     # VERIFY IMAGE FILES EXIST
     # ========================================================================
-    logger.info(f"   Verifying extracted image files...")
+    logger.info("   Verifying extracted image files...")
     missing_files = []
     for i, img in enumerate(extracted_images_list[:5]):
         img_path = img.get('path', '')
@@ -481,7 +481,7 @@ async def process_product_images(
 
     non_material_count = len(non_material_images)
 
-    logger.info(f"   📊 CLASSIFICATION RESULTS:")
+    logger.info("   📊 CLASSIFICATION RESULTS:")
     logger.info(f"      Material images: {len(material_images)}")
     logger.info(f"      Non-material images: {non_material_count}")
 
@@ -566,7 +566,7 @@ async def process_product_images(
     # ========================================================================
     # Get material_category from config (passed from upload settings)
     material_category = config.get('material_category')
-    logger.info(f"   💾 DATABASE STAGE: Saving metadata and generating SLIG embeddings...")
+    logger.info("   💾 DATABASE STAGE: Saving metadata and generating SLIG embeddings...")
     logger.info(f"      Material category: {material_category or 'not specified'}")
     if uploaded_icons:
         logger.info(f"      Icon candidates: {len(uploaded_icons)} → OCR + Claude path")
@@ -587,7 +587,7 @@ async def process_product_images(
     failed_images = save_result.get('failed_images', [])
     vector_stats = save_result.get('vector_stats', {})
 
-    logger.info(f"   📊 DATABASE RESULTS:")
+    logger.info("   📊 DATABASE RESULTS:")
     logger.info(f"      Images saved to DB: {images_processed}/{len(uploaded_all)}")
     logger.info(f"      SLIG embeddings generated: {clip_embeddings}/{images_processed}")
     if vector_stats:

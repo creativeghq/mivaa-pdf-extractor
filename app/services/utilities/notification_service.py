@@ -97,7 +97,7 @@ class NotificationService:
         """Notify user that a job has completed successfully."""
         job_label = self._format_job_type(job_type)
         
-        message = f"Completed successfully"
+        message = "Completed successfully"
         if duration:
             message += f" in {duration}"
         if stats:

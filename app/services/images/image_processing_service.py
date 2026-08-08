@@ -497,7 +497,7 @@ class ImageProcessingService:
         from app.config.rate_limits import CLAUDE_CONCURRENCY, CURRENT_TIER
         from app.services.core.endpoint_controller import endpoint_controller
 
-        logger.info(f"🎯 Rate Limiting Configuration:")
+        logger.info("🎯 Rate Limiting Configuration:")
         logger.info(f"   Vision Tier: {CURRENT_TIER.tier} (${CURRENT_TIER.total_spend} spent)")
         logger.info(f"   LLM Rate Limit: {CURRENT_TIER.llm_rpm} RPM ({CURRENT_TIER.llm_rps:.1f} RPS)")
         endpoint_controller.log_stats("   Endpoint gates")
@@ -653,14 +653,14 @@ class ImageProcessingService:
             if batch_duration < expected_min_time:
                 logger.warning(f"⚠️ SUSPICIOUS: Batch {batch_num} completed in {batch_duration:.2f}s for {len(batch_images)} images")
                 logger.warning(f"   Expected minimum: {expected_min_time:.2f}s ({len(batch_images)} images × 0.5s)")
-                logger.warning(f"   This may indicate API failures or skipped classifications")
+                logger.warning("   This may indicate API failures or skipped classifications")
 
             # Filter batch results
             failed_count = 0
             for img_data in classified_batch:
                 if img_data is None:
                     failed_count += 1
-                    logger.warning(f"   ⚠️ Skipping image: returned None (path validation failed)")
+                    logger.warning("   ⚠️ Skipping image: returned None (path validation failed)")
                     continue
 
                 if isinstance(img_data, Exception):
@@ -687,7 +687,7 @@ class ImageProcessingService:
                 # target metadata->ai_classification->>classification_pending.
                 if 'error' in classification or '_failed' in classification.get('model', '') or '_empty_response' in classification.get('model', ''):
                     logger.warning(f"   ⚠️ Classification uncertain for {img_data.get('filename')}: {classification.get('reason')}")
-                    logger.warning(f"   → Quarantining (classification_pending) — persisted WITHOUT embeddings, eligible for re-classification")
+                    logger.warning("   → Quarantining (classification_pending) — persisted WITHOUT embeddings, eligible for re-classification")
                     img_data['ai_classification'] = {
                         'is_material': True,  # keep in material bucket so the row persists
                         'classification_pending': True,
@@ -715,7 +715,7 @@ class ImageProcessingService:
 
         classification_duration = time.time() - classification_start_time
 
-        logger.info(f"✅ AI classification complete:")
+        logger.info("✅ AI classification complete:")
         logger.info(f"   Total time: {classification_duration:.2f}s")
         logger.info(f"   Material images: {len(material_images)}")
         logger.info(f"   Non-material images filtered out: {len(non_material_images)}")
@@ -730,17 +730,17 @@ class ImageProcessingService:
         if total_classified == 0 and total_input > 0:
             logger.error("❌ CRITICAL FAILURE: ALL images failed classification!")
             logger.error(f"   Input images: {total_input}")
-            logger.error(f"   Successfully classified: 0")
-            logger.error(f"   This indicates a systemic issue with the AI classification service")
-            logger.error(f"   Possible causes:")
-            logger.error(f"   1. HuggingFace Endpoint token invalid or expired")
-            logger.error(f"   2. HuggingFace Endpoint service unavailable")
-            logger.error(f"   3. Image files deleted before classification")
-            logger.error(f"   4. Network connectivity issues")
-            logger.error(f"   5. Model name incorrect or model unavailable")
+            logger.error("   Successfully classified: 0")
+            logger.error("   This indicates a systemic issue with the AI classification service")
+            logger.error("   Possible causes:")
+            logger.error("   1. HuggingFace Endpoint token invalid or expired")
+            logger.error("   2. HuggingFace Endpoint service unavailable")
+            logger.error("   3. Image files deleted before classification")
+            logger.error("   4. Network connectivity issues")
+            logger.error("   5. Model name incorrect or model unavailable")
 
             # Log first few image paths for debugging
-            logger.error(f"   Sample image paths:")
+            logger.error("   Sample image paths:")
             for i, img in enumerate(extracted_images[:3]):
                 logger.error(f"     {i+1}. {img.get('path')} (exists: {os.path.exists(img.get('path', ''))})")
 
@@ -750,7 +750,7 @@ class ImageProcessingService:
             )
 
         if total_classified < total_input * 0.5:
-            logger.warning(f"⚠️ WARNING: Low classification success rate")
+            logger.warning("⚠️ WARNING: Low classification success rate")
             logger.warning(f"   Successfully classified: {total_classified}/{total_input} ({total_classified/total_input*100:.1f}%)")
             logger.warning(f"   Failed: {total_input - total_classified}")
 
@@ -1714,7 +1714,7 @@ class ImageProcessingService:
                             else:
                                 logger.warning(f"   ⚠️ Visual metadata extraction failed: {visual_metadata_result.get('error')}")
                         else:
-                            logger.debug(f"   ℹ️ No aspect embeddings available for visual metadata extraction")
+                            logger.debug("   ℹ️ No aspect embeddings available for visual metadata extraction")
 
                     except Exception as visual_meta_error:
                         logger.warning(f"   ⚠️ Visual metadata extraction failed (non-critical): {visual_meta_error}")
@@ -2073,7 +2073,7 @@ class ImageProcessingService:
             # Skip already processed images
             material_images = material_images[checkpoint_index:]
             if not material_images:
-                logger.info(f"   ✅ All images already processed!")
+                logger.info("   ✅ All images already processed!")
                 return {
                     'images_saved': checkpoint_index,
                     'clip_embeddings_generated': checkpoint_index,
@@ -2308,7 +2308,7 @@ class ImageProcessingService:
                 )
 
         # Final summary
-        logger.info(f"✅ Image processing complete:")
+        logger.info("✅ Image processing complete:")
         logger.info(f"   Images saved to DB: {images_saved_count + checkpoint_index}")
         logger.info(f"   SLIG embeddings generated: {clip_embeddings_count + checkpoint_index}")
         logger.info(

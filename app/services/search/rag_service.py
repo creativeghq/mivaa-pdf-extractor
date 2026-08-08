@@ -205,7 +205,7 @@ class RAGService:
 
                     try:
                         # Extract markdown with page metadata
-                        self.logger.info(f"   📄 Extracting PDF with page metadata...")
+                        self.logger.info("   📄 Extracting PDF with page metadata...")
                         pages = pymupdf4llm.to_markdown(tmp_path, page_chunks=True)
 
                         # Calculate total characters
@@ -243,7 +243,7 @@ class RAGService:
                 # Drop pages now — they can be 100K+ chars and are no longer needed.
                 del pages
                 gc.collect()
-                self.logger.info(f"   🧹 Released pages from memory")
+                self.logger.info("   🧹 Released pages from memory")
 
             except Exception as e:
                 self.logger.error(f"   ❌ Chunking failed: {e}")
@@ -541,7 +541,7 @@ class RAGService:
             # Drop the chunks list now that all batches are persisted.
             del chunks
             gc.collect()
-            self.logger.info(f"   🧹 Released chunks list from memory")
+            self.logger.info("   🧹 Released chunks list from memory")
 
             elapsed_time = time.time() - start_time
 

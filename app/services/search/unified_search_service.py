@@ -1069,7 +1069,7 @@ Return ONLY valid JSON. Use null for missing fields."""
             model_used = "claude-haiku-4-5"
             try:
                 parsed_data = await self._parse_query_with_haiku(query, system_prompt)
-                self.logger.debug(f"🤖 Query parsed with Haiku 4.5")
+                self.logger.debug("🤖 Query parsed with Haiku 4.5")
             except Exception as parse_err:
                 self.logger.debug(f"Primary query parse failed ({parse_err}), falling back to Claude Haiku")
 

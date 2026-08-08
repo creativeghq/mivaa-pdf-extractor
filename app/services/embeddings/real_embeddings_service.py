@@ -155,7 +155,7 @@ class RealEmbeddingsService:
         self.voyage_model = getattr(config, "voyage_model", None) or "voyage-4"
 
         # Log SLIG configuration
-        self.logger.info(f"☁️ Visual Embeddings: SLIG on Modal (basiliskan/slig — siglip2-base-patch16-512, native 768D)")
+        self.logger.info("☁️ Visual Embeddings: SLIG on Modal (basiliskan/slig — siglip2-base-patch16-512, native 768D)")
 
         # Voyage AI configuration
         self.voyage_api_key = settings.voyage_api_key
@@ -1288,9 +1288,9 @@ class RealEmbeddingsService:
 
                     if embedding is None or len(embedding) != self.slig_embedding_dimension:
                         self.logger.error(
-                            f"❌ SLIG endpoint returned wrong-dim embedding 3x in a row — "
-                            f"refusing to store. The endpoint is likely misconfigured "
-                            f"(serving wrong model). Operator action required."
+                            "❌ SLIG endpoint returned wrong-dim embedding 3x in a row — "
+                            "refusing to store. The endpoint is likely misconfigured "
+                            "(serving wrong model). Operator action required."
                         )
                         return None, None
 

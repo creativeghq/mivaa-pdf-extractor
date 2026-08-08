@@ -133,7 +133,7 @@ def extract_pdf_to_markdown(file_name, page_number):
         error_msg = str(e).lower()
         if "not a textpage" in error_msg:
             import logging
-            logging.getLogger(__name__).warning(f"PyMuPDF 'not a textpage' error - attempting page-by-page extraction")
+            logging.getLogger(__name__).warning("PyMuPDF 'not a textpage' error - attempting page-by-page extraction")
             # Re-raise to trigger page-by-page extraction in pdf_processor.py
             raise
         elif "xref" in error_msg or "damaged" in error_msg or "corrupt" in error_msg:

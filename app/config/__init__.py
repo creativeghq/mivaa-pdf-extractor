@@ -6,7 +6,6 @@ to maintain backward compatibility with the directory structure.
 """
 
 # Import from the parent config.py file using absolute import
-import sys
 import importlib.util
 from pathlib import Path
 

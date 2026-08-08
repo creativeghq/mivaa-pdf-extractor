@@ -94,7 +94,7 @@ class SupabaseLoggingHandler(logging.Handler):
             # Add to queue for batch processing
             self.queue.put(log_entry)
             
-        except Exception as e:
+        except Exception:
             # Don't let logging errors crash the application
             self.handleError(record)
     

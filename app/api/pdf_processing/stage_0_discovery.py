@@ -106,7 +106,7 @@ async def process_stage_0_discovery(
             )
             pdf_resource_registered = True
         else:
-            logger.info(f"🔧 [STAGE 0] Step 1/7: Creating temporary PDF file...")
+            logger.info("🔧 [STAGE 0] Step 1/7: Creating temporary PDF file...")
             # Create temp file that persists during processing
             temp_fd, temp_pdf_path = tempfile.mkstemp(suffix='.pdf', prefix=f'{document_id}_')
             os.close(temp_fd)
@@ -125,19 +125,19 @@ async def process_stage_0_discovery(
                 metadata={"document_id": document_id, "filename": filename}
             )
             pdf_resource_registered = True
-            logger.info(f"✅ [STAGE 0] PDF registered with ResourceManager")
+            logger.info("✅ [STAGE 0] PDF registered with ResourceManager")
 
         # Mark as IN_USE
         await resource_manager.mark_in_use(f"temp_pdf_{document_id}", job_id)
-        logger.info(f"✅ [STAGE 0] Resource marked as IN_USE")
+        logger.info("✅ [STAGE 0] Resource marked as IN_USE")
 
-        logger.info(f"🔧 [STAGE 0] Step 6/7: Analyzing PDF structure...")
+        logger.info("🔧 [STAGE 0] Step 6/7: Analyzing PDF structure...")
         # 🚀 PROGRESSIVE TIMEOUT: Calculate timeout based on document size
         file_size_mb = len(file_content) / (1024 * 1024)
         logger.info(f"📊 File size: {file_size_mb:.1f} MB")
 
         # Quick page count check (fast, doesn't extract content)
-        logger.info(f"🔧 Opening PDF with PyMuPDF to count pages...")
+        logger.info("🔧 Opening PDF with PyMuPDF to count pages...")
         import fitz
         quick_doc = fitz.open(temp_pdf_path)
         page_count = len(quick_doc)
@@ -152,19 +152,19 @@ async def process_stage_0_discovery(
         logger.info(f"📊 Document: {page_count} pages, {file_size_mb:.1f} MB → timeout: {pdf_extraction_timeout:.0f}s")
 
         # Check memory pressure before PDF extraction
-        logger.info(f"🔧 Checking memory pressure...")
+        logger.info("🔧 Checking memory pressure...")
         mem_before_extraction = memory_monitor.get_memory_stats()
         logger.info(f"💾 Memory before PDF extraction: {mem_before_extraction.used_mb:.1f} MB ({mem_before_extraction.percent_used:.1f}%)")
 
         # Wait for memory if pressure is high
         if mem_before_extraction.is_high_pressure:
-            logger.warning(f"⚠️ High memory pressure detected, waiting for memory to free up...")
+            logger.warning("⚠️ High memory pressure detected, waiting for memory to free up...")
             await memory_monitor.wait_for_memory_available(
                 required_mb=200,  # Need 200MB for PDF extraction
                 max_wait_seconds=60,
                 operation_name="PDF extraction"
             )
-            logger.info(f"✅ Memory pressure resolved")
+            logger.info("✅ Memory pressure resolved")
 
         # Full PDF text extraction is skipped. product_discovery_service extracts
         # text on-demand in batches (100K chars at a time), which is ~10× faster
@@ -202,7 +202,7 @@ async def process_stage_0_discovery(
             )
         logger.info(f"✅ Tracker updated with {page_count} pages")
 
-        logger.info(f"🔧 [STAGE 0] Step 7/7: Preparing product discovery...")
+        logger.info("🔧 [STAGE 0] Step 7/7: Preparing product discovery...")
         # Run TWO-STAGE category-based discovery with prompt enhancement
         # Stage 0A: Index scan (first 50-100 pages)
         # Stage 0B: Focused extraction (specific pages per product)
@@ -240,14 +240,14 @@ async def process_stage_0_discovery(
 
         logger.info(f"🤖 Discovery model normalized: '{discovery_model}' → '{normalized_model}'")
 
-        logger.info(f"🔧 Checking memory pressure before discovery...")
+        logger.info("🔧 Checking memory pressure before discovery...")
         # Check memory before discovery
         await memory_monitor.check_memory_pressure()
-        logger.info(f"✅ Memory check passed")
+        logger.info("✅ Memory check passed")
 
         logger.info(f"🔧 Initializing ProductDiscoveryService with model '{normalized_model}'...")
         discovery_service = ProductDiscoveryService(model=normalized_model)
-        logger.info(f"✅ ProductDiscoveryService initialized")
+        logger.info("✅ ProductDiscoveryService initialized")
 
         # ── RESUME OPTIMIZATION: skip Claude Vision call if catalog cached ──
         # When a job is auto-resumed (P1-2 startup hook), Stage 0 was already
@@ -325,7 +325,7 @@ async def process_stage_0_discovery(
             logger.debug(f"Catalog cache lookup failed (non-fatal): {cache_lookup_err}")
 
         if catalog is None:
-            logger.info(f"🚀 [STAGE 0] STARTING PRODUCT DISCOVERY (this may take several minutes)...")
+            logger.info("🚀 [STAGE 0] STARTING PRODUCT DISCOVERY (this may take several minutes)...")
             logger.info(f"   📄 Pages: {page_count}")
             logger.info(f"   📦 Categories: {', '.join(extract_categories)}")
             logger.info(f"   🤖 Model: {normalized_model}")
@@ -412,7 +412,7 @@ async def process_stage_0_discovery(
                         operation_name="Product discovery (Stage 0A + 0B)",
                     )
                 )
-                logger.info(f"✅ [STAGE 0] DISCOVERY COMPLETED SUCCESSFULLY")
+                logger.info("✅ [STAGE 0] DISCOVERY COMPLETED SUCCESSFULLY")
 
                 # Persist catalog for resume reuse (best-effort).
                 # `ProductCatalog` is a @dataclass so it has neither
@@ -441,7 +441,7 @@ async def process_stage_0_discovery(
                             },
                         }
                     ).execute()
-                    logger.info(f"   💾 Catalog cached for potential resume")
+                    logger.info("   💾 Catalog cached for potential resume")
                 except Exception as cache_save_err:
                     logger.debug(f"Catalog cache save failed (non-fatal): {cache_save_err}")
 
@@ -499,7 +499,7 @@ async def process_stage_0_discovery(
     # Calculate processing time
     discovery_time_ms = catalog.processing_time_ms
 
-    logger.info(f"✅ [STAGE 0] Discovery Complete:")
+    logger.info("✅ [STAGE 0] Discovery Complete:")
     logger.info(f"   Categories: {', '.join(extract_categories)}")
     logger.info(f"   Products: {products_discovered}")
     if "certificates" in extract_categories:
