@@ -210,13 +210,12 @@ async def _generate_aspects_for_row(
         if not text:
             continue
         try:
-            # allow_openai_fallback=False — never let an OpenAI 1024D vector
-            # land in a Voyage 1024D collection. Same audit-gap-B discipline
-            # applied to image_understanding_embeddings.
+            # No fallback embedder exists, so a wrong-space vector cannot land
+            # in this Voyage 1024D collection. On Voyage failure `vec` is None and
+            # the aspect stays unembedded for the next backfill run.
             vec = await embeddings_svc._generate_text_embedding(
                 text=text,
                 input_type="document",
-                allow_openai_fallback=False,
             )
             if vec and len(vec) == 1024:
                 embeddings[aspect] = vec
@@ -428,7 +427,6 @@ async def rerun_aspect_embeddings_for_image(
             vec = await embeddings_svc._generate_text_embedding(
                 text=text,
                 input_type="document",
-                allow_openai_fallback=False,
             )
             if vec and len(vec) == 1024:
                 aspect_embeddings[aspect] = vec

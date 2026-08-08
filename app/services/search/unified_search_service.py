@@ -821,8 +821,8 @@ class UnifiedSearchService:
 
         Voyage-embeds the user's text at 1024D (same model + embedding space
         as the aspect collection rows) and queries vecs.image_<aspect>_embeddings.
-        `allow_openai_fallback=False` so an OpenAI fallback vector can never
-        live in the same collection as Voyage rows (would corrupt similarity).
+        There is no fallback embedder, so a wrong-space vector can never be
+        compared against these Voyage rows (it would corrupt similarity silently).
 
         `min_similarity` is applied client-side — vecs_service doesn't support
         a server-side cutoff.
@@ -835,7 +835,6 @@ class UnifiedSearchService:
             query_embedding = await embeddings_service._generate_text_embedding(
                 text=query,
                 input_type="query",
-                allow_openai_fallback=False,
             )
             if not query_embedding or len(query_embedding) != 1024:
                 self.logger.warning(

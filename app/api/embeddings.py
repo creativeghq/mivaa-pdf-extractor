@@ -56,7 +56,7 @@ class ClipTextRequest(BaseModel):
     )
     model: str = Field(
         default="voyage-4",
-        description="Embedding model to use (voyage-4 or text-embedding-3-small)"
+        description="Embedding model to use (voyage-4)"
     )
     input_type: str = Field(
         default="document",
@@ -204,7 +204,10 @@ async def generate_clip_text_embedding(
     """
     **📝 Text Embedding - Powered by Voyage AI**
 
-    Generate text embedding using Voyage AI (primary) with OpenAI fallback.
+    Generate a text embedding using Voyage AI. There is no fallback provider —
+    on a Voyage outage this returns an error rather than a vector from a different
+    model, because a same-dimension vector from a different latent space is
+    indistinguishable from a correct one until it silently ranks wrongly.
     Supports input_type optimization for better retrieval quality.
 
     ## 🎯 Use Cases
@@ -239,10 +242,9 @@ async def generate_clip_text_embedding(
 
     ## 📊 Technical Details
 
-    - **Primary Model**: Voyage AI voyage-4
-    - **Fallback Model**: OpenAI text-embedding-3-small
-    - **Default Dimension**: 1024 (Voyage AI)
-    - **Supported Dimensions**: 256, 512, 1024, 2048 (Voyage) or 512, 1536 (OpenAI)
+    - **Model**: Voyage AI voyage-4 (the only text embedder)
+    - **Default Dimension**: 1024
+    - **Supported Dimensions**: 256, 512, 1024, 2048
     - **Input Types**: "document" (for indexing), "query" (for search)
     - **Normalization**: L2 normalized (unit vector)
     - **Distance Metric**: Cosine similarity
@@ -269,11 +271,11 @@ async def generate_clip_text_embedding(
 
     - **400 Bad Request**: Empty or invalid text
     - **500 Internal Server Error**: Embedding generation failed
-    - **503 Service Unavailable**: Both Voyage AI and OpenAI unavailable
+    - **503 Service Unavailable**: Voyage AI unavailable
 
     ## 📏 Limits
 
-    - **Max text length**: 8000 tokens (Voyage AI), 8191 tokens (OpenAI)
+    - **Max text length**: 8000 tokens
     - **Rate limit**: 100 requests/minute
     """
     try:
@@ -322,7 +324,7 @@ async def health_check():
             "success": True,
             "message": "Embeddings service is healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "available_models": ["clip-vit-base-patch32", "text-embedding-3-small"]
+            "available_models": ["clip-vit-base-patch32", "voyage-4"]
         }
     except Exception as e:
         logger.error(f"Embeddings health check failed: {e}")

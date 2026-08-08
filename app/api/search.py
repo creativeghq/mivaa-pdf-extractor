@@ -1356,16 +1356,14 @@ async def _build_aspect_query_embedding(
         if not source_text:
             return None, None, "query_text is empty"
 
-    # Common terminus: Voyage-embed the source_text at 1024D.
-    # allow_openai_fallback=False — the aspect collections live in Voyage
-    # 1024D space; an OpenAI 1024D query vector would produce meaningless
-    # similarity scores against Voyage row vectors. Better to fail explicitly
-    # on Voyage outage than to surface confidently-wrong results.
+    # Common terminus: Voyage-embed the source_text at 1024D. There is no second
+    # embedder to fall through to — the aspect collections live in Voyage 1024D
+    # space, and a same-dimension vector from any other model would score against
+    # them confidently and meaninglessly. On a Voyage outage this fails explicitly.
     try:
         vec = await voyage_svc._generate_text_embedding(
             text=source_text,
             input_type="query",
-            allow_openai_fallback=False,
         )
     except Exception as e:
         return None, None, f"Voyage embed failed: {e}"

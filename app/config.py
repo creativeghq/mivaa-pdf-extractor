@@ -233,15 +233,19 @@ class Settings(BaseSettings):
     database_timeout: int = Field(default=30, env="DATABASE_TIMEOUT")
 
     # ============================================================================
-    # OpenAI API Settings (only used as Voyage AI text-embedding fallback —
-    # the platform runs Claude exclusively for chat / vision / tool use).
+    # OpenAI API Settings — NOT an embedding provider.
     # ============================================================================
+    # The platform runs Claude for chat / vision / tool use, and Voyage for every
+    # embedding. OpenAI survives here for exactly one thing: the multi-provider LLM
+    # mention probe, which compares gpt-4o-mini against haiku / gemini / sonar on
+    # purpose. The embedding-model key was deleted with the embedding fallback
+    # (2026-08-08) — a config key naming an embedding model this platform will not
+    # call reads as an invitation to call it.
     openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
-    openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
     openai_timeout: int = Field(default=30, env="OPENAI_TIMEOUT")
 
     # ============================================================================
-    # Voyage AI Settings (Primary Text Embedding Provider)
+    # Voyage AI Settings (the ONLY text embedding provider)
     # ============================================================================
     # API key set via GitHub Secrets: VOYAGE_API_KEY
     voyage_api_key: str = Field(default="", env="VOYAGE_API_KEY")
@@ -249,12 +253,15 @@ class Settings(BaseSettings):
     voyage_embedding_dimension: int = Field(default=1024, env="VOYAGE_EMBEDDING_DIMENSION")
     voyage_timeout: int = Field(default=30, env="VOYAGE_TIMEOUT")
     voyage_enabled: bool = Field(default=True, env="VOYAGE_ENABLED")
-    voyage_fallback_to_openai: bool = Field(default=True, env="VOYAGE_FALLBACK_TO_OPENAI")
 
     # RAG Settings (model-agnostic - works with Claude 4.5 + Direct Vector DB)
 
+    # Reported by the config endpoint, not used to select an embedder — RAG text
+    # embeddings come from Voyage via RealEmbeddingsService. The default named an
+    # OpenAI model this platform has never called for RAG, which made the config
+    # endpoint misreport which model the corpus was embedded with.
     rag_embedding_model: str = Field(
-        default="text-embedding-3-small",
+        default="voyage-4",
         env="RAG_EMBEDDING_MODEL"
     )
     rag_llm_model: str = Field(
@@ -581,12 +588,10 @@ class Settings(BaseSettings):
     voyage_enabled: bool = Field(
         default=True,
         env="VOYAGE_ENABLED",
-        description="Enable Voyage AI embeddings (fallback to OpenAI if disabled)"
-    )
-    voyage_fallback_to_openai: bool = Field(
-        default=True,
-        env="VOYAGE_FALLBACK_TO_OPENAI",
-        description="Fallback to OpenAI if Voyage AI fails"
+        description=(
+            "Enable Voyage AI embeddings. Disabling it does NOT switch providers — "
+            "there is no other embedder. It means no text embeddings at all."
+        )
     )
 
     # ── Page embeddings (#239) — the 8th fusion vector ──────────────────────────

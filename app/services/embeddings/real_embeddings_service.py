@@ -2,15 +2,40 @@
 Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 
 Generates embedding types using AI models:
-1. Text (1024D) - Voyage AI voyage-4 (primary) with OpenAI fallback (both 1024D)
+1. Text (1024D) - Voyage AI voyage-4
 2. Visual Embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
-3. Understanding (1024D) - Claude Opus 4.7 vision_analysis JSON → Voyage AI text embedding
-4. Multimodal Fusion (1792D) - Combined text+visual (1024D + 768D = 1792D)
+3. Understanding (1024D) - Claude Opus 4.7 vision_analysis JSON -> Voyage AI text embedding
+4. Page (1024D) - voyage-multimodal, whole rendered catalog page (#239)
 
 Text Embedding Strategy:
-- Primary: Voyage AI voyage-4 (1024D default, supports 256/512/1024/2048)
+- Voyage AI voyage-4 (1024D default, supports 256/512/1024/2048)
 - Supports input_type parameter: "document" for indexing, "query" for search
-- Fallback: OpenAI text-embedding-3-small (1024D) if Voyage fails - matches DB schema vector(1024)
+
+THERE IS NO SECOND EMBEDDING PROVIDER, AND ADDING ONE IS A BUG
+--------------------------------------------------------------
+This service used to fall back to OpenAI `text-embedding-3-small` when Voyage failed.
+It was removed (2026-08-08) because a fallback embedder is not a resilience feature -
+it is a correctness hazard wearing one.
+
+`text-embedding-3-small` at 1024D and `voyage-4` at 1024D are the same SHAPE and a
+different SPACE. A fallback vector is therefore accepted everywhere a real one is:
+Postgres stores it, the HNSW index ranks it, cosine similarity returns a confident
+number. Nothing raises, nothing logs, and no probe can see it - every artifact
+involved is individually well-formed. On the write paths the damage is durable:
+mixed-space rows sit in the collection forever, ranking wrongly.
+
+The old design tried to contain this with a per-call `allow_openai_fallback=False`
+opt-out, and SEVEN call sites duly passed it. `generate_understanding_query_embedding`
+did not - so the collections most carefully purified on the write side could still be
+QUERIED with a wrong-space vector. That is the predictable end state of an opt-out:
+it holds until someone adds the eighth call site.
+
+So: Voyage or nothing. `None` means NO VECTOR, and every caller handles that - the
+work is retryable and the gap is visible. A vector from another model is neither.
+
+(OpenAI is still used elsewhere in this codebase, legitimately: the multi-provider
+LLM mention probe compares gpt-4o-mini against haiku/gemini/sonar on purpose. That
+is a comparison of models, not a substitution of one for another.)
 
 Visual Embedding Strategy:
 - Uses SLIG cloud endpoint exclusively (768D embeddings)
@@ -64,7 +89,6 @@ from app.models.vision_analysis import (
 
 logger = logging.getLogger(__name__)
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 VOYAGE_API_KEY = os.getenv("VOYAGE_API_KEY", "")  # From GitHub Secrets / Deno.env
 HUGGINGFACE_API_KEY = os.getenv("HUGGINGFACE_API_KEY", "")
 MIVAA_GATEWAY_URL = os.getenv("MIVAA_GATEWAY_URL", "http://localhost:3000")
@@ -75,7 +99,7 @@ class RealEmbeddingsService:
     Generates embedding types using AI models.
 
     This service provides:
-    - Text embeddings via Voyage AI (1024D primary) with OpenAI fallback (1024D)
+    - Text embeddings via Voyage AI (1024D) - no fallback provider, by design
     - Visual embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
     - Understanding embeddings (1024D) - Claude vision_analysis → Voyage AI text embedding
     - Multimodal fusion (1792D) - combined text+visual (1024D + 768D = 1792D)
@@ -110,7 +134,6 @@ class RealEmbeddingsService:
         """Initialize embeddings service."""
         self.supabase = supabase_client
         self.logger = logger
-        self.openai_api_key = OPENAI_API_KEY
         self.voyage_api_key = VOYAGE_API_KEY
         self.huggingface_api_key = HUGGINGFACE_API_KEY
         self.mivaa_gateway_url = MIVAA_GATEWAY_URL
@@ -144,10 +167,10 @@ class RealEmbeddingsService:
         self._slig_client = None  # Lazy-initialized SLIG client
         self._voyage_client = None  # Lazy-initialized Voyage AI httpx client
 
-        # Records which provider (voyage-4 / openai-text-embedding-3-small)
-        # produced the most recent text embedding. The public
-        # `generate_text_embedding` reads this so callers can persist
-        # provenance for fallback-drift detection.
+        # Records which model produced the most recent text embedding. With one
+        # provider this is always the configured Voyage model - kept because callers
+        # persist it as row provenance, which is how a MODEL change (voyage-4 ->
+        # voyage-5) stays detectable even though a PROVIDER change cannot happen.
         self._last_provider: Optional[str] = None
 
         # Pull voyage_model from config once so call sites don't have to
@@ -161,7 +184,6 @@ class RealEmbeddingsService:
         self.voyage_api_key = settings.voyage_api_key
         self.voyage_model = settings.voyage_model
         self.voyage_enabled = settings.voyage_enabled
-        self.voyage_fallback_to_openai = settings.voyage_fallback_to_openai
 
         # Debug logging for Voyage AI configuration
         self.logger.info(f"🔧 Voyage AI Config: enabled={self.voyage_enabled}, api_key={'SET' if self.voyage_api_key else 'NOT SET'}, model={self.voyage_model}")
@@ -231,9 +253,14 @@ class RealEmbeddingsService:
                 # Provenance = the model that ACTUALLY produced the vector (S3-3).
                 # Was a hardcoded "voyage-4" that lied whenever Settings.voyage_model
                 # was set to a different version.
+                # The `voyage_enabled is False` arm used to stamp
+                # "text-embedding-3-small" here. With the fallback removed that arm is
+                # unreachable - Voyage disabled means text_embedding is None and this
+                # block never runs - but it was also WRONG on its own terms: it would
+                # have labelled a row with a model that did not embed it, which is the
+                # one thing provenance exists to prevent.
                 embeddings["metadata"]["model_versions"]["text"] = (
-                    (self._last_provider or self.voyage_model) if self.voyage_enabled
-                    else "text-embedding-3-small"
+                    self._last_provider or self.voyage_model
                 )
                 embeddings["metadata"]["confidence_scores"]["text"] = 0.95
                 self.logger.info(f"✅ Text embedding generated (1024D, input_type={input_type})")
@@ -350,7 +377,7 @@ class RealEmbeddingsService:
     async def generate_embedding(
         self,
         text: str,
-        embedding_type: str = "openai",
+        embedding_type: str = "voyage",
         dimensions: int = 1536
     ) -> Optional[List[float]]:
         """
@@ -360,7 +387,7 @@ class RealEmbeddingsService:
 
         Args:
             text: Text to embed
-            embedding_type: Type of embedding ("openai" for text-embedding-3-small")
+            embedding_type: Legacy, ignored - Voyage is the only text embedder
             dimensions: Embedding dimensions (default 1536)
 
         Returns:
@@ -379,10 +406,9 @@ class RealEmbeddingsService:
         """
         Public method to generate a text embedding for search queries.
 
-        Returns dict with {"success", "embedding", "model"} format. The
-        model field is set to the actual provider that returned the vector
-        (`voyage-4` on the happy path, `openai-text-embedding-3-small` on
-        fallback) so callers can persist provenance for drift tracking.
+        Returns dict with {"success", "embedding", "model"} format. The model
+        field is the model that actually produced the vector, so callers can
+        persist provenance and detect a model change across a collection.
 
         Args:
             query: Text query to embed
@@ -392,12 +418,7 @@ class RealEmbeddingsService:
             image_id: Optional image ID for per-image cost attribution
         """
         try:
-            # Track which provider answered by recording state before/after.
-            # _generate_text_embedding doesn't currently bubble that up, so we
-            # infer it from the AI logger's last entry — but cleaner is to
-            # default to the configured Voyage model and let the fallback
-            # path stamp openai. Implementation: peek at self._last_provider
-            # which the embedder sets at the end of the call.
+            # _last_provider is stamped by the embedder at the end of the call.
             self._last_provider = None
             embedding = await self._generate_text_embedding(
                 text=query,
@@ -410,10 +431,9 @@ class RealEmbeddingsService:
                 return {
                     "success": True,
                     "embedding": embedding,
-                    # Report the ACTUAL provider returned by the embed call,
-                    # not the configured default. _last_provider is stamped to
-                    # the exact model that produced the vector — voyage-3.5,
-                    # voyage-4, or openai-text-embedding-3-small on fallback.
+                    # Report the model that ACTUALLY produced the vector, not the
+                    # configured default - they differ whenever settings change
+                    # between a row being written and being read.
                     "model": self._last_provider or self.voyage_model or "voyage-3.5",
                 }
             return {"success": False, "error": "Text embedding generation returned None"}
@@ -494,12 +514,12 @@ class RealEmbeddingsService:
             Dict with `embedding` (1024D list) + `embedding_model` + `schema_version`
             on success. Returns None on failure.
 
-            IMPORTANT: this path deliberately does NOT fall back to OpenAI on
-            Voyage failure (audit gap B). Mixing voyage-4 and openai-3-small
-            vectors in image_understanding_embeddings poisons the cosine search
-            with two latent spaces. Better to fail-soft (no understanding
-            embedding for this image) — the visual + specialised SLIG vectors
-            still cover the row in fusion search.
+            Fails soft: on Voyage failure this returns None and the image gets no
+            understanding embedding, leaving the visual + specialized vectors to
+            cover the row in fusion search. This used to require an explicit opt-out
+            from the OpenAI fallback (audit gap B); that fallback no longer exists,
+            so mixing two latent spaces in one collection is now structurally
+            impossible rather than per-call discipline.
         """
         from app.models.vision_analysis import (
             VisionAnalysis,
@@ -550,9 +570,7 @@ class RealEmbeddingsService:
                 f"📝 Understanding embedding text ({len(text)} chars): {text[:200]}..."
             )
 
-            # Embed via Voyage AI with input_type="document". Audit gap B:
-            # disable OpenAI fallback for this specific path so we never mix
-            # embedding spaces in image_understanding_embeddings.
+            # Embed via Voyage AI with input_type="document".
             self._last_provider = None  # reset so we can read the actual provider
             embedding = await self._generate_text_embedding(
                 text=text,
@@ -560,7 +578,6 @@ class RealEmbeddingsService:
                 job_id=job_id,
                 product_id=product_id,
                 image_id=image_id,
-                allow_openai_fallback=False,
             )
 
             if not embedding:
@@ -867,7 +884,8 @@ class RealEmbeddingsService:
         Generate embeddings for multiple texts in a single batch API call.
 
         This is optimized for Voyage AI's batch embedding endpoint, which is more
-        efficient than making individual calls. Falls back to OpenAI if Voyage fails.
+        efficient than making individual calls. On Voyage failure every entry comes
+        back None - there is no second provider (see the module docstring).
 
         Args:
             texts: List of texts to embed
@@ -969,8 +987,7 @@ class RealEmbeddingsService:
                     # (e.g. document_chunks.embedding_model in rag_service.py)
                     # don't lie. Without this, the chunk provenance fix from
                     # 2026-05-23 round-3 was reading stale state from the LAST
-                    # single-text call and tagging OpenAI-fallback vectors as
-                    # "voyage-3.5". Drift detection blind spot — fixed post-round-3.
+                    # single-text call. Drift detection blind spot - fixed post-round-3.
                     self._last_provider = self.voyage_model or "voyage-4"
                     return embeddings
                 else:
@@ -980,11 +997,10 @@ class RealEmbeddingsService:
                     raise Exception(f"Voyage AI API error: {response.status_code} - {error_body}")
 
             except Exception as e:
-                self.logger.warning(f"Voyage AI batch failed, falling back to OpenAI: {e}")
+                self.logger.error(f"Voyage AI batch embedding failed: {e}")
 
-                # Log failed Voyage call
+                # Log the failed Voyage call
                 latency_ms = int((time.time() - start_time) * 1000)
-                # Use voyage_dimensions for logging (may be different from requested dimensions)
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="batch_text_embedding_generation",
@@ -1001,119 +1017,25 @@ class RealEmbeddingsService:
                         "validation": 0.0,
                         "batch_size": len(texts)
                     },
-                    action="fallback_to_rules",
+                    # NOT "fallback_to_rules" - nothing falls back. See the
+                    # single-text path for the same reasoning.
+                    action="fallback_failed",
                     job_id=job_id,
                     product_id=product_id,
                     image_id=image_id,
-                    fallback_reason=f"Voyage AI batch error: {str(e)}",
+                    fallback_reason="no fallback provider for text embeddings",
                     error_message=str(e)
                 )
-
-                # If fallback disabled, raise the error
-                if self.config and not getattr(self.config, 'voyage_fallback_to_openai', True):
-                    raise
-
-        # Fallback to OpenAI batch processing
-        try:
-            if not self.openai_api_key:
-                self.logger.warning("OpenAI API key not available for fallback")
                 return [None] * len(texts)
 
-            self.logger.info(f"🔄 Falling back to OpenAI for batch of {len(texts)} texts...")
-
-            # OpenAI also supports batch embeddings
-            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
-                response = await client.post(
-                    "https://api.openai.com/v1/embeddings",
-                    headers={
-                        "Authorization": f"Bearer {self.openai_api_key}",
-                        "Content-Type": "application/json"
-                    },
-                    json={
-                        "model": "text-embedding-3-small",
-                        "input": [text[:8191] for text in texts],  # OpenAI limit per text
-                        "encoding_format": "float",
-                        "dimensions": 1024  # Pinned to 1024D so the OpenAI fallback matches Voyage + DB schema.
-                    }
-                )
-
-                if response.status_code == 200:
-                    data = response.json()
-                    embeddings = [item["embedding"] for item in data["data"]]
-
-                    self.logger.info(f"✅ OpenAI fallback successful: {len(embeddings)} embeddings generated")
-
-                    # Log AI call
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    usage = data.get("usage", {})
-                    input_tokens = usage.get("prompt_tokens", 0)
-
-                    # OpenAI Pricing: $0.02 per 1M tokens for text-embedding-3-small
-                    cost = (input_tokens / 1_000_000) * 0.02
-
-                    await self.ai_logger.log_ai_call(
-                        task="batch_text_embedding_generation",
-                        model="text-embedding-3-small",
-                        input_tokens=input_tokens,
-                        output_tokens=0,
-                        cost=cost,
-                        latency_ms=latency_ms,
-                        confidence_score=0.95,
-                        confidence_breakdown={
-                            "model_confidence": 0.98,
-                            "completeness": 1.0,
-                            "consistency": 0.95,
-                            "validation": 0.90,
-                            "batch_size": len(texts)
-                        },
-                        action="use_ai_result",
-                        job_id=job_id,
-                        product_id=product_id,
-                        image_id=image_id,
-                    )
-
-                    self.logger.info(f"✅ Generated {len(embeddings)} OpenAI embeddings in batch ({dimensions}D)")
-                    # Provenance: stamp OpenAI fallback so callers' embedding_model
-                    # writes reflect the real provider.
-                    self._last_provider = "openai-text-embedding-3-small"
-                    return embeddings
-                else:
-                    error_text = response.text[:500]  # Limit error text
-                    raise Exception(f"OpenAI API error {response.status_code}: {error_text}")
-
-        except httpx.TimeoutException as e:
-            self.logger.error(f"❌ OpenAI batch fallback timed out after 30s: {e}")
-        except httpx.ConnectError as e:
-            self.logger.error(f"❌ OpenAI batch fallback connection failed: {e}")
-        except Exception as e:
-            self.logger.error(f"❌ Batch embedding generation failed: {e}")
-
-            # Log failed AI call
-            latency_ms = int((time.time() - start_time) * 1000)
-            await self.ai_logger.log_ai_call(
-                task="batch_text_embedding_generation",
-                model="text-embedding-3-small",
-                input_tokens=0,
-                output_tokens=0,
-                cost=0.0,
-                latency_ms=latency_ms,
-                confidence_score=0.0,
-                confidence_breakdown={
-                    "model_confidence": 0.0,
-                    "completeness": 0.0,
-                    "consistency": 0.0,
-                    "validation": 0.0,
-                    "batch_size": len(texts)
-                },
-                action="fallback_to_rules",
-                job_id=job_id,
-                product_id=product_id,
-                image_id=image_id,
-                fallback_reason=f"Batch API error: {str(e)}",
-                error_message=str(e)
-            )
-
-            return [None] * len(texts)
+        # Voyage disabled or unkeyed. A list of Nones is the honest answer: every
+        # caller already treats a None entry as "this text has no vector", which is
+        # recoverable. A vector from a different model would not be.
+        self.logger.error(
+            "Voyage AI unavailable (disabled or no API key) and there is no "
+            f"fallback embedder - returning {len(texts)} empty results"
+        )
+        return [None] * len(texts)
 
     async def _generate_text_embedding(
         self,
@@ -1123,11 +1045,10 @@ class RealEmbeddingsService:
         input_type: Optional[str] = None,
         truncation: bool = True,
         output_dtype: str = "float",
-        allow_openai_fallback: Optional[bool] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Optional[List[float]]:
-        """Generate text embedding using Voyage AI (primary) with OpenAI fallback.
+        """Generate a text embedding using Voyage AI. There is no second provider.
 
         Args:
             text: Text to embed
@@ -1135,14 +1056,12 @@ class RealEmbeddingsService:
             dimensions: Embedding dimensions (default 1024 for Voyage AI; 256, 512, 1024, 2048 supported)
             input_type: None (default), "document" for indexing, "query" for search (Voyage AI only)
             truncation: Whether to truncate text to fit context length (Voyage AI only, default: True)
-            output_dtype: Output data type - 'float', 'int8', 'uint8', 'binary', 'ubinary' (Voyage AI only)
-            allow_openai_fallback: Per-call override of the global
-                voyage_fallback_to_openai setting. Set False on understanding-
-                embedding paths so we never mix Voyage and OpenAI vectors in
-                the same VECS collection (audit gap B). None = use global.
+            output_dtype: Output data type - 'float', 'int8', 'uint8', 'binary', 'ubinary'
 
         Returns:
-            List of floats representing the embedding, or None if failed.
+            List of floats representing the embedding, or None if Voyage failed.
+            None means NO VECTOR - callers must handle it. It never means
+            "a vector from somewhere else".
         """
         start_time = time.time()
 
@@ -1188,8 +1107,8 @@ class RealEmbeddingsService:
                     )
 
                     # Audit fix #34: handle 429 rate-limit explicitly. Without this,
-                    # 429s fall through to the generic except → silent OpenAI fallback
-                    # → bursts of OpenAI cost during a Voyage rate-limit window.
+                    # 429s would otherwise fall through to the generic except and be
+                    # reported as a hard failure, losing work to a transient window.
                     # Respect Retry-After header (Voyage sets it). Up to 3 retries
                     # with capped backoff before giving up to fallback.
                     rate_limit_attempt = 0
@@ -1258,9 +1177,9 @@ class RealEmbeddingsService:
                         raise Exception(f"Voyage AI API error: {response.status_code} - {error_body}")
 
             except Exception as e:
-                self.logger.warning(f"Voyage AI failed, falling back to OpenAI: {e}")
+                self.logger.error(f"Voyage AI text embedding failed: {e}")
 
-                # Log failed Voyage call
+                # Log the failed Voyage call
                 latency_ms = int((time.time() - start_time) * 1000)
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
@@ -1277,131 +1196,25 @@ class RealEmbeddingsService:
                         "consistency": 0.0,
                         "validation": 0.0
                     },
-                    action="fallback_to_rules",
+                    # NOT "fallback_to_rules": nothing falls back. Reporting a
+                    # fallback that does not exist makes the dashboards read as
+                    # "handled" on a path where the caller simply gets no vector.
+                    action="fallback_failed",
                     job_id=job_id,
                     product_id=product_id,
                     image_id=image_id,
-                    fallback_reason=f"Voyage AI error: {str(e)}",
+                    fallback_reason="no fallback provider for text embeddings",
                     error_message=str(e)
                 )
-
-                # If fallback disabled (per-call override or global config), raise.
-                global_fallback_ok = (
-                    not self.config
-                    or getattr(self.config, 'voyage_fallback_to_openai', True)
-                )
-                effective_fallback_ok = (
-                    global_fallback_ok
-                    if allow_openai_fallback is None
-                    else allow_openai_fallback
-                )
-                if not effective_fallback_ok:
-                    self.logger.warning(
-                        "⛔ OpenAI fallback disabled for this call (caller "
-                        "opted out to prevent embedding-space drift). "
-                        "Returning None."
-                    )
-                    return None
-
-        # Fallback to OpenAI (or primary if Voyage disabled)
-        # Honour the per-call opt-out even when reaching here via "Voyage disabled"
-        # rather than via Voyage failure.
-        if allow_openai_fallback is False:
-            return None
-
-        try:
-            if not self.openai_api_key:
-                self.logger.warning("OpenAI API key not available")
                 return None
 
-            # Audit fix #16: pin OpenAI fallback to 1024D regardless of caller's
-            # `dimensions` arg. The DB schema is halfvec(1024) and there's no
-            # legitimate code path that should request a different dim. Previously
-            # legacy callers passing dimensions=1536 caused silent dim-mismatch
-            # storage (truncation or type error at write time).
-            openai_dimensions = 1024
-            if dimensions != 1024:
-                self.logger.warning(
-                    f"OpenAI fallback received dimensions={dimensions} but pinning to 1024 "
-                    f"(DB schema constraint). Caller should be updated."
-                )
-
-            # Call OpenAI API
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://api.openai.com/v1/embeddings",
-                    headers={"Authorization": f"Bearer {self.openai_api_key}"},
-                    json={
-                        "model": "text-embedding-3-small",
-                        "input": text[:8191],
-                        "encoding_format": "float",
-                        "dimensions": openai_dimensions
-                    },
-                    timeout=30.0
-                )
-
-                if response.status_code == 200:
-                    data = response.json()
-                    embedding = data["data"][0]["embedding"]
-
-                    # Log AI call
-                    latency_ms = int((time.time() - start_time) * 1000)
-                    usage = data.get("usage", {})
-                    input_tokens = usage.get("prompt_tokens", 0)
-
-                    await self.ai_logger.log_gpt_call(
-                        task="text_embedding_generation",
-                        model="text-embedding-3-small",
-                        response=data,
-                        latency_ms=latency_ms,
-                        confidence_score=0.95,
-                        confidence_breakdown={
-                            "model_confidence": 0.98,
-                            "completeness": 1.0,
-                            "consistency": 0.95,
-                            "validation": 0.90
-                        },
-                        action="use_ai_result",
-                        job_id=job_id,
-                        product_id=product_id,
-                        image_id=image_id,
-                    )
-
-                    self.logger.info(f"✅ Generated OpenAI embedding ({openai_dimensions}D) - fallback")
-                    self._last_provider = "openai-text-embedding-3-small"
-                    return embedding
-                else:
-                    self.logger.warning(f"OpenAI API error: {response.status_code}")
-                    return None
-
-        except Exception as e:
-            self.logger.error(f"OpenAI embedding generation failed: {e}")
-
-            # Log failed OpenAI call
-            latency_ms = int((time.time() - start_time) * 1000)
-            await self.ai_logger.log_ai_call(
-                task="text_embedding_generation",
-                model="text-embedding-3-small",
-                input_tokens=0,
-                output_tokens=0,
-                cost=0.0,
-                latency_ms=latency_ms,
-                confidence_score=0.0,
-                confidence_breakdown={
-                    "model_confidence": 0.0,
-                    "completeness": 0.0,
-                    "consistency": 0.0,
-                    "validation": 0.0
-                },
-                action="fallback_failed",
-                job_id=job_id,
-                product_id=product_id,
-                image_id=image_id,
-                fallback_reason=f"OpenAI API error: {str(e)}",
-                error_message=str(e)
-            )
-
-            return None
+        # Voyage disabled or unkeyed. There is nothing else to try - see the module
+        # docstring for why there is no second provider.
+        self.logger.error(
+            "Voyage AI unavailable (disabled or no API key) and there is no "
+            "fallback embedder - returning None"
+        )
+        return None
 
     async def _generate_visual_embedding(
         self,
@@ -1663,13 +1476,10 @@ class RealEmbeddingsService:
         # style are legitimately optional — we don't want a missing color
         # field to also wipe out a perfectly good material vector.
         #
-        # `allow_openai_fallback=False` matches the same audit-gap-B
-        # discipline applied to image_understanding_embeddings: never let
-        # OpenAI 1024D vectors silently mix into the four aspect collections
-        # alongside Voyage vectors. Mixed-provider rows would corrode
-        # cosine similarity even though they share dimensionality. On
-        # Voyage outage the aspect for this image stays unembedded; the
-        # backfill cron picks it up on the next run.
+        # On a Voyage outage the aspect for this image stays unembedded and the
+        # backfill cron picks it up next run. It cannot instead be filled by another
+        # provider's same-dimension vector - that fallback was removed, so mixed
+        # spaces in these four collections are structurally impossible now.
         embeddings: Dict[str, List[float]] = {}
         any_failure = False
         for aspect, text in aspect_texts.items():
@@ -1680,7 +1490,6 @@ class RealEmbeddingsService:
                 vec = await self._generate_text_embedding(
                     text=text,
                     input_type="document",
-                    allow_openai_fallback=False,
                     job_id=job_id,
                     product_id=product_id,
                     image_id=image_id,

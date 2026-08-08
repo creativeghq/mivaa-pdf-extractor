@@ -556,9 +556,8 @@ class MaterialVisualSearchService:
 
                     # Per-aspect query embedding: 1024D Voyage of the user's
                     # text — same model and embedding space as the aspect
-                    # collection rows. allow_openai_fallback=False so an
-                    # OpenAI fallback can never produce a query vector that
-                    # would return nonsense similarity against Voyage rows.
+                    # collection rows. No fallback embedder exists, so this
+                    # cannot silently become a wrong-space query vector.
                     #
                     # We embed the user's query ONCE and share it across all
                     # 4 aspect collections. The 4 collections rank against
@@ -575,7 +574,6 @@ class MaterialVisualSearchService:
                         aspect_query_emb = await voyage_svc._generate_text_embedding(
                             text=request.query_text,
                             input_type="query",
-                            allow_openai_fallback=False,
                         )
                         specialized_embeddings = {
                             'color': aspect_query_emb,

@@ -14,7 +14,7 @@ class EmbeddingConfig(BaseModel):
 
     model_name: str = Field(
         default="voyage-4",
-        description="Embedding model name (voyage-4 or text-embedding-3-small)"
+        description="Embedding model name (voyage-4)"
     )
     model_type: str = Field(
         default="voyage",
@@ -84,7 +84,7 @@ class EmbeddingRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="Override model name (voyage-4 or text-embedding-3-small)"
+        description="Override model name (voyage-4)"
     )
     input_type: Optional[str] = Field(
         default="document",
@@ -142,7 +142,7 @@ class BatchEmbeddingRequest(BaseModel):
     )
     model: Optional[str] = Field(
         default=None,
-        description="Override model name (voyage-4 or text-embedding-3-small)"
+        description="Override model name (voyage-4)"
     )
     input_type: Optional[str] = Field(
         default="document",
