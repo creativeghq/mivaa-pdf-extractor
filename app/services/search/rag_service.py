@@ -677,17 +677,22 @@ class RAGService:
             enable_product = config.get('enable_product_search', True)
             enable_keyword = config.get('enable_keyword_search', True)
 
-            # Default weights (can be overridden)
+            # Default weights, used when the caller passes none. The normal path
+            # supplies `weights` derived from weight_profiles.profile_to_source_weights,
+            # so this table only covers direct callers — but it must still name EVERY
+            # source channel, or that channel scores zero on exactly the paths nobody
+            # is looking at.
             default_weights = {
-                'visual': 0.20,         # Visual SLIG embeddings
-                'chunk': 0.20,          # Text chunks
-                'understanding': 0.15,  # Vision-understanding (Claude → Voyage AI)
-                'product': 0.15,        # Direct product embeddings
-                'keyword': 0.12,        # Keyword matching
-                'color': 0.05,          # Color SLIG
-                'texture': 0.05,        # Texture SLIG
-                'style': 0.04,          # Style SLIG
-                'material': 0.04        # Material SLIG
+                'visual': 0.19,         # Visual SLIG embeddings
+                'chunk': 0.18,          # Text chunks
+                'understanding': 0.14,  # Vision-understanding (Claude → Voyage AI)
+                'product': 0.14,        # Direct product embeddings
+                'keyword': 0.11,        # Keyword matching
+                'color': 0.05,          # Color aspect
+                'texture': 0.05,        # Texture aspect
+                'style': 0.04,          # Style aspect
+                'material': 0.04,       # Material aspect
+                'page': 0.06,           # Whole-page multimodal (#239)
             }
             embedding_weights = config.get('weights', default_weights)
 
@@ -703,6 +708,7 @@ class RAGService:
             visual_embedding = None
             text_embedding = None
             understanding_embedding = None
+            page_embedding = None
 
             # Build embedding tasks to run in parallel
             async def _get_visual_embedding():
@@ -747,12 +753,28 @@ class RAGService:
                     return emb
                 return None
 
+            async def _get_page_embedding():
+                # The page channel (#239) lives in voyage-multimodal space. It CANNOT
+                # reuse text_embedding: voyage-4 and voyage-multimodal are both 1024D,
+                # so the wrong vector would be accepted by the collection and score
+                # confident nonsense instead of raising. Different model, different
+                # space — matching dimensions prove nothing.
+                if not embedding_weights.get('page'):
+                    return None
+                result = await self.embeddings_service.generate_page_query_embedding(query)
+                if result.get("success"):
+                    emb = result.get("embedding", [])
+                    self.logger.info(f"✅ Page query embedding: {len(emb)}D")
+                    return emb
+                return None
+
             # Run all embedding generations in parallel, each with its own timeout.
             # Per-task timeouts ensure completed tasks are preserved even if one hangs.
-            visual_result, text_result, understanding_result = await asyncio.gather(
+            visual_result, text_result, understanding_result, page_result = await asyncio.gather(
                 asyncio.wait_for(_get_visual_embedding(), timeout=EMBEDDING_TIMEOUT),
                 asyncio.wait_for(_get_text_embedding(), timeout=EMBEDDING_TIMEOUT),
                 asyncio.wait_for(_get_understanding_embedding(), timeout=EMBEDDING_TIMEOUT),
+                asyncio.wait_for(_get_page_embedding(), timeout=EMBEDDING_TIMEOUT),
                 return_exceptions=True
             )
             if isinstance(visual_result, Exception):
@@ -767,6 +789,10 @@ class RAGService:
                 self.logger.warning(f"⚠️ Understanding embedding failed/timed out: {understanding_result}")
             else:
                 understanding_embedding = understanding_result
+            if isinstance(page_result, Exception):
+                self.logger.warning(f"⚠️ Page query embedding failed/timed out: {page_result}")
+            else:
+                page_embedding = page_result
 
             # ============================================================================
             # STEP 2A: Search VISUAL + UNDERSTANDING embeddings (6 VECS collections)
@@ -936,6 +962,34 @@ class RAGService:
                 self.logger.warning(f"⚠️ Fulltext search failed: {e}")
 
             # ============================================================================
+            # STEP 2E: Search PAGE embeddings (#239)
+            # The 8th vector: the whole rendered page as one text+image embedding.
+            # Its unique contribution is text that exists ONLY as pixels inside a
+            # figure — no other channel can see it, because the structural OCR pass
+            # treats image regions as crop sources and never reads them.
+            # ============================================================================
+            page_scores = {}  # Maps (document_id, page_number) -> score
+
+            if page_embedding:
+                try:
+                    page_results = await self.vecs_service.search_page_embeddings(
+                        query_embedding=page_embedding,
+                        limit=top_k * 3,
+                        workspace_id=workspace_id,
+                        include_metadata=True,
+                    )
+                    for item in page_results:
+                        doc_id = item.get('document_id')
+                        page_no = item.get('page_number')
+                        if doc_id is None or page_no is None:
+                            continue
+                        page_scores[(str(doc_id), int(page_no))] = item.get('similarity_score', 0.0)
+
+                    self.logger.info(f"✅ Page search: {len(page_scores)} pages")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Page search failed: {e}")
+
+            # ============================================================================
             # STEP 3: Map all sources to products
             # ============================================================================
             product_scores = {}  # Maps product_id -> {source_type: score}
@@ -1021,6 +1075,78 @@ class RAGService:
                     # Take the max of keyword (Jaccard) and fulltext (PostgreSQL tsrank)
                     existing = product_scores[product_id].get('keyword', 0.0)
                     product_scores[product_id]['keyword'] = max(existing, score)
+
+            # 3E: Map pages to products (#239).
+            #
+            # A page hit has to reach a product to score, and the honest route is the
+            # one the pipeline already built: the images lifted off that page, which
+            # carry image_product_associations. Going via `products.source_document_id`
+            # instead would attribute a single page's hit to every product in the
+            # catalog — a whole-document boost dressed up as a page-level signal.
+            #
+            # Images with no page number are excluded rather than defaulted to page 1;
+            # a wrong page attribution here would spread one page's score across
+            # unrelated products with nothing to flag it.
+            if page_scores:
+                try:
+                    by_document: Dict[str, List[int]] = {}
+                    for (doc_id, page_no) in page_scores:
+                        by_document.setdefault(doc_id, []).append(page_no)
+
+                    page_image_rows = []
+                    for doc_id, pages in by_document.items():
+                        img_resp = self.supabase_client.client.table('document_images')\
+                            .select('id, document_id, page_number')\
+                            .eq('document_id', doc_id)\
+                            .in_('page_number', sorted(set(pages)))\
+                            .execute()
+                        if img_resp.data:
+                            page_image_rows.extend(img_resp.data)
+
+                    image_to_page = {
+                        row['id']: (str(row['document_id']), int(row['page_number']))
+                        for row in page_image_rows
+                        if row.get('id') and row.get('page_number') is not None
+                    }
+
+                    if image_to_page:
+                        page_image_ids = list(image_to_page.keys())
+                        page_rels = []
+                        for i in range(0, len(page_image_ids), 100):
+                            rel_resp = self.supabase_client.client.table('image_product_associations')\
+                                .select('product_id, image_id, overall_score')\
+                                .in_('image_id', page_image_ids[i:i + 100])\
+                                .execute()
+                            if rel_resp.data:
+                                page_rels.extend(rel_resp.data)
+
+                        for rel in page_rels:
+                            product_id = rel.get('product_id')
+                            key = image_to_page.get(rel.get('image_id'))
+                            if not product_id or not key:
+                                continue
+                            score = page_scores.get(key, 0.0) * (rel.get('overall_score') or 1.0)
+                            if product_id not in product_scores:
+                                product_scores[product_id] = {}
+                            # Best page wins: a product appearing on two pages should
+                            # be ranked by its strongest page, not by their sum.
+                            if product_scores[product_id].get('page', 0.0) < score:
+                                product_scores[product_id]['page'] = score
+
+                        self.logger.info(
+                            f"📎 Page→Product: {len(page_rels)} relationships from "
+                            f"{len(page_scores)} page hit(s)"
+                        )
+                    else:
+                        # Worth saying out loud: page vectors matched but no product
+                        # could be reached from them, so the channel contributed
+                        # nothing to this query despite carrying weight.
+                        self.logger.info(
+                            f"📎 Page→Product: {len(page_scores)} page hit(s) reached no "
+                            f"product (no page-attributed images)"
+                        )
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Page→Product mapping failed: {e}")
 
             self.logger.info(f"🎯 Total products with scores: {len(product_scores)}")
 
@@ -1142,7 +1268,11 @@ class RAGService:
                                 "visual": enable_visual and len(image_scores) > 0,
                                 "chunk": enable_chunk and len(chunk_scores) > 0,
                                 "product": enable_product and len(direct_product_scores) > 0,
-                                "keyword": enable_keyword
+                                "keyword": enable_keyword,
+                                # Reported so a dead page channel is visible in the
+                                # response rather than only in the logs — this dict is
+                                # what tells an operator which channels actually fired.
+                                "page": len(page_scores) > 0,
                             }
                         })
 

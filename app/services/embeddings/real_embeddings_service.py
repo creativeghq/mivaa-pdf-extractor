@@ -614,6 +614,244 @@ class RealEmbeddingsService:
             self.logger.error(f"❌ generate_understanding_query_embedding failed: {e}")
             return {"success": False, "error": str(e)}
 
+    # ────────────────────────────────────────────────────────────────────────────
+    # Page embeddings (#239) — the 8th fusion vector
+    # ────────────────────────────────────────────────────────────────────────────
+
+    async def _voyage_multimodal_embed(
+        self,
+        content: List[Dict[str, str]],
+        input_type: str,
+        job_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
+        task: str = "page_embedding_generation",
+    ) -> Optional[Dict[str, Any]]:
+        """One call to Voyage's multimodal endpoint. Returns vector + real usage.
+
+        `content` is Voyage's interleaved list: `{"type": "text", "text": ...}` and
+        `{"type": "image_base64", "image_base64": "data:image/png;base64,..."}` items
+        that are embedded TOGETHER into a single vector — that fusion is the whole
+        point, and it is why the page vector can match a query against a product name
+        that exists only as pixels inside a photograph.
+
+        There is deliberately NO fallback provider. voyage-4 is a text-only model in a
+        different latent space, and OpenAI has no equivalent; substituting either on
+        failure would push a wrong-space vector into `page_embeddings` and quietly
+        corrode every page search. That is audit gap B's lesson, applied before it can
+        happen rather than after. On failure we return None and the page stays
+        unembedded for the backfill to retry — visible, and recoverable.
+        """
+        from app.config import settings as _settings
+
+        if not self.voyage_api_key:
+            self.logger.warning("⚠️ VOYAGE_API_KEY not set — cannot generate page embedding")
+            return None
+
+        model = _settings.voyage_multimodal_model
+        expected_dim = _settings.voyage_multimodal_dimension
+        start_time = time.time()
+
+        request_data: Dict[str, Any] = {
+            "model": model,
+            "inputs": [{"content": content}],
+            "input_type": input_type,
+            "truncation": True,
+        }
+
+        try:
+            async with self._get_voyage_semaphore(), httpx.AsyncClient() as client:
+                async def _post():
+                    return await client.post(
+                        "https://api.voyageai.com/v1/multimodalembeddings",
+                        headers={
+                            "Authorization": f"Bearer {self.voyage_api_key}",
+                            "Content-Type": "application/json",
+                        },
+                        json=request_data,
+                        # Generous vs the 30s text timeout: the request body carries a
+                        # ~2 megapixel PNG, so upload alone can outlast a text call.
+                        timeout=90.0,
+                    )
+
+                response = await _post()
+
+                # Same 429 discipline as the text path: honour Retry-After instead of
+                # letting a rate-limit window look like a hard failure.
+                rate_limit_attempt = 0
+                while response.status_code == 429 and rate_limit_attempt < 3:
+                    try:
+                        retry_after = min(60.0, float(response.headers.get("Retry-After", "5")))
+                    except ValueError:
+                        retry_after = 5.0
+                    self.logger.warning(
+                        f"⚠️ Voyage multimodal 429 (attempt {rate_limit_attempt+1}/3); "
+                        f"sleeping {retry_after}s"
+                    )
+                    await asyncio.sleep(retry_after)
+                    response = await _post()
+                    rate_limit_attempt += 1
+
+                if response.status_code != 200:
+                    raise Exception(
+                        f"Voyage multimodal API error: {response.status_code} - "
+                        f"{response.text[:300]}"
+                    )
+
+                data = response.json()
+                embedding = data["data"][0]["embedding"]
+
+                if len(embedding) != expected_dim:
+                    # Never store a wrong-dim vector: the collection is fixed-width, so
+                    # this would fail at the Postgres boundary anyway — but failing here
+                    # names the real cause (model/config mismatch) instead of a dim error.
+                    self.logger.error(
+                        f"❌ Voyage multimodal returned {len(embedding)}D, expected "
+                        f"{expected_dim}D (model={model}). Refusing to store."
+                    )
+                    return None
+
+                usage = data.get("usage", {}) or {}
+                text_tokens = int(usage.get("text_tokens") or 0)
+                image_pixels = int(usage.get("image_pixels") or 0)
+                latency_ms = int((time.time() - start_time) * 1000)
+
+                # Cost is BOTH tokens and pixels; the token-only path would under-report
+                # a page by ~20×. See calculate_multimodal_embedding_cost.
+                from app.config.ai_pricing import AIPricingConfig
+                costs = AIPricingConfig.calculate_multimodal_embedding_cost(
+                    model=model, text_tokens=text_tokens, image_pixels=image_pixels,
+                )
+
+                await self.ai_logger.log_ai_call(
+                    task=task,
+                    model=model,
+                    input_tokens=text_tokens,
+                    output_tokens=0,
+                    cost=float(costs["raw_cost_usd"]),
+                    latency_ms=latency_ms,
+                    confidence_score=0.95,
+                    confidence_breakdown={
+                        "model_confidence": 0.98,
+                        "completeness": 1.0,
+                        "consistency": 0.95,
+                        "validation": 0.90,
+                        "vectors_generated": 1,
+                        "vector_dimension": expected_dim,
+                        "vector_kind": "page",
+                        "image_pixels": image_pixels,
+                        "billable_pixels": int(costs["billable_pixels"]),
+                    },
+                    action="use_ai_result",
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
+                )
+
+                self.logger.info(
+                    f"✅ Page embedding generated ({expected_dim}D, {model}, "
+                    f"{text_tokens} text tokens, {image_pixels} px, {latency_ms}ms)"
+                )
+                return {
+                    "embedding": embedding,
+                    "embedding_model": model,
+                    "text_tokens": text_tokens,
+                    "image_pixels": image_pixels,
+                }
+
+        except Exception as e:
+            self.logger.error(f"❌ Voyage multimodal embedding failed: {e}")
+            latency_ms = int((time.time() - start_time) * 1000)
+            try:
+                await self.ai_logger.log_ai_call(
+                    task=task,
+                    model=model,
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost=0.0,
+                    latency_ms=latency_ms,
+                    confidence_score=0.0,
+                    confidence_breakdown={
+                        "model_confidence": 0.0, "completeness": 0.0,
+                        "consistency": 0.0, "validation": 0.0,
+                    },
+                    # NOT "fallback_to_rules": nothing falls back here by design, and
+                    # logging a fallback that does not exist would make the dashboards
+                    # read as "handled" on a path where the page simply has no vector.
+                    action="fallback_failed",
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
+                    fallback_reason="no fallback provider for multimodal embeddings",
+                    error_message=str(e),
+                )
+            except Exception:
+                pass
+            return None
+
+    async def generate_page_embedding(
+        self,
+        image_base64: str,
+        page_text: Optional[str] = None,
+        job_id: Optional[str] = None,
+        product_id: Optional[str] = None,
+        image_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Embed one rendered catalog page (image + its extracted text) as one vector.
+
+        Args:
+            image_base64: PNG/JPEG bytes, base64. A bare payload or a full
+                `data:image/png;base64,...` URI both work.
+            page_text: The page's text as SILVER already holds it (document_chunks),
+                not re-extracted from the PDF. Optional — an image-only page still
+                embeds fine, which matters because the pages this vector exists for
+                are precisely the ones whose text the OCR pass could not read.
+
+        Returns dict with `embedding` + provenance, or None on failure.
+        """
+        if not image_base64:
+            self.logger.warning("⚠️ generate_page_embedding called without image data")
+            return None
+
+        # Voyage wants a data URI. Accept either form so callers can pass raw base64.
+        if not image_base64.startswith("data:"):
+            image_base64 = f"data:image/png;base64,{image_base64}"
+
+        content: List[Dict[str, str]] = []
+        if page_text and page_text.strip():
+            # Text first, then the image: Voyage's interleaved order is preserved, and
+            # leading with text keeps the page's own words in context if the combined
+            # input ever hits the 32k-token truncation limit.
+            content.append({"type": "text", "text": page_text.strip()})
+        content.append({"type": "image_base64", "image_base64": image_base64})
+
+        return await self._voyage_multimodal_embed(
+            content=content,
+            input_type="document",
+            job_id=job_id,
+            product_id=product_id,
+            image_id=image_id,
+        )
+
+    async def generate_page_query_embedding(self, query: str) -> Dict[str, Any]:
+        """Embed a text query into the PAGE vector space for search.
+
+        Must use the same multimodal model the pages were embedded with, with
+        `input_type="query"`. Reaching for the ordinary voyage-4 text embedding here
+        would be the easy mistake and a silent one: both are 1024D, so the query would
+        be accepted by the collection and return confidently-scored nonsense rather
+        than erroring. Different model, different space — dimension agreement proves
+        nothing.
+        """
+        result = await self._voyage_multimodal_embed(
+            content=[{"type": "text", "text": query}],
+            input_type="query",
+            task="page_query_embedding_generation",
+        )
+        if result and result.get("embedding"):
+            return {"success": True, "embedding": result["embedding"], "model": result["embedding_model"]}
+        return {"success": False, "error": "Page query embedding returned None"}
+
     async def generate_batch_embeddings(
         self,
         texts: List[str],

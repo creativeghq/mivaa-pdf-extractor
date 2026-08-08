@@ -135,7 +135,7 @@ class AIPricingConfig:
         }
     }
 
-    # Voyage AI Embedding Pricing (per 1M tokens) — voyage-4 is sole production embedder.
+    # Voyage AI Embedding Pricing (per 1M tokens) — voyage-4 is sole production TEXT embedder.
     VOYAGE_PRICING = {
         "voyage-4": {
             "input": Decimal("0.06"),
@@ -144,7 +144,40 @@ class AIPricingConfig:
             "source": "https://docs.voyageai.com/docs/pricing",
             "dimensions": 1024,
             "note": "Sole text embedding model — 1024D"
-        }
+        },
+        # Page embeddings (#239). These bill on TWO axes — tokens AND pixels — so the
+        # `input` figure here covers only the text half. Anything embedding a page must
+        # go through calculate_multimodal_embedding_cost(), or it under-reports by the
+        # pixel term, which for a rendered page is ~90% of the real cost.
+        "voyage-multimodal-3.5": {
+            "input": Decimal("0.12"),
+            "output": Decimal("0.00"),
+            "last_verified": "2026-08-08",
+            "source": "https://docs.voyageai.com/docs/pricing",
+            "dimensions": 1024,
+            "note": "Page embeddings — text tokens only; add the pixel term (see MULTIMODAL_PIXEL_PRICING)"
+        },
+        "voyage-multimodal-3": {
+            "input": Decimal("0.12"),
+            "output": Decimal("0.00"),
+            "last_verified": "2026-08-08",
+            "source": "https://docs.voyageai.com/docs/pricing",
+            "dimensions": 1024,
+            "note": "Predecessor of voyage-multimodal-3.5; same price. Same two-axis billing."
+        },
+    }
+
+    # The pixel half of multimodal billing. Voyage clamps each image before charging:
+    # under 50k pixels is upscaled and billed at 50k, over 2M is downsampled and billed
+    # at 2M — so one rendered page costs at most $0.0012 no matter the DPI. That ceiling
+    # is why page rendering is capped just under 2M pixels: past it you pay full price
+    # for pixels Voyage throws away.
+    MULTIMODAL_PIXEL_PRICING = {
+        "usd_per_billion_pixels": Decimal("0.60"),
+        "min_billable_pixels": 50_000,
+        "max_billable_pixels": 2_000_000,
+        "last_verified": "2026-08-08",
+        "source": "https://docs.voyageai.com/docs/pricing",
     }
     
     # Vision/Image Pricing — Claude Opus/Haiku now handle vision; OpenAI vision removed.
@@ -558,6 +591,59 @@ class AIPricingConfig:
             "credits_to_debit": credits_to_debit
         }
     
+    @classmethod
+    def calculate_multimodal_embedding_cost(
+        cls,
+        model: str,
+        text_tokens: int,
+        image_pixels: int,
+        include_markup: bool = True
+    ) -> Dict[str, Decimal]:
+        """Cost of one voyage-multimodal call — the token term PLUS the pixel term.
+
+        `calculate_cost` cannot do this job: it only knows tokens, and for a rendered
+        catalog page the pixels are the overwhelming majority of the bill (a full page
+        is ~$0.0012 of pixels against ~$0.00006 of text). Routing a page embedding
+        through the token-only path would report a cost roughly 20× too low — a wrong
+        number that is still a valid Decimal, so nothing downstream could catch it.
+
+        Voyage clamps PER IMAGE before charging, and so does this function — which is
+        only equivalent because the page-embedding path sends exactly one image per
+        call. Batching several images into one call would need the clamp applied per
+        image before summing; passing the combined total here would under-bill.
+
+        Returns the same key set as calculate_cost() so callers and dashboards can
+        treat the two interchangeably.
+        """
+        pricing = cls.get_model_pricing(model)
+        px = cls.MULTIMODAL_PIXEL_PRICING
+
+        text_cost = (Decimal(max(0, text_tokens)) / Decimal(1_000_000)) * pricing["input"]
+
+        billable_pixels = 0
+        if image_pixels > 0:
+            billable_pixels = min(
+                max(int(image_pixels), int(px["min_billable_pixels"])),
+                int(px["max_billable_pixels"]),
+            )
+        pixel_cost = (
+            Decimal(billable_pixels) / Decimal(1_000_000_000)
+        ) * px["usd_per_billion_pixels"]
+
+        raw_cost = text_cost + pixel_cost
+        markup = cls.get_model_markup(model)
+        billed_cost = raw_cost * markup if include_markup else raw_cost
+
+        return {
+            "input_cost_usd": text_cost,
+            "output_cost_usd": pixel_cost,
+            "raw_cost_usd": raw_cost,
+            "markup_multiplier": markup,
+            "billed_cost_usd": billed_cost,
+            "credits_to_debit": billed_cost * Decimal("100"),
+            "billable_pixels": Decimal(billable_pixels),
+        }
+
     @classmethod
     def calculate_firecrawl_cost(
         cls,

@@ -589,6 +589,54 @@ class Settings(BaseSettings):
         description="Fallback to OpenAI if Voyage AI fails"
     )
 
+    # ── Page embeddings (#239) — the 8th fusion vector ──────────────────────────
+    # A whole rendered catalog page embedded as one text+image vector, so a page is
+    # retrievable by combined meaning and, critically, so product names printed
+    # INSIDE photos become searchable — `Image`/`Figure`/`chart` regions are crop
+    # sources for the structural OCR pass, never read as text, so no other channel
+    # can see them.
+    page_embeddings_enabled: bool = Field(
+        default=True,
+        env="PAGE_EMBEDDINGS_ENABLED",
+        description="Render + embed catalog pages into vecs.page_embeddings"
+    )
+    voyage_multimodal_model: str = Field(
+        default="voyage-multimodal-3.5",
+        env="VOYAGE_MULTIMODAL_MODEL",
+        description=(
+            "Voyage multimodal model for page embeddings. #239 specified "
+            "voyage-multimodal-3; 3.5 is its GA successor at the same price and the "
+            "same 1024D, which is the release ai-models-architecture.md was waiting "
+            "on. Both are accepted — but NEVER change this on a populated collection: "
+            "the two are different latent spaces and mixing them corrodes cosine "
+            "similarity, exactly as the Voyage/OpenAI mixing that audit gap B closed."
+        )
+    )
+    voyage_multimodal_dimension: int = Field(
+        default=1024,
+        env="VOYAGE_MULTIMODAL_DIMENSION",
+        description="Page embedding dimensions (must match the VECS collection)"
+    )
+    page_embedding_dpi: int = Field(
+        default=144,
+        env="PAGE_EMBEDDING_DPI",
+        description=(
+            "Render DPI for page embeddings. 144 puts an A4 page at ~2.0M pixels, "
+            "just under Voyage's 2M billing ceiling — above it you pay the same "
+            "capped price for pixels Voyage downsamples away, so higher is pure waste."
+        )
+    )
+    page_embedding_max_pages: int = Field(
+        default=500,
+        env="PAGE_EMBEDDING_MAX_PAGES",
+        description="Hard per-document page cap. Bounds cost on a pathological upload."
+    )
+    page_embedding_concurrency: int = Field(
+        default=4,
+        env="PAGE_EMBEDDING_CONCURRENCY",
+        description="Max concurrent page render+embed operations (each holds a page bitmap)"
+    )
+
     # Document Chunking Models — Sonnet 4.6
     # (2026-05-01). Chunking is a pure text task where Sonnet sits at the
     # quality ceiling; Opus would be 5× more expensive on the most

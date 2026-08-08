@@ -4391,6 +4391,46 @@ async def process_document_with_discovery(
         except Exception as _ee:
             logger.warning(f"⚠️ Product edge rebuild failed (non-blocking): {_ee}")
 
+        # ── Page embeddings — the 8th fusion vector (#239) ───────────────────
+        # Runs HERE, after chunking, because the page text it embeds alongside the
+        # render comes from `document_chunks` (silver). Running it earlier would mean
+        # re-extracting text from the PDF, which is the layer violation the Medallion
+        # rule exists to prevent.
+        #
+        # Awaited rather than fire-and-forget: `document_page_embeddings` rows are what
+        # the silent-zero probe reads, and a background task that loses its race with
+        # job completion would leave the document looking permanently unembedded.
+        # Failures are non-fatal — a catalog with no page vectors is a catalog with
+        # seven working channels, not a failed ingest.
+        try:
+            from app.services.embeddings.page_embedding_service import get_page_embedding_service
+
+            with pipeline_stage_span("stage_4.7.page_embeddings"):
+                _page_result = await asyncio.wait_for(
+                    get_page_embedding_service().embed_document_pages(
+                        document_id=document_id,
+                        workspace_id=workspace_id,
+                        job_id=job_id,
+                    ),
+                    # Bounded so a Voyage outage cannot hold the whole job open: the
+                    # per-page rows already written stay, and the backfill picks up
+                    # whatever this run did not reach.
+                    timeout=1800,
+                )
+            logger.info(
+                f"📄 Page embeddings: {_page_result.get('embedded', 0)} embedded, "
+                f"{_page_result.get('failed', 0)} failed, "
+                f"{_page_result.get('skipped_blank', 0)} blank "
+                f"(of {_page_result.get('pages_considered', 0)} pages)"
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"⏱️ Page embeddings for {document_id} exceeded 30min — abandoning; "
+                f"already-written pages are kept and the rest stay retryable"
+            )
+        except Exception as _pe:
+            logger.warning(f"⚠️ Page embeddings failed (non-blocking): {_pe}")
+
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)
         # ============================================================================

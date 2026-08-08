@@ -2271,6 +2271,134 @@ async def document_extraction_status(
         )
 
 
+class BackfillPageEmbeddingsRequest(BaseModel):
+    """Request model for backfilling page embeddings (#239)."""
+    workspace_id: str
+    document_id: Optional[str] = None  # None = every eligible document in the workspace
+    max_documents: int = 5             # bounded by default; each document is many API calls
+    force: bool = False                # re-embed pages already marked embedded
+
+
+class BackfillPageEmbeddingsResponse(BaseModel):
+    """Response model for the page-embedding backfill."""
+    success: bool
+    message: str
+    documents_processed: int
+    pages_embedded: int
+    pages_failed: int
+    pages_skipped: int
+    documents_remaining: int
+    errors: List[str] = []
+
+
+@router.post("/backfill-page-embeddings", response_model=BackfillPageEmbeddingsResponse)
+async def backfill_page_embeddings(
+    request: BackfillPageEmbeddingsRequest,
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Dict[str, Any] = Depends(get_current_user),
+):
+    """Render + embed pages for documents that have no page vectors yet (#239).
+
+    The remedy the `ops.page_embeddings_never_written` probe points at, and the way
+    catalogs ingested before this feature existed get their 8th vector. The ingest
+    pipeline covers new uploads; this covers everything else.
+
+    Bounded on purpose: `max_documents` defaults to 5 because one document is one API
+    call per page. `documents_remaining` is returned so a caller can page through the
+    backlog deliberately instead of discovering the cost after the fact.
+    """
+    try:
+        # Tenancy from the verified JWT, not from the body (security invariant 1).
+        await authorize_rag_workspace(claims, request.workspace_id)
+
+        from app.services.embeddings.page_embedding_service import get_page_embedding_service
+        from app.config import settings
+
+        if not settings.page_embeddings_enabled:
+            return BackfillPageEmbeddingsResponse(
+                success=False,
+                message="Page embeddings are disabled (PAGE_EMBEDDINGS_ENABLED=false)",
+                documents_processed=0, pages_embedded=0, pages_failed=0,
+                pages_skipped=0, documents_remaining=0,
+            )
+
+        # Candidate documents: completed, in THIS workspace, with a source file to
+        # render. The workspace filter is applied to the query itself rather than
+        # checked afterwards, so a document from another tenant is never even loaded.
+        query = (
+            supabase.client.table('documents')
+            .select('id', count='exact')
+            .eq('workspace_id', request.workspace_id)
+            # 'completed' is the only success value documents_processing_status_check
+            # permits — pending / processing / completed / failed.
+            .eq('processing_status', 'completed')
+            .not_.is_('storage_object_path', 'null')
+        )
+        if request.document_id:
+            query = query.eq('id', request.document_id)
+
+        docs_response = query.order('created_at', desc=True).limit(500).execute()
+        candidate_ids = [row['id'] for row in (docs_response.data or [])]
+
+        if not request.force:
+            # Drop documents that already have at least one embedded page. Coarse on
+            # purpose — embed_document_pages() skips per-page anyway, so this only
+            # avoids opening PDFs that have nothing left to do.
+            done_response = (
+                supabase.client.table('document_page_embeddings')
+                .select('document_id')
+                .eq('workspace_id', request.workspace_id)
+                .eq('cache_status', 'embedded')
+                .execute()
+            )
+            done = {r['document_id'] for r in (done_response.data or [])}
+            candidate_ids = [d for d in candidate_ids if d not in done]
+
+        selected = candidate_ids[: max(1, request.max_documents)]
+        remaining = max(0, len(candidate_ids) - len(selected))
+
+        service = get_page_embedding_service()
+        embedded = failed = skipped = 0
+        errors: List[str] = []
+
+        for doc_id in selected:
+            try:
+                result = await service.embed_document_pages(
+                    document_id=doc_id,
+                    workspace_id=request.workspace_id,
+                    force=request.force,
+                )
+                embedded += result.get('embedded', 0)
+                failed += result.get('failed', 0)
+                skipped += result.get('skipped_blank', 0) + result.get('skipped_existing', 0)
+                if result.get('error'):
+                    errors.append(f"{doc_id}: {result['error']}")
+            except Exception as doc_err:
+                # One bad document must not abandon the rest of the batch.
+                logger.error(f"❌ Page-embedding backfill failed for {doc_id}: {doc_err}")
+                errors.append(f"{doc_id}: {doc_err}")
+
+        return BackfillPageEmbeddingsResponse(
+            success=True,
+            message=(
+                f"Backfilled {len(selected)} document(s); {remaining} still queued"
+                if remaining else f"Backfilled {len(selected)} document(s)"
+            ),
+            documents_processed=len(selected),
+            pages_embedded=embedded,
+            pages_failed=failed,
+            pages_skipped=skipped,
+            documents_remaining=remaining,
+            errors=errors[:20],
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ backfill_page_embeddings failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Page-embedding backfill failed: {str(e)}")
+
+
 # ============================================================================
 # Deferred import (break circular-import cycle — see Sentry MIVAA-5HQ)
 # ============================================================================

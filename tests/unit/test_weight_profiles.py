@@ -33,6 +33,8 @@ SPECIALIZED_ASPECTS = weight_profiles.SPECIALIZED_ASPECTS
 TEXT_SOURCE_SPLIT = weight_profiles.TEXT_SOURCE_SPLIT
 WEIGHT_PROFILES = weight_profiles.WEIGHT_PROFILES
 DEFAULT_PROFILE = weight_profiles.DEFAULT_PROFILE
+PAGE_WEIGHTS = weight_profiles.PAGE_WEIGHTS
+_BASE_PROFILES = weight_profiles._BASE_PROFILES
 aspect_bias_weights = weight_profiles.aspect_bias_weights
 get_profile = weight_profiles.get_profile
 image_only_weights = weight_profiles.image_only_weights
@@ -186,6 +188,57 @@ def test_aspect_bias_dominates(aspect):
 def test_aspect_bias_rejects_unknown_aspect():
     with pytest.raises(ValueError):
         aspect_bias_weights("text")
+
+
+@pytest.mark.parametrize("aspect", sorted(SPECIALIZED_ASPECTS))
+def test_aspect_bias_covers_every_source_channel(aspect):
+    """aspect_bias_weights builds its dict BY HAND rather than deriving it from a
+    profile, so it is the one mapping that a new channel can slip past. A missing key
+    scores that vector at zero on the explicit-aspect path only — the exact
+    computed-stored-billed-unread shape."""
+    assert set(aspect_bias_weights(aspect)) == set(SOURCE_CHANNELS)
+
+
+# ── The page channel (#239) ─────────────────────────────────────────────────────
+
+def test_page_weight_defined_for_every_profile():
+    """PAGE_WEIGHTS is what WEIGHT_PROFILES is built from — a profile missing from it
+    is a KeyError at import, but this states the requirement where it's readable."""
+    assert set(PAGE_WEIGHTS) == set(_BASE_PROFILES)
+
+
+@pytest.mark.parametrize("name", sorted(WEIGHT_PROFILES))
+def test_page_channel_is_present_and_positive(name):
+    """A zero page weight is indistinguishable from having forgotten the channel."""
+    assert WEIGHT_PROFILES[name]["page"] > 0
+
+
+@pytest.mark.parametrize("name", sorted(WEIGHT_PROFILES))
+def test_page_carve_out_preserves_the_original_ratios(name):
+    """THE invariant behind _with_page: the page channel takes a slice of the whole
+    profile, it does not rob one aspect. Every original pair keeps its ratio, so the
+    seven-aspect tuning survives intact and re-tuning `page` is one number, not eight.
+    """
+    base = _BASE_PROFILES[name]
+    profile = WEIGHT_PROFILES[name]
+    scale = 1.0 - PAGE_WEIGHTS[name]
+    for aspect, weight in base.items():
+        assert profile[aspect] == pytest.approx(weight * scale, abs=TOL), f"{name}.{aspect}"
+
+
+def test_page_channel_does_not_disturb_the_image_only_fan_out():
+    """The image-only path has no page channel (it ranks images, and a page vector
+    keys a page). Because the carve-out is proportional and this path renormalizes,
+    its weights must be IDENTICAL to the pre-page values — this is what lets the
+    channel be added without re-tuning image search. Pinned separately from
+    test_image_only_full_set_matches_pre_refactor_constants because that test asserts
+    the same numbers for a different reason and could legitimately be retired."""
+    got = image_only_weights(has_understanding=True, specialized_types=list(SPECIALIZED_ASPECTS))
+    assert "page" not in got
+    base = _BASE_PROFILES[DEFAULT_PROFILE]
+    expected_visual = base["text"] + base["visual"]
+    assert got["visual"] == pytest.approx(expected_visual, abs=TOL)
+    assert got["understanding"] == pytest.approx(base["understanding"], abs=TOL)
 
 
 # ── normalize() ─────────────────────────────────────────────────────────────────

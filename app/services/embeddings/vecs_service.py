@@ -604,6 +604,196 @@ class VecsService:
             logger.error(f"❌ Understanding embedding search failed: {e}")
             return []
 
+    # ── Page embeddings (#239) — the 8th fusion vector ──────────────────────────
+    #
+    # Keyed by "<document_id>:<page_number>" rather than a uuid, because a page has no
+    # row of its own to borrow an id from and the pair IS the identity. Making the key
+    # derivable means a re-run overwrites the same vector instead of duplicating it,
+    # and a document's pages can be deleted by prefix without a lookup table.
+
+    PAGE_COLLECTION = "page_embeddings"
+    PAGE_DIMENSION = 1024
+
+    @staticmethod
+    def page_vector_id(document_id: str, page_number: int) -> str:
+        """The VECS primary key for a page. One definition — callers never build it."""
+        return f"{document_id}:{int(page_number)}"
+
+    async def upsert_page_embedding(
+        self,
+        document_id: str,
+        page_number: int,
+        embedding: List[float],
+        metadata: Dict[str, Any],
+        embedding_model: Optional[str] = None,
+        schema_version: Optional[int] = None,
+    ) -> bool:
+        """Upsert one page's multimodal embedding.
+
+        Inherits the Phase-0 write invariant (0.2): a vector with no `workspace_id` in
+        its metadata is unattributable, and an unattributable vector in a tenant
+        collection cannot be filtered out of another tenant's search. We refuse the
+        write rather than store one — a missing page is recoverable, a leaked one
+        is not.
+        """
+        try:
+            meta = dict(metadata or {})
+            meta["document_id"] = str(document_id)
+            meta["page_number"] = int(page_number)
+            if embedding_model:
+                meta["embedding_model"] = embedding_model
+            if schema_version is not None:
+                meta["schema_version"] = schema_version
+
+            if not meta.get("workspace_id"):
+                logger.error(
+                    f"Refusing page upsert for {document_id} p{page_number}: metadata "
+                    f"missing workspace_id (tenant-attribution invariant)"
+                )
+                return False
+
+            if len(embedding) != self.PAGE_DIMENSION:
+                logger.error(
+                    f"Refusing page upsert for {document_id} p{page_number}: got "
+                    f"{len(embedding)}D, collection is {self.PAGE_DIMENSION}D"
+                )
+                return False
+
+            collection = self.get_or_create_collection(
+                name=self.PAGE_COLLECTION,
+                dimension=self.PAGE_DIMENSION,
+            )
+            collection.upsert(
+                records=[(self.page_vector_id(document_id, page_number), embedding, meta)]
+            )
+            logger.debug(f"✅ Upserted page embedding for {document_id} p{page_number}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Failed to upsert page embedding {document_id} p{page_number}: {e}")
+            return False
+
+    async def search_page_embeddings(
+        self,
+        query_embedding: List[float],
+        limit: int = 10,
+        workspace_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+        include_metadata: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Search page embeddings. Query must come from the SAME multimodal model.
+
+        Inherits the Phase-0 read invariant (0.1): no workspace/document filter means
+        no results. Fails closed, and loudly — an unfiltered vector search is the
+        cheapest possible cross-tenant leak, and returning [] makes the bug show up as
+        "search found nothing" instead of "search found someone else's catalog".
+        """
+        try:
+            if not workspace_id and not document_id:
+                logger.error(
+                    "search_page_embeddings called without workspace_id/document_id - "
+                    "refusing (returning empty) to prevent cross-tenant leakage"
+                )
+                return []
+
+            filters: Optional[Dict[str, Any]] = None
+            if workspace_id:
+                filters = {"workspace_id": {"$eq": workspace_id}}
+                if document_id:
+                    filters["document_id"] = {"$eq": document_id}
+            elif document_id:
+                filters = {"document_id": {"$eq": document_id}}
+
+            collection = self.get_or_create_collection(
+                name=self.PAGE_COLLECTION,
+                dimension=self.PAGE_DIMENSION,
+            )
+
+            import asyncio
+            results = await asyncio.to_thread(
+                collection.query,
+                data=query_embedding,
+                limit=limit,
+                filters=filters,
+                include_value=True,
+                include_metadata=include_metadata,
+            )
+
+            formatted: List[Dict[str, Any]] = []
+            for result_tuple in results:
+                if include_metadata:
+                    vector_id, distance, meta = result_tuple
+                else:
+                    vector_id, distance = result_tuple
+                    meta = None
+
+                row = {
+                    "page_key": vector_id,
+                    "similarity_score": 1 - distance,
+                    "distance": distance,
+                    "search_type": "page_similarity",
+                }
+                if meta:
+                    # Read identity from metadata rather than splitting the key: a
+                    # document_id containing a colon would make string-splitting wrong,
+                    # and metadata is what the write invariant actually guarantees.
+                    row["document_id"] = meta.get("document_id")
+                    row["page_number"] = meta.get("page_number")
+                    if include_metadata:
+                        row["metadata"] = meta
+                formatted.append(row)
+
+            logger.info(f"✅ Found {len(formatted)} pages via page embeddings")
+            return formatted
+
+        except Exception as e:
+            logger.error(f"❌ Page embedding search failed: {e}")
+            return []
+
+    async def delete_page_embeddings(
+        self,
+        document_id: str,
+        page_numbers: Optional[List[int]] = None,
+    ) -> int:
+        """Delete a document's page vectors (or just the named pages).
+
+        Deleting by derived primary key, not by a metadata filter: filtering on
+        `document_id` metadata is what silently matched nothing and orphaned every
+        image embedding before `delete_embeddings_by_image_ids` existed. The page key
+        is derivable from (document_id, page_number), so we never need the filter.
+        """
+        try:
+            if page_numbers is None:
+                # No page list: find them by filter, then delete by key. The query is a
+                # lookup, not the delete itself, so the orphaning bug above can't recur.
+                collection = self.get_or_create_collection(
+                    name=self.PAGE_COLLECTION, dimension=self.PAGE_DIMENSION,
+                )
+                found = collection.query(
+                    data=[0.0] * self.PAGE_DIMENSION,
+                    limit=1000,  # vecs caps query limit at 1000 (>1000 raises)
+                    filters={"document_id": {"$eq": str(document_id)}},
+                    include_value=False,
+                    include_metadata=False,
+                )
+                ids = [r[0] if isinstance(r, (list, tuple)) else r for r in found]
+            else:
+                ids = [self.page_vector_id(document_id, p) for p in page_numbers]
+
+            if not ids:
+                return 0
+
+            collection = self.get_or_create_collection(
+                name=self.PAGE_COLLECTION, dimension=self.PAGE_DIMENSION,
+            )
+            collection.delete(ids=ids)
+            logger.info(f"✅ Deleted {len(ids)} page embeddings for document {document_id}")
+            return len(ids)
+
+        except Exception as e:
+            logger.error(f"❌ Failed to delete page embeddings for {document_id}: {e}")
+            return 0
+
     async def search_similar_images(
         self,
         query_embedding: List[float],
@@ -1117,6 +1307,13 @@ class VecsService:
             )
 
             image_ids = [r[0] if isinstance(r, (list, tuple)) else r for r in results]
+
+            # Page vectors are keyed by page, not by image, so they survive every
+            # image-keyed delete. Purge them here — and BEFORE the early return below,
+            # because a document can have page embeddings and no images at all (a
+            # text-only catalog), and that is exactly the case that would otherwise
+            # leave vectors behind for a deleted document.
+            await self.delete_page_embeddings(document_id)
 
             if image_ids:
                 collection.delete(ids=image_ids)
