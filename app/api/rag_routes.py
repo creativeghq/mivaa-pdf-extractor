@@ -5830,6 +5830,22 @@ async def get_stuck_job_statistics():
 # RAG Knowledge Base Search (No PDF Upload Required)
 # ============================================================================
 
+# Per-hit ceiling on an expanded PDF chunk (hit + neighbours), in characters.
+# ~1.5k tokens. Without it, `expand_neighbors=3` over top_k=10 could hand the
+# LLM most of a catalog and call it a search result.
+EXPANDED_CHUNK_CHAR_BUDGET = 6000
+
+# Cosine floor for document_chunks retrieval. Deliberately NOT
+# `request.similarity_threshold`, which defaults to 0.7: that knob was tuned for the
+# word-count scorer this branch replaced (+0.15 per matched word, 0..1) and is shared
+# with the products/entities branches. 0.7 is a different SCALE, not a stricter
+# setting — as a cosine cutoff on Voyage 1024D vectors it rejects near enough every
+# real hit, which would swap the old wrong-results bug for a no-results one that looks
+# exactly like an empty corpus. 0.4 for the same measured reason the kb_docs branch
+# uses 0.4: a bull's-eye query lands ~0.50 while unrelated text sits <=0.33.
+CHUNK_SIMILARITY_FLOOR = 0.4
+
+
 class KnowledgeBaseSearchRequest(BaseModel):
     """Request model for knowledge base search"""
     query: str = Field(..., description="Search query")
@@ -5872,6 +5888,16 @@ class KnowledgeBaseSearchRequest(BaseModel):
     price_doc_type: Optional[str] = Field(
         default=None,
         description="Restrict to pricing sub-type: price_list | discount_rule | contract_terms | promotion"
+    )
+    expand_neighbors: int = Field(
+        default=1, ge=0, le=3,
+        description=(
+            "Structure expansion for PDF chunk hits: also return the +/-N chunks "
+            "adjacent in reading order, so an answer that runs past a chunk boundary "
+            "(a table split in two, a spec whose heading landed in the previous chunk) "
+            "arrives whole. 0 disables it. Applies to `chunks` only — kb_docs are "
+            "already section-sized and have /search/read-section for reading outward."
+        )
     )
 
 
@@ -6091,6 +6117,42 @@ async def search_knowledge_base(
             "images": []
         }
 
+        # One query embedding, shared by every branch that needs it. `chunks`
+        # (document_chunks.text_embedding) and `kb_docs` (kb_doc_chunks.embedding)
+        # are both halfvec(1024) Voyage columns, so generating it per-branch would
+        # be a second paid API call for the identical vector.
+        _query_embedding_memo: Dict[str, Any] = {}
+        # Reported in search_metadata. Expansion that silently never fires is the
+        # platform's dominant failure shape, so the counters ship with the response
+        # rather than living only in logs.
+        chunk_expansion_stats: Dict[str, Any] = {
+            "requested": 0, "hits": 0, "expanded_hits": 0, "neighbors_added": 0,
+        }
+
+        async def _query_embedding_1024() -> Optional[List[float]]:
+            """Voyage 1024D embedding of the query. Memoized; returns None on failure
+            so each branch can degrade rather than fail the whole search."""
+            if "value" in _query_embedding_memo:
+                return _query_embedding_memo["value"]
+            value = None
+            try:
+                from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+                embeddings_service = RealEmbeddingsService()
+                embedding_result = await embeddings_service.generate_all_embeddings(
+                    entity_id="kb_search_query",
+                    # "query" → Voyage input_type="query" (optimized for retrieval).
+                    # Was "search", which fell through to input_type="document" and
+                    # slightly degraded match quality against document-side vectors.
+                    entity_type="query",
+                    text_content=request.query,
+                )
+                if embedding_result.get("success"):
+                    value = embedding_result.get("embeddings", {}).get("text_1024")
+            except Exception as embed_err:
+                logger.warning(f"   ⚠️ Query embedding failed: {embed_err}")
+            _query_embedding_memo["value"] = value
+            return value
+
         # 🎯 Search products using multi-vector search (same as main search endpoint)
         if "products" in request.search_types:
             logger.info("   🎯 Searching products with multi-vector search...")
@@ -6184,52 +6246,132 @@ async def search_knowledge_base(
             except Exception as e:
                 logger.warning(f"Entity search failed: {e}")
 
-        # Search chunks using embeddings
+        # Search PDF-derived chunks (document_chunks) by vector similarity, then
+        # expand each hit with its reading-order neighbours (issue #318).
+        #
+        # What this replaced: an UNORDERED `select * limit top_k*3` sample of the
+        # workspace, scored at +0.15 per query word found as a substring against a
+        # threshold defaulting to 0.7 — an arbitrary 30-row sample, a hit needing 5+
+        # matching words to survive, content cut at 500 chars, and no document_id /
+        # chunk_index in the result, so a retrieved chunk could not be read outward
+        # from. text_embedding was never touched despite the hnsw index existing.
         if "chunks" in request.search_types:
             logger.info("   Searching chunks...")
             try:
-                # Build category filter if provided
-                chunk_filters = {}
-                if request.categories:
-                    chunk_filters["category"] = request.categories
+                query_embedding = await _query_embedding_1024()
+                if not query_embedding:
+                    logger.warning("   ⚠️ Chunk search skipped — query embedding unavailable")
+                else:
+                    chunk_rpc_args: Dict[str, Any] = {
+                        "query_embedding": query_embedding,
+                        "p_workspace_id": request.workspace_id,
+                        "p_limit": request.top_k,
+                        # See CHUNK_SIMILARITY_FLOOR — request.similarity_threshold is
+                        # on the retired scorer's scale and would zero this out.
+                        "p_similarity_threshold": CHUNK_SIMILARITY_FLOOR,
+                    }
+                    if request.categories:
+                        chunk_rpc_args["p_categories"] = request.categories
 
-                # Search chunk embeddings
-                chunks_response = supabase.client.table('document_chunks').select('*').eq(
-                    'workspace_id', request.workspace_id
-                ).limit(request.top_k * 3).execute()
+                    chunk_rows = (
+                        supabase.client
+                        .rpc("search_document_chunks_by_embedding", chunk_rpc_args)
+                        .execute().data
+                    ) or []
+                    chunk_expansion_stats["hits"] = len(chunk_rows)
 
-                if chunks_response.data:
-                    for chunk in chunks_response.data:
-                        # Apply category filter
-                        if request.categories and chunk.get('category') not in request.categories:
-                            continue
+                    # Structure expansion, one round trip for the whole result page.
+                    # Adjacency is resolved server-side inside each hit's own
+                    # (document, product) namespace — chunk_index restarts at 0 per
+                    # product, so a document-wide walk would interleave products.
+                    expand_n = request.expand_neighbors
+                    chunk_expansion_stats["requested"] = expand_n
+                    neighbors_by_hit: Dict[str, List[Dict[str, Any]]] = {}
+                    if expand_n and chunk_rows:
+                        try:
+                            expanded_rows = (
+                                supabase.client.rpc("expand_document_chunk_hits", {
+                                    "p_chunk_ids": [r["chunk_id"] for r in chunk_rows],
+                                    "p_workspace_id": request.workspace_id,
+                                    "p_before": expand_n,
+                                    "p_after": expand_n,
+                                }).execute().data
+                            ) or []
+                            for nrow in expanded_rows:
+                                neighbors_by_hit.setdefault(
+                                    nrow["source_chunk_id"], []
+                                ).append(nrow)
+                        except Exception as expand_err:
+                            # Expansion is an enhancement: never let it cost the hit.
+                            logger.warning(
+                                f"   ⚠️ Chunk expansion failed, returning bare hits: {expand_err}"
+                            )
 
-                        # Simple text matching
-                        chunk_text = chunk.get('content', '').lower()
-                        query_lower = request.query.lower()
+                    # Total order even if an index is NULL. A plain
+                    # `(idx is None, idx)` tuple key raises TypeError comparing
+                    # None to None, which the outer handler would swallow into
+                    # "Chunk search failed" — a whole search lost to a sort key.
+                    def _reading_order(idx: Optional[int]) -> int:
+                        return idx if idx is not None else 2_147_483_647
 
-                        score = 0.0
-                        query_words = query_lower.split()
-                        for word in query_words:
-                            if word in chunk_text:
-                                score += 0.15
+                    for row in chunk_rows:
+                        matched = (row.get("content") or "").strip()
+                        # (chunk_index, text, is_the_hit) — reassembled in reading order.
+                        pieces: List[tuple] = [(row.get("chunk_index"), matched, True)]
+                        budget = EXPANDED_CHUNK_CHAR_BUDGET - len(matched)
+                        for nrow in sorted(
+                            neighbors_by_hit.get(row["chunk_id"], []),
+                            key=lambda n: _reading_order(n.get("chunk_index")),
+                        ):
+                            text = (nrow.get("content") or "").strip()
+                            # Skip rather than break: a single oversized neighbour must
+                            # not block the smaller one on its other side.
+                            if not text or len(text) > budget:
+                                continue
+                            budget -= len(text)
+                            pieces.append((nrow.get("chunk_index"), text, False))
 
-                        if score >= request.similarity_threshold:
-                            results["chunks"].append({
-                                "id": chunk['id'],
-                                "content": chunk.get('content', '')[:500],  # Truncate for response
-                                "category": chunk.get('category'),
-                                "metadata": chunk.get('metadata', {}),
-                                "relevance_score": min(score, 1.0),
-                                "type": "chunk"
-                            })
+                        pieces.sort(key=lambda p: _reading_order(p[0]))
+                        added_indexes = [p[0] for p in pieces if not p[2]]
+                        if added_indexes:
+                            chunk_expansion_stats["expanded_hits"] += 1
+                            chunk_expansion_stats["neighbors_added"] += len(added_indexes)
 
-                    # Sort and limit
-                    results["chunks"] = sorted(
-                        results["chunks"],
-                        key=lambda x: x['relevance_score'],
-                        reverse=True
-                    )[:request.top_k]
+                        results["chunks"].append({
+                            # `id` is the DOCUMENT id, not the chunk's — it is the
+                            # address /search/read-section (source='pdf') reads from.
+                            "id": row.get("document_id"),
+                            "chunk_id": row.get("chunk_id"),
+                            "chunk_index": row.get("chunk_index"),
+                            "product_id": row.get("product_id"),
+                            "page_number": row.get("page_number"),
+                            # Full text, expanded — no 500-char cut.
+                            "content": "\n\n".join(p[1] for p in pieces),
+                            # The hit on its own, so a caller can tell what actually
+                            # matched from what expansion pulled in around it.
+                            "matched_content": matched if added_indexes else None,
+                            "document_title": row.get("document_title"),
+                            "product_name": row.get("product_name"),
+                            "category": row.get("chunk_type"),
+                            "metadata": {
+                                "source": "document_chunks",
+                                "page_number": row.get("page_number"),
+                                "chunk_type": row.get("chunk_type"),
+                                "region_types": row.get("region_types"),
+                                "product_id": row.get("product_id"),
+                                "expanded": bool(added_indexes),
+                                "expanded_chunk_indexes": added_indexes,
+                            },
+                            "relevance_score": row.get("similarity_score") or 0.0,
+                            "source": "pdf",
+                            "type": "chunk",
+                        })
+
+                    logger.info(
+                        f"   ✅ {len(chunk_rows)} PDF chunk hits, "
+                        f"{chunk_expansion_stats['expanded_hits']} expanded "
+                        f"(+{chunk_expansion_stats['neighbors_added']} neighbours)"
+                    )
 
             except Exception as e:
                 logger.warning(f"Chunk search failed: {e}")
@@ -6248,102 +6390,96 @@ async def search_knowledge_base(
                 allowed_access_levels = kb_scope["allowed_access_levels"]
                 accessible_category_ids = kb_scope["accessible_category_ids"]
 
-                # Generate text_1024 embedding for the query
-                from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-                embeddings_service = RealEmbeddingsService()
-                embedding_result = await embeddings_service.generate_all_embeddings(
-                    entity_id="kb_search_query",
-                    # "query" → Voyage input_type="query" (optimized for retrieval).
-                    # Was "search", which fell through to input_type="document" and
-                    # slightly degraded match quality against document-side vectors.
-                    entity_type="query",
-                    text_content=request.query
-                )
+                # Shared with the `chunks` branch above — same vector, one API call.
+                query_embedding = await _query_embedding_1024()
 
-                if embedding_result.get("success"):
-                    query_embedding = embedding_result.get("embeddings", {}).get("text_1024")
-                    if query_embedding:
-                        rpc_args: Dict[str, Any] = {
-                            "query_embedding": query_embedding,
-                            "match_workspace_id": request.workspace_id,
-                            # 0.4, not 0.5. A long KB doc (e.g. a 7k-char company
-                            # overview) has ONE averaged embedding, so even a bull's-eye
-                            # query ("Materials Hub") lands ~0.50 — right on a 0.5 cutoff,
-                            # flickering in/out with float noise. Measured separation is
-                            # clean: the true match sits ~0.50 while the next-best
-                            # unrelated docs sit ≤0.33, so 0.4 admits the real hit without
-                            # letting noise in. (Proper long-term fix: chunk long KB docs.)
-                            "match_threshold": 0.4,
-                            "match_count": request.top_k * 2,  # fetch extra, will post-filter
-                            "allowed_access_levels": allowed_access_levels,
-                            # 'private' visibility means "not published to the public KB
-                            # website" — it is NOT an agent gate. Agent readability is
-                            # governed by category access_level (agent/public) + per-doc
-                            # allowed_agents, both applied above/below. So admin AND agent
-                            # callers include private docs; only the public-website caller
-                            # ('public') is restricted to visibility='public'. Without this,
-                            # every "private but agent-allowed" doc was invisible to the agent.
-                            "include_private": kb_scope["include_private"],
-                        }
-                        # Per-agent allow-list: only agent callers filter by identity.
-                        # Admin/public callers pass no agent_id, so allowed_agents is ignored.
-                        if caller != "admin" and request.agent_id:
-                            rpc_args["match_agent_id"] = request.agent_id
-                        if request.category_id:
-                            rpc_args["match_category_id"] = request.category_id
-                        if request.category_slug:
-                            rpc_args["match_category_slug"] = request.category_slug
-                        if request.price_doc_type:
-                            rpc_args["match_price_doc_type"] = request.price_doc_type
-                        # Cross-workspace shared KB: tenant callers (agent/admin — NOT the
-                        # public-website caller) also pull the operator root workspace's
-                        # published + non-private docs. The RPC forces published+non-private on
-                        # the shared branch and no-ops when shared == caller, so an operator
-                        # (root) caller never bleeds its own drafts/private through this path.
-                        if kb_scope["shared_workspace_id"]:
-                            rpc_args["shared_workspace_id"] = kb_scope["shared_workspace_id"]
+                if query_embedding:
+                    rpc_args: Dict[str, Any] = {
+                        "query_embedding": query_embedding,
+                        "match_workspace_id": request.workspace_id,
+                        # 0.4, not 0.5. A long KB doc (e.g. a 7k-char company
+                        # overview) has ONE averaged embedding, so even a bull's-eye
+                        # query ("Materials Hub") lands ~0.50 — right on a 0.5 cutoff,
+                        # flickering in/out with float noise. Measured separation is
+                        # clean: the true match sits ~0.50 while the next-best
+                        # unrelated docs sit ≤0.33, so 0.4 admits the real hit without
+                        # letting noise in. (Proper long-term fix: chunk long KB docs.)
+                        "match_threshold": 0.4,
+                        "match_count": request.top_k * 2,  # fetch extra, will post-filter
+                        "allowed_access_levels": allowed_access_levels,
+                        # 'private' visibility means "not published to the public KB
+                        # website" — it is NOT an agent gate. Agent readability is
+                        # governed by category access_level (agent/public) + per-doc
+                        # allowed_agents, both applied above/below. So admin AND agent
+                        # callers include private docs; only the public-website caller
+                        # ('public') is restricted to visibility='public'. Without this,
+                        # every "private but agent-allowed" doc was invisible to the agent.
+                        "include_private": kb_scope["include_private"],
+                    }
+                    # Per-agent allow-list: only agent callers filter by identity.
+                    # Admin/public callers pass no agent_id, so allowed_agents is ignored.
+                    if caller != "admin" and request.agent_id:
+                        rpc_args["match_agent_id"] = request.agent_id
+                    if request.category_id:
+                        rpc_args["match_category_id"] = request.category_id
+                    if request.category_slug:
+                        rpc_args["match_category_slug"] = request.category_slug
+                    if request.price_doc_type:
+                        rpc_args["match_price_doc_type"] = request.price_doc_type
+                    # Cross-workspace shared KB: tenant callers (agent/admin — NOT the
+                    # public-website caller) also pull the operator root workspace's
+                    # published + non-private docs. The RPC forces published+non-private on
+                    # the shared branch and no-ops when shared == caller, so an operator
+                    # (root) caller never bleeds its own drafts/private through this path.
+                    if kb_scope["shared_workspace_id"]:
+                        rpc_args["shared_workspace_id"] = kb_scope["shared_workspace_id"]
 
-                        # Section-level retrieval: match on kb_doc_chunks (each ~1.3k-char
-                        # section), gated via the parent doc INSIDE the RPC (workspace,
-                        # published, category access_level, visibility, per-doc allowed_agents
-                        # via match_agent_id). So a big manual returns its most relevant
-                        # SECTIONS in full instead of a truncated head, and matching is
-                        # per-section rather than one weak whole-doc vector.
-                        kb_response = supabase.client.rpc("kb_match_doc_chunks", rpc_args).execute()
+                    # Section-level retrieval: match on kb_doc_chunks (each ~1.3k-char
+                    # section), gated via the parent doc INSIDE the RPC (workspace,
+                    # published, category access_level, visibility, per-doc allowed_agents
+                    # via match_agent_id). So a big manual returns its most relevant
+                    # SECTIONS in full instead of a truncated head, and matching is
+                    # per-section rather than one weak whole-doc vector.
+                    kb_response = supabase.client.rpc("kb_match_doc_chunks", rpc_args).execute()
 
-                        if kb_response.data:
-                            kb_count = 0
-                            for ch in kb_response.data:
-                                cat_id = ch.get("category_id")
-                                # Trigger-keyword gate: agent-level categories only unlock when
-                                # their keyword is in the query (public categories always in set).
-                                if (
-                                    accessible_category_ids is not None
-                                    and cat_id is not None
-                                    and cat_id not in accessible_category_ids
-                                ):
-                                    continue
-                                heading = ch.get("heading")
-                                results["chunks"].append({
-                                    "id": ch.get("kb_doc_id"),
-                                    "chunk_id": ch.get("chunk_id"),
-                                    "chunk_index": ch.get("chunk_index"),
-                                    "heading": heading,
-                                    # Full section content — no truncation (chunks are section-sized).
-                                    "content": ch.get("content") or "",
-                                    "document_title": ch.get("document_title"),
-                                    "category": cat_id,
-                                    "category_slug": ch.get("category_slug"),
-                                    "category_name": ch.get("category_name"),
-                                    "price_doc_type": ch.get("price_doc_type"),
-                                    "metadata": {"source": "kb_doc_chunks", "visibility": ch.get("visibility"), "heading": heading},
-                                    "relevance_score": ch.get("similarity", 0.0),
-                                    "type": "kb_doc",
-                                })
-                                kb_count += 1
-                                if kb_count >= request.top_k:
-                                    break
-                            logger.info(f"   ✅ Found {kb_count} KB doc sections after keyword filtering")
+                    if kb_response.data:
+                        kb_count = 0
+                        for ch in kb_response.data:
+                            cat_id = ch.get("category_id")
+                            # Trigger-keyword gate: agent-level categories only unlock when
+                            # their keyword is in the query (public categories always in set).
+                            if (
+                                accessible_category_ids is not None
+                                and cat_id is not None
+                                and cat_id not in accessible_category_ids
+                            ):
+                                continue
+                            heading = ch.get("heading")
+                            results["chunks"].append({
+                                "id": ch.get("kb_doc_id"),
+                                "chunk_id": ch.get("chunk_id"),
+                                "chunk_index": ch.get("chunk_index"),
+                                "heading": heading,
+                                # Full section content — no truncation (chunks are section-sized).
+                                "content": ch.get("content") or "",
+                                "document_title": ch.get("document_title"),
+                                "category": cat_id,
+                                "category_slug": ch.get("category_slug"),
+                                "category_name": ch.get("category_name"),
+                                "price_doc_type": ch.get("price_doc_type"),
+                                "metadata": {"source": "kb_doc_chunks", "visibility": ch.get("visibility"), "heading": heading},
+                                "relevance_score": ch.get("similarity", 0.0),
+                                # `source` tells the caller WHICH corpus this hit is
+                                # addressed in, and therefore which read-section mode
+                                # ('kb' vs 'pdf') can read outward from it. The two
+                                # share this list but not their id spaces.
+                                "source": "kb",
+                                "type": "kb_doc",
+                            })
+                            kb_count += 1
+                            if kb_count >= request.top_k:
+                                break
+                        logger.info(f"   ✅ Found {kb_count} KB doc sections after keyword filtering")
 
             except Exception as e:
                 logger.warning(f"KB docs search failed: {e}")
@@ -6365,7 +6501,11 @@ async def search_knowledge_base(
                 "search_types": request.search_types,
                 "categories_filter": request.categories,
                 "entity_types_filter": request.entity_types,
-                "similarity_threshold": request.similarity_threshold
+                "similarity_threshold": request.similarity_threshold,
+                # Did structure expansion actually fire, and how much did it add?
+                # Shipped with the response so "expansion is on" can be verified
+                # from a single call instead of inferred from log archaeology.
+                "chunk_expansion": chunk_expansion_stats,
             }
         )
 
@@ -6381,7 +6521,31 @@ async def search_knowledge_base(
 
 class ReadSectionRequest(BaseModel):
     """Request model for contiguous section reading (locate-then-read)."""
-    kb_doc_id: str = Field(..., description="kb_doc to read from (as returned by knowledge-base search)")
+    source: str = Field(
+        default="kb",
+        description=(
+            "Which corpus the id addresses: 'kb' (kb_docs, authored articles) or "
+            "'pdf' (document_chunks, text extracted from ingested PDFs). Defaults to "
+            "'kb' so pre-existing callers are unaffected."
+        )
+    )
+    kb_doc_id: Optional[str] = Field(
+        default=None,
+        description="kb_doc to read from (as returned by knowledge-base search). Required when source='kb'."
+    )
+    document_id: Optional[str] = Field(
+        default=None,
+        description="document to read from, as returned by knowledge-base search. Required when source='pdf'."
+    )
+    product_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "PDF only. chunk_index restarts at 0 for EACH product within a document, "
+            "so the product scopes the index namespace. Pass the product_id the search "
+            "hit carried; omitting it reads the document-level namespace (product_id IS "
+            "NULL), which is a different set of chunks — not a wildcard."
+        )
+    )
     workspace_id: str = Field(..., description="Caller's workspace ID")
     from_chunk_index: int = Field(default=0, ge=0, description="First section index to read (inclusive)")
     to_chunk_index: Optional[int] = Field(
@@ -6406,7 +6570,10 @@ class ReadSectionRequest(BaseModel):
 
 class ReadSectionResponse(BaseModel):
     """Response model for contiguous section reading."""
-    kb_doc_id: str
+    source: str = "kb"
+    kb_doc_id: Optional[str] = None
+    document_id: Optional[str] = None
+    product_id: Optional[str] = None
     document_title: Optional[str] = None
     chunks: List[Dict[str, Any]] = []
     doc_chunk_count: int = 0
@@ -6423,22 +6590,38 @@ async def read_document_section(
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
     """
-    📖 Read a contiguous run of sections from ONE knowledge-base document, in order.
+    📖 Read a contiguous run of sections from ONE document, in order.
 
     The companion to `/search/knowledge-base`: search **locates** a section (it returns
-    `kb_doc_id` + `chunk_index` + `heading` per hit), this **reads outward** from it.
-    Answers that straddle a section boundary — a spec continued under the next heading,
-    a table whose caption sits in the previous chunk — are otherwise unreachable except
-    by guessing new keywords and hoping the missing part scores above threshold.
+    an id + `chunk_index` per hit), this **reads outward** from it. Answers that
+    straddle a section boundary — a spec continued under the next heading, a table
+    whose caption sits in the previous chunk — are otherwise unreachable except by
+    guessing new keywords and hoping the missing part scores above threshold.
 
-    Access is gated by `_resolve_kb_access_scope` + `kb_read_doc_section`, the SAME
-    predicate `/search/knowledge-base` uses. The caller supplies `kb_doc_id`, so a
-    document it cannot read returns **404** (not 403 — a 403 would confirm the id).
+    Two corpora, selected by `source`:
 
-    Cheap by construction: pure SQL over `kb_doc_chunks`, no embedding and no LLM call.
+    - **`kb`** (default) — authored `kb_docs`. Access is gated by
+      `_resolve_kb_access_scope` + `kb_read_doc_section`, the SAME predicate
+      `/search/knowledge-base` uses.
+    - **`pdf`** — `document_chunks` extracted from ingested PDFs, via
+      `read_document_chunk_span`. Scoped to the caller's workspace, and to the
+      `(document, product)` index namespace because `chunk_index` restarts at 0 for
+      each product inside a document.
+
+    The caller supplies the id either way, so an object it cannot read returns **404**
+    (not 403 — a 403 would confirm the id exists).
+
+    Cheap by construction: pure SQL, no embedding and no LLM call.
     """
     try:
         await authorize_rag_workspace(claims, request.workspace_id)
+
+        source = (request.source or "kb").strip().lower()
+        if source not in ("kb", "pdf"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="source must be 'kb' or 'pdf'",
+            )
 
         caller = request.caller or "agent"
         from_idx = max(0, request.from_chunk_index)
@@ -6447,23 +6630,62 @@ async def read_document_section(
         if to_idx < from_idx:
             to_idx = from_idx
 
-        scope = _resolve_kb_access_scope(supabase, request.workspace_id, caller, request.query)
+        if source == "pdf":
+            if not request.document_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="document_id is required when source='pdf'",
+                )
+            pdf_resp = supabase.client.rpc("read_document_chunk_span", {
+                "p_document_id": request.document_id,
+                "match_workspace_id": request.workspace_id,
+                "p_from_chunk_index": from_idx,
+                "p_to_chunk_index": to_idx,
+                "p_product_id": request.product_id,
+            }).execute()
+            # Normalize onto the kb row shape so the budget/outline logic below is
+            # shared. PDF chunks carry no heading — the page is their human locator —
+            # and no token_count column, so length/4 stands in for the budget.
+            rows = [
+                {
+                    "chunk_id": r.get("chunk_id"),
+                    "chunk_index": r.get("chunk_index"),
+                    "heading": (
+                        f"page {r.get('page_number')}"
+                        if r.get("page_number") is not None else None
+                    ),
+                    "content": r.get("content") or "",
+                    "token_count": max(1, len(r.get("content") or "") // 4),
+                    "document_title": r.get("document_title") or r.get("product_name"),
+                    "page_number": r.get("page_number"),
+                    "category_id": None,  # no category gate on the PDF corpus
+                    "doc_chunk_count": r.get("doc_chunk_count"),
+                }
+                for r in (pdf_resp.data or [])
+            ]
+        else:
+            if not request.kb_doc_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="kb_doc_id is required when source='kb'",
+                )
+            scope = _resolve_kb_access_scope(supabase, request.workspace_id, caller, request.query)
 
-        rpc_args: Dict[str, Any] = {
-            "p_kb_doc_id": request.kb_doc_id,
-            "match_workspace_id": request.workspace_id,
-            "p_from_chunk_index": from_idx,
-            "p_to_chunk_index": to_idx,
-            "allowed_access_levels": scope["allowed_access_levels"],
-            "include_private": scope["include_private"],
-        }
-        if caller != "admin" and request.agent_id:
-            rpc_args["match_agent_id"] = request.agent_id
-        if scope["shared_workspace_id"]:
-            rpc_args["shared_workspace_id"] = scope["shared_workspace_id"]
+            rpc_args: Dict[str, Any] = {
+                "p_kb_doc_id": request.kb_doc_id,
+                "match_workspace_id": request.workspace_id,
+                "p_from_chunk_index": from_idx,
+                "p_to_chunk_index": to_idx,
+                "allowed_access_levels": scope["allowed_access_levels"],
+                "include_private": scope["include_private"],
+            }
+            if caller != "admin" and request.agent_id:
+                rpc_args["match_agent_id"] = request.agent_id
+            if scope["shared_workspace_id"]:
+                rpc_args["shared_workspace_id"] = scope["shared_workspace_id"]
 
-        resp = supabase.client.rpc("kb_read_doc_section", rpc_args).execute()
-        rows = resp.data or []
+            resp = supabase.client.rpc("kb_read_doc_section", rpc_args).execute()
+            rows = resp.data or []
 
         if not rows:
             # Either the doc is invisible to this caller, or the span is out of range.
@@ -6474,13 +6696,16 @@ async def read_document_section(
             )
 
         # Trigger-keyword gate — the same post-filter search applies to its RPC rows.
-        accessible = scope["accessible_category_ids"]
-        cat_id = rows[0].get("category_id")
-        if accessible is not None and cat_id is not None and cat_id not in accessible:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Section not found or not accessible",
-            )
+        # kb only: the PDF corpus has no categories, and read_document_chunk_span
+        # already scopes its rows to the caller's workspace.
+        if source == "kb":
+            accessible = scope["accessible_category_ids"]
+            cat_id = rows[0].get("category_id")
+            if accessible is not None and cat_id is not None and cat_id not in accessible:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Section not found or not accessible",
+                )
 
         # Token budget. Sections are returned whole (a half-section is worse than a
         # missing one), so the budget cuts at a section boundary and reports it.
@@ -6499,6 +6724,8 @@ async def read_document_section(
                 "heading": row.get("heading"),
                 "content": row.get("content") or "",
                 "token_count": tokens,
+                # PDF only; None on kb rows.
+                "page_number": row.get("page_number"),
             })
             spent += tokens
 
@@ -6516,12 +6743,16 @@ async def read_document_section(
         ]
 
         logger.info(
-            f"📖 read-section doc={request.kb_doc_id} span=[{from_idx}..{to_idx}] "
+            f"📖 read-section source={source} "
+            f"doc={request.kb_doc_id or request.document_id} span=[{from_idx}..{to_idx}] "
             f"returned={len(kept)}/{len(rows)} tokens={spent} truncated={truncated}"
         )
 
         return ReadSectionResponse(
+            source=source,
             kb_doc_id=request.kb_doc_id,
+            document_id=request.document_id,
+            product_id=request.product_id,
             document_title=rows[0].get("document_title"),
             chunks=kept,
             doc_chunk_count=doc_chunk_count,
