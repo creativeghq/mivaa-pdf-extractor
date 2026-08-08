@@ -7,6 +7,7 @@ with proper metadata, embeddings, and relationships.
 """
 
 import logging
+import re  # module level: three functions imported it locally, a fourth used it without
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import json

@@ -5753,20 +5753,13 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get AI tracking: {str(e)}"
         )
-        
-        processing_time = (datetime.utcnow() - start_time).total_seconds()
-        
-        return AdvancedQueryResponse(
-            original_query=request.query,
-            optimized_query=results.get('optimized_query', request.query),
-            query_type=request.query_type,
-            results=results.get('results', []),
-            total_results=results.get('total_results', 0),
-            expansion_terms=results.get('expansion_terms', []),
-            processing_time=processing_time,
-            confidence_score=results.get('confidence_score', 0.0)
-        )
-        
+
+    # A `return AdvancedQueryResponse(...)` block used to sit here, after the `raise`
+    # above and inside its `except` — unreachable, and referencing four names
+    # (`start_time`, `request`, `results`, `datetime`) that do not exist in this
+    # function at all. Paste residue from a different handler. Removed; it was four
+    # of this file's F821s and it made the error path harder to read than it is.
+
     except ValueError as e:
         logger.error(f"Invalid query parameters: {e}")
         raise HTTPException(

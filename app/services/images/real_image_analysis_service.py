@@ -13,6 +13,7 @@ same tool-use guarantees. No HF vision endpoint involved.
 import logging
 import asyncio
 import base64
+import re  # used by the JSON-repair path below; was missing, so every repair NameError'd
 import time
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass

@@ -6,6 +6,7 @@ endpoints using Claude 4.5 + Direct Vector DB for semantic search, document quer
 and intelligent document analysis.
 """
 
+import asyncio  # used by the metadata-enrichment loop; only one function imported it locally
 import logging
 from typing import Dict, List, Optional, Any
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
