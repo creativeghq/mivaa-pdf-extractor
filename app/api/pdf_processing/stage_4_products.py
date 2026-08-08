@@ -1404,7 +1404,6 @@ async def propagate_common_fields_to_products(
                     nested_updates[(parent_key, child_key)] = common_value
 
             # Propagate nested factory object if product is missing/incomplete
-            factory_updated = False
             if best_factory:
                 existing_fobj = metadata.get('factory') or {}
                 existing_score = sum(
@@ -1425,7 +1424,6 @@ async def propagate_common_fields_to_products(
                         updates_needed['factory_name'] = merged_factory['factory_name']
                     if merged_factory.get('factory_group_name'):
                         updates_needed['factory_group_name'] = merged_factory['factory_group_name']
-                    factory_updated = True
 
             if updates_needed or nested_updates:
                 updated_metadata = {**metadata, **updates_needed}
@@ -1883,7 +1881,7 @@ def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:
     # "MATT" and "GLOSS" on the spec page are options, not confirmed values for
     # this product unless they appear with a "✓" or bold marker — but their
     # presence on the page at least hints at what finishes exist.
-    finish_patterns = {
+    {
         "matt":      _re.compile(r"\bMATT\b"),
         "gloss":     _re.compile(r"\bGLOSS\b"),
         "polished":  _re.compile(r"\bPOLISHED\b", _re.IGNORECASE),

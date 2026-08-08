@@ -151,7 +151,7 @@ class SearchQueryTracker:
         """Track an unmatched term for frequency analysis."""
         try:
             # Upsert into unmatched_term_frequency (sync client — no await)
-            result = self.supabase.client.rpc(
+            self.supabase.client.rpc(
                 'upsert_unmatched_term',
                 {
                     'p_term': term,

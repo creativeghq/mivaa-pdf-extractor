@@ -81,7 +81,7 @@ async def check_supabase_health() -> Dict[str, Any]:
         # Try to query a system table or perform a simple operation
         try:
             # Try to query the auth users table first (always exists in Supabase)
-            response = supabase.auth.get_session()
+            supabase.auth.get_session()
             
             end_time = datetime.utcnow()
             response_time_ms = (end_time - start_time).total_seconds() * 1000
@@ -170,7 +170,7 @@ async def test_database_performance() -> Dict[str, Any]:
     try:
         # Test connection latency
         start_time = datetime.utcnow()
-        health_check = await check_supabase_health()
+        await check_supabase_health()
         end_time = datetime.utcnow()
         
         latency_ms = (end_time - start_time).total_seconds() * 1000

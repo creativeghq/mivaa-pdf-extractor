@@ -476,7 +476,7 @@ async def download_and_upload_to_supabase(image_url: str, job_id: str, model_id:
 
             # Upload to Supabase Storage
             supabase = get_supabase_client()
-            result = supabase.client.storage.from_('generation-images').upload(
+            supabase.client.storage.from_('generation-images').upload(
                 filename,
                 image_data,
                 file_options={"content-type": content_type}

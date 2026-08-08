@@ -119,7 +119,7 @@ class StuckJobAnalyzer:
             
             if i == 0:
                 # First checkpoint - time from job start
-                created_at = datetime.fromisoformat(checkpoint['created_at'].replace('Z', '+00:00'))
+                datetime.fromisoformat(checkpoint['created_at'].replace('Z', '+00:00'))
                 stage_times[stage] = {
                     "duration_seconds": 0,
                     "completed_at": checkpoint['created_at']

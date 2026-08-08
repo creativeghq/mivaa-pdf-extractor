@@ -545,7 +545,7 @@ class UnifiedChunkingService:
             else:
                 # Split oversized semantic chunks using fixed-size approach
                 # Create temporary config for fixed-size chunking
-                temp_config = ChunkingConfig(
+                ChunkingConfig(
                     strategy=ChunkingStrategy.FIXED_SIZE,
                     max_chunk_size=self.config.max_chunk_size,
                     min_chunk_size=self.config.min_chunk_size,

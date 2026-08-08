@@ -263,7 +263,7 @@ async def mark_feedback_helpful(
         current_count = response.data.get("helpful_count", 0)
 
         # Increment helpful_count
-        update_response = supabase_client.client.from_("user_feedback").update({"helpful_count": current_count + 1}).eq("id", feedback_id).execute()
+        supabase_client.client.from_("user_feedback").update({"helpful_count": current_count + 1}).eq("id", feedback_id).execute()
 
         return {
             "success": True,

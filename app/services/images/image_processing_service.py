@@ -206,7 +206,7 @@ class ImageProcessingService:
         import httpx
         import json
 
-        ai_service = get_ai_client_service()
+        get_ai_client_service()
 
         # Stage 3 image classification runs on Anthropic Claude Opus 4.7 via
         # tool use. The deployed
@@ -215,7 +215,7 @@ class ImageProcessingService:
         # the architecture honest. Tool use guarantees schema-conformant
         # output without parsing/regex recovery.
         from app.config import get_settings as _get_settings
-        settings = _get_settings()
+        _get_settings()
 
         anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
         if not anthropic_api_key:
@@ -1573,11 +1573,11 @@ class ImageProcessingService:
                     continue
 
                 embeddings = embedding_result.get('embeddings', {})
-                model_used = embedding_result.get('model_used', 'unknown')
+                embedding_result.get('model_used', 'unknown')
 
                 # 🔍 BBOX TRACE: Check if bbox changed after embedding generation
                 bbox_after = img_data.get('bbox')
-                bbox_after_len = len(bbox_after) if isinstance(bbox_after, (list, tuple)) else 'N/A'
+                len(bbox_after) if isinstance(bbox_after, (list, tuple)) else 'N/A'
                 if isinstance(bbox_after, (list, tuple)) and len(bbox_after) > 10:
                     logger.error(
                         f"   ❌ [BBOX TRACE] CORRUPTION AFTER EMBEDDING! bbox has {len(bbox_after)} elements. "

@@ -84,7 +84,7 @@ async def log_frontend_error(log_request: FrontendLogRequest, request: Request):
         }
 
         # Insert into database
-        response = supabase.client.table('system_logs').insert(log_entry).execute()
+        supabase.client.table('system_logs').insert(log_entry).execute()
 
         return {
             "success": True,

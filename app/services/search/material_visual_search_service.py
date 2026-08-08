@@ -747,7 +747,7 @@ class MaterialVisualSearchService:
             for idx, item in enumerate(enriched_results):
                 metadata = item.get('metadata', {})
                 related_products = item.get('related_products', [])
-                related_chunks = item.get('related_chunks', [])
+                item.get('related_chunks', [])
 
                 # Use first related product as primary material
                 primary_product = related_products[0] if related_products else None

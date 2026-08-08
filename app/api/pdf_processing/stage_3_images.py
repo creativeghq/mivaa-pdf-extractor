@@ -303,7 +303,7 @@ async def process_product_images(
                         import re
                         region_match = re.search(r'_region_(\d+)', filename)
                         if region_match:
-                            region_idx = int(region_match.group(1))
+                            int(region_match.group(1))
                             # Check if this region was detected on left or right page
                             for region in left_layout_regions:
                                 if hasattr(region, 'bbox') and region.bbox:
@@ -765,7 +765,6 @@ async def _run_phase_3_ocr_for_product(
         # Rationale: OCR calls aren't free. Stage 1.5 already covered
         # full_render pages and IMAGE-class layout crops are explicitly
         # classified as non-text, so OCRing them was burning OCR calls.
-        text_bearing_regions = {"TABLE", "TEXT", "TITLE", "CAPTION"}
         photo_regions        = {"IMAGE", "FIGURE", "PHOTO"}
 
         skipped_reason: Optional[str] = None

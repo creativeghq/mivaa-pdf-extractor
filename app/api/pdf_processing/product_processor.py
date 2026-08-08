@@ -99,10 +99,15 @@ async def process_single_product(
     # on resume; this short-circuits each stage individually.
     prior_stages: set = set()
     prior_db_id: Optional[str] = None
-    skip_extraction = False
+    # Only two resume flags exist because only two stages are skippable here.
+    # `skip_extraction` and `skip_creation` were declared alongside these and never
+    # read: extraction is deliberately always redone (see the comment at the resume
+    # block below — Stage 3 needs the in-memory pages and re-extracting costs no AI
+    # calls), and product CREATION does not happen in this function at all. Stage 0
+    # discovery creates the row; Stage 4 here only updates it, and raises if the id is
+    # missing. Two dead flags that read like unimplemented skips.
     skip_chunking = False
     skip_images = False
-    skip_creation = False
     # What a completed-stage checkpoint claimed it wrote, so the DB row counts below
     # can be judged complete-or-partial rather than merely non-zero. None = no
     # checkpoint recorded a total, which is itself evidence the stage never finished.
@@ -248,8 +253,9 @@ async def process_single_product(
                 f"♻️  [RESUME] Product {product_index} '{product.name}' images already in DB — "
                 f"will reuse instead of re-creating"
             )
-        if 'products_created' in prior_stages:
-            skip_creation = True
+        # ('products_created' in prior_stages) is deliberately NOT turned into a skip:
+        # this function does not create products. Stage 0 discovery does, and the
+        # fully-processed case already returned early above with prior_db_id.
 
     except Exception as resume_check_err:
         logger_instance.debug(f"Per-product resume check failed (continuing): {resume_check_err}")
@@ -314,7 +320,7 @@ async def process_single_product(
         layout_stats = extraction_result.get('layout_stats', {})
         # Get spread layout info for internal PDF access
         has_spread_layout = extraction_result.get('has_spread_layout', False)
-        physical_to_pdf_map = extraction_result.get('physical_to_pdf_map', {})
+        extraction_result.get('physical_to_pdf_map', {})
 
         await product_tracker.mark_stage_complete(
             product_id,

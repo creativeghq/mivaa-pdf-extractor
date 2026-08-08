@@ -338,7 +338,7 @@ async def get_tracked_query_history(
     ctx: ApiKeyContext = Depends(authenticate_api_key),
 ) -> List[TrackedQueryResultRow]:
     service = get_tracked_queries_service()
-    tq = _ensure_owner(await service.get(tracking_id), ctx)
+    _ensure_owner(await service.get(tracking_id), ctx)
     history = await service.history(tracking_id, limit=limit)
     return [TrackedQueryResultRow(**row) for row in history]
 

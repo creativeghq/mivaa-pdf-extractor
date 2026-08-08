@@ -575,7 +575,7 @@ async def search_documents(
         # Initialize services
         supabase_client = get_supabase_client()
         search_prompt_service = SearchPromptService(supabase_client=supabase_client.client)
-        product_rel_service = ProductRelationshipService(supabase_client=supabase_client.client)
+        ProductRelationshipService(supabase_client=supabase_client.client)
 
         # Apply enhancement prompt to query if enabled
         query_to_use = request.query

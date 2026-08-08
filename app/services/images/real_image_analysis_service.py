@@ -530,8 +530,7 @@ class RealImageAnalysisService:
         """Analyze image with Claude Opus 4.7 Vision from base64 data"""
         try:
             # Use centralized AI client service
-            ai_service = get_ai_client_service()
-            client = ai_service.anthropic
+            get_ai_client_service()
 
             # Use database prompt - NO FALLBACK
             if self.claude_prompt:

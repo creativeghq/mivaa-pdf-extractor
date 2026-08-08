@@ -244,7 +244,7 @@ class ChunkTypeClassificationService:
         Returns:
             Dictionary with chunk_type, confidence, and reasoning
         """
-        content_lower = content.lower()
+        content.lower()
         content_length = len(content)
         
         # Product Description patterns

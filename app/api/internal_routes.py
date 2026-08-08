@@ -1808,7 +1808,7 @@ async def validate_pipeline(
 
         job = job_resp.data
         document_id = job.get('document_id') or job.get('metadata', {}).get('document_id')
-        workspace_id = job.get('workspace_id')
+        job.get('workspace_id')
 
         stages = {}
         issues = []

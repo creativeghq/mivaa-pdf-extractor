@@ -442,7 +442,7 @@ class ProductRelationshipService:
             candidates = response.data
 
             # Ask Claude to select related products based on the custom prompt
-            ai = get_ai_client_service()
+            get_ai_client_service()
             source_summary = {
                 "name": source_product.get("name", ""),
                 "description": source_product.get("description", ""),

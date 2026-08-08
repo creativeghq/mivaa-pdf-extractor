@@ -1312,7 +1312,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         supabase_client = get_supabase_client()
 
         # Test query
-        result = supabase_client.client.table('documents').select('id').limit(1).execute()
+        supabase_client.client.table('documents').select('id').limit(1).execute()
         latency_ms = int((time.time() - start_time) * 1000)
 
         services_status["database"] = {
@@ -2083,7 +2083,10 @@ async def trigger_sentry_error():
     Raises:
         ZeroDivisionError: Intentional error for Sentry testing
     """
-    division_by_zero = 1 / 0
+    # Bare expression, not an assignment: the ZeroDivisionError IS the payload of this
+    # endpoint, and binding it to a name that can never receive a value only made the
+    # linter flag a deliberate probe as dead code.
+    1 / 0
     return {"status": "This should never be reached"}
 
 

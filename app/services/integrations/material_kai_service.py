@@ -38,13 +38,11 @@ def retry_on_failure(max_retries: int = 3, backoff_factor: float = 1.0,
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
-            last_exception = None
             
             for attempt in range(max_retries + 1):
                 try:
                     return await func(*args, **kwargs)
                 except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-                    last_exception = e
                     if attempt == max_retries:
                         logger.error(f"Function {func.__name__} failed after {max_retries} retries: {e}")
                         raise MaterialKaiIntegrationError(f"Operation failed after {max_retries} retries: {e}")

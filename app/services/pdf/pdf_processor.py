@@ -730,7 +730,7 @@ class PDFProcessor:
             self.logger.info(f"   Pages to process (array indices): {pages_to_process}")
 
             # Process pages in small batches with aggressive memory cleanup
-            loop = asyncio.get_event_loop()
+            asyncio.get_event_loop()
             all_images = []
 
             # Track extraction method for metrics (4-layer cascade)
@@ -853,7 +853,7 @@ class PDFProcessor:
             List of extracted image data dictionaries (deduplicated)
         """
         from app.config import get_settings
-        settings = get_settings()
+        get_settings()
 
         all_images = []
 
@@ -2286,7 +2286,7 @@ class PDFProcessor:
             for item in images_skipped:
                 image_data = item['data']
                 skip_reason = item.get('skip_reason', 'unknown')
-                metadata = item.get('metadata', {})
+                item.get('metadata', {})
                 
                 # Build comprehensive metadata for skipped images
                 skip_metadata = {

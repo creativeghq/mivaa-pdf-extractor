@@ -443,7 +443,7 @@ class CheckpointRecoveryService:
 
             elif stage == ProcessingStage.WARMUP_COMPLETE:
                 # Verify warmup complete checkpoint has results
-                endpoint_names = data.get("endpoint_names", [])
+                data.get("endpoint_names", [])
                 total_ready = data.get("total_ready", 0)
                 endpoints_failed = data.get("endpoints_failed", [])
 

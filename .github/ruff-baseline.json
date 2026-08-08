@@ -1,35 +1,16 @@
 {
   "_comment": [
-    "Per-rule ceiling for `ruff --select F` over app/, enforced by",
-    "scripts/check_ruff_gate.py in deploy.yml. A count may FALL, never rise.",
-    "Fix findings and ratchet the number down in the same change; do not raise a",
-    "number to make a build pass. Same contract as the platform repo's",
-    ".github/edge-typecheck-baseline.json.",
+    "EMPTY ON PURPOSE. The whole `ruff --select F,W605` surface over app/ is at zero",
+    "(605 findings -> 0), so every rule is enforced by ZERO_TOLERANCE in",
+    "scripts/check_ruff_gate.py and nothing needs a ceiling.",
     "",
-    "NOT listed here — enforced at ZERO by ZERO_TOLERANCE in the gate script:",
-    "  F821 undefined name       41 -> 0",
-    "  F811 redefinition         10 -> 0",
-    "  F401 unused import       371 -> 0",
-    "  F541 f-string no fields  139 -> 0",
-    "  invalid-syntax             1 -> 0",
+    "This file is the escape hatch, not the norm: if a rule is ever added that has",
+    "existing debt, record its count here so the gate can ratchet it down instead of",
+    "being switched off. A count may FALL, never rise. Do not raise a number to make",
+    "a build pass, and do not move a rule out of ZERO_TOLERANCE into here.",
     "",
-    "What is left, and why it is still a ratchet rather than a gate:",
-    "",
-    "  F841 (46) unused local. Ruff cannot fix these safely: the pattern is",
-    "       `result = something()` where the call has side effects and only the",
-    "       binding is dead, so removing the statement would remove the call. Each",
-    "       needs a human to decide whether the ignored result should have been",
-    "       checked. Triaged once already for security-shaped cases (a computed",
-    "       workspace_id in validate-pipeline is genuinely unused; that route gates on",
-    "       verify_internal_access and scopes by document_id from the job row).",
-    "",
-    "  F405 (22) / F403 (5) star imports. Fixing means enumerating what each",
-    "       `from x import *` actually provides. Mechanical but not automatic, and a",
-    "       wrong enumeration is an ImportError."
+    "With this empty, main()'s new-rule check means ANY finding fails the build,",
+    "including from a rule nobody has classified yet."
   ],
-  "counts": {
-    "F841": 46,
-    "F405": 22,
-    "F403": 5
-  }
+  "counts": {}
 }

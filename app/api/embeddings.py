@@ -316,7 +316,7 @@ async def health_check():
     """Health check endpoint for embeddings service."""
     try:
         # Try to initialize service
-        embedding_service = await get_embedding_service()
+        await get_embedding_service()
         
         return {
             "success": True,

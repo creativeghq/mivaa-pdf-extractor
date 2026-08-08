@@ -493,7 +493,7 @@ class SearchSuggestionsService:
             if use_ai:
                 try:
                     from app.services.core.ai_client_service import get_ai_client_service
-                    ai_service = get_ai_client_service()
+                    get_ai_client_service()
 
                     prompt = f"""Given the search query "{query}" for a materials database, suggest:
 1. 5-10 semantically related terms

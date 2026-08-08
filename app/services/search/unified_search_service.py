@@ -528,23 +528,20 @@ class UnifiedSearchService:
         Weights can be dynamically overridden based on query intent.
         """
         try:
-            # Generate all embedding types
-            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-            embeddings_service = RealEmbeddingsService()
-            
-            embeddings_result = await embeddings_service.generate_all_embeddings(
-                entity_id="query",
-                entity_type="query",
-                text_content=query
-            )
-            
-            if not embeddings_result.get("success"):
-                self.logger.warning("Failed to generate multi-vector embeddings")
-                return []
-            
-            embeddings = embeddings_result.get("embeddings", {})
-            
-            # Search using all embedding types with weights
+            # NO embedding generation here, deliberately.
+            #
+            # This used to call generate_all_embeddings(query) and assign the result to
+            # a local that nothing read — then hand the raw `query` string to all seven
+            # sub-searches below, each of which generates its own embedding. So every
+            # multi-vector search paid Voyage for a full embedding set, discarded it,
+            # and then paid again per branch. The only thing the discarded call bought
+            # was an early exit when embedding generation fails; the sub-searches
+            # already degrade to empty results in that case, so the outcome is the same.
+            #
+            # The remaining redundancy is real but bigger than a cleanup: the seven
+            # branches should share ONE generated set instead of generating per branch.
+            # That means threading the vectors through seven signatures, so it wants
+            # measurement rather than a blind refactor.
             results_by_id = {}
             
             # Run all 7 embedding searches in parallel (text, visual, understanding, color, texture, style, material)

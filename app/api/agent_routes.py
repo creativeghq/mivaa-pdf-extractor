@@ -245,7 +245,7 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
     _log(supabase, req.run_id, "info", f"Found {len(products)} products to enrich")
 
     # httpx-backed shim — same .messages.create API as the SDK had.
-    client = get_ai_client_service().anthropic
+    get_ai_client_service().anthropic
     system = req.system_prompt or (
         "You are a material product specialist. "
         "For each product, return JSON: {\"description\":\"...\",\"keywords\":[...],\"material_category\":\"...\"}. "
@@ -325,7 +325,7 @@ async def handle_material_tagger(req: AgentRunRequest, supabase) -> Dict[str, An
         return {"output": {"tagged": 0, "message": "No products to tag"},
                 "input_tokens": 0, "output_tokens": 0}
 
-    client = get_ai_client_service().anthropic
+    get_ai_client_service().anthropic
     system = req.system_prompt or (
         "You are a material classification expert. "
         "Return JSON: {\"material_type\":\"...\",\"color\":\"...\",\"finish\":\"...\",\"application\":\"...\",\"tags\":[...]}. "

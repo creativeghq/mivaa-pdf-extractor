@@ -1632,7 +1632,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             doc_data = doc_result.data[0]
             file_path = doc_data.get('file_path')
             filename = doc_data.get('filename', 'document.pdf')
-            metadata = doc_data.get('metadata', {})
+            doc_data.get('metadata', {})
             storage_bucket = doc_data.get('storage_bucket')
             storage_object_path = doc_data.get('storage_object_path')
 
@@ -1981,12 +1981,12 @@ async def reprocess_document(
         if clear_intermediate:
             logger.info(f"🧹 reprocess: clearing intermediate data for {document_id}")
 
-            # Collect product ids for this doc so we can delete their joins
-            prods = supabase.client.table("products") \
-                .select("id") \
-                .eq("source_document_id", document_id) \
-                .execute()
-            product_ids = [p["id"] for p in (prods.data or [])]
+            # A SELECT of this document's product ids used to sit here, commented
+            # "so we can delete their joins" — and nothing ever deleted a join with
+            # them. A read whose result was discarded, so removing it changes no
+            # behaviour. NOTE the intent it recorded was never implemented: if
+            # product join rows do need clearing on reprocess, that is a real gap and
+            # not something this cleanup should invent a fix for.
 
             # 3a. VECS embeddings — these are NOT FK-cascaded from
             # document_images / products. Without explicit cleanup the
@@ -5073,7 +5073,7 @@ async def search_documents(
         # Initialize services
         supabase_client = get_supabase_client()
         search_prompt_service = SearchPromptService(supabase_client=supabase_client.client)
-        product_rel_service = ProductRelationshipService(supabase_client=supabase_client.client)
+        ProductRelationshipService(supabase_client=supabase_client.client)
 
         # Apply enhancement prompt to query if enabled
         query_to_use = request.query
@@ -5977,7 +5977,6 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
     from app.services.kb.kb_chunk_service import rechunk_doc
 
     ids: List[str] = []
-    total_remaining = None
     if request.doc_id:
         ids = [request.doc_id]
     elif request.doc_ids:

@@ -661,7 +661,7 @@ async def health_check() -> BaseResponse:
         supabase = get_supabase_client()
         db_healthy = False
         try:
-            result = supabase.client.table('health_check').select('*').limit(1).execute()
+            supabase.client.table('health_check').select('*').limit(1).execute()
             db_healthy = True
         except Exception as db_error:
             logger.warning(f"Database health check failed: {str(db_error)}")

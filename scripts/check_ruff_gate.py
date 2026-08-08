@@ -22,19 +22,17 @@ The gate
 --------
 Two tiers:
 
-  ZERO_TOLERANCE  Any occurrence fails the build. Six rules, all at zero: undefined
-                  names, redefinitions, unused imports, placeholder-free f-strings,
-                  invalid escape sequences, and unparseable files. See the set below
-                  for what each one cost this repo before it was cleared.
+  ZERO_TOLERANCE  Any occurrence fails the build. The named rules are the ones whose
+                  history in this repo is documented below.
 
-  RATCHET         The rest, held against .github/ruff-baseline.json — a count may
-                  fall, never rise. What remains needs human judgement rather than a
-                  fix-all: unused locals where the ignored value came from a call with
-                  side effects, and star-import fallout.
+  RATCHET         .github/ruff-baseline.json, for a rule deliberately admitted with
+                  existing debt. It is EMPTY: the whole `F,W605` selection is at zero,
+                  so any finding at all — including a rule not listed anywhere — fails
+                  the build via the new-rule check in main().
 
-The whole F-class went 605 findings -> 73 to make the zero tier landable. That
-mattered for more than tidiness: 371 unused imports are what made an undefined name
-invisible, because nobody reads a 400-line report looking for the four that matter.
+605 findings -> 0. That mattered for more than tidiness: 371 unused imports are what
+made four genuinely undefined names invisible, because nobody reads a 400-line report
+looking for the ones that matter.
 
 Fix findings; do not edit the baseline upward. Same contract as
 .github/edge-typecheck-baseline.json on the platform side.
@@ -65,10 +63,19 @@ TARGET = "app/"
 #         what made the two rules above invisible: nobody scans a 400-line report. Held
 #         at zero because it is now free to hold there — `ruff --fix` removes them.
 #   F541  f-string, no fields.  139 -> 0. Same argument: pure noise, now absent.
+#   F841  unused local.         53 -> 0. Cleared by dropping the binding while KEEPING
+#         the call, which is why ruff's own --unsafe-fixes was not used: it deletes the
+#         whole statement, and most of these were `x = something()` where the call has
+#         side effects and only the name was dead.
+#   F403/F405 star imports.      27 -> 0. app/schemas/__init__.py bound 22 names via
+#         five `import *`, so neither ruff nor a reader could tell whether its __all__
+#         was honest. Now explicit.
 #   invalid-syntax               A file ruff cannot parse is unchecked AND reports clean,
 #         which is worse than any finding. app/api/images.py sat like that behind a
 #         wrong requires-python.
-ZERO_TOLERANCE = {"F821", "F811", "F401", "F541", "W605", "invalid-syntax"}
+ZERO_TOLERANCE = {
+    "F821", "F811", "F401", "F541", "F841", "F403", "F405", "W605", "invalid-syntax",
+}
 
 
 def run_ruff() -> collections.Counter:
@@ -112,6 +119,10 @@ def main() -> int:
         "F401": "unused imports are individually harmless and collectively what hides "
                 "the rules above; `ruff check --select F401 --fix app/` clears them",
         "F541": "an f-string with no placeholders is noise; drop the f prefix",
+        "F841": "an unused local means a computed value is discarded; drop the binding "
+                "but KEEP the call if it has side effects (--unsafe-fixes deletes both)",
+        "F403": "a star import hides what is bound, so nothing can verify __all__",
+        "F405": "this name may come from a star import; import it explicitly",
         "W605": "an invalid escape sequence is a DeprecationWarning today and a "
                 "SyntaxError in a future Python; make the string raw (r'...')",
         "invalid-syntax": "ruff cannot parse the file, so it is unchecked AND looks clean",

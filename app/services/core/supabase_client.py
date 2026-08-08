@@ -269,7 +269,7 @@ class SupabaseClient:
         """
         try:
             # Simple query to test connection
-            response = self._client.table('processed_documents').select('id').limit(1).execute()
+            self._client.table('processed_documents').select('id').limit(1).execute()
             return True
         except Exception as e:
             logger.warning(f"Supabase health check failed: {str(e)}")
@@ -923,7 +923,7 @@ class SupabaseClient:
                 document_id = str(uuid.uuid4())
 
             timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-            file_extension = filename.split('.')[-1] if '.' in filename else 'pdf'
+            filename.split('.')[-1] if '.' in filename else 'pdf'
             storage_path = f"documents/{document_id}/{timestamp}_{filename}"
 
             # Upload to pdf-documents bucket
@@ -1058,7 +1058,7 @@ class SupabaseClient:
                 file_path = storage_path
 
             # Delete from Supabase Storage
-            result = self.client.storage.from_(bucket_name).remove([file_path])
+            self.client.storage.from_(bucket_name).remove([file_path])
 
             logger.info(f"✅ Deleted image from Supabase: {storage_path}")
             return True
