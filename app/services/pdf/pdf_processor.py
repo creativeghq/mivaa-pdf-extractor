@@ -138,7 +138,6 @@ async def download_image_to_base64(image_url: str) -> str:
         Exception: If download fails or URL is invalid
     """
     import httpx
-    import base64
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:

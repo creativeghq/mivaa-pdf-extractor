@@ -202,7 +202,6 @@ class ConsensusValidator:
             )
 
         keys = [_key(r) for r in results]
-        from collections import Counter
         counts = Counter(keys)
         best_key = counts.most_common(1)[0][0] if counts else ""
         for i, k in enumerate(keys):

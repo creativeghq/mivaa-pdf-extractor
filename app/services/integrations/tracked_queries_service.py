@@ -982,7 +982,7 @@ class TrackedQueriesService:
             {status, credits_used, results, latency_ms, error?}
         """
         from app.services.integrations.perplexity_price_search_service import (
-            get_perplexity_price_search_service, PriceHit,
+            get_perplexity_price_search_service,
         )
         start = datetime.now(timezone.utc)
 

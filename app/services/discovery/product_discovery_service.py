@@ -44,7 +44,6 @@ import re
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
-import os
 
 import openai
 from PIL import Image

@@ -272,8 +272,15 @@ async def async_performance_tracker(collector: PerformanceCollector,
             pass
 
 
-def performance_monitor(operation_name: str, tags: Optional[Dict[str, str]] = None):
-    """Decorator for monitoring function performance."""
+def monitor_performance(operation_name: str, tags: Optional[Dict[str, str]] = None):
+    """Decorator for monitoring function performance.
+
+    Renamed from `performance_monitor`, which collided with the module-level
+    `performance_monitor = PerformanceMonitor()` instance further down this file. The
+    instance won — it is bound later — so this decorator was unreachable under its old
+    name and `@performance_monitor(...)` would have tried to call an object with no
+    `__call__`. Nothing used it, so nothing broke; it was simply dead.
+    """
     def decorator(func: Callable):
         @wraps(func)
         async def async_wrapper(*args, **kwargs):

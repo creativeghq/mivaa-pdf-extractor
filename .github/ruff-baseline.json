@@ -6,23 +6,29 @@
     "number to make a build pass. Same contract as the platform repo's",
     ".github/edge-typecheck-baseline.json.",
     "",
-    "F821 (undefined name) and invalid-syntax are NOT listed here on purpose: they",
-    "are enforced at zero by ZERO_TOLERANCE in the gate script. F821 was 41 across",
-    "app/ before this work — it covered a search path that never searched, six",
-    "pipeline endpoints that always 500'd, and four modules using an unimported",
-    "module. It is 0 now and must stay 0.",
+    "NOT listed here, because they are enforced at ZERO by ZERO_TOLERANCE in the",
+    "gate script:",
+    "  F821 undefined name        41 -> 0.  Covered a search path that never",
+    "                             searched, six pipeline endpoints that always",
+    "                             500'd, and four modules using an unimported module.",
+    "  F811 redefinition          10 -> 0.  Three of the ten were live bugs: an",
+    "                             exception class declared twice so the registered",
+    "                             handler matched a different class than the one",
+    "                             raised; a decorator shadowed by an instance of the",
+    "                             same name; a service getter both imported and",
+    "                             redefined, resolved by line number.",
+    "  invalid-syntax             A file ruff cannot parse is unchecked AND looks",
+    "                             clean, which is worse than any finding.",
     "",
     "The rules below are hygiene debt, not broken code: unused imports (F401),",
     "f-strings with no placeholders (F541), unused locals (F841), star-import",
-    "fallout (F403/F405), redefinitions (F811). F811 is the one worth attacking",
-    "first — a redefinition silently discards the earlier definition."
+    "fallout (F403/F405). Worth grinding down, but none of them is a bug on its own."
   ],
   "counts": {
-    "F401": 376,
+    "F401": 371,
     "F541": 139,
     "F841": 53,
     "F405": 22,
-    "F811": 10,
     "F403": 5
   }
 }

@@ -49,8 +49,13 @@ from ..services.search.material_visual_search_service import (
     MaterialVisualSearchService,
     MaterialSearchRequest,
     MaterialSearchResponse,
-    get_material_visual_search_service
 )
+# `get_material_visual_search_service` is deliberately NOT imported here. This module
+# defines its own below (~line 940) which falls back to a degraded service instead of
+# raising, and all four Depends() sites sit after that definition — so the local one is
+# what has always been in use. Importing the service module's version as well put two
+# same-named callables in one namespace, with which one you got decided purely by
+# whether your line number was above or below the redefinition.
 
 # Import unified search service (Step 7)
 from ..services.search.unified_search_service import (

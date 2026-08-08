@@ -158,7 +158,7 @@ def detect_full_spread_image(page: fitz.Page, threshold: float = 0.75) -> bool:
     return False
 
 
-from typing import List, Optional, Tuple, Dict, Any, Callable
+from typing import List, Tuple, Dict, Any, Callable
 
 def analyze_pdf_layout(pdf_path: str, progress_callback: Optional[Callable[[int, int], None]] = None) -> PDFLayoutAnalysis:
     """

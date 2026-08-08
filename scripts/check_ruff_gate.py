@@ -49,7 +49,16 @@ BASELINE_PATH = ROOT / ".github" / "ruff-baseline.json"
 TARGET = "app/"
 
 # At zero today. Keep them there.
-ZERO_TOLERANCE = {"F821", "invalid-syntax"}
+#
+# F811 (redefinition) earned its place here rather than a ratchet. It is not hygiene:
+# a redefinition silently discards the earlier binding, and which one you get depends
+# on your line number. It was hiding three live problems in this repo —
+# MaterialKaiIntegrationError declared twice so main.py's exception handler matched a
+# different class than the one being raised; a `performance_monitor` decorator made
+# unreachable by an instance of the same name; and a service getter imported *and*
+# redefined, where only the Depends() sites below the redefinition got the intended
+# one. Ten findings, three of them real bugs — a poor ratio to leave ratcheting.
+ZERO_TOLERANCE = {"F821", "F811", "invalid-syntax"}
 
 
 def run_ruff() -> collections.Counter:
@@ -84,13 +93,19 @@ def main() -> int:
     baseline = json.loads(BASELINE_PATH.read_text(encoding="utf-8"))["counts"]
     failures: list[str] = []
 
+    # Rule-specific, because a wrong explanation is worse than none: whoever hits this
+    # needs to know why it is not baselineable, not a generic scolding.
+    why = {
+        "F821": "an undefined name is code that cannot run",
+        "F811": "a redefinition silently discards the earlier binding, and which one "
+                "you get depends on your line number",
+        "invalid-syntax": "ruff cannot parse the file, so it is unchecked AND looks clean",
+    }
     for rule in sorted(ZERO_TOLERANCE):
         found = counts.get(rule, 0)
         if found:
-            failures.append(
-                f"  {rule}: {found} (must be 0) - an undefined name is code that "
-                f"cannot run; fix it, do not baseline it"
-            )
+            reason = why.get(rule, "this rule is enforced at zero")
+            failures.append(f"  {rule}: {found} (must be 0) - {reason}; fix it, do not baseline it")
 
     for rule, allowed in sorted(baseline.items()):
         if rule in ZERO_TOLERANCE:

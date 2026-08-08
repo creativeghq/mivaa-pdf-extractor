@@ -1566,7 +1566,6 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
         Robust JSON extraction from Claude responses.
         Handles cases where Claude returns extra text before/after JSON.
         """
-        import json
         import re
 
         if not response or not response.strip():
