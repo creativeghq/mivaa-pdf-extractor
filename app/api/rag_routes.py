@@ -5835,15 +5835,20 @@ async def get_stuck_job_statistics():
 # LLM most of a catalog and call it a search result.
 EXPANDED_CHUNK_CHAR_BUDGET = 6000
 
-# Cosine floor for document_chunks retrieval. Deliberately NOT
-# `request.similarity_threshold`, which defaults to 0.7: that knob was tuned for the
-# word-count scorer this branch replaced (+0.15 per matched word, 0..1) and is shared
-# with the products/entities branches. 0.7 is a different SCALE, not a stricter
-# setting — as a cosine cutoff on Voyage 1024D vectors it rejects near enough every
-# real hit, which would swap the old wrong-results bug for a no-results one that looks
-# exactly like an empty corpus. 0.4 for the same measured reason the kb_docs branch
-# uses 0.4: a bull's-eye query lands ~0.50 while unrelated text sits <=0.33.
-CHUNK_SIMILARITY_FLOOR = 0.4
+# Cosine floor for the Voyage-1024D text searches on this endpoint (chunks, entities).
+# Deliberately NOT `request.similarity_threshold`, which defaults to 0.7: that knob was
+# tuned for the word-count scorer the chunk branch replaced (+0.15 per matched word,
+# 0..1). 0.7 is a different SCALE, not a stricter setting — as a cosine cutoff on
+# Voyage vectors it rejects near enough every real hit, which would swap a
+# wrong-results bug for a no-results one that looks exactly like an empty corpus.
+# 0.4 for the same measured reason the kb_docs branch uses 0.4: a bull's-eye query
+# lands ~0.50 while unrelated text sits <=0.33.
+#
+# NOTE: measured on kb_doc_chunks. document_chunks and document_entities are both
+# empty, so this is a borrowed constant on those two paths — same embedding model and
+# same text-vs-text comparison, but not independently verified. Re-check it against
+# real hits once a PDF has been ingested.
+TEXT_SEARCH_SIMILARITY_FLOOR = 0.4
 
 
 class KnowledgeBaseSearchRequest(BaseModel):
@@ -6194,54 +6199,56 @@ async def search_knowledge_base(
             except Exception as e:
                 logger.warning(f"Product search failed: {e}")
 
-        # Search entities using embeddings
+        # Search entities (certificates / logos / specifications) by vector similarity.
+        #
+        # What this replaced: `await vecs_service.search_similar(collection_name=
+        # "embeddings", ...)` — `vecs_service` was never instantiated in this function,
+        # `search_similar` is not a method of VecsService (only `search_similar_images`
+        # is), and no VECS collection named "embeddings" exists. So every call raised
+        # NameError, the `except` below logged "Entity search failed", and
+        # results["entities"] was ALWAYS []. The producer matched it: entity embeddings
+        # were generated, counted and thrown away (see DocumentEntityService.
+        # generate_entity_embeddings). Both halves reported success; neither worked.
         if "entities" in request.search_types:
             logger.info("   Searching entities...")
             try:
-                # Search entity embeddings using VECS
-                entity_search_results = await vecs_service.search_similar(
-                    collection_name="embeddings",
-                    query_embedding=query_embedding,
-                    limit=request.top_k * 2,  # Get more for filtering
-                    filters={"entity_type": "entity"}
-                )
+                query_embedding = await _query_embedding_1024()
+                if not query_embedding:
+                    logger.warning("   ⚠️ Entity search skipped — query embedding unavailable")
+                else:
+                    entity_rpc_args: Dict[str, Any] = {
+                        "query_embedding": query_embedding,
+                        "p_workspace_id": request.workspace_id,
+                        "p_limit": request.top_k,
+                        # Same scale argument as the chunk branch — see the constant.
+                        "p_similarity_threshold": TEXT_SEARCH_SIMILARITY_FLOOR,
+                    }
+                    if request.entity_types:
+                        # Filter in SQL, not after the fact: post-filtering an ANN page
+                        # silently shrinks top_k to however many survived.
+                        entity_rpc_args["p_entity_types"] = request.entity_types
 
-                # Fetch full entity details
-                for result in entity_search_results:
-                    entity_id = result.get('id')
-                    similarity = result.get('similarity', 0.0)
+                    entity_rows = (
+                        supabase.client
+                        .rpc("search_document_entities_by_embedding", entity_rpc_args)
+                        .execute().data
+                    ) or []
 
-                    if similarity < request.similarity_threshold:
-                        continue
-
-                    # Fetch entity from database
-                    entity_response = supabase.client.table('document_entities').select('*').eq(
-                        'id', entity_id
-                    ).eq('workspace_id', request.workspace_id).execute()
-
-                    if entity_response.data and len(entity_response.data) > 0:
-                        entity = entity_response.data[0]
-
-                        # Apply entity type filter
-                        if request.entity_types and entity.get('entity_type') not in request.entity_types:
-                            continue
-
+                    for erow in entity_rows:
                         results["entities"].append({
-                            "id": entity['id'],
-                            "entity_type": entity.get('entity_type'),
-                            "name": entity.get('name'),
-                            "description": entity.get('description'),
-                            "metadata": entity.get('metadata', {}),
-                            "relevance_score": similarity,
-                            "type": "entity"
+                            "id": erow.get("entity_id"),
+                            "entity_type": erow.get("entity_type"),
+                            "name": erow.get("name"),
+                            "description": erow.get("description"),
+                            "content": erow.get("content"),
+                            "source_document_id": erow.get("source_document_id"),
+                            "page_range": erow.get("page_range"),
+                            "metadata": erow.get("metadata") or {},
+                            "relevance_score": erow.get("similarity_score") or 0.0,
+                            "type": "entity",
                         })
 
-                # Sort and limit
-                results["entities"] = sorted(
-                    results["entities"],
-                    key=lambda x: x['relevance_score'],
-                    reverse=True
-                )[:request.top_k]
+                    logger.info(f"   ✅ Found {len(entity_rows)} entities")
 
             except Exception as e:
                 logger.warning(f"Entity search failed: {e}")
@@ -6266,9 +6273,9 @@ async def search_knowledge_base(
                         "query_embedding": query_embedding,
                         "p_workspace_id": request.workspace_id,
                         "p_limit": request.top_k,
-                        # See CHUNK_SIMILARITY_FLOOR — request.similarity_threshold is
+                        # See TEXT_SEARCH_SIMILARITY_FLOOR — request.similarity_threshold is
                         # on the retired scorer's scale and would zero this out.
-                        "p_similarity_threshold": CHUNK_SIMILARITY_FLOOR,
+                        "p_similarity_threshold": TEXT_SEARCH_SIMILARITY_FLOOR,
                     }
                     if request.categories:
                         chunk_rpc_args["p_categories"] = request.categories

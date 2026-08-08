@@ -119,9 +119,43 @@ def test_chunk_retrieval_does_not_reuse_the_word_count_threshold():
     code_only = "\n".join(
         line for line in chunk_branch.splitlines() if not line.strip().startswith("#")
     )
-    assert "CHUNK_SIMILARITY_FLOOR" in code_only
+    assert "TEXT_SEARCH_SIMILARITY_FLOOR" in code_only
     assert "request.similarity_threshold" not in code_only, (
         "the retired scorer's threshold is being used as a cosine floor again"
+    )
+
+
+def test_entity_search_actually_searches():
+    """Both halves of entity search were no-ops that reported success. The consumer
+    called `vecs_service.search_similar` — a method that does not exist, on a name that
+    was never bound — so every call raised NameError into a swallowed warning and
+    `results["entities"]` was always []."""
+    src = _function_source(_RAG_TREE, _RAG_SOURCE, "search_knowledge_base")
+    assert "search_document_entities_by_embedding" in src
+    # Comments stripped: the branch documents the call it replaced by name.
+    code_only = "\n".join(
+        line for line in src.splitlines() if not line.strip().startswith("#")
+    )
+    assert "vecs_service" not in code_only, (
+        "the entity branch is calling vecs_service again — it is not bound in this "
+        "function and VecsService has no search_similar method"
+    )
+
+
+def test_entity_embeddings_are_persisted_not_just_counted():
+    """The producer generated a Voyage vector per entity, counted it, logged a green
+    tick and dropped it — its docstring pointed at an 'embeddings table' that does not
+    exist in this database. Paid-for vectors, an empty index, a success report."""
+    service = _ROOT / "app" / "services" / "discovery" / "document_entity_service.py"
+    source = service.read_text(encoding="utf-8")
+    src = _function_source(ast.parse(source), source, "generate_entity_embeddings")
+    assert "text_embedding" in src and ".update(" in src, (
+        "generate_entity_embeddings no longer writes the vector it generates"
+    )
+    # The write must precede the counter, or the count is again a claim about memory.
+    assert src.index(".update(") < src.index("embeddings_generated += 1"), (
+        "the counter is incremented before the row is written — exactly the shape "
+        "that reported success while the search index stayed empty"
     )
 
 

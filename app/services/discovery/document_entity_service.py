@@ -380,7 +380,15 @@ class DocumentEntityService:
         Generate embeddings for all document entities.
 
         Creates text embeddings for entity content to enable semantic search.
-        Embeddings are stored in the embeddings table with entity_type='entity'.
+        Embeddings are written to `document_entities.text_embedding` (halfvec(1024)),
+        which `search_document_entities_by_embedding` reads.
+
+        This used to claim the vectors went to "the embeddings table". There is no
+        such table in this database and the function contained no write at all: it
+        generated a Voyage vector per entity, checked it was non-empty, incremented
+        `embeddings_generated`, logged a green tick and discarded it. Every run paid
+        for embeddings and reported success while entity search stayed empty forever.
+        `embeddings_generated` now counts rows actually persisted.
 
         Args:
             document_id: Document ID to generate embeddings for
@@ -450,9 +458,20 @@ class DocumentEntityService:
                         text_embedding = embeddings.get('text_1024')
 
                         if text_embedding:
+                            # Persist it. Counting an in-memory vector as "generated"
+                            # is what made this stage report success for a search
+                            # index it never wrote to.
+                            self.supabase.client.table('document_entities').update({
+                                'text_embedding': text_embedding,
+                                'embedding_model': 'voyage-3.5',
+                                'embedding_generated_at': datetime.utcnow().isoformat(),
+                            }).eq('id', entity_id).eq(
+                                'workspace_id', workspace_id
+                            ).execute()
+
                             embeddings_generated += 1
                             self.logger.info(
-                                f"   ✅ Generated embedding for {entity_type} '{entity_name}' "
+                                f"   ✅ Stored embedding for {entity_type} '{entity_name}' "
                                 f"({len(text_content)} chars)"
                             )
                         else:
