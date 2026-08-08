@@ -80,8 +80,6 @@ class SearchResponse:
 # working; new code should import from weight_profiles directly.
 from app.services.search.weight_profiles import (  # noqa: E402
     WEIGHT_PROFILES,
-    DEFAULT_PROFILE,
-    EMBEDDING_ASPECTS,
 )
 
 

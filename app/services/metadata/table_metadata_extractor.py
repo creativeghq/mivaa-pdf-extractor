@@ -10,7 +10,7 @@ Parses extracted tables from product_tables to enrich product metadata with:
 
 import re
 import logging
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 
 from app.services.pdf.table_extraction import (

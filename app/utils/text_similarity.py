@@ -6,7 +6,6 @@ Consolidates duplicate similarity calculation logic.
 """
 
 import logging
-from typing import Optional
 from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)

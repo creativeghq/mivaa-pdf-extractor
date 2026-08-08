@@ -10,13 +10,11 @@ Real-time communication endpoints for:
 
 import logging
 import json
-import asyncio
 from typing import Dict, Set, Any
 from datetime import datetime
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState
 
-from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
 

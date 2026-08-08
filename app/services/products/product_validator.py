@@ -11,9 +11,7 @@ Validates extracted products against quality thresholds:
 Prevents false positives and ensures high-quality product extraction.
 """
 
-import asyncio
 from typing import Dict, Any, List, Optional
-from datetime import datetime
 import logging
 import numpy as np
 

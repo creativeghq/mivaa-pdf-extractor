@@ -11,11 +11,10 @@ Provides comprehensive AI usage metrics for monitoring dashboard:
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
-from decimal import Decimal
+from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient
 from app.schemas.api_responses import DataResponse

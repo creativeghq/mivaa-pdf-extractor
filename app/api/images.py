@@ -9,7 +9,6 @@ This module provides comprehensive image processing capabilities including:
 - Integration with document processing workflow
 """
 
-import asyncio
 import logging
 import uuid
 import json
@@ -17,7 +16,7 @@ import tempfile
 import zipfile
 import httpx
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Optional
 from pathlib import Path
 from collections import defaultdict, deque
 
@@ -32,19 +31,15 @@ from ..schemas.images import (
     ImageSearchRequest,
     ImageSearchResponse,
     ImageMetadata,
-    DetectedObject,
-    DetectedText,
-    FaceDetection,
-    BoundingBox,
     SimilarImage,
     ImageBatchResult
 )
 from ..schemas.common import BaseResponse, ProcessingStatus
-from ..schemas.api_responses import ImageExportResponse, ImageReclassifyResponse, SegmentResponse
+from ..schemas.api_responses import ImageReclassifyResponse, SegmentResponse
 from ..services.integrations.material_kai_service import MaterialKaiService, get_material_kai_service
 from ..services.core.supabase_client import get_supabase_client
-from ..dependencies import get_current_user, get_workspace_context, require_image_read, require_image_write
-from ..middleware.jwt_auth import WorkspaceContext, User
+from ..dependencies import get_current_user
+from ..middleware.jwt_auth import User
 from ..utils.ssrf_guard import assert_safe_url, SSRFError
 from ..utils.credit_metering import meter_operation, refund_operation
 from ..config import get_settings

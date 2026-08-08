@@ -10,7 +10,6 @@ import os
 import shutil
 import tempfile
 import gc
-import base64
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from uuid import uuid4
@@ -21,7 +20,7 @@ import asyncio
 import aiohttp
 import httpx
 import sentry_sdk
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.services.search.rag_service import RAGService
@@ -30,23 +29,17 @@ from app.services.products.product_creation_service import ProductCreationServic
 from app.services.tracking.job_recovery_service import JobRecoveryService
 from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.core.supabase_client import get_supabase_client, SupabaseClient
-from app.services.core.ai_model_tracker import AIModelTracker
 from app.services.products.product_relationship_service import ProductRelationshipService
 from app.services.search.search_prompt_service import SearchPromptService
 from app.services.tracking.stuck_job_analyzer import stuck_job_analyzer
 from app.services.embeddings.vecs_service import get_vecs_service
-from app.services.core.ai_client_service import get_ai_client_service
-from app.utils.logging import PDFProcessingLogger
-from app.utils.timeout_guard import with_timeout, TimeoutConstants, TimeoutError, ProgressiveTimeoutStrategy
-from app.utils.circuit_breaker import claude_breaker, vision_breaker, clip_breaker, CircuitBreakerError
-from app.utils.memory_monitor import memory_monitor
 from app.utils.resource_manager import get_resource_manager
 from app.schemas.api_responses import (
-    StatusResponse, DataResponse, ListDataResponse, JobInfoResponse,
+    StatusResponse, ListDataResponse, JobInfoResponse,
     CheckpointListResponse, RelevancyListResponse, StatsResponse,
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
-from app.dependencies import get_current_user, get_workspace_context, get_optional_workspace_context
+from app.dependencies import get_current_user, get_optional_workspace_context
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
 # Importing it at the top triggers `app.api.documents.__init__` →
 # `management_routes` → `app.orchestration` → back into this (still partially
@@ -3820,7 +3813,6 @@ async def process_document_with_discovery(
 
         # Initialize product progress tracker
         from app.services.tracking.product_progress_tracker import ProductProgressTracker
-        from app.api.pdf_processing.product_processor import process_single_product
         from app.api.pdf_processing.parallel_product_processor import (
             process_products_parallel,
             ParallelProcessingConfig
@@ -5545,7 +5537,6 @@ async def get_workspace_statistics(
     - Total embeddings (text + image)
     """
     try:
-        from app.services.embeddings.vecs_service import get_vecs_service
 
         # Query Supabase tables for counts
         products_response = supabase.client.table('products').select('id', count='exact').eq('workspace_id', workspace_id).execute()

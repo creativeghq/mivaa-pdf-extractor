@@ -29,7 +29,7 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import httpx
 

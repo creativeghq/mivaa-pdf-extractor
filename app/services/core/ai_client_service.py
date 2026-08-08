@@ -12,7 +12,7 @@ configuration across the application.
 """
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Optional, TYPE_CHECKING
 import openai
 import httpx
 

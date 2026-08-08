@@ -506,7 +506,6 @@ async def generate_inpainting_prompt(request: GeneratePromptRequest, user: Dict[
     Ask Claude Haiku to write an optimised FLUX Fill Pro inpainting prompt
     given a zone label and a user description.
     """
-    import anthropic
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:

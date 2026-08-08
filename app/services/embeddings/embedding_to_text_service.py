@@ -9,7 +9,7 @@ import logging
 import os
 import json
 import re
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.core.ai_call_logger import AICallLogger

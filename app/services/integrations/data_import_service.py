@@ -12,7 +12,6 @@ Data Import Service — process XML import jobs into products.
 
 import logging
 import os
-import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 

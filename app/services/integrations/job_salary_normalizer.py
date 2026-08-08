@@ -18,7 +18,6 @@ percent doesn't matter for "is this listing in the salary band I want?"
 from __future__ import annotations
 
 import logging
-import re
 from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)

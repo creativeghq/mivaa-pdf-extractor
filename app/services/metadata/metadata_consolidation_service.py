@@ -10,7 +10,7 @@ This service implements Stage 4 metadata consolidation.
 """
 
 import logging
-from typing import Dict, List, Any, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime
 
 logger = logging.getLogger(__name__)

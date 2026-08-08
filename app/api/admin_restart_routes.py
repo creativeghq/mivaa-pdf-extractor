@@ -5,8 +5,7 @@ Admin Restart Routes - Authorized service restart with job protection
 import os
 import subprocess
 from datetime import datetime
-from typing import Optional
-from fastapi import APIRouter, HTTPException, Header, Body
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import logging
 

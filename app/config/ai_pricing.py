@@ -767,7 +767,6 @@ class AIPricingConfig:
         Returns:
             Dict with verification status and warnings
         """
-        from datetime import timedelta
         
         last_updated = datetime.strptime(cls.LAST_UPDATED, "%Y-%m-%d")
         days_old = (datetime.now() - last_updated).days

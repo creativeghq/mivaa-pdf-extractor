@@ -14,7 +14,7 @@ normalised query text.
 
 import hashlib
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional
 from datetime import datetime
 
 from app.services.core.supabase_client import get_supabase_client

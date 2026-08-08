@@ -40,7 +40,7 @@ import httpx
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.mention_identity_service import (
-    SubjectFacets, normalize_text,
+    normalize_text,
 )
 from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_dataforseo_labs_call, log_dataforseo_serp_call,

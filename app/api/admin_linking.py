@@ -6,8 +6,8 @@ that may have failed during processing or need re-linking.
 """
 
 import logging
-from typing import Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Query
+from typing import Optional
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.services.discovery.entity_linking_service import EntityLinkingService

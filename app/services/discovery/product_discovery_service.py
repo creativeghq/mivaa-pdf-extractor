@@ -38,16 +38,12 @@ This service is designed to support future extraction types:
 import logging
 import os
 import asyncio
-import base64
 import json
 import re
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
 
-import openai
-from PIL import Image
-import io
 
 from app.schemas.jobs import ProcessingStage
 from app.services.core.ai_call_logger import AICallLogger
@@ -838,7 +834,6 @@ class ProductDiscoveryService:
         # Call Claude. Use Haiku 4.5 directly — vision retry is best-effort
         # and we cap cost. Opus would be 12× the price for a path that may
         # never succeed (truly non-product PDFs).
-        from app.config import get_settings as _get_settings_disc
         model_to_use = "claude-haiku-4-5"
         start_time = datetime.now()
         try:

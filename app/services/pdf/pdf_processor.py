@@ -16,12 +16,10 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import aiofiles
 import httpx
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # =============================================================================
@@ -103,9 +101,8 @@ except ImportError as e:
     cv2 = None
 
 import numpy as np
-from PIL import Image, ImageEnhance, ImageFilter
+from PIL import Image
 from PIL.ExifTags import TAGS
-import imageio
 import imagehash  # For perceptual hash deduplication (Layer 4)
 
 try:
@@ -114,7 +111,6 @@ try:
 except ImportError as e:
     logging.warning(f"scikit-image not available: {e}. Some advanced image processing features will be disabled.")
     SKIMAGE_AVAILABLE = False
-from scipy import ndimage
 
 
 # ============================================================================
@@ -151,12 +147,6 @@ async def download_image_to_base64(image_url: str) -> str:
 
 
 # Extraction functions live in extractor_imports; tables go through TableExtractor.
-from app.services.pdf.extractor_imports import (
-    extract_pdf_to_markdown,
-    extract_pdf_to_markdown_with_doc,
-    extract_json_and_images,
-    EXTRACTOR_AVAILABLE
-)
 
 # Import OCR service
 from app.services.pdf.ocr_service import get_ocr_service, OCRConfig
@@ -167,13 +157,10 @@ from app.services.core.supabase_client import get_supabase_client
 # Import custom exceptions
 from app.utils.exceptions import (
     PDFProcessingError,
-    PDFValidationError,
     PDFExtractionError,
     PDFDownloadError,
     PDFSizeError,
-    PDFTimeoutError,
-    PDFStorageError,
-    PDFFormatError
+    PDFTimeoutError
 )
 
 # Import unified chunking service (Step 6)
@@ -1354,7 +1341,6 @@ class PDFProcessor:
         """
         try:
             # Test basic imports and functionality
-            import pymupdf4llm
             import tempfile
             import os
             
@@ -1864,7 +1850,6 @@ class PDFProcessor:
             }
 
         try:
-            import numpy as np
             
             # Load image in grayscale
             img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
@@ -2001,7 +1986,6 @@ class PDFProcessor:
             # ✅ Use SLIG similarity mode for classification
             # Note: zero_shot mode has issues with batched text inputs on HF endpoints
             # Using two sequential similarity calls for reliable comparison
-            import asyncio
 
             # Define descriptions for classification
             # For ALL material catalogs: KEEP all product images (including showcases, room layouts)

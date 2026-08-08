@@ -7,7 +7,7 @@ on route patterns and HTTP methods.
 """
 
 import re
-from typing import Dict, List, Optional, Type, Union, Pattern
+from typing import Dict, List, Optional, Type, Union
 from collections import defaultdict
 import logging
 

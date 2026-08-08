@@ -8,11 +8,10 @@ async processing status, and task queuing.
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
-from .common import BaseResponse, ProcessingStatus, PaginationParams
+from .common import BaseResponse, PaginationParams
 
 
 class JobStatus(str, Enum):

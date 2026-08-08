@@ -24,16 +24,14 @@ Single `refresh()` chokepoint runs:
 from __future__ import annotations
 
 import logging
-import os
 import statistics
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from typing import Any, Dict, List, Optional
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.mention_identity_service import (
-    SubjectFacets, content_hash, get_mention_identity_service,
+    content_hash, get_mention_identity_service,
 )
 from app.services.integrations.mention_search_service import (
     MentionHit, canonicalize_url, domain_of, get_mention_search_service,

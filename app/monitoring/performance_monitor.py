@@ -22,10 +22,9 @@ from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from functools import wraps
 import threading
-from concurrent.futures import ThreadPoolExecutor
 
 import sentry_sdk
-from fastapi import Request, Response
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 
 

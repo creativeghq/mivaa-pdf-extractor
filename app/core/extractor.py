@@ -8,13 +8,10 @@ tables, images, and metadata from PDF files.
 
 import pymupdf4llm
 import pathlib
-from pathlib import Path
 import json
 import os
 import fitz
-import csv
 import re
-from typing import Dict, Any, Optional
 
 
 def _fix_glyph_names(text: str) -> str:

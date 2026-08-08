@@ -11,7 +11,7 @@ import os
 import logging
 import tempfile
 import aiofiles
-from typing import Dict, Any, List, Set, Optional
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 import sentry_sdk
 
@@ -72,7 +72,6 @@ async def process_stage_0_discovery(
         - temp_pdf_path: Path to temporary PDF file (returned existing or new)
     """
     from app.services.discovery.product_discovery_service import ProductDiscoveryService
-    from app.services.pdf.pdf_processor import PDFProcessor
     from app.services.core.supabase_client import get_supabase_client
 
     logger.info("🔍 [STAGE 0] Product Discovery - Starting...")
@@ -687,7 +686,6 @@ async def process_stage_0_discovery(
     # This creates the actual product records so all subsequent stages just update them
     if catalog.products:
         from app.services.tracking.product_progress_tracker import ProductProgressTracker
-        from app.schemas.product_progress import ProductStatus
         from app.api.pdf_processing.stage_4_products import create_single_product
 
         # 🧪 TEST MODE: Only create first product in DB if test_single_product=True

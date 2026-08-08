@@ -379,7 +379,7 @@ def create_error_response(exception: Exception) -> Dict[str, Any]:
 
 import functools
 import logging
-from typing import Callable, TypeVar, Union
+from typing import Callable, TypeVar
 
 T = TypeVar('T')
 

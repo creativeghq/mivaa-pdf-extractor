@@ -184,7 +184,6 @@ class ImageProcessingService:
         """
         import gc
         import time
-        import traceback
         from app.config import get_settings as _get_settings
 
         _cfg = _get_settings()

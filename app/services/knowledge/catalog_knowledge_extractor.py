@@ -32,7 +32,6 @@ Complements `AutoKBDocumentService` which creates per-product docs from
 metadata. This one creates catalog-wide docs from actual PDF content.
 """
 
-import asyncio
 import base64
 import io
 import json

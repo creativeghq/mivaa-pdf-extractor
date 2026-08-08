@@ -29,7 +29,7 @@ place.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
 # Label taxonomy — PP-DocLayoutV2 categories → the existing region_type vocab

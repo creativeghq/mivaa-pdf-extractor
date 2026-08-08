@@ -16,7 +16,6 @@ import logging
 from datetime import datetime, timedelta
 import psutil
 import os
-from pathlib import Path
 
 from app.utils.timestamp_utils import normalize_timestamp
 from app.schemas.api_responses import (
@@ -28,21 +27,15 @@ from ..schemas.jobs import (
     JobResponse, JobStatusResponse, JobListResponse, JobListItem,
     JobStatistics, SystemMetrics, JobStatus,
 )
-from ..schemas.common import BaseResponse, PaginationParams
-from ..services.pdf.pdf_processor import PDFProcessor
+from ..schemas.common import PaginationParams
 from ..services.core.supabase_client import SupabaseClient
-from ..services.search.rag_service import RAGService
 from ..services.products.product_creation_service import ProductCreationService
 from ..services.integrations.material_kai_service import MaterialKaiService
-from ..services.core.async_queue_service import AsyncQueueService
 from ..dependencies import (
     get_current_user,
     get_workspace_context,
     require_admin,
-    get_rag_service,
-    get_supabase_client,
-    get_material_kai_service,
-    get_pdf_processor
+    get_supabase_client
 )
 from ..middleware.jwt_auth import WorkspaceContext, User
 from pydantic import BaseModel

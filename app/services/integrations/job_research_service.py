@@ -33,12 +33,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import uuid
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations import job_cost_logger as costs

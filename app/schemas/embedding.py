@@ -6,7 +6,7 @@ and request/response handling.
 """
 
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 
 class EmbeddingConfig(BaseModel):

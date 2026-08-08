@@ -14,7 +14,7 @@ If factory/manufacturer differs, materials are NOT duplicates regardless of visu
 """
 
 import logging
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 import numpy as np
 

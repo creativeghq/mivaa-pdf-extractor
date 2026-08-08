@@ -7,8 +7,7 @@ fallback strategies, and escalation decisions.
 Last Updated: 2025-10-27
 """
 
-from typing import Dict, Optional
-from decimal import Decimal
+from typing import Optional
 
 
 class ConfidenceThresholds:

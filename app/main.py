@@ -10,7 +10,6 @@ Deployment trigger: 2025-10-25 - Testing deployment after SSH issue
 
 import logging
 import os
-import sys
 import signal
 import asyncio
 import concurrent.futures
@@ -23,13 +22,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import sentry_sdk
-from sentry_sdk.integrations.logging import LoggingIntegration
-import urllib3
 
 # Import configuration and logging setup
 from app.config import get_settings, configure_logging
-from app.utils.logging import PDFProcessingLogger, LoggingMiddleware
-from app.utils.json_encoder import CustomJSONEncoder
+from app.utils.logging import LoggingMiddleware
 from app.services.core.supabase_client import initialize_supabase, get_supabase_client
 from app.monitoring import global_performance_monitor
 
@@ -574,8 +570,6 @@ async def perform_comprehensive_health_checks(app: FastAPI, logger):
     
     # 2. File system and storage validation
     try:
-        import os
-        import tempfile
         from pathlib import Path
         
         # Check upload directory
@@ -769,8 +763,6 @@ async def cleanup_resources(app: FastAPI, logger):
         
         # Cleanup temporary files
         try:
-            import tempfile
-            import shutil
             from pathlib import Path
             
             temp_dirs = [Path("uploads"), Path("temp")]

@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from app.services.search.rag_service import RAGService
 from app.services.products.product_relationship_service import ProductRelationshipService

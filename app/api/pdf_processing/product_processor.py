@@ -7,14 +7,12 @@ Includes checkpoint creation for recovery and visibility.
 
 import gc
 import logging
-from typing import Dict, Any, List, Optional, Set
+from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from app.schemas.product_progress import (
     ProductStage,
-    ProductStatus,
-    ProductProcessingResult,
-    ProductMetrics
+    ProductProcessingResult
 )
 from app.services.tracking.product_progress_tracker import ProductProgressTracker
 from app.services.tracking.checkpoint_recovery_service import ProcessingStage as CheckpointStage

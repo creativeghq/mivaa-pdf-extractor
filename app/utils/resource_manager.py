@@ -8,7 +8,7 @@ Ensures resources are only cleaned up when processing is COMPLETE, not based on 
 import os
 import logging
 import asyncio
-from typing import Dict, List, Optional, Set
+from typing import Dict, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum

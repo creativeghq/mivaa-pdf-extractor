@@ -14,9 +14,9 @@ Provides health check endpoint for monitoring systems.
 import asyncio
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, Any, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app.services.core.supabase_client import get_supabase_client
 

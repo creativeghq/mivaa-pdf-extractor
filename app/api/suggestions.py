@@ -13,21 +13,14 @@ from datetime import datetime, timedelta
 from ..schemas.suggestions import (
     AutoCompleteRequest,
     AutoCompleteResponse,
-    TrendingSearchesRequest,
     TrendingSearchesResponse,
     TypoCorrectionRequest,
     TypoCorrectionResponse,
     QueryExpansionRequest,
     QueryExpansionResponse,
-    PopularSearchesRequest,
-    PopularSearchesResponse,
-    PersonalizedSuggestionsRequest,
-    PersonalizedSuggestionsResponse,
     SuggestionClickRequest,
     SuggestionClickResponse,
-    SearchSuggestion,
-    TrendingSearch,
-    PopularSearch
+    TrendingSearch
 )
 from ..services.search.search_suggestions_service import SearchSuggestionsService
 from ..services.core.supabase_client import SupabaseClient

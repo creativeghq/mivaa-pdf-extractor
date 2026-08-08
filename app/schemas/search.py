@@ -5,13 +5,11 @@ This module contains schemas for search functionality, RAG queries,
 and semantic similarity operations.
 """
 
-from typing import Any, Dict, List, Optional, Union
-from uuid import UUID
+from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, model_validator
 
-from .common import BaseResponse, PaginationParams
-from .documents import DocumentChunk
+from .common import BaseResponse
 
 
 class SearchRequest(BaseModel):

@@ -8,7 +8,6 @@ Replaces: admin_prompt_service, prompt_template_service, search_prompt_service
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
-from uuid import UUID
 
 from app.services.core.supabase_client import get_supabase_client
 

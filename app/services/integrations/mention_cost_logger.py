@@ -25,16 +25,13 @@ Why a dedicated module instead of using AICallLogger directly:
 from __future__ import annotations
 
 import logging
-import os
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
-import httpx
 
 from app.services.core.supabase_client import get_supabase_client
 from app.modules._core.cost_logger import (
     CostAttribution as _CoreCostAttribution,
     log_external_call as _core_log_external_call,
-    DEFAULT_MARKUP,
 )
 
 logger = logging.getLogger(__name__)

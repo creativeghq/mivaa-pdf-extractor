@@ -26,12 +26,10 @@ if TYPE_CHECKING:
     from PIL import Image  # noqa: F401
 import asyncio
 import time
-import io
 import gc
 
 # Import utilities
-from app.utils.circuit_breaker import CircuitBreaker, CircuitBreakerError
-from app.utils.memory_monitor import memory_monitor
+from app.utils.circuit_breaker import CircuitBreaker
 
 # Import services
 from ..embeddings.real_embeddings_service import RealEmbeddingsService

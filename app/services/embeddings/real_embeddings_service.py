@@ -25,10 +25,9 @@ Understanding Embedding Strategy:
 
 import logging
 import asyncio
-import json
 import os
 import time
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 import httpx
 
@@ -54,11 +53,8 @@ def _is_valid_vision_analysis_schema(vision_analysis: Any) -> bool:
     expected_any = ('material_type', 'category', 'colors', 'textures',
                     'finish', 'surface_pattern', 'description')
     return any(k in vision_analysis for k in expected_any)
-import numpy as np
-import sentry_sdk
 
 from app.services.core.ai_call_logger import AICallLogger
-from app.services.core.supabase_client import SupabaseClient
 from app.models.vision_analysis import (
     VisionAnalysis,
     SCHEMA_VERSION,
@@ -1239,7 +1235,6 @@ class RealEmbeddingsService:
             import base64
             from PIL import Image
             import io
-            import numpy as np
             import asyncio
 
             # SLIG Cloud Endpoint — visual embeddings are always remote.

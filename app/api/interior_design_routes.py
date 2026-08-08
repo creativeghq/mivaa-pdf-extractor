@@ -8,12 +8,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import asyncio
-import json
 import os
 import httpx
 from datetime import datetime
 import uuid
-import io
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.credits_integration_service import get_credits_service
 from app.dependencies import get_current_user

@@ -25,7 +25,7 @@ Two modes (the only two the pipeline uses):
 import logging
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import requests
 

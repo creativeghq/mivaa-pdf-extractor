@@ -9,15 +9,12 @@ processing capabilities with the sophisticated visual material search system.
 import logging
 import asyncio
 import aiohttp
-import json
-import os
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.utils.exceptions import MaterialKaiIntegrationError
-from ..integrations.material_kai_service import MaterialKaiService
 
 logger = logging.getLogger(__name__)
 

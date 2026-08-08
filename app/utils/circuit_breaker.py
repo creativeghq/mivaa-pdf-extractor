@@ -23,12 +23,11 @@ Example:
     )
 """
 
-import asyncio
 import logging
 import time
 from enum import Enum
 from typing import Callable, Any, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 

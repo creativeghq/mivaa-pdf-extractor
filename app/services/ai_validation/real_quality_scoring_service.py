@@ -11,9 +11,7 @@ Replaces all hardcoded quality scores (0.85, 0.90, 0.95) with real calculations.
 """
 
 import logging
-import math
-from typing import Dict, List, Any, Optional, Tuple
-from datetime import datetime
+from typing import Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 

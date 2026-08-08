@@ -15,18 +15,16 @@ import asyncio
 import base64
 import re  # used by the JSON-repair path below; was missing, so every repair NameError'd
 import time
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from datetime import datetime
 import json
 import os
 
 import httpx
-from PIL import Image
-import io
 
 from app.services.core.ai_call_logger import AICallLogger
-from app.services.core.supabase_client import SupabaseClient, get_supabase_client
+from app.services.core.supabase_client import get_supabase_client
 from app.services.core.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)

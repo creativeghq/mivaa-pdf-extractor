@@ -9,8 +9,7 @@ and intelligent document analysis.
 import asyncio  # used by the metadata-enrichment loop; only one function imported it locally
 import logging
 from typing import Dict, List, Optional, Any
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
 
 from ..schemas.search import (
@@ -18,19 +17,10 @@ from ..schemas.search import (
     SearchRequest,
     SearchResult,
     SearchResponse,
-    DocumentQueryRequest,
-    DocumentQueryResponse,
     SemanticSearchRequest,
     SemanticSearchResponse,
     SimilaritySearchRequest,
     SimilaritySearchResponse,
-    RelatedDocumentsResponse,
-    DocumentSummaryRequest,
-    DocumentSummaryResponse,
-    EntityExtractionRequest,
-    EntityExtractionResponse,
-    DocumentComparisonRequest,
-    DocumentComparisonResponse,
     QueryRequest,
     QueryResponse,
     SourceCitation,
@@ -42,7 +32,7 @@ from ..schemas.search import (
     # Legacy schemas removed - Phase 8 cleanup completed
     # All functionality now handled by modern multi-modal schemas above
 )
-from ..schemas.common import ErrorResponse, SuccessResponse
+from ..schemas.common import SuccessResponse
 from ..services.search.rag_service import RAGService
 from ..services.core.supabase_client import SupabaseClient
 from ..services.search.material_visual_search_service import (
@@ -58,11 +48,6 @@ from ..services.search.material_visual_search_service import (
 # whether your line number was above or below the redefinition.
 
 # Import unified search service (Step 7)
-from ..services.search.unified_search_service import (
-    UnifiedSearchService,
-    SearchConfig,
-    SearchStrategy
-)
 
 # Import centralized dependencies
 from ..dependencies import get_rag_service, get_supabase_client, get_workspace_context, get_current_user

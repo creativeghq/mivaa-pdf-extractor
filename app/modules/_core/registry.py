@@ -17,7 +17,6 @@ import importlib
 import logging
 import pkgutil
 import time
-from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.modules._core.types import ModuleDefinition

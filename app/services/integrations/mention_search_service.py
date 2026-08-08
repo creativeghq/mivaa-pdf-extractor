@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import logging
 import os
 import re
@@ -35,7 +34,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import httpx
-from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.mention_identity_service import (

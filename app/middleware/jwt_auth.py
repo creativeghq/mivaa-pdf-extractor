@@ -12,7 +12,6 @@ Key Features:
 - Security headers and error handling
 """
 
-import json
 import logging
 import os
 from typing import Optional, Dict, Any, List
@@ -20,13 +19,12 @@ from datetime import datetime, timezone, timedelta
 
 import jwt
 from fastapi import Request, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from ..config import get_settings
 from ..database import get_supabase_client
-from ..utils.json_encoder import safe_json_response
 
 # Import auth schemas for type consistency
 try:

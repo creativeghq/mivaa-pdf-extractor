@@ -9,7 +9,7 @@ Provides real-time monitoring of:
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from typing import Dict, Any, List
+from typing import Dict, Any
 import logging
 from datetime import datetime
 

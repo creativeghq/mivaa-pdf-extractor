@@ -29,7 +29,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.dependencies import get_current_user, get_workspace_context

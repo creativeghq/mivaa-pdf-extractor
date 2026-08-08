@@ -5,8 +5,6 @@ This module provides centralized configuration management that bridges
 existing extractor.py functionality with the production FastAPI structure.
 """
 
-import os
-import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from pydantic_settings import BaseSettings, SettingsConfigDict

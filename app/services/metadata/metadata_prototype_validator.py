@@ -17,7 +17,7 @@ Integration:
 """
 
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 import numpy as np
 

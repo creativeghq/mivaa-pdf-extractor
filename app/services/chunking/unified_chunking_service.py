@@ -483,7 +483,6 @@ class UnifiedChunkingService:
 
             # Adjust for sentence boundaries if enabled
             if self.config.split_on_sentences and end_position < len(text):
-                import re
                 adjusted_end = self._find_sentence_boundary(chunk_content)
                 if adjusted_end > self.config.min_chunk_size:
                     chunk_content = chunk_content[:adjusted_end]

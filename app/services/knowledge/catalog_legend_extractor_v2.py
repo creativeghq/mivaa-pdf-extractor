@@ -43,7 +43,6 @@ Design notes
 """
 
 import base64
-import io
 import json
 import logging
 import os
@@ -52,7 +51,6 @@ from typing import Any, Dict, List, Optional, Set
 
 import fitz  # PyMuPDF
 import sentry_sdk
-from PIL import Image
 
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
 

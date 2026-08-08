@@ -6,7 +6,7 @@ Handles various formats: 15×38, 20x40, 11.8×11.8 cm, etc.
 """
 
 import re
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
 

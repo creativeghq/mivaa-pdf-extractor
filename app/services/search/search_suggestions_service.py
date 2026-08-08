@@ -7,17 +7,13 @@ typo correction, and query expansion functionality.
 
 import logging
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timedelta
-import re
-from collections import defaultdict
+from datetime import datetime
 
 from ..core.supabase_client import SupabaseClient
 from app.schemas.suggestions import (
     SearchSuggestion,
-    TrendingSearch,
     QueryCorrection,
-    ExpandedQuery,
-    PopularSearch
+    ExpandedQuery
 )
 from app.utils.text_similarity import calculate_string_similarity
 

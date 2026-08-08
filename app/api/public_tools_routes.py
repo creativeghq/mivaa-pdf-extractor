@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Any, List, Optional
+from datetime import timezone
+from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
@@ -35,11 +35,9 @@ from app.services.integrations.mention_identity_service import SubjectFacets
 from app.services.integrations.mention_search_service import MentionSearchService
 from app.services.integrations.platform_secret_resolver import resolve_secret
 from app.services.integrations.public_lookup_service import (
-    ANONYMOUS_DAILY_QUOTA,
     QuotaStatus,
     check_quota,
     log_scan,
-    normalize_query,
     query_hash,
     read_cache,
     write_cache,

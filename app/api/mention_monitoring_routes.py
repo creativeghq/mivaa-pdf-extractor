@@ -39,10 +39,9 @@ Cross-flow:
 
 import logging
 import os
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from app.dependencies import get_current_user, get_workspace_context
@@ -52,7 +51,7 @@ from app.services.integrations.tracked_mentions_service import (
     get_tracked_mentions_service,
 )
 from app.services.integrations.llm_mention_probe_service import (
-    build_probes, get_llm_mention_probe_service,
+    get_llm_mention_probe_service,
 )
 from app.services.integrations.mention_identity_service import SubjectFacets
 from app.services.integrations.cron_billing import charge_cron

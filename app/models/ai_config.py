@@ -5,7 +5,7 @@ Defines configurable AI models for different pipeline stages with defaults and a
 All parameters can be overridden via API requests.
 """
 
-from typing import Optional, Literal
+from typing import Literal
 from pydantic import BaseModel, Field
 
 

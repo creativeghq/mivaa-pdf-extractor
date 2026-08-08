@@ -10,18 +10,11 @@ for consistent API response formatting.
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Generic, List, Optional, TypeVar, Union
-from uuid import UUID
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Import unified response for convenience
-from .unified_response import (
-    UnifiedApiResponse,
-    ErrorDetail,
-    ResponseMetadata,
-    ErrorCode
-)
 
 # Generic type for paginated responses
 T = TypeVar('T')

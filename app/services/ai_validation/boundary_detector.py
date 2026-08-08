@@ -10,9 +10,7 @@ Detects product boundaries in PDF documents using:
 Helps identify where one product ends and another begins.
 """
 
-import asyncio
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime
+from typing import Dict, Any, List, Optional
 import logging
 import numpy as np
 

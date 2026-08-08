@@ -18,7 +18,6 @@ tied to it (enforced at the DB level via ON DELETE CASCADE).
 """
 
 import logging
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status

@@ -17,7 +17,6 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Depends, Query
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..services.search.search_deduplication_service import (

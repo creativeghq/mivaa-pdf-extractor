@@ -18,9 +18,7 @@ import logging
 from collections import Counter
 import httpx
 
-from app.services.core.ai_client_service import get_ai_client_service
 from app.services.core.ai_call_logger import AICallLogger
-from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 

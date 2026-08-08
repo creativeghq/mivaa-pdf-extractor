@@ -6,7 +6,7 @@ REST endpoints for managing extraction prompts and configuration.
 
 import logging
 from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, Body
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from app.services.utilities.admin_prompt_service import AdminPromptService

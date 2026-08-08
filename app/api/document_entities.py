@@ -15,9 +15,9 @@ ARCHITECTURE:
 import logging
 from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, status, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from app.services.discovery.document_entity_service import DocumentEntityService, DocumentEntity
+from app.services.discovery.document_entity_service import DocumentEntityService
 from app.services.core.supabase_client import SupabaseClient
 
 logger = logging.getLogger(__name__)

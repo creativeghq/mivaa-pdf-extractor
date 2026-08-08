@@ -22,13 +22,11 @@ from datetime import datetime
 import json
 import os
 
-import openai
 
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.metadata.metadata_normalizer import normalize_metadata, get_normalization_report
 from app.services.metadata.category_field_registry import (
-    get_category_config,
     get_priority_fields_for_prompt,
     get_extraction_hints_for_prompt,
     get_skip_fields,

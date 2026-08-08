@@ -31,7 +31,7 @@ import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 import httpx

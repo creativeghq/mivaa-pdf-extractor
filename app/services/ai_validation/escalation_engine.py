@@ -11,8 +11,7 @@ Features:
 - Performance tracking
 """
 
-import asyncio
-from typing import Dict, Any, Optional, List, Callable
+from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 import logging
 

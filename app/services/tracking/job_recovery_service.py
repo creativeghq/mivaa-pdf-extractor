@@ -6,10 +6,8 @@ It ensures that interrupted jobs can be resumed after service restarts.
 """
 
 import logging
-import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any
-from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 

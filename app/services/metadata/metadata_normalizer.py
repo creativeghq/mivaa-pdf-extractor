@@ -12,9 +12,8 @@ This allows the system to:
 """
 
 import logging
-import re
 import unicodedata
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple
 
 from app.utils.text_similarity import calculate_string_similarity
 

@@ -12,8 +12,7 @@ ARCHITECTURE (vision is Anthropic-only):
 
 import logging
 import asyncio
-import base64
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from datetime import datetime
 import uuid
 

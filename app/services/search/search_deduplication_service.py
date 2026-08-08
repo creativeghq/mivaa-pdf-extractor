@@ -13,12 +13,9 @@ Features:
 """
 
 import json
-import asyncio
 from typing import Optional, Tuple, Dict, List, Any
 from dataclasses import dataclass
-from functools import lru_cache
 import numpy as np
-import openai
 
 from app.config import get_settings
 from ..core.supabase_client import get_supabase_client

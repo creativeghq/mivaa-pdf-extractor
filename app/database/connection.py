@@ -6,7 +6,6 @@ for the MIVAA PDF Extractor microservice.
 """
 
 import logging
-import asyncio
 from typing import Dict, Any, Optional
 from datetime import datetime
 

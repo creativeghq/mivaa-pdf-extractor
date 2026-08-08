@@ -7,8 +7,6 @@ Supports detection of TEXT, IMAGE, TABLE, TITLE, and CAPTION regions.
 
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Any, Optional, Literal
-from datetime import datetime
-from uuid import UUID
 
 
 class BoundingBox(BaseModel):

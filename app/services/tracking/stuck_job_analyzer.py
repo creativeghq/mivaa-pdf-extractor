@@ -7,7 +7,7 @@ Tracks performance bottlenecks and generates optimization recommendations.
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from collections import defaultdict
 
 from app.services.core.supabase_client import get_supabase_client

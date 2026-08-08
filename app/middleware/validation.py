@@ -14,25 +14,23 @@ Key Features:
 - Integration with existing FastAPI middleware stack
 """
 
-import asyncio
 import json
 import time
-from typing import Any, Dict, List, Optional, Set, Union, Callable
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Set, Callable
+from datetime import datetime
 from collections import defaultdict, deque
 import logging
 from functools import wraps
 import hashlib
 import re
 
-from fastapi import Request, Response, HTTPException, status
+from fastapi import Request, Response, status
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 from pydantic import BaseModel, ValidationError, field_validator
 
 from app.schemas.common import BaseResponse, ErrorResponse
-from app.config import settings
 
 
 # Configure logger for validation middleware

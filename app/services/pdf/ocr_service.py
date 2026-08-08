@@ -9,9 +9,7 @@ OCR labels.
 
 import asyncio
 import logging
-import os
-import tempfile
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Union
 from pathlib import Path
 import cv2
 import numpy as np

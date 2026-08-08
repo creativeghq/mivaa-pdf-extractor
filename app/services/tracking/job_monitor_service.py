@@ -14,14 +14,13 @@ Run as a background task in the FastAPI application.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.tracking.checkpoint_recovery_service import (
-    checkpoint_recovery_service,
-    ProcessingStage
+    checkpoint_recovery_service
 )
-from app.utils.query_metrics import track_query_performance, query_metrics
+from app.utils.query_metrics import track_query_performance
 
 logger = logging.getLogger(__name__)
 

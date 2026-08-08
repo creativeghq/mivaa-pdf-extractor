@@ -7,7 +7,6 @@ This service integrates EmbeddingToTextService into the image processing pipelin
 
 import logging
 from typing import Dict, List, Any, Optional
-import asyncio
 
 from app.services.embeddings.embedding_to_text_service import EmbeddingToTextService
 from app.services.core.supabase_client import get_supabase_client

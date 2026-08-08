@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import httpx
 

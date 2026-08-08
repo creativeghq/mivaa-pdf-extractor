@@ -39,7 +39,6 @@ That's the entire integration — one import, one `async with`, two signals.
 
 import asyncio
 import logging
-import os
 from typing import Any, Dict, Optional
 
 from app.services.core.adaptive_concurrency import AdaptiveConcurrency

@@ -10,12 +10,11 @@ Provides real-time monitoring of background job health:
 """
 
 from fastapi import APIRouter, HTTPException, Depends
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any
 import logging
 from datetime import datetime, timedelta
 
 from app.services.core.supabase_client import get_supabase_client
-from app.services.tracking.job_monitor_service import job_monitor_service
 from app.services.tracking.stuck_job_analyzer import stuck_job_analyzer
 from app.utils.timestamp_utils import normalize_timestamp
 from app.schemas.api_responses import (

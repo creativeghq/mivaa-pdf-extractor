@@ -13,7 +13,7 @@ from starlette.requests import Request
 from starlette.responses import Response, JSONResponse
 from starlette.types import ASGIApp
 
-from ..utils.json_encoder import CustomJSONEncoder, safe_json_response
+from ..utils.json_encoder import safe_json_response
 
 logger = logging.getLogger(__name__)
 

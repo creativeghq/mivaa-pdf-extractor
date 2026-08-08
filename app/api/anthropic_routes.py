@@ -7,14 +7,12 @@ This module provides image validation and product enrichment using Anthropic Cla
 - Batch processing for both operations
 """
 
-import asyncio
 import logging
 import time
-import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from ..services.core.supabase_client import get_supabase_client, SupabaseClient

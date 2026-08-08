@@ -23,7 +23,7 @@ Endpoints:
 """
 
 from fastapi import APIRouter, HTTPException, Depends, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime  # several handlers import this locally; one error path did not
 import logging

@@ -6,12 +6,11 @@ including settings for security, performance, monitoring, and error handling.
 """
 
 import os
-from typing import Dict, List, Set, Optional, Any
+from typing import Dict, List, Set, Any
 from functools import lru_cache
 import re
 
 from pydantic import BaseModel, Field, field_validator
-from app.config import settings
 
 
 class SecurityConfig(BaseModel):

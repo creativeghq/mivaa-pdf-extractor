@@ -6,7 +6,7 @@ Endpoints for populating and managing material category prototypes
 
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Any
 from app.schemas.api_responses import PrototypeVerifyResponse
 import numpy as np
 from datetime import datetime

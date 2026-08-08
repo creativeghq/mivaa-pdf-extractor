@@ -20,10 +20,8 @@ Uses PyMuPDF (fitz) to overlay page numbers in a non-intrusive way.
 import asyncio
 import logging
 import os
-import shutil
-import tempfile
 from datetime import datetime
-from typing import Optional, Dict, Any, Callable, Tuple, List
+from typing import Optional, Dict, Any, Callable, Tuple
 
 import fitz  # PyMuPDF
 
@@ -33,7 +31,6 @@ from app.services.tracking.checkpoint_recovery_service import (
 )
 from app.utils.pdf_to_images import (
     analyze_pdf_layout,
-    PDFLayoutAnalysis,
     PageLayoutType
 )
 

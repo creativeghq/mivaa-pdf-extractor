@@ -9,7 +9,7 @@ import logging
 import asyncio
 from datetime import datetime
 from typing import Dict, Any, Optional, List
-from fastapi import APIRouter, HTTPException, Depends, status, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel, Field
 
 from app.services.products.product_creation_service import ProductCreationService

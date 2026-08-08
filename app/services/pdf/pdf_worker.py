@@ -1,15 +1,11 @@
 
-import asyncio
 import gc
-import inspect
 import logging
 import os
-from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 # Import core extraction functions from centralized module
 from app.services.pdf.extractor_imports import (
-    EXTRACTOR_AVAILABLE,
     extract_pdf_to_markdown,
     extract_pdf_to_markdown_with_doc,
 )

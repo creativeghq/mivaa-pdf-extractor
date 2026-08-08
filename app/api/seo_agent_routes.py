@@ -22,13 +22,13 @@ workspace_id in the request body.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from app.services.integrations.dataforseo_unified_client import (
-    DataForSEOUnifiedClient, get_dataforseo_client,
+    get_dataforseo_client,
 )
 from app.services.integrations.mention_cost_logger import CostAttribution
 

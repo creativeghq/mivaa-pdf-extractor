@@ -12,9 +12,8 @@ Replaces mock enrichment with real AI-powered data extraction.
 """
 
 import logging
-import asyncio
 import json
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any
 from datetime import datetime
 import os
 

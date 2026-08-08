@@ -8,14 +8,11 @@ This module provides REST API endpoints for generating embeddings:
 - Batch embedding generation
 """
 
-import asyncio
-import base64
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from ..services.embeddings.real_embeddings_service import RealEmbeddingsService

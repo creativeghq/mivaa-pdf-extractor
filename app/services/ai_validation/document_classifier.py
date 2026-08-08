@@ -15,8 +15,6 @@ import logging
 import httpx
 
 from app.services.core.ai_call_logger import AICallLogger
-from app.config.confidence_thresholds import ConfidenceThresholds
-from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 

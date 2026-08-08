@@ -10,7 +10,7 @@ Physical pages are what users see in catalogs.
 
 import logging
 import fitz
-from typing import Dict, Any, Set, List, Optional
+from typing import Dict, Any, List, Optional
 from app.utils.pdf_to_images import analyze_pdf_layout, get_physical_page_text
 
 

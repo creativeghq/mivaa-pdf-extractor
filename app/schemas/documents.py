@@ -7,7 +7,6 @@ including requests, responses, and document metadata.
 
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
-from uuid import UUID
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 

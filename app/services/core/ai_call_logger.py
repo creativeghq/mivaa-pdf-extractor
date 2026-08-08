@@ -14,7 +14,6 @@ import threading
 from collections import OrderedDict, deque
 from typing import Dict, Any, Optional
 from datetime import datetime
-from decimal import Decimal
 import json
 
 from app.services.core.supabase_client import get_supabase_client

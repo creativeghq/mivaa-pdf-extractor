@@ -9,8 +9,7 @@ Provides AI-powered sentiment analysis for user feedback using:
 """
 
 import logging
-import asyncio
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 from datetime import datetime
 import re
 import json

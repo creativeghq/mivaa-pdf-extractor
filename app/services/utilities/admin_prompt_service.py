@@ -8,11 +8,9 @@ UPDATED: Now uses UnifiedPromptService for all prompt operations.
 import logging
 from typing import Dict, Any, Optional, List
 from datetime import datetime
-from uuid import UUID
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.utilities.unified_prompt_service import UnifiedPromptService
-from app.services.core.ai_client_service import get_ai_client_service
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,6 @@ metadata validation and search relevance.
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
-import asyncio
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.metadata.metadata_prototype_validator import get_metadata_validator
