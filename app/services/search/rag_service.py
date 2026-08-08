@@ -265,6 +265,45 @@ class RAGService:
             total_embeddings_stored = 0  # Track total embeddings across all batches
             chunks_failed_insert = 0  # chunks that chunking produced but the INSERT lost (S2-1)
 
+            # Make the write idempotent: clear this (document, product) namespace before
+            # inserting into it.
+            #
+            # chunk_pages() restarts chunk_index at 0 on every call, and stage_2 calls it
+            # ONCE PER PRODUCT against the same document_id — so (document_id, product_id)
+            # is the addressable namespace. Nothing here ever deleted, which made a
+            # re-run purely additive: re-process a document and every index exists twice.
+            # That is not merely wasted rows. Retrieval reads chunk_index as an ADDRESS
+            # (issue #318): expand_document_chunk_hits would pull each neighbour twice
+            # and read_document_chunk_span would spend its budget returning the same
+            # section repeatedly, so a duplicated document degrades answers rather than
+            # failing loudly. Deleting first also means a shrinking re-chunk (fewer
+            # chunks than last time) cannot strand orphans at the tail.
+            try:
+                _clear = self.supabase_client.client.table('document_chunks') \
+                    .delete() \
+                    .eq('document_id', document_id) \
+                    .eq('workspace_id', workspace_id)
+                # PostgREST has no `is not distinct from`; the two namespaces need
+                # different predicates, and `product_id=is.null` is NOT the same query
+                # as `product_id=eq.<uuid>`.
+                _product_id = metadata.get('product_id')
+                _clear = _clear.eq('product_id', _product_id) if _product_id else _clear.is_('product_id', 'null')
+                _cleared = _clear.execute()
+                _n = len(_cleared.data or [])
+                if _n:
+                    self.logger.info(
+                        f"   ♻️ Replaced {_n} existing chunk(s) for document={document_id} "
+                        f"product={_product_id or '(document-level)'} — re-chunk, not append"
+                    )
+            except Exception as _clear_err:
+                # Loud, and non-fatal: proceeding appends duplicates, which is worse than
+                # the old behaviour only in that we now know it happened.
+                self.logger.error(
+                    f"   ❌ Could not clear prior chunks for document={document_id} "
+                    f"product={metadata.get('product_id') or '(document-level)'}: {_clear_err}. "
+                    f"Proceeding will DUPLICATE chunk_index values and degrade retrieval."
+                )
+
             try:
                 initial_mem = memory_monitor.get_memory_stats()
                 self.logger.info(f"🧠 Initial memory: {initial_mem.percent_used:.1f}% ({initial_mem.used_mb:.0f}MB / {initial_mem.total_mb:.0f}MB)")

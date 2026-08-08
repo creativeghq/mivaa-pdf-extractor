@@ -3,11 +3,11 @@ Guards for PDF-chunk retrieval in /search/knowledge-base (issue #318).
 
 Three things here are load-bearing and none of them is visible to a typecheck:
 
-1. **The route is served by a duplicate-defining module pair.** `/search/knowledge-base`
-   is defined TWICE — in `app/api/rag_routes.py` and in `app/api/documents/query_routes.py`
-   — and Starlette serves whichever router was included FIRST. The fixed implementation
-   lives in rag_routes; reorder the `include_router` calls in main.py and the endpoint
-   silently reverts to the shadowed copy, with no import error and no failing request.
+1. **One route, one declaration.** `/search/knowledge-base` used to be declared TWICE —
+   in `app/api/rag_routes.py` and in `app/api/documents/query_routes.py` — with
+   Starlette serving whichever router main.py included FIRST. The duplicate has been
+   deleted; the guard now pins the path to a single declaration, so include_router
+   order can never again decide which implementation answers.
 
 2. **Retrieval must be a vector search.** The original chunks branch pulled an unordered
    `select * limit top_k*3` sample of the workspace and scored it with `+0.15 per query
@@ -33,8 +33,6 @@ pytestmark = pytest.mark.unit
 
 _ROOT = Path(__file__).resolve().parents[2]
 _RAG_ROUTES = _ROOT / "app" / "api" / "rag_routes.py"
-_QUERY_ROUTES = _ROOT / "app" / "api" / "documents" / "query_routes.py"
-_MAIN = _ROOT / "app" / "main.py"
 
 _RAG_SOURCE = _RAG_ROUTES.read_text(encoding="utf-8")
 _RAG_TREE = ast.parse(_RAG_SOURCE)
@@ -47,38 +45,25 @@ def _function_source(tree: ast.AST, source: str, name: str) -> str:
     raise AssertionError(f"{name}() not found — it was renamed or removed")
 
 
-def _included_routers_in_order() -> list:
-    """Names passed to app.include_router(...), in registration order."""
-    tree = ast.parse(_MAIN.read_text(encoding="utf-8"))
-    names = []
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "include_router"
-            and node.args
-            and isinstance(node.args[0], ast.Name)
-        ):
-            names.append(node.args[0].id)
-    return names
+def test_knowledge_base_route_is_defined_exactly_once():
+    """Stronger than the ordering guard it replaces.
 
-
-def test_knowledge_base_route_is_still_defined_twice():
-    """The premise of the ordering guard below. If someone deletes the shadowed copy
-    this test fails — delete the ordering guard with it, don't weaken it."""
-    assert '"/search/knowledge-base"' in _RAG_SOURCE
-    assert '"/search/knowledge-base"' in _QUERY_ROUTES.read_text(encoding="utf-8")
-
-
-def test_rag_router_wins_the_duplicate_knowledge_base_route():
-    """First-registered wins in Starlette. rag_router holds the vector-search
-    implementation; query_router holds the shadowed substring-scoring copy."""
-    order = _included_routers_in_order()
-    assert "rag_router" in order, "rag_router is no longer registered in main.py"
-    assert "query_router" in order, "query_router is no longer registered in main.py"
-    assert order.index("rag_router") < order.index("query_router"), (
-        "query_router now shadows rag_router, so /search/knowledge-base is served by "
-        "the old substring-scoring implementation in query_routes.py"
+    This path used to be declared in BOTH rag_routes.py and documents/query_routes.py,
+    with Starlette serving whichever router main.py included first — rag_router at
+    ~1986, query_router at ~1989. Working retrieval sat three lines away from being
+    silently swapped for the shadowed copy's substring scorer, and neither a reorder
+    nor a stale edit to the wrong copy would raise anything. The duplicate is now
+    deleted; one declaration is the invariant, so the ordering never matters again.
+    """
+    declarations = [
+        path.name
+        for path in (_ROOT / "app" / "api").rglob("*.py")
+        if '"/search/knowledge-base"' in path.read_text(encoding="utf-8")
+    ]
+    assert declarations == ["rag_routes.py"], (
+        f"/search/knowledge-base is declared in {declarations}. Two routers claiming "
+        "one path means the served implementation is decided by include_router order "
+        "in main.py, not by anything visible at the call site."
     )
 
 
@@ -156,6 +141,30 @@ def test_entity_embeddings_are_persisted_not_just_counted():
     assert src.index(".update(") < src.index("embeddings_generated += 1"), (
         "the counter is incremented before the row is written — exactly the shape "
         "that reported success while the search index stayed empty"
+    )
+
+
+def test_chunk_writes_are_idempotent_per_namespace():
+    """Re-chunking must REPLACE its (document, product) namespace, not append to it.
+
+    chunk_pages() restarts chunk_index at 0 every call and stage_2 calls it once per
+    product, so a re-run used to leave every index present twice. Retrieval treats
+    chunk_index as an address (#318): duplicates make expansion return each neighbour
+    twice and make a span read spend its budget on repeats — answers get worse without
+    anything failing. The delete must be scoped to the product namespace, and `is null`
+    is a different query from `eq(<uuid>)` in PostgREST, so both branches must exist.
+    """
+    service = _ROOT / "app" / "services" / "search" / "rag_service.py"
+    source = service.read_text(encoding="utf-8")
+    src = _function_source(ast.parse(source), source, "index_pdf_content")
+    assert ".delete()" in src, "index_pdf_content appends chunks without clearing prior ones"
+    assert "is_('product_id', 'null')" in src and "eq('product_id'" in src, (
+        "the clear-before-insert must distinguish the document-level namespace "
+        "(product_id IS NULL) from a specific product's"
+    )
+    # Clearing after the insert loop would delete the rows just written.
+    assert src.index(".delete()") < src.index("for batch_start in range("), (
+        "prior chunks are cleared after the insert loop, which deletes the new rows"
     )
 
 
