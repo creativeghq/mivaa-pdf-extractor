@@ -129,6 +129,8 @@ def _map_source_label(hit_source: str) -> str:
     so unknown values still persist (better than the row failing the enum constraint).
     """
     s = (hit_source or "").lower()
+    if s == "firecrawl":
+        return "firecrawl_url"
     if s == "dataforseo":
         return "dataforseo_shopping"
     if s == "skroutz":
@@ -353,14 +355,22 @@ class TrackedQueriesService:
     # ────────── Internal-flow helpers (api_key_id IS NULL, product_id NOT NULL) ──────────
 
     async def find_for_product(self, product_id: str) -> Optional[Dict[str, Any]]:
-        """Return the internal tracked_query attached to this product, if any.
-        At most one exists — enforced by `uniq_tracked_queries_internal_product`.
+        """Return the internal DISCOVERY tracked_query attached to this product,
+        if any. At most one exists — enforced by
+        `uniq_tracked_queries_internal_product_discovery`.
+
+        The `mode='discovery'` filter is load-bearing, not decoration: a product
+        also owns N `mode='url-only'` siblings (Custom Monitoring pinned URLs)
+        which share its `product_id`. Without the filter this `LIMIT 1` returns
+        an arbitrary row, so `/products/{id}/refresh`, `/track` and the
+        exclusion routes would act on a pinned URL instead of the discovery row.
         """
         res = (
             self.supabase.client.table("tracked_queries")
             .select("*")
             .eq("product_id", product_id)
             .is_("api_key_id", "null")
+            .eq("mode", "discovery")
             .limit(1)
             .execute()
         )
@@ -477,14 +487,16 @@ class TrackedQueriesService:
         own row so refresh history is per-URL and cadence/exclusions stay
         independent. The internal product can have at most one
         `mode='discovery'` row + N `mode='url-only'` rows.
+
+        The row carries `product_id` like any internal row — the partial unique
+        index `uniq_tracked_queries_internal_product_discovery` is scoped to
+        `mode = 'discovery'`, so the siblings don't compete for it. Refresh
+        takes the Firecrawl-only path in `_refresh_url_only()`; it never runs
+        discovery.
         """
         row: Dict[str, Any] = {
             "api_key_id": None,
-            "product_id": None,  # url-only rows are not subject to the unique
-                                  # internal-product index — store product_id in
-                                  # pinned_url metadata via a side relation if we
-                                  # need product join later. For now we keep the
-                                  # row owner-less to avoid unique conflict.
+            "product_id": product_id,
             "user_id": user_id,
             "workspace_id": workspace_id,
             "search_query": product_name.strip(),
@@ -494,19 +506,6 @@ class TrackedQueriesService:
             "mode": "url-only",
             "pinned_url": url.strip(),
         }
-        # The XOR check requires either api_key_id OR product_id. For url-only
-        # we hang it off the product but flag mode=url-only to keep the unique
-        # internal-product index clean (only mode='discovery' rows compete).
-        # Drop the partial uniqueness restriction: index is partial WHERE
-        # api_key_id IS NULL AND product_id IS NOT NULL — url-only rows pass
-        # because they ALSO carry product_id; multiple are allowed because the
-        # index is on (product_id) alone. To avoid that, we require product_id
-        # but rely on the unique partial NOT covering url-only rows. Simplest:
-        # the unique index covers all internal rows; url-only must use a
-        # distinct product_id strategy. Solution adopted: keep product_id on
-        # url-only rows but tag with mode; rebuild the unique index to include
-        # mode = 'discovery'. (Migration will add this constraint refinement.)
-        row["product_id"] = product_id
         res = self.supabase.client.table("tracked_queries").insert(row).execute()
         created = (res.data or [{}])[0]
         tracking_id = created.get("id")
@@ -533,9 +532,15 @@ class TrackedQueriesService:
 
     async def refresh(self, tracking_id: str, force: bool = False) -> Dict[str, Any]:
         """
-        Run Perplexity for this tracked query and persist results.
+        Run discovery for this tracked query and persist results.
         Respects refresh_interval_hours unless force=True.
         Returns {status, results, error?}.
+
+        Two modes, and the split is a cost boundary, not a detail:
+          - `mode='url-only'` (Custom Monitoring) → `_refresh_url_only()`.
+            One Firecrawl scrape of the pinned URL. No Perplexity, no
+            DataForSEO, no marketplaces, no Haiku classifier.
+          - everything else → the full discovery pass below.
         """
         tq = await self.get(tracking_id)
         if not tq:
@@ -556,6 +561,15 @@ class TrackedQueriesService:
                         "throttle_until": next_at.isoformat(),
                         "results": await self.latest_results(tracking_id),
                     }
+
+        # Pinned-URL rows never run discovery — the user already picked the
+        # page, so there is nothing to discover and no SKU ambiguity to
+        # classify. Routing them through the block below would spend a full
+        # Perplexity + DataForSEO + Haiku pass, every 24h, on a query built
+        # from the product NAME while the URL the user actually pinned went
+        # unread. That is what shipped until 2026-08-08 (issue #234).
+        if (tq.get("mode") or "") == "url-only":
+            return await self._refresh_url_only(tracking_id, tq)
 
         # Use the cached query_facets if we have them (created on first insert).
         # Rows that predate facet caching (or whose create-time extraction
@@ -686,12 +700,111 @@ class TrackedQueriesService:
             }).eq("id", tracking_id).execute()
             return {"status": "error", "error": result.error, "credits_used": result.credits_used}
 
+        return await self._persist_refresh(
+            tracking_id=tracking_id,
+            tq=tq,
+            hits=result.hits,
+            credits_used=result.credits_used,
+            latency_ms=result.latency_ms,
+            summary=result.summary,
+            brand=(cached_facets.brand if cached_facets else None) or tq.get("manufacturer"),
+        )
+
+    async def _refresh_url_only(self, tracking_id: str, tq: Dict[str, Any]) -> Dict[str, Any]:
+        """Refresh a Custom Monitoring row: scrape the one pinned URL.
+
+        1 Firecrawl credit, no LLM call. The user picked the exact page, so
+        there is nothing to discover and no identity to classify — the hit is
+        stamped `match_kind='exact'` so it feeds the chart, the rolling median
+        and the alerts like any other verified retailer row.
+
+        A page that loads but yields no price is still persisted, with
+        `verified=false` and a note. Pipeline convention #1: an explicit
+        failure marker beats an empty return, and `_select_cheapest` skips
+        null-price rows so the `current_*` cache keeps its last good value.
+        """
+        start = datetime.now(timezone.utc)
+        pinned = (tq.get("pinned_url") or "").strip()
+        if not pinned:
+            self.supabase.client.table("tracked_queries").update({
+                "last_error": "url-only row has no pinned_url",
+                "updated_at": start.isoformat(),
+            }).eq("id", tracking_id).execute()
+            return {
+                "status": "error",
+                "error": "url-only tracked_query has no pinned_url",
+                "credits_used": 0,
+            }
+
+        hit = PriceHit(
+            retailer_name=_domain_of(pinned) or "pinned URL",
+            product_url=pinned,
+            verified=False,
+            source="firecrawl",
+            match_kind="exact",
+            match_note="Pinned URL — user-selected page, identity classifier not run",
+        )
+
+        try:
+            credits_used = await self.search._verify_hits_with_firecrawl(
+                [hit],
+                extractions_out=None,
+                user_id=tq.get("user_id"),
+                workspace_id=tq.get("workspace_id"),
+                double_read=False,
+            )
+        except Exception as e:
+            logger.exception(f"url-only refresh failed for tracked_query={tracking_id}: {e}")
+            self.supabase.client.table("tracked_queries").update({
+                "last_error": str(e),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", tracking_id).execute()
+            return {"status": "error", "error": str(e), "credits_used": 0}
+
+        if hit.price is None:
+            hit.notes = " | ".join(filter(None, [hit.notes, "pinned URL returned no readable price"]))
+
+        latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+        return await self._persist_refresh(
+            tracking_id=tracking_id,
+            tq=tq,
+            hits=[hit],
+            credits_used=credits_used,
+            latency_ms=latency_ms,
+            summary=f"Pinned URL check: {hit.retailer_name}",
+            # No brand seeding from a pinned URL — `brand_retailer_index` exists
+            # to teach DISCOVERY which retailers stock a brand. One URL the user
+            # typed is not evidence about the retailer landscape.
+            brand=None,
+        )
+
+    async def _persist_refresh(
+        self,
+        *,
+        tracking_id: str,
+        tq: Dict[str, Any],
+        hits: List[PriceHit],
+        credits_used: int,
+        latency_ms: int,
+        summary: Optional[str] = None,
+        brand: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Shared tail of every refresh — exclusions → sanity band → history
+        insert → alerts → `current_*` cache → cadence → brand index.
+
+        Both `refresh()` (discovery) and `_refresh_url_only()` (Firecrawl on a
+        pinned URL) land here, so a pinned URL gets the same anomaly banding,
+        alerting and cadence as a discovered retailer. Only the way the hits
+        were OBTAINED differs.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+
         # Apply per-tracked-query exclusions BEFORE persisting. Excluded URLs
         # never reach the price_history table, so they never feed the chart,
         # the rolling median, the alerts, or future refreshes' "known
         # retailers" seed. Cheaper than persist-then-filter and keeps the
         # tracked_query_price_history table clean.
-        if result.hits:
+        if hits:
             try:
                 ex = (
                     self.supabase.client.table("tracked_query_excluded_urls")
@@ -702,13 +815,13 @@ class TrackedQueriesService:
                 excluded_urls = {e["url"] for e in (ex.data or []) if e.get("url")}
                 excluded_domains = {e["domain"] for e in (ex.data or []) if e.get("domain")}
                 if excluded_urls or excluded_domains:
-                    before = len(result.hits)
-                    result.hits = [
-                        h for h in result.hits
+                    before = len(hits)
+                    hits = [
+                        h for h in hits
                         if h.product_url not in excluded_urls
                         and (_domain_of(h.product_url) or "") not in excluded_domains
                     ]
-                    dropped = before - len(result.hits)
+                    dropped = before - len(hits)
                     if dropped > 0:
                         logger.info(
                             f"refresh: tracked_query={tracking_id} dropped {dropped} hits via exclusions"
@@ -722,9 +835,9 @@ class TrackedQueriesService:
         # can show it under a yellow banner without it polluting medians.
         refresh_run_id = str(uuid4())
         rows: List[Dict[str, Any]] = []
-        if result.hits:
+        if hits:
             dispatcher = get_price_alert_dispatcher()
-            for h in result.hits:
+            for h in hits:
                 price_val = float(h.price) if h.price is not None else None
                 is_anomaly = False
                 anomaly_reason: Optional[str] = None
@@ -795,8 +908,8 @@ class TrackedQueriesService:
         cheapest = _select_cheapest(rows)
         update_payload: Dict[str, Any] = {
             "last_refreshed_at": now_iso,
-            "last_refresh_credits_used": result.credits_used,
-            "total_credits_used": prev_total + result.credits_used,
+            "last_refresh_credits_used": credits_used,
+            "total_credits_used": prev_total + credits_used,
             "last_error": None,
             "updated_at": now_iso,
             "first_refresh_verified": True,
@@ -833,7 +946,6 @@ class TrackedQueriesService:
         # SKUs in the same brand can seed their `known_retailer_domains` list
         # from this index instead of running a fresh Perplexity discovery.
         try:
-            brand = (cached_facets.brand if cached_facets else None) or tq.get("manufacturer")
             country_code = (tq.get("country_code") or "XX").upper()
             if brand and rows:
                 _upsert_brand_retailer_index(
@@ -848,10 +960,10 @@ class TrackedQueriesService:
         return {
             "status": "refreshed",
             "refresh_run_id": refresh_run_id,
-            "credits_used": result.credits_used,
-            "latency_ms": result.latency_ms,
-            "results": [h.model_dump() for h in result.hits],
-            "summary": result.summary,
+            "credits_used": credits_used,
+            "latency_ms": latency_ms,
+            "results": [h.model_dump() for h in hits],
+            "summary": summary,
         }
 
     async def latest_results(
