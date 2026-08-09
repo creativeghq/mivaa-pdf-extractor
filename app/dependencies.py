@@ -14,6 +14,7 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.auth.workspace_resolution import (
+    WorkspaceAccessDenied,
     is_service_caller,  # noqa: F401  (re-exported for routes)
     resolve_workspace_id as _resolve_workspace_id,
 )
@@ -263,12 +264,23 @@ async def resolve_workspace_id(
     async def _is_member(user_id: str, workspace_id: str) -> bool:
         return await jwt_middleware._validate_workspace_access(user_id, workspace_id)
 
-    return await _resolve_workspace_id(
-        claims,
-        requested_workspace_id,
-        is_member=_is_member,
-        validated_workspace_id=getattr(getattr(request, "state", None), "workspace_id", None),
-    )
+    try:
+        return await _resolve_workspace_id(
+            claims,
+            requested_workspace_id,
+            is_member=_is_member,
+            validated_workspace_id=getattr(getattr(request, "state", None), "workspace_id", None),
+        )
+    except WorkspaceAccessDenied as denied:
+        # The rule module raises a plain exception so it stays importable with pytest
+        # alone; the HTTP mapping belongs here. Detail is deliberately bare — naming
+        # the workspace back to a caller who does not belong to it is the leak.
+        import logging
+        logging.getLogger(__name__).warning(
+            "Workspace access denied: user %s requested workspace %s",
+            denied.user_id, denied.workspace_id,
+        )
+        raise HTTPException(status_code=denied.status_code, detail="Not found")
 
 
 # ============================================================================

@@ -34,15 +34,38 @@ End user -> the requested value is honored only if they are an active member of 
 Otherwise 404 rather than 403: a 403 confirms the workspace exists, which turns the
 endpoint into an id-enumeration oracle.
 
-Kept free of service imports on purpose — `app.dependencies` pulls Supabase, the RAG
-service and the settings bootstrap, none of which are installed in CI. Membership is
-injected as `is_member`, so this module is unit-testable against a stub and the tests
-run in a second with nothing but fastapi + pytest.
+Kept free of ALL third-party imports on purpose — not just service ones. CI installs
+pytest and nothing else (`deploy.yml`: `pip install --quiet pytest==7.4.3`), so an
+import of fastapi here is enough to make the guard uncollectable and take the whole
+suite down with it. That is not hypothetical: it is what happened. Hence the plain
+exception below rather than `HTTPException` — the rule is about who may use a
+workspace, which is not an HTTP question. `app.dependencies.resolve_workspace_id`
+translates it at the boundary, where fastapi genuinely belongs.
+
+Membership is injected as `is_member`, so this module is unit-testable against a stub
+and the tests run in a second with nothing but pytest.
 """
 
 from typing import Any, Awaitable, Callable, Dict, Optional
 
-from fastapi import HTTPException, status
+
+class WorkspaceAccessDenied(Exception):
+    """The caller may not operate on the workspace they asked for.
+
+    `status_code` is 404, deliberately, and callers must not "improve" it to 403: a
+    403 confirms the workspace exists, which turns any endpoint taking a workspace id
+    into an enumeration oracle. Kept as an attribute so the HTTP mapping is stated
+    once, here, next to the reason.
+    """
+
+    status_code = 404
+
+    def __init__(self, user_id: Optional[str], workspace_id: str):
+        self.user_id = user_id
+        self.workspace_id = workspace_id
+        super().__init__(
+            f"user {user_id!r} is not an active member of workspace {workspace_id!r}"
+        )
 
 #: Subject minted by `JWTAuthMiddleware._validate_simple_api_key` for the `mk_` key.
 SERVICE_SUBJECT = "material-kai-platform"
@@ -103,4 +126,4 @@ async def resolve_workspace_id(
     if user_id and await is_member(str(user_id), requested):
         return requested
 
-    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    raise WorkspaceAccessDenied(user_id, requested)
