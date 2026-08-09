@@ -50,7 +50,13 @@ from ..services.search.material_visual_search_service import (
 # Import unified search service (Step 7)
 
 # Import centralized dependencies
-from ..dependencies import get_rag_service, get_supabase_client, get_workspace_context, get_current_user
+from ..dependencies import (
+    get_rag_service,
+    get_supabase_client,
+    get_workspace_context,
+    get_current_user,
+    resolve_workspace_id,
+)
 from ..schemas.auth import WorkspaceContext
 from ..utils.credit_metering import meter_operation, refund_operation
 
@@ -1382,6 +1388,12 @@ async def _run_aspect_search(
     """Shared body for the four /search/by-<aspect> endpoints."""
     from app.services.embeddings.vecs_service import get_vecs_service
 
+    # Bind the body-supplied workspace to the caller BEFORE anything else (invariant 1).
+    # `search_specialized_embeddings` uses this as its only tenancy filter, so an
+    # unbound value here reads another tenant's aspect vectors. Resolving first also
+    # means a request that is about to 404 never reaches the metered vision call.
+    workspace_id = await resolve_workspace_id(user or {}, request.workspace_id)
+
     # #250 H1: only the query_image path runs Opus vision — meter it BEFORE the call,
     # refund on failure. Text-only queries skip Opus entirely and stay free.
     _billed = 0.0
@@ -1407,7 +1419,7 @@ async def _run_aspect_search(
         query_embedding=embedding,
         embedding_type=aspect,
         limit=request.limit,
-        workspace_id=request.workspace_id,
+        workspace_id=workspace_id,
         document_id=request.document_id,
         include_metadata=True,
     )
