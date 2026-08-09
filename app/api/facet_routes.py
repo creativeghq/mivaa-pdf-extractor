@@ -119,7 +119,7 @@ class RecanonicalizeRequest(BaseModel):
 
 
 @router.post("/recanonicalize", dependencies=[Depends(require_admin)])
-async def recanonicalize(req: RecanonicalizeRequest, current_user: dict = Depends(get_current_user)):
+async def recanonicalize(req: RecanonicalizeRequest):
     """Replay attributes_raw → canonical attributes for stale/degraded products.
 
     Idempotent and resumable: `products.facet_canonicalization_version` is the cursor, so a
@@ -129,8 +129,10 @@ async def recanonicalize(req: RecanonicalizeRequest, current_user: dict = Depend
     first next time. Bumping it would turn a retryable outage into a permanent empty-facet
     product while reporting success.
     """
-    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
-    workspace_id = await resolve_workspace_id(current_user, req.workspace_id)
+    # No workspace binding here on purpose: this route is admin-gated at the decorator
+    # (`require_admin`), and `workspace_id` is a sweep SCOPE — "omit to sweep all". A
+    # membership check would break an operator recanonicalizing a tenant they do not
+    # belong to, which is the normal case for platform admin maintenance.
     from app.services.facets.facet_recanonicalization import (
         recanonicalize_products,
         CURRENT_FACET_CANONICALIZATION_VERSION,
@@ -141,7 +143,7 @@ async def recanonicalize(req: RecanonicalizeRequest, current_user: dict = Depend
             target_version=req.target_version or CURRENT_FACET_CANONICALIZATION_VERSION,
             max_products=req.max_products,
             batch_size=req.batch_size,
-            workspace_id=workspace_id,
+            workspace_id=req.workspace_id,
             degraded_only=req.degraded_only,
         )
     except Exception as e:

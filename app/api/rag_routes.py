@@ -39,7 +39,7 @@ from app.schemas.api_responses import (
     CheckpointListResponse, RelevancyListResponse, StatsResponse,
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
-from app.dependencies import get_current_user, get_optional_workspace_context
+from app.dependencies import get_current_user, get_optional_workspace_context, resolve_workspace_id
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
 # Importing it at the top triggers `app.api.documents.__init__` →
 # `management_routes` → `app.orchestration` → back into this (still partially
@@ -5585,7 +5585,7 @@ async def get_rag_statistics(
 @router.get("/workspace-stats", responses={200: {"model": StatsResponse}})
 async def get_workspace_statistics(
     workspace_id: str,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ):
     """
     Get comprehensive workspace statistics including VECS embedding counts.
@@ -5598,6 +5598,8 @@ async def get_workspace_statistics(
     - Image embeddings (from VECS)
     - Total embeddings (text + image)
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
 
         # Query Supabase tables for counts
@@ -6023,7 +6025,13 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
     """Chunk + embed kb_docs into kb_doc_chunks (section-level retrieval). Idempotent
     (delete+reinsert per doc). Internal/admin only — gated on x-cron-secret, since the
     /api/rag prefix is excluded from the JWT middleware. Called on-write (per doc) and by
-    the one-time backfill (all=true, paged by limit/offset)."""
+    the one-time backfill (all=true, paged by limit/offset).
+
+    Deliberately NOT using `resolve_workspace_id`: this route self-guards below on the
+    cron secret or the service-role bearer and is not user-reachable, so `workspace_id`
+    is a backfill filter from a trusted internal caller, not a tenancy claim. Adding
+    `Depends(get_current_user)` here would 401 the cron path, which sends no bearer at
+    all."""
     secret = (http_request.headers.get("x-cron-secret") or "").strip()
     expected = (os.getenv("CRON_SECRET") or "").strip()
     authz = (http_request.headers.get("authorization") or "").strip()

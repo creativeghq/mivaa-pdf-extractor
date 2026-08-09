@@ -37,7 +37,7 @@ from app.services.core.supabase_client import get_supabase_client, SupabaseClien
 from app.services.tracking.progress_tracker import get_progress_service
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 from app.schemas.jobs import JobStatus, ProcessingStage
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, resolve_workspace_id
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module — importing
 # from `app.api.documents` at the top triggers a circular-import cycle on startup
 # (app.api.documents → management_routes → app.orchestration → rag_routes). It is only
@@ -150,23 +150,31 @@ router = APIRouter(
 )
 
 
-async def verify_internal_access(request: Request) -> None:
+async def verify_internal_access(request: Request) -> Optional[Dict[str, Any]]:
     """Pentest #250 D19/D20: `/api/internal` is service-to-service and excluded from the
     JWT middleware, yet these thin HTTP wrappers (the pipeline calls the underlying
     services in-process — it never hits these routes) were fully unauthenticated while
     reachable via the public gateway URL. Accept EITHER the `x-cron-secret` used by the
     other internal endpoints OR a valid platform JWT (the admin UI / mivaaApiClient sends
-    one); reject anonymous external callers."""
+    one); reject anonymous external callers.
+
+    Returns the validated claims when the caller authenticated with a token, and None
+    for the `x-cron-secret` path. Routes that scope by a body-supplied `workspace_id`
+    need that distinction: this gate admits ANY valid platform token, including an end
+    user's, so without the claims a route cannot tell a trusted cron call from a user
+    naming someone else's workspace. Declaring it as a parameter as well as a decorator
+    dependency is free — FastAPI caches a dependency per request.
+    """
     secret = os.getenv("CRON_SECRET")
     if secret and request.headers.get("x-cron-secret") == secret:
-        return
+        return None
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         try:
             from app.dependencies import _get_jwt_middleware
             claims = await _get_jwt_middleware()._validate_token(auth.split(" ", 1)[1])
             if claims:
-                return
+                return claims
         except Exception:
             pass
     raise HTTPException(status_code=401, detail="Unauthorized: internal endpoint requires a valid token or x-cron-secret")
@@ -451,7 +459,8 @@ async def upload_images(
 @router.post("/save-images-db/{job_id}", response_model=SaveImagesResponse, dependencies=[Depends(verify_internal_access)])
 async def save_images_to_db(
     job_id: str,
-    request: SaveImagesRequest
+    request: SaveImagesRequest,
+    internal_claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ):
     """
     Save images to database and generate visual embeddings (SLIG (SigLIP2)).
@@ -487,6 +496,13 @@ async def save_images_to_db(
     Returns:
         SaveImagesResponse with counts and model used
     """
+    # Bind the body-supplied workspace to the caller (invariant 1). `verify_internal_access`
+    # admits EITHER the x-cron-secret (claims None -> trusted internal call, the value
+    # stands) OR any valid platform token — including an end user's, which is why a user's
+    # claims must still be checked against the workspace they named.
+    workspace_id = await resolve_workspace_id(
+        internal_claims or {"service": "mivaa"}, request.workspace_id
+    )
     try:
         logger.info(f"💾 [Job {job_id}] Starting DB save and SLIG generation for {len(request.material_images)} images")
 
@@ -499,7 +515,7 @@ async def save_images_to_db(
         result = await image_service.save_images_and_generate_clips(
             material_images=request.material_images,
             document_id=request.document_id,
-            workspace_id=request.workspace_id
+            workspace_id=workspace_id
         )
 
         # Report stage completion
