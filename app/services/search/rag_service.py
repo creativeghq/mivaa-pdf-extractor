@@ -711,6 +711,53 @@ class RAGService:
             # If any fail or timeout, search continues with remaining sources.
             # ============================================================================
             EMBEDDING_TIMEOUT = 10  # seconds — prevents search from hanging
+
+            # Does the caller actually have words, or only a picture?
+            #
+            # This is not a hypothetical distinction. The search page REQUIRES an image for
+            # its five image modes and then sends the image's FILENAME as `query`, so every
+            # text-derived channel was ranking against `voyage("IMG_2831.jpg")` — 41.5% of the
+            # ranking in the balanced profile, 18 of those points from `understanding` alone.
+            # Fabricated text is worse than no text: it is confidently wrong rather than absent.
+            has_text_query = bool(query and query.strip())
+
+            # One vision call yields every text-space vector an image can supply: the four
+            # aspects AND understanding, each mirroring what ingestion embedded. Only worth
+            # paying for when it will actually be used — an aspect search, or a query with no
+            # words for the text channels to stand on.
+            image_query_vecs: Dict[str, List[float]] = {}
+            if image_base64 and (not has_text_query or config.get('weights')):
+                try:
+                    from app.services.search.aspect_query import image_query_vectors
+                    image_query_vecs, _iq_texts, _iq_err = await image_query_vectors(image_base64)
+                    if _iq_err:
+                        self.logger.warning(
+                            f"⚠️ Image-derived query vectors failed ({_iq_err}) — "
+                            "falling back to whatever the query text can provide"
+                        )
+                    else:
+                        self.logger.info(
+                            f"🎨 Query vectors from image: {sorted(image_query_vecs)}"
+                        )
+                except Exception as _ae:
+                    self.logger.warning(
+                        f"⚠️ Image-derived query vectors raised ({_ae}) — "
+                        "falling back to whatever the query text can provide"
+                    )
+
+            # With no words, the text-only channels have nothing to search WITH. Disable them
+            # rather than embedding the empty/fabricated string: their weight is redistributed
+            # over the channels that do have a real query vector, instead of polluting the
+            # ranking with matches against a filename.
+            if not has_text_query:
+                enable_chunk = False
+                enable_product = False
+                enable_keyword = False
+                self.logger.info(
+                    "🖼️ Image-only query (no text) — chunk/product/keyword channels disabled; "
+                    "ranking on visual + image-derived aspect/understanding vectors"
+                )
+
             self.logger.info(f"🔍 HYBRID SEARCH: '{query[:50]}...'")
             self.logger.info(f"   Sources: Visual={enable_visual}, Chunk={enable_chunk}, Product={enable_product}, Keyword={enable_keyword}")
 
@@ -735,6 +782,14 @@ class RAGService:
                             return emb
                     except Exception as _ve:
                         self.logger.warning(f"⚠️ Image visual embedding failed ({_ve}), falling back to text")
+                # Falling back to a text visual embedding needs text. With none, returning
+                # None loses the visual channel — correct, and far better than embedding a
+                # filename into the SLIG space and ranking every image against it.
+                if not has_text_query:
+                    self.logger.warning(
+                        "⚠️ No visual embedding: image unusable and no query text to fall back to"
+                    )
+                    return None
                 result = await self.embeddings_service.generate_visual_embedding(query)
                 if result.get("success"):
                     emb = result.get("embedding", [])
@@ -755,6 +810,16 @@ class RAGService:
                 return None
 
             async def _get_understanding_embedding():
+                # Prefer the image-derived vector: it is built from this image's own
+                # vision_analysis via the same serializer ingestion used, so it asks the
+                # understanding collection a question about the picture rather than about
+                # whatever string the caller put in `query`.
+                if image_query_vecs.get("understanding"):
+                    emb = image_query_vecs["understanding"]
+                    self.logger.info(f"✅ Understanding embedding from image: {len(emb)}D")
+                    return emb
+                if not has_text_query:
+                    return None
                 result = await self.embeddings_service.generate_understanding_query_embedding(query)
                 if result.get("success"):
                     emb = result.get("embedding", [])
@@ -769,6 +834,11 @@ class RAGService:
                 # confident nonsense instead of raising. Different model, different
                 # space — matching dimensions prove nothing.
                 if not embedding_weights.get('page'):
+                    return None
+                # No words, no page query. `generate_page_query_embedding` is a TEXT entry
+                # point into multimodal space; handing it a filename (or an empty string)
+                # produces a vector that ranks pages against nothing in particular.
+                if not has_text_query:
                     return None
                 result = await self.embeddings_service.generate_page_query_embedding(query)
                 if result.get("success"):
@@ -829,29 +899,7 @@ class RAGService:
                 #  - With TEXT only, keep the understanding embedding. The user's words
                 #    describe every aspect at once, so one vector for four collections is the
                 #    right approximation and stays free.
-                aspect_queries: Dict[str, List[float]] = {}
-                if image_base64:
-                    try:
-                        from app.services.search.aspect_query import (
-                            aspect_query_embeddings_from_image,
-                        )
-                        aspect_queries, aspect_texts, aspect_err = (
-                            await aspect_query_embeddings_from_image(image_base64)
-                        )
-                        if aspect_err:
-                            self.logger.warning(
-                                f"⚠️ Image-derived aspect queries failed ({aspect_err}) — "
-                                "falling back to the text understanding embedding"
-                            )
-                        else:
-                            self.logger.info(
-                                f"🎨 Aspect queries from image: {sorted(aspect_queries)}"
-                            )
-                    except Exception as _ae:
-                        self.logger.warning(
-                            f"⚠️ Image-derived aspect queries raised ({_ae}) — "
-                            "falling back to the text understanding embedding"
-                        )
+                aspect_queries = image_query_vecs
 
                 if not aspect_queries and not understanding_embedding:
                     self.logger.warning(

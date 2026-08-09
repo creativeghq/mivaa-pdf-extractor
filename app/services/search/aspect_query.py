@@ -205,44 +205,62 @@ async def aspect_query_embedding(
     return vec, source_text, None
 
 
-async def aspect_query_embeddings_from_image(
+async def image_query_vectors(
     query_image: str,
-    aspects: Tuple[str, ...] = ASPECTS,
+    channels: Tuple[str, ...] = ASPECTS + ("understanding",),
 ) -> Tuple[Dict[str, List[float]], Dict[str, str], Optional[str]]:
-    """All aspects from ONE image → `(embeddings, source_texts, error)`.
+    """Every text-space query vector an IMAGE can supply, from ONE vision call.
 
-    `error` is set only when the whole derivation failed (no vision analysis). A per-aspect
-    miss is normal and NOT an error — an image with no discernible pattern legitimately yields
-    no texture string — so that aspect is simply absent from the returned dicts. Callers must
-    treat a missing key as "no query vector for this aspect" and skip that collection rather
-    than substituting another aspect's vector.
+    Returns `(embeddings, source_texts, error)` keyed by channel — the four aspects plus
+    `understanding`. Each mirrors exactly what ingestion embedded for that collection:
+    `ASPECT_SERIALIZERS[aspect](va)` for the aspects, `serialize_vision_analysis_to_text(va)`
+    for understanding. Same serializer, same model, same space.
+
+    Understanding is included because it is the single heaviest channel in the balanced
+    profile (18%) and it was being fed the caller's query TEXT. When that text is a filename
+    — which is what the search page sends for its image modes — 18% of the ranking came from
+    `voyage("IMG_2831.jpg")`. The vision analysis needed for the aspects already describes
+    the whole image, so filling this channel from it costs one extra Voyage embed and no
+    extra Claude call.
+
+    `error` is set only when the whole derivation failed (no vision analysis). A per-channel
+    miss is normal and NOT an error — an image with no discernible pattern legitimately
+    yields no texture string — so that channel is simply absent. Callers must treat a missing
+    key as "no query vector for this channel" and skip it rather than substituting another
+    channel's vector, which would answer a different question with full confidence.
     """
-    from app.models.vision_analysis import ASPECT_SERIALIZERS
+    from app.models.vision_analysis import (
+        ASPECT_SERIALIZERS,
+        serialize_vision_analysis_to_text,
+    )
 
     va, err = await analyze_query_image(query_image)
     if err:
         return {}, {}, err
 
+    serializers = dict(ASPECT_SERIALIZERS)
+    serializers["understanding"] = serialize_vision_analysis_to_text
+
     embeddings: Dict[str, List[float]] = {}
     source_texts: Dict[str, str] = {}
-    for aspect in aspects:
-        serializer = ASPECT_SERIALIZERS.get(aspect)
+    for channel in channels:
+        serializer = serializers.get(channel)
         if not serializer:
             continue
         text = serializer(va)
         if not text:
-            logger.debug("⏭️ Query aspect '%s' skipped — image yielded no source text", aspect)
+            logger.debug("⏭️ Query channel '%s' skipped — image yielded no source text", channel)
             continue
         vec, embed_err = await _embed(text)
         if embed_err:
-            # One aspect failing to embed must not take the other three down with it.
-            logger.warning("⚠️ Query aspect '%s' embed failed: %s", aspect, embed_err)
+            # One channel failing to embed must not take the others down with it.
+            logger.warning("⚠️ Query channel '%s' embed failed: %s", channel, embed_err)
             continue
-        embeddings[aspect] = vec
-        source_texts[aspect] = text
+        embeddings[channel] = vec
+        source_texts[channel] = text
 
     logger.info(
-        "🎨 Query image → %d/%d aspect vectors (%s)",
-        len(embeddings), len(aspects), ", ".join(sorted(embeddings)) or "none",
+        "🎨 Query image → %d/%d query vectors (%s)",
+        len(embeddings), len(channels), ", ".join(sorted(embeddings)) or "none",
     )
     return embeddings, source_texts, None

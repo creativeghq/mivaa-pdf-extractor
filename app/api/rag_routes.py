@@ -20,7 +20,7 @@ import asyncio
 import aiohttp
 import httpx
 import sentry_sdk
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.config import get_settings
 from app.services.search.rag_service import RAGService
@@ -451,7 +451,13 @@ class ChatResponse(BaseModel):
 
 class SearchRequest(BaseModel):
     """Request model for semantic search."""
-    query: str = Field(..., min_length=1, max_length=1000, description="Search query")
+    # Empty is allowed, and meaningful: "I have a picture, not words." It used to be
+    # min_length=1, which 422'd every image-only search — MaterialPickerModal sends
+    # `query: ''` and had therefore never worked once. The alternative callers reached for
+    # was inventing a string (the search page sends the image's filename), which is worse:
+    # a fabricated query is embedded and ranked against as if it meant something.
+    # `validate_query_or_image` below rejects the genuinely empty request.
+    query: str = Field("", max_length=1000, description="Search query. May be empty when an image is supplied.")
     search_type: str = Field("semantic", pattern="^(semantic|hybrid|keyword)$", description="Search type")
     top_k: Optional[int] = Field(10, ge=1, le=50, description="Number of results to return")
     similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="Similarity threshold")
@@ -478,6 +484,18 @@ class SearchRequest(BaseModel):
     # "find similar colors / textures / styles / materials" biases toward it.
     # Explicit user intent → overrides the query-understanding weight profile.
     aspect: Optional[str] = Field(None, pattern="^(color|texture|style|material)$", description="Bias multi-vector fusion toward one visual aspect: color|texture|style|material (#277)")
+
+    @model_validator(mode="after")
+    def validate_query_or_image(self):
+        """A search needs something to search WITH — words or a picture.
+
+        Relaxing `query` to allow empty removed the only thing stopping a request with
+        neither, which would have run the whole fusion against an empty string and returned
+        a confident ordering of nothing in particular.
+        """
+        if not (self.query or "").strip() and not self.image_base64 and not self.image_url:
+            raise ValueError("Provide a non-empty query, or an image (image_base64 / image_url)")
+        return self
 
 class SearchResponse(BaseModel):
     """Response model for semantic search."""

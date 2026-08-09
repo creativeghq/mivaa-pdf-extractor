@@ -61,13 +61,13 @@ def test_aspects_match_the_serializer_registry():
 
 def test_fusion_derives_aspect_queries_from_the_image():
     """The fix itself: an image present => image-derived aspect vectors."""
-    assert "aspect_query_embeddings_from_image" in RAG_SERVICE_SRC, (
+    assert "image_query_vectors" in RAG_SERVICE_SRC, (
         "multi_vector_search no longer derives aspect queries from the image — it is back to "
         "searching the aspect collections with an embedding of whatever text was passed, "
         "which on the search page is the image's filename."
     )
     guard = re.search(
-        r"if image_base64:.{0,600}?aspect_query_embeddings_from_image",
+        r"if image_base64 and.{0,600}?image_query_vectors",
         RAG_SERVICE_SRC,
         re.DOTALL,
     )
@@ -92,9 +92,9 @@ def test_one_vision_call_per_image_not_one_per_aspect():
     Claude call. Calling per aspect would quadruple the cost and latency of every aspect
     search for identical output.
     """
-    fn = ASPECT_QUERY_SRC[ASPECT_QUERY_SRC.index("async def aspect_query_embeddings_from_image"):]
+    fn = ASPECT_QUERY_SRC[ASPECT_QUERY_SRC.index("async def image_query_vectors"):]
     assert fn.count("analyze_query_image") == 1, (
-        "aspect_query_embeddings_from_image must analyze the image exactly once"
+        "image_query_vectors must analyze the image exactly once"
     )
 
 
@@ -104,9 +104,54 @@ def test_a_missing_aspect_never_borrows_another_aspects_vector():
     from the result — substituting a neighbouring aspect's vector would answer a different
     question with full confidence, which is the whole failure family this module exists for.
     """
-    fn = ASPECT_QUERY_SRC[ASPECT_QUERY_SRC.index("async def aspect_query_embeddings_from_image"):]
-    assert "continue" in fn, "a missing/failed aspect must be skipped, not substituted"
-    assert "embeddings[aspect] = vec" in fn
+    fn = ASPECT_QUERY_SRC[ASPECT_QUERY_SRC.index("async def image_query_vectors"):]
+    assert "continue" in fn, "a missing/failed channel must be skipped, not substituted"
+    assert "embeddings[channel] = vec" in fn
+
+
+def test_understanding_is_filled_from_the_image_too():
+    """
+    `understanding` is the heaviest single channel in the balanced profile (18%) and it was
+    fed the caller's query TEXT — which on the search page is the image's filename. The vision
+    analysis run for the aspects already describes the whole image, so this channel costs one
+    extra Voyage embed and no extra Claude call.
+    """
+    assert "serialize_vision_analysis_to_text" in ASPECT_QUERY_SRC, (
+        "the understanding query vector must use the SAME serializer ingestion used, or it "
+        "lands outside image_understanding_embeddings' space"
+    )
+    assert re.search(
+        r'image_query_vecs\.get\("understanding"\)', RAG_SERVICE_SRC
+    ), "the understanding channel must prefer the image-derived vector when there is one"
+
+
+def test_text_only_channels_stand_down_when_there_is_no_text():
+    """
+    The core of the fix. With no words, chunk/product/keyword have nothing to search WITH.
+    Disabling beats embedding the empty-or-fabricated string: a filename embeds to a valid
+    vector and ranks every row against it, which is confidently wrong rather than absent.
+    """
+    assert "has_text_query" in RAG_SERVICE_SRC, "the no-text case must be detected explicitly"
+    block = re.search(
+        r"if not has_text_query:(.{0,400}?)self\.logger\.info", RAG_SERVICE_SRC, re.DOTALL
+    )
+    assert block, "expected an `if not has_text_query:` block disabling the text channels"
+    body = block.group(1)
+    for channel in ("enable_chunk", "enable_product", "enable_keyword"):
+        assert f"{channel} = False" in body, f"{channel} must be disabled when there is no text"
+
+
+def test_the_page_channel_needs_words():
+    """
+    generate_page_query_embedding is a TEXT entry point into multimodal space. Handing it a
+    filename produces a vector that ranks pages against nothing in particular — and page
+    carries 10% of the balanced profile.
+    """
+    fn_at = RAG_SERVICE_SRC.index("async def _get_page_embedding")
+    fn = RAG_SERVICE_SRC[fn_at:fn_at + 1200]
+    assert "if not has_text_query" in fn, (
+        "the page channel must return None rather than embed a fabricated query"
+    )
 
 
 def test_query_image_fetch_goes_through_the_ssrf_guard():
