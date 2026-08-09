@@ -1930,7 +1930,7 @@ from app.api.search import router as search_router
 from app.api.images import router as images_router
 from app.api.admin import router as admin_router
 from app.api.rag_routes import router as rag_router
-from app.api.documents import query_router, management_router  # NEW: Refactored query and management routes (upload_router removed 2026-05-23 — was dead-code duplicate of rag_routes.py upload handler)
+from app.api.documents import management_router  # query_router removed 2026-08-09 and upload_router 2026-05-23 — both were dead-code duplicates of rag_routes.py handlers
 from app.api.anthropic_routes import router as anthropic_router
 from app.api.products import router as products_router
 from app.api.document_entities import router as document_entities_router
@@ -1978,7 +1978,10 @@ app.include_router(admin_router)
 app.include_router(rag_router)
 # upload_router removed 2026-05-23 — was unreachable duplicate of rag_router's
 # `/documents/upload` handler (FastAPI keeps the first-registered route).
-app.include_router(query_router, prefix="/api/rag")  # NEW: Refactored query routes (mounted at /api/rag/documents/query, /search, /chat)
+# query_router removed 2026-08-09 for the same reason: its /query, /chat and /search
+# were all declared in rag_routes.py too, and rag_router is included ABOVE this line,
+# so they never served a request — but they did define the published OpenAPI for
+# /api/rag/search, which is why the docs showed no `aspect` field (#277).
 app.include_router(management_router, prefix="/api/rag")  # NEW: Refactored management routes (job status, content, AI tracking)
 app.include_router(anthropic_router)
 app.include_router(products_router)

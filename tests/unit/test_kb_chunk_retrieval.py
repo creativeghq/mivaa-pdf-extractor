@@ -45,25 +45,57 @@ def _function_source(tree: ast.AST, source: str, name: str) -> str:
     raise AssertionError(f"{name}() not found — it was renamed or removed")
 
 
-def test_knowledge_base_route_is_defined_exactly_once():
+@pytest.mark.parametrize(
+    "route_path",
+    [
+        "/search/knowledge-base",
+        # Added 2026-08-09. All three were declared in rag_routes.py AND
+        # documents/query_routes.py, both mounted at /api/rag. rag_router is included
+        # first so the query_routes copies never served a request — but they DID define
+        # the published OpenAPI for those paths, because spec generation is
+        # last-write-wins per path. The visible symptom: /api/rag/search documented a
+        # body with no `aspect` field while the served handler accepted one (#277).
+        "/query",
+        "/chat",
+        "/search",
+    ],
+)
+def test_route_is_declared_exactly_once(route_path):
     """Stronger than the ordering guard it replaces.
 
-    This path used to be declared in BOTH rag_routes.py and documents/query_routes.py,
-    with Starlette serving whichever router main.py included first — rag_router at
-    ~1986, query_router at ~1989. Working retrieval sat three lines away from being
-    silently swapped for the shadowed copy's substring scorer, and neither a reorder
-    nor a stale edit to the wrong copy would raise anything. The duplicate is now
-    deleted; one declaration is the invariant, so the ordering never matters again.
+    These paths used to be declared in BOTH rag_routes.py and documents/query_routes.py,
+    with Starlette serving whichever router main.py included first. Working retrieval sat
+    three lines away from being silently swapped for the shadowed copy's substring scorer,
+    and neither a reorder nor a stale edit to the wrong copy would raise anything. The
+    duplicates are deleted; one declaration is the invariant, so ordering never matters.
+
+    This is the third instance of the same shape in this repo — `upload_routes.py` was
+    deleted for it too — which is why the rule is pinned rather than left to review.
     """
-    declarations = [
-        path.name
-        for path in (_ROOT / "app" / "api").rglob("*.py")
-        if '"/search/knowledge-base"' in path.read_text(encoding="utf-8")
+    # Scoped to the routers MOUNTED AT /api/rag, not every file in app/api. A bare
+    # "/search" is declared by images.py and knowledge_base.py too, but those routers
+    # carry different prefixes (/api/images, /api/kb) so they resolve to different full
+    # paths and are not duplicates. The hazard is specifically two routers sharing one
+    # prefix, which is these three and only these three.
+    mounted_at_api_rag = [
+        _ROOT / "app" / "api" / "rag_routes.py",
+        _ROOT / "app" / "api" / "documents" / "query_routes.py",
+        _ROOT / "app" / "api" / "documents" / "management_routes.py",
     ]
+    for path in mounted_at_api_rag:
+        assert path.exists(), f"{path} moved — this guard is scoped by filename and is now blind"
+
+    needle = f'"{route_path}"'
+    declarations = sorted(
+        path.name
+        for path in mounted_at_api_rag
+        if needle in path.read_text(encoding="utf-8")
+    )
     assert declarations == ["rag_routes.py"], (
-        f"/search/knowledge-base is declared in {declarations}. Two routers claiming "
-        "one path means the served implementation is decided by include_router order "
-        "in main.py, not by anything visible at the call site."
+        f"{route_path} is declared in {declarations}. Two routers claiming one path "
+        "means the served implementation is decided by include_router order in main.py, "
+        "not by anything visible at the call site — and the one that loses still writes "
+        "the OpenAPI."
     )
 
 
