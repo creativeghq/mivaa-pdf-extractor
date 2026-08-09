@@ -301,7 +301,7 @@ class RealImageAnalysisService:
                         await validation_service.queue_image_for_validation(
                             image_id=image_id,
                             document_id=document_id,
-                            vision_quality_score=quality_score,
+                            quality_score=quality_score,
                             priority=5
                         )
                     except Exception as e:

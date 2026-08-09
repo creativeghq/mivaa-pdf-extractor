@@ -603,7 +603,7 @@ async def create_chunks(
         chunks = await chunking_service.chunk_pages(
             pages=pages,
             document_id=request.document_id,
-            details={
+            metadata={
                 'workspace_id': request.workspace_id,
                 'product_ids': request.product_ids
             }
@@ -1252,7 +1252,7 @@ async def regenerate_image_embeddings(
                     await vecs_service.upsert_image_embedding(
                         image_id=image_id,
                         siglip_embedding=visual_embedding,
-                        details={
+                        metadata={
                             'document_id': image.get('document_id'),
                             'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)
@@ -1281,7 +1281,7 @@ async def regenerate_image_embeddings(
                     await vecs_service.upsert_specialized_embeddings(
                         image_id=image_id,
                         embeddings=specialized_embeddings,
-                        details={
+                        metadata={
                             'document_id': image.get('document_id'),
                             'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)
@@ -1307,7 +1307,7 @@ async def regenerate_image_embeddings(
                     await vecs_service.upsert_understanding_embedding(
                         image_id=image_id,
                         embedding=understanding_embedding,
-                        details={
+                        metadata={
                             'document_id': image.get('document_id'),
                             'workspace_id': image.get('workspace_id'),
                             'page_number': image.get('page_number', 1)
