@@ -24,7 +24,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from app.services.core.supabase_client import get_supabase_client
 from app.utils.ssrf_guard import assert_safe_url, SSRFError
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, resolve_workspace_id
 from app.utils.credit_metering import meter_operation as _meter, refund_operation as _refund
 
 logger = logging.getLogger(__name__)
@@ -164,6 +164,9 @@ async def generate_sam_mask(request: SAMMaskRequest, user: Dict[str, Any] = Depe
     Primary: SAM 2 (Replicate meta/sam-2) when `image_url` is provided + REPLICATE_API_TOKEN is set.
     Fallback: Pillow bbox/ellipse (instant, no external call).
     """
+    # Authorize the caller for the requested workspace (invariant 1); the route
+    # does not filter by it, so this is the check, not a value.
+    await resolve_workspace_id(user, request.workspace_id)
     try:
         from PIL import Image
         import numpy as np
@@ -351,6 +354,9 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
     Mask must be a base64 PNG where white pixels = replace area, black = keep.
     Result is uploaded to Supabase Storage and a permanent URL is returned.
     """
+    # Authorize the caller for the requested workspace (invariant 1); the route
+    # does not filter by it, so this is the check, not a value.
+    await resolve_workspace_id(user, request.workspace_id)
     import time
     start = time.time()
 

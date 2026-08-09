@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app.services.core.supabase_client import get_supabase_client, SupabaseClient
 from app.schemas.api_responses import FlagReviewResponse
-from app.dependencies import require_admin
+from app.dependencies import require_admin, get_current_user, resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ class FlaggedChunk(BaseModel):
 async def get_chunk_quality_metrics(
     days: int = Query(default=30, ge=1, le=365),
     workspace_id: Optional[str] = None,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ):
     """
     Get chunk quality metrics for the specified time period.
@@ -181,6 +181,8 @@ async def get_chunk_quality_metrics(
     Returns:
         ChunkQualityMetrics with aggregated statistics
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         # Calculate time range
         start_date = (datetime.utcnow() - timedelta(days=days)).isoformat()
@@ -323,7 +325,7 @@ async def get_flagged_chunks(
     document_id: Optional[str] = None,
     reviewed: Optional[bool] = None,
     limit: int = Query(default=50, ge=1, le=100),
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ):
     """
     Get list of flagged chunks for review.
@@ -334,6 +336,8 @@ async def get_flagged_chunks(
     - reviewed: Filter by review status (None = all, True = reviewed, False = pending)
     - limit: Maximum number of results
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         query = supabase.client.table("chunk_quality_flags").select("*")
 

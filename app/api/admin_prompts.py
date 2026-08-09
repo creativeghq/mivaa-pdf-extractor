@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from app.services.utilities.admin_prompt_service import AdminPromptService
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,8 @@ async def list_prompts(
     - **403 Forbidden**: Insufficient permissions
     - **500 Internal Server Error**: Database error
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         service = AdminPromptService()
         prompts = await service.get_prompts(workspace_id, stage, category)
@@ -164,6 +166,8 @@ async def get_prompt(
     current_user: dict = Depends(get_current_user)
 ):
     """Get specific prompt by stage and category"""
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         service = AdminPromptService()
         prompt = await service.get_prompt(workspace_id, stage, category)
@@ -202,6 +206,8 @@ async def update_prompt(
     - system_prompt: Optional system prompt
     - change_reason: Reason for the change
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         service = AdminPromptService()
         
@@ -277,6 +283,8 @@ async def get_extraction_config(
     current_user: dict = Depends(get_current_user)
 ):
     """Get extraction configuration for workspace"""
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         service = AdminPromptService()
         config = await service.get_extraction_config(workspace_id)
@@ -300,6 +308,8 @@ async def update_extraction_config(
     
     Body: Configuration fields to update
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         service = AdminPromptService()
         

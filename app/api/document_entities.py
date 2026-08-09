@@ -17,6 +17,7 @@ from typing import Dict, Any, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, status, Query
 from pydantic import BaseModel
 
+from app.dependencies import get_current_user, resolve_workspace_id
 from app.services.discovery.document_entity_service import DocumentEntityService
 from app.services.core.supabase_client import SupabaseClient
 
@@ -114,7 +115,7 @@ async def get_document_entities(
     factory_group: Optional[str] = Query(None, description="Filter by factory group"),
     limit: int = Query(100, description="Maximum number of entities to return"),
     offset: int = Query(0, description="Number of entities to skip"),
-    service: DocumentEntityService = Depends(get_document_entity_service)
+    service: DocumentEntityService = Depends(get_document_entity_service), current_user: dict = Depends(get_current_user)
 ):
     """
     Get all document entities for a workspace.
@@ -127,6 +128,8 @@ async def get_document_entities(
     Example agentic query: "Get all certifications for Castellón Factory"
     → GET /api/document-entities?workspace_id=xxx&entity_type=certificate&factory_name=Castellón Factory
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         # Build query
         query = service.supabase.client.table("document_entities")\

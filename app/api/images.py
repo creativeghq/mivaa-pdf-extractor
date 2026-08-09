@@ -38,7 +38,7 @@ from ..schemas.common import BaseResponse, ProcessingStatus
 from ..schemas.api_responses import ImageReclassifyResponse, SegmentResponse
 from ..services.integrations.material_kai_service import MaterialKaiService, get_material_kai_service
 from ..services.core.supabase_client import get_supabase_client
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, resolve_workspace_id
 from ..middleware.jwt_auth import User
 from ..utils.ssrf_guard import assert_safe_url, SSRFError
 from ..utils.credit_metering import meter_operation, refund_operation
@@ -455,17 +455,19 @@ async def analyze_batch_images(
 
 @router.post("/search", response_model=ImageSearchResponse)
 async def search_similar_images(
-    request: ImageSearchRequest
+    request: ImageSearchRequest, current_user: dict = Depends(get_current_user)
 ) -> ImageSearchResponse:
     """
     Search for similar images using visual similarity or description matching.
 
     Supports both image-to-image and text-to-image search.
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     # Tenancy: scope to the caller's workspace. Required — without it the query below returned
     # document_images across ALL tenants. The gateway validates the caller is a member of this
     # workspace before forwarding. Raised before the inner try/except so it surfaces as a 400.
-    if not request.workspace_id:
+    if not workspace_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="workspace_id is required")
     try:
         logger.info("Starting image similarity search")
@@ -485,7 +487,7 @@ async def search_similar_images(
             query = supabase.client.table('document_images').select('*')
 
             # Tenancy filter — never return another workspace's images.
-            query = query.eq('workspace_id', request.workspace_id)
+            query = query.eq('workspace_id', workspace_id)
 
             # Apply filters if provided
             if request.document_ids:
@@ -1082,6 +1084,9 @@ async def segment_image(
     Accepts either `image_url` (fetched server-side, no CORS issues) or
     `image_base64` (raw base64 without data URI prefix).
     """
+    # Authorize the caller for the requested workspace (invariant 1); the route
+    # does not filter by it, so this is the check, not a value.
+    await resolve_workspace_id(current_user, request.workspace_id)
     from app.services.images.segmentation_service import get_segmentation_service
     import time
     import httpx

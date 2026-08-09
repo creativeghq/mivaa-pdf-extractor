@@ -15,7 +15,7 @@ from datetime import datetime
 from app.services.core.supabase_client import SupabaseClient
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.schemas.api_responses import KBHealthResponse
-from app.dependencies import get_workspace_context, WorkspaceContext
+from app.dependencies import get_workspace_context, WorkspaceContext, get_current_user, resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -131,13 +131,15 @@ class KBDocResponse(BaseModel):
 )
 async def create_kb_document(
     request: CreateKBDocRequest,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(), current_user: dict = Depends(get_current_user)
 ) -> KBDocResponse:
     """Create a new knowledge base document with embeddings.
 
     Upserts by (workspace_id, title, category_id): if a doc with the same title
     and category already exists, updates it in place and re-embeds if content changed.
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         if request.price_doc_type is not None and request.price_doc_type not in PRICE_DOC_TYPES:
             raise HTTPException(
@@ -148,7 +150,7 @@ async def create_kb_document(
         existing_query = (
             supabase_client.client.table("kb_docs")
             .select("id, content, title, summary, category_id")
-            .eq("workspace_id", request.workspace_id)
+            .eq("workspace_id", workspace_id)
             .eq("title", request.title)
         )
         if request.category_id:
@@ -219,7 +221,7 @@ async def create_kb_document(
             embedding_status = "failed"
 
         doc_data = {
-            "workspace_id": request.workspace_id,
+            "workspace_id": workspace_id,
             "title": request.title,
             "content": request.content,
             "content_markdown": request.content_markdown,
@@ -406,9 +408,11 @@ async def create_kb_document_from_pdf(
     title: str,
     category_id: Optional[str] = None,
     file: UploadFile = File(...),
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(), current_user: dict = Depends(get_current_user)
 ) -> KBDocResponse:
     """Create a knowledge base document from PDF file."""
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         import fitz  # PyMuPDF
 
@@ -512,9 +516,11 @@ async def create_category(
 )
 async def list_categories(
     workspace_id: str,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(), current_user: dict = Depends(get_current_user)
 ) -> List[CategoryResponse]:
     """List all categories for a workspace."""
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         result = supabase_client.client.table("kb_categories").select("*").eq("workspace_id", workspace_id).order("sort_order").execute()
 
@@ -691,7 +697,7 @@ class SearchKBResponse(BaseModel):
 @router.post("/search", response_model=SearchKBResponse)
 async def search_kb_documents(
     request: SearchKBRequest,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(), current_user: dict = Depends(get_current_user)
 ) -> SearchKBResponse:
     """
     Search knowledge base documents using semantic, full-text, or hybrid search.
@@ -748,6 +754,8 @@ async def search_kb_documents(
     }
     ```
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         import time
         start_time = time.time()
@@ -777,7 +785,7 @@ async def search_kb_documents(
             # Perform vector similarity search
             rpc_args: Dict[str, Any] = {
                 'query_embedding': query_embedding,
-                'match_workspace_id': request.workspace_id,
+                'match_workspace_id': workspace_id,
                 'match_threshold': request.match_threshold,
                 'match_count': request.limit,
                 'require_published': request.require_published,
@@ -800,7 +808,7 @@ async def search_kb_documents(
             # Use the kb_search_docs RPC function for full-text and hybrid
             rpc_args = {
                 'search_query': request.query,
-                'search_workspace_id': request.workspace_id,
+                'search_workspace_id': workspace_id,
                 'search_type': request.search_type,
                 'result_limit': request.limit,
                 'include_private': request.is_admin_caller,
@@ -828,7 +836,7 @@ async def search_kb_documents(
                 # Ensure all required fields exist with defaults
                 doc_data = {
                     'id': raw_doc.get('id', ''),
-                    'workspace_id': raw_doc.get('workspace_id', request.workspace_id),
+                    'workspace_id': raw_doc.get('workspace_id', workspace_id),
                     'title': raw_doc.get('title', 'Untitled'),
                     'content': raw_doc.get('content', ''),
                     'summary': raw_doc.get('summary'),

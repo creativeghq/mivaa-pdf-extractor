@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from app.services.utilities.prompt_template_service import PromptTemplateService
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, resolve_workspace_id
 from app.schemas.api_responses import StatusResponse
 
 logger = logging.getLogger(__name__)
@@ -106,6 +106,8 @@ async def list_prompt_templates(
     - **industry** (optional): Filter by industry (construction, interior_design, general)
     - **include_inactive** (optional): Include inactive templates (default: false)
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         service = PromptTemplateService()
         templates = await service.list_templates(
@@ -142,10 +144,12 @@ async def create_prompt_template(
     - **construction**: Tiles, flooring, construction materials
     - **interior_design**: Furniture, decor, design products
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         service = PromptTemplateService()
         result = await service.create_template(
-            workspace_id=request.workspace_id,
+            workspace_id=workspace_id,
             name=request.name,
             stage=request.stage,
             prompt_template=request.prompt_template,
@@ -176,6 +180,8 @@ async def update_prompt_template(
 
     Update an existing prompt template.
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         service = PromptTemplateService()
         result = await service.update_template(
@@ -211,6 +217,8 @@ async def delete_prompt_template(
 
     Soft delete a prompt template (sets is_active=false).
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         service = PromptTemplateService()
         success = await service.delete_template(template_id, workspace_id)

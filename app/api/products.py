@@ -16,7 +16,7 @@ from app.services.products.product_creation_service import ProductCreationServic
 from app.services.core.supabase_client import SupabaseClient
 from app.schemas.api_responses import ServiceHealthResponse
 from app.services.integrations.data_import_service import DataImportService
-from app.dependencies import get_workspace_context
+from app.dependencies import get_workspace_context, get_current_user, resolve_workspace_id
 from app.middleware.jwt_auth import WorkspaceContext
 
 logger = logging.getLogger(__name__)
@@ -180,7 +180,7 @@ class ProductCreationResponse(BaseModel):
     }
 )
 async def create_products_from_chunks(
-    request: ProductCreationRequest
+    request: ProductCreationRequest, current_user: dict = Depends(get_current_user)
 ) -> ProductCreationResponse:
     """
     Create products from document chunks using two-stage classification.
@@ -205,6 +205,8 @@ async def create_products_from_chunks(
     Raises:
         HTTPException: If the operation fails
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         logger.info(f"🚀 Starting two-stage product creation for document: {request.document_id}")
 
@@ -215,7 +217,7 @@ async def create_products_from_chunks(
         # Create products using two-stage classification
         result = await product_service.create_products_from_chunks(
             document_id=request.document_id,
-            workspace_id=request.workspace_id,
+            workspace_id=workspace_id,
             max_products=request.max_products,
             min_chunk_length=request.min_chunk_length
         )
@@ -259,7 +261,7 @@ async def create_products_from_chunks(
 
 @router.post("/create-from-layout", response_model=ProductCreationResponse)
 async def create_products_from_layout(
-    request: ProductCreationRequest
+    request: ProductCreationRequest, current_user: dict = Depends(get_current_user)
 ) -> ProductCreationResponse:
     """
     Create products from layout-based candidates (legacy method).
@@ -277,6 +279,8 @@ async def create_products_from_layout(
     Raises:
         HTTPException: If the operation fails
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         logger.info(f"🏗️ Starting layout-based product creation for document: {request.document_id}")
 
@@ -287,7 +291,7 @@ async def create_products_from_layout(
         # Create products using layout-based method
         result = await product_service.create_products_from_layout_candidates(
             document_id=request.document_id,
-            workspace_id=request.workspace_id,
+            workspace_id=workspace_id,
             min_confidence=0.5,
             min_quality_score=0.5
         )
@@ -347,7 +351,7 @@ class BatchCategorizeResponse(BaseModel):
 
 
 @router.post("/batch-categorize", response_model=BatchCategorizeResponse)
-async def batch_categorize_products(request: BatchCategorizeRequest) -> BatchCategorizeResponse:
+async def batch_categorize_products(request: BatchCategorizeRequest, current_user: dict = Depends(get_current_user)) -> BatchCategorizeResponse:
     """
     Batch re-categorize products using Claude Haiku.
 
@@ -355,6 +359,8 @@ async def batch_categorize_products(request: BatchCategorizeRequest) -> BatchCat
     material_category in metadata), calls _classify_product for each,
     and updates metadata.material_category + metadata.zone_intent in DB.
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         from app.api.pdf_processing.stage_4_products import _classify_product
         supabase_client = SupabaseClient()
@@ -365,7 +371,7 @@ async def batch_categorize_products(request: BatchCategorizeRequest) -> BatchCat
             supabase
             .from_("products")
             .select("id, name, description, metadata")
-            .eq("workspace_id", request.workspace_id)
+            .eq("workspace_id", workspace_id)
         )
 
         if request.only_uncategorized:

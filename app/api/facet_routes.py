@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.facets import canonicalize_product_attributes
-from app.dependencies import require_admin
+from app.dependencies import require_admin, get_current_user, resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/admin/facets", tags=["Admin - Facets"])
@@ -62,7 +62,9 @@ class CanonicalizeResponse(BaseModel):
 
 
 @router.post("/canonicalize", response_model=CanonicalizeResponse)
-async def canonicalize(req: CanonicalizeRequest) -> CanonicalizeResponse:
+async def canonicalize(req: CanonicalizeRequest, current_user: dict = Depends(get_current_user)) -> CanonicalizeResponse:
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, req.workspace_id)
     supabase = get_supabase_client()
     try:
         result = await canonicalize_product_attributes(
@@ -70,7 +72,7 @@ async def canonicalize(req: CanonicalizeRequest) -> CanonicalizeResponse:
             req.raw_attributes,
             source=req.source,
             product_id=req.product_id,  # uuid string OK; service stringifies
-            workspace_id=req.workspace_id,
+            workspace_id=workspace_id,
         )
     except Exception as e:
         logger.exception("canonicalize endpoint failed")
@@ -117,7 +119,7 @@ class RecanonicalizeRequest(BaseModel):
 
 
 @router.post("/recanonicalize", dependencies=[Depends(require_admin)])
-async def recanonicalize(req: RecanonicalizeRequest):
+async def recanonicalize(req: RecanonicalizeRequest, current_user: dict = Depends(get_current_user)):
     """Replay attributes_raw → canonical attributes for stale/degraded products.
 
     Idempotent and resumable: `products.facet_canonicalization_version` is the cursor, so a
@@ -127,6 +129,8 @@ async def recanonicalize(req: RecanonicalizeRequest):
     first next time. Bumping it would turn a retryable outage into a permanent empty-facet
     product while reporting success.
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, req.workspace_id)
     from app.services.facets.facet_recanonicalization import (
         recanonicalize_products,
         CURRENT_FACET_CANONICALIZATION_VERSION,
@@ -137,7 +141,7 @@ async def recanonicalize(req: RecanonicalizeRequest):
             target_version=req.target_version or CURRENT_FACET_CANONICALIZATION_VERSION,
             max_products=req.max_products,
             batch_size=req.batch_size,
-            workspace_id=req.workspace_id,
+            workspace_id=workspace_id,
             degraded_only=req.degraded_only,
         )
     except Exception as e:

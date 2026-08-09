@@ -348,7 +348,7 @@ async def search_health_check(
 async def multimodal_search(
     request: SearchRequest,
     rag: RAGService = Depends(get_rag_service),
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ) -> SearchResponse:
     """
     Perform multi-modal search across documents with text and image support.
@@ -359,6 +359,9 @@ async def multimodal_search(
     - Image content analysis
     - Combined multi-modal scoring
     """
+    # Authorize the caller for the requested workspace (invariant 1); the route
+    # does not filter by it, so this is the check, not a value.
+    await resolve_workspace_id(current_user, request.workspace_id)
     try:
         # Get configuration for multi-modal settings
         from app.config import get_settings
@@ -536,7 +539,7 @@ async def multimodal_search(
 async def multimodal_query(
     request: QueryRequest,
     rag: RAGService = Depends(get_rag_service),
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ) -> QueryResponse:
     """
     Perform multi-modal RAG query with enhanced context from text and images.
@@ -547,6 +550,9 @@ async def multimodal_query(
     - Image analysis and descriptions
     - Multi-modal LLM reasoning
     """
+    # Authorize the caller for the requested workspace (invariant 1); the route
+    # does not filter by it, so this is the check, not a value.
+    await resolve_workspace_id(current_user, request.workspace_id)
     try:
         # Get configuration
         from app.config import get_settings
@@ -681,7 +687,7 @@ async def multimodal_query(
 async def image_search(
     request: ImageSearchRequest,
     rag: RAGService = Depends(get_rag_service),
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ) -> ImageSearchResponse:
     """
     Search specifically within document images.
@@ -692,6 +698,9 @@ async def image_search(
     - Image similarity matching
     - Visual element detection
     """
+    # Authorize the caller for the requested workspace (invariant 1); the route
+    # does not filter by it, so this is the check, not a value.
+    await resolve_workspace_id(current_user, request.workspace_id)
     try:
         import time
         search_start_time = time.time()
@@ -972,6 +981,9 @@ async def material_visual_search(
     - Multi-modal fusion with configurable weights
     - Integration with Supabase visual search infrastructure
     """
+    # Authorize the caller for the requested workspace (invariant 1); the route
+    # does not filter by it, so this is the check, not a value.
+    await resolve_workspace_id(user, request.workspace_id)
     try:
         logger.info(f"Material visual search requested: {request.search_type}")
 

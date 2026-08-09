@@ -15,7 +15,7 @@ from ..services.core.supabase_client import get_supabase_client, SupabaseClient
 from ..services.integrations.sentiment_analysis_service import SentimentAnalysisService
 from ..schemas.api_responses import StatusResponse, ServiceHealthResponse
 from ..config import get_settings
-from ..dependencies import get_current_user, get_workspace_context
+from ..dependencies import get_current_user, get_workspace_context, resolve_workspace_id
 from ..middleware.jwt_auth import WorkspaceContext
 
 logger = logging.getLogger(__name__)
@@ -157,13 +157,15 @@ async def get_material_feedback(
     limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     sentiment_filter: Optional[str] = Query(None, description="Filter by sentiment: positive, neutral, negative"),
-    supabase_client: SupabaseClient = Depends(get_supabase_client)
+    supabase_client: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ) -> List[FeedbackResponse]:
     """
     Get all feedback for a specific material
 
     Returns public feedback with sentiment analysis, sorted by most recent.
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         query = supabase_client.client.from_("user_feedback").select("*").eq("workspace_id", workspace_id).eq("material_id", material_id).eq("is_public", True)
 
@@ -203,13 +205,15 @@ async def get_sentiment_trends(
     material_id: Optional[str] = Query(None, description="Material ID (optional, for all materials if not provided)"),
     time_window: str = Query("daily", description="Time window: hourly, daily, weekly, monthly"),
     days_back: int = Query(30, ge=1, le=365, description="Number of days to look back"),
-    supabase_client: SupabaseClient = Depends(get_supabase_client)
+    supabase_client: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ) -> List[SentimentTrendsResponse]:
     """
     Get sentiment trends over time
 
     Returns aggregated sentiment metrics by time window.
     """
+    # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+    workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
         response = supabase_client.client.rpc(
             "calculate_sentiment_trends",
