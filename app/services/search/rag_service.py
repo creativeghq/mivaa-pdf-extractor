@@ -726,7 +726,8 @@ class RAGService:
             # paying for when it will actually be used — an aspect search, or a query with no
             # words for the text channels to stand on.
             image_query_vecs: Dict[str, List[float]] = {}
-            if image_base64 and (not has_text_query or config.get('weights')):
+            requested_aspect = config.get('aspect')
+            if image_base64 and (not has_text_query or requested_aspect):
                 try:
                     from app.services.search.aspect_query import image_query_vectors
                     image_query_vecs, _iq_texts, _iq_err = await image_query_vectors(image_base64)

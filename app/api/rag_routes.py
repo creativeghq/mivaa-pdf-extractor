@@ -5176,6 +5176,11 @@ async def search_documents(
             _aspect = _requested_aspect
             if _aspect in ('color', 'texture', 'style', 'material'):
                 sc["weights"] = aspect_bias_weights(_aspect)
+                # Named, not inferred. rag_service decides whether to spend a vision call on
+                # image-derived query vectors, and "were weights supplied?" is the wrong
+                # signal — query understanding sets weights on ordinary searches too, so
+                # sniffing that would bill a Claude call for every text+image search.
+                sc["aspect"] = _aspect
                 weight_profile = f"aspect:{_aspect}"
                 logger.info(
                     f"🎨 Aspect bias applied: {_aspect} "
