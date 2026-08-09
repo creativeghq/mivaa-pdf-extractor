@@ -13,6 +13,10 @@ from typing import Optional, Dict, Any
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+from app.auth.workspace_resolution import (
+    is_service_caller,  # noqa: F401  (re-exported for routes)
+    resolve_workspace_id as _resolve_workspace_id,
+)
 from app.config import get_settings
 from app.middleware.jwt_auth import JWTAuthMiddleware
 from app.schemas.auth import WorkspaceContext
@@ -231,6 +235,40 @@ async def get_workspace_context(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing workspace context",
         )
+
+
+# ============================================================================
+# Workspace resolution (BOLA — pentest #250 invariant 1)
+# ============================================================================
+
+
+async def resolve_workspace_id(
+    claims: Dict[str, Any],
+    requested_workspace_id: Optional[str],
+    request: Optional[Request] = None,
+) -> Optional[str]:
+    """Bind a caller-supplied `workspace_id` to the authenticated identity.
+
+    Thin wrapper over `app.auth.workspace_resolution.resolve_workspace_id` — that
+    module holds the rule and the reasoning and is unit-tested; this supplies the two
+    things it cannot import: the real membership check, and the workspace the
+    middleware already validated for this request.
+
+    Use it in any route that reads a `workspace_id` off the request::
+
+        workspace_id = await resolve_workspace_id(claims, request.workspace_id, http_request)
+    """
+    jwt_middleware = _get_jwt_middleware()
+
+    async def _is_member(user_id: str, workspace_id: str) -> bool:
+        return await jwt_middleware._validate_workspace_access(user_id, workspace_id)
+
+    return await _resolve_workspace_id(
+        claims,
+        requested_workspace_id,
+        is_member=_is_member,
+        validated_workspace_id=getattr(getattr(request, "state", None), "workspace_id", None),
+    )
 
 
 # ============================================================================
