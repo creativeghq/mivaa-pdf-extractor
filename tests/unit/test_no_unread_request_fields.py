@@ -20,12 +20,21 @@ Fix one, delete its line. Adding a line requires justifying why a documented par
 does nothing is acceptable, which it usually is not; the honest alternative is to delete the
 field from the model so the API stops advertising it.
 
-Detection is deliberately generous — a field counts as "read" if its name appears ANYWHERE in
-app/ outside its own class body, including a string key or an unrelated identifier. So this
-under-reports, and a finding here is close to certain. It cannot see the reverse case (a field
-read by only ONE branch of several, which is the exact #277 shape) — that half is guarded by
-tests/unit/test_aspect_strategy_guard.py, which pins the refusal for the strategies that
-cannot honor an aspect.
+DETECTION, and the one way it lies. A field counts as "read" if its name appears ANYWHERE in
+app/ outside its own class body — a string key or an unrelated identifier is enough. That is
+deliberately generous, so it under-reports.
+
+It also over-reported, once, and the fix is below. `request.dict()` / `.model_dump()` reads
+every field of a model WITHOUT NAMING ANY, so a model consumed that way looked entirely unread
+while working perfectly. `CreateCategoryRequest.icon` and `.parent_category_id` were reported
+as dropped when `create_category` was in fact inserting them — via mass assignment, which is
+its own invariant-8 bug (now fixed with an allowlisted payload). `_models_consumed_wholesale()`
+now recognizes that pattern, so those fields are correctly seen as read.
+
+Both blind spots share a cause worth remembering: this guard reasons about NAMES, and a
+value can travel without its name. It cannot see the reverse case either — a field read by
+only ONE branch of several, the exact #277 shape — which is guarded separately by
+tests/unit/test_aspect_strategy_guard.py.
 """
 
 import ast
@@ -38,36 +47,45 @@ _ROOT = Path(__file__).resolve().parents[2]
 _APP = _ROOT / "app"
 
 # Known-unread fields, each a real defect awaiting a fix. SHRINK ONLY.
-KNOWN_UNREAD = {
-    # (model, field): why it is still here
-    ("CreateCategoryRequest", "icon"):
-        "KB category icon is accepted and dropped — the category saves without it.",
-    ("CreateCategoryRequest", "parent_category_id"):
-        "KB sub-categories cannot actually nest; the parent is silently discarded.",
-    ("DocumentUploadRequest", "enable_embedding"):
-        "Defaults True and never read, so passing False does not skip embedding — the caller "
-        "is billed for work they explicitly declined.",
-    ("ChatRequest", "include_history"):
-        "Conversation history inclusion is not togglable despite the flag.",
-    ("SearchRequest", "include_content"):
-        "Sent by unifiedSearchService on EVERY search and read nowhere; content is always "
-        "returned regardless.",
-    ("MMRSearchRequest", "diversity_threshold"):
-        "MMR diversity is driven by mmr_lambda only; this second knob does nothing.",
-    ("AdvancedQueryRequest", "enable_expansion"): "Query expansion toggle is inert.",
-    ("AdvancedQueryRequest", "enable_rewriting"): "Query rewriting toggle is inert.",
-    ("AdvancedQueryRequest", "metadata_filters"): "Filters are accepted and never applied.",
-    ("AdvancedQueryRequest", "search_operator"): "AND/OR operator is accepted and never applied.",
-}
+#
+# Emptied by the #338 sweep. All ten original entries are resolved:
+#   - 6 belonged to DocumentUploadRequest / MMRSearchRequest / AdvancedQueryRequest, which no
+#     route referenced at all. Deleted the models rather than implementing dead knobs.
+#   - SearchRequest.include_content and ChatRequest.include_history are now honored.
+#   - CreateCategoryRequest.icon / .parent_category_id were false positives (see the module
+#     docstring) — stored all along via a mass assignment that is now an explicit payload.
+#
+# Keep it empty. An entry here is a documented parameter that does nothing.
+KNOWN_UNREAD: dict = {}
 
 
 def _corpus():
     return {p: p.read_text(encoding="utf-8", errors="ignore") for p in _APP.rglob("*.py")}
 
 
+def _models_consumed_wholesale(all_src: str) -> set:
+    """Models passed somewhere as `x.dict()` / `x.model_dump()` / `**x`.
+
+    Such a call reads every field without naming one, so a name-based scan sees the whole
+    model as dead when it is fully live. Resolved by parameter NAME (`request`, `body`, …)
+    rather than by model, because the annotation is what ties a handler parameter to its
+    model — so any model bound to a parameter that is dumped counts as wholesale-read.
+    """
+    dumped_params = set(re.findall(r"\b(\w+)\s*\.\s*(?:dict|model_dump)\s*\(", all_src))
+    dumped_params |= set(re.findall(r"\*\*\s*(\w+)\b", all_src))
+    if not dumped_params:
+        return set()
+    models = set()
+    for param, model in re.findall(r"\b(\w+)\s*:\s*([A-Z]\w*Request)\b", all_src):
+        if param in dumped_params:
+            models.add(model)
+    return models
+
+
 def _find_unread():
     corpus = _corpus()
     all_src = "\n".join(corpus.values())
+    wholesale = _models_consumed_wholesale(all_src)
     unread = []
 
     for path in sorted(_APP.glob("api/**/*.py")):
@@ -80,6 +98,8 @@ def _find_unread():
                 continue
             bases = {getattr(b, "id", getattr(b, "attr", "")) for b in node.bases}
             if "BaseModel" not in bases or not node.name.endswith("Request"):
+                continue
+            if node.name in wholesale:
                 continue
 
             cls_src = ast.get_source_segment(corpus[path], node) or ""
@@ -131,12 +151,17 @@ def test_every_allowlist_entry_states_why(entry):
     assert reason and len(reason) > 25, f"{model}.{field} needs a real reason, got {reason!r}"
 
 
-def test_the_allowlist_only_shrinks():
+def test_the_allowlist_stays_empty():
     """
-    A ceiling, not a target. 10 was the count when this guard was written; it may go down and
-    must never go up. Raising this number is the move that turns a debt list into a dumping
-    ground — the same reason the edge-typecheck baseline is ratcheted, not edited upward.
+    It started at 10 and the #338 sweep took it to 0, so the ratchet is now a floor: there is
+    no longer such a thing as an acceptable unread field, and re-opening the list is how a
+    debt register becomes a dumping ground.
+
+    If you genuinely cannot honor a parameter, delete it from the model. An API that does not
+    advertise a knob is honest; one that advertises a knob it ignores is not.
     """
-    assert len(KNOWN_UNREAD) <= 10, (
-        f"KNOWN_UNREAD grew to {len(KNOWN_UNREAD)}. Fix the field or delete it from the model."
+    assert len(KNOWN_UNREAD) == 0, (
+        f"KNOWN_UNREAD is back to {len(KNOWN_UNREAD)} "
+        f"({', '.join(f'{m}.{f}' for m, f in KNOWN_UNREAD)}). "
+        "Read the field or remove it from the model — do not re-open this list."
     )

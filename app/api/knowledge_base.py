@@ -496,7 +496,24 @@ async def create_category(
     """Create a new category."""
     _assert_own_workspace(ctx, request.workspace_id)
     try:
-        result = supabase_client.client.table("kb_categories").insert(request.dict()).execute()
+        # Allowlisted payload, never `request.dict()` (invariant 8). The model's fields happen
+        # to match the table today, so the spread looked harmless — but it binds the write to
+        # whatever the model grows next. kb_categories carries `is_locked` and
+        # `material_category_id`, both server-owned; a field added to the model with either
+        # name would start setting them from the request body with no code change and no
+        # review signal.
+        payload = {
+            "workspace_id": request.workspace_id,
+            "name": request.name,
+            "slug": request.slug,
+            "description": request.description,
+            "icon": request.icon,
+            "color": request.color,
+            "parent_category_id": request.parent_category_id,
+            "access_level": request.access_level,
+            "trigger_keyword": request.trigger_keyword,
+        }
+        result = supabase_client.client.table("kb_categories").insert(payload).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create category")
@@ -570,7 +587,16 @@ async def attach_document_to_product(
     """Attach a document to a product."""
     _assert_own_workspace(ctx, request.workspace_id)
     try:
-        result = supabase_client.client.table("kb_doc_attachments").insert(request.dict()).execute()
+        # Allowlisted payload, never `request.dict()` (invariant 8) — same reasoning as
+        # create_category above.
+        payload = {
+            "workspace_id": request.workspace_id,
+            "document_id": request.document_id,
+            "product_id": request.product_id,
+            "relationship_type": request.relationship_type,
+            "relevance_score": request.relevance_score,
+        }
+        result = supabase_client.client.table("kb_doc_attachments").insert(payload).execute()
 
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to create attachment")

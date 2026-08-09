@@ -403,51 +403,6 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
     )
 
 # Pydantic models for request/response validation
-class DocumentUploadRequest(BaseModel):
-    """Request model for document upload and processing."""
-    title: Optional[str] = Field(None, description="Document title")
-    description: Optional[str] = Field(None, description="Document description")
-    tags: Optional[List[str]] = Field(default_factory=list, description="Document tags")
-    chunk_size: Optional[int] = Field(1000, ge=100, le=4000, description="Chunk size for processing")
-    chunk_overlap: Optional[int] = Field(200, ge=0, le=1000, description="Chunk overlap")
-    enable_embedding: bool = Field(True, description="Enable automatic embedding generation")
-
-    # NEW: Consolidated upload parameters
-    categories: Optional[str] = Field(
-        "all",
-        description="Categories to extract: 'products', 'certificates', 'logos', 'specifications', 'all', 'extract_only'. Comma-separated."
-    )
-    file_url: Optional[str] = Field(
-        None,
-        description="URL to download PDF from (alternative to file upload)"
-    )
-    discovery_model: Optional[str] = Field(
-        "claude-vision",
-        description="AI model for discovery: 'claude-vision' (Claude Opus 4.7 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
-    )
-    enable_prompt_enhancement: bool = Field(
-        True,
-        description="Enable AI prompt enhancement with admin customizations"
-    )
-    agent_prompt: Optional[str] = Field(
-        None,
-        description="Natural language instruction (e.g., 'extract products', 'search for NOVA')"
-    )
-    workspace_id: Optional[str] = Field(
-        "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-        description="Workspace ID"
-    )
-
-class DocumentUploadResponse(BaseModel):
-    """Response model for document upload."""
-    document_id: str = Field(..., description="Unique document identifier")
-    title: str = Field(..., description="Document title")
-    status: str = Field(..., description="Processing status")
-    chunks_created: int = Field(..., description="Number of chunks created")
-    embeddings_generated: bool = Field(..., description="Whether embeddings were generated")
-    processing_time: float = Field(..., description="Processing time in seconds")
-    message: str = Field(..., description="Status message")
-
 class QueryRequest(BaseModel):
     """Request model for RAG queries."""
     query: str = Field(..., min_length=1, max_length=2000, description="Query text")
@@ -471,7 +426,19 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000, description="Chat message")
     conversation_id: Optional[str] = Field(None, description="Conversation ID for context")
     top_k: Optional[int] = Field(5, ge=1, le=20, description="Number of context chunks to retrieve")
-    include_history: bool = Field(True, description="Include conversation history in context")
+    include_history: bool = Field(True, description="Use conversation_history as context for this turn")
+    # The handler already read `request.conversation_history` via hasattr — the field was
+    # intended and never declared, so the check was permanently False and every chat turn ran
+    # with no context at all. Declaring it restores the intended contract; this endpoint is
+    # stateless and persists nothing, so history is supplied by the caller (#338).
+    conversation_history: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description=(
+            "Prior turns, oldest first, e.g. [{'role': 'user', 'content': '…'}]. This endpoint "
+            "stores nothing between calls, so the caller owns the transcript. Ignored when "
+            "include_history is false."
+        ),
+    )
     document_ids: Optional[List[str]] = Field(None, description="Filter by specific document IDs")
 
 class ChatResponse(BaseModel):
@@ -536,46 +503,6 @@ class HealthCheckResponse(BaseModel):
     timestamp: str = Field(..., description="Health check timestamp")
 
 # Advanced Search Models for Phase 7 Features
-class MMRSearchRequest(BaseModel):
-    """Request model for MMR (Maximal Marginal Relevance) search."""
-    query: str = Field(..., min_length=1, max_length=2000, description="Search query")
-    top_k: Optional[int] = Field(10, ge=1, le=50, description="Number of initial results to retrieve")
-    diversity_threshold: Optional[float] = Field(0.7, ge=0.0, le=1.0, description="MMR diversity threshold")
-    lambda_param: Optional[float] = Field(0.5, ge=0.0, le=1.0, description="MMR lambda parameter for relevance vs diversity balance")
-    document_ids: Optional[List[str]] = Field(None, description="Filter by specific document IDs")
-    include_metadata: bool = Field(True, description="Include document metadata in response")
-
-class MMRSearchResponse(BaseModel):
-    """Response model for MMR search."""
-    query: str = Field(..., description="Original search query")
-    results: List[Dict[str, Any]] = Field(..., description="MMR search results with diversity scores")
-    total_results: int = Field(..., description="Total number of results")
-    diversity_score: float = Field(..., description="Overall diversity score of results")
-    processing_time: float = Field(..., description="Search processing time in seconds")
-
-class AdvancedQueryRequest(BaseModel):
-    """Request model for advanced query with optimization."""
-    query: str = Field(..., min_length=1, max_length=2000, description="Query text")
-    query_type: str = Field("semantic", pattern="^(factual|analytical|conversational|boolean|fuzzy|semantic)$", description="Type of query")
-    top_k: Optional[int] = Field(10, ge=1, le=50, description="Number of results to retrieve")
-    enable_expansion: bool = Field(True, description="Enable query expansion")
-    enable_rewriting: bool = Field(True, description="Enable query rewriting")
-    similarity_threshold: Optional[float] = Field(0.6, ge=0.0, le=1.0, description="Similarity threshold")
-    document_ids: Optional[List[str]] = Field(None, description="Filter by specific document IDs")
-    metadata_filters: Optional[Dict[str, Any]] = Field(None, description="Metadata-based filters")
-    search_operator: str = Field("AND", pattern="^(AND|OR|NOT)$", description="Search operator for multiple terms")
-
-class AdvancedQueryResponse(BaseModel):
-    """Response model for advanced query."""
-    original_query: str = Field(..., description="Original query text")
-    optimized_query: str = Field(..., description="Optimized/expanded query")
-    query_type: str = Field(..., description="Type of query processed")
-    results: List[Dict[str, Any]] = Field(..., description="Search results with relevance scores")
-    total_results: int = Field(..., description="Total number of results")
-    expansion_terms: List[str] = Field(..., description="Terms added during query expansion")
-    processing_time: float = Field(..., description="Query processing time in seconds")
-    confidence_score: float = Field(..., description="Overall confidence score")
-
 # Dependency functions
 async def get_rag_service() -> RAGService:
     """Get RAG service instance."""
@@ -4823,10 +4750,13 @@ async def chat_with_documents(
         # Generate conversation ID if not provided
         conversation_id = request.conversation_id or str(uuid4())
 
-        # Build conversation context from history
-        conversation_context = None
-        if hasattr(request, 'conversation_history') and request.conversation_history:
-            conversation_context = request.conversation_history
+        # Build conversation context from the caller-supplied history. `include_history` is
+        # now what actually gates it — it was declared and read nowhere, so callers could not
+        # turn context off, and the hasattr guard below it tested a field that did not exist,
+        # so context was never on either (#338).
+        conversation_context = (
+            request.conversation_history if request.include_history else None
+        )
 
         # Process chat message using advanced_rag_query with Claude 4.5
         result = await rag_service.advanced_rag_query(
@@ -5307,6 +5237,18 @@ async def search_documents(
             request.include_related_products,
             request.related_products_limit
         )
+
+        # Honor include_content. It is declared on SearchRequest, documented as
+        # "Include chunk content in results", and sent by unifiedSearchService on EVERY
+        # search — and until now it was read nowhere, so a caller asking to drop the chunk
+        # bodies got them anyway (#338). Dropped last so the content is still available to
+        # the prompt/enrichment stages above, which legitimately need it to rank and
+        # summarize; only the payload sent back to the caller loses it.
+        if not request.include_content:
+            for _r in enhanced_results:
+                if isinstance(_r, dict):
+                    _r.pop('content', None)
+
         stage_timings['enhancement_ms'] = int((_time.time() - _t_enhancement_start) * 1000)
         stage_timings['total_ms'] = int((_time.time() - _t_total_start) * 1000)
 
