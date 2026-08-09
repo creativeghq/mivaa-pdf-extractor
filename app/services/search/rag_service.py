@@ -1822,7 +1822,12 @@ class RAGService:
         ✅ Visual similarity search using VECS with relationship enrichment.
 
         Searches images using VECS visual embeddings (SLIG (SigLIP2)) with HNSW indexing.
-        Returns enriched results with related products and chunks.
+        Returns rows resolved to what they depict — caption, url, page, document, and the
+        associated product where there is one (see services/search/image_results.py).
+
+        This docstring used to promise "related products and chunks" and deliver neither: the
+        route's `_enhance_search_results` keys on `result.get('id')`, which image rows do not
+        carry, so it skipped every one. Products are real now; chunks are still not returned.
 
         Args:
             workspace_id: Workspace ID to filter results
