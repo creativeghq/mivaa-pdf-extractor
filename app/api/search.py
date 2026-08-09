@@ -1263,133 +1263,22 @@ async def _build_aspect_query_embedding(
     query_image: Optional[str],
     query_text: Optional[str],
 ) -> tuple[Optional[List[float]], Optional[str], Optional[str]]:
-    """Resolve `(query_image | query_text) → (1024D Voyage embedding, source text, error)`.
+    """Resolve `(query_image | query_text) -> (1024D Voyage embedding, source text, error)`.
 
-    The single chokepoint for all 4 aspect endpoints. Returns:
-        (embedding, source_text, error) — exactly one of (embedding, error)
-        is populated. `source_text` is the string Voyage embedded, returned
-        to the caller for transparency.
-
-    `aspect` is one of color/texture/style/material. Drives which serializer
-    we call when query_image was provided.
+    Thin delegate. The derivation itself lives in `services/search/aspect_query.py` because
+    the multi-vector fusion path needs the same chain (vision_analysis -> ASPECT_SERIALIZERS
+    -> Voyage) and a second copy here would be a second thing to keep in the collections'
+    latent space. It previously fetched a user-supplied https query_image with a raw
+    `httpx.get(..., follow_redirects=True)`; the shared version routes that through the SSRF
+    guard with redirects off and a size cap (invariant 7).
     """
-    if not query_image and not query_text:
-        return None, None, "Provide either query_image or query_text"
+    from app.services.search.aspect_query import aspect_query_embedding
 
-    from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-    voyage_svc = RealEmbeddingsService()
-
-    # Path A — query_image: run Opus vision_analysis, build aspect text via
-    # serializer, embed. Mirrors ingestion exactly so query and row vectors
-    # live in the same Voyage embedding space.
-    if query_image:
-        from app.models.vision_analysis import (
-            VisionAnalysis,
-            VISION_ANALYSIS_TOOL,
-            ASPECT_SERIALIZERS,
-        )
-        import base64 as _b64
-        import os as _os
-
-        anthropic_key = _os.getenv("ANTHROPIC_API_KEY")
-        if not anthropic_key:
-            return None, None, "ANTHROPIC_API_KEY not configured"
-
-        # Accept either a data URL or a raw base64 string. URLs are fetched
-        # before sending to Anthropic so we don't have to deal with anthropic
-        # supporting only certain URL patterns.
-        if query_image.startswith("http"):
-            import httpx
-            try:
-                async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                    resp = await client.get(query_image)
-                    if resp.status_code != 200:
-                        return None, None, f"Failed to fetch query_image (HTTP {resp.status_code})"
-                    image_b64 = _b64.b64encode(resp.content).decode()
-            except Exception as e:
-                return None, None, f"Failed to fetch query_image: {e}"
-        elif query_image.startswith("data:"):
-            try:
-                _, _, encoded = query_image.partition("base64,")
-                if not encoded:
-                    return None, None, "Malformed data URL (no base64 payload)"
-                image_b64 = encoded
-            except Exception as e:
-                return None, None, f"Failed to parse data URL: {e}"
-        else:
-            image_b64 = query_image  # assume raw base64
-
-        # Run vision_analysis via Anthropic tool use. Schema-locked output.
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": anthropic_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
-                    },
-                    json={
-                        "model": "claude-opus-4-8",
-                        "max_tokens": 4096,
-                        "tools": [VISION_ANALYSIS_TOOL],
-                        "tool_choice": {"type": "tool", "name": "emit_vision_analysis"},
-                        "messages": [{
-                            "role": "user",
-                            "content": [
-                                {"type": "image", "source": {
-                                    "type": "base64", "media_type": "image/jpeg", "data": image_b64,
-                                }},
-                                {"type": "text", "text": (
-                                    "Use the emit_vision_analysis tool to return a "
-                                    "structured catalog-grade material analysis for this image."
-                                )},
-                            ],
-                        }],
-                    },
-                )
-                if resp.status_code != 200:
-                    return None, None, f"Anthropic vision_analysis returned HTTP {resp.status_code}"
-                payload = resp.json()
-                tool_block = next(
-                    (b for b in payload.get("content", []) if b.get("type") == "tool_use"),
-                    None,
-                )
-                if not tool_block:
-                    return None, None, "Anthropic response missing tool_use block"
-                va = VisionAnalysis(**tool_block["input"])
-        except Exception as e:
-            return None, None, f"Anthropic vision_analysis call failed: {e}"
-
-        serializer = ASPECT_SERIALIZERS.get(aspect)
-        if not serializer:
-            return None, None, f"Unknown aspect: {aspect}"
-        source_text = serializer(va)
-        if not source_text:
-            return None, None, f"VisionAnalysis from query_image had no {aspect} content (e.g. empty colors[])"
-    else:
-        # Path B — query_text: skip Opus, embed the user's text directly.
-        source_text = query_text.strip()
-        if not source_text:
-            return None, None, "query_text is empty"
-
-    # Common terminus: Voyage-embed the source_text at 1024D. There is no second
-    # embedder to fall through to — the aspect collections live in Voyage 1024D
-    # space, and a same-dimension vector from any other model would score against
-    # them confidently and meaninglessly. On a Voyage outage this fails explicitly.
-    try:
-        vec = await voyage_svc._generate_text_embedding(
-            text=source_text,
-            input_type="query",
-        )
-    except Exception as e:
-        return None, None, f"Voyage embed failed: {e}"
-
-    if not vec or len(vec) != 1024:
-        return None, None, f"Voyage returned wrong-dim embedding (len={len(vec) if vec else 0}, expected 1024)"
-
-    return vec, source_text, None
+    return await aspect_query_embedding(
+        aspect=aspect,
+        query_image=query_image,
+        query_text=query_text,
+    )
 
 
 async def _run_aspect_search(

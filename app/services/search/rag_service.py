@@ -668,6 +668,15 @@ class RAGService:
         try:
             start_time = time.time()
 
+            # Normalize at the boundary: the search page encodes uploads with
+            # FileReader.readAsDataURL, so this arrives as `data:image/jpeg;base64,…` while
+            # every decode below assumes the bare payload. b64decode does not reject the
+            # prefix — it folds the alphabet-legal characters in and shifts the stream — so
+            # the failure surfaced as PIL choking on noise, which the visual channel caught
+            # and quietly answered with a text embedding of the query instead (#277).
+            from app.utils.image_payload import normalize_base64_image
+            image_base64 = normalize_base64_image(image_base64)
+
             # ============================================================================
             # CONFIGURATION: Parse search config with sensible defaults
             # ============================================================================
@@ -803,29 +812,75 @@ class RAGService:
                 embedding_types = ['color', 'texture', 'style', 'material']
                 search_tasks = []
 
-                # The 4 aspect collections are 1024D Voyage embeddings of
-                # per-aspect text from VisionAnalysis (always-on post-Phase-10).
-                # Query must live in the same space — we use the 1024D Voyage
-                # understanding embedding. Sending a 768D SLIG visual would
-                # silently dim-mismatch and return [] from all 4 collections.
-                aspect_query = understanding_embedding
+                # The 4 aspect collections are 1024D Voyage embeddings of per-aspect text
+                # from VisionAnalysis (always-on post-Phase-10). Query must live in the same
+                # space — a 768D SLIG visual would dim-mismatch and return [] from all 4.
+                #
+                # WHICH text, though, is the whole game (#277):
+                #
+                #  - With an IMAGE, derive each aspect's query text from the image itself, the
+                #    same vision_analysis -> ASPECT_SERIALIZERS chain ingestion ran, so each
+                #    collection is asked its own question. The search page requires an image
+                #    for its aspect modes and passes the FILENAME as `query`, so the old
+                #    shared-text path searched image_texture_embeddings with
+                #    voyage("IMG_2831.jpg") — a valid vector, compared confidently, meaning
+                #    nothing. Costs one Claude call, shared across all four aspects.
+                #
+                #  - With TEXT only, keep the understanding embedding. The user's words
+                #    describe every aspect at once, so one vector for four collections is the
+                #    right approximation and stays free.
+                aspect_queries: Dict[str, List[float]] = {}
+                if image_base64:
+                    try:
+                        from app.services.search.aspect_query import (
+                            aspect_query_embeddings_from_image,
+                        )
+                        aspect_queries, aspect_texts, aspect_err = (
+                            await aspect_query_embeddings_from_image(image_base64)
+                        )
+                        if aspect_err:
+                            self.logger.warning(
+                                f"⚠️ Image-derived aspect queries failed ({aspect_err}) — "
+                                "falling back to the text understanding embedding"
+                            )
+                        else:
+                            self.logger.info(
+                                f"🎨 Aspect queries from image: {sorted(aspect_queries)}"
+                            )
+                    except Exception as _ae:
+                        self.logger.warning(
+                            f"⚠️ Image-derived aspect queries raised ({_ae}) — "
+                            "falling back to the text understanding embedding"
+                        )
 
-                if not aspect_query:
+                if not aspect_queries and not understanding_embedding:
                     self.logger.warning(
-                        "⚠️ Aspect search skipped — no understanding query embedding "
-                        f"(has_visual={bool(visual_embedding)}, has_text={bool(text_embedding)})"
+                        "⚠️ Aspect search skipped — no aspect query vector available "
+                        f"(has_image={bool(image_base64)}, has_visual={bool(visual_embedding)}, "
+                        f"has_text={bool(text_embedding)})"
                     )
                     embedding_types = []
 
+                # Per-aspect vector when the image gave us one, else the shared text vector.
+                # An aspect the image had nothing to say about (no discernible pattern -> no
+                # texture string) falls back to the text vector rather than borrowing another
+                # aspect's — that would be a different question answered confidently.
+                resolved_types = []
                 for emb_type in embedding_types:
-                    task = self.vecs_service.search_specialized_embeddings(
-                        query_embedding=aspect_query,
-                        embedding_type=emb_type,
-                        limit=top_k * 3,
-                        workspace_id=workspace_id,
-                        include_metadata=True
+                    q = aspect_queries.get(emb_type) or understanding_embedding
+                    if not q:
+                        continue
+                    resolved_types.append(emb_type)
+                    search_tasks.append(
+                        self.vecs_service.search_specialized_embeddings(
+                            query_embedding=q,
+                            embedding_type=emb_type,
+                            limit=top_k * 3,
+                            workspace_id=workspace_id,
+                            include_metadata=True
+                        )
                     )
-                    search_tasks.append(task)
+                embedding_types = resolved_types
 
                 # Add understanding search in parallel with visual searches
                 if understanding_embedding:
@@ -1748,12 +1803,29 @@ class RAGService:
                     "processing_time": time.time() - start_time
                 }
 
-            # Load image
+            # Load image. Same data-URL normalization as multi_vector_search — this path
+            # takes image_base64 from the same callers, and b64decode would fold the
+            # `data:image/jpeg;base64,` prefix into the stream rather than rejecting it.
+            from app.utils.image_payload import normalize_base64_image
+
             if image_url:
-                response = requests.get(image_url)
+                # image_url comes straight from the request body, so it is user-influenced:
+                # validate the target and refuse to follow redirects, or a permitted host can
+                # 302 into link-local metadata (invariant 7).
+                from app.utils.ssrf_guard import assert_safe_url, SSRFError
+                try:
+                    assert_safe_url(image_url)
+                except SSRFError as _se:
+                    return {
+                        "results": [],
+                        "message": f"image_url rejected: {_se}",
+                        "total_results": 0,
+                        "processing_time": time.time() - start_time
+                    }
+                response = requests.get(image_url, timeout=30, allow_redirects=False)
                 image = Image.open(BytesIO(response.content))
             else:
-                image_data = base64.b64decode(image_base64)
+                image_data = base64.b64decode(normalize_base64_image(image_base64))
                 image = Image.open(BytesIO(image_data))
 
             # Generate visual embedding for the query image

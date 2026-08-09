@@ -1,0 +1,248 @@
+"""One derivation for "what vector represents this query's <aspect>?" (#277).
+
+The four per-aspect collections (`image_{color,texture,style,material}_embeddings`) hold
+**Voyage 1024D embeddings of vision-analysis TEXT** — never image vectors. A row's vector is
+`voyage(ASPECT_SERIALIZERS[aspect](VisionAnalysis))`, built at ingest.
+
+So a query only lands in the same space by reproducing that exact chain. Two callers need it
+and they must not each grow their own copy:
+
+  * the four `/api/search/by-<aspect>` endpoints — one aspect, one query
+  * `rag_service.multi_vector_search` — all four aspects, one image
+
+Before this module the second caller had no derivation at all: it queried every aspect
+collection with the *understanding embedding of the query text*. That is correct when the user
+typed words, and silently wrong when they did not — the search page requires an image for its
+aspect modes and sends the image's FILENAME as the query, so `image_texture_embeddings` was
+being searched with `voyage("IMG_2831.jpg")` at 0.55 of the total ranking weight.
+
+Nothing raised: a filename embeds to a perfectly valid 1024D vector, cosine-compares against
+every row, and returns confident nonsense. Same failure family as a wrong-space vector — the
+shape is right, the meaning is absent.
+
+Vision runs ONCE per image here, not once per aspect: a VisionAnalysis carries all four
+aspects' source fields, so four serializers share one Claude call and differ only in the four
+cheap Voyage embeds that follow.
+"""
+
+from __future__ import annotations
+
+import base64 as _b64
+import logging
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+# The canonical aspect list. Must mirror ASPECT_SERIALIZERS' keys — not asserted at import,
+# because importing app.models.vision_analysis here would drag the model layer into every
+# consumer of this module. tests/unit/test_aspect_query.py holds the two in agreement instead.
+ASPECTS: Tuple[str, ...] = ("color", "texture", "style", "material")
+
+# Cap on a fetched query image. An unbounded read of a user-supplied URL is a memory DoS
+# regardless of how safe the host is (invariant 7's size cap).
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+async def _resolve_image_base64(query_image: str) -> Tuple[Optional[str], Optional[str]]:
+    """`(base64, error)` from a data URL, an https URL, or a raw base64 string.
+
+    The https branch goes through the shared SSRF guard with redirects DISABLED — a permitted
+    external host can 302 straight into link-local metadata, so validating the first URL only
+    is not enough (invariant 7).
+    """
+    if query_image.startswith("data:"):
+        from app.utils.image_payload import normalize_base64_image
+
+        encoded = normalize_base64_image(query_image)
+        # normalize_base64_image returns the input unchanged when there is no `base64,`
+        # marker (e.g. `data:image/svg+xml,<svg…>`), so that case still reads as a data URL.
+        if not encoded or encoded.startswith("data:"):
+            return None, "Malformed data URL (no base64 payload)"
+        return encoded, None
+
+    if query_image.startswith("http"):
+        from app.utils.ssrf_guard import assert_safe_url, SSRFError
+        import httpx
+
+        try:
+            assert_safe_url(query_image)
+        except SSRFError as e:
+            return None, f"query_image URL rejected: {e}"
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+                resp = await client.get(query_image)
+                if resp.status_code != 200:
+                    return None, f"Failed to fetch query_image (HTTP {resp.status_code})"
+                content = resp.content
+                if len(content) > _MAX_IMAGE_BYTES:
+                    return None, (
+                        f"query_image too large ({len(content)} bytes, "
+                        f"max {_MAX_IMAGE_BYTES})"
+                    )
+                return _b64.b64encode(content).decode(), None
+        except Exception as e:
+            return None, f"Failed to fetch query_image: {e}"
+
+    # Assume raw base64.
+    return query_image, None
+
+
+async def analyze_query_image(query_image: str) -> Tuple[Optional[Any], Optional[str]]:
+    """`(VisionAnalysis, error)` — ONE Anthropic vision call, schema-locked via tool_use.
+
+    Forced `tool_choice` with no JSON-parse fallback, matching the ingestion path: a repaired
+    or salvaged analysis would produce aspect text that never existed in the image.
+    """
+    from app.models.vision_analysis import VisionAnalysis, VISION_ANALYSIS_TOOL
+
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+    if not anthropic_key:
+        return None, "ANTHROPIC_API_KEY not configured"
+
+    image_b64, err = await _resolve_image_base64(query_image)
+    if err:
+        return None, err
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": anthropic_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-opus-4-8",
+                    "max_tokens": 4096,
+                    "tools": [VISION_ANALYSIS_TOOL],
+                    "tool_choice": {"type": "tool", "name": "emit_vision_analysis"},
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "source": {
+                                "type": "base64", "media_type": "image/jpeg", "data": image_b64,
+                            }},
+                            {"type": "text", "text": (
+                                "Use the emit_vision_analysis tool to return a "
+                                "structured catalog-grade material analysis for this image."
+                            )},
+                        ],
+                    }],
+                },
+            )
+            if resp.status_code != 200:
+                return None, f"Anthropic vision_analysis returned HTTP {resp.status_code}"
+            payload = resp.json()
+            tool_block = next(
+                (b for b in payload.get("content", []) if b.get("type") == "tool_use"),
+                None,
+            )
+            if not tool_block:
+                return None, "Anthropic response missing tool_use block"
+            return VisionAnalysis(**tool_block["input"]), None
+    except Exception as e:
+        return None, f"Anthropic vision_analysis call failed: {e}"
+
+
+async def _embed(text: str) -> Tuple[Optional[List[float]], Optional[str]]:
+    """Voyage 1024D, `input_type="query"`. No second embedder to fall through to: the aspect
+    collections ARE Voyage space, and a same-dimension vector from another model would score
+    against them confidently and meaninglessly. On a Voyage outage this fails explicitly."""
+    from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+
+    try:
+        vec = await RealEmbeddingsService()._generate_text_embedding(text=text, input_type="query")
+    except Exception as e:
+        return None, f"Voyage embed failed: {e}"
+    if not vec or len(vec) != 1024:
+        return None, (
+            f"Voyage returned wrong-dim embedding (len={len(vec) if vec else 0}, expected 1024)"
+        )
+    return vec, None
+
+
+async def aspect_query_embedding(
+    aspect: str,
+    query_image: Optional[str] = None,
+    query_text: Optional[str] = None,
+) -> Tuple[Optional[List[float]], Optional[str], Optional[str]]:
+    """Single aspect → `(embedding, source_text, error)`. Exactly one of embedding/error is set.
+
+    `query_image` wins over `query_text`: an image is grounded in actual visible material,
+    where the text is whatever the user happened to type.
+    """
+    from app.models.vision_analysis import ASPECT_SERIALIZERS
+
+    if not query_image and not query_text:
+        return None, None, "Provide either query_image or query_text"
+
+    serializer = ASPECT_SERIALIZERS.get(aspect)
+    if not serializer:
+        return None, None, f"Unknown aspect: {aspect}"
+
+    if query_image:
+        va, err = await analyze_query_image(query_image)
+        if err:
+            return None, None, err
+        source_text = serializer(va)
+        if not source_text:
+            return None, None, (
+                f"VisionAnalysis from query_image had no {aspect} content (e.g. empty colors[])"
+            )
+    else:
+        source_text = (query_text or "").strip()
+        if not source_text:
+            return None, None, "query_text is empty"
+
+    vec, err = await _embed(source_text)
+    if err:
+        return None, None, err
+    return vec, source_text, None
+
+
+async def aspect_query_embeddings_from_image(
+    query_image: str,
+    aspects: Tuple[str, ...] = ASPECTS,
+) -> Tuple[Dict[str, List[float]], Dict[str, str], Optional[str]]:
+    """All aspects from ONE image → `(embeddings, source_texts, error)`.
+
+    `error` is set only when the whole derivation failed (no vision analysis). A per-aspect
+    miss is normal and NOT an error — an image with no discernible pattern legitimately yields
+    no texture string — so that aspect is simply absent from the returned dicts. Callers must
+    treat a missing key as "no query vector for this aspect" and skip that collection rather
+    than substituting another aspect's vector.
+    """
+    from app.models.vision_analysis import ASPECT_SERIALIZERS
+
+    va, err = await analyze_query_image(query_image)
+    if err:
+        return {}, {}, err
+
+    embeddings: Dict[str, List[float]] = {}
+    source_texts: Dict[str, str] = {}
+    for aspect in aspects:
+        serializer = ASPECT_SERIALIZERS.get(aspect)
+        if not serializer:
+            continue
+        text = serializer(va)
+        if not text:
+            logger.debug("⏭️ Query aspect '%s' skipped — image yielded no source text", aspect)
+            continue
+        vec, embed_err = await _embed(text)
+        if embed_err:
+            # One aspect failing to embed must not take the other three down with it.
+            logger.warning("⚠️ Query aspect '%s' embed failed: %s", aspect, embed_err)
+            continue
+        embeddings[aspect] = vec
+        source_texts[aspect] = text
+
+    logger.info(
+        "🎨 Query image → %d/%d aspect vectors (%s)",
+        len(embeddings), len(aspects), ", ".join(sorted(embeddings)) or "none",
+    )
+    return embeddings, source_texts, None

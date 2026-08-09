@@ -1,0 +1,141 @@
+"""
+Guard: the aspect query vector is derived from the IMAGE when there is one (#277).
+
+The bug: the search page requires an image for its Color/Texture/Style/Material modes, then
+sends the image's *filename* as the query text. `multi_vector_search` queried all four aspect
+collections with the understanding embedding of that text, so `image_texture_embeddings` was
+searched with `voyage("IMG_2831.jpg")` — while `aspect_bias_weights` put 0.55 of the ranking
+weight on that channel and cut the SLIG visual channel (the only one that had actually seen
+the image) from 0.19 to 0.10. Picking "Texture Pattern" made results worse than not picking it.
+
+Nothing could catch it: a filename embeds to a valid 1024D vector, cosine-compares against
+every row, and returns a confident ordering. Right shape, absent meaning.
+
+These are source-level assertions on purpose. Exercising the real path needs Anthropic +
+Voyage + VECS; this has to run in CI in a second with nothing but pytest, which is the
+difference between a guard that runs on every push and one that quietly never runs. The
+behaviour they pin is structural — WHICH derivation each caller reaches for.
+"""
+
+import re
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[2]
+_ASPECT_QUERY = _ROOT / "app" / "services" / "search" / "aspect_query.py"
+_RAG_SERVICE = _ROOT / "app" / "services" / "search" / "rag_service.py"
+_SEARCH_API = _ROOT / "app" / "api" / "search.py"
+
+ASPECT_QUERY_SRC = _ASPECT_QUERY.read_text(encoding="utf-8")
+RAG_SERVICE_SRC = _RAG_SERVICE.read_text(encoding="utf-8")
+SEARCH_API_SRC = _SEARCH_API.read_text(encoding="utf-8")
+
+
+def test_files_exist():
+    """A moved file must fail loudly, not make every assertion vacuously true."""
+    for p in (_ASPECT_QUERY, _RAG_SERVICE, _SEARCH_API):
+        assert p.exists(), f"{p} not found"
+
+
+def test_aspects_match_the_serializer_registry():
+    """
+    ASPECTS is a hand-written mirror of ASPECT_SERIALIZERS' keys (it cannot import the model
+    layer without dragging it into every consumer). An aspect added to one and not the other
+    means a collection nobody queries, or a query against a collection that does not exist.
+    """
+    model_src = (_ROOT / "app" / "models" / "vision_analysis.py").read_text(encoding="utf-8")
+    block = re.search(r"ASPECT_SERIALIZERS\s*=\s*\{(.*?)\}", model_src, re.DOTALL)
+    assert block, "ASPECT_SERIALIZERS registry not found"
+    registry_keys = set(re.findall(r"[\"']([a-z_]+)[\"']\s*:", block.group(1)))
+
+    declared = re.search(r"ASPECTS:\s*Tuple\[str, \.\.\.\]\s*=\s*\(([^)]*)\)", ASPECT_QUERY_SRC)
+    assert declared, "ASPECTS tuple not found in aspect_query.py"
+    declared_keys = set(re.findall(r"[\"']([a-z_]+)[\"']", declared.group(1)))
+
+    assert declared_keys == registry_keys, (
+        f"aspect_query.ASPECTS {sorted(declared_keys)} != ASPECT_SERIALIZERS "
+        f"{sorted(registry_keys)}"
+    )
+
+
+def test_fusion_derives_aspect_queries_from_the_image():
+    """The fix itself: an image present => image-derived aspect vectors."""
+    assert "aspect_query_embeddings_from_image" in RAG_SERVICE_SRC, (
+        "multi_vector_search no longer derives aspect queries from the image — it is back to "
+        "searching the aspect collections with an embedding of whatever text was passed, "
+        "which on the search page is the image's filename."
+    )
+    guard = re.search(
+        r"if image_base64:.{0,600}?aspect_query_embeddings_from_image",
+        RAG_SERVICE_SRC,
+        re.DOTALL,
+    )
+    assert guard, "the image-derived derivation must be reached only when an image is present"
+
+
+def test_text_only_queries_still_use_the_understanding_embedding():
+    """
+    The other half. Text queries describe every aspect at once, so one shared vector is the
+    right approximation AND stays free — a guard that forced a vision call on every text
+    search would 'fix' this bug by making search cost a Claude call per query.
+    """
+    assert "understanding_embedding" in RAG_SERVICE_SRC
+    assert re.search(
+        r"aspect_queries\.get\(emb_type\)\s*or\s*understanding_embedding", RAG_SERVICE_SRC
+    ), "the per-aspect vector must fall back to the shared text embedding, not to nothing"
+
+
+def test_one_vision_call_per_image_not_one_per_aspect():
+    """
+    A VisionAnalysis carries all four aspects' source fields, so four serializers share one
+    Claude call. Calling per aspect would quadruple the cost and latency of every aspect
+    search for identical output.
+    """
+    fn = ASPECT_QUERY_SRC[ASPECT_QUERY_SRC.index("async def aspect_query_embeddings_from_image"):]
+    assert fn.count("analyze_query_image") == 1, (
+        "aspect_query_embeddings_from_image must analyze the image exactly once"
+    )
+
+
+def test_a_missing_aspect_never_borrows_another_aspects_vector():
+    """
+    An image with no discernible pattern yields no texture string. That aspect must be absent
+    from the result — substituting a neighbouring aspect's vector would answer a different
+    question with full confidence, which is the whole failure family this module exists for.
+    """
+    fn = ASPECT_QUERY_SRC[ASPECT_QUERY_SRC.index("async def aspect_query_embeddings_from_image"):]
+    assert "continue" in fn, "a missing/failed aspect must be skipped, not substituted"
+    assert "embeddings[aspect] = vec" in fn
+
+
+def test_query_image_fetch_goes_through_the_ssrf_guard():
+    """
+    Invariant 7. This helper fetches a user-supplied https URL; it previously used a raw
+    httpx.get with follow_redirects=True, so a permitted host could 302 into link-local
+    metadata. Wiring these endpoints up made that reachable.
+    """
+    assert "assert_safe_url" in ASPECT_QUERY_SRC, "user-supplied query_image URL must be validated"
+    assert "follow_redirects=False" in ASPECT_QUERY_SRC, (
+        "redirects must be disabled — validating only the first URL is not enough"
+    )
+    assert "_MAX_IMAGE_BYTES" in ASPECT_QUERY_SRC, "an unbounded fetch is a memory DoS"
+
+
+def test_the_endpoints_delegate_rather_than_keeping_a_second_copy():
+    """
+    Two callers need this chain. Two implementations of it would be two things to keep inside
+    the collections' latent space, and the drift would be invisible — both produce valid 1024D
+    vectors either way.
+    """
+    assert "from app.services.search.aspect_query import aspect_query_embedding" in SEARCH_API_SRC
+    assert "api.anthropic.com" not in SEARCH_API_SRC, (
+        "search.py re-grew its own vision call — the aspect derivation must have exactly one home"
+    )
+
+
+@pytest.mark.parametrize("forbidden", ["voyage-3", "openai", "text-embedding"])
+def test_no_second_embedder_creeps_in(forbidden):
+    """The aspect collections ARE Voyage 1024D space; a same-dimension vector from another
+    model is stored, compared and ranked without anything raising."""
+    assert forbidden not in ASPECT_QUERY_SRC.lower()
