@@ -5183,6 +5183,28 @@ async def search_documents(
 
         # 🔍 STEP 2: Route to appropriate search method based on strategy
         _t_search_start = _time.time()
+
+        # `aspect` is honored by exactly ONE branch below — multi_vector, which re-weights
+        # the fusion toward that aspect's channel. `image` ranks on the SLIG visual vector
+        # alone and `material` is JSONB filtering; neither has anywhere to apply it, and
+        # both used to accept it and drop it on the floor, so an aspect-biased image search
+        # returned plain visual similarity while looking like it had worked.
+        #
+        # Checked here rather than inside a branch so a strategy added later cannot quietly
+        # inherit the silent drop — a new branch has to opt in by name (#277).
+        _requested_aspect = getattr(request, 'aspect', None)
+        if _requested_aspect and strategy != "multi_vector":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"strategy='{strategy}' cannot honor aspect='{_requested_aspect}'; only "
+                    f"multi_vector can. For a single-aspect match use POST "
+                    f"/api/search/by-{_requested_aspect}, which queries "
+                    f"image_{_requested_aspect}_embeddings directly — pass query_image (the "
+                    f"server runs vision_analysis on it) or query_text."
+                ),
+            )
+
         # All strategies now use the parsed query + extracted filters + dynamic weights
         if strategy == "multi_vector":
             # 🎯 Enhanced multi-vector search with dynamic weight profiles.
@@ -5203,7 +5225,7 @@ async def search_documents(
                 sc["mmr_lambda"] = getattr(request, 'mmr_lambda', 0.7)
             # Aspect bias (#277) — explicit user aspect wins over the balanced /
             # query-understanding weights: emphasize the chosen per-aspect vector.
-            _aspect = getattr(request, 'aspect', None)
+            _aspect = _requested_aspect
             if _aspect in ('color', 'texture', 'style', 'material'):
                 sc["weights"] = aspect_bias_weights(_aspect)
                 weight_profile = f"aspect:{_aspect}"
