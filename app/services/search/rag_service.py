@@ -1917,6 +1917,16 @@ class RAGService:
                     "search_type": "vecs_image_similarity"
                 })
 
+            # Same treatment as /api/search/by-<aspect>: a UUID and a score is a correct
+            # answer nobody can use. The route's own enrichment cannot help here — it keys on
+            # `result.get('id')`, which these rows do not have — so it silently skipped every
+            # one of them (#277).
+            from app.services.search.image_results import enrich_image_rows, apply_enrichment
+            apply_enrichment(
+                results,
+                await enrich_image_rows([r["image_id"] for r in results], workspace_id),
+            )
+
             self.logger.info(f"✅ VECS image search: {len(results)} results in {time.time() - start_time:.2f}s")
 
             return {

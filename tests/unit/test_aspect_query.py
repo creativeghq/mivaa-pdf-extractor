@@ -184,3 +184,46 @@ def test_no_second_embedder_creeps_in(forbidden):
     """The aspect collections ARE Voyage 1024D space; a same-dimension vector from another
     model is stored, compared and ranked without anything raising."""
     assert forbidden not in ASPECT_QUERY_SRC.lower()
+
+
+def test_image_hits_are_resolved_to_something_a_caller_can_use():
+    """
+    VECS answers an image search with a UUID and a score. That is a correct ranking in an
+    unusable form — an agent cannot describe it and a UI cannot render it — and it reports
+    success with a populated `results` array, so nothing looks wrong.
+
+    `/api/rag/search?strategy=multi_vector` never had this problem: it resolves to products
+    and the route enriches them, keying on `result.get('id')`. Image rows have no `id`, so
+    that enrichment silently skipped every one of them.
+
+    Both bare-row endpoints must go through the shared enrichment.
+    """
+    enrich_src = (_ROOT / "app" / "services" / "search" / "image_results.py").read_text(
+        encoding="utf-8"
+    )
+    assert "def enrich_image_rows" in enrich_src
+
+    # Tenancy: the ids come back from a vector store, so re-scoping here is what stops a
+    # caller reading the caption and URL of another tenant's image (invariant 1).
+    assert 'eq("workspace_id", workspace_id)' in enrich_src, (
+        "enrichment must filter by workspace — an unscoped lookup leaks captions and URLs"
+    )
+    assert "if ids and not workspace_id" in enrich_src, (
+        "a missing workspace_id must refuse loudly, not enrich everything"
+    )
+
+    for label, src in (("aspect endpoint", SEARCH_API_SRC), ("image_similarity_search", RAG_SERVICE_SRC)):
+        assert "enrich_image_rows" in src, f"{label} still returns bare image rows"
+
+
+def test_enrichment_is_batched_not_per_row():
+    """Two queries for the whole result set. Per-row lookups would make a 50-result search
+    101 round trips, which is how an enrichment gets removed again for being slow."""
+    enrich_src = (_ROOT / "app" / "services" / "search" / "image_results.py").read_text(
+        encoding="utf-8"
+    )
+    assert enrich_src.count('.in_(') == 2, "expected exactly two batched .in_() lookups"
+    body = enrich_src[enrich_src.index("async def enrich_image_rows"):]
+    assert "for r in ids" not in body and "for image_id in ids" not in body, (
+        "no per-id query loop"
+    )

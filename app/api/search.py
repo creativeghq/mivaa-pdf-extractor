@@ -1242,6 +1242,19 @@ class AspectSearchResultItem(BaseModel):
     distance: Optional[float] = None
     metadata: Optional[Dict[str, Any]] = None
 
+    # Resolved from document_images + image_product_associations. Without these the caller
+    # receives a correctly-ranked list of UUIDs — right answer, unusable form (#277).
+    name: Optional[str] = Field(
+        None,
+        description="Best available label: product name, else caption, else 'Image p<N>'.",
+    )
+    caption: Optional[str] = None
+    image_url: Optional[str] = None
+    page_number: Optional[int] = None
+    document_id: Optional[str] = None
+    product_id: Optional[str] = Field(None, description="Product this image is associated with, if any")
+    product_name: Optional[str] = None
+
 
 class AspectSearchResponse(BaseModel):
     success: bool
@@ -1329,15 +1342,29 @@ async def _run_aspect_search(
     # accept a threshold (it converts distance → similarity inside, but doesn't
     # filter). Cosine similarity sits in [-1, 1]; the cutoff is requested by
     # the caller and we trust their value.
+    kept = [r for r in raw_results if (r.get("similarity_score") or 0.0) >= request.min_similarity]
+
+    # VECS answers with a UUID and a score. Resolve each hit to what it actually depicts,
+    # or the caller gets a correctly-ranked list it cannot show anyone (#277).
+    from app.services.search.image_results import enrich_image_rows, apply_enrichment
+    enrichment = await enrich_image_rows([r.get("image_id") for r in kept], workspace_id)
+    apply_enrichment(kept, enrichment)
+
     filtered = [
         AspectSearchResultItem(
             image_id=r.get("image_id"),
             similarity_score=r.get("similarity_score"),
             distance=r.get("distance"),
             metadata=r.get("metadata"),
+            name=r.get("name"),
+            caption=r.get("caption"),
+            image_url=r.get("image_url"),
+            page_number=r.get("page_number"),
+            document_id=r.get("document_id"),
+            product_id=r.get("product_id"),
+            product_name=r.get("product_name"),
         )
-        for r in raw_results
-        if (r.get("similarity_score") or 0.0) >= request.min_similarity
+        for r in kept
     ]
 
     logger.info(
