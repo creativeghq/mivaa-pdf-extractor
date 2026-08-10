@@ -35,6 +35,7 @@ import httpx
 
 from app.modules._core.registry import is_module_enabled
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.cron_billing import charge_cron
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,29 @@ class JobDigestDispatcher:
             for tj in tracked_jobs:
                 self._log_alert(tj, user_id, channels_attempted=[], channels_skipped=["bell", "email"], listing_count=0, payload={"reason": "no_new_matches"})
             return {"sent": False, "reason": "no_new_matches"}
+
+        # Meter the digest BEFORE it goes out. Registered cron_key 'job-research-digest' (3 cr),
+        # priced "per user consolidated job digest" — so it is charged per SEND, once for the
+        # whole consolidated email, not per tracked_job in it.
+        #
+        # Deliberately placed AFTER the no_new_matches return: an empty day costs nothing.
+        # Charging on the way in and refunding later is the shape the cron-billing docstring
+        # warns about, and there is no cron_refund_user to make it symmetric anyway. This is the
+        # last point before any outward work (email build + send), so it still satisfies
+        # "debit before the upstream call".
+        #
+        # Fails OPEN on any metering error, False only when the payer is genuinely out of credits.
+        digest_workspace_id = next((tj.get("workspace_id") for tj in tracked_jobs if tj.get("workspace_id")), None)
+        if not charge_cron(
+            self.sb, "job-research-digest",
+            workspace_id=digest_workspace_id, user_id=user_id,
+            description="Consolidated job digest",
+            subject={"tracked_job_ids": [str(tj["id"]) for tj in tracked_jobs if tj.get("id")][:20]},
+        ):
+            for tj in tracked_jobs:
+                self._log_alert(tj, user_id, channels_attempted=[], channels_skipped=["bell", "email"],
+                                listing_count=total_listings, payload={"reason": "insufficient_credits"})
+            return {"sent": False, "reason": "insufficient_credits"}
 
         # Build email payload
         user_profile = self._load_user_profile(user_id)
