@@ -36,6 +36,7 @@ from app.dependencies import get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
 from app.modules.job_research_notifications.service import get_job_digest_dispatcher
 from app.services.integrations.job_research_service import get_job_research_service
+from app.services.integrations import job_cost_logger as costs
 from app.services.integrations.cron_billing import charge_cron
 from app.services.integrations.job_sites_kb_sync import sync_one_site_type as _sync_kb
 
@@ -230,19 +231,71 @@ async def delete_tracked_job(
 
 # ─── Refresh + listings + summary ────────────────────────────────────────
 
-@router.post("/track/{tracked_job_id}/refresh")
+@router.post("/track/{tracked_job_id}/refresh", summary="Force a refresh (debits 5 credits)")
 async def refresh_tracked_job(
     tracked_job_id: str,
     force: bool = Query(False),
     force_full_discovery: bool = Query(False),
     user: User = Depends(get_current_user),
 ):
+    """Session-JWT twin of `POST /api/v1/job-tracking/{id}/refresh`.
+
+    Both doors run the identical paid fan-out — DataForSEO SERP, Perplexity Sonar, Firecrawl
+    career-page scrapes, Haiku classification. The partner door has debited 5 credits up front
+    since it shipped; this one debited nothing, so the cheapest way to spend the operator's
+    DataForSEO/Firecrawl/Anthropic budget was to press "Refresh" in the app rather than call the
+    API. Two doors onto one paid operation, one of which checks — the shape that keeps costing
+    this platform money.
+
+    Metering mirrors the partner route (invariant 10: debit BEFORE the upstream call, refund
+    when the work could not be delivered), with one addition — the debit passes `workspace_id`,
+    so a funded workspace pool pays before the member's personal balance.
+    """
+    user_id = user.get("sub")
+    if not user_id:
+        # No payer means no debit. Refuse rather than fall through to a free paid refresh —
+        # "fail open on a missing identity" is how a metered route becomes an unmetered one.
+        raise HTTPException(status_code=401, detail="Unauthenticated")
+    user_id = str(user_id)
+
     svc = get_job_research_service()
-    # Ownership check
-    if not svc.get(tracked_job_id, owner_user_id=str(user.get("sub"))):
+    # Ownership check. Keep the row: it carries the workspace the charge should route to.
+    job = svc.get(tracked_job_id, owner_user_id=user_id)
+    if not job:
         raise HTTPException(status_code=404, detail="Not found")
-    outcome = await svc.refresh(tracked_job_id, force=force, force_full_discovery=force_full_discovery)
-    return outcome
+
+    workspace_id = job.get("workspace_id")
+    debit_amount = costs.JOB_OP_CREDIT_COST.get("refresh", 5)
+
+    if not costs.debit_credits(
+        user_id=user_id, amount=debit_amount,
+        operation_type="job_research.refresh", workspace_id=workspace_id,
+    ):
+        raise HTTPException(status_code=402, detail="Insufficient credits")
+
+    def _refund() -> None:
+        costs.refund_credits(
+            user_id=user_id, amount=debit_amount,
+            operation_type="job_research.refresh", workspace_id=workspace_id,
+        )
+
+    try:
+        outcome = await svc.refresh(tracked_job_id, force=force, force_full_discovery=force_full_discovery)
+    except Exception as e:
+        _refund()
+        raise HTTPException(status_code=500, detail=str(e)[:200])
+
+    # Refund cases, identical to the partner route: nothing ran, it errored, or the classifier
+    # dropped every candidate it found (paid the upstreams, delivered zero listings). A genuine
+    # "nothing new" run short-circuits without `candidates_after_exclusions` and keeps the credit,
+    # because the upstream calls really did happen.
+    if outcome.get("skipped") or outcome.get("error") or (
+        outcome.get("candidates_after_exclusions", 0) > 0 and outcome.get("persisted", 0) == 0
+    ):
+        _refund()
+        return {**outcome, "credits_debited": 0}
+
+    return {**outcome, "credits_debited": debit_amount}
 
 
 @router.get("/track/{tracked_job_id}/listings")
