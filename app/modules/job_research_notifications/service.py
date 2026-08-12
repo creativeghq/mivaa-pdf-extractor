@@ -696,6 +696,7 @@ class JobDigestDispatcher:
     # ────────────────────────────────────────────────────────────────────
 
     def _load_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:
+        profile: Dict[str, Any] = {}
         try:
             res = (
                 self.sb.table("user_profiles")
@@ -704,9 +705,28 @@ class JobDigestDispatcher:
                 .maybe_single()
                 .execute()
             )
-            return (res.data if res else None) or None
+            profile = (res.data if res else None) or {}
         except Exception:
-            return None
+            profile = {}
+        # user_profiles.email is frequently NULL — the address of record lives in
+        # auth.users. Without this fallback _send_email got no address and skipped
+        # email for every such user, so the digest quietly delivered bell-only
+        # (and, before the purge-gate fix, deleted the jobs anyway). Resolve the
+        # auth email via the service-role admin API.
+        if not profile.get("email"):
+            try:
+                admin = self.sb.auth.admin.get_user_by_id(user_id)
+                auth_user = getattr(admin, "user", None)
+                if auth_user is None and isinstance(admin, dict):
+                    auth_user = admin.get("user")
+                auth_email = getattr(auth_user, "email", None)
+                if not auth_email and isinstance(auth_user, dict):
+                    auth_email = auth_user.get("email")
+                if auth_email:
+                    profile["email"] = auth_email
+            except Exception as e:
+                logger.warning(f"job-digest: auth email lookup failed for {user_id}: {e}")
+        return profile or None
 
     def _log_alert(
         self, tj: Dict[str, Any], user_id: str, *,
