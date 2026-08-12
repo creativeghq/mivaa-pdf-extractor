@@ -246,6 +246,7 @@ class JobDigestDispatcher:
                     to_name=(user_profile or {}).get("display_name") or "there",
                     title=title, body_html=body_html, action_url=action_url,
                     section_count=len(sections), total_listings=total_listings,
+                    workspace_id=digest_workspace_id,
                 )
                 (channels_attempted if ok else channels_skipped).append("email")
             else:
@@ -635,7 +636,7 @@ class JobDigestDispatcher:
     async def _send_email(
         self,
         *, to_email: str, to_name: str, title: str, body_html: str, action_url: str,
-        section_count: int, total_listings: int,
+        section_count: int, total_listings: int, workspace_id: str | None = None,
     ) -> bool:
         if not self._supabase_url or not self._service_role_key:
             return False
@@ -656,6 +657,18 @@ class JobDigestDispatcher:
                         "action": "send",
                         "to": to_email,
                         "subject": title,
+                        # WHOSE email this is, for the LOG ROW only.
+                        #
+                        # The workspace is resolved a hundred lines above to decide who pays for
+                        # the digest, and it never reached the send — so every one of these landed
+                        # in `email_logs` with no workspace. That table's member policy is
+                        # `workspace_id IS NOT NULL AND is_workspace_member(workspace_id)`, so the
+                        # tenant could not see mail going out in their own name.
+                        #
+                        # `attribution_workspace_id`, NOT `workspace_id`: the latter also picks the
+                        # workspace's BYOK sender and meters its daily cap, and a platform-sent
+                        # digest must keep taking neither.
+                        **({"attribution_workspace_id": workspace_id} if workspace_id else {}),
                         # NO templateSlug: email-api's renderTemplateWithVariables()
                         # escapeHtml's every {{var}}, so the template's {{body}} turned
                         # our pre-built section HTML into literal <h2>…</h2> text in the
