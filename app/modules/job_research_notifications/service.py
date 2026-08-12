@@ -656,15 +656,13 @@ class JobDigestDispatcher:
                         "action": "send",
                         "to": to_email,
                         "subject": title,
-                        "templateSlug": "job_alerts.daily_digest",
-                        "variables": {
-                            "name": to_name,
-                            "title": title,
-                            "body": body_html,
-                            "action_url": action_url,
-                            "tracked_job_count": section_count,
-                            "total_new_listings": total_listings,
-                        },
+                        # NO templateSlug: email-api's renderTemplateWithVariables()
+                        # escapeHtml's every {{var}}, so the template's {{body}} turned
+                        # our pre-built section HTML into literal <h2>…</h2> text in the
+                        # inbox. We send the fully-rendered `html` below instead — same
+                        # design as the template, but with body_html embedded raw (its
+                        # dynamic fields are already _html_escape'd in _build_body_html,
+                        # so this is XSS-safe).
                         "html": (
                             f'<!DOCTYPE html><html><body style="background:#0f0f0f;color:#e6e6e6;'
                             f'font-family:Helvetica,Arial,sans-serif;padding:24px;">'
