@@ -642,13 +642,18 @@ class JobDigestDispatcher:
         try:
             async with httpx.AsyncClient(timeout=self._http_timeout) as client:
                 resp = await client.post(
-                    f"{self._supabase_url}/functions/v1/email-api?action=send",
+                    # email-api reads the action from the request BODY (or the last
+                    # path segment) — NOT the query string. `?action=send` was ignored,
+                    # so it resolved to "email-api" and returned 500 "Invalid endpoint".
+                    # Put the action in the body AND the path so either resolver hits 'send'.
+                    f"{self._supabase_url}/functions/v1/email-api/send",
                     headers={
                         "Authorization": f"Bearer {self._service_role_key}",
                         "apikey": self._service_role_key,
                         "Content-Type": "application/json",
                     },
                     json={
+                        "action": "send",
                         "to": to_email,
                         "subject": title,
                         "templateSlug": "job_alerts.daily_digest",
