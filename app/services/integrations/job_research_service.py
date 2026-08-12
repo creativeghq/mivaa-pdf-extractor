@@ -785,6 +785,10 @@ class JobResearchService:
                         careers_urls=merged_careers,
                         company_hint=None,
                         attribution=attribution,
+                        # Daily flow: only pull roles within the recency window so a
+                        # big archive board can't time out the run (issue: "firecrawl
+                        # needs to get only last-day jobs, not the whole page").
+                        recent_days=max_age_days,
                     ))
             if sources_enabled.get("rss_feeds", False):
                 from app.services.integrations.job_search_service import load_site_defaults_from_db
@@ -862,6 +866,7 @@ class JobResearchService:
                             careers_urls=list(_page_for.values()),
                             company_hint=None,
                             attribution=attribution,
+                            recent_days=max_age_days,
                         )
                         hits.extend(_fb)
                         _fb_by_page: Dict[str, int] = {}

@@ -1493,6 +1493,7 @@ async def search_via_firecrawl_careers(
     careers_urls: List[str],
     company_hint: Optional[str],
     attribution: costs.CostAttribution,
+    recent_days: Optional[int] = None,
 ) -> List[JobHit]:
     if not careers_urls:
         return []
@@ -1513,13 +1514,34 @@ async def search_via_firecrawl_careers(
         # on most board layouts (4dayWeek/TheProductFolks/ChoppingBlock all yielded
         # nothing despite the jobs being in the HTML). onlyMainContent off + a
         # render wait so JS-built boards populate.
-        _EXTRACT_PROMPT = (
-            "Extract EVERY job posting listed on this careers / job-board page. "
-            "For each posting return: url (the direct link to that specific job), "
-            "title, company, location, and when shown employment_type, seniority, "
-            "posted_at, and whether it is remote. Return ALL postings on the page, "
-            "not just the first few."
-        )
+        #
+        # Daily flow: when recent_days is set, extract ONLY the freshest postings.
+        # A big archive board (hundreds of roles) otherwise blows the render /
+        # extraction budget and times out — the exact failure the daily "one day at
+        # a time" model is meant to avoid. Boards list newest-first, so we take the
+        # last `recent_days` days when dates are shown, else the top N. A board with
+        # nothing new that day correctly returns 0 (the digest reports it as an
+        # empty source) — that is "slowly and steady", not a miss, because the
+        # sent-ledger dedup means an overlapping window never double-delivers.
+        if recent_days and recent_days > 0:
+            _TOP_N_UNDATED = 30
+            _EXTRACT_PROMPT = (
+                f"Extract only the MOST RECENT job postings on this careers / job-board page — "
+                f"those posted within the last {recent_days} days. Job boards list newest first, so: "
+                f"if the page shows posting dates, return ONLY postings from the last {recent_days} days; "
+                f"if NO posting dates are shown, return the FIRST {_TOP_N_UNDATED} postings at the top of "
+                f"the list (these are the newest). Do NOT extract the entire archive or older postings. "
+                f"For each posting return: url (the direct link to that specific job), title, company, "
+                f"location, and when shown employment_type, seniority, posted_at, and whether it is remote."
+            )
+        else:
+            _EXTRACT_PROMPT = (
+                "Extract EVERY job posting listed on this careers / job-board page. "
+                "For each posting return: url (the direct link to that specific job), "
+                "title, company, location, and when shown employment_type, seniority, "
+                "posted_at, and whether it is remote. Return ALL postings on the page, "
+                "not just the first few."
+            )
 
         def _body(wait_ms: int) -> Dict[str, Any]:
             return {
@@ -1527,6 +1549,9 @@ async def search_via_firecrawl_careers(
                 "formats": [{"type": "json", "schema": schema, "prompt": _EXTRACT_PROMPT}],
                 "onlyMainContent": False,
                 "waitFor": wait_ms,
+                # Fail fast on a hung render (Firecrawl-side cap, ms) instead of one
+                # slow board stalling the whole daily run up to the 75s HTTP ceiling.
+                "timeout": 45000,
             }
 
         try:
