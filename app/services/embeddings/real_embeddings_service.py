@@ -199,6 +199,12 @@ class RealEmbeddingsService:
         image_data: Optional[str] = None,  # base64 encoded
         vision_analysis: Optional[Dict[str, Any]] = None,  # Claude Opus 4.7 vision_analysis JSON (schema-locked via Anthropic tool use)
         job_id: Optional[str] = None,
+        # Mirrors job_id exactly. The workspace was never threaded, so 2134 ai_usage_logs rows
+        # landed with no tenant: invisible to per-workspace cost views AND to that table's own
+        # `is_workspace_admin(workspace_id)` policy, which cannot match on NULL. Per CALL, never
+        # on the instance — this service is reused across tenants (rag_service holds one on
+        # self), so instance state would misattribute confidently instead of leaving a blank.
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -245,6 +251,7 @@ class RealEmbeddingsService:
                 text=text_content,
                 input_type=input_type,
                 job_id=job_id,
+                workspace_id=workspace_id,
                 product_id=product_id,
                 image_id=image_id,
             )
@@ -272,6 +279,7 @@ class RealEmbeddingsService:
                 visual_embedding, model_used, pil_image_for_reuse = await self._generate_visual_embedding(
                     image_url, image_data,
                     job_id=job_id,
+                    workspace_id=workspace_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -307,6 +315,7 @@ class RealEmbeddingsService:
                 aspect_embeddings = await self._generate_specialized_aspect_embeddings(
                     vision_analysis=vision_analysis,
                     job_id=job_id,
+                    workspace_id=workspace_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -341,6 +350,7 @@ class RealEmbeddingsService:
                     vision_analysis=vision_analysis,
                     material_properties=material_properties,
                     job_id=job_id,
+                    workspace_id=workspace_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -400,6 +410,7 @@ class RealEmbeddingsService:
         query: str,
         dimensions: int = 1024,
         job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -424,6 +435,7 @@ class RealEmbeddingsService:
                 text=query,
                 dimensions=dimensions,
                 job_id=job_id,
+                workspace_id=workspace_id,
                 product_id=product_id,
                 image_id=image_id,
             )
@@ -492,6 +504,7 @@ class RealEmbeddingsService:
         vision_analysis: Dict[str, Any],
         material_properties: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -576,6 +589,7 @@ class RealEmbeddingsService:
                 text=text,
                 input_type="document",
                 job_id=job_id,
+                workspace_id=workspace_id,
                 product_id=product_id,
                 image_id=image_id,
             )
@@ -640,6 +654,7 @@ class RealEmbeddingsService:
         content: List[Dict[str, str]],
         input_type: str,
         job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
         task: str = "page_embedding_generation",
@@ -761,6 +776,7 @@ class RealEmbeddingsService:
                     },
                     action="use_ai_result",
                     job_id=job_id,
+                    workspace_id=workspace_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -797,6 +813,7 @@ class RealEmbeddingsService:
                     # read as "handled" on a path where the page simply has no vector.
                     action="fallback_failed",
                     job_id=job_id,
+                    workspace_id=workspace_id,
                     product_id=product_id,
                     image_id=image_id,
                     fallback_reason="no fallback provider for multimodal embeddings",
@@ -811,6 +828,7 @@ class RealEmbeddingsService:
         image_base64: str,
         page_text: Optional[str] = None,
         job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -846,6 +864,7 @@ class RealEmbeddingsService:
             content=content,
             input_type="document",
             job_id=job_id,
+            workspace_id=workspace_id,
             product_id=product_id,
             image_id=image_id,
         )
@@ -877,6 +896,7 @@ class RealEmbeddingsService:
         truncation: bool = True,
         output_dtype: str = "float",
         job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
@@ -978,6 +998,7 @@ class RealEmbeddingsService:
                         },
                         action="use_ai_result",
                         job_id=job_id,
+                        workspace_id=workspace_id,
                         product_id=product_id,
                         image_id=image_id,
                     )
@@ -1021,6 +1042,7 @@ class RealEmbeddingsService:
                     # single-text path for the same reasoning.
                     action="fallback_failed",
                     job_id=job_id,
+                    workspace_id=workspace_id,
                     product_id=product_id,
                     image_id=image_id,
                     fallback_reason="no fallback provider for text embeddings",
@@ -1041,6 +1063,7 @@ class RealEmbeddingsService:
         self,
         text: str,
         job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         dimensions: int = 1024,
         input_type: Optional[str] = None,
         truncation: bool = True,
@@ -1163,6 +1186,7 @@ class RealEmbeddingsService:
                             },
                             action="use_ai_result",
                             job_id=job_id,
+                            workspace_id=workspace_id,
                             product_id=product_id,
                             image_id=image_id,
                         )
@@ -1201,6 +1225,7 @@ class RealEmbeddingsService:
                     # "handled" on a path where the caller simply gets no vector.
                     action="fallback_failed",
                     job_id=job_id,
+                    workspace_id=workspace_id,
                     product_id=product_id,
                     image_id=image_id,
                     fallback_reason="no fallback provider for text embeddings",
@@ -1223,6 +1248,7 @@ class RealEmbeddingsService:
         confidence_threshold: float = 0.8,
         pil_image = None,  # NEW: Accept pre-decoded PIL image
         job_id: Optional[str] = None,  # NEW: Add job_id for logging
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> tuple[Optional[List[float]], str, Optional[any]]:
@@ -1244,7 +1270,7 @@ class RealEmbeddingsService:
         """
         # Use configured visual embedding model (default: SigLIP)
         visual_embedding, pil_image_out = await self._generate_siglip_embedding(
-            image_url, image_data, pil_image=pil_image, job_id=job_id,
+            image_url, image_data, pil_image=pil_image, job_id=job_id, workspace_id=workspace_id,
             product_id=product_id, image_id=image_id,
         )
         if visual_embedding:
@@ -1260,6 +1286,7 @@ class RealEmbeddingsService:
         image_data: Optional[str],
         pil_image = None,  # NEW: Accept pre-decoded PIL image
         job_id: Optional[str] = None,  # NEW: Add job_id for logging
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> tuple[Optional[List[float]], Optional[any]]:
@@ -1374,6 +1401,7 @@ class RealEmbeddingsService:
                             "endpoint_model": self.slig_model_name,
                         },
                         job_id=job_id,
+                        workspace_id=workspace_id,
                         product_id=product_id,
                         image_id=image_id,
                     )
@@ -1400,6 +1428,7 @@ class RealEmbeddingsService:
         self,
         vision_analysis: Any,
         job_id: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Optional[Dict[str, List[float]]]:
@@ -1491,6 +1520,7 @@ class RealEmbeddingsService:
                     text=text,
                     input_type="document",
                     job_id=job_id,
+                    workspace_id=workspace_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -1542,6 +1572,7 @@ class RealEmbeddingsService:
                 },
                 action="use_ai_result",
                 job_id=job_id,
+                workspace_id=workspace_id,
                 product_id=product_id,
                 image_id=image_id,
             )

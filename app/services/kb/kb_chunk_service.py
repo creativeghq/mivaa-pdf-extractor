@@ -75,7 +75,9 @@ async def rechunk_doc(
     embeddings: list = []
     for i in range(0, len(texts), _EMBED_BATCH):
         batch = await embeddings_service.generate_batch_embeddings(
-            texts[i : i + _EMBED_BATCH], input_type="document"
+            texts[i : i + _EMBED_BATCH], input_type="document",
+            # Already selected on the doc row above and written onto every chunk below.
+            workspace_id=workspace_id,
         )
         embeddings.extend(batch or [None] * len(texts[i : i + _EMBED_BATCH]))
 

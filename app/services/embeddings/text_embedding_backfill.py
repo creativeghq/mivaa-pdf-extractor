@@ -197,6 +197,7 @@ async def backfill_chunk_text_embeddings(
                 pass
             vectors = await embeddings_svc.generate_batch_embeddings(
                 texts=texts, dimensions=1024, input_type="document",
+                workspace_id=workspace_id,
             )
         except Exception as batch_err:
             logger.error(f"❌ Chunk backfill batch embedding failed: {batch_err}")

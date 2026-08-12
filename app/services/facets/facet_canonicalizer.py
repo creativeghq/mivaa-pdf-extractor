@@ -311,6 +311,7 @@ class FacetCanonicalizer:
                     [n for (_f, _r, n) in needs_embed],
                     dimensions=1024,
                     input_type="document",
+                    workspace_id=workspace_id,
                 )
             except Exception as e:
                 logger.error(f"Voyage batch embed failed ({len(needs_embed)} values): {e}")

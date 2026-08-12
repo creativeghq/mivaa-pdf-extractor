@@ -438,7 +438,11 @@ class RAGService:
                         embedding_vectors = await self.embeddings_service.generate_batch_embeddings(
                             texts=batch_texts,
                             dimensions=1024,  # matches DB schema vector(1024)
-                            input_type="document"
+                            input_type="document",
+                            # Whose document this is. Read off the metadata at the top of this
+                            # method and used for every other write here; the embedding cost was
+                            # the one thing that left without it.
+                            workspace_id=None if workspace_id == 'default' else workspace_id,
                         )
 
                         if embedding_vectors:
