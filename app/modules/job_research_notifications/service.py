@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.config import settings
 from app.modules._core.registry import is_module_enabled
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.cron_billing import charge_cron
@@ -47,8 +48,10 @@ CHANNEL_CREDIT_COST: Dict[str, int] = {
     "webhook": 0,
 }
 
-# Cap per tracked_job in the email so the body stays scannable
-MAX_LISTINGS_PER_SECTION = 10
+# Cap per tracked_job in the email so the body stays scannable. Overflow beyond
+# this is NOT dropped — it carries forward to the next daily digest (see the
+# recency-window fetch in _dispatch_for_user), draining the backlog day by day.
+MAX_LISTINGS_PER_SECTION = 25
 
 
 def _utcnow() -> datetime:
@@ -62,8 +65,13 @@ def _iso(d: datetime) -> str:
 class JobDigestDispatcher:
     def __init__(self) -> None:
         self.sb = get_supabase_client().client
-        self._supabase_url = os.getenv("SUPABASE_URL") or ""
-        self._service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
+        # Source creds from `settings` (pydantic BaseSettings, env_file='.env'),
+        # NOT raw os.getenv. On prod these live in MIVAA's .env and are NOT exported
+        # to the process env, so os.getenv returned "" and _send_email bailed at the
+        # guard below on EVERY digest — email had silently never delivered. `self.sb`
+        # worked only because get_supabase_client() reads the same settings object.
+        self._supabase_url = settings.supabase_url or os.getenv("SUPABASE_URL") or ""
+        self._service_role_key = settings.supabase_service_role_key or os.getenv("SUPABASE_SERVICE_ROLE_KEY") or ""
         self._http_timeout = httpx.Timeout(15.0, connect=5.0)
 
     def _module_active(self) -> bool:
@@ -131,7 +139,14 @@ class JobDigestDispatcher:
         sections: List[Dict[str, Any]] = []
         total_listings = 0
         for tj in tracked_jobs:
-            since = tj.get("last_digest_sent_at") or _iso(_utcnow() - timedelta(hours=26))
+            # Deliver every still-present match within the recency window, newest
+            # first — NOT only those discovered since the last digest. Purge deletes
+            # delivered rows, so "present" == "undelivered"; anchoring the fetch on
+            # last_digest_sent_at silently dropped the overflow beyond the per-section
+            # cap (a wide search finds >cap/day, and the window then advanced past
+            # them). A rolling window carries the backlog forward until it drains.
+            _window_days = max(1, min(60, int(tj.get("max_age_days") or 7)))
+            since = _iso(_utcnow() - timedelta(days=_window_days))
             listings = (
                 self.sb.table("job_listings")
                 .select("id, content_hash, url, title, company, company_domain, location, is_remote, "
@@ -241,6 +256,18 @@ class JobDigestDispatcher:
         if webhooks_to_call:
             await asyncio.gather(*[self._send_webhook(url, {"tracked_job_id": tj["id"], "label": tj["label"], "listings": [s["listings"] for s in sections if s["tracked_job"]["id"] == tj["id"]]}) for tj, url in webhooks_to_call])
             channels_attempted.append("webhook")
+
+        # Deliver-then-purge, never purge-then-lose. If EVERY channel failed
+        # (nothing in channels_attempted), keep the listings and do NOT stamp
+        # last_digest_sent_at — the next cron tick retries. Purging here would
+        # silently delete jobs the user never saw; that is exactly how email+bell
+        # being broken left no trace — the listings were deleted regardless.
+        if not channels_attempted:
+            logger.warning(
+                f"job-digest: all channels failed for user {user_id} — "
+                f"{total_listings} listing(s) kept, not stamping (will retry next run)"
+            )
+            return {"sent": False, "reason": "all_channels_failed", "total_listings": total_listings}
 
         # 4. Purge after send — "keep the search, not the data". Record each
         #    delivered job's content_hash in job_research_sent (compact tombstone
@@ -593,7 +620,12 @@ class JobDigestDispatcher:
                 "body": body,
                 "action_url": action_url,
                 "metadata": payload,
-                "read": False,
+                # Column is `is_read` (NOT NULL, default false), not `read`. The old
+                # key made PostgREST reject the whole insert as an unknown column, so
+                # the bell threw every time and was swallowed — the in-app bell had
+                # silently never fired for a job digest. Omitting it would also work
+                # (default false); we set it explicitly to match the column.
+                "is_read": False,
             }).execute()
             return True
         except Exception as e:
