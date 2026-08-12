@@ -994,6 +994,16 @@ class StatelessOpportunitiesRequest(BaseModel):
     types: Optional[List[str]] = Field(None, description="Subset of opportunity types. Default = all subject-driven (mention-derived auto-skip).")
     limit_per_type: int = Field(5, ge=1, le=20)
     use_llm_summary: bool = Field(False, description="When true, Haiku polishes rationales/actions.")
+    workspace_id: Optional[str] = Field(
+        None,
+        description=(
+            "Whose research this is, for cost attribution. There is no tracked-subject row on this "
+            "path for the service to read an owner off, so without it the DataForSEO Labs spend "
+            "this triggers lands in ai_usage_logs owned by nobody. Trusted because the endpoint is "
+            "x-cron-secret gated and internal-only — the edge function sends the session's "
+            "workspace, not anything a user supplied."
+        ),
+    )
 
 
 @router.post("/opportunities-stateless")
@@ -1026,6 +1036,9 @@ async def opportunities_stateless(
         "language_codes": body.language_codes or ["en"],
         "country_codes": body.country_codes or ["US"],
         "homepage_domain": body.homepage_domain,
+        # Picked up by CostAttribution, which derives its owner from this dict when the caller
+        # did not pre-build one. Absent, every external call in this run logs with no tenant.
+        "workspace_id": body.workspace_id,
     }
     out = await get_mention_opportunity_service().generate(
         subject_override=subject_override,
