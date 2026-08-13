@@ -212,9 +212,16 @@ class JobDigestDispatcher:
         channels_attempted: List[str] = []
         channels_skipped: List[str] = []
 
-        # 1. Bell (in-app notification) — always free, always send if requested
+        # 1. Bell (in-app notification) — always free, always send if requested.
+        # Payload carries keyword-group counts (not the internal search label) so the
+        # bell chips match the email's keyword headlines.
         if "bell" in all_channels:
-            ok = await self._send_bell(user_id, title=title, body=body_text[:300], action_url=action_url, payload={"sections": [{"label": s["tracked_job"]["label"], "count": len(s["listings"])} for s in sections]})
+            _kw_groups = self._group_by_keyword(
+                [l for s in sections for l in s["listings"]], self._union_keywords(sections)
+            )
+            bell_payload = {"groups": [{"keyword": h, "count": len(ls)} for h, ls in _kw_groups if h],
+                            "total": total_listings}
+            ok = await self._send_bell(user_id, title=title, body=body_text[:300], action_url=action_url, payload=bell_payload)
             (channels_attempted if ok else channels_skipped).append("bell")
 
         # 1b. Chat post into the original conversation (v0.2) — primary user-facing surface.
@@ -318,36 +325,93 @@ class JobDigestDispatcher:
     # ────────────────────────────────────────────────────────────────────
 
     def _build_title(self, sections: List[Dict[str, Any]], total: int) -> str:
-        if len(sections) == 1:
-            return f"{total} new {('match' if total == 1 else 'matches')} for {sections[0]['tracked_job']['label']}"
-        return f"{total} new job matches across {len(sections)} of your searches"
+        # Recipient-agnostic — no internal search label or version. This is the same
+        # email every user who opts into a digest receives.
+        return f"{total} new job {'match' if total == 1 else 'matches'}"
+
+    # ── Keyword grouping ────────────────────────────────────────────────
+    def _union_keywords(self, sections: List[Dict[str, Any]]) -> List[str]:
+        """Every search keyword across the user's tracked_jobs, in first-seen order."""
+        seen: List[str] = []
+        for s in sections:
+            for k in (s["tracked_job"].get("keywords") or []):
+                k = (k or "").strip()
+                if k and k not in seen:
+                    seen.append(k)
+        return seen
+
+    def _group_by_keyword(
+        self, listings: List[Dict[str, Any]], keywords: List[str]
+    ) -> List[tuple]:
+        """Bucket each listing under the keyword its TITLE matches. Checked
+        most-specific (longest) first so 'Senior Product Manager' wins over
+        'Product Manager'. A role the classifier matched on FUNCTION but whose title
+        carries no keyword phrase lands in 'More roles'. Returns (heading, listings)
+        in the user's keyword order, 'More roles' last, empty buckets dropped."""
+        if not keywords:
+            return [("", listings)]
+        check_order = sorted(keywords, key=len, reverse=True)
+        buckets: Dict[str, List[Dict[str, Any]]] = {k: [] for k in keywords}
+        more: List[Dict[str, Any]] = []
+        for l in listings:
+            title = (l.get("title") or "").lower()
+            hit = next((k for k in check_order if k.lower() in title), None)
+            (buckets[hit] if hit else more).append(l)
+        groups: List[tuple] = [(k, buckets[k]) for k in keywords if buckets[k]]
+        if more:
+            groups.append(("More roles", more))
+        return groups
+
+    def _pretty_empty_sources(self, empty: List[str]) -> List[str]:
+        """Human-readable empty-source list: collapse the internal perplexity_* fan-out
+        into one line, keep board URLs as-is (they are browsable)."""
+        out: List[str] = []
+        perplexity = False
+        for u in empty:
+            if (u or "").startswith("perplexity"):
+                perplexity = True
+            elif u and u not in out:
+                out.append(u)
+        if perplexity:
+            out.append("Perplexity (web search — check its API credits)")
+        return out
+
+    def _listing_card_html(self, l: Dict[str, Any]) -> str:
+        salary = _fmt_salary(l)
+        where = " · ".join(filter(None, [
+            _html_escape(l.get("location") or ""),
+            "Remote" if l.get("is_remote") else None,
+            salary,
+            _html_escape((l.get("employment_type") or "")),
+        ]))
+        return (
+            f'<div style="margin:0 0 14px 0;padding:10px 12px;background:#1a1a1a;border-radius:6px;">'
+            f'<a href="{_html_escape(l["url"])}" style="color:#d4a3bf;text-decoration:none;font-size:15px;font-weight:500;">'
+            f'{_html_escape(l.get("title") or "(no title)")}</a><br>'
+            f'<span style="color:#bbb;font-size:13px;">{_html_escape(l.get("company") or "")}</span><br>'
+            f'<span style="color:#888;font-size:12px;">{where}</span>'
+            f'</div>'
+        )
 
     def _build_body_html(self, sections: List[Dict[str, Any]], user_profile: Optional[Dict[str, Any]]) -> str:
         parts: List[str] = []
-        for s in sections:
-            tj = s["tracked_job"]
-            parts.append(
-                f'<h2 style="font-weight:400;font-size:16px;margin:24px 0 8px 0;color:#fff;border-bottom:1px solid #333;padding-bottom:6px;">'
-                f'{_html_escape(tj["label"])} '
-                f'<span style="color:#888;font-size:13px;">({len(s["listings"])} new)</span></h2>'
-            )
-            parts.append('<div style="display:block;">')
-            for l in s["listings"]:
-                salary = _fmt_salary(l)
-                where = " · ".join(filter(None, [
-                    _html_escape(l.get("location") or ""),
-                    "Remote" if l.get("is_remote") else None,
-                    salary,
-                    _html_escape((l.get("employment_type") or "")),
-                ]))
+        all_listings = [l for s in sections for l in s["listings"]]
+        keywords = self._union_keywords(sections)
+        groups = self._group_by_keyword(all_listings, keywords)
+        # Only headline the groups when there is more than one — a single bucket needs
+        # no divider.
+        show_headlines = len(groups) > 1
+        for heading, listings in groups:
+            if show_headlines and heading:
                 parts.append(
-                    f'<div style="margin:0 0 14px 0;padding:10px 12px;background:#1a1a1a;border-radius:6px;">'
-                    f'<a href="{_html_escape(l["url"])}" style="color:#d4a3bf;text-decoration:none;font-size:15px;font-weight:500;">'
-                    f'{_html_escape(l.get("title") or "(no title)")}</a><br>'
-                    f'<span style="color:#bbb;font-size:13px;">{_html_escape(l.get("company") or "")}</span><br>'
-                    f'<span style="color:#888;font-size:12px;">{where}</span>'
-                    f'</div>'
+                    f'<h2 style="font-weight:400;font-size:16px;margin:24px 0 8px 0;color:#fff;'
+                    f'border-bottom:1px solid #333;padding-bottom:6px;">'
+                    f'{_html_escape(heading)} '
+                    f'<span style="color:#888;font-size:13px;">({len(listings)})</span></h2>'
                 )
+            parts.append('<div style="display:block;">')
+            for l in listings:
+                parts.append(self._listing_card_html(l))
             parts.append('</div>')
         manual = self._manual_boards()
         if manual:
@@ -363,13 +427,29 @@ class JobDigestDispatcher:
                     f'{_html_escape(b["name"])}</a></div>'
                 )
             parts.append('</div>')
+        # RULE: ALWAYS surface the sources that returned nothing — in the EMAIL too, not
+        # just the bell — so a silently-dead board/API is visible, never hidden in a total.
+        empty = self._pretty_empty_sources(self._empty_sources([s["tracked_job"]["id"] for s in sections]))
+        if empty:
+            parts.append(
+                '<div style="margin-top:18px;padding-top:12px;border-top:1px solid #333;">'
+                f'<div style="color:#bbb;font-size:13px;margin-bottom:6px;">Returned nothing this run '
+                f'({len(empty)}) — worth a manual look:</div>'
+            )
+            for u in empty:
+                parts.append(f'<div style="margin:3px 0;color:#888;font-size:12px;">{_html_escape(u)}</div>')
+            parts.append('</div>')
         return "".join(parts)
 
     def _build_body_text(self, sections: List[Dict[str, Any]]) -> str:
         lines: List[str] = []
-        for s in sections:
-            lines.append(f"\n=== {s['tracked_job']['label']} ({len(s['listings'])} new) ===")
-            for l in s["listings"]:
+        all_listings = [l for s in sections for l in s["listings"]]
+        groups = self._group_by_keyword(all_listings, self._union_keywords(sections))
+        show_headlines = len(groups) > 1
+        for heading, listings in groups:
+            if show_headlines and heading:
+                lines.append(f"\n=== {heading} ({len(listings)}) ===")
+            for l in listings:
                 lines.append(f"• {l.get('title') or '(no title)'} — {l.get('company') or ''}")
                 lines.append(f"  {l['url']}")
         manual = self._manual_boards()
@@ -379,7 +459,7 @@ class JobDigestDispatcher:
                 lines.append(f"• {b['name']}: {b['url']}")
         # RULE: ALWAYS close with the sources that returned nothing this run, so a
         # silently-dead board/feed is visible instead of hidden in a total.
-        empty = self._empty_sources([s["tracked_job"]["id"] for s in sections])
+        empty = self._pretty_empty_sources(self._empty_sources([s["tracked_job"]["id"] for s in sections]))
         if empty:
             lines.append(f"\n=== Sources that returned NOTHING this run ({len(empty)}) ===")
             for u in empty:
