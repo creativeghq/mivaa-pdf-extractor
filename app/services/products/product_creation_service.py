@@ -1933,24 +1933,10 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
             # Aggregate all meta fields from related chunks
             meta_fields = self._aggregate_meta_fields_from_chunks(document_id, product_name)
             if meta_fields:
-                # Merge with existing metadata (deduplication logic)
                 for field_type, values in meta_fields.items():
-                    if field_type not in metadata or not metadata[field_type]:
-                        # No existing data - use aggregated values
-                        metadata[field_type] = values
-                    elif isinstance(metadata[field_type], str):
-                        # Existing data is a single string - convert to list and merge
-                        existing_values = {metadata[field_type].lower()}
-                        new_values = set(v.lower() for v in values)
-                        merged = existing_values | new_values
-                        metadata[field_type] = sorted(list(merged))
-                    elif isinstance(metadata[field_type], list):
-                        # Existing data is a list - merge and deduplicate (case-insensitive)
-                        existing_values = set(v.lower() if isinstance(v, str) else v for v in metadata[field_type])
-                        new_values = set(v.lower() for v in values)
-                        merged = existing_values | new_values
-                        metadata[field_type] = sorted(list(merged))
-                    # If existing data is dict or other type, keep it as-is (AI extraction takes priority)
+                    metadata[field_type] = self._merge_meta_field(
+                        metadata.get(field_type), values
+                    )
 
             # Build product data
             product_data = {
@@ -1995,6 +1981,57 @@ Be thorough and accurate. REJECT non-product content. Extract all available info
                 workspace_id=workspace_id,
                 index=index
             )
+
+
+    @staticmethod
+    def _merge_meta_field(existing: Any, aggregated: List[str]) -> Any:
+        """Union an existing metadata value with chunk-aggregated values, deduped case-insensitively.
+
+        **This must never raise.** Its caller catches everything and falls back to
+        `_create_product_from_chunk`, so an exception here does not surface as an error — the
+        product is still created, silently stripped of every attribute the enrichment found,
+        leaving one log line behind. A crash would be safer than what actually happens.
+
+        The previous version raised on two shapes that occur in real data:
+
+          * `colors` as a list of `{"name": ..., "hex": ...}` objects — a shape the frontend's
+            `getAvailableColors` explicitly supports — hit `set(...)` over dicts and threw
+            `unhashable type: 'dict'`.
+          * any list mixing strings with a number threw on `sorted()`, which cannot order
+            `int` against `str`.
+
+        Both became reachable when #347 phase 2.1 flattened metadata: `colors` used to sit
+        nested under `appearance`, so `metadata['colors']` was absent and the merge took the
+        "nothing here yet" branch. Flat keys mean the merge branches now actually run.
+
+        The resolution follows the intent the original code already stated for the top-level
+        dict case — *AI extraction takes priority* — and simply applies it to list ELEMENTS too:
+        a list we cannot safely fold is kept exactly as it is. Structured colour objects carry
+        more information than the keyword scanner's strings, so overwriting or stringifying
+        them would be a downgrade.
+        """
+        if not aggregated:
+            return existing
+
+        # Only fold values the keyword aggregator actually produces: plain strings.
+        new_values = {v.lower() for v in aggregated if isinstance(v, str) and v.strip()}
+        if not new_values:
+            return existing
+
+        if existing is None or existing == "" or existing == [] or existing == {}:
+            return sorted(new_values)
+
+        if isinstance(existing, str):
+            return sorted({existing.lower()} | new_values)
+
+        if isinstance(existing, list):
+            if not all(isinstance(v, str) for v in existing):
+                # Structured entries (e.g. {name, hex}) — richer than what we would merge in.
+                return existing
+            return sorted({v.lower() for v in existing} | new_values)
+
+        # dict or anything else: the extraction's own structure wins, unchanged.
+        return existing
 
     def _deduplicate_product_chunks(self, product_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
