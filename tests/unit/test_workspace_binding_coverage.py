@@ -53,6 +53,12 @@ ALLOWED = {
     # caller. Adding Depends(get_current_user) here 401s the cron path, which sends
     # no bearer at all.
     ("app/api/rag_routes.py", "kb_docs_rechunk"),
+    # Same shape: x-cron-secret gated (checked inline, 401 on mismatch), internal-only
+    # (called by the seo-research edge function), not user-reachable. There is no
+    # tracked-subject row to read an owner off, so the body workspace_id is the trusted
+    # cost-attribution SCOPE the edge function passes for its own session — binding it to
+    # a JWT is impossible here because the caller sends no bearer.
+    ("app/api/mention_monitoring_routes.py", "opportunities_stateless"),
 }
 
 
