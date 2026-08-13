@@ -193,21 +193,49 @@ def build_rows() -> list[dict[str, Any]]:
     return rows
 
 
+def build_category_rows() -> list[dict[str, Any]]:
+    """The CATEGORY-level half of the Python registry: prose tips and the skip list.
+
+    Neither is derivable from `material_metadata_fields`, which holds field-level facts only.
+    `skip_fields` in particular is curation, not an inversion — see the migration note on
+    `material_categories.skip_fields`.
+    """
+    registry = _literal(ROOT / "app/services/metadata/category_field_registry.py",
+                        "CATEGORY_FIELD_REGISTRY")
+    return [
+        {
+            "category_key": key,
+            # The Python key is `extraction_hints`; the COLUMN is `extraction_tips`, because
+            # material_metadata_fields.extraction_hints already exists and is field-level.
+            "extraction_tips": config.get("extraction_hints") or None,
+            "skip_fields": sorted(set(config.get("skip_fields") or [])) or None,
+            "controlled_vocab": sorted(set(config.get("controlled_vocab") or [])) or None,
+        }
+        for key, config in sorted(registry.items())
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="print a summary and write no rows")
     args = parser.parse_args()
 
     rows = build_rows()
+    cat_rows = build_category_rows()
     identity = [r["field_name"] for r in rows if r["role"] == "identity"]
     print(f"fields            : {len(rows)}")
     print(f"  role=identity   : {len(identity)}")
     print(f"  canonicalize    : {sum(1 for r in rows if r['canonicalize'])}")
     print(f"  dest=column     : {sum(1 for r in rows if r['destination'] == 'column')}")
     print(f"  identity fields : {', '.join(sorted(identity))}")
+    print(f"categories        : {len(cat_rows)}")
+    print(f"  with tips       : {sum(1 for c in cat_rows if c['extraction_tips'])}")
+    print(f"  with skip_fields: {sum(1 for c in cat_rows if c['skip_fields'])}")
+    print(f"  with vocab      : {sum(1 for c in cat_rows if c['controlled_vocab'])}")
 
     if args.dry_run:
-        (ROOT / "registry_seed.json").write_text(json.dumps(rows, indent=2), encoding="utf-8")
+        (ROOT / "registry_seed.json").write_text(
+            json.dumps({"fields": rows, "categories": cat_rows}, indent=2), encoding="utf-8")
         print("\n--dry-run: wrote registry_seed.json, no rows written")
         return 0
 
@@ -265,7 +293,25 @@ def main() -> int:
         client.table("material_metadata_fields").update(patch).eq(
             "field_name", row["field_name"]).execute()
 
-    print(f"\ndone: {len(inserts)} inserted, {len(updates)} updated")
+    # Category-level guidance. UPDATE only — `material_categories` rows are the category
+    # vocabulary itself and this script has no business creating one. A key the table does
+    # not have is REPORTED, not invented.
+    known = {r["category_key"] for r in (client.table("material_categories")
+                                         .select("category_key").execute().data or [])}
+    missing = [c["category_key"] for c in cat_rows if c["category_key"] not in known]
+    for cat in cat_rows:
+        if cat["category_key"] in known:
+            client.table("material_categories").update(
+                {"extraction_tips": cat["extraction_tips"],
+                 "skip_fields": cat["skip_fields"],
+                 "controlled_vocab": cat["controlled_vocab"]}
+            ).eq("category_key", cat["category_key"]).execute()
+
+    print(f"\ndone: {len(inserts)} inserted, {len(updates)} updated, "
+          f"{len(cat_rows) - len(missing)} categories")
+    if missing:
+        print(f"WARNING: Python registry category keys with no material_categories row: "
+              f"{', '.join(missing)}", file=sys.stderr)
     return 0
 
 
