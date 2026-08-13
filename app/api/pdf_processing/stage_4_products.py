@@ -1333,13 +1333,30 @@ async def propagate_common_fields_to_products(
                 best_factory_score = score
                 best_factory = fobj
 
-        # Nested fields to propagate: (parent_key, child_key)
-        # Tiles/stones from the same catalog series share these material-level properties.
-        nested_fields = [
-            ('material_properties', 'thickness'),
-            ('material_properties', 'body_type'),
-            ('material_properties', 'composition'),
-        ]
+        # Material-level properties tiles/stones from the same catalog series share.
+        #
+        # These are FLAT keys since #347 phase 2.1 — the extractor's prompt sections
+        # (`material_properties`, `dimensions`, ...) are a prompt device, not a storage schema,
+        # and all three enrichment paths now agree on the flat shape. `legacy_nested_sources`
+        # is the read-only migration bridge: rows written before that change still carry
+        # `{"material_properties": {"thickness": "9mm"}}`, and this stage must be able to find
+        # a value there so a half-migrated document does not silently lose the propagation.
+        # Nothing WRITES nested any more.
+        material_fields = ['thickness', 'body_type', 'composition']
+        legacy_nested_sources = ['material_properties']
+
+        def _read_material_field(metadata: Dict[str, Any], field: str) -> Any:
+            """Flat first, then the pre-2.1 nested location. Returns None when absent."""
+            value = metadata.get(field)
+            if value and not _is_empty_value(value):
+                return value
+            for parent_key in legacy_nested_sources:
+                parent = metadata.get(parent_key)
+                if isinstance(parent, dict):
+                    value = parent.get(field)
+                    if value and not _is_empty_value(value):
+                        return value
+            return None
 
         # Find the best value for each common field (first non-empty value)
         common_values = {}
@@ -1363,24 +1380,22 @@ async def propagate_common_fields_to_products(
                     common_values[field] = value
                     break  # Use first valid value found
 
-        # Find the best nested field values (first non-empty across all products)
-        nested_common_values = {}
-        for parent_key, child_key in nested_fields:
+        # Material fields join the flat common set; the value may still be found nested on a
+        # pre-2.1 row, but it is written back flat.
+        for field in material_fields:
+            if field in common_values:
+                continue
             for product in products:
-                metadata = product.get('metadata', {}) or {}
-                parent = metadata.get(parent_key) or {}
-                if not isinstance(parent, dict):
-                    continue
-                value = parent.get(child_key)
-                if value and not _is_empty_value(value):
-                    nested_common_values[(parent_key, child_key)] = value
+                value = _read_material_field(product.get('metadata', {}) or {}, field)
+                if value is not None:
+                    common_values[field] = value
                     break
 
-        if not common_values and not nested_common_values:
+        if not common_values:
             logger.info("   ℹ️ No common values to propagate")
             return stats
 
-        all_found = list(common_values.keys()) + [f"{pk}.{ck}" for pk, ck in nested_common_values.keys()]
+        all_found = list(common_values.keys())
         logger.info(f"   📦 Found common values: {all_found}")
 
         # Update products that are missing these common fields (one DB write per product)
@@ -1388,20 +1403,16 @@ async def propagate_common_fields_to_products(
             product_id = product['id']
             metadata = product.get('metadata', {}) or {}
             updates_needed = {}
-            nested_updates = {}
 
             for field, common_value in common_values.items():
-                current_value = metadata.get(field)
+                # A material field already present in the legacy nested spot counts as present —
+                # otherwise every pre-2.1 product gets rewritten on every run.
+                current_value = (
+                    _read_material_field(metadata, field) if field in material_fields
+                    else metadata.get(field)
+                )
                 if _is_empty_value(current_value) and not _is_empty_value(common_value):
                     updates_needed[field] = common_value
-
-            for (parent_key, child_key), common_value in nested_common_values.items():
-                parent = metadata.get(parent_key) or {}
-                if not isinstance(parent, dict):
-                    continue
-                current_value = parent.get(child_key)
-                if _is_empty_value(current_value) and not _is_empty_value(common_value):
-                    nested_updates[(parent_key, child_key)] = common_value
 
             # Propagate nested factory object if product is missing/incomplete
             if best_factory:
@@ -1425,14 +1436,8 @@ async def propagate_common_fields_to_products(
                     if merged_factory.get('factory_group_name'):
                         updates_needed['factory_group_name'] = merged_factory['factory_group_name']
 
-            if updates_needed or nested_updates:
+            if updates_needed:
                 updated_metadata = {**metadata, **updates_needed}
-
-                # Apply one-level-deep nested updates
-                for (parent_key, child_key), value in nested_updates.items():
-                    parent = dict(updated_metadata.get(parent_key) or {})
-                    parent[child_key] = value
-                    updated_metadata[parent_key] = parent
 
                 supabase.client.table('products') \
                     .update({'metadata': updated_metadata}) \
@@ -1440,7 +1445,7 @@ async def propagate_common_fields_to_products(
                     .execute()
 
                 stats['products_updated'] += 1
-                propagated = list(updates_needed.keys()) + [f"{pk}.{ck}" for pk, ck in nested_updates.keys()]
+                propagated = list(updates_needed.keys())
                 stats['fields_propagated'].extend(propagated)
                 logger.info(f"   ✅ Updated product {product['name']}: {propagated}")
 

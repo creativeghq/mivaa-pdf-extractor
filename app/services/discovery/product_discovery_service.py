@@ -48,6 +48,7 @@ from datetime import datetime
 from app.schemas.jobs import ProcessingStage
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
+from app.services.metadata.metadata_shape import flatten_extracted_metadata
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.utilities.prompt_templates import get_prompt_template_from_db
 # PageConverter removed - using simple PDF page numbers instead
@@ -1859,10 +1860,14 @@ class ProductDiscoveryService:
                     # unknown_attributes are preserved under their own key so the
                     # frontend "Additional Properties" card can render them.
                     unknown_attrs = extracted.get("unknown_attributes", extracted.get("unknown", {}))
+                    # ONE shape (#347 phase 2.1). This path used to spread `discovered` directly,
+                    # which left sections NESTED (`{"material_properties": {"finish": "matt"}}`)
+                    # while the other two paths produced flat keys. The facet collector reads
+                    # top-level keys only, so `finish` — whitelisted and canonicalizable — never
+                    # became a filterable attribute for anything enriched down this branch.
                     enriched_metadata = {
-                        **extracted.get("discovered", {}),  # Lowest priority
-                        **extracted.get("critical", {}),    # Medium priority
-                        **product.metadata,                 # Highest priority (from discovery)
+                        **flatten_extracted_metadata(extracted),  # discovered < critical
+                        **product.metadata,                       # Highest priority (from discovery)
                         "_extraction_metadata": extracted.get("metadata", {}),
                     }
                     if unknown_attrs and isinstance(unknown_attrs, dict) and len(unknown_attrs) > 0:
@@ -2056,11 +2061,9 @@ class ProductDiscoveryService:
                     except Exception as e:
                         self.logger.warning(f"Metadata validation failed, using unvalidated: {e}")
                         # Fallback: flatten without validation (include unknown_attributes)
-                        validated_metadata = {}
-                        for category, fields in extracted.get("discovered", {}).items():
-                            if isinstance(fields, dict):
-                                validated_metadata.update(fields)
-                        validated_metadata.update(extracted.get("critical", {}))
+                        # Same flattener as the other paths (#347 phase 2.1). The hand-rolled
+                        # version here also DROPPED any non-dict section without a word.
+                        validated_metadata = flatten_extracted_metadata(extracted)
                         # Carry unknown_attributes into the fallback path too
                         fallback_unknown = extracted.get("unknown_attributes", extracted.get("unknown", {}))
                         if fallback_unknown and isinstance(fallback_unknown, dict):

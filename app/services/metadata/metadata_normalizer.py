@@ -20,6 +20,11 @@ from app.utils.text_similarity import calculate_string_similarity
 logger = logging.getLogger(__name__)
 
 
+# `flatten_extracted_metadata` lives in `metadata_shape.py` — a leaf module with no app
+# imports, so the guard test can load it directly without dragging in the DB client.
+from app.services.metadata.metadata_shape import flatten_extracted_metadata  # noqa: E402,F401
+
+
 # ============================================================================
 # STANDARDIZED METADATA SCHEMA
 # ============================================================================
