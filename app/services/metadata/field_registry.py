@@ -74,9 +74,26 @@ class FieldSpec:
     dropdown_options: Sequence[str] = ()
     #: Per-field prose telling the model where to look. Distinct from `section`.
     extraction_hint: str = ""
+    #: {category_key: description}. A field can mean different things in different categories.
+    description_by_category: Optional[Dict[str, str]] = None
 
     def applies_to(self, category_key: str) -> bool:
         return self.categories is None or category_key in self.categories
+
+    def describe(self, category_key: str) -> str:
+        """The description to show for THIS category.
+
+        `body_material` is "vitreous china, fine fireclay, acrylic" under sanitary and
+        "metal, glass, fabric, wood, concrete, rattan" under lighting. Serving one merged
+        description to both does not just lose detail — it steers the model toward values that
+        are wrong for the category, and every one of them is a plausible string no validator
+        can reject.
+        """
+        if self.description_by_category:
+            specific = self.description_by_category.get(category_key)
+            if specific:
+                return specific
+        return self.description
 
 
 @dataclass(frozen=True)
@@ -130,7 +147,7 @@ class FieldRegistry:
             client.table("material_metadata_fields")
             .select("field_name, display_name, description, section, applies_to_categories, "
                     "role, destination, canonicalize, field_type, dropdown_options, "
-                    "extraction_hints")
+                    "extraction_hints, description_by_category")
             .eq("status", "active")
             .execute()
         ).data or []
@@ -168,6 +185,7 @@ class FieldRegistry:
                 field_type=r.get("field_type") or "text",
                 dropdown_options=tuple(r.get("dropdown_options") or ()),
                 extraction_hint=r.get("extraction_hints") or "",
+                description_by_category=r.get("description_by_category") or None,
             )
             for r in field_rows
         }
@@ -299,12 +317,14 @@ class FieldRegistry:
             "(Extract these if present — they are the most important for this category)",
             "",
         ]
+        key = self._resolve_category(category_key)
         current = None
         for spec in specs:
             if spec.section != current:
                 current = spec.section
                 lines.append(f"**{current.replace('_', ' ').title()}:**")
-            line = f"- {spec.name}: {spec.description}" if spec.description else f"- {spec.name}"
+            description = spec.describe(key)
+            line = f"- {spec.name}: {description}" if description else f"- {spec.name}"
             if spec.extraction_hint:
                 line += f" ({spec.extraction_hint})"
             if spec.field_type == "dropdown" and spec.dropdown_options:
