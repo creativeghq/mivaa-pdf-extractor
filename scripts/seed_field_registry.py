@@ -91,6 +91,32 @@ COLUMN_BACKED: set[str] = {
 }
 
 
+#: Names that are a yes/no fact about the product.
+_BOOLEAN_NAMES = {"rectified", "dimmable", "waterproof", "outdoor_rated", "fire_rated",
+                  "frost_resistant", "slip_resistant", "recyclable", "made_to_order",
+                  "discontinued", "requires_sealing", "is_variable", "led_included"}
+
+_NUMERIC_SUFFIX = re.compile(
+    r"_(mm|cm|m|m2|m3|kg|g|w|k|lm|lx|v|a|hz|pct|percent|years|months|days|hours|"
+    r"count|qty|min|max|kwh|db|nm|deg|ml|l)$")
+
+
+def _field_type_for(row: dict[str, Any]) -> str:
+    """Infer the EDITOR type for a brand-new field.
+
+    Deliberately never returns `dropdown`. 51 of the pre-existing rows are dropdowns whose
+    `dropdown_options` are curated lists this script has no way to reconstruct, and a dropdown
+    with an empty option list is a field editor that cannot be used at all. Text is wrong-but-
+    usable; an optionless dropdown is broken. Promoting a field to a dropdown is a human act.
+    """
+    name, desc = row["field_name"], (row["description"] or "").lower()
+    if name in _BOOLEAN_NAMES or name.startswith(("is_", "has_")) or "true/false" in desc:
+        return "boolean"
+    if _NUMERIC_SUFFIX.search(name) or name.startswith("number_of_"):
+        return "number"
+    return "text"
+
+
 def _literal(path: Path, name: str) -> Any:
     """Read a module-level assignment without importing the module (no app deps, no DB client)."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -140,6 +166,9 @@ def build_rows() -> list[dict[str, Any]]:
             "destination": "column" if key in COLUMN_BACKED else "metadata",
             "extraction_hints": data["section"],
             "status": "active",
+            "classified_by": "python_registry_seed",
+            "classified_reason": ("Derived from CATEGORY_FIELD_REGISTRY + CANONICALIZABLE_FACETS "
+                                  "during #347 phase 3.1."),
         }
         for key, data in sorted(merged.items())
     ]
@@ -158,6 +187,8 @@ def build_rows() -> list[dict[str, Any]]:
             "destination": "metadata",
             "extraction_hints": "appearance",
             "status": "active",
+            "classified_by": "python_registry_seed",
+            "classified_reason": "Canonicalizable facet with no extraction prompt (#347 phase 3.1).",
         })
     return rows
 
@@ -189,17 +220,52 @@ def main() -> int:
     from supabase import create_client  # imported late so --dry-run needs no deps
 
     client = create_client(url, key)
-    written = 0
-    for start in range(0, len(rows), 100):
-        batch = rows[start:start + 100]
-        # on_conflict on field_name: re-running must update, never duplicate. The unique index
-        # added in the same phase is what makes that safe.
-        result = client.table("material_metadata_fields").upsert(
-            batch, on_conflict="field_name",
-        ).execute()
-        written += len(result.data or [])
-        print(f"  upserted {written}/{len(rows)}")
-    print(f"\ndone: {written} rows")
+
+    # Two passes, NOT one blanket upsert.
+    #
+    # A plain upsert sends every key in the dict, so it would overwrite `field_type` and
+    # `dropdown_options` on the 120 rows that already existed — and 52 of those are authored
+    # dropdowns whose option lists are real curation this script cannot reconstruct. The Python
+    # registry knows what a field MEANS; the table knows how it is EDITED. Neither should
+    # clobber the other.
+    existing = {
+        r["field_name"]: r
+        for r in (client.table("material_metadata_fields")
+                  .select("field_name, applies_to_categories, description")
+                  .execute().data or [])
+    }
+
+    inserts = [{**r, "field_type": _field_type_for(r)} for r in rows if r["field_name"] not in existing]
+    updates = [r for r in rows if r["field_name"] in existing]
+
+    for start in range(0, len(inserts), 100):
+        batch = inserts[start:start + 100]
+        client.table("material_metadata_fields").insert(batch).execute()
+        print(f"  inserted {min(start + 100, len(inserts))}/{len(inserts)}")
+
+    for row in updates:
+        prior = existing[row["field_name"]]
+        patch: dict[str, Any] = {
+            "role": row["role"],
+            "canonicalize": row["canonicalize"],
+            "destination": row["destination"],
+            "classified_by": "python_registry_seed",
+            "classified_reason": row["classified_reason"],
+        }
+        # Fill a missing description; never replace one somebody wrote.
+        if not (prior.get("description") or "").strip():
+            patch["description"] = row["description"]
+        # Union the scopes. A field the table says is global must not be narrowed by a registry
+        # that only listed it under two categories.
+        prior_cats, new_cats = prior.get("applies_to_categories"), row["applies_to_categories"]
+        patch["applies_to_categories"] = (
+            None if prior_cats is None or new_cats is None
+            else sorted(set(prior_cats) | set(new_cats))
+        )
+        client.table("material_metadata_fields").update(patch).eq(
+            "field_name", row["field_name"]).execute()
+
+    print(f"\ndone: {len(inserts)} inserted, {len(updates)} updated")
     return 0
 
 
