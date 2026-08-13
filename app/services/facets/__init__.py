@@ -11,8 +11,8 @@ from app.services.facets.facet_translator import (
     translate_facet_values,
 )
 from app.services.facets.facet_whitelist import (
-    CANONICALIZABLE_FACETS,
     NON_CANONICAL_FACETS,
+    capture_permissively,
     is_canonicalizable,
 )
 
@@ -25,7 +25,7 @@ __all__ = [
     "resolve_query_term",
     "is_ascii_english",
     "translate_facet_values",
-    "CANONICALIZABLE_FACETS",
     "NON_CANONICAL_FACETS",
+    "capture_permissively",
     "is_canonicalizable",
 ]

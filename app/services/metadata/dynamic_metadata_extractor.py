@@ -26,11 +26,7 @@ import os
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.metadata.metadata_normalizer import normalize_metadata, get_normalization_report
-from app.services.metadata.category_field_registry import (
-    get_priority_fields_for_prompt,
-    get_extraction_hints_for_prompt,
-    get_skip_fields,
-)
+from app.services.metadata.field_registry import field_registry
 from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -485,7 +481,11 @@ class DynamicMetadataExtractor:
             # This preserves packaging/compliance/care sections while reducing token usage
             smart_text = self._extract_relevant_sections(pdf_text, max_chars=100000)
 
-            # Step 1: Load prompt from database - NO FALLBACK
+            # Step 1: Load prompt AND field registry from the database — NO FALLBACK for either.
+            # The field list, category tips, skip list and subtype vocabulary all come from
+            # material_metadata_fields / material_categories (#347 phase 3.2). There is no
+            # hardcoded copy left to fall back to; the hardcoded copy WAS the bug.
+            await field_registry.ensure_loaded()
             db_prompt_template = await self._load_prompt_from_database(stage="entity_creation", category="products")
 
             if db_prompt_template:
@@ -508,18 +508,9 @@ class DynamicMetadataExtractor:
                 category_fields_context = ""
                 if category_hint:
                     cat_key = category_hint.lower().strip()
-                    priority_text = get_priority_fields_for_prompt(cat_key)
-                    hints_text = get_extraction_hints_for_prompt(cat_key)
-                    skip_list = get_skip_fields(cat_key)
-
-                    category_fields_context = f"\n\n{priority_text}"
-                    if hints_text:
-                        category_fields_context += f"\n\n{hints_text}"
-                    if skip_list:
-                        category_fields_context += (
-                            f"\n\nFIELDS TO SKIP (not relevant for {category_hint} products — "
-                            f"do NOT extract or hallucinate these): {', '.join(skip_list)}"
-                        )
+                    # Priority fields, subtype vocabulary, category tips and the skip list all
+                    # come from the DB registry now — one block, one source (#347 phase 3.2).
+                    category_fields_context = "\n\n" + field_registry.category_prompt_block(cat_key)
                     category_fields_context += (
                         "\n\nIMPORTANT: Beyond the priority fields above, also extract ANY other "
                         "attributes you discover in the document. Capture everything — the priority "
@@ -527,7 +518,12 @@ class DynamicMetadataExtractor:
                         "just because it's not on the list. Place unexpected attributes in the "
                         "'unknown_attributes' section with a descriptive key name."
                     )
-                    self.logger.info(f"📋 Injected category-specific fields for '{cat_key}' ({len(skip_list)} skip-fields)")
+                    self.logger.info(
+                        "📋 Injected DB field registry for '%s' (%d fields, %d skip-fields)",
+                        cat_key,
+                        len(field_registry.fields_for_category(cat_key)),
+                        len(field_registry.skip_fields(cat_key)),
+                    )
 
                 prompt = (
                     db_prompt_template

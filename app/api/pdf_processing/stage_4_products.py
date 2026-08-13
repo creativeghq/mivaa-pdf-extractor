@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
 from app.services.facets import canonicalize_product_attributes
+from app.services.metadata.field_registry import field_registry
 
 # ── Category → default unit mapping (mirrors material_categories.default_unit) ─
 #
@@ -211,45 +212,19 @@ async def _trigger_factory_enrichment(
         logger.warning(f"   ⚠️ Factory enrichment trigger failed (non-blocking): {exc}")
 
 # ── Controlled vocabulary ────────────────────────────────────────────────────
-# Fine-grained material_category values that the AI classifier can assign.
-# These map to the 10 upload categories via resolveUploadCategory() on the frontend
-# and get_category_config() on the backend.
-MATERIAL_CATEGORY_VOCAB = {
-    # Tiles
-    "floor_tile", "wall_tile", "bathroom_tile", "shower_tile",
-    "porcelain_tile", "ceramic_tile",
-    # Wood / Flooring
-    "wood_flooring", "laminate", "vinyl_flooring", "carpet",
-    "hardwood", "engineered_wood", "parquet",
-    # Paint / Wall Decor
-    "wall_paint", "wallpaper", "decorative_plaster", "wall_panel", "wall_coating",
-    # Furniture
-    "sofa", "armchair", "dining_chair", "accent_chair",
-    "dining_table", "coffee_table", "side_table",
-    "cabinet", "shelving", "sideboard", "bed", "desk",
-    "outdoor_furniture",
-    # Decor
-    "rug", "curtain", "cushion", "vase", "mirror",
-    "wall_art", "sculpture", "candle_holder", "planter",
-    # General Materials
-    "countertop", "kitchen_worktop", "stone_slab", "metal_panel",
-    "glass_panel", "concrete", "terrazzo", "quartz",
-    # Sanitary
-    "toilet", "basin", "bathtub", "shower_tray", "bidet", "urinal",
-    "vanity_unit", "shower_enclosure", "tap", "faucet", "mixer", "shower_head",
-    # Kitchen
-    "kitchen_cabinet", "kitchen_sink", "kitchen_tap", "kitchen_hood",
-    "kitchen_appliance", "kitchen_handle", "kitchen_organiser",
-    # Heating
-    "radiator", "towel_rail", "underfloor_heating",
-    "heat_pump", "boiler", "fireplace", "convector",
-    # Lighting
-    "lighting", "pendant_light", "ceiling_light", "wall_light",
-    "floor_lamp", "table_lamp", "spotlight", "track_light",
-    "recessed_light", "outdoor_light", "chandelier",
-    # Legacy / generic
-    "door", "window", "fabric_swatch", "leather_swatch",
-}
+# The fine-grained material_category vocabulary lives in
+# `material_categories.controlled_vocab` and is read through `field_registry` (#347 phase 3.2).
+#
+# It used to be a hardcoded set HERE, plus a second hardcoded copy inside _classify_product's
+# prompt string, plus a third in CATEGORY_FIELD_REGISTRY. No two agreed, and the disagreement
+# was load-bearing in both directions: `cladding`/`composite` were offered to the extractor and
+# then rejected by the validator below (re-classifying a correctly-classified product on every
+# run), while `urinal`, `track_light`, `outdoor_light`, `candle_holder`, `wall_coating`,
+# `kitchen_handle` and `kitchen_organiser` were accepted by the validator but offered by no
+# prompt at all, so nothing could ever produce them.
+#
+# zone_intent stays hardcoded: it is a 4-value PIPELINE concept (how the material occupies
+# space), not a product taxonomy an admin curates.
 ZONE_INTENT_VOCAB = {"surface", "full_object", "upholstery", "sub_element"}
 
 
@@ -276,6 +251,13 @@ async def _classify_product(
 
     import json as _json
 
+    # Offer EXACTLY the values the validator below accepts — same source, no second copy.
+    await field_registry.ensure_loaded()
+    _vocab_lines = "\n".join(
+        f"  {group}: {' | '.join(values)}"
+        for group, values in field_registry.controlled_vocab_by_category()
+    )
+
     prompt = f"""Classify this interior material/furniture product into the controlled vocabularies below.
 
 Product name: {name}
@@ -285,16 +267,7 @@ Current category (may be wrong or missing): {existing_category or 'N/A'}
 CONTROLLED VOCABULARY — respond ONLY with a JSON object, no explanation:
 
 material_category (pick exactly one):
-  TILES: floor_tile | wall_tile | bathroom_tile | shower_tile | porcelain_tile | ceramic_tile
-  WOOD: wood_flooring | laminate | vinyl_flooring | carpet | hardwood | engineered_wood | parquet
-  PAINT/WALL: wall_paint | wallpaper | decorative_plaster | wall_panel
-  FURNITURE: sofa | armchair | dining_chair | accent_chair | dining_table | coffee_table | side_table | cabinet | shelving | sideboard | bed | desk | outdoor_furniture
-  DECOR: rug | curtain | cushion | vase | mirror | wall_art | sculpture | planter
-  GENERAL: countertop | kitchen_worktop | stone_slab | metal_panel | glass_panel | concrete | terrazzo | quartz
-  SANITARY: toilet | basin | bathtub | shower_tray | bidet | vanity_unit | shower_enclosure | tap | faucet | mixer | shower_head
-  KITCHEN: kitchen_cabinet | kitchen_sink | kitchen_tap | kitchen_hood | kitchen_appliance
-  HEATING: radiator | towel_rail | underfloor_heating | heat_pump | boiler | fireplace | convector
-  LIGHTING: lighting | pendant_light | ceiling_light | wall_light | floor_lamp | table_lamp | spotlight | chandelier | recessed_light
+{_vocab_lines}
 
 zone_intent (pick exactly one):
   surface     — floor/wall/ceiling tiles, paint, wallpaper, countertops, cladding
@@ -324,7 +297,7 @@ Respond with exactly: {{"material_category": "...", "zone_intent": "..."}}"""
                 raw = raw[4:].strip()
         data = _json.loads(raw)
         result = {}
-        if data.get("material_category") in MATERIAL_CATEGORY_VOCAB:
+        if data.get("material_category") in field_registry.all_controlled_vocab():
             result["material_category"] = data["material_category"]
         if data.get("zone_intent") in ZONE_INTENT_VOCAB:
             result["zone_intent"] = data["zone_intent"]
@@ -520,7 +493,8 @@ async def create_single_product(
         raw_intent = raw_intent.get("value")
         metadata["zone_intent"] = raw_intent
 
-    needs_category = not raw_cat or raw_cat not in MATERIAL_CATEGORY_VOCAB
+    await field_registry.ensure_loaded()
+    needs_category = not raw_cat or raw_cat not in field_registry.all_controlled_vocab()
     needs_intent = not raw_intent or raw_intent not in ZONE_INTENT_VOCAB
     if needs_category or needs_intent:
         try:
@@ -1626,8 +1600,10 @@ import re as _re
 
 # Controlled vocabulary map for vision_analysis material_type → products.material_category
 # Maps AI-freeform material_type strings (from vision analysis) to
-# controlled-vocab values that exist in MATERIAL_CATEGORY_VOCAB.
-# Every value here MUST be present in the vocab set above.
+# controlled-vocab values that exist in `material_categories.controlled_vocab`.
+# Every value here MUST be present in that vocabulary — _normalize_material_category enforces
+# it at runtime rather than trusting the comment, because the vocabulary is now admin-editable
+# and a value removed there would otherwise keep being written by this map with nothing failing.
 _MATERIAL_TYPE_TO_CATEGORY = {
     # Tiles
     "ceramic tile": "ceramic_tile",
@@ -1690,17 +1666,33 @@ _MATERIAL_TYPE_TO_CATEGORY = {
 
 
 def _normalize_material_category(raw: str) -> Optional[str]:
-    """Map an AI-freeform material_type to our controlled vocab."""
+    """Map an AI-freeform material_type to our controlled vocab.
+
+    The result is checked against the live vocabulary before being returned. An admin who
+    removes a value from `material_categories.controlled_vocab` would otherwise keep getting
+    it written here — accepted by no validator, offered by no prompt, and reported by nothing.
+    """
     if not raw or not isinstance(raw, str):
         return None
     key = raw.strip().lower()
-    if key in _MATERIAL_TYPE_TO_CATEGORY:
-        return _MATERIAL_TYPE_TO_CATEGORY[key]
-    # Partial matches
-    for phrase, vocab in _MATERIAL_TYPE_TO_CATEGORY.items():
-        if phrase in key:
-            return vocab
-    return None
+
+    mapped = _MATERIAL_TYPE_TO_CATEGORY.get(key)
+    if mapped is None:
+        for phrase, vocab in _MATERIAL_TYPE_TO_CATEGORY.items():
+            if phrase in key:
+                mapped = vocab
+                break
+    if mapped is None:
+        return None
+
+    if field_registry.is_loaded and mapped not in field_registry.all_controlled_vocab():
+        logger.error(
+            "_MATERIAL_TYPE_TO_CATEGORY maps '%s' to '%s', which is no longer in "
+            "material_categories.controlled_vocab — dropping. Fix the map or restore the value.",
+            key, mapped,
+        )
+        return None
+    return mapped
 
 
 def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:

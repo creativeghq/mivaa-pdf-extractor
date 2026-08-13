@@ -40,7 +40,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from app.services.facets.facet_translator import is_ascii_english, translate_facet_values
-from app.services.facets.facet_whitelist import is_canonicalizable
+from app.services.facets.facet_whitelist import capture_permissively, is_canonicalizable
+from app.services.metadata.field_registry import field_registry
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,10 @@ class FacetCanonicalizer:
         product_id: Optional[UUID] = None,
         workspace_id: Optional[str] = None,
     ) -> CanonicalizedAttributes:
+        # The allowlist lives in the DB (#347 phase 3.2) and _collect_pending reads it
+        # synchronously, so it has to be in memory before we get there.
+        await field_registry.ensure_loaded()
+
         # ── 1. Collect canonicalizable (facet, raw, norm) triples ────────────
         pending = self._collect_pending(raw_metadata)
         if not pending:
@@ -496,9 +501,28 @@ def collect_raw_attributes(raw_metadata: Dict[str, Any]) -> Dict[str, List[str]]
     permanently unfacetable without a full re-ingest. Mirrors
     FacetCanonicalizer._collect_pending's whitelist rules.
     """
+    # Exactly ONE of these rules applies, never both.
+    #
+    # Loaded: the registry is authoritative. Layering the structural denylist on top of it would
+    # let a hardcoded list silently veto an admin who turned `canonicalize` on for one of its keys.
+    #
+    # Not loaded: this function is very often called from the `except` block of
+    # canonicalize_product_attributes — i.e. the registry load is exactly what failed. Raising
+    # here would replace a degraded-but-complete result with a crash AND lose the lossless raw
+    # map, the one thing this function exists to protect. So it over-captures instead.
+    if field_registry.is_loaded:
+        def keep(k: str, v: Any) -> bool:
+            return v is not None and is_canonicalizable(k)
+    else:
+        logger.warning(
+            "Field registry not loaded — collect_raw_attributes is over-capturing into "
+            "attributes_raw. A spurious key is recoverable; a missing one is not."
+        )
+        keep = capture_permissively
+
     raw_map: Dict[str, List[str]] = {}
     for key, value in raw_metadata.items():
-        if not is_canonicalizable(key) or value is None:
+        if not keep(key, value):
             continue
         raw_values = value if isinstance(value, list) else [value]
         for rv in raw_values:

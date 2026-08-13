@@ -68,6 +68,42 @@ def test_sections_are_flattened_away():
     assert "appearance" not in out
 
 
+def _load_whitelist_with_registry(canonicalizable: set):
+    """Load `facet_whitelist` by path with a STUB field registry injected.
+
+    The allowlist moved to `material_metadata_fields.canonicalize` in #347 phase 3.2, so
+    `facet_whitelist` is no longer a leaf — it imports the registry, which builds a Supabase
+    client. Injecting the stub keeps this test DB-free and sub-second while still running the
+    real delegation code.
+    """
+    import sys
+    import types
+
+    stub = types.ModuleType("app.services.metadata.field_registry")
+
+    class _StubRegistry:
+        is_loaded = True
+
+        @staticmethod
+        def is_canonicalizable(key: str) -> bool:
+            return bool(key) and not key.startswith("_") and key in canonicalizable
+
+    stub.field_registry = _StubRegistry()
+    # The parent packages must exist as modules for the `from app.services.metadata...` import
+    # inside facet_whitelist to resolve against our stub rather than the real tree.
+    for name in ("app", "app.services", "app.services.metadata"):
+        sys.modules.setdefault(name, types.ModuleType(name))
+    saved = sys.modules.get("app.services.metadata.field_registry")
+    sys.modules["app.services.metadata.field_registry"] = stub
+    try:
+        return _load_leaf("app/services/facets/facet_whitelist.py", "facet_whitelist_probe")
+    finally:
+        if saved is None:
+            sys.modules.pop("app.services.metadata.field_registry", None)
+        else:
+            sys.modules["app.services.metadata.field_registry"] = saved
+
+
 def test_whitelisted_facets_land_top_level_where_the_collector_looks():
     """
     The specific failure: a canonicalizable facet nested one level deep is invisible.
@@ -75,11 +111,9 @@ def test_whitelisted_facets_land_top_level_where_the_collector_looks():
     `collect_raw_attributes` / `_collect_pending` decide what becomes a filterable attribute by
     walking TOP-LEVEL keys and asking `is_canonicalizable(key)`. Under the nested shape the only
     top-level keys are SECTION names, and no section name is a facet — so the whole product
-    canonicalises to nothing. Checked against the real whitelist rather than a restatement of it.
+    canonicalises to nothing.
     """
-    is_canonicalizable = _load_leaf(
-        "app/services/facets/facet_whitelist.py", "facet_whitelist_probe"
-    ).is_canonicalizable
+    is_canonicalizable = _load_whitelist_with_registry({"finish"}).is_canonicalizable
 
     extracted = {
         "discovered": {"material_properties": {"finish": "Matt Black"}},
@@ -98,6 +132,37 @@ def test_whitelisted_facets_land_top_level_where_the_collector_looks():
     flat = flatten_extracted_metadata(extracted)
     assert is_canonicalizable("finish")
     assert [k for k in flat if is_canonicalizable(k)] == ["finish"]
+
+
+def test_the_allowlist_has_no_hardcoded_copy():
+    """`facet_whitelist` must DELEGATE, never carry its own set of canonicalizable keys.
+
+    It used to hold `CANONICALIZABLE_FACETS`, one of six copies of "what fields exist", and 16
+    of its 24 keys were never requested by any extraction prompt. Phase 3.2 made
+    `material_metadata_fields.canonicalize` the single source. If a hardcoded allowlist
+    reappears here, `is_canonicalizable` starts answering from code again and admin edits stop
+    taking effect — silently, because a stale allowlist still returns plausible answers.
+    """
+    module = _load_whitelist_with_registry(set())
+    source = (_ROOT / "app/services/facets/facet_whitelist.py").read_text(encoding="utf-8")
+
+    assert "CANONICALIZABLE_FACETS" not in source.replace(
+        "The hardcoded `CANONICALIZABLE_FACETS` set that used to live here is gone.", ""
+    ), "the hardcoded allowlist came back — the DB is the source (#347 phase 3.2)"
+
+    # With an EMPTY registry stub nothing is canonicalizable. If a local set were consulted,
+    # these would still come back True.
+    for key in ("finish", "color", "material", "ip_rating"):
+        assert module.is_canonicalizable(key) is False, (
+            f"'{key}' answered True against an empty registry — something other than the DB "
+            f"is answering"
+        )
+
+    # NON_CANONICAL_FACETS survives, but only as the degraded-path floor — never as an allowlist.
+    assert module.capture_permissively("finish", "matt") is True
+    assert module.capture_permissively("sku", "ABC-1") is False
+    assert module.capture_permissively("_internal", "x") is False
+    assert module.capture_permissively("finish", None) is False
 
 
 def test_critical_beats_discovered():
