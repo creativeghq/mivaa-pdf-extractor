@@ -271,6 +271,86 @@ def _resolve_user_from_job(job_id: Optional[str]) -> tuple[Optional[str], Option
 # Public tracked-call API (signatures unchanged; backed by httpx now)
 # ─────────────────────────────────────────────────────────────────────────────
 
+#: A Claude call that raised still cost money — Anthropic bills a request whose
+#: tokens were generated before the client timed out or the connection dropped.
+#: Logging only the successes therefore makes ai_usage_logs quietly optimistic
+#: AND removes the failure data you most want when a model starts erroring: the
+#: task, the model, and when it began. Audit #12: neither tracked wrapper had a
+#: try/except, so every failed call vanished without a row.
+_FAILED_CONFIDENCE_BREAKDOWN = {
+    "model_confidence": 0.0,
+    "completeness": 0.0,
+    "consistency": 0.0,
+    "validation": 0.0,
+}
+
+
+async def _log_failed_claude_call_async(
+    *, task: str, model: str, latency_ms: int, error: BaseException,
+    job_id, user_id, workspace_id, product_id, image_id,
+) -> None:
+    """Best-effort failure row. Never raises: the caller is already failing and
+    a logging problem must not replace the real exception."""
+    try:
+        await AICallLogger().log_ai_call(
+            task=task,
+            model=model,
+            # Unknown, not zero-cost. The row exists to record that the call
+            # happened and failed; cost attribution for a raised call is not
+            # recoverable client-side.
+            input_tokens=0,
+            output_tokens=0,
+            cost=0.0,
+            latency_ms=latency_ms,
+            confidence_score=0.0,
+            confidence_breakdown=_FAILED_CONFIDENCE_BREAKDOWN,
+            action="call_failed",
+            job_id=job_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            image_id=image_id,
+            error_message=str(error)[:500],
+        )
+    except Exception as log_err:  # pragma: no cover - logging must never mask
+        logger.warning(f"Could not log failed Claude call for task={task}: {log_err}")
+
+
+def _log_failed_claude_call_sync(
+    *, task: str, model: str, latency_ms: int, error: BaseException,
+    job_id, user_id, workspace_id, product_id, image_id,
+) -> None:
+    """Sync twin. Dispatches the same coroutine the sync success path uses:
+    fire-and-forget inside a running loop, asyncio.run outside one."""
+    import asyncio
+
+    try:
+        coro = AICallLogger().log_ai_call(
+            task=task,
+            model=model,
+            input_tokens=0,
+            output_tokens=0,
+            cost=0.0,
+            latency_ms=latency_ms,
+            confidence_score=0.0,
+            confidence_breakdown=_FAILED_CONFIDENCE_BREAKDOWN,
+            action="call_failed",
+            job_id=job_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            image_id=image_id,
+            error_message=str(error)[:500],
+        )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            asyncio.run(coro)
+    except Exception as log_err:  # pragma: no cover
+        logger.warning(f"Could not log failed Claude call for task={task}: {log_err}")
+
+
 async def tracked_claude_call_async(
     *,
     task: str,
@@ -295,14 +375,32 @@ async def tracked_claude_call_async(
     Pass tools / tool_choice via `extra_kwargs={'tools': [...], 'tool_choice': {...}}`.
     """
     start = time.time()
-    response = await _call_anthropic_async(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        system=system,
-        **(extra_kwargs or {}),
-    )
+    try:
+        response = await _call_anthropic_async(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            **(extra_kwargs or {}),
+        )
+    except BaseException as call_err:
+        # Record the failure, then re-raise unchanged — callers' behaviour is
+        # untouched, they simply stop being invisible in ai_usage_logs.
+        _uid, _wsid = user_id, workspace_id
+        if not _uid and job_id:
+            try:
+                _uid, _ws = _resolve_user_from_job(job_id)
+                _wsid = _wsid or _ws
+            except Exception:
+                pass
+        await _log_failed_claude_call_async(
+            task=task, model=model,
+            latency_ms=int((time.time() - start) * 1000),
+            error=call_err, job_id=job_id, user_id=_uid, workspace_id=_wsid,
+            product_id=product_id, image_id=image_id,
+        )
+        raise
     latency_ms = int((time.time() - start) * 1000)
 
     # Auto-resolve user from job if not provided
@@ -354,14 +452,31 @@ def tracked_claude_call(
     import asyncio
 
     start = time.time()
-    response = _call_anthropic_sync(
-        model=model,
-        messages=messages,
-        max_tokens=max_tokens,
-        temperature=temperature,
-        system=system,
-        **(extra_kwargs or {}),
-    )
+    try:
+        response = _call_anthropic_sync(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            **(extra_kwargs or {}),
+        )
+    except BaseException as call_err:
+        # Same contract as the async twin: record, then re-raise unchanged.
+        _uid, _wsid = user_id, workspace_id
+        if not _uid and job_id:
+            try:
+                _uid, _ws = _resolve_user_from_job(job_id)
+                _wsid = _wsid or _ws
+            except Exception:
+                pass
+        _log_failed_claude_call_sync(
+            task=task, model=model,
+            latency_ms=int((time.time() - start) * 1000),
+            error=call_err, job_id=job_id, user_id=_uid, workspace_id=_wsid,
+            product_id=product_id, image_id=image_id,
+        )
+        raise
     latency_ms = int((time.time() - start) * 1000)
 
     if not user_id and job_id:

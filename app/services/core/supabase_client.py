@@ -60,6 +60,41 @@ def _install_postgrest_retry_once(
 
     from app.utils.retry_helper import should_retry_exception
 
+    #: Methods whose repetition cannot create a second row. PostgREST maps
+    #: select→GET, update→PATCH, delete→DELETE, and insert/upsert/rpc→POST.
+    _IDEMPOTENT_METHODS = {"GET", "HEAD", "PUT", "PATCH", "DELETE"}
+
+    def _is_safe_to_repeat(builder) -> bool:
+        """Whether re-issuing this request can duplicate an effect.
+
+        A transient "Server disconnected" is AMBIGUOUS: the server may have
+        committed the write and died before answering. Re-issuing a SELECT or a
+        filtered PATCH/DELETE is free; re-issuing an INSERT creates a second row,
+        and re-issuing an RPC runs the function twice — `append_stage_history`
+        would append the same event twice, `charge_cron` would debit twice.
+
+        Audit #12: this patch wrapped every builder's execute() unconditionally,
+        so the convenience of transparent retry was being bought with silent
+        duplicates on exactly the calls where a duplicate matters.
+
+        Upserts are the one POST that IS safe — they carry
+        `Prefer: resolution=merge-duplicates` and collapse onto the conflict
+        target — so they keep their retry.
+        """
+        request = getattr(builder, "request", None)
+        method = (getattr(request, "http_method", "") or "").upper()
+        if method in _IDEMPOTENT_METHODS:
+            return True
+        if method == "POST":
+            try:
+                prefer = ",".join(request.headers.get_list("Prefer", split_commas=True))
+            except Exception:
+                prefer = str(getattr(request, "headers", {}) or "")
+            return "resolution=" in prefer.lower()
+        # Unknown method: assume unsafe. Being wrong in this direction costs one
+        # surfaced error; being wrong the other way costs a duplicate row.
+        return False
+
     try:
         module = importlib.import_module("postgrest._sync.request_builder")
     except Exception as e:  # pragma: no cover - defensive
@@ -81,6 +116,16 @@ def _install_postgrest_retry_once(
                     return result
                 except Exception as e:
                     if attempt < max_retries and should_retry_exception(e):
+                        if not _is_safe_to_repeat(self):
+                            # Surface it instead of silently risking a duplicate.
+                            # The caller decides; most of these are inserts whose
+                            # duplicate would be far more expensive than the error.
+                            logger.error(
+                                f"❌ PostgREST transient failure on a NON-IDEMPOTENT "
+                                f"request — not retrying (a repeat could duplicate the "
+                                f"write): {e}"
+                            )
+                            raise
                         logger.warning(
                             f"⚠️ PostgREST transient failure "
                             f"(attempt {attempt + 1}/{max_retries + 1}): {e}. "

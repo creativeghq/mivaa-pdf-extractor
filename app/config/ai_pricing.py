@@ -14,9 +14,12 @@ Sources:
 IMPORTANT: Verify prices monthly and update this file.
 """
 
+import logging
 from typing import Dict, Optional
 from datetime import datetime
 from decimal import Decimal
+
+logger = logging.getLogger(__name__)
 
 
 class AIPricingConfig:
@@ -73,9 +76,51 @@ class AIPricingConfig:
             cls._db_pricing_cache = cache
             cls._db_pricing_cache_ts = now
             return cache
-        except Exception:
+        except Exception as db_err:
             # Network/DB error — keep any stale cache, else empty (→ hardcoded fallback).
+            # Logged at ERROR because falling back is a MONEY event: the hardcoded
+            # dict is a copy, and a copy that nobody notices is being used is a
+            # copy that silently drifts. This branch was completely silent, which
+            # is how claude-opus-4-8 sat at 3x the real price without complaint.
+            logger.error(f"ai_model_pricing lookup failed, using hardcoded prices: {db_err}")
             return cls._db_pricing_cache or {}
+
+    #: Models already reported as drifted, so the log says it once per process
+    #: rather than once per call.
+    _drift_reported: set = set()
+
+    @classmethod
+    def _warn_on_pricing_drift(cls, model_key: str, db_row: Dict) -> None:
+        """Report a hardcoded price that disagrees with the authoritative table.
+
+        `ai_model_pricing` is the single source for USD; the dicts in this file
+        are a fallback copy for when it is unreachable. CLAUDE.md's rule for any
+        cached copy of a money quantity is a drift check against the derivation —
+        this is that check. It cannot live in SQL (the copy is Python) and it
+        cannot live in a unit test (the derivation is in the DB), so it runs where
+        both values are in hand: at lookup time.
+        """
+        if model_key in cls._drift_reported:
+            return
+        hard = (
+            {**cls.CLAUDE_PRICING, **cls.VOYAGE_PRICING}.get(model_key)
+            if hasattr(cls, "VOYAGE_PRICING") else cls.CLAUDE_PRICING.get(model_key)
+        )
+        if not hard:
+            return
+        for field in ("input", "output"):
+            try:
+                if Decimal(str(hard.get(field, 0))) != Decimal(str(db_row.get(field, 0))):
+                    cls._drift_reported.add(model_key)
+                    logger.error(
+                        f"PRICING DRIFT for {model_key}: hardcoded {field}="
+                        f"{hard.get(field)} but ai_model_pricing says {db_row.get(field)}. "
+                        f"The DB wins for billing; fix the hardcoded copy in "
+                        f"app/config/ai_pricing.py before it is ever used as a fallback."
+                    )
+                    return
+            except Exception:
+                return
 
     @classmethod
     def _db_lookup(cls, model: str) -> Optional[Dict]:
@@ -85,6 +130,7 @@ class AIPricingConfig:
             return None
         ml = (model or '').lower()
         if ml in db:
+            cls._warn_on_pricing_drift(ml, db[ml])
             return db[ml]
         for key, val in db.items():
             if key in ml or ml in key:
@@ -101,9 +147,14 @@ class AIPricingConfig:
 
     # Anthropic Claude Pricing (per 1M tokens) — canonical 3 latest-tier models
     CLAUDE_PRICING = {
+        # Corrected 2026-08-14 (audit #12): this said 15.00 / 75.00 — Opus-3-era
+        # pricing — while ai_model_pricing (authoritative) says 5.00 / 25.00. Any
+        # call that fell through to this dict was billed at 3x. See
+        # _warn_on_pricing_drift below: divergence is now reported rather than
+        # discovered by hand a year later.
         "claude-opus-4-8": {
-            "input": Decimal("15.00"),
-            "output": Decimal("75.00"),
+            "input": Decimal("5.00"),
+            "output": Decimal("25.00"),
             "last_verified": "2026-04-18",
             "source": "https://www.anthropic.com/pricing",
             "note": "Default primary model — agent chat, discovery, metadata extraction, consensus validation"

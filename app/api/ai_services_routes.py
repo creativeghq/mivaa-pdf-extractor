@@ -17,13 +17,12 @@ import logging
 from app.schemas.api_responses import (
     DataResponse, ClassificationResponse, BatchClassificationResponse,
     BoundaryDetectionResponse, ProductGroupingResponse, ValidationResponse,
-    EscalationStatsResponse, ServiceHealthResponse,
+    ServiceHealthResponse,
 )
 from app.services.ai_validation.document_classifier import DocumentClassifier
 from app.services.ai_validation.boundary_detector import BoundaryDetector
 from app.services.products.product_validator import ProductValidator
 from app.services.ai_validation.consensus_validator import ConsensusValidator
-from app.services.ai_validation.escalation_engine import EscalationEngine
 # REMOVED: EnhancedPDFProcessor was imported but never used - consolidated into process_document_with_discovery
 
 logger = logging.getLogger(__name__)
@@ -35,7 +34,6 @@ document_classifier = DocumentClassifier()
 boundary_detector = BoundaryDetector()
 product_validator = ProductValidator()
 consensus_validator = ConsensusValidator()
-escalation_engine = EscalationEngine()
 
 
 # ============================================================================
@@ -380,23 +378,13 @@ async def check_if_critical(task_type: str):
 # ESCALATION METRICS ENDPOINTS
 # ============================================================================
 
-@router.get("/escalation/stats", response_model=EscalationStatsResponse)
-async def get_escalation_stats():
-    """
-    Get escalation engine statistics.
-    
-    Returns metrics on:
-    - Total escalations
-    - Successful escalations
-    - Failed escalations
-    - Cost saved/spent
-    """
-    stats = escalation_engine.get_stats()
-    
-    return {
-        "success": True,
-        "stats": stats
-    }
+# GET /escalation/stats and the EscalationEngine behind it were deleted in audit
+# #12. Neither execute_with_escalation nor execute_with_fallback had a single
+# caller anywhere in the repo, so the only reachable part of a 321-line engine was
+# this endpoint — reporting counters that could not be anything but zero, forever.
+# That is the platform's own silent-zero shape: a metric that looks healthy
+# because nothing is producing it. The confidence thresholds it used
+# (app/config/confidence_thresholds.py) stay; unified_chunking_service uses them.
 
 
 # ============================================================================
@@ -425,7 +413,6 @@ async def process_pdf_enhanced(
                 "boundary_detector": "ready",
                 "product_validator": "ready",
                 "consensus_validator": "ready",
-                "escalation_engine": "ready"
             }
         }
         
@@ -448,7 +435,6 @@ async def health_check():
             "boundary_detector": "initialized",
             "product_validator": "initialized",
             "consensus_validator": "initialized",
-            "escalation_engine": "initialized",
             "enhanced_processor": "initialized"
         }
     }

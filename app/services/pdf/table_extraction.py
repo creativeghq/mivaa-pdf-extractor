@@ -249,15 +249,50 @@ class TableExtractor:
             log.debug(f"   No TABLE regions on this product's pages ({product_id})")
             return 0
 
+        # Write the new rows BEFORE removing the old ones. This used to delete
+        # first and store second, and store_tables_in_database swallows its own
+        # exception and returns 0 — so a failed write left the product with the old
+        # tables destroyed, no new tables, and a return value of 0 that is
+        # indistinguishable from "this product has no tables". Destructive step
+        # last means a failure is merely a no-op with stale data, never data loss.
+        # (No unique constraint on product_tables beyond the PK, so the brief
+        # overlap between old and new rows is safe.)
         try:
-            supabase.client.table('product_tables') \
-                .delete() \
+            existing = supabase.client.table('product_tables') \
+                .select('id') \
                 .eq('product_id', product_id) \
                 .execute()
+            stale_ids = [r['id'] for r in (existing.data or []) if r.get('id')]
         except Exception as e:  # noqa: BLE001
-            log.debug(f"   product_tables pre-clean failed (non-fatal): {e}")
+            log.warning(f"   Could not list existing product_tables for {product_id}: {e}")
+            stale_ids = []
 
         stored = await self.store_tables_in_database(product_id, tables, supabase)
+
+        if stored == 0:
+            # Parsed tables that would not store. Loud, because the caller's only
+            # other signal is a count that reads exactly like "no tables here".
+            log.error(
+                f"   ❌ Parsed {len(tables)} table(s) for product {product_id} but "
+                f"stored NONE — leaving the {len(stale_ids)} existing row(s) in "
+                f"place rather than replacing them with nothing"
+            )
+            return 0
+
+        if stale_ids:
+            try:
+                supabase.client.table('product_tables') \
+                    .delete() \
+                    .in_('id', stale_ids) \
+                    .execute()
+            except Exception as e:  # noqa: BLE001
+                # Superseded rows left behind: duplicates are visible and fixable,
+                # which is the better failure than the one above.
+                log.warning(
+                    f"   Could not remove {len(stale_ids)} superseded table row(s) "
+                    f"for {product_id}: {e}"
+                )
+
         log.info(
             f"   📊 Stored {stored}/{len(tables)} table(s) from "
             f"{regions_seen} TABLE region(s) for product {product_id}"
@@ -419,5 +454,8 @@ class TableExtractor:
             return stored_count
 
         except Exception as e:
+            # Returning 0 keeps the signature, but the caller now treats
+            # "parsed tables, stored none" as an error rather than as an empty
+            # result — see extract_tables_for_product.
             self.logger.error(f"❌ Failed to store tables in database: {e}")
             return 0

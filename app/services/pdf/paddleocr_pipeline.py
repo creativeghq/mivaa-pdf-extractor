@@ -28,8 +28,12 @@ place.
 
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Label taxonomy — PP-DocLayoutV2 categories → the existing region_type vocab
@@ -148,14 +152,41 @@ def parse_parse_response(payload: Dict[str, Any]) -> List[PaddleRegion]:
     clamps + order-corrects. Regions missing a usable bbox are skipped (never
     guessed). Returns regions in reading order.
     """
-    width = float(payload.get("width") or 0) or 1.0
-    height = float(payload.get("height") or 0) or 1.0
+    # Page dimensions are load-bearing: every bbox is normalised against them.
+    # This used to read `float(... or 0) or 1.0`, so a response with a missing or
+    # zero width divided pixel coordinates by 1.0 — a bbox at x=1800 clamped to
+    # 1.0, collapsing every region onto the page edge, and nothing raised. A
+    # response we cannot normalise is a malformed response, not a page with odd
+    # layout: raise so the caller marks the page `ocr_failed` and retries it.
+    # Imported lazily: paddleocr_endpoint_manager imports from THIS module, so a
+    # module-level import back would be circular.
+    from app.services.pdf.paddleocr_endpoint_manager import PaddleOCRResponseError
+
+    try:
+        width = float(payload.get("width") or 0)
+        height = float(payload.get("height") or 0)
+    except (TypeError, ValueError) as exc:
+        raise PaddleOCRResponseError(f"non-numeric page dimensions in parse response: {exc}")
+    if not (width > 0 and height > 0):
+        raise PaddleOCRResponseError(
+            f"parse response has unusable page dimensions (width={width!r}, "
+            f"height={height!r}) — cannot normalise bboxes"
+        )
+
     out: List[PaddleRegion] = []
+    skipped_degenerate = 0
     for raw in payload.get("regions", []) or []:
         bbox = raw.get("bbox")
         if not bbox or len(bbox) != 4:
             continue
-        x0, y0, x1, y1 = (float(v) for v in bbox)
+        try:
+            x0, y0, x1, y1 = (float(v) for v in bbox)
+        except (TypeError, ValueError):
+            skipped_degenerate += 1
+            continue
+        if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
+            skipped_degenerate += 1
+            continue
         nx0, ny0, nx1, ny1 = (
             _clamp01(x0 / width), _clamp01(y0 / height),
             _clamp01(x1 / width), _clamp01(y1 / height),
@@ -164,6 +195,12 @@ def parse_parse_response(payload: Dict[str, Any]) -> List[PaddleRegion]:
             nx0, nx1 = nx1, nx0
         if ny1 < ny0:
             ny0, ny1 = ny1, ny0
+        # A zero-area box is not a region. It survives clamping happily and then
+        # becomes a layout element with width 0 — a crop of nothing for Stage 3
+        # and a chunk of nothing for Stage 2.
+        if (nx1 - nx0) <= 0 or (ny1 - ny0) <= 0:
+            skipped_degenerate += 1
+            continue
         out.append(
             PaddleRegion(
                 label=str(raw.get("label") or "text"),
@@ -171,6 +208,11 @@ def parse_parse_response(payload: Dict[str, Any]) -> List[PaddleRegion]:
                 content=str(raw.get("content") or ""),
                 order=int(raw.get("order", len(out))),
             )
+        )
+    if skipped_degenerate:
+        logger.warning(
+            f"PaddleOCR parse: skipped {skipped_degenerate} degenerate region(s) "
+            f"(non-numeric, non-finite, or zero-area bbox)"
         )
     out.sort(key=lambda r: r.order)
     return out

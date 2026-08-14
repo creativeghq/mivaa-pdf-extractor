@@ -131,15 +131,39 @@ class ConsensusValidator:
             final_result = self._weighted_vote(valid_results)
             decision_method = "weighted_vote"
             
-        else:
-            # Low consensus - flag for human review
-            final_result = self._weighted_vote(valid_results)  # Still provide best guess
+        elif agreement_score >= self.LOW_AGREEMENT:
+            # Low consensus - a best guess, explicitly flagged for human review.
+            final_result = self._weighted_vote(valid_results)
             decision_method = "weighted_vote_flagged"
-            
+
             logger.warning(
                 f"⚠️ Low consensus ({agreement_score:.2f}) for '{task_type}' - "
                 f"flagging for human review"
             )
+
+        else:
+            # Below LOW_AGREEMENT the models do not agree on anything: this is not
+            # a decision with low confidence, it is the absence of a decision.
+            # Returning success=True here (which is what used to happen, for ANY
+            # agreement score down to 0.0) meant a caller checking `success` got a
+            # green light from a vote nobody won -- needs_human_review was set, but
+            # a flag alongside success=True is advisory and gets ignored. This is
+            # the confidence floor invariant 9 asks for before a verdict drives a
+            # write. LOW_AGREEMENT existed as a constant and was never read.
+            logger.error(
+                f"❌ Consensus failed for '{task_type}': agreement "
+                f"{agreement_score:.2f} < {self.LOW_AGREEMENT} across "
+                f"{len(valid_results)} models - refusing to return a verdict"
+            )
+            return {
+                "success": False,
+                "error": "consensus_below_floor",
+                "agreement_score": agreement_score,
+                "needs_human_review": True,
+                "model_results": valid_results,
+                "total_latency_ms": total_latency_ms,
+                "model_count": len(valid_results),
+            }
         
         logger.info(
             f"✅ Consensus validation complete: agreement={agreement_score:.2f}, "

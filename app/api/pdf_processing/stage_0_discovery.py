@@ -218,21 +218,28 @@ async def process_stage_0_discovery(
         # ProductDiscoveryService expects: "claude-vision", "claude", "gpt-vision", "gpt", "haiku-vision", "haiku"
         normalized_model = discovery_model.lower()
 
+        # Audit #12 (finding 4): this used to normalise anything containing "gpt"
+        # to "gpt-vision"/"gpt" — names ProductDiscoveryService accepted, validated
+        # an OpenAI key for, and had no code path to execute. Vision is
+        # Anthropic-only here, so those branches are gone; discovery now rejects a
+        # GPT request loudly rather than running it on Claude and recording
+        # "gpt-vision" as the model that did the work.
+        if "gpt" in normalized_model or "openai" in normalized_model:
+            raise ValueError(
+                f"discovery_model {discovery_model!r} is not supported: product "
+                f"discovery runs on Claude only."
+            )
+
         # Keep vision suffix if present
         if normalized_model.endswith('-vision'):
-            # Vision models: claude-vision, claude-haiku-vision, gpt-vision
             if "haiku" in normalized_model:
                 normalized_model = "claude-haiku-vision"
             elif "claude" in normalized_model:
                 normalized_model = "claude-vision"
-            elif "gpt" in normalized_model:
-                normalized_model = "gpt-vision"
         else:
             # Text-only models (legacy)
             if "claude" in normalized_model:
                 normalized_model = "claude"
-            elif "gpt" in normalized_model:
-                normalized_model = "gpt"
             elif "haiku" in normalized_model:
                 normalized_model = "haiku"
             else:

@@ -63,6 +63,17 @@ class ClipTextRequest(BaseModel):
         default="document",
         description="Type of input: 'document' for indexing, 'query' for search (Voyage AI only)"
     )
+    # Audit #12: every row this route wrote to ai_usage_logs had a NULL
+    # workspace_id — 979 of them in 30 days, which is most of the platform's
+    # unattributed AI spend. Per-tenant cost views cannot see them and the
+    # is_workspace_admin RLS branch cannot match them. The callers are edge
+    # functions that know the workspace; they just had nowhere to put it.
+    # Advisory only: this route authenticates by x-cron-secret / platform token,
+    # so this value is for ATTRIBUTION, never for authorization.
+    workspace_id: Optional[str] = Field(
+        default=None,
+        description="Workspace to attribute this call's cost to (cost attribution only)"
+    )
     dimensions: int = Field(
         default=1024,
         description="Embedding dimensions (default 1024 for Voyage AI; 256, 512, 1024, 2048 supported)"
@@ -288,7 +299,8 @@ async def generate_clip_text_embedding(
             dimensions=request.dimensions,
             input_type=request.input_type,
             truncation=request.truncation,
-            output_dtype=request.output_dtype
+            output_dtype=request.output_dtype,
+            workspace_id=request.workspace_id,
         )
 
         if not embedding:

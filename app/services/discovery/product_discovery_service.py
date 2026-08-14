@@ -58,9 +58,12 @@ from app.utils.pdf_to_images import analyze_pdf_layout, get_physical_page_text, 
 
 logger = logging.getLogger(__name__)
 
-# Get API keys from environment
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+# Read at CALL time, never at import. A module-load capture freezes whatever the
+# environment happened to be when the module was first imported, which is the wrong
+# value in any process that populates env after import — and it makes the key
+# impossible to rotate without a restart. (Audit #12, finding 4.)
+def _anthropic_api_key() -> str:
+    return os.getenv("ANTHROPIC_API_KEY", "")
 
 
 @dataclass
@@ -322,11 +325,20 @@ class ProductDiscoveryService:
         self.ai_logger = AICallLogger()
         self.settings = get_settings()
 
-        # Check API keys based on model family (claude/gpt)
-        if "claude" in model.lower() and not ANTHROPIC_API_KEY:
+        # Vision is Anthropic-only in this platform: there is no OpenAI execution
+        # path in this service, and there never was one behind the "gpt" model
+        # names it used to accept. That combination is worse than an unsupported
+        # option — a `gpt-vision` job either died on a confusing "OPENAI_API_KEY
+        # not set" error or ran on Claude while recording `gpt-vision` as its
+        # model, which is a provenance lie in the job metadata. Reject it plainly
+        # instead (audit #12, finding 4).
+        if "gpt" in model.lower() or "openai" in model.lower():
+            raise ValueError(
+                f"Model {model!r} is not supported: product discovery runs on "
+                f"Claude only. There is no OpenAI code path in this service."
+            )
+        if not _anthropic_api_key():
             raise ValueError("ANTHROPIC_API_KEY not set - cannot use Claude")
-        if "gpt" in model.lower() and not OPENAI_API_KEY:
-            raise ValueError("OPENAI_API_KEY not set - cannot use GPT")
     
     async def discover_products_from_text(
         self,
