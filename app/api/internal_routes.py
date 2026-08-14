@@ -22,12 +22,11 @@ Endpoints:
 - POST /api/internal/validate-pipeline/{job_id} - Audit pipeline completion status across all stages
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Request
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime  # several handlers import this locally; one error path did not
 import logging
-import os
 
 from app.services.images.image_processing_service import ImageProcessingService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
