@@ -107,7 +107,28 @@ class MultiModalImageProductAssociationService:
                     
                     try:
                         association = await self._evaluate_association(image, product, options)
-                        
+
+                        # Spatial is a GATE, not just the heaviest weight.
+                        #
+                        # _calculate_spatial_score returns 0.0 for an image that is
+                        # not on one of the product's declared pages — the hard rule
+                        # added 2026-05-02 after a 140-page catalog wrote 12
+                        # associations for 4 images. But the weighted sum let that
+                        # rule be voted down by two NEUTRAL scores: with spatial 0.0,
+                        # overall = 0.3*caption + 0.3*clip, and both default to 0.5
+                        # in the ordinary case — a generic "Image from page 22"
+                        # caption (which is what the pipeline generates) and a
+                        # product with no visual embedding (which is every product,
+                        # since products carry only text_embedding_1024 and visual
+                        # vectors are DERIVED from these very associations). That is
+                        # 0.0 + 0.15 + 0.15 = exactly 0.30, which passed a >= 0.30
+                        # threshold. So the wrong-page images the hard cutoff was
+                        # written to exclude were being written anyway.
+                        #
+                        # Two neutral "I don't know"s must not add up to a "yes".
+                        if association.spatial_score <= 0.0:
+                            continue
+
                         if association.overall_score >= options.overall_threshold:
                             all_associations.append(association)
                     except Exception as e:

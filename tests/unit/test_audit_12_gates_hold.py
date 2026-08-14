@@ -39,6 +39,9 @@ _EMBEDDINGS = _APP / "services" / "embeddings" / "real_embeddings_service.py"
 _DOWNLOADER = _APP / "services" / "images" / "image_download_service.py"
 _JWT = _APP / "middleware" / "jwt_auth.py"
 _ADMIN = _APP / "api" / "admin.py"
+_ASSOC = _APP / "services" / "images" / "multi_modal_image_product_association_service.py"
+_PRICING = _APP / "config" / "ai_pricing.py"
+_SUPA = _APP / "services" / "core" / "supabase_client.py"
 
 
 def _src(path: Path) -> str:
@@ -142,3 +145,47 @@ def test_deploy_hooks_are_gated_at_the_route():
     )
     assert "MIVAA_DEPLOY_TOKEN" in src
     assert "status_code=503" in src, "an unset secret must fail closed, never fall through"
+
+
+# ────────────────────── 6. arithmetic that defeats a rule ──────────────────
+
+
+def test_spatial_is_a_gate_not_merely_a_weight():
+    """Two neutral scores must not outvote a hard exclusion.
+
+    Weights are spatial .4 / caption .3 / clip .3 against a .3 threshold, so an
+    image the spatial rule scored 0.0 still reached exactly 0.30 whenever caption
+    and clip both returned their neutral 0.5 — which is the ORDINARY case: the
+    pipeline writes generic "Image from page N" captions, and products carry only
+    text_embedding_1024 so the visual comparison has nothing to compare against.
+    """
+    src = _src(_ASSOC)
+    assert "if association.spatial_score <= 0.0:" in src, (
+        "the spatial gate is gone — wrong-page images can ride two neutral scores "
+        "over the threshold again"
+    )
+    # the arithmetic itself, so a weight/threshold tweak re-opening the hole fails here
+    weights = {"spatial": 0.4, "caption": 0.3, "clip": 0.3}
+    neutral_only = 0.0 * weights["spatial"] + 0.5 * weights["caption"] + 0.5 * weights["clip"]
+    assert neutral_only >= 0.3, (
+        "if this no longer reaches the threshold the weights changed; re-check "
+        "whether the gate is still the thing keeping wrong-page images out"
+    )
+
+
+def test_pricing_fallback_matches_the_authoritative_table():
+    """The hardcoded dict is a copy of ai_model_pricing. Copies drift; this one
+    drifted to 3x on the most expensive model and nothing noticed for months."""
+    src = _src(_PRICING)
+    assert '"input": Decimal("15.00")' not in src, "claude-opus-4-8 is back at the 3x price"
+    assert "_warn_on_pricing_drift" in src, "the drift check is gone"
+    assert "logger.error(f\"ai_model_pricing lookup failed" in src, (
+        "falling back to hardcoded prices must never be silent again"
+    )
+
+
+def test_postgrest_retry_does_not_repeat_writes():
+    """'Server disconnected' is ambiguous — the write may have committed."""
+    src = _src(_SUPA)
+    assert "_is_safe_to_repeat" in src, "the idempotency gate on retry is gone"
+    assert "resolution=" in src, "upserts must stay retryable (they collapse on conflict)"
