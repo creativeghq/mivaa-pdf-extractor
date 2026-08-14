@@ -5,7 +5,7 @@ This service validates AI-extracted metadata against prototype values using Voya
 It standardizes free-text metadata to consistent, validated property values.
 
 Architecture:
-- Loads prototype embeddings from material_properties table
+- Loads prototype embeddings from the material_metadata_fields registry (#347 phase 4.1)
 - Generates Voyage AI 1024D embeddings for extracted values
 - Compares using cosine similarity
 - Returns validated value if confidence > threshold
@@ -104,19 +104,38 @@ class MetadataPrototypeValidator:
         
         try:
             # Fetch all properties with prototypes
-            result = self.supabase.client.table('material_properties').select(
-                'property_key, name, prototype_descriptions, text_embedding_1024'
+            # #347 phase 4.1: prototypes live on `material_metadata_fields` now.
+            # `material_properties` was the sixth registry and is gone; its columns were
+            # absorbed rather than dropped precisely because this reader existed.
+            result = self.supabase.client.table('material_metadata_fields').select(
+                'field_name, display_name, prototype_descriptions, text_embedding_1024'
             ).not_.is_('prototype_descriptions', 'null').not_.is_('text_embedding_1024', 'null').execute()
-            
+
             for prop in result.data:
-                self._prototype_cache[prop['property_key']] = {
-                    'name': prop['name'],
+                self._prototype_cache[prop['field_name']] = {
+                    'name': prop['display_name'],
                     'prototypes': prop['prototype_descriptions'],
                     'embedding': np.array(prop['text_embedding_1024'])
                 }
             
             self._cache_loaded = True
-            self.logger.info(f"Loaded {len(self._prototype_cache)} prototype properties")
+
+            # An empty cache is not a quiet edge case — `validate_metadata` gates every field on
+            # `field_key in self._prototype_cache`, so with zero prototypes NOTHING is validated
+            # and every extracted value passes through untouched. The validator still returns
+            # success, so the pipeline looks healthy while doing no work. Measured 2026-08-14:
+            # both material_properties AND material_metadata_fields have zero rows carrying
+            # prototype_descriptions + text_embedding_1024, so this is the state it has been in.
+            # WARNING, not INFO, because INFO is dropped by the DB log sink's noise filter.
+            if not self._prototype_cache:
+                self.logger.warning(
+                    "Prototype validator loaded 0 prototypes from material_metadata_fields — "
+                    "every metadata value will pass through UNVALIDATED. Populate "
+                    "prototype_descriptions + text_embedding_1024 on that table, or stop calling "
+                    "this validator."
+                )
+            else:
+                self.logger.info(f"Loaded {len(self._prototype_cache)} prototype properties")
             
         except Exception as e:
             self.logger.error(f"Failed to load prototypes: {e}")
