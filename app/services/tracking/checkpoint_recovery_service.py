@@ -236,31 +236,19 @@ class CheckpointRecoveryService:
                     },
                 ).execute()
             except Exception as atomic_err:
+                # No fallback. There used to be a legacy two-call path here
+                # ("in case the new RPC isn't deployed yet"), which reintroduced
+                # the exact crash window update_checkpoint_and_append_history
+                # exists to eliminate — and, worse, this function returned True
+                # afterwards even when BOTH paths had failed, so a caller could
+                # not tell a written checkpoint from a lost one. The RPC is
+                # deployed (public.update_checkpoint_and_append_history(uuid,
+                # jsonb, jsonb)); audit #12 deleted the fallback rather than
+                # keeping a second, non-atomic way to do the same write.
                 logger.error(
                     f"Atomic checkpoint+history write failed for {job_id} @ {stage.value}: {atomic_err}"
                 )
-                # Fall back to legacy two-call pattern so we don't lose the
-                # checkpoint entirely if the new RPC isn't deployed yet.
-                # ORDER MATTERS: append history FIRST, then update
-                # last_checkpoint. A crash between the calls then leaves a
-                # history entry with a slightly stale checkpoint (harmless —
-                # recovery reads the latest history entry), instead of a
-                # checkpoint with no corresponding audit entry, which is the
-                # exact divergence the atomic RPC was built to eliminate.
-                try:
-                    self.supabase_client.client.rpc(
-                        'append_stage_history',
-                        {'p_job_id': job_id, 'p_event': {'stage': stage.value, 'status': event_status,
-                                                          'completed_at': now_iso, 'data': data,
-                                                          'metadata': metadata or {}}},
-                    ).execute()
-                    self.supabase_client.client.table(self.jobs_table)\
-                        .update({
-                            "last_checkpoint": {"stage": stage.value, "metadata": metadata or {}, "created_at": now_iso},
-                            "updated_at": now_iso,
-                        }).eq("id", job_id).execute()
-                except Exception as fallback_err:
-                    logger.error(f"Legacy fallback also failed: {fallback_err}")
+                return False
 
             logger.info(f"✅ Checkpoint created: {job_id} @ {stage.value}")
             return True
@@ -738,6 +726,26 @@ class CheckpointRecoveryService:
         started making progress again between detection and this write must not be
         failed out from under its own live worker.
         """
+        # Close the audit log before flipping status — this path is how a job dies
+        # with nobody watching, so it is the one that most needs a reason on the
+        # record (pipeline convention 9).
+        try:
+            self.supabase_client.client.rpc(
+                'append_stage_history',
+                {
+                    'p_job_id': job_id,
+                    'p_event': {
+                        'stage': 'recovery',
+                        'status': 'failed',
+                        'completed_at': datetime.utcnow().isoformat(),
+                        'data': {'reason': reason},
+                        'source': 'checkpoint_recovery_service',
+                    },
+                },
+            ).execute()
+        except Exception as hist_err:
+            logger.warning(f"Could not append terminal 'failed' stage event for {job_id}: {hist_err}")
+
         try:
             update = self.supabase_client.client.table(self.jobs_table)\
                 .update({

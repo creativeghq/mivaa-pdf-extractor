@@ -76,6 +76,66 @@ async def process_product_images(
     workspace_id: str,
     job_id: str,
     product: Any,
+    physical_pages: List[int],
+    catalog: Any,
+    config: Dict[str, Any],
+    logger: logging.Logger,
+    layout_regions: Optional[List[Any]] = None,
+    tracker: Optional[Any] = None,
+    product_db_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Own the ``current_slow_operation`` marker across the whole stage.
+
+    Registers this stage as a known long-running op so auto-recovery's stuck-job
+    detector does not false-positive while we fan out SLIG / Voyage / Anthropic
+    calls, and clears it in a ``finally`` so no exception path can leak it.
+
+    Audit #12: the push used to live inside the body with three separate clear
+    sites (no-images, classification-failure, success) and no enclosing
+    try/finally, so a raise in ``process_pdf_from_bytes``,
+    ``upload_images_to_storage`` or ``save_images_and_generate_clips`` left the
+    marker set. That was inert only for as long as auto-recovery ignored the
+    marker entirely; now that ``detect_stuck_jobs`` reads it, a leaked marker
+    would suppress recovery for the job until the +600s grace expired.
+
+    Bound to the per-product wrapper timeout
+    (PRODUCT_PROCESSING_TIMEOUT_SECONDS, default 600s).
+    """
+    operation = f"stage_3_images:{product.name}"
+    if tracker is not None:
+        try:
+            await tracker.set_slow_operation(operation=operation, expected_max_seconds=600)
+        except Exception as _slow_err:
+            logger.debug(f"   set_slow_operation failed (non-fatal): {_slow_err}")
+    try:
+        return await _process_product_images(
+            file_content=file_content,
+            document_id=document_id,
+            workspace_id=workspace_id,
+            job_id=job_id,
+            product=product,
+            physical_pages=physical_pages,
+            catalog=catalog,
+            config=config,
+            logger=logger,
+            layout_regions=layout_regions,
+            tracker=tracker,
+            product_db_id=product_db_id,
+        )
+    finally:
+        if tracker is not None:
+            try:
+                await tracker.clear_slow_operation(operation=operation)
+            except Exception:
+                pass
+
+
+async def _process_product_images(
+    file_content: bytes,
+    document_id: str,
+    workspace_id: str,
+    job_id: str,
+    product: Any,
     physical_pages: List[int],  # 1-based physical pages
     catalog: Any,
     config: Dict[str, Any],
@@ -113,19 +173,6 @@ async def process_product_images(
 
     logger.info(f"🖼️  Processing images for product: {product.name}")
     logger.info(f"   Physical pages (1-based): {sorted(physical_pages)}")
-
-    # Register this stage as a known long-running op so the auto-recovery
-    # cron's stuck-job detector doesn't false-positive while we fan out
-    # SLIG / Voyage / Anthropic calls. Bound to the per-product wrapper
-    # timeout (PRODUCT_PROCESSING_TIMEOUT_SECONDS, default 600s).
-    if tracker is not None:
-        try:
-            await tracker.set_slow_operation(
-                operation=f"stage_3_images:{product.name}",
-                expected_max_seconds=600,
-            )
-        except Exception as _slow_err:
-            logger.debug(f"   set_slow_operation failed (non-fatal): {_slow_err}")
 
     # Get spread layout info from catalog
     has_spread_layout = catalog and getattr(catalog, 'has_spread_layout', False)
@@ -418,11 +465,6 @@ async def process_product_images(
         logger.warning("      1. Pages are text-only (no embedded images)")
         logger.warning("      2. Images were filtered out by size/quality thresholds")
         logger.warning("      3. The layout structural pass returned errors")
-        if tracker is not None:
-            try:
-                await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
-            except Exception:
-                pass
         return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0, 'clip_embeddings_generated': 0}
 
     logger.info(f"   ✅ Extracted {total_images} images from {len(physical_pages)} physical pages")
@@ -472,11 +514,6 @@ async def process_product_images(
         # The outer per-product wrapper (process_single_product) catches this
         # raise and clears too, but a direct caller (admin endpoint, test
         # harness) would leave the marker set and trip auto-recovery.
-        if tracker is not None:
-            try:
-                await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
-            except Exception:
-                pass
         raise
 
     non_material_count = len(non_material_images)
@@ -658,11 +695,6 @@ async def process_product_images(
     logger.info(f"      Successfully processed: {images_processed}")
     logger.info(f"      SLIG embeddings: {clip_embeddings}")
 
-    if tracker is not None:
-        try:
-            await tracker.clear_slow_operation(operation=f"stage_3_images:{product.name}")
-        except Exception:
-            pass
 
     return {
         'images_processed': images_processed,

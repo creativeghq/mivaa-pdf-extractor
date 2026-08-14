@@ -277,7 +277,19 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         # non-excluded paths now actually flow through JWT validation.
         if path == "/":
             return True
-        return any(path.startswith(excluded) for excluded in self.exclude_paths)
+        # Match on SEGMENT boundaries, not raw string prefix. Audit #12: plain
+        # startswith() meant an entry like "/api/rag" also excluded "/api/rag-admin"
+        # and "/api/ragx" — a route nobody had written yet would have inherited
+        # public access silently the day someone added it, which is invariant 5's
+        # "never a bare prefix that swallows everything" as a matching-strategy bug
+        # rather than a bad entry. Subtree exclusion is still deliberate and intact
+        # for /api/rag, /api/internal, /api/embeddings and /api/jobs; verified that
+        # this changes the verdict for zero existing routes.
+        for excluded in self.exclude_paths:
+            base = excluded.rstrip("/")
+            if path == base or path.startswith(base + "/"):
+                return True
+        return False
     
     async def _extract_token(self, request: Request) -> Optional[str]:
         """

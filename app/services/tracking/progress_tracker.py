@@ -691,6 +691,16 @@ class ProgressTracker:
             except Exception as vc_err:
                 logger.warning(f"   ⚠️ Could not aggregate vision_analysis_coverage: {vc_err}")
 
+        self._append_terminal_event('completed', {
+            'pages_completed': self.pages_completed,
+            'pages_failed': self.pages_failed,
+            'chunks_created': self.chunks_created,
+            'products_created': self.products_created,
+            'images_extracted': self.images_extracted,
+            'errors_count': len(self.errors),
+            'warnings_count': len(self.warnings),
+        })
+
         try:
             update_payload = {
                 'status': JobStatus.COMPLETED.value,
@@ -871,6 +881,15 @@ class ProgressTracker:
 
             except Exception as sentry_error:
                 logger.warning(f"Failed to send Sentry alert: {sentry_error}")
+
+        self._append_terminal_event('failed', {
+            'error': error_message,
+            'error_type': type(error).__name__,
+            'pages_completed': self.pages_completed,
+            'pages_failed': self.pages_failed,
+            'errors_count': len(self.errors),
+            'warnings_count': len(self.warnings),
+        })
 
         try:
             # Update background_jobs table
@@ -1067,6 +1086,43 @@ class ProgressTracker:
             raise  # Re-raise cancellation
         except Exception as e:
             logger.error(f"❌ Failed to update heartbeat for job {self.job_id}: {e}")
+
+    def _append_terminal_event(self, status: str, data: Dict[str, Any]) -> None:
+        """Append the boundary event that closes a job's audit log.
+
+        Every stage emits ``in_progress`` on entry via ``_sync_to_database``, but
+        the terminal paths (``complete_job``, ``fail_job``,
+        ``CheckpointRecoveryService._mark_job_failed``) used to flip
+        ``background_jobs.status`` with no closing event at all. Pipeline
+        convention 9 asks for ``in_progress`` at start AND ``completed``/
+        ``failed`` at end precisely so the audit log can answer why a job ended;
+        without this the history just stops mid-stage and the reason lives only
+        in a column that the next write can overwrite.
+
+        Best-effort and synchronous: it runs immediately before the status write,
+        so the audit entry can never be newer than the status it explains.
+        """
+        if not (self._db_sync_enabled and self._supabase):
+            return
+        try:
+            self._supabase.client.rpc(
+                'append_stage_history',
+                {
+                    'p_job_id': self.job_id,
+                    'p_event': {
+                        'stage': getattr(self.current_stage, 'value', None) or 'job',
+                        'status': status,
+                        'progress': 100 if status == 'completed' else int(
+                            self.calculate_progress_percentage()
+                        ),
+                        'completed_at': datetime.utcnow().isoformat(),
+                        'data': data,
+                        'source': 'progress_tracker',
+                    },
+                },
+            ).execute()
+        except Exception as e:
+            logger.warning(f"   ⚠️ Could not append terminal '{status}' stage event: {e}")
 
     async def set_slow_operation(
         self,

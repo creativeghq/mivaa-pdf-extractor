@@ -383,52 +383,6 @@ async def precompute_document_layout(
         f"{len(existing_pages)} already cached, {total_physical} total"
     )
 
-    # Register this stage as a long-running op so the auto-recovery cron's
-    # stuck-job detector doesn't false-positive on large catalogs. Layout
-    # precompute on 200+ page documents routinely runs past the default
-    # stuck-threshold (5 min) — without this flag the cron would re-dispatch
-    # the job mid-stage and Stage 1.5 would start over from the resume point.
-    # Budget: 30s/page (worst case with PaddleOCR retries), floor 300s.
-    #
-    # When a `tracker` is provided, we use its stack-based set_slow_operation
-    # which is nest-safe vs Stage 3's parallel per-product markers. Without a
-    # tracker (e.g. backfill scripts), fall back to a direct UPDATE — the
-    # collision risk only exists when Stage 3 is concurrent, which doesn't
-    # happen on the backfill path.
-    _slow_op_key = f'stage_1_5_layout_precompute:{len(pages_to_process)}_pages'
-    _slow_op_budget = max(300, len(pages_to_process) * 30)
-    _stage_1_5_slow_op_set = False
-    if tracker is not None:
-        try:
-            await tracker.set_slow_operation(
-                operation=_slow_op_key,
-                expected_max_seconds=_slow_op_budget,
-            )
-            _stage_1_5_slow_op_set = True
-        except Exception as _slow_err:
-            logger.debug(f"   tracker.set_slow_operation failed (non-fatal): {_slow_err}")
-    elif job_id:
-        try:
-            slow_op_payload = {
-                'current_slow_operation': {
-                    'operation': _slow_op_key,
-                    'started_at': datetime.utcnow().isoformat(),
-                    'expected_max_seconds': _slow_op_budget,
-                },
-                'updated_at': datetime.utcnow().isoformat(),
-            }
-            # supabase-py is sync; run the update in a thread so we don't block
-            # the event loop while the PaddleOCR fan-out runs.
-            await asyncio.to_thread(
-                lambda: supabase.client.table('background_jobs')
-                    .update(slow_op_payload)
-                    .eq('id', job_id)
-                    .execute()
-            )
-            _stage_1_5_slow_op_set = True
-        except Exception as _slow_err:
-            logger.debug(f"   set_slow_operation (fallback) failed (non-fatal): {_slow_err}")
-
     # 3. Resolve the PaddleOCR structural-pass manager once, then iterate physical
     #    pages serially. Serial iteration keeps memory flat (one rendered image
     #    at a time). PaddleOCR returns layout regions + OCR text + figure boxes in a
@@ -618,6 +572,59 @@ async def precompute_document_layout(
                 f"page {physical_page}: {e}"
             )
 
+    # Register this stage as a long-running op so the auto-recovery cron's
+    # stuck-job detector doesn't false-positive on large catalogs. Layout
+    # precompute on 200+ page documents routinely runs past the default
+    # stuck-threshold (5 min) — without this flag the cron would re-dispatch
+    # the job mid-stage and Stage 1.5 would start over from the resume point.
+    # Budget: 30s/page (worst case with PaddleOCR retries), floor 300s.
+    #
+    # When a `tracker` is provided, we use its stack-based set_slow_operation
+    # which is nest-safe vs Stage 3's parallel per-product markers. Without a
+    # tracker (e.g. backfill scripts), fall back to a direct UPDATE — the
+    # collision risk only exists when Stage 3 is concurrent, which doesn't
+    # happen on the backfill path.
+    _slow_op_key = f'stage_1_5_layout_precompute:{len(pages_to_process)}_pages'
+    _slow_op_budget = max(300, len(pages_to_process) * 30)
+    _stage_1_5_slow_op_set = False
+    if tracker is not None:
+        try:
+            await tracker.set_slow_operation(
+                operation=_slow_op_key,
+                expected_max_seconds=_slow_op_budget,
+            )
+            _stage_1_5_slow_op_set = True
+        except Exception as _slow_err:
+            logger.debug(f"   tracker.set_slow_operation failed (non-fatal): {_slow_err}")
+    elif job_id:
+        try:
+            slow_op_payload = {
+                'current_slow_operation': {
+                    'operation': _slow_op_key,
+                    'started_at': datetime.utcnow().isoformat(),
+                    'expected_max_seconds': _slow_op_budget,
+                },
+                'updated_at': datetime.utcnow().isoformat(),
+            }
+            # supabase-py is sync; run the update in a thread so we don't block
+            # the event loop while the PaddleOCR fan-out runs.
+            await asyncio.to_thread(
+                lambda: supabase.client.table('background_jobs')
+                    .update(slow_op_payload)
+                    .eq('id', job_id)
+                    .execute()
+            )
+            _stage_1_5_slow_op_set = True
+        except Exception as _slow_err:
+            logger.debug(f"   set_slow_operation (fallback) failed (non-fatal): {_slow_err}")
+
+    # The push sits here, immediately before the try whose `finally` clears it, so
+    # there is no window in which the marker can leak. Audit #12: it used to run
+    # ~190 lines earlier, before the PaddleOCR manager was resolved — and that
+    # resolution raises LayoutPrecomputeFatalError when the manager is
+    # unavailable, leaving the marker set on a dead job. Nothing above this point
+    # is slow (manager lookup and closure definitions), so the marker still covers
+    # every second of the actual page fan-out below.
     try:
         # STREAMING fan-out (not chunk-barriered). Bound concurrency with a
         # semaphore so exactly PARALLELISM pages are in flight AT ALL TIMES: as
@@ -717,6 +724,28 @@ async def precompute_document_layout(
             f"✅ [STAGE 1.5] Cached {persisted}/{len(pages_to_process)} pages — "
             f"extraction paths: {extraction_paths}"
         )
+    # A stage that persisted NOTHING has not completed, whatever the loop thought.
+    # Every `document_layout_analysis` upsert failure is swallowed per-page (it is
+    # logged as a warning so one bad page cannot kill a 200-page catalog), so a
+    # total write failure — bad credentials, table gone, schema drift — used to
+    # arrive here with persisted == 0 and emit `completed` anyway. Everything
+    # downstream reads that table, so the job then ran green on no layout at all:
+    # the exact silent-zero shape the platform rules call out. Raise instead, the
+    # same way the manager-unavailable and circuit-breaker preconditions do.
+    if pages_to_process and persisted == 0:
+        _msg = (
+            f"Stage 1.5 persisted 0 of {len(pages_to_process)} pages to "
+            f"document_layout_analysis — every cache write failed"
+        )
+        logger.error(f"   ❌ [STAGE 1.5] {_msg}")
+        _emit_stage_event(
+            supabase, job_id, "failed",
+            {**summary, "error": "layout_persisted_zero",
+             "duration_ms": int((time.time() - started_at) * 1000)},
+            logger,
+        )
+        raise LayoutPrecomputeFatalError(_msg)
+
     _emit_stage_event(
         supabase, job_id, "completed",
         {**summary, "duration_ms": int((time.time() - started_at) * 1000)},

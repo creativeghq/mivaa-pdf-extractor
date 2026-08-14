@@ -12,6 +12,8 @@ Handles concurrent image downloads from URLs:
 import logging
 import asyncio
 import aiohttp
+
+from app.utils.ssrf_guard import assert_safe_url, SSRFError
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from pathlib import Path
@@ -119,8 +121,25 @@ class ImageDownloadService:
                     if not self.validate_image_url(url):
                         raise ValueError(f"Invalid image URL: {url}")
 
+                    # Audit #12 finding C: this is a server-side fetch of a URL that
+                    # came from an LLM / supplier feed, so it goes through the shared
+                    # SSRF guard (scheme allowlist + DNS-resolve every record and
+                    # reject private / loopback / link-local / 169.254.169.254).
+                    # follow_redirects is off because the guard validates the URL we
+                    # were given, not wherever a 302 points -- aiohttp follows
+                    # redirects by default, which would have handed an attacker the
+                    # bypass for free.
+                    try:
+                        assert_safe_url(url, allow_schemes=("https",))
+                    except SSRFError as ssrf_err:
+                        raise ValueError(f"Blocked image URL ({ssrf_err}): {url[:120]}")
+
                     # Use the shared session (passed from download_images batch call)
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
+                    async with session.get(
+                        url,
+                        timeout=aiohttp.ClientTimeout(total=self.timeout),
+                        allow_redirects=False,
+                    ) as response:
                         # Handle HTTP 429 rate limiting with longer backoff
                         if response.status == 429:
                             retry_after = response.headers.get('Retry-After')
@@ -143,23 +162,37 @@ class ImageDownloadService:
                         if not content_type.startswith('image/') and 'octet-stream' not in content_type:
                             raise ValueError(f"Invalid content type: {content_type}")
 
-                        # Check declared content-length before reading (fast fail for oversized files)
+                        # Declared length is a fast fail, never the actual cap: an
+                        # absent header skipped the check and a malformed one fell
+                        # through to `pass`, and BOTH then hit an unbounded
+                        # response.read() that pulled the whole body into memory
+                        # before the 10MB limit was consulted. The cap that matters is
+                        # the streaming one below -- a hostile or broken server cannot
+                        # opt out of it by omitting a header.
                         content_length = response.headers.get('Content-Length')
                         if content_length:
                             try:
                                 if int(content_length) > self.max_file_size:
                                     raise ValueError(f"File too large: {content_length} bytes")
                             except (ValueError, TypeError):
-                                pass  # Malformed header — proceed and check after read
+                                pass  # Malformed header — the streaming cap still bounds us
 
-                        # Read image data
-                        image_data = await response.read()
+                        # Read in chunks and abort the moment we pass the cap, so peak
+                        # memory is bounded by max_file_size regardless of what the
+                        # server claims or sends.
+                        chunks = []
+                        total = 0
+                        async for chunk in response.content.iter_chunked(64 * 1024):
+                            total += len(chunk)
+                            if total > self.max_file_size:
+                                raise ValueError(
+                                    f"File too large: exceeded {self.max_file_size} bytes while streaming"
+                                )
+                            chunks.append(chunk)
+                        image_data = b"".join(chunks)
 
                         if len(image_data) == 0:
                             raise ValueError("Empty image data")
-
-                        if len(image_data) > self.max_file_size:
-                            raise ValueError(f"File too large: {len(image_data)} bytes")
 
                     # Generate filename and store
                     filename = self._generate_filename(url, index)
@@ -225,8 +258,10 @@ class ImageDownloadService:
         if not url or not isinstance(url, str):
             return False
 
-        # Must be HTTP(S)
-        if not url.startswith(('http://', 'https://')):
+        # https only. Plain http was accepted here, which is both a downgrade and
+        # (with redirects) an SSRF stepping stone; the real guard is assert_safe_url
+        # at fetch time, this is the cheap pre-filter.
+        if not url.startswith('https://'):
             return False
 
         # Reject known non-image paths (documents, stylesheets, scripts, data URIs)

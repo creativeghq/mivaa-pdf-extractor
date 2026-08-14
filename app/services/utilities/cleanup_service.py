@@ -352,6 +352,7 @@ class CleanupService:
             self.logger.info(f"🗑️ Cleaning storage bucket {bucket_name} prefix='{prefix}'")
 
             files_deleted = 0
+            failures = 0
             stack: List[str] = [prefix.rstrip('/')]
 
             while stack:
@@ -387,6 +388,12 @@ class CleanupService:
                                 sb.storage.from_(bucket_name).remove(leaf_paths)
                                 files_deleted += len(leaf_paths)
                             except Exception as rm_err:
+                                # Count it. A reaper that swallows its remove
+                                # failures reports the same "0 files" as a bucket
+                                # that was already clean, which is precisely what
+                                # ops.test_artifacts_accumulating exists to catch —
+                                # watch the OUTPUT, never the exit code.
+                                failures += len(leaf_paths)
                                 self.logger.warning(
                                     f"Batch remove failed in {bucket_name} "
                                     f"({len(leaf_paths)} paths): {rm_err}"
@@ -397,11 +404,26 @@ class CleanupService:
                         offset += 1000
 
                 except Exception as list_err:
+                    # A folder we could not list may hold any number of files. Treating
+                    # that as "nothing here" is how a reaper silently stops reaping.
+                    failures += 1
                     self.logger.warning(
                         f"Failed to list bucket={bucket_name} prefix='{cur}': {list_err}"
                     )
 
-            self.logger.info(f"🗑️ Deleted {files_deleted} files from {bucket_name} ({prefix})")
+            if failures:
+                # ERROR, not warning: WARNING+ is never dropped by the DB log sink,
+                # and a partially-failed sweep must be visible rather than inferred
+                # from a suspiciously low count.
+                self.logger.error(
+                    f"❌ Storage sweep of {bucket_name} ({prefix}) deleted {files_deleted} "
+                    f"file(s) but FAILED on {failures} path(s)/folder(s) — the bucket is "
+                    f"not clean and this is not 'nothing to delete'"
+                )
+            else:
+                self.logger.info(
+                    f"🗑️ Deleted {files_deleted} files from {bucket_name} ({prefix})"
+                )
             return files_deleted
 
         except Exception as e:
@@ -642,11 +664,21 @@ class CleanupService:
                 #    of zombie PDFs across months of completed jobs.
                 if document_id and delete_storage_files:
                     try:
-                        stats['storage_files_deleted'] = self.cleanup_document_storage(
-                            document_id, supabase_client, document_row=document_row
-                        )
-                        # Null out the path columns so a follow-up audit doesn't
-                        # think the row still owns the (now-deleted) object.
+                        # ORDER MATTERS, and it used to be backwards. The bytes were
+                        # deleted first and the pointer columns nulled afterwards in a
+                        # second call wrapped in `except Exception: pass` — so a crash
+                        # or a swallowed failure between them left a live `documents`
+                        # row pointing at an object that no longer exists, which is
+                        # the inverse of the platform's storage-GC hazard and strictly
+                        # worse: an orphaned OBJECT gets reaped by
+                        # storage-orphan-cleanup-cron, an orphaned POINTER is a
+                        # permanent 404 that nothing sweeps.
+                        #
+                        # Clearing the pointer first means the object drops out of
+                        # build_storage_reference_set() immediately, so if we die on
+                        # the next line the cron collects it. Losing the race in this
+                        # direction costs disk for one cron interval; losing it in the
+                        # other direction corrupts the row.
                         try:
                             supabase_client.client.table('documents')\
                                 .update({
@@ -655,8 +687,22 @@ class CleanupService:
                                 })\
                                 .eq('id', document_id)\
                                 .execute()
-                        except Exception:
-                            pass
+                        except Exception as ptr_err:
+                            # Do NOT proceed to delete the bytes: the row still claims
+                            # to own them, and deleting them now is exactly the
+                            # corruption this ordering exists to prevent.
+                            self.logger.warning(
+                                f"⚠️ Could not clear storage pointers for {document_id}, "
+                                f"leaving files in place: {ptr_err}"
+                            )
+                            stats['errors'].append(
+                                f"storage pointer clear failed: {str(ptr_err)}"
+                            )
+                            raise
+
+                        stats['storage_files_deleted'] = self.cleanup_document_storage(
+                            document_id, supabase_client, document_row=document_row
+                        )
                     except Exception as e:
                         self.logger.warning(f"⚠️ Storage cleanup failed: {e}")
                         stats['errors'].append(f"Storage cleanup failed: {str(e)}")

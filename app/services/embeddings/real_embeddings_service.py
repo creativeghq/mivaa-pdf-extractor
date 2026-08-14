@@ -945,8 +945,16 @@ class RealEmbeddingsService:
                         limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
                     )
 
+                # Audit #12 finding 3: this said "voyage-4" unconditionally while the
+                # provenance stamp below wrote self.voyage_model, so setting
+                # VOYAGE_MODEL to anything else would have batch-indexed rows
+                # embedded by voyage-4 and queried with the new model -- both 1024D,
+                # so VECS accepts the mixed-space vector and ranks confident
+                # nonsense instead of raising. Latent only because the config
+                # default happens to match. The single-text path already used
+                # self.voyage_model; only the batch path diverged.
                 request_data = {
-                    "model": "voyage-4",
+                    "model": self.voyage_model,
                     "input": processed_texts,  # Use processed texts (no empty strings)
                     "truncation": truncation
                 }
@@ -970,7 +978,43 @@ class RealEmbeddingsService:
 
                 if response.status_code == 200:
                     data = response.json()
-                    embeddings = [item["embedding"] for item in data["data"]]
+
+                    # Validate the response against what we asked for BEFORE any
+                    # caller can zip it back onto its inputs. A batch is positional:
+                    # caller i gets embeddings[i]. A 100-text batch that came back
+                    # with 99 vectors, or came back out of order, silently attached
+                    # every chunk to its neighbour's embedding -- stored, indexed and
+                    # ranked with nothing raising. Voyage returns an explicit `index`
+                    # per item; order is not part of the contract, so sort by it
+                    # rather than trusting arrival order.
+                    items = data.get("data") or []
+                    if len(items) != len(processed_texts):
+                        raise ValueError(
+                            f"Voyage batch returned {len(items)} embeddings for "
+                            f"{len(processed_texts)} inputs -- refusing to misalign them"
+                        )
+                    try:
+                        items = sorted(items, key=lambda it: int(it["index"]))
+                    except (KeyError, TypeError, ValueError) as idx_err:
+                        raise ValueError(
+                            f"Voyage batch response items lack a usable 'index': {idx_err}"
+                        )
+                    if [int(it["index"]) for it in items] != list(range(len(processed_texts))):
+                        raise ValueError(
+                            "Voyage batch response indices are not a complete 0..n-1 run"
+                        )
+
+                    embeddings = [item.get("embedding") for item in items]
+                    wrong = [
+                        i for i, e in enumerate(embeddings)
+                        if not isinstance(e, list) or len(e) != voyage_dimensions
+                    ]
+                    if wrong:
+                        raise ValueError(
+                            f"Voyage batch returned {len(wrong)} vector(s) that are not "
+                            f"{voyage_dimensions}D (first offending index {wrong[0]}) -- "
+                            f"a wrong-width vector is a wrong SPACE, never a usable vector"
+                        )
 
                     # Log AI call with proper cost calculation
                     latency_ms = int((time.time() - start_time) * 1000)
@@ -983,7 +1027,7 @@ class RealEmbeddingsService:
 
                     await self.ai_logger.log_ai_call(
                         task="batch_text_embedding_generation",
-                        model=f"voyage-4-{voyage_dimensions}d",
+                        model=f"{self.voyage_model}-{voyage_dimensions}d",
                         input_tokens=input_tokens,
                         output_tokens=0,
                         cost=cost,
@@ -1025,7 +1069,7 @@ class RealEmbeddingsService:
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="batch_text_embedding_generation",
-                    model=f"voyage-4-{voyage_dimensions}d",
+                    model=f"{self.voyage_model}-{voyage_dimensions}d",
                     input_tokens=0,
                     output_tokens=0,
                     cost=0.0,
@@ -1208,7 +1252,7 @@ class RealEmbeddingsService:
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="text_embedding_generation",
-                    model=f"voyage-4-{voyage_dimensions}d",
+                    model=f"{self.voyage_model}-{voyage_dimensions}d",
                     input_tokens=0,
                     output_tokens=0,
                     cost=0.0,
@@ -1342,6 +1386,48 @@ class RealEmbeddingsService:
                     # Decode base64 to PIL Image
                     image_bytes = base64.b64decode(image_data)
                     pil_image = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+
+                # Audit #12: `image_url` was accepted as a parameter and then never
+                # read. An image known only by URL therefore reached
+                # get_image_embedding(None) -- no visual_768 vector, while the other
+                # channels still reported success, so the image looked embedded and
+                # had no visual vector at all. Fetch it, through the shared SSRF
+                # guard because the URL can come from a supplier feed or an LLM.
+                if pil_image is None and image_url:
+                    try:
+                        from app.utils.ssrf_guard import assert_safe_url, SSRFError
+                        try:
+                            assert_safe_url(image_url, allow_schemes=("https",))
+                        except SSRFError as ssrf_err:
+                            self.logger.error(f"❌ Blocked image_url for SLIG ({ssrf_err})")
+                            return None, None
+                        import httpx as _httpx
+                        async with _httpx.AsyncClient(
+                            timeout=30.0, follow_redirects=False
+                        ) as _c:
+                            _r = await _c.get(image_url)
+                        if _r.status_code != 200:
+                            self.logger.error(
+                                f"❌ image_url fetch for SLIG returned HTTP {_r.status_code}"
+                            )
+                            return None, None
+                        _body = _r.content
+                        if len(_body) > 10 * 1024 * 1024:
+                            self.logger.error("❌ image_url for SLIG exceeds the 10MB cap")
+                            return None, None
+                        pil_image = Image.open(io.BytesIO(_body)).convert('RGB')
+                    except Exception as _fetch_err:
+                        self.logger.error(f"❌ Could not fetch image_url for SLIG: {_fetch_err}")
+                        return None, None
+
+                # Never hand SLIG a None image: it produced a confusing downstream
+                # failure instead of an honest "this image has no visual vector".
+                if pil_image is None:
+                    self.logger.error(
+                        "❌ SLIG called with no decodable image (no pil_image, "
+                        "no image_data, no usable image_url) — returning no vector"
+                    )
+                    return None, None
 
                 try:
                     # Audit fix #14: SLIG dim-mismatch retry. Previously a single

@@ -12,13 +12,44 @@ import asyncio
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import logging
-import httpx
 
 from app.services.core.ai_call_logger import AICallLogger
 
 from app.services.utilities.prompt_registry import load_prompt, render
 
 logger = logging.getLogger(__name__)
+
+
+#: Invariant 9: a classifier whose verdict drives downstream behaviour states that
+#: verdict through a real Anthropic tool schema, never as free text a parser has to
+#: guess at. The enum is the contract -- the model cannot answer "productish", and
+#: there is nothing left to salvage-parse.
+_VALID_CATEGORIES = {"product", "supporting", "administrative", "transitional"}
+
+DOCUMENT_CLASSIFICATION_TOOL = {
+    "name": "record_page_classification",
+    "description": "Record the classification of one catalog page.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "enum": ["product", "supporting", "administrative", "transitional"],
+                "description": (
+                    "product: product information, specifications, features. "
+                    "supporting: technical details, certifications, guides. "
+                    "administrative: company info, legal, contact. "
+                    "transitional: TOC, headers, footers, navigation."
+                ),
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence in the category, 0.0 to 1.0.",
+            },
+        },
+        "required": ["category", "confidence"],
+    },
+}
 
 
 class DocumentClassifier:
@@ -66,6 +97,18 @@ class DocumentClassifier:
         content_type = stage1_result["content_type"]
         confidence = stage1_result["confidence"]
         
+        # A failed classification is not a category. Return it as-is so the caller
+        # sees the marker rather than a page silently treated as "not a product".
+        if content_type == "classification_failed":
+            return {
+                "content_type": "classification_failed",
+                "confidence": 0.0,
+                "metadata": {},
+                "is_product": False,
+                "enrichment_applied": False,
+                "error": stage1_result.get("error"),
+            }
+
         # Stage 2: Deep enrichment (only for product content)
         if content_type == "product" and confidence >= 0.7:
             stage2_result = await self._deep_enrich(content, context, job_id)
@@ -116,65 +159,56 @@ class DocumentClassifier:
         try:
             start_time = datetime.now()
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        "x-api-key": self.anthropic_api_key,
-                        "anthropic-version": "2023-06-01",
-                        "content-type": "application/json",
+            # Forced tool_choice, via the tracked helper so the cost lands in
+            # ai_usage_logs automatically (pipeline convention 10) instead of the
+            # hand-rolled httpx POST + manual log_ai_call this replaced.
+            from app.services.core.claude_helper import tracked_claude_call_async
+
+            response = await tracked_claude_call_async(
+                task="document_classification_stage1",
+                model="claude-haiku-4-5",
+                max_tokens=256,
+                messages=[{"role": "user", "content": prompt}],
+                job_id=job_id,
+                extra_kwargs={
+                    "tools": [DOCUMENT_CLASSIFICATION_TOOL],
+                    "tool_choice": {
+                        "type": "tool",
+                        "name": DOCUMENT_CLASSIFICATION_TOOL["name"],
                     },
-                    json={
-                        "model": "claude-haiku-4-5",
-                        "max_tokens": 64,
-                        "messages": [{"role": "user", "content": prompt}],
-                    },
-                )
-                response.raise_for_status()
-                response_data = response.json()
+                },
+            )
 
             end_time = datetime.now()
             latency_ms = int((end_time - start_time).total_seconds() * 1000)
 
-            response_text = response_data["content"][0]["text"].strip()
-            parts = response_text.split("|")
-            
-            if len(parts) >= 2:
-                category = parts[0].strip().lower()
-                try:
-                    confidence = float(parts[1].strip())
-                except ValueError:
-                    confidence = 0.5
-            else:
-                # Fallback parsing
-                response_lower = response_text.lower()
-                if "product" in response_lower:
-                    category = "product"
-                elif "supporting" in response_lower:
-                    category = "supporting"
-                elif "administrative" in response_lower:
-                    category = "administrative"
-                else:
-                    category = "transitional"
-                confidence = 0.6
-            
+            tool_input = None
+            for block in (response.content or []):
+                if getattr(block, "type", None) == "tool_use":
+                    tool_input = getattr(block, "input", None)
+                    break
+            if not isinstance(tool_input, dict):
+                # tool_choice was forced, so this means the API contract broke.
+                # There is nothing to salvage and guessing would be worse than
+                # admitting it.
+                raise ValueError("Claude returned no tool_use block for a forced tool_choice")
+
+            category = str(tool_input.get("category", "")).strip().lower()
+            if category not in _VALID_CATEGORIES:
+                raise ValueError(f"Classifier returned an out-of-enum category: {category!r}")
+            try:
+                confidence = float(tool_input.get("confidence"))
+            except (TypeError, ValueError):
+                raise ValueError("Classifier returned a non-numeric confidence")
+            confidence = max(0.0, min(1.0, confidence))
+                        
             # Adjust confidence based on context
             if has_images and category == "product":
                 confidence = min(1.0, confidence + 0.1)  # Boost confidence for products with images
             
-            # Log AI call
-            if self.ai_logger and job_id:
-                usage = response_data.get("usage", {}) or {}
-                await self.ai_logger.log_ai_call(
-                    task="document_classification_stage1",
-                    model="claude-haiku-4-5",
-                    input_tokens=usage.get("input_tokens", 0),
-                    output_tokens=usage.get("output_tokens", 0),
-                    latency_ms=latency_ms,
-                    confidence_score=confidence,
-                    job_id=job_id,
-                )
-            
+            # (No manual log_ai_call: tracked_claude_call_async already recorded
+            # this call's tokens and cost in ai_usage_logs.)
+
             logger.info(
                 f"✅ Fast classification: {category} (confidence: {confidence:.2f}, "
                 f"latency: {latency_ms}ms)"
@@ -187,19 +221,19 @@ class DocumentClassifier:
             }
             
         except Exception as e:
+            # No keyword-heuristic fallback. It used to return e.g.
+            # {"content_type": "product", "confidence": 0.5} from a substring match,
+            # which is indistinguishable at every call site from a real verdict at
+            # middling confidence — so a dead API key or a broken model silently
+            # reclassified an entire catalog by keyword. `classification_failed` is
+            # the explicit failure marker (pipeline convention 1): consumers check
+            # the marker, because emptiness and low confidence are both ambiguous.
             logger.error(f"❌ Fast classification failed: {str(e)}")
-            
-            # Fallback to simple heuristics
-            content_lower = content.lower()
-            
-            if any(word in content_lower for word in ["product", "specification", "features", "dimensions"]):
-                return {"content_type": "product", "confidence": 0.5}
-            elif any(word in content_lower for word in ["technical", "installation", "warranty", "certificate"]):
-                return {"content_type": "supporting", "confidence": 0.5}
-            elif any(word in content_lower for word in ["company", "contact", "legal", "copyright"]):
-                return {"content_type": "administrative", "confidence": 0.5}
-            else:
-                return {"content_type": "transitional", "confidence": 0.4}
+            return {
+                "content_type": "classification_failed",
+                "confidence": 0.0,
+                "error": str(e)[:300],
+            }
     
     async def _deep_enrich(
         self,
