@@ -132,6 +132,11 @@ class AdminPromptService:
             # that the pipeline (which reads 'classification') never sees (audit #217 H9).
             # Resolving by (stage, category) lets the update-by-id branch preserve the
             # row's real prompt_type.
+            # DELIBERATELY workspace-scoped, unlike every READ path (#347). This is the admin
+            # SAVE lookup: it decides update-vs-insert. Widening it to the global workspace
+            # would make a tenant editing their prompt find the PLATFORM DEFAULT and update it
+            # for every other tenant. A read falling back to the default is correct; a write
+            # falling through to it is not.
             existing = self.supabase.client.table('prompts')\
                 .select('*')\
                 .eq('workspace_id', workspace_id)\

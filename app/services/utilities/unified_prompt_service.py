@@ -16,6 +16,11 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.utilities.prompt_registry import (
+    prefer_workspace,
+    prefer_workspace_rows,
+    workspace_scope,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,20 +102,21 @@ class UnifiedPromptService:
     ) -> Optional[Dict[str, Any]]:
         """Get specific extraction prompt (latest version)"""
         try:
+            # Widened to [workspace, global] so a platform default is reachable, and
+            # `.limit(1)` dropped with it: on a two-scope query it returns whichever row the
+            # database happened to order first, which could be the default over the tenant's
+            # own customisation (#347).
             result = self.supabase.client.table('prompts')\
                 .select('*')\
                 .eq('prompt_type', self.EXTRACTION)\
-                .eq('workspace_id', workspace_id)\
+                .in_('workspace_id', workspace_scope(workspace_id))\
                 .eq('stage', stage)\
                 .eq('category', category)\
                 .eq('is_active', True)\
                 .order('version', desc=True)\
-                .limit(1)\
                 .execute()
 
-            if result.data and len(result.data) > 0:
-                return result.data[0]
-            return None
+            return prefer_workspace(result.data or [], workspace_id)
 
         except Exception as e:
             logger.error(f"Error fetching extraction prompt: {str(e)}")
@@ -145,7 +151,7 @@ class UnifiedPromptService:
             query = self.supabase.client.table('prompts')\
                 .select('*')\
                 .eq('prompt_type', self.TEMPLATE)\
-                .eq('workspace_id', workspace_id)\
+                .in_('workspace_id', workspace_scope(workspace_id))\
                 .eq('is_active', True)
 
             if stage:
@@ -154,7 +160,12 @@ class UnifiedPromptService:
                 query = query.eq('industry', industry)
 
             result = query.order('stage').execute()
-            data = result.data if result.data else []
+            # A tenant that has customised a template would otherwise see it twice — its own
+            # row and the platform default — with no guarantee which one a caller picks.
+            data = prefer_workspace_rows(
+                result.data or [], workspace_id,
+                lambda r: (r.get('stage'), r.get('category'), r.get('industry')),
+            )
 
             self._set_cache(cache_key, data)
             return data
@@ -183,63 +194,60 @@ class UnifiedPromptService:
                 result = self.supabase.client.table('prompts')\
                     .select('*')\
                     .eq('prompt_type', self.TEMPLATE)\
-                    .eq('workspace_id', workspace_id)\
+                    .in_('workspace_id', workspace_scope(workspace_id))\
                     .eq('stage', stage)\
                     .eq('industry', industry)\
                     .eq('category', category)\
                     .eq('is_active', True)\
                     .order('updated_at', desc=True)\
-                    .limit(1)\
                     .execute()
-                if result.data:
-                    return result.data[0]
+                row = prefer_workspace(result.data or [], workspace_id)
+                if row:
+                    return row
 
             # Try industry match (any category)
             if industry:
                 result = self.supabase.client.table('prompts')\
                     .select('*')\
                     .eq('prompt_type', self.TEMPLATE)\
-                    .eq('workspace_id', workspace_id)\
+                    .in_('workspace_id', workspace_scope(workspace_id))\
                     .eq('stage', stage)\
                     .eq('industry', industry)\
                     .is_('category', 'null')\
                     .eq('is_active', True)\
                     .order('updated_at', desc=True)\
-                    .limit(1)\
                     .execute()
-                if result.data:
-                    return result.data[0]
+                row = prefer_workspace(result.data or [], workspace_id)
+                if row:
+                    return row
 
             # Try category match (any industry)
             if category:
                 result = self.supabase.client.table('prompts')\
                     .select('*')\
                     .eq('prompt_type', self.TEMPLATE)\
-                    .eq('workspace_id', workspace_id)\
+                    .in_('workspace_id', workspace_scope(workspace_id))\
                     .eq('stage', stage)\
                     .eq('category', category)\
                     .is_('industry', 'null')\
                     .eq('is_active', True)\
                     .order('updated_at', desc=True)\
-                    .limit(1)\
                     .execute()
-                if result.data:
-                    return result.data[0]
+                row = prefer_workspace(result.data or [], workspace_id)
+                if row:
+                    return row
 
             # Default template for stage
             result = self.supabase.client.table('prompts')\
                 .select('*')\
                 .eq('prompt_type', self.TEMPLATE)\
-                .eq('workspace_id', workspace_id)\
+                .in_('workspace_id', workspace_scope(workspace_id))\
                 .eq('stage', stage)\
                 .eq('is_default', True)\
                 .eq('is_active', True)\
-                .limit(1)\
                 .execute()
 
-            if result.data:
-                return result.data[0]
-            return None
+            return prefer_workspace(result.data or [], workspace_id)
 
         except Exception as e:
             logger.error(f"Error fetching template prompt: {str(e)}")
@@ -272,14 +280,17 @@ class UnifiedPromptService:
             query = self.supabase.client.table('prompts')\
                 .select('*')\
                 .eq('prompt_type', self.SEARCH)\
-                .eq('workspace_id', workspace_id)\
+                .in_('workspace_id', workspace_scope(workspace_id))\
                 .eq('is_active', True)
 
             if prompt_subtype:
                 query = query.eq('subcategory', prompt_subtype)
 
             result = query.order('created_at').execute()
-            data = result.data if result.data else []
+            data = prefer_workspace_rows(
+                result.data or [], workspace_id,
+                lambda r: (r.get('category'), r.get('subcategory')),
+            )
 
             self._set_cache(cache_key, data)
             return data

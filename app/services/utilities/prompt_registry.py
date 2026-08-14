@@ -94,6 +94,26 @@ def prefer_workspace(rows: list, workspace_id: Optional[str]) -> Optional[dict]:
             return row
     return rows[0]
 
+
+def prefer_workspace_rows(rows: list, workspace_id: Optional[str], key) -> list:
+    """De-duplicate a two-scope result set, keeping the tenant's row over the platform default.
+
+    A LIST query widened to [workspace, global] returns BOTH rows whenever a tenant has
+    customised a prompt — so the caller would see the same prompt twice and, worse, might use
+    the default. `key` maps a row to whatever identifies "the same prompt" for that query.
+    """
+    best: dict = {}
+    for row in rows or []:
+        k = key(row)
+        current = best.get(k)
+        if current is None:
+            best[k] = row
+        elif (workspace_id
+              and current.get("workspace_id") != workspace_id
+              and row.get("workspace_id") == workspace_id):
+            best[k] = row
+    return list(best.values())
+
 class PromptError(RuntimeError):
     """Base for both prompt failures, so a caller may catch either deliberately."""
 
