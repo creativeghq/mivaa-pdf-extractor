@@ -82,3 +82,7 @@ output/
 temp/
 tmp/
 
+audit_*.tmp.py
+*.tmp.py
+prompt_seed.json
+registry_seed.json
