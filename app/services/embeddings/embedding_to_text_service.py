@@ -15,6 +15,7 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
+from app.services.utilities.prompt_registry import workspace_scope, prefer_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -39,18 +40,21 @@ class EmbeddingToTextService:
         """Load embedding-to-text prompt from database."""
         try:
             result = self.supabase.client.table('prompts') \
-                .select('prompt_text') \
-                .eq('workspace_id', self.workspace_id) \
+                .select('prompt_text, workspace_id') \
+                .in_('workspace_id', workspace_scope(self.workspace_id)) \
                 .eq('prompt_type', 'extraction') \
                 .eq('stage', 'image_analysis') \
                 .eq('category', 'embedding_to_text') \
                 .eq('is_active', True) \
                 .order('version', desc=True) \
-                .limit(1) \
                 .execute()
 
-            if result.data:
-                self.prompt = result.data[0]['prompt_text']
+            # `.limit(1)` is gone on purpose: the query now spans two workspaces, so taking the
+            # first row would pick the platform default over the tenant's own customisation
+            # whenever the database happened to return it first.
+            row = prefer_workspace(result.data or [], self.workspace_id)
+            if row:
+                self.prompt = row['prompt_text']
                 logger.info("✅ Loaded embedding-to-text prompt from database")
             else:
                 logger.error("❌ No embedding-to-text prompt found in database")

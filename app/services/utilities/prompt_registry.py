@@ -56,6 +56,44 @@ GLOBAL_WORKSPACE = "00000000-0000-0000-0000-000000000000"
 CACHE_TTL_SECONDS = 300
 
 
+
+# ── Workspace scope ──────────────────────────────────────────────────────────────────────────
+#
+# A prompt row lives EITHER under a tenant workspace (a customisation) or under the global
+# workspace (the platform default). Every loader in this service used to filter
+# `.eq('workspace_id', workspace_id)` and stop there, so a platform default was invisible to
+# every tenant and each workspace needed its own copy of all ~30 pipeline prompts.
+#
+# That is not a theoretical gap: 32 defaults were sitting under one tenant, and moving them to
+# the global workspace — the correct place for a default — broke PDF ingestion outright, because
+# no loader looked there. The move is only safe once every loader resolves like
+# `prompt_registry.load_prompt` does: workspace first, then global.
+
+
+def workspace_scope(workspace_id: Optional[str]) -> list:
+    """The workspace ids a prompt lookup may match, for `.in_('workspace_id', ...)`."""
+    if not workspace_id or workspace_id == GLOBAL_WORKSPACE:
+        return [GLOBAL_WORKSPACE]
+    return [workspace_id, GLOBAL_WORKSPACE]
+
+
+def prefer_workspace(rows: list, workspace_id: Optional[str]) -> Optional[dict]:
+    """Pick the tenant's own row when it exists, else the platform default.
+
+    PostgREST cannot order by "this workspace first" in the fluent API, so the choice is made
+    here rather than by hoping the database returns them in a useful order.
+    """
+    if not rows:
+        return None
+    if workspace_id:
+        for row in rows:
+            if row.get("workspace_id") == workspace_id:
+                return row
+    for row in rows:
+        if row.get("workspace_id") == GLOBAL_WORKSPACE:
+            return row
+    return rows[0]
+
 class PromptError(RuntimeError):
     """Base for both prompt failures, so a caller may catch either deliberately."""
 

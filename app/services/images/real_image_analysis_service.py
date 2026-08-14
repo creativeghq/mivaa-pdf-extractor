@@ -26,6 +26,7 @@ import httpx
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.supabase_client import get_supabase_client
 from app.services.core.ai_client_service import get_ai_client_service
+from app.services.utilities.prompt_registry import workspace_scope, prefer_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -85,12 +86,13 @@ class RealImageAnalysisService:
         """
         try:
             query = self.supabase.client.table('prompts')\
-                .select('prompt_text, version')\
+                .select('prompt_text, version, workspace_id')\
                 .eq('prompt_type', 'extraction')\
 
             # Only filter by workspace_id if it's a valid non-None value
             if self.workspace_id and self.workspace_id != "None":
-                query = query.eq('workspace_id', self.workspace_id)
+                # workspace row first, platform default second (#347).
+                query = query.in_('workspace_id', workspace_scope(self.workspace_id))
 
             result = query\
                 .eq('stage', 'image_analysis')\
@@ -99,11 +101,23 @@ class RealImageAnalysisService:
                 .in_('version', [3, 4])\
                 .execute()
 
-            if result.data and len(result.data) > 0:
+            # This query returns TWO prompts (v3 = vision, v4 = Claude validation), so the
+            # workspace preference has to be applied WITHIN each version — picking one row
+            # overall would silently drop the other prompt entirely.
+            _by_version = {}
+            for _row in (result.data or []):
+                _by_version.setdefault(_row['version'], []).append(_row)
+            _rows = [
+                prefer_workspace(_group, self.workspace_id)
+                for _group in _by_version.values()
+            ]
+            _rows = [r for r in _rows if r]
+
+            if _rows:
                 self.vision_prompt = None
                 self.claude_prompt = None
 
-                for row in result.data:
+                for row in _rows:
                     version = row['version']
                     prompt = row['prompt_text']
 

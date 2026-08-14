@@ -11,6 +11,7 @@ import logging
 from typing import Optional
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.utilities.prompt_registry import workspace_scope, prefer_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -38,36 +39,38 @@ async def get_prompt_template_from_db(
         supabase = get_supabase_client()
 
         # Try exact match first
+        # workspace row first, platform default second (#347) — a default living under the
+        # global workspace was previously invisible to every tenant.
         result = supabase.client.table('prompts')\
-            .select('prompt_text')\
+            .select('prompt_text, workspace_id')\
             .eq('prompt_type', 'extraction')\
-            .eq('workspace_id', workspace_id)\
+            .in_('workspace_id', workspace_scope(workspace_id))\
             .eq('stage', stage)\
             .eq('category', category)\
             .eq('is_active', True)\
             .order('version', desc=True)\
-            .limit(1)\
             .execute()
 
-        if result.data and len(result.data) > 0:
+        row = prefer_workspace(result.data or [], workspace_id)
+        if row:
             logger.info(f"Found prompt for {stage}/{category} in database")
-            return result.data[0]['prompt_text']
+            return row['prompt_text']
 
         # Try default for this stage
         result = supabase.client.table('prompts')\
-            .select('prompt_text')\
+            .select('prompt_text, workspace_id')\
             .eq('prompt_type', 'extraction')\
-            .eq('workspace_id', workspace_id)\
+            .in_('workspace_id', workspace_scope(workspace_id))\
             .eq('stage', stage)\
             .eq('category', 'default')\
             .eq('is_active', True)\
             .order('version', desc=True)\
-            .limit(1)\
             .execute()
 
-        if result.data and len(result.data) > 0:
+        row = prefer_workspace(result.data or [], workspace_id)
+        if row:
             logger.info(f"Found default prompt for {stage} in database")
-            return result.data[0]['prompt_text']
+            return row['prompt_text']
 
         # No prompt found - this is an error
         error_msg = f"CRITICAL: No prompt found in database for stage='{stage}', category='{category}'. Please add it via /admin/ai-configs."

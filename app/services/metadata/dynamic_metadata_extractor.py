@@ -29,6 +29,7 @@ from app.services.metadata.metadata_normalizer import normalize_metadata, get_no
 from app.services.metadata.field_registry import field_registry
 from app.services.core.supabase_client import get_supabase_client
 from app.services.utilities.prompt_registry import get_cached, load_prompt, prefetch, render
+from app.services.utilities.prompt_registry import workspace_scope, prefer_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +179,8 @@ class DynamicMetadataExtractor:
             # Try to get custom prompt first (is_custom = true)
             # Only select columns that exist in the prompts table
             result = self.supabase.client.table('prompts')\
-                .select('prompt_text, version, is_custom')\
-                .eq('workspace_id', self.workspace_id)\
+                .select('prompt_text, version, is_custom, workspace_id')\
+                .in_('workspace_id', workspace_scope(self.workspace_id))\
                 .eq('prompt_type', 'extraction')\
                 .eq('stage', stage)\
                 .eq('category', category)\
@@ -188,15 +189,15 @@ class DynamicMetadataExtractor:
                 .limit(1)\
                 .execute()
 
-            if result.data and len(result.data) > 0:
-                prompt_data = result.data[0]
+            prompt_data = prefer_workspace(result.data or [], self.workspace_id)
+            if prompt_data:
                 self.logger.info(f"✅ Loaded CUSTOM prompt from database (v{prompt_data['version']})")
                 return prompt_data['prompt_text']
 
             # Fallback to default prompt (is_custom = false)
             result = self.supabase.client.table('prompts')\
-                .select('prompt_text, version')\
-                .eq('workspace_id', self.workspace_id)\
+                .select('prompt_text, version, workspace_id')\
+                .in_('workspace_id', workspace_scope(self.workspace_id))\
                 .eq('prompt_type', 'extraction')\
                 .eq('stage', stage)\
                 .eq('category', category)\
@@ -205,8 +206,8 @@ class DynamicMetadataExtractor:
                 .limit(1)\
                 .execute()
 
-            if result.data and len(result.data) > 0:
-                prompt_data = result.data[0]
+            prompt_data = prefer_workspace(result.data or [], self.workspace_id)
+            if prompt_data:
                 self.logger.info(f"✅ Loaded DEFAULT prompt from database (v{prompt_data['version']})")
                 return prompt_data['prompt_text']
 
