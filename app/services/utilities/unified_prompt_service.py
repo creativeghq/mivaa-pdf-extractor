@@ -83,53 +83,6 @@ class UnifiedPromptService:
             logger.error(f"Error fetching agent prompts: {str(e)}")
             return []
 
-    async def get_extraction_prompts(
-        self,
-        workspace_id: str,
-        stage: Optional[str] = None,
-        category: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Get extraction prompts for PDF processing
-
-        Args:
-            workspace_id: Workspace ID
-            stage: Optional stage filter (discovery, entity_creation, image_analysis)
-            category: Optional category filter (products, material_properties)
-
-        Returns:
-            List of extraction prompts
-        """
-        try:
-            if not workspace_id:
-                return []
-
-            cache_key = self._get_cache_key(type=self.EXTRACTION, workspace=workspace_id, stage=stage, category=category)
-            cached = self._get_from_cache(cache_key)
-            if cached is not None:
-                return cached
-
-            query = self.supabase.client.table('prompts')\
-                .select('*')\
-                .eq('prompt_type', self.EXTRACTION)\
-                .eq('workspace_id', workspace_id)\
-                .eq('is_active', True)
-
-            if stage:
-                query = query.eq('stage', stage)
-            if category:
-                query = query.eq('category', category)
-
-            result = query.order('stage').order('category').order('version', desc=True).execute()
-            data = result.data if result.data else []
-
-            self._set_cache(cache_key, data)
-            return data
-
-        except Exception as e:
-            logger.error(f"Error fetching extraction prompts: {str(e)}")
-            return []
-
     async def get_extraction_prompt(
         self,
         workspace_id: str,
