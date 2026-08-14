@@ -168,6 +168,35 @@ async def load_prompt(
         return text
 
 
+def get_cached(prompt_type: str, category: str, *, stage: Optional[str] = None,
+               workspace_id: Optional[str] = None, subcategory: Optional[str] = None) -> str:
+    """Synchronous read of an already-loaded prompt.
+
+    Some prompt sites are sync — `_build_spec_prompt`, the legend PROMPTS_BY_TYPE map — and one
+    was evaluated at IMPORT time, which can neither await nor reach a database. They call this
+    after an async entry point has called `prefetch`.
+
+    It RAISES rather than returning a default, for the same reason the field registry does: a
+    prompt site that quietly degrades is exactly the failure this phase exists to delete.
+    """
+    hit = _CACHE.get(_key(prompt_type, category, stage, workspace_id, subcategory))
+    if hit is None:
+        raise PromptNotConfigured(
+            f"Prompt {prompt_type}/{stage or '-'}/{category} read synchronously before it was "
+            f"loaded. Call `await prefetch(...)` at this path's entry point — sync sites cannot "
+            f"reach the database and must not invent a default."
+        )
+    return hit[0]
+
+
+async def prefetch(*keys: Tuple[str, ...]) -> None:
+    """Warm the cache for sync sites. Each key is (prompt_type, category[, stage])."""
+    for key in keys:
+        prompt_type, category = key[0], key[1]
+        stage = key[2] if len(key) > 2 else None
+        await load_prompt(prompt_type, category, stage=stage)
+
+
 def render(template: str, **values: Any) -> str:
     """Substitute `{name}` placeholders, failing loudly if one is not in the template.
 

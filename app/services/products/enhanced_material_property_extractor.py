@@ -19,6 +19,8 @@ from typing import Any, Dict, Optional
 
 from app.services.core.supabase_client import get_supabase_client
 
+from app.services.utilities.prompt_registry import PromptNotConfigured, load_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,69 +58,9 @@ class PropertyExtractionResult:
 
 # ─── Single-call extraction prompt ───────────────────────────────────────────
 
-EXTRACTION_SYSTEM_PROMPT = """\
-You are a technical material specification analyst. Extract ALL functional \
-properties you can find from the provided text. Return ONLY a JSON object \
-with exactly these top-level keys (omit a key entirely if no data found):
+# Prompt: extraction / entity_creation / material_properties_system
+# (#347 phase 3P — was hardcoded here AND used as the `or` fallback below).
 
-{
-  "slipSafetyRatings": {
-    "rValue": ["R10"],           // DIN 51130: R9-R13
-    "barefootRampTest": ["B"],   // DIN 51097: A/B/C
-    "dcofRange": [0.45, 0.62],   // Dynamic Coefficient of Friction 0-1
-    "pendulumTestRange": [25, 45],// PTV 0-100
-    "safetyCertifications": []   // ANSI A137.1, DIN 51130, etc.
-  },
-  "surfaceGlossReflectivity": {
-    "glossLevel": ["polished"],  // super-polished/polished/satin/matte/velvet/anti-glare
-    "glossValueRange": [15, 35]  // gloss meter 0-100
-  },
-  "mechanicalPropertiesExtended": {
-    "mohsHardnessRange": [6.5, 7.0],  // 1-10
-    "peiRating": [3, 4],         // PEI Class 0-5
-    "breakingStrength": 2000,    // N
-    "modulusOfRupture": 45       // MPa
-  },
-  "thermalProperties": {
-    "thermalConductivityRange": [0.8, 1.2],  // W/mK
-    "heatResistanceRange": [200, 300],        // °C
-    "radiantHeatingCompatible": true,
-    "fireRating": "A1"           // Euroclass
-  },
-  "waterMoistureResistance": {
-    "waterAbsorptionRange": [0.1, 0.5],  // %
-    "frostResistance": true,
-    "moldMildewResistant": true
-  },
-  "chemicalHygieneResistance": {
-    "acidResistance": "high",    // low/medium/high/excellent
-    "alkaliResistance": "high",
-    "stainResistanceClass": [4, 5],  // EN ISO 10545-14 Class 1-5
-    "foodSafeCertified": false
-  },
-  "acousticElectricalProperties": {
-    "nrcRange": [0.15, 0.25],    // NRC 0-1
-    "antiStatic": false,
-    "soundAbsorption": 0.22
-  },
-  "environmentalSustainability": {
-    "greenguardLevel": "gold",   // none/certified/gold
-    "totalRecycledContentRange": [25, 40],  // %
-    "leedCreditsRange": [2, 4],
-    "vocEmissions": "low"        // none/low/medium/high
-  },
-  "dimensionalAesthetic": {
-    "rectifiedEdges": true,
-    "shadeVariation": "V2",      // V1-V4
-    "nominalSizes": ["60x60", "30x60"]  // cm
-  }
-}
-
-Rules:
-- Extract ONLY properties explicitly stated or clearly implied in the text
-- Use null for ambiguous values, omit keys with no data
-- Ranges are [min, max] arrays
-- Return raw JSON only — no markdown fences, no explanation"""
 
 
 class EnhancedMaterialPropertyExtractor:
@@ -135,31 +77,30 @@ class EnhancedMaterialPropertyExtractor:
         self.workspace_id = workspace_id or get_settings().default_workspace_id
         self.supabase = get_supabase_client()
         self._db_prompt: Optional[str] = None
-        self._load_db_prompt()
+        # NOT loaded here: _load_db_prompt is async now (it must be, to reach the prompt store),
+        # and calling it from __init__ would leave an un-awaited coroutine and a None prompt.
+        # extract() loads it.
 
-    def _load_db_prompt(self) -> None:
-        """Load custom prompt from database if available, else use built-in."""
-        try:
-            result = self.supabase.client.table("prompts") \
-                .select("prompt_text") \
-                .eq("workspace_id", self.workspace_id) \
-                .eq("prompt_type", "extraction") \
-                .eq("stage", "entity_creation") \
-                .eq("category", "material_properties") \
-                .eq("is_active", True) \
-                .order("version", desc=True) \
-                .limit(1) \
-                .execute()
+    async def _load_db_prompt(self) -> None:
+        """Load the extraction system prompt. Raises if it is not configured.
 
-            if result.data:
-                self._db_prompt = result.data[0]["prompt_text"]
-                logger.info("Loaded material property prompt from database")
-        except Exception as e:
-            logger.warning(f"Could not load DB prompt, using built-in: {e}")
+        This used to swallow every exception and fall through to a built-in constant via
+        `self._db_prompt or EXTRACTION_SYSTEM_PROMPT`, so a workspace whose prompt failed to
+        load silently ran on the built-in while the admin UI showed their edit saved.
+        """
+        self._db_prompt = await load_prompt(
+            "extraction", "material_properties_system",
+            stage="entity_creation", workspace_id=self.workspace_id,
+        )
 
     @property
     def system_prompt(self) -> str:
-        return self._db_prompt or EXTRACTION_SYSTEM_PROMPT
+        if not self._db_prompt:
+            raise PromptNotConfigured(
+                "system_prompt read before _load_db_prompt() — there is no built-in fallback "
+                "(#347 phase 3P)."
+            )
+        return self._db_prompt
 
     async def extract(
         self,
@@ -181,6 +122,8 @@ class EnhancedMaterialPropertyExtractor:
         Returns:
             PropertyExtractionResult with structured properties
         """
+        if self._db_prompt is None:
+            await self._load_db_prompt()
         start_ms = int(time.time() * 1000)
 
         # Build user message
