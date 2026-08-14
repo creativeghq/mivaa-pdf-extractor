@@ -1407,12 +1407,32 @@ class RAGService:
             else:
                 self.logger.warning("⚠️ No product scores available, returning empty results")
 
-            # #347: the metadata prototype validation boost was removed. It multiplied each
-            # result's score by up to 1.2 based on cosine similarity between the product's
-            # metadata and the query filters — but the prototype cache was ALWAYS empty
-            # (zero rows anywhere carried prototype_descriptions + text_embedding_1024), so
-            # `_calculate_metadata_validation_boost` returned 0 for every result and the
-            # multiplier was always exactly 1.0. Removing it changes no ranking.
+            # Apply metadata prototype validation scoring (if available)
+            if material_filters and results:
+                try:
+                    from app.services.metadata.metadata_prototype_validator import get_metadata_validator
+                    validator = get_metadata_validator()
+                    await validator.load_prototypes()
+
+                    # Enhance results with metadata validation scoring
+                    for result in results:
+                        metadata_boost = await self._calculate_metadata_validation_boost(
+                            product_metadata=result.get("metadata", {}),
+                            query_filters=material_filters,
+                            validator=validator
+                        )
+
+                        # Apply boost to score (up to 20% increase)
+                        original_score = result["score"]
+                        result["score"] = original_score * (1.0 + metadata_boost * 0.2)
+                        result["metadata_validation_boost"] = metadata_boost
+                        result["original_score"] = original_score
+
+                    # Re-sort by enhanced score
+                    results.sort(key=lambda x: x["score"], reverse=True)
+
+                except Exception as e:
+                    self.logger.warning(f"Metadata validation scoring failed: {e}")
 
             # NOTE: search query tracking is now done in rag_routes.search_documents
             # with full per-stage timings. The old call here would double-track.
@@ -1449,6 +1469,94 @@ class RAGService:
                 "total_results": 0,
                 "processing_time": time.time() - start_time if 'start_time' in locals() else 0
             }
+
+    async def _calculate_metadata_validation_boost(
+        self,
+        product_metadata: Dict[str, Any],
+        query_filters: Dict[str, Any],
+        validator: Any
+    ) -> float:
+        """Calculate metadata validation boost score.
+
+        Compares query filters to product metadata using prototype validation.
+        Returns boost score between 0.0 and 1.0.
+
+        Args:
+            product_metadata: Product's metadata JSONB
+            query_filters: User's search filters
+            validator: MetadataPrototypeValidator instance
+
+        Returns:
+            Boost score (0.0 = no boost, 1.0 = perfect match)
+        """
+        if not query_filters or not product_metadata:
+            return 0.0
+
+        total_score = 0.0
+        matched_fields = 0
+        total_fields = len(query_filters)
+
+        for filter_key, filter_value in query_filters.items():
+            product_value = product_metadata.get(filter_key)
+
+            if not product_value:
+                continue
+
+            # Check if this field has prototype validation
+            if filter_key in validator._prototype_cache:
+                # Check validation metadata
+                validation_info = product_metadata.get('_validation', {}).get(filter_key, {})
+
+                if validation_info.get('prototype_matched'):
+                    # Both values are validated - check if they match
+                    if str(product_value).lower() == str(filter_value).lower():
+                        # Exact match → full score
+                        total_score += 1.0
+                        matched_fields += 1
+                    else:
+                        # Different prototypes → check semantic similarity
+                        try:
+                            import numpy as np
+
+                            # Generate embeddings for both values
+                            filter_embedding = await validator.embeddings_service._generate_text_embedding(
+                                text=str(filter_value),
+                                job_id=None,
+                                dimensions=512
+                            )
+                            product_embedding = await validator.embeddings_service._generate_text_embedding(
+                                text=str(product_value),
+                                job_id=None,
+                                dimensions=512
+                            )
+
+                            if filter_embedding and product_embedding:
+                                similarity = validator._cosine_similarity(
+                                    np.array(filter_embedding),
+                                    np.array(product_embedding)
+                                )
+
+                                if similarity > 0.70:
+                                    # Semantically similar → partial score
+                                    total_score += similarity
+                                    matched_fields += 1
+                        except Exception as e:
+                            self.logger.warning(f"Similarity calculation failed: {e}")
+                else:
+                    # Product value not validated → fuzzy match
+                    if str(product_value).lower() == str(filter_value).lower():
+                        total_score += 0.8  # Penalty for unvalidated
+                        matched_fields += 1
+            else:
+                # No prototype validation → exact match only
+                if str(product_value).lower() == str(filter_value).lower():
+                    total_score += 1.0
+                    matched_fields += 1
+
+        # Normalize score
+        if total_fields > 0:
+            return total_score / total_fields
+        return 0.0
 
     def _calculate_text_score(self, query: str, product: Dict[str, Any]) -> float:
         """

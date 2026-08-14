@@ -2037,20 +2037,38 @@ class ProductDiscoveryService:
                         product_name=product.name
                     )
 
-                    # #347: the prototype validator was removed. It embedded each extracted
-                    # value and snapped it to a canonical one by cosine similarity — the same job
-                    # facet canonicalization does, except canonicalization SELF-POPULATES
-                    # (resolve_facet_value creates a canonical value when nothing matches at
-                    # 0.92) while prototypes had to be hand-authored per field and never were.
-                    # Both material_properties and material_metadata_fields had ZERO rows with
-                    # prototype_descriptions + text_embedding_1024, so `validate_metadata` gated
-                    # every field on an empty cache and returned everything untouched while
-                    # logging success.
-                    validated_metadata = flatten_extracted_metadata(extracted)
-                    unknown_attrs = extracted.get("unknown_attributes", extracted.get("unknown", {}))
-                    if unknown_attrs and isinstance(unknown_attrs, dict):
-                        validated_metadata["_discovered_extra"] = unknown_attrs
-                    validation_info = {}
+                    # NEW: Validate metadata against prototypes. The acceptance
+                    # threshold is the admin-configured per-category value from
+                    # material_categories.ai_confidence_threshold (audit #217 M3) —
+                    # resolved from the product's category, default 0.80 on miss.
+                    from app.services.metadata.metadata_prototype_validator import (
+                        get_metadata_validator,
+                        get_category_confidence_threshold,
+                    )
+
+                    try:
+                        validator = get_metadata_validator(job_id=job_id)
+                        _cat_threshold = await get_category_confidence_threshold(category_hint)
+                        validation_result = await validator.validate_metadata(
+                            extracted_metadata=extracted,
+                            confidence_threshold=_cat_threshold
+                        )
+
+                        validated_metadata = validation_result["validated_metadata"]
+                        validation_info = validation_result["validation_info"]
+
+                        self.logger.info(f"      ✅ Validated {len(validation_info)} metadata fields")
+                    except Exception as e:
+                        self.logger.warning(f"Metadata validation failed, using unvalidated: {e}")
+                        # Fallback: flatten without validation (include unknown_attributes)
+                        # Same flattener as the other paths (#347 phase 2.1). The hand-rolled
+                        # version here also DROPPED any non-dict section without a word.
+                        validated_metadata = flatten_extracted_metadata(extracted)
+                        # Carry unknown_attributes into the fallback path too
+                        fallback_unknown = extracted.get("unknown_attributes", extracted.get("unknown", {}))
+                        if fallback_unknown and isinstance(fallback_unknown, dict):
+                            validated_metadata["_discovered_extra"] = fallback_unknown
+                        validation_info = {}
 
                     # Merge validated metadata with existing metadata
                     # Priority: existing metadata > validated metadata > extraction metadata
@@ -2078,7 +2096,8 @@ class ProductDiscoveryService:
                     product.metadata = flattened_metadata
                     enriched_products.append(product)
 
-                    self.logger.info(f"      ✅ Extracted {len(flattened_metadata)} fields")
+                    validated_count = sum(1 for v in validation_info.values() if v.get("prototype_matched"))
+                    self.logger.info(f"      ✅ Extracted {len(flattened_metadata)} fields ({validated_count} validated)")
 
                 except Exception as e:
                     self.logger.error(f"Failed to enrich metadata for {product.name}: {e}")
