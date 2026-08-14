@@ -15,7 +15,6 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime
 
 from app.services.core.supabase_client import get_supabase_client
-from app.services.metadata.metadata_prototype_validator import get_metadata_validator
 
 logger = logging.getLogger(__name__)
 
@@ -71,32 +70,14 @@ class SearchQueryTracker:
             matched_terms = []
             unmatched_terms = []
             
-            if query_metadata:
-                validator = get_metadata_validator()
-                await validator.load_prototypes()
-                
-                for property_key, value in query_metadata.items():
-                    if property_key in validator._prototype_cache:
-                        # Validate this term
-                        validated_value, validation_info = await validator._validate_field(
-                            field_key=property_key,
-                            field_value=str(value),
-                            confidence_threshold=0.80
-                        )
-                        
-                        validation_results[property_key] = validation_info
-                        
-                        if validation_info.get("prototype_matched"):
-                            matched_terms.append(str(value))
-                        else:
-                            unmatched_terms.append(str(value))
-                            # Track unmatched term for frequency analysis
-                            self._track_unmatched_term(
-                                term=str(value),
-                                property_key=property_key,
-                                workspace_id=workspace_id
-                            )
-            
+            # #347: the prototype validation loop here was removed. It populated
+            # matched_terms / unmatched_terms / validation_results from
+            # validator._prototype_cache, which was ALWAYS empty — no row anywhere carried
+            # prototype_descriptions + text_embedding_1024 — so those three
+            # search_query_tracking columns have been empty and validation_attempted false
+            # since this shipped. The tracker still records the query; it just no longer
+            # pretends to have validated it.
+
             # Insert tracking record (sync client — no await)
             stage_timings = stage_timings or {}
             insert_payload = {
