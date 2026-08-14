@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 import sentry_sdk
+from app.services.utilities.prompt_registry import prefetch
 
 logger = logging.getLogger(__name__)
 
@@ -677,6 +678,8 @@ async def extract_product_spec(
         Nested metadata dict matching Stage 4.7's merge function, with a
         `_source_tiers` key listing which tiers fired.
     """
+    # _tier_b_opus -> psve builds its prompt synchronously from the cache.
+    await prefetch(("extraction", "product_spec_vision", "image_analysis"))
     log_prefix = f"[{job_id or '-'}] spec_v2 '{product_name}'"
     source_tiers: List[str] = []
 

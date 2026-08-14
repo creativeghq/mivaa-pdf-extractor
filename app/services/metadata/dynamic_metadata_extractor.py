@@ -28,6 +28,7 @@ from app.services.core.ai_client_service import get_ai_client_service
 from app.services.metadata.metadata_normalizer import normalize_metadata, get_normalization_report
 from app.services.metadata.field_registry import field_registry
 from app.services.core.supabase_client import get_supabase_client
+from app.services.utilities.prompt_registry import get_cached, load_prompt, prefetch, render
 
 logger = logging.getLogger(__name__)
 
@@ -337,11 +338,8 @@ class DynamicMetadataExtractor:
                 category_context = f"\nMaterial Category Hint: This appears to be a {category_hint} product." if category_hint else ""
                 # [Option A] Inject product name scoping rule so the AI only extracts SKUs for THIS product
                 if product_name:
-                    product_name_context = (
-                        f"\nPRODUCT SCOPE: You are extracting metadata specifically for the product named '{product_name}'. "
-                        f"For sku_codes and product_codes: ONLY include codes that belong to '{product_name}'. "
-                        f"Do NOT include SKU or product codes for other products visible on the same PDF page."
-                    )
+                    product_name_context = render(await load_prompt("extraction", "product_name_scope", stage="entity_creation"),
+                        product_name=product_name)
                 else:
                     product_name_context = ""
 
@@ -793,6 +791,8 @@ class MetadataScopeDetector:
                 "extracted_metadata": {...}
             }
         """
+        # _build_scope_detection_prompt is sync and reads the cache.
+        await prefetch(("classification", "chunk_scope", "chunking"))
         try:
             prompt = self._build_scope_detection_prompt(
                 chunk_content, product_names, document_context
@@ -825,50 +825,8 @@ class MetadataScopeDetector:
 
         product_list = ", ".join(product_names) if product_names else "Unknown"
 
-        return f"""Analyze this text chunk and determine its metadata scope.
-
-Chunk Content:
-"{chunk_content}"
-
-Product Names in Catalog: {product_list}
-
-Classify the scope as:
-1. "product_specific" - Mentions specific product name and applies only to that product
-   Example: "NOVA tile features R11 slip resistance"
-
-2. "catalog_general_explicit" - Explicitly says "all products" or "entire catalog"
-   Example: "All tiles in this catalog are made in Spain"
-
-3. "catalog_general_implicit" - Metadata mentioned WITHOUT product context (applies to all)
-   Example: "Available in 15×38" (no product name, applies to all unless overridden)
-   Example: "Factory: Castellón Ceramics" (general info, applies to all)
-
-4. "category_specific" - Applies to a category of products
-   Example: "All matte finish tiles have R11 slip resistance"
-
-CRITICAL RULES:
-- If chunk mentions dimensions/size WITHOUT product name → catalog_general_implicit
-- If chunk mentions factory/country WITHOUT product name → catalog_general_implicit
-- If chunk says "available in" or "comes in" WITHOUT product name → catalog_general_implicit
-- Product-specific metadata can OVERRIDE catalog-general metadata
-
-Extract ALL metadata mentioned in the chunk.
-
-Return JSON in this exact format:
-{{
-  "scope": "product_specific|catalog_general_explicit|catalog_general_implicit|category_specific",
-  "confidence": 0.95,
-  "reasoning": "Chunk mentions 'NOVA' specifically, so metadata applies only to NOVA product",
-  "applies_to": ["NOVA"],  // or "all" for catalog-general, or ["matte_tiles"] for category
-  "extracted_metadata": {{
-    "slip_resistance": "R11",
-    "dimensions": "15×38",
-    "designer": "SG NY"
-  }},
-  "is_override": false  // true if product-specific metadata overrides catalog-general
-}}
-
-Analyze now:"""
+        return render(get_cached("classification", "chunk_scope", stage="chunking"),
+            chunk_content=chunk_content, product_list=product_list)
 
     def _fallback_scope_detection(
         self,

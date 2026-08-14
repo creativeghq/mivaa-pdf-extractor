@@ -53,6 +53,7 @@ import fitz  # PyMuPDF
 import sentry_sdk
 
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
+from app.services.utilities.prompt_registry import load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -80,122 +81,27 @@ LEGEND_TYPE_TO_RELATIONSHIP: Dict[str, str] = {
 # Prompts — one per legend type. Each returns a flat JSON schema.
 # ──────────────────────────────────────────────────────────────────────────
 
-ICONS_PROMPT = """You are reading an ICONOGRAPHY LEGEND page from a ceramic tile catalog. This page explains what each technical-characteristic icon means (e.g. what R9 vs R10 vs R11 means, what PEI I-V means, etc.).
 
-Extract every icon + its description into STRICT JSON:
 
-{
-  "type": "legend_icons",
-  "title": "e.g. Technical Characteristics Legend",
-  "content_markdown": "Clean markdown of the page content, English only if bilingual. Max 2500 chars.",
-  "icons": [
-    {
-      "category": "slip_resistance" | "pei_rating" | "water_absorption" | "fire_rating" | "frost_resistance" | "shade_variation" | "traffic_level" | "finish" | "thickness" | "dimensions" | "recommended_use" | "other",
-      "code": "R10" | "PEI III" | "BIa" | "A1" | "V2" | "Bfl-s1" | "heavy_commercial" | ...,
-      "description": "Human-friendly description of what this value means",
-      "standard": "Optional — the ISO/EN/DIN standard that defines this value (e.g. DIN 51130, ISO 10545)"
-    }
-  ],
-  "applies_globally": false
+
+
+
+
+# Legend type -> the `prompts` row that drives it. The six prompt bodies used to be
+# hardcoded above; they live in the DB now (#347 phase 3P), keyed
+# prompt_type='extraction', stage='discovery'.
+CATEGORY_BY_TYPE: Dict[str, str] = {
+    "icons":          "legend_icons",
+    "regulation":     "legend_regulations",
+    "certification":  "legend_certifications",
+    "installation":   "legend_installation",
+    "care":           "legend_care",
+    "sustainability": "legend_sustainability",
 }
 
-Set `applies_globally: true` only if the page text says something like "all products in this collection have R10 / PEI III / ..." — in that case add every globally-applicable spec to the icons list with the actual value (not just the definition).
 
-Return JSON only. No prose. No markdown fences."""
-
-REGULATION_PROMPT = """You are reading a TECHNICAL STANDARDS / REGULATIONS page from a ceramic tile catalog. This page lists the test norms (EN 14411, ISO 10545, ANSI A137.1, DIN 51130, etc.) used to measure the technical characteristics.
-
-Extract into STRICT JSON:
-
-{
-  "type": "legend_regulation",
-  "title": "...",
-  "content_markdown": "Clean markdown, English only. Max 3000 chars.",
-  "standards": ["EN 14411", "ISO 10545-3", "ANSI A137.1", "..."],
-  "test_methods": [
-    {
-      "characteristic": "water absorption" | "slip resistance" | "breaking strength" | ...,
-      "standard": "ISO 10545-3",
-      "unit": "% (by mass)",
-      "value_or_range": "≤ 0.5%"
-    }
-  ],
-  "applies_globally": true | false
-}
-
-Return JSON only. No prose. No markdown fences."""
-
-CERTIFICATION_PROMPT = """You are reading a CERTIFICATIONS page from a ceramic tile catalog. This page lists ISO / CE / LEED / quality marks that the manufacturer holds.
-
-Extract into STRICT JSON:
-
-{
-  "type": "legend_certification",
-  "title": "...",
-  "content_markdown": "Clean markdown, English only. Max 2000 chars.",
-  "certifications": ["ISO 9001", "ISO 14001", "CE", "LEED", "..."],
-  "applies_globally": true
-}
-
-The `certifications` array is the catalog-wide set — every product in the catalog can be treated as holding these certifications (set applies_globally: true). If the page mentions a cert only applies to a specific product line, still list it but set applies_globally: false.
-
-Return JSON only. No prose. No markdown fences."""
-
-INSTALLATION_PROMPT = """You are reading an INSTALLATION GUIDE page from a ceramic tile catalog.
-
-Extract into STRICT JSON:
-
-{
-  "type": "legend_installation",
-  "title": "...",
-  "content_markdown": "Clean markdown, English only. Max 3000 chars.",
-  "method": "thin-set" | "medium-bed" | "mortar" | null,
-  "recommended_joint_width_mm": null,
-  "adhesive_type": null,
-  "key_points": ["...", "..."]
-}
-
-Return JSON only. No prose. No markdown fences."""
-
-CARE_PROMPT = """You are reading a CARE & MAINTENANCE page from a ceramic tile catalog.
-
-Extract into STRICT JSON:
-
-{
-  "type": "legend_care",
-  "title": "...",
-  "content_markdown": "Clean markdown, English only. Max 3000 chars.",
-  "recommended_ph": "neutral" | "alkaline" | "acidic" | null,
-  "cleaning_products": ["...", "..."],
-  "key_points": ["...", "..."]
-}
-
-Return JSON only. No prose. No markdown fences."""
-
-SUSTAINABILITY_PROMPT = """You are reading a SUSTAINABILITY page from a ceramic tile catalog.
-
-Extract into STRICT JSON:
-
-{
-  "type": "legend_sustainability",
-  "title": "...",
-  "content_markdown": "Clean markdown, English only. Max 3000 chars.",
-  "commitments": ["...", "..."],
-  "certifications": ["LEED v4", "EPD", "..."],
-  "recycled_content_pct": null,
-  "applies_globally": true
-}
-
-Return JSON only. No prose. No markdown fences."""
-
-PROMPTS_BY_TYPE: Dict[str, str] = {
-    "icons":          ICONS_PROMPT,
-    "regulation":     REGULATION_PROMPT,
-    "certification":  CERTIFICATION_PROMPT,
-    "installation":   INSTALLATION_PROMPT,
-    "care":           CARE_PROMPT,
-    "sustainability": SUSTAINABILITY_PROMPT,
-}
+async def _legend_prompt(legend_type: str) -> str:
+    return await load_prompt("extraction", CATEGORY_BY_TYPE[legend_type], stage="discovery")
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -423,7 +329,8 @@ async def extract_catalog_legends(
         if not page_indices or not isinstance(page_indices, list):
             continue
 
-        prompt = PROMPTS_BY_TYPE.get(legend_type)
+        prompt = (await _legend_prompt(legend_type)
+                  if legend_type in CATEGORY_BY_TYPE else None)
         if prompt is None and legend_type != "unknown":
             logger.warning(
                 f"[{job_id or '-'}] no prompt defined for legend type '{legend_type}'"
@@ -449,7 +356,8 @@ async def extract_catalog_legends(
                 best_result = None
                 best_type = None
                 best_score = 0
-                for t, p in PROMPTS_BY_TYPE.items():
+                for t in CATEGORY_BY_TYPE:
+                    p = await _legend_prompt(t)
                     r = _call_claude(
                         image_bytes, p, job_id=job_id, workspace_id=workspace_id,
                     )

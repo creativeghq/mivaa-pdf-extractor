@@ -44,6 +44,7 @@ import fitz  # PyMuPDF
 from PIL import Image
 
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
+from app.services.utilities.prompt_registry import load_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -58,46 +59,8 @@ PAGE_RENDER_DPI = 200  # lower than spec extraction — knowledge pages are text
 MAX_IMAGE_BYTES = 4_500_000
 MAX_PAGES_TO_SCAN = 10  # cap on knowledge pages per catalog (last 10 pages)
 
-# Prompt returns a flat JSON schema so we can loop over fields without
-# guessing nested structure.
-KNOWLEDGE_PROMPT = """You are reading a page from the END of a ceramic tile (or similar building-material) catalog. These pages contain catalog-wide content that applies to ALL products in the catalog.
+# Prompt: extraction / discovery / catalog_knowledge (#347 phase 3P).
 
-Classify this page into ONE of these types (or "none" if it's something else):
-
-- "iconography"     — legend explaining what spec/technical icons mean (R9/R10/R11, PEI I-V, water absorption classes, shade variation V1-V4, frost/chemical resistance, suitability symbols)
-- "packing"         — packing / logistics legend or table: pieces per box, m² (or sq ft) per box, weight per box, boxes per pallet, m²/weight per pallet, pallet dimensions, tile thickness, sold-by-piece vs sold-by-m²
-- "regulation"      — technical standards, regulations, test norms (EN 14411, ANSI A137.1, DIN 51130, UNE, ISO)
-- "installation"    — handling and installation recommendations (thin-set, joint width, substrate, cutting)
-- "care"            — cleaning and maintenance instructions (neutral pH, sealants, stain removal)
-- "sustainability"  — environmental/sustainability commitments, LEED, eco-friendly claims
-- "certification"   — ISO / CE / quality certifications
-- "legal"           — copyright, legal notices, trademarks
-- "brand"           — brand introduction, mission statement, about the company
-- "none"            — cover page, product photos, index, contact info, or anything not matching the above
-
-CRITICAL — TRANSCRIBE, DO NOT SUMMARISE. For "iconography" and "packing" pages you MUST read every icon/symbol and every row of any table and write down its EXACT meaning and EXACT value. NEVER write generic descriptions like "includes information on pieces per box, weight per box, ..." or "detailed packing specifications with icons for ..." — that is useless and will be rejected. Instead transcribe each icon/row with three things:
-  1. the icon/symbol itself, described in a few words (e.g. "box", "stacked boxes / pallet", "scales / weight", "ruler / thickness", "hand", "foot", "shower");
-  2. the label or term printed next to it (if bilingual, give the English term);
-  3. the actual VALUE printed on the page if there is one (e.g. "12 pcs", "1.44 m²", "25 kg", "R10", "PEI IV", "120×80×91 cm"). Use "—" ONLY when the page is a definition-only legend with no numbers next to the icon.
-
-Render the iconography/packing content as a markdown table with columns: `Icon | Meaning | Value`. If the page shows multiple tile formats each with their own packing numbers, add a row per format (put the format in the Meaning column).
-
-Return STRICT JSON ONLY (no prose, no markdown fences):
-
-{
-  "page_type": "iconography" | "packing" | "regulation" | "installation" | "care" | "sustainability" | "certification" | "legal" | "brand" | "none",
-  "title": "Concise section title, e.g. 'Technical Characteristics Legend' or 'Packing Information'",
-  "content_markdown": "The page content as clean markdown. For iconography/packing pages this MUST be the per-icon / per-row table described above with the real labels and values — NOT a summary. Preserve any other structure (headings, lists, tables). Strip page numbers and artifacts. If text is bilingual, keep ONLY the English version. Maximum 4500 characters.",
-  "key_points": ["bullet 1", "bullet 2", "..."],
-  "certifications": ["ISO 14001", "ISO 9001", "CE", "LEED", "EN 14411", "..."],
-  "language": "en"
-}
-
-When page_type is "certification", "regulation", or "sustainability", ALSO extract every certification, standard, or compliance mark visible on the page into the "certifications" array. Include ISO numbers, CE marks, EN/ANSI/DIN standards, LEED credits, sustainability marks, and quality badges. Use [] when none are visible.
-
-If page_type is "none", return {"page_type": "none", "title": null, "content_markdown": null, "key_points": [], "certifications": [], "language": null}.
-
-No prose. No markdown fences. JSON only."""
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -156,6 +119,7 @@ def _pages_to_scan(pdf_path: str) -> List[int]:
 
 def _call_claude_vision_knowledge(
     png_bytes: bytes,
+    prompt: str,
     *,
     job_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
@@ -182,7 +146,7 @@ def _call_claude_vision_knowledge(
                 "role": "user",
                 "content": [
                     {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}},
-                    {"type": "text", "text": KNOWLEDGE_PROMPT},
+                    {"type": "text", "text": prompt},
                 ],
             }],
             job_id=job_id,
@@ -260,6 +224,9 @@ async def extract_catalog_knowledge_from_pdf(
         Stats dict: pages_scanned, pages_with_content, docs_created,
                     attachments_created, errors.
     """
+    # Loaded once per document, not per page — and it RAISES if unconfigured,
+    # so a missing prompt stops the run instead of quietly extracting nothing.
+    knowledge_prompt = await load_prompt("extraction", "catalog_knowledge", stage="discovery")
     log = logger_instance or logger
     stats = {
         "pages_scanned": 0,
@@ -319,7 +286,7 @@ async def extract_catalog_knowledge_from_pdf(
             continue
 
         data = _call_claude_vision_knowledge(
-            png, job_id=job_id, workspace_id=workspace_id,
+            png, knowledge_prompt, job_id=job_id, workspace_id=workspace_id,
         )
         if not data:
             continue

@@ -22,6 +22,7 @@ import re
 from typing import Any, List, Optional
 
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
+from app.services.utilities.prompt_registry import get_cached
 
 logger = logging.getLogger(__name__)
 
@@ -31,31 +32,8 @@ DESCRIPTION_MODEL = os.getenv("PRODUCT_DESCRIPTION_MODEL", "claude-haiku-4-5")
 
 MAX_INPUT_CHARS = 6000  # ~1500 tokens — plenty for product context without overspend
 
-DESCRIPTION_PROMPT = """You are writing a clean 2-4 sentence English product description for a ceramic tile (or similar surface material) product catalog entry.
+# Prompt: generation / product_description (#347 phase 3P).
 
-Input: raw chunks of text extracted from a PDF page, which may contain:
-- the real description paragraphs (in English, sometimes also in Spanish/Italian/French)
-- PDF page separators like "--- # Page N ---"
-- SKU code lines like "39656 VALENOVA WHITE LT/11,8X11,8"
-- packing table artifacts ("PACKING", "BOXES PALLET", "UNIT m2", etc.)
-- page numbers like "24  —"
-- designer biographies that should NOT be included in the product description
-
-Your job:
-1. Extract ONLY the English narrative describing THIS product (name, designer, inspiration, aesthetic, format/size, palette, suggested use).
-2. Write it as 2-4 flowing sentences. Natural English, no filler.
-3. If the text is only Spanish/Italian/French, translate to English.
-4. Do NOT include: SKU codes, page numbers, packing data, designer bios that aren't about the product itself.
-5. Do NOT hallucinate fields that aren't in the source. If there's no real description, return an empty string.
-
-Return ONLY the description text (or empty string). No prose, no JSON, no quotes, no markdown.
-
-Product name: {product_name}
-
-Raw chunks:
-{chunks_text}
-
-Write the description now:"""
 
 
 def _clean_chunk_text(text: str) -> str:
@@ -166,7 +144,7 @@ def write_product_description_from_chunks(
             max_tokens=400,
             messages=[{
                 "role": "user",
-                "content": DESCRIPTION_PROMPT.format(
+                "content": get_cached("generation", "product_description").format(
                     product_name=product_name or "(unnamed)",
                     chunks_text=chunks_text,
                 ),

@@ -15,6 +15,7 @@ import time
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.products.material_quota import material_quota_remaining_sync
+from app.services.utilities.prompt_registry import get_cached, prefetch, render
 
 logger = logging.getLogger(__name__)
 
@@ -1190,6 +1191,8 @@ class ProductCreationService:
         Returns:
             List of product candidates with classification metadata
         """
+        # Sync builder below reads this from the cache; load it here where we can await.
+        await prefetch(("extraction", "fast_product_classifier_system", "discovery"))
         try:
             # Use centralized AI client service
             ai_service = get_ai_client_service()
@@ -1256,6 +1259,8 @@ class ProductCreationService:
         Returns:
             Enriched product data or None if validation fails
         """
+        # Sync builder below reads this from the cache; load it here where we can await.
+        await prefetch(("extraction", "product_deep_analysis", "entity_creation"))
         try:
             from app.services.core.ai_client_service import get_ai_client_service
             client = get_ai_client_service().anthropic
@@ -1304,128 +1309,14 @@ class ProductCreationService:
             content = chunk.get('content', '')[:500]  # Limit content for speed
             chunk_texts.append(f"CHUNK_{i}:\n{content}\n")
 
-        return f"""You are a fast product classifier. Analyze these text chunks and identify which ones contain actual product information.
-
-CHUNKS TO ANALYZE:
-{chr(10).join(chunk_texts)}
-
-For each chunk, determine if it contains:
-- Product names (usually UPPERCASE like VALENOVA, PIQUÉ, ONA)
-- Product dimensions (like 15×38, 20×40)
-- Designer/brand information
-- Material specifications
-
-SKIP THE FOLLOWING (NOT PRODUCTS):
-- Index pages, table of contents, signature books
-- Sustainability content, environmental certifications, LEED info
-- Technical tables without product names (just specs/data)
-- Designer biographies (e.g., "John Doe was born in...", "Studio founded in...")
-- Factory details (e.g., "Factory location: Spain...", "Production capacity...")
-- Standalone technical specifications (water absorption, breaking strength without product)
-- Moodboards, inspiration boards, design philosophy
-- Cleaning/maintenance guides, application instructions
-- Certification pages (ISO, ANSI, ASTM)
-
-EXAMPLES OF NON-PRODUCTS TO SKIP:
-- "ESTUDI{{H}}AC was founded in 2003 by designers..." → SKIP (designer biography)
-- "Factory location: Castellón, Spain. Production capacity: 10,000 m²/day" → SKIP (factory details)
-- "Water absorption: <0.5%, Breaking strength: >1300N" → SKIP (specs without product name)
-- "Sustainability: Our commitment to the environment..." → SKIP (sustainability content)
-- "Fresh Inspiration: Moodboard featuring natural textures..." → SKIP (moodboard)
-
-ONLY CLASSIFY AS PRODUCT IF:
-- Has a specific product name (UPPERCASE) AND
-- Has dimensions/specifications AND
-- Is NOT biography/factory/sustainability content
-
-RESPOND WITH JSON ONLY:
-{{
-  "results": [
-    {{
-      "chunk_index": 0,
-      "is_product": true/false,
-      "confidence": 0.0-1.0,
-      "product_name": "extracted name or null",
-      "reasoning": "brief explanation"
-    }}
-  ]
-}}
-
-Focus on speed and accuracy. Be strict - when in doubt, mark as NOT a product."""
+        return render(get_cached("extraction", "fast_product_classifier_system", stage="discovery"),
+            chunk_texts=chr(10).join(chunk_texts))
 
     def _build_stage2_enrichment_prompt(self, content: str, candidate: Dict[str, Any]) -> str:
         """Build prompt for Stage 2 deep enrichment with Claude Opus."""
-        return f"""You are an expert product analyst. Perform deep analysis and enrichment of this product content.
-
-PRODUCT CONTENT:
-{content}
-
-STAGE 1 ANALYSIS:
-- Confidence: {candidate.get('confidence', 0)}
-- Initial Assessment: {candidate.get('reasoning', 'N/A')}
-
-FIRST, VALIDATE THIS IS ACTUALLY A PRODUCT:
-- Does it have a specific product name (not just a designer/studio/factory name)?
-- Does it have dimensions or technical specifications?
-- Is this product content or designer biography/factory details/sustainability info?
-
-RED FLAGS (NOT PRODUCTS):
-- Designer biographies: "John Doe was born in...", "Studio founded in...", "Career began..."
-- Factory details: "Factory location...", "Production capacity...", "Manufacturing facility..."
-- Sustainability content: "Our commitment to environment...", "Carbon footprint...", "LEED certified..."
-- Technical specs only: Just tables of data without product names
-- Moodboards: "Fresh inspiration...", "Design philosophy...", "Mood board..."
-
-IF THIS IS NOT A PRODUCT (biography/factory/sustainability/etc.), RESPOND:
-{{
-  "is_valid_product": false,
-  "rejection_reason": "Designer biography / Factory details / Sustainability content / Technical specs only / Moodboard",
-  "confidence_score": 0.0,
-  "quality_assessment": "rejected"
-}}
-
-IF THIS IS A VALID PRODUCT, PERFORM COMPREHENSIVE ANALYSIS:
-
-1. PRODUCT IDENTIFICATION:
-   - Extract exact product name (must be a product, not a person/place)
-   - Identify product category/type
-   - Determine collection/series
-
-2. SPECIFICATIONS:
-   - Dimensions (extract all size variants)
-   - Materials and composition
-   - Colors and finishes available
-   - Technical properties
-
-3. DESIGN INFORMATION:
-   - Designer/studio name (who designed it, not biography)
-   - Design inspiration/story (brief, not full biography)
-   - Style characteristics
-
-4. METADATA:
-   - Product codes/SKUs
-   - Availability information
-   - Related products
-   - Applications/use cases
-
-RESPOND WITH DETAILED JSON:
-{{
-  "is_valid_product": true,
-  "product_name": "exact product name",
-  "category": "product category",
-  "collection": "collection name",
-  "designer": "designer/studio",
-  "dimensions": ["size1", "size2"],
-  "materials": ["material1", "material2"],
-  "colors": ["color1", "color2"],
-  "description": "detailed description",
-  "specifications": {{}},
-  "metadata": {{}},
-  "confidence_score": 0.0-1.0,
-  "quality_assessment": "high/medium/low"
-}}
-
-Be thorough and accurate. REJECT non-product content. Extract all available information for valid products."""
+        return render(get_cached("extraction", "product_deep_analysis", stage="entity_creation"),
+            content=content, confidence=candidate.get('confidence', 0),
+            reasoning=candidate.get('reasoning', 'N/A'))
 
     async def _call_claude_haiku(self, client, prompt: str, job_id: Optional[str] = None) -> str:
         """Call Claude 4.5 Haiku for fast classification."""

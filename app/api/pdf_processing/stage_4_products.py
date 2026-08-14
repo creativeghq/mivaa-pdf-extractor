@@ -16,7 +16,7 @@ from typing import Dict, Any, List, Optional
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
 from app.services.facets import canonicalize_product_attributes
 from app.services.metadata.field_registry import field_registry
-from app.services.utilities.prompt_registry import load_prompt, render
+from app.services.utilities.prompt_registry import load_prompt, prefetch, render
 
 # ── Category → default unit mapping (mirrors material_categories.default_unit) ─
 #
@@ -2289,6 +2289,8 @@ async def enrich_products_from_chunks_and_vision(
                chunk_candidates_found, vision_candidates_found,
                spec_vision_calls, description_writes
     """
+    # write_product_description_from_chunks is sync and reads the cache.
+    await prefetch(("generation", "product_description"))
     stats: Dict[str, Any] = {
         "products_checked": 0,
         "products_updated": 0,

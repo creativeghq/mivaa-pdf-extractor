@@ -31,6 +31,7 @@ import fitz  # PyMuPDF
 from PIL import Image
 
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
+from app.services.utilities.prompt_registry import get_cached
 
 logger = logging.getLogger(__name__)
 
@@ -53,118 +54,25 @@ PAGE_RENDER_DPI = 280
 # under Claude's 5 MB hard limit after base64 expansion overhead.
 MAX_IMAGE_BYTES = 4_000_000
 
-# The single prompt we send for every product spec page. The schema is
-# deliberately flat — nested objects make the post-parse merge harder.
-# Placeholder {product_name} is substituted at call time so Claude can
-# filter multi-product spec pages down to just the one we're enriching.
-SPEC_PROMPT_TEMPLATE = """You are reading one page of a ceramic tile catalog. The page may list MULTIPLE product series (e.g. "PIQUE 30", "PIQUÉ WAFFLE", "VALENOVA", "ONA", "FOLD") side by side in a single packing table or shared spec grid. We are enriching this specific product:
+# Prompt: extraction / image_analysis / product_spec_vision (#347 phase 3P).
 
-    TARGET PRODUCT NAME: {product_name}
-
-Return `page_contains_target: true` if ANY of the following is true:
-  - A row whose variant name / SKU code mentions "{product_name}" (case-insensitive, accent-insensitive, any language) is visible on this page
-  - A shared technical-characteristics icon strip (MATT / GLOSS / SHADE VARIATION / SHOWER WALL / SHOWER FLOOR / FLOOR / TRAFFIC plus R-rating / PEI / water absorption / fire / frost) is visible and would apply to this product
-  - A shared packing-table header is visible (UNIT / m² / PIECES / BOX / BOXES PALLET / WEIGHT PALLET etc.) even if the specific row data is mixed across products
-
-ONLY return `page_contains_target: false` when the page is CLEARLY a different product's photo / intro / brand spread with nothing that could apply to "{product_name}".
-
-For the fields you return:
-  - variants / SKU codes / packing_per_variant / grout_recommendations → ONLY include rows whose variant name starts with or mentions "{product_name}" (case-insensitive). Drop rows for other products on the same table.
-  - slip_resistance / pei_rating / water_absorption_class / fire_rating / frost_resistance / shade_variation / traffic_level / installation_method / joint_width_mm / certifications → include if visible on this page, even if presented as a shared spec grid. Those icons are usually one set per spec page.
-  - thickness_mm / finish / body_type / dimensions → include if the page shows values specifically tied to "{product_name}".
-
-TECHNICAL CHARACTERISTICS ICON STRIP — read carefully
------------------------------------------------------
-Ceramic catalogs show tech specs as a ROW of small square pictograms near the top or bottom of the spec page, each with a tiny label underneath. You MUST inspect every icon and extract its value when visible. The icons you will see in Harmony / similar catalogs:
-
-  • MATT / GLOSS          — finish dot, report "matte" or "gloss" in `finish`
-  • SHADE VARIATION       — V1 / V2 / V3 / V4 → `shade_variation`
-  • SLIP RESISTANCE       — foot on wet surface, look for R9 / R10 / R11 / R12 label → `slip_resistance`
-  • PEI                   — circle of arrows or roman numeral I..V → `pei_rating`
-  • WATER ABSORPTION      — water droplet + BIa / BIb / BIIa / BIIb / BIII → `water_absorption_class`
-  • FIRE RATING           — flame + A1 / A2 / Bfl / Cfl → `fire_rating`
-  • FROST RESISTANCE      — snowflake; yes/no → `frost_resistance`
-  • TRAFFIC LEVEL         — footprint; residential / commercial / heavy → `traffic_level`
-  • SHOWER WALL / FLOOR / FLOOR — check marks next to each → include in `recommended_use` array
-
-Most pages show 6-10 of these pictograms together. Even if a value looks subtle, RETURN WHAT YOU SEE rather than null. If a pictogram is clearly struck-through or dimmed, it's an absent feature — skip it. If you genuinely cannot read the icon strip, use null for that field but still populate the other fields on the page.
-
-If page_contains_target is false, return exactly:
-{"page_contains_target": false, "product_name": null}
-
-Otherwise return STRICT JSON (no prose, no markdown fences). Fields you cannot clearly see should be null. Arrays you cannot populate should be []:
-{
-  "page_contains_target": true,
-  "product_name": "{product_name}",
-  "dimensions_cm": "...",
-  "dimensions_inch": "...",
-  "thickness_mm": null,
-  "finish": null,
-  "body_type": null,
-  "patterns": [],
-  "colors": [],
-  "variants": [{"sku":"","name":"","color":"","format":"","pattern":""}],
-  "pieces_per_box": null,
-  "m2_per_box": null,
-  "sqft_per_box": null,
-  "weight_per_box_kg": null,
-  "weight_per_box_lb": null,
-  "boxes_per_pallet": null,
-  "m2_per_pallet": null,
-  "weight_per_pallet_kg": null,
-  "weight_per_pallet_lb": null,
-  "packaging_per_variant": [
-    {
-      "variant": "",
-      "format": "",
-      "pcs_box": null,
-      "m2_box": null,
-      "sqft_box": null,
-      "weight_box_kg": null,
-      "weight_box_lb": null,
-      "boxes_pallet": null,
-      "weight_pallet_kg": null
-    }
-  ],
-  "slip_resistance": null,
-  "pei_rating": null,
-  "water_absorption_class": null,
-  "water_absorption_pct": null,
-  "fire_rating": null,
-  "frost_resistance": null,
-  "shade_variation": null,
-  "traffic_level": null,
-  "recommended_use": [],
-  "grout_recommendations": [{"supplier":"","product":"","code":"","for_variant":""}],
-  "certifications": [],
-  "installation_method": null,
-  "joint_width_mm": null
-}
-
-For packaging_per_variant: only include rows whose variant name starts with or matches "{product_name}". Drop every row that clearly belongs to a different product, even if it's on the same packing table.
-
-The technical characteristics icons section is usually a strip of small pictograms labeled MATT, GLOSS, SHADE VARIATION, SHOWER WALL, SHOWER FLOOR, FLOOR, TRAFFIC, etc. Below or beside those labels look for values like R10, R11, PEI III, V2, BIa, A1, Class II — read each icon's state even if it's subtle.
-
-CRITICAL rules:
-- Use null for fields you cannot clearly see on this page.
-- Do NOT hallucinate values. Empty > guessed.
-- For arrays, return [] if empty.
-- NEVER include variants, SKU codes, packing rows, or grout recommendations for a product OTHER than "{product_name}".
-- Return JSON only. No prose. No markdown fences."""
 
 def _build_spec_prompt(product_name: str) -> str:
-    """Fill SPEC_PROMPT_TEMPLATE with the target product name.
+    """Fill the stored spec template with the target product name.
 
     We use a plain `.replace` rather than `.format` because the template
     embeds literal JSON braces that would trip .format's {…} parser.
     """
     safe = (product_name or "").strip() or "the ceramic product on this page"
-    return SPEC_PROMPT_TEMPLATE.replace("{product_name}", safe)
+    template = get_cached("extraction", "product_spec_vision", stage="image_analysis")
+    return template.replace("{product_name}", safe)
 
 
-# Backwards-compat constant for any caller that still imports SPEC_PROMPT
-# without a product name (emits a generic prompt).
-SPEC_PROMPT = _build_spec_prompt("the ceramic product on this page")
+# Was `SPEC_PROMPT = _build_spec_prompt(...)`, evaluated at IMPORT time — which can neither
+# await nor reach the prompt store. A function instead, resolved when it is actually needed
+# (#347 phase 3P).
+def default_spec_prompt() -> str:
+    return _build_spec_prompt("the ceramic product on this page")
 
 
 def _render_pdf_page_to_bytes(
@@ -334,7 +242,7 @@ def _call_claude_vision(
     model choice (the S4-1 race).
     """
     if prompt is None:
-        prompt = SPEC_PROMPT
+        prompt = default_spec_prompt()
     if not ANTHROPIC_API_KEY:
         logger.error("product_spec_vision_extractor: ANTHROPIC_API_KEY not set")
         return None
@@ -652,7 +560,7 @@ def extract_specs_from_pdf_pages(
                       `page_contains_target=false` are dropped entirely.
 
     Returns:
-        Merged spec dict (fields defined by SPEC_PROMPT_TEMPLATE schema).
+        Merged spec dict (schema defined by the extraction/product_spec_vision prompt).
         Empty on failure.
     """
     if not os.path.exists(pdf_path):
