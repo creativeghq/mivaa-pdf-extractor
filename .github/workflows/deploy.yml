@@ -1434,6 +1434,7 @@ jobs:
             echo "→ embedding contract (/api/embeddings/clip-text → 1024D)"
             curl -fsS -m 60 -X POST http://localhost:8000/api/embeddings/clip-text \
               -H "Content-Type: application/json" \
+              -H "x-cron-secret: $CRON" \
               -d "{\"text\":\"deploy smoke\",\"model\":\"voyage-4\",\"input_type\":\"document\",\"dimensions\":1024}" \
               | grep -q "\"success\": *true" || { echo "❌ EMBEDDINGS FAILED"; exit 1; }
             echo "→ price-monitoring cron-refresh (postgrest .or_ path)"
