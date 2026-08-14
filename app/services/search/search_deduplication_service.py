@@ -19,6 +19,7 @@ import numpy as np
 
 from app.config import get_settings
 from ..core.supabase_client import get_supabase_client
+from app.services.utilities.prompt_registry import load_prompt, render
 
 # Get settings
 settings = get_settings()
@@ -63,36 +64,7 @@ class SearchDeduplicationService:
             SearchAnalysis with extracted components
         """
         
-        prompt = f"""Analyze this material search query and extract structured information:
-
-Query: "{query}"
-
-Extract:
-1. Core Material: The main material/product (e.g., "cement tile", "oak flooring", "marble countertop")
-2. Attributes: Specific properties as key-value pairs
-   - color: if mentioned (e.g., "grey", "white", "natural")
-   - texture: if mentioned (e.g., "smooth", "rough", "matte", "glossy")
-   - finish: if mentioned (e.g., "polished", "honed", "brushed")
-   - size: if mentioned (e.g., "large", "small", "60x60cm")
-   - any other specific attributes
-3. Application Context: Where it will be used (e.g., "floor", "wall", "outdoor", "indoor", "kitchen", "bathroom")
-   - Be specific: "kitchen floor" not just "kitchen"
-   - If outdoor/indoor mentioned, include it
-4. Intent Category: One of: product_search, comparison, recommendation, specification
-
-Return ONLY valid JSON, no markdown:
-{{
-  "core_material": "...",
-  "attributes": {{}},
-  "application_context": "...",
-  "intent_category": "..."
-}}
-
-Rules:
-- If attribute not explicitly mentioned, omit it from attributes object
-- If no context mentioned, use null for application_context
-- Be precise and consistent with naming
-- Normalize colors (gray→grey, etc)"""
+        prompt = render(await load_prompt("search", "query_structuring"), query=query)
 
         try:
             from app.services.core.claude_helper import tracked_claude_call_async

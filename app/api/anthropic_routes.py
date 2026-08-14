@@ -23,6 +23,8 @@ from ..schemas.api_responses import DataResponse
 from ..config import get_settings
 
 # Configure logging
+from app.services.utilities.prompt_registry import load_prompt, render
+
 logger = logging.getLogger(__name__)
 
 # Create router
@@ -165,30 +167,8 @@ async def validate_image_with_claude(
                 [f"- {g}" for g in request.product_groups]
             )
 
-        prompt = f"""You are an expert material and product analyst. Analyze this image and provide:
-
-1. **Quality Assessment**: Rate the image quality (0-1 scale) considering clarity, lighting, composition
-2. **Content Analysis**: Describe what you see in the image
-3. **Material Identification**: Identify any materials visible
-4. **Product Associations**: Match the image to relevant product groups{product_groups_context}
-5. **Issues**: List any quality issues or concerns
-6. **Recommendations**: Suggest improvements for better product matching
-
-Respond in JSON format:
-{{
-  "quality_score": <number 0-1>,
-  "content_description": "<description>",
-  "materials_identified": ["<material1>", "<material2>"],
-  "product_associations": [
-    {{
-      "product_group": "<group>",
-      "confidence": <0-1>,
-      "reasoning": "<why this matches>"
-    }}
-  ],
-  "issues": ["<issue1>", "<issue2>"],
-  "recommendations": ["<recommendation1>", "<recommendation2>"]
-}}"""
+        prompt = render(await load_prompt("extraction", "anthropic_image_analysis", stage="image_analysis"),
+            product_groups_context=product_groups_context)
 
         # Call Claude Vision API (tracked for cost/credit accounting)
         from app.services.core.claude_helper import tracked_claude_call
@@ -290,32 +270,8 @@ async def enrich_product_with_claude(
         import time
         start_time = time.time()
 
-        prompt = f"""You are an expert product analyst and technical writer. Analyze this product content and provide comprehensive enrichment:
-
-CONTENT TO ANALYZE:
-{request.chunk_content}
-
-Provide enrichment in JSON format:
-{{
-  "product_name": "<primary product name>",
-  "product_category": "<category>",
-  "product_description": "<1-2 sentence summary>",
-  "specifications": {{
-    "<spec_name>": "<value>",
-    "<spec_name>": "<value>"
-  }},
-  "related_products": ["<related_product_1>", "<related_product_2>"],
-  "confidence_score": <0-1>,
-  "key_features": ["<feature1>", "<feature2>"],
-  "use_cases": ["<use_case1>", "<use_case2>"]
-}}
-
-Focus on:
-1. Accurate product identification
-2. Clear, professional descriptions
-3. Comprehensive specifications
-4. Related products that complement this one
-5. High confidence only if information is clear"""
+        prompt = render(await load_prompt("extraction", "anthropic_chunk_analysis", stage="entity_creation"),
+            chunk_content=request.chunk_content)
 
         # Call Claude API (tracked for cost/credit accounting)
         from app.services.core.claude_helper import tracked_claude_call

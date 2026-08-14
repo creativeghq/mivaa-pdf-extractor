@@ -38,6 +38,7 @@ from ..embeddings.vecs_service import get_vecs_service
 from ..core.ai_client_service import get_ai_client_service
 from ..core.ai_call_logger import AICallLogger
 from ..chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
+from app.services.utilities.prompt_registry import load_prompt
 
 
 class RAGService:
@@ -2346,14 +2347,7 @@ class RAGService:
                     'error': 'API key missing'
                 }
 
-            analysis_text = (
-                "Analyze this building/interior material image. Use the "
-                "emit_vision_analysis tool to return a structured material "
-                "analysis. Be catalog-grade specific (e.g. 'Calacatta marble' "
-                "not 'marble', 'herringbone white oak engineered wood' not "
-                "'wood floor'). Confidence must reflect how certain you are "
-                "of the material identification."
-            )
+            analysis_text = await load_prompt("extraction", "rag_vision_analysis", stage="image_analysis")
 
             async with httpx.AsyncClient(timeout=120.0) as client:
                 response = await client.post(

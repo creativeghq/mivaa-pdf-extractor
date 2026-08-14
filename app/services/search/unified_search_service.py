@@ -19,6 +19,8 @@ from enum import Enum
 from datetime import datetime
 from app.services.core.ai_client_service import get_ai_client_service
 
+from app.services.utilities.prompt_registry import load_prompt
+
 logger = logging.getLogger(__name__)
 
 
@@ -1024,39 +1026,7 @@ class UnifiedSearchService:
             import json
             from app.services.core.ai_call_logger import AICallLogger
 
-            system_prompt = """You are a material search query parser. Analyze the query and determine if it's:
-1. A PRODUCT NAME search (e.g., "MAISON by ONSET", "NOVA collection", "LOG by ALT Design")
-2. A DESCRIPTIVE search (e.g., "waterproof ceramic tiles for outdoor patio")
-
-For PRODUCT NAME searches:
-- Set is_product_name: true
-- Set product_name: the exact product name from the query
-- Leave all other fields null
-
-For DESCRIPTIVE searches, extract:
-- is_product_name: false
-- material_type: Type of material - ONLY if EXPLICITLY stated (ceramic, porcelain, fabric, wood, metal, tile, etc.)
-- material_type_explicit: true if the user explicitly mentioned the material type, false if you're inferring it
-- properties: Functional properties (waterproof, outdoor, slip-resistant, fire-resistant, etc.)
-- finish: Surface finish (matte, glossy, textured, polished, brushed, matt, etc.)
-- colors: Color names or descriptions (beige, white, gray, blue, sand, taupe, etc.)
-- pattern: Visual pattern (wood pattern, marble pattern, geometric, stripes, etc.)
-- application: Use case or location (patio, bathroom, kitchen, flooring, wall, shower, etc.)
-- style: Design style (modern, rustic, minimalist, industrial, mediterranean, etc.)
-- dimensions: Size specifications if mentioned
-- designer: Designer or studio name if mentioned
-- collection: Collection name if mentioned
-- factory: Factory or manufacturer name if mentioned
-
-IMPORTANT RULES:
-1. If the query looks like a product/collection name (contains "by", brand names, ALL CAPS words), treat it as PRODUCT NAME search.
-2. For material_type: ONLY set if user EXPLICITLY says it. Examples:
-   - "ceramic tile with wood pattern" → material_type="ceramic tile", material_type_explicit=true
-   - "wood pattern" → material_type=null, material_type_explicit=false (could be ceramic, wood, MDF)
-   - "baxi" → material_type=null (brand spans multiple categories)
-3. pattern is separate from material_type - "wood pattern" is a pattern, not necessarily wood material.
-
-Return ONLY valid JSON. Use null for missing fields."""
+            system_prompt = await load_prompt("search", "query_parser_system")
 
             # Primary: Anthropic Haiku 4.5 (cheap, structured-output friendly).
             # The variable retains its name for compatibility with downstream

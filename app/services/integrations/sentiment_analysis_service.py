@@ -16,6 +16,8 @@ import json
 
 from app.services.core.ai_client_service import get_ai_client_service
 
+from app.services.utilities.prompt_registry import load_prompt, render
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,37 +66,8 @@ class SentimentAnalysisService:
     ) -> Dict:
         """Use Claude for comprehensive sentiment analysis"""
         
-        prompt = f"""Analyze the following user feedback about a material product and provide a detailed sentiment analysis.
-
-Material: {material_name or 'Unknown'}
-User Rating: {rating}/5 stars
-Feedback: "{feedback_text}"
-
-Provide your analysis in the following JSON format:
-{{
-    "sentiment": "positive" | "neutral" | "negative",
-    "confidence": 0.0-1.0,
-    "aspects": {{
-        "quality": 0.0-1.0,
-        "appearance": 0.0-1.0,
-        "durability": 0.0-1.0,
-        "value": 0.0-1.0,
-        "usability": 0.0-1.0
-    }},
-    "key_phrases": ["phrase1", "phrase2", "phrase3"],
-    "recommendation_score": 0.0-10.0,
-    "reasoning": "Brief explanation of the analysis"
-}}
-
-Rules:
-- sentiment: Overall sentiment (positive if rating >= 4, negative if rating <= 2, neutral otherwise)
-- confidence: How confident you are in the sentiment classification (0.0-1.0)
-- aspects: Score each aspect from 0.0 (very negative) to 1.0 (very positive). Use 0.5 if not mentioned.
-- key_phrases: Extract 3-5 most important phrases from the feedback
-- recommendation_score: Overall recommendation score from 0 (would not recommend) to 10 (highly recommend)
-- reasoning: Brief explanation of why you classified it this way
-
-Respond ONLY with valid JSON, no additional text."""
+        prompt = render(await load_prompt("extraction", "sentiment"),
+            material_name=material_name or 'Unknown', rating=rating, feedback_text=feedback_text)
 
         try:
             from app.services.core.claude_helper import tracked_claude_call

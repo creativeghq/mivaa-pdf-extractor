@@ -16,6 +16,7 @@ from typing import Dict, Any, List, Optional
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
 from app.services.facets import canonicalize_product_attributes
 from app.services.metadata.field_registry import field_registry
+from app.services.utilities.prompt_registry import load_prompt, render
 
 # ── Category → default unit mapping (mirrors material_categories.default_unit) ─
 #
@@ -258,24 +259,9 @@ async def _classify_product(
         for group, values in field_registry.controlled_vocab_by_category()
     )
 
-    prompt = f"""Classify this interior material/furniture product into the controlled vocabularies below.
-
-Product name: {name}
-Description: {description or 'N/A'}
-Current category (may be wrong or missing): {existing_category or 'N/A'}
-
-CONTROLLED VOCABULARY — respond ONLY with a JSON object, no explanation:
-
-material_category (pick exactly one):
-{_vocab_lines}
-
-zone_intent (pick exactly one):
-  surface     — floor/wall/ceiling tiles, paint, wallpaper, countertops, cladding
-  full_object — sofa, chair, rug, curtain, table, cabinet, lamp, radiator, toilet, basin
-  upholstery  — fabric/leather swatches for covering furniture
-  sub_element — hardware, handles, trims, brackets, taps, faucets
-
-Respond with exactly: {{"material_category": "...", "zone_intent": "..."}}"""
+    prompt = render(await load_prompt("classification", "product_classification", stage="entity_creation"),
+        product_name=name, product_description=description or 'N/A',
+        existing_category=existing_category or 'N/A', vocab_lines=_vocab_lines)
 
     try:
         from app.services.core.claude_helper import tracked_claude_call_async

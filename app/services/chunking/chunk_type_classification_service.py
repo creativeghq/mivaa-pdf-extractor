@@ -14,6 +14,8 @@ import asyncio
 import httpx
 from app.config import settings
 
+from app.services.utilities.prompt_registry import load_prompt, render
+
 logger = logging.getLogger(__name__)
 
 class ChunkType(Enum):
@@ -129,12 +131,8 @@ class ChunkTypeClassificationService:
                 },
             }
 
-            system_prompt = (
-                "You are a document chunk classifier for a material catalog platform. "
-                f"Classify into exactly one of: {chunk_types_str}. Use the "
-                "emit_chunk_classification tool. Be accurate; only claim high "
-                "confidence when the chunk clearly fits the chosen type."
-            )
+            system_prompt = render(await load_prompt("classification", "chunk_type", stage="chunking"),
+                chunk_types=chunk_types_str)
 
             async with httpx.AsyncClient(timeout=30.0) as http:
                 response = await http.post(

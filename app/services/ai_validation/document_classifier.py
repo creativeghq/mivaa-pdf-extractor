@@ -16,6 +16,8 @@ import httpx
 
 from app.services.core.ai_call_logger import AICallLogger
 
+from app.services.utilities.prompt_registry import load_prompt, render
+
 logger = logging.getLogger(__name__)
 
 
@@ -108,20 +110,8 @@ class DocumentClassifier:
         page_num = context.get("page_number", "unknown") if context else "unknown"
         has_images = context.get("has_images", False) if context else False
         
-        prompt = f"""Classify the following content into one of these categories:
-
-1. PRODUCT: Product information, specifications, features, product images
-2. SUPPORTING: Technical details, certifications, installation guides, warranties
-3. ADMINISTRATIVE: Company information, contact details, legal text, disclaimers
-4. TRANSITIONAL: Table of contents, page numbers, headers, footers, navigation
-
-Content (from page {page_num}, has_images: {has_images}):
-{content[:1000]}
-
-Respond with ONLY the category name (PRODUCT, SUPPORTING, ADMINISTRATIVE, or TRANSITIONAL) and a confidence score (0.0-1.0).
-Format: CATEGORY|CONFIDENCE
-
-Example: PRODUCT|0.85"""
+        prompt = render(await load_prompt("classification", "document_page", stage="discovery"),
+            page_num=page_num, has_images=has_images, content=content[:1000])
         
         try:
             start_time = datetime.now()
