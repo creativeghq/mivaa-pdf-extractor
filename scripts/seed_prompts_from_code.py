@@ -29,10 +29,10 @@ ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_WORKSPACE = "00000000-0000-0000-0000-000000000000"
 
 
-def M(file: str, anchor: Any, prompt_type: str, category: str, name: str,
+def M(file: str, anchor: str, prompt_type: str, category: str, name: str,
       stage: Optional[str] = None, subcategory: Optional[str] = None,
       placeholders: Optional[List[str]] = None, description: str = "") -> Dict[str, Any]:
-    """One manifest row. `anchor` is the assigned constant name, or the 1-based line number."""
+    """One manifest row. `anchor` is the assigned constant name, or a distinctive substring."""
     return dict(file=file, anchor=anchor, prompt_type=prompt_type, category=category, name=name,
                 stage=stage, subcategory=subcategory, placeholders=placeholders or [],
                 description=description)
@@ -43,24 +43,29 @@ def M(file: str, anchor: Any, prompt_type: str, category: str, name: str,
 #: `placeholders` names the f-string interpolations IN SOURCE ORDER. They become `{name}` in the
 #: stored template and are filled by `prompt_registry.render(...)` at the call site.
 MANIFEST: List[Dict[str, Any]] = [
-    M("app/api/anthropic_routes.py", 168, "extraction", "anthropic_image_analysis",
+    M("app/api/anthropic_routes.py",
+      "You are an expert material and product analyst. Analyze this image", "extraction", "anthropic_image_analysis",
       "Anthropic Route — Image Analysis", stage="image_analysis",
       placeholders=["product_groups_context"],
       description="Ad-hoc image analysis exposed on /api/anthropic."),
-    M("app/api/anthropic_routes.py", 293, "extraction", "anthropic_chunk_analysis",
+    M("app/api/anthropic_routes.py",
+      "You are an expert product analyst and technical writer.", "extraction", "anthropic_chunk_analysis",
       "Anthropic Route — Chunk Analysis", stage="entity_creation",
       placeholders=["chunk_content"],
       description="Ad-hoc product-content analysis exposed on /api/anthropic."),
-    M("app/api/pdf_processing/stage_4_products.py", 261, "classification", "product_classification",
+    M("app/api/pdf_processing/stage_4_products.py",
+      "Classify this interior material/furniture product into the controlled vocabularies", "classification", "product_classification",
       "Stage 4 — Product Classification", stage="entity_creation",
       placeholders=["product_name", "product_description", "existing_category", "vocab_lines"],
       description="Assigns material_category + zone_intent from the controlled vocabulary. "
                   "{vocab_lines} is rendered from material_categories.controlled_vocab."),
-    M("app/services/ai_validation/document_classifier.py", 111, "classification", "document_page",
+    M("app/services/ai_validation/document_classifier.py",
+      "Classify the following content into one of these categories:", "classification", "document_page",
       "Document Page Classifier", stage="discovery",
       placeholders=["page_num", "has_images", "content"],
       description="PRODUCT / SPEC / MARKETING page triage."),
-    M("app/services/chunking/chunk_type_classification_service.py", 133, "classification",
+    M("app/services/chunking/chunk_type_classification_service.py",
+      "You are a document chunk classifier for a material catalog platform.", "classification",
       "chunk_type", "Chunk Type Classifier", stage="chunking",
       placeholders=["chunk_types"],
       description="System prompt; {chunk_types} is the allowed set."),
@@ -73,7 +78,8 @@ MANIFEST: List[Dict[str, Any]] = [
     M("app/services/integrations/product_identity_service.py", "_CLASSIFIER_SYSTEM",
       "tool", "price_monitor_match", "Price Monitor — Page Match",
       description="Decides whether a scraped retailer page is the same product."),
-    M("app/services/integrations/sentiment_analysis_service.py", 67, "extraction", "sentiment",
+    M("app/services/integrations/sentiment_analysis_service.py",
+      "Analyze the following user feedback about a material product", "extraction", "sentiment",
       "Feedback Sentiment Analysis",
       placeholders=["material_name", "rating", "feedback_text"]),
     M("app/services/knowledge/catalog_knowledge_extractor.py", "KNOWLEDGE_PROMPT",
@@ -94,23 +100,27 @@ MANIFEST: List[Dict[str, Any]] = [
     # when one is passed, so a fragment filed under products/entity_creation could be returned
     # to the main extractor asking for the same key — quietly replacing an 11,508-char
     # extraction prompt with a 266-char fragment.
-    M("app/services/metadata/dynamic_metadata_extractor.py", 497, "extraction",
+    M("app/services/metadata/dynamic_metadata_extractor.py",
+      "PRODUCT SCOPE: You are extracting metadata specifically for the product named", "extraction",
       "product_name_scope",
       "Product Name Scoping Rule", stage="entity_creation",
       # Named twice on purpose: the fragment repeats the product name, and `render` replaces
       # every occurrence, so the same placeholder legitimately appears more than once.
       placeholders=["product_name", "product_name"],
       description="Injected fragment that stops SKU bleed between products on one page."),
-    M("app/services/metadata/dynamic_metadata_extractor.py", 984, "classification",
+    M("app/services/metadata/dynamic_metadata_extractor.py",
+      "Analyze this text chunk and determine its metadata scope.", "classification",
       "chunk_scope", "Chunk Scope Classifier", stage="chunking",
       placeholders=["chunk_content", "product_list"]),
     M("app/services/products/enhanced_material_property_extractor.py", "EXTRACTION_SYSTEM_PROMPT",
       "extraction", "material_properties_system", "Material Properties — System",
       stage="entity_creation"),
-    M("app/services/products/product_creation_service.py", 1307, "extraction",
+    M("app/services/products/product_creation_service.py",
+      "You are a fast product classifier.", "extraction",
       "fast_product_classifier_system", "Fast Product Classifier — System", stage="discovery",
       placeholders=["chunk_texts"]),
-    M("app/services/products/product_creation_service.py", 1358, "extraction",
+    M("app/services/products/product_creation_service.py",
+      "You are an expert product analyst. Perform deep analysis", "extraction",
       "product_deep_analysis", "Product Deep Analysis", stage="entity_creation",
       placeholders=["content", "confidence", "reasoning"]),
     M("app/services/products/product_description_writer.py", "DESCRIPTION_PROMPT",
@@ -118,45 +128,61 @@ MANIFEST: List[Dict[str, Any]] = [
     M("app/services/products/product_spec_vision_extractor.py", "SPEC_PROMPT_TEMPLATE",
       "extraction", "product_spec_vision", "Product Spec — Vision Extraction",
       stage="image_analysis"),
-    M("app/services/search/rag_service.py", 2350, "extraction", "rag_vision_analysis",
+    M("app/services/search/rag_service.py",
+      "Analyze this building/interior material image.", "extraction", "rag_vision_analysis",
       "RAG — Vision Analysis", stage="image_analysis"),
-    M("app/services/search/search_deduplication_service.py", 66, "search", "query_structuring",
+    M("app/services/search/search_deduplication_service.py",
+      "Analyze this material search query and extract structured information:", "search", "query_structuring",
       "Search — Query Structuring", placeholders=["query"]),
-    M("app/services/search/unified_search_service.py", 1027, "search", "query_parser_system",
+    M("app/services/search/unified_search_service.py",
+      "You are a material search query parser.", "search", "query_parser_system",
       "Search — Query Parser System"),
 ]
 
 
-def _extract(path: Path, anchor: Any, placeholders: List[str]) -> str:
-    """Pull the literal out of the AST, turning interpolations into {named} placeholders."""
+def _static_text(node: ast.AST) -> Optional[str]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value for v in node.values
+                       if isinstance(v, ast.Constant) and isinstance(v.value, str))
+    return None
+
+
+def _extract(path: Path, anchor: str, placeholders: List[str]) -> str:
+    """Pull the literal out of the AST, turning interpolations into {named} placeholders.
+
+    `anchor` is either an assigned constant name or a distinctive SUBSTRING of the prompt.
+    It is deliberately NOT a line number: the first version of this manifest used line numbers
+    and every one of them shifted the moment 162 lines of dead prompt were deleted from a file
+    above them. An anchor that moves when unrelated code moves is not an anchor.
+    """
     tree = ast.parse(path.read_text(encoding="utf-8"))
 
-    node = None
-    if isinstance(anchor, str):
-        for n in ast.walk(tree):
-            if isinstance(n, ast.Assign) and n.targets and \
-               getattr(n.targets[0], "id", None) == anchor:
-                node = n.value
-                break
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign) and n.targets and            getattr(n.targets[0], "id", None) == anchor:
+            node = n.value
+            break
     else:
-        best = None
+        nested = set()
         for n in ast.walk(tree):
-            if isinstance(n, (ast.Constant, ast.JoinedStr)) and getattr(n, "lineno", None) == anchor:
-                if isinstance(n, ast.Constant) and not isinstance(n.value, str):
-                    continue
-                # Prefer the outermost node on that line: a JoinedStr contains Constants.
-                if best is None or isinstance(n, ast.JoinedStr):
-                    best = n
-        node = best
-
-    if node is None:
-        raise SystemExit(f"{path}: could not find prompt anchored at {anchor!r}")
+            if isinstance(n, ast.JoinedStr):
+                nested.update(id(sub) for sub in ast.walk(n) if sub is not n)
+        matches = [
+            n for n in ast.walk(tree)
+            if id(n) not in nested and (_static_text(n) or "").find(anchor) >= 0
+        ]
+        if not matches:
+            raise SystemExit(f"{path}: no prompt containing {anchor!r}")
+        if len(matches) > 1:
+            raise SystemExit(f"{path}: {anchor!r} matches {len(matches)} literals "
+                             f"(lines {[m.lineno for m in matches]}) — make it more specific")
+        node = matches[0]
 
     if isinstance(node, ast.Constant):
-        text = node.value
         if placeholders:
-            raise SystemExit(f"{path}:{anchor} is a plain string but declares {placeholders}")
-        return text
+            raise SystemExit(f"{path}: {anchor!r} is a plain string but declares {placeholders}")
+        return node.value
 
     parts, holes = [], 0
     for value in node.values:
@@ -165,13 +191,13 @@ def _extract(path: Path, anchor: Any, placeholders: List[str]) -> str:
         else:
             if holes >= len(placeholders):
                 raise SystemExit(
-                    f"{path}:{anchor} has more interpolations than declared placeholders "
+                    f"{path}: {anchor!r} has more interpolations than declared placeholders "
                     f"({len(placeholders)}); next is {ast.unparse(value.value)!r}"
                 )
             parts.append("{" + placeholders[holes] + "}")
             holes += 1
     if holes != len(placeholders):
-        raise SystemExit(f"{path}:{anchor} declares {len(placeholders)} placeholders "
+        raise SystemExit(f"{path}: {anchor!r} declares {len(placeholders)} placeholders "
                          f"but the f-string has {holes}")
     return "".join(parts)
 
