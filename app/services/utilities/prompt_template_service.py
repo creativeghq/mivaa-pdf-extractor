@@ -117,6 +117,26 @@ class PromptTemplateService:
             'updated_at': str(row.get('updated_at') or ''),
         }
 
+    #: The unified `prompts` table stores the body in prompt_text and the model
+    #: knobs in a `configuration` jsonb; the admin API contract (and the frontend)
+    #: still speak the legacy prompt_templates vocabulary. _to_template_response
+    #: maps rows outwards; this maps the same fields inwards.
+    @staticmethod
+    def _configuration_from(
+        model_preference: Optional[str],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        base: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        config = dict(base or {})
+        if model_preference is not None:
+            config['model_preference'] = model_preference
+        if temperature is not None:
+            config['temperature'] = temperature
+        if max_tokens is not None:
+            config['max_tokens'] = max_tokens
+        return config
+
     async def create_template(
         self,
         workspace_id: str,
@@ -132,30 +152,33 @@ class PromptTemplateService:
         max_tokens: int = 4096,
         created_by: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Create a new prompt template."""
+        """Create a new prompt template in the unified `prompts` table."""
         try:
-            supabase = get_supabase_client().client
+            supabase = get_supabase_client()
 
             data = {
+                'prompt_type': 'template',
                 'workspace_id': workspace_id,
                 'name': name,
                 'stage': stage,
-                'prompt_template': prompt_template,
+                # NOT NULL in `prompts`; the legacy table allowed it to be absent.
+                'category': category or 'general',
+                'prompt_text': prompt_template,
                 'description': description,
                 'industry': industry,
-                'category': category,
                 'system_prompt': system_prompt,
-                'model_preference': model_preference,
-                'temperature': temperature,
-                'max_tokens': max_tokens,
-                'created_by': created_by
+                'configuration': self._configuration_from(
+                    model_preference, temperature, max_tokens
+                ),
+                'is_custom': True,
+                'created_by': created_by,
             }
 
-            response = supabase.client.table('prompt_templates').insert(data).execute()
+            response = supabase.client.table('prompts').insert(data).execute()
 
             if response.data:
                 logger.info(f"✅ Created prompt template: {name} (ID: {response.data[0]['id']})")
-                return response.data[0]
+                return self._to_template_response(response.data[0])
 
             raise Exception("Failed to create template")
 
@@ -178,14 +201,14 @@ class PromptTemplateService:
         changed_by: Optional[str] = None,
         change_reason: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Update an existing prompt template."""
+        """Update a prompt template in the unified `prompts` table."""
         try:
-            supabase = get_supabase_client().client
+            supabase = get_supabase_client()
 
-            # Get current template for history
-            current_response = supabase.client.table('prompt_templates')\
-                .select('prompt_template, system_prompt, version')\
+            current_response = supabase.client.table('prompts')\
+                .select('prompt_text, system_prompt, version, configuration')\
                 .eq('id', template_id)\
+                .eq('prompt_type', 'template')\
                 .eq('workspace_id', workspace_id)\
                 .execute()
 
@@ -194,11 +217,10 @@ class PromptTemplateService:
 
             current = current_response.data[0]
 
-            # Build update data
-            update_data = {}
+            update_data: Dict[str, Any] = {}
 
             if prompt_template is not None:
-                update_data['prompt_template'] = prompt_template
+                update_data['prompt_text'] = prompt_template
 
             if system_prompt is not None:
                 update_data['system_prompt'] = system_prompt
@@ -209,14 +231,12 @@ class PromptTemplateService:
             if description is not None:
                 update_data['description'] = description
 
-            if model_preference is not None:
-                update_data['model_preference'] = model_preference
-
-            if temperature is not None:
-                update_data['temperature'] = temperature
-
-            if max_tokens is not None:
-                update_data['max_tokens'] = max_tokens
+            if any(v is not None for v in (model_preference, temperature, max_tokens)):
+                base = current.get('configuration')
+                update_data['configuration'] = self._configuration_from(
+                    model_preference, temperature, max_tokens,
+                    base=base if isinstance(base, dict) else {},
+                )
 
             if is_active is not None:
                 update_data['is_active'] = is_active
@@ -224,66 +244,75 @@ class PromptTemplateService:
             if not update_data:
                 raise ValueError("No fields to update")
 
-            # Increment version
-            update_data['version'] = current['version'] + 1
+            update_data['version'] = (current.get('version') or 1) + 1
             update_data['updated_at'] = datetime.utcnow().isoformat()
 
-            # Update template
-            response = supabase.client.table('prompt_templates')\
+            response = supabase.client.table('prompts')\
                 .update(update_data)\
                 .eq('id', template_id)\
+                .eq('prompt_type', 'template')\
                 .eq('workspace_id', workspace_id)\
                 .execute()
 
             if not response.data:
                 raise Exception("Failed to update template")
 
-            # Record history if prompt changed
+            # Audit trail goes to `prompt_history`, the same table admin_prompt_service
+            # writes for extraction prompts — one history for one prompts table.
             if prompt_template is not None or system_prompt is not None:
-                history_data = {
-                    'template_id': template_id,
-                    'old_prompt': current['prompt_template'],
-                    'new_prompt': prompt_template or current['prompt_template'],
-                    'old_system_prompt': current.get('system_prompt'),
-                    'new_system_prompt': system_prompt or current.get('system_prompt'),
-                    'changed_by': changed_by,
-                    'change_reason': change_reason
-                }
+                try:
+                    supabase.client.table('prompt_history').insert({
+                        'prompt_id': template_id,
+                        'old_prompt_text': current.get('prompt_text') or '',
+                        'new_prompt_text': prompt_template or current.get('prompt_text') or '',
+                        'old_system_prompt': current.get('system_prompt'),
+                        'new_system_prompt': system_prompt or current.get('system_prompt'),
+                        'changed_by': changed_by,
+                        'change_reason': change_reason,
+                    }).execute()
+                except Exception as hist_err:
+                    # The edit itself succeeded; losing the audit row must not
+                    # present as a failed save, but it must not be silent either.
+                    logger.warning(
+                        f"Prompt template {template_id} updated but history write failed: {hist_err}"
+                    )
 
-                supabase.client.table('prompt_template_history').insert(history_data).execute()
-
-            logger.info(f"✅ Updated prompt template: {response.data[0]['name']} (version {response.data[0]['version']})")
-            return response.data[0]
+            logger.info(
+                f"✅ Updated prompt template: {response.data[0].get('name')} "
+                f"(version {response.data[0].get('version')})"
+            )
+            return self._to_template_response(response.data[0])
 
         except Exception as e:
             logger.error(f"Failed to update template: {str(e)}")
             raise
 
     async def delete_template(self, template_id: str, workspace_id: str) -> bool:
-        """Delete a prompt template (soft delete by setting is_active=False)."""
+        """Soft-delete a prompt template (is_active=False)."""
         try:
-            supabase = get_supabase_client().client
+            supabase = get_supabase_client()
 
-            response = supabase.client.table('prompt_templates')\
-                .update({'is_active': False})\
+            response = supabase.client.table('prompts')\
+                .update({'is_active': False, 'updated_at': datetime.utcnow().isoformat()})\
                 .eq('id', template_id)\
+                .eq('prompt_type', 'template')\
                 .eq('workspace_id', workspace_id)\
                 .execute()
 
-            return len(response.data) > 0
+            return bool(response.data)
 
         except Exception as e:
             logger.error(f"Failed to delete template: {str(e)}")
             return False
 
     async def get_template_history(self, template_id: str) -> List[Dict[str, Any]]:
-        """Get change history for a template."""
+        """Get change history for a template from the unified `prompt_history`."""
         try:
-            supabase = get_supabase_client().client
+            supabase = get_supabase_client()
 
-            response = supabase.client.table('prompt_template_history')\
+            response = supabase.client.table('prompt_history')\
                 .select('*')\
-                .eq('template_id', template_id)\
+                .eq('prompt_id', template_id)\
                 .order('changed_at', desc=True)\
                 .execute()
 
@@ -292,5 +321,3 @@ class PromptTemplateService:
         except Exception as e:
             logger.error(f"Failed to get template history: {str(e)}")
             return []
-
-
