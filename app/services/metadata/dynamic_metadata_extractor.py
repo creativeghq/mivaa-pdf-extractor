@@ -425,15 +425,12 @@ class DynamicMetadataExtractor:
             # Use normalized data
             extracted_data = normalized_data
 
-            # Step 5: Auto-create material_properties entries for new discovered fields
+            # Step 5: register every discovered field in the ONE registry and classify it
+            # (#347 phase 4.1/4.2). Best-effort: a registry write must never fail an extraction.
             try:
-                await self._ensure_properties_exist(extracted_data)
-            except AttributeError as ae:
-                self.logger.error(f"AttributeError in _ensure_properties_exist: {ae}")
-                self.logger.error(f"Available methods: {[m for m in dir(self) if not m.startswith('__')]}")
-                # Don't fail extraction if property creation fails
+                await self._register_and_classify_fields(extracted_data)
             except Exception as prop_error:
-                self.logger.warning(f"Failed to auto-create material_properties: {prop_error}")
+                self.logger.warning(f"Failed to register/classify fields: {prop_error}")
 
             # Step 6: Log packaging/iconography extraction results
             packaging_fields = extracted_data.get("packaging", {})
@@ -651,91 +648,159 @@ class DynamicMetadataExtractor:
             }
         }
 
-    async def _ensure_properties_exist(self, extracted_data: Dict[str, Any]):
-        """Auto-create material_properties entries for newly discovered fields.
+    async def _register_and_classify_fields(self, extracted_data):
+        """Register discovered fields in `material_metadata_fields` and classify each one.
 
-        This integrates with the prototype validation system by ensuring that
-        all discovered metadata fields have corresponding entries in the
-        material_properties table.
+        #347 phase 4.1/4.2. This replaced two BYTE-IDENTICAL copies of
+        `_ensure_properties_exist` (Python silently kept the second, so 86 lines were dead) which
+        wrote to `material_properties` -- the sixth registry this issue exists to collapse.
 
-        Args:
-            extracted_data: Extracted metadata from AI
+        Classification happens here because it is free and the evidence is in front of us:
+
+        * Plurality. A field the catalogue enumerates FOR ONE PRODUCT
+          (available_sizes: ["60x60", "30x60"]) is a variant axis by construction -- you cannot
+          ship "both sizes". A scalar (pei_rating: "IV") is a property of the product already
+          chosen. This alone decides most fields and costs nothing.
+        * SKU correlation. Where the catalogue maps variant names to SKU codes, the fields that
+          vary across those variants ARE identity. Ground truth, straight from the document.
+
+        The verdict is applied through the `classify_field_role` RPC, never by writing `role`
+        directly: that RPC owns the signal ladder (warehouse feedback > sku correlation >
+        plurality > llm > seed) and the demotion veto. A second ladder here would be a second
+        derivation of the same decision.
+
+        Bias, per the plan: when plurality fires, default to IDENTITY. The two errors are not
+        symmetric -- wrongly identity SPLITS stock into duplicate rows, visible and fixable;
+        wrongly descriptive MERGES stock that should be separate, which is invisible and is the
+        bug this whole issue is about.
         """
         from app.services.core.supabase_client import get_supabase_client
 
-        try:
-            supabase = get_supabase_client()
+        supabase = get_supabase_client()
 
-            # Collect all discovered property keys
-            property_keys = set()
+        # Collect key -> value across every section, keeping the VALUE: plurality is a fact about
+        # the value's shape, so the old key-only pass could not have classified anything.
+        discovered = {}
+        for section in ("critical", "unknown"):
+            block = extracted_data.get(section)
+            if isinstance(block, dict):
+                for key, value in block.items():
+                    if not key.startswith("_"):
+                        discovered.setdefault(key, value)
+        nested = extracted_data.get("discovered")
+        if isinstance(nested, dict):
+            for _category, fields in nested.items():
+                if isinstance(fields, dict):
+                    for key, value in fields.items():
+                        if not key.startswith("_"):
+                            discovered.setdefault(key, value)
 
-            # From critical metadata
-            if "critical" in extracted_data:
-                for key in extracted_data["critical"].keys():
-                    property_keys.add(key)
+        if not discovered:
+            return
 
-            # From discovered metadata (nested by category)
-            if "discovered" in extracted_data:
-                for category, fields in extracted_data["discovered"].items():
-                    if isinstance(fields, dict):
-                        for key in fields.keys():
-                            property_keys.add(key)
+        sku_varying = self._sku_correlated_fields(extracted_data)
 
-            # From unknown metadata (custom fields)
-            if "unknown" in extracted_data:
-                for key in extracted_data["unknown"].keys():
-                    if not key.startswith('_'):  # Skip internal fields
-                        property_keys.add(key)
+        existing = supabase.client.table("material_metadata_fields").select("field_name").execute()
+        known = {r["field_name"] for r in (existing.data or [])}
 
-            # Check which properties already exist
-            existing_result = supabase.client.table('material_properties').select('property_key').execute()
-            existing_keys = {row['property_key'] for row in existing_result.data}
+        new_rows = []
+        for key in discovered:
+            if key in known:
+                continue
+            new_rows.append({
+                "field_name": key,
+                "display_name": key.replace("_", " ").title(),
+                "description": "Auto-discovered during extraction: " + key,
+                "field_type": "text",
+                "extraction_hints": self._determine_property_category(key),
+                "status": "active",
+                # Registered as descriptive; the pass below promotes it through the RPC, so the
+                # ladder is applied in exactly one place.
+                "role": "descriptive",
+                "destination": "metadata",
+                "canonicalize": False,
+                "is_global": False,
+                "applies_to_categories": [],
+                "classified_by": "ingest",
+                "classified_signal": "seed",
+                "classified_reason": "Registered at ingest, awaiting classification.",
+            })
 
-            # Create missing properties
-            new_properties = []
-            for property_key in property_keys:
-                if property_key not in existing_keys:
-                    # Determine category from METADATA_CATEGORY_HINTS
-                    category = self._determine_property_category(property_key)
+        if new_rows:
+            try:
+                supabase.client.table("material_metadata_fields") \
+                    .upsert(new_rows, on_conflict="field_name").execute()
+                self.logger.info("Registered %d new field(s) in material_metadata_fields" % len(new_rows))
+            except Exception as e:
+                self.logger.warning("Field registration failed: %s" % e)
 
-                    # Create property definition
-                    new_properties.append({
-                        'property_key': property_key,
-                        'name': property_key.replace('_', ' ').title(),
-                        'display_name': property_key.replace('_', ' ').title(),
-                        'description': f'Auto-discovered property: {property_key}',
-                        'data_type': 'string',  # Default to string
-                        'validation_rules': {},
-                        'is_searchable': True,
-                        'is_filterable': True,
-                        'is_ai_extractable': True,
-                        'category': category,
-                        'created_at': datetime.utcnow().isoformat(),
-                        'updated_at': datetime.utcnow().isoformat()
-                    })
+        for key, value in discovered.items():
+            if key in sku_varying:
+                signal, role, confidence = "sku_correlation", "identity", 1.0
+                reason = "Varies across the catalogue's variant -> SKU map."
+            elif isinstance(value, (list, tuple)) and len([v for v in value if v not in (None, "")]) > 1:
+                signal, role, confidence = "plurality", "identity", 1.0
+                reason = "Catalogue enumerates %d values for one product." % len(value)
+            else:
+                # A scalar is WEAK evidence of descriptive, not proof: the catalogue may simply
+                # have listed one value. Left for the LLM tier to confirm rather than asserted.
+                continue
 
-            # Batch insert new properties with upsert to handle duplicates
-            if new_properties:
-                try:
-                    # Use upsert to avoid duplicate key violations
-                    supabase.client.table('material_properties')\
-                        .upsert(new_properties, on_conflict='property_key')\
-                        .execute()
-                    self.logger.info(f"Auto-created/updated {len(new_properties)} material_properties entries")
-                except Exception as insert_error:
-                    # If upsert fails, try inserting one by one to identify problematic entries
-                    self.logger.warning(f"Batch upsert failed: {insert_error}, trying individual inserts")
-                    for prop in new_properties:
-                        try:
-                            supabase.client.table('material_properties')\
-                                .upsert(prop, on_conflict='property_key')\
-                                .execute()
-                        except Exception as single_error:
-                            self.logger.debug(f"Skipped property {prop['property_key']}: {single_error}")
+            try:
+                supabase.client.rpc("classify_field_role", {
+                    "p_field_name": key,
+                    "p_role": role,
+                    "p_signal": signal,
+                    "p_confidence": confidence,
+                    "p_reason": reason,
+                }).execute()
+            except Exception as e:
+                self.logger.debug("classify_field_role(%s) skipped: %s" % (key, e))
 
-        except Exception as e:
-            # Don't fail extraction if property creation fails
-            self.logger.warning(f"Failed to auto-create material_properties: {e}")
+    def _sku_correlated_fields(self, extracted_data):
+        """Fields that differ across the catalogue's variant -> SKU mapping.
+
+        The registry already extracts `sku_codes` as "object mapping variant names to SKU codes".
+        Where a document maps variants to SKUs, whatever distinguishes those variants is identity
+        by definition -- the manufacturer said so by giving them different part numbers.
+        """
+        sku_map = None
+        for section in ("critical", "unknown", "discovered"):
+            block = extracted_data.get(section)
+            if not isinstance(block, dict):
+                continue
+            if isinstance(block.get("sku_codes"), dict):
+                sku_map = block["sku_codes"]
+                break
+            for _cat, fields in block.items():
+                if isinstance(fields, dict) and isinstance(fields.get("sku_codes"), dict):
+                    sku_map = fields["sku_codes"]
+                    break
+            if sku_map:
+                break
+
+        # One variant is not a mapping worth reading -- every field would "vary" across it.
+        if not sku_map or len(sku_map) < 2:
+            return set()
+
+        # The variant NAMES are the axis values ("60x60 Matte" -> "SKU-1"). A field whose values
+        # show up inside those names is what separates the variants.
+        varying = set()
+        names = [str(n).lower() for n in sku_map.keys()]
+        for section in ("critical", "unknown"):
+            block = extracted_data.get(section)
+            if not isinstance(block, dict):
+                continue
+            for key, value in block.items():
+                if key.startswith("_") or not isinstance(value, (list, tuple)):
+                    continue
+                vals = [str(v).lower() for v in value if v not in (None, "")]
+                if len(vals) < 2:
+                    continue
+                hits = sum(1 for v in vals if any(v in n for n in names))
+                if hits >= 2:
+                    varying.add(key)
+        return varying
 
     def _determine_property_category(self, property_key: str) -> str:
         """Determine which category a property belongs to."""
@@ -924,92 +989,6 @@ class MetadataScopeDetector:
                 "applies_to": [],
                 "extracted_metadata": {}
             }
-
-    async def _ensure_properties_exist(self, extracted_data: Dict[str, Any]):
-        """Auto-create material_properties entries for newly discovered fields.
-
-        This integrates with the prototype validation system by ensuring that
-        all discovered metadata fields have corresponding entries in the
-        material_properties table.
-
-        Args:
-            extracted_data: Extracted metadata from AI
-        """
-        from app.services.core.supabase_client import get_supabase_client
-
-        try:
-            supabase = get_supabase_client()
-
-            # Collect all discovered property keys
-            property_keys = set()
-
-            # From critical metadata
-            if "critical" in extracted_data:
-                for key in extracted_data["critical"].keys():
-                    property_keys.add(key)
-
-            # From discovered metadata (nested by category)
-            if "discovered" in extracted_data:
-                for category, fields in extracted_data["discovered"].items():
-                    if isinstance(fields, dict):
-                        for key in fields.keys():
-                            property_keys.add(key)
-
-            # From unknown metadata (custom fields)
-            if "unknown" in extracted_data:
-                for key in extracted_data["unknown"].keys():
-                    if not key.startswith('_'):  # Skip internal fields
-                        property_keys.add(key)
-
-            # Check which properties already exist
-            existing_result = supabase.client.table('material_properties').select('property_key').execute()
-            existing_keys = {row['property_key'] for row in existing_result.data}
-
-            # Create missing properties
-            new_properties = []
-            for property_key in property_keys:
-                if property_key not in existing_keys:
-                    # Determine category from METADATA_CATEGORY_HINTS
-                    category = self._determine_property_category(property_key)
-
-                    # Create property definition
-                    new_properties.append({
-                        'property_key': property_key,
-                        'name': property_key.replace('_', ' ').title(),
-                        'display_name': property_key.replace('_', ' ').title(),
-                        'description': f'Auto-discovered property: {property_key}',
-                        'data_type': 'string',  # Default to string
-                        'validation_rules': {},
-                        'is_searchable': True,
-                        'is_filterable': True,
-                        'is_ai_extractable': True,
-                        'category': category,
-                        'created_at': datetime.utcnow().isoformat(),
-                        'updated_at': datetime.utcnow().isoformat()
-                    })
-
-            # Batch insert new properties with upsert to handle duplicates
-            if new_properties:
-                try:
-                    # Use upsert to avoid duplicate key violations
-                    supabase.client.table('material_properties')\
-                        .upsert(new_properties, on_conflict='property_key')\
-                        .execute()
-                    self.logger.info(f"Auto-created/updated {len(new_properties)} material_properties entries")
-                except Exception as insert_error:
-                    # If upsert fails, try inserting one by one to identify problematic entries
-                    self.logger.warning(f"Batch upsert failed: {insert_error}, trying individual inserts")
-                    for prop in new_properties:
-                        try:
-                            supabase.client.table('material_properties')\
-                                .upsert(prop, on_conflict='property_key')\
-                                .execute()
-                        except Exception as single_error:
-                            self.logger.debug(f"Skipped property {prop['property_key']}: {single_error}")
-
-        except Exception as e:
-            # Don't fail extraction if property creation fails
-            self.logger.warning(f"Failed to auto-create material_properties: {e}")
 
     def _determine_property_category(self, property_key: str) -> str:
         """Determine which category a property belongs to."""
