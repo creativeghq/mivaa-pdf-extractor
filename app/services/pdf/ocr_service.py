@@ -496,8 +496,6 @@ class OCRService:
         workspace_id = workspace_id or get_settings().default_workspace_id
 
         try:
-            from app.services.core.supabase_client import get_supabase_client
-
             # Load image
             if isinstance(image, str):
                 img = cv2.imread(image)
@@ -555,24 +553,28 @@ class OCRService:
                     })
 
             if use_ai:
-                # Load prompt from database
-                supabase = get_supabase_client()
-                prompt_result = supabase.client.table('prompts') \
-                    .select('prompt_text') \
-                    .eq('workspace_id', workspace_id) \
-                    .eq('prompt_type', 'extraction') \
-                    .eq('stage', 'image_analysis') \
-                    .eq('category', 'icon_metadata') \
-                    .eq('is_active', True) \
-                    .order('version', desc=True) \
-                    .limit(1) \
-                    .execute()
+                # #347 phase 3P.3/3P.4 - through the registry, not a hand-rolled query.
+                #
+                # This block used to select from `prompts` itself, filtered on
+                # `.eq('workspace_id', workspace_id)`, and on a miss logged "using fallback"
+                # and returned []. Three faults in one:
+                #
+                #   1. It never fell back to anything. It returned NO icons, silently and
+                #      forever - a metric sitting at zero while everything reports success.
+                #   2. The workspace filter meant only ONE workspace could ever match. The row
+                #      exists for exactly one tenant, so every other tenant got the empty path.
+                #   3. It bypassed the resolution order (workspace custom -> workspace default
+                #      -> platform default) that every other prompt site goes through.
+                #
+                # `load_prompt` applies that order and RAISES on a genuine miss, which is the
+                # point of the no-fallback policy: a missing prompt must stop the work loudly
+                # rather than quietly produce nothing.
+                from app.services.utilities.prompt_registry import load_prompt
 
-                if not prompt_result.data:
-                    logger.warning("No icon extraction prompt found in database, using fallback")
-                    return []
-
-                prompt_template = prompt_result.data[0]['prompt_text']
+                prompt_template = await load_prompt(
+                    "extraction", "icon_metadata",
+                    stage="image_analysis", workspace_id=workspace_id,
+                )
 
                 # Imports at top of the branch so `json` is bound before
                 # any use below — placing them after the f-string would make

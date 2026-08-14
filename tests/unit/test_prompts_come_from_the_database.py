@@ -182,3 +182,71 @@ def test_active_prompts_only():
     assert '.eq("is_active", True)' in select, (
         "the prompt query stopped filtering is_active — deactivating a prompt in /admin/ai-configs "
         "would silently keep serving it.")
+
+
+def test_required_prompts_matches_every_literal_call_site():
+    """`REQUIRED_PROMPTS` must list every prompt this service loads with a literal key.
+
+    The list is DECLARED, not derived, because a running service cannot AST-scan itself to build
+    its own health check. A declared list is exactly the kind that rots, so this walks every
+    `load_prompt(...)` / `get_cached(...)` call in app/ and compares both ways.
+
+    Without it, /health would confidently report "all required prompts present" while a call site
+    loaded a key nobody was checking for — the same silent-zero shape the probe exists to prevent.
+    """
+    import re
+
+    registry_src = _REGISTRY.read_text(encoding="utf-8")
+    block = registry_src[
+        registry_src.index("REQUIRED_PROMPTS"):registry_src.index("async def check_required_prompts")
+    ]
+    declared = {
+        (t, c, st or None)
+        for t, c, st in re.findall(
+            r'\(\s*"([\w-]+)"\s*,\s*"([\w-]+)"\s*,\s*(?:"([\w-]+)"|None)\s*\)', block
+        )
+    }
+
+    call_re = re.compile(r'(?:load_prompt|get_cached)\(\s*"([\w-]+)"\s*,\s*"([\w-]+)"(?:\s*,\s*stage\s*=\s*"([\w-]+)")?')
+    called = set()
+    for path, src in _sources():
+        if path == _REGISTRY:
+            continue
+        for m in call_re.finditer(src):
+            called.add((m.group(1), m.group(2), m.group(3)))
+
+    undeclared = sorted(called - declared)
+    assert undeclared == [], (
+        "these prompt keys are loaded by code but missing from REQUIRED_PROMPTS, so /health "
+        "would report every prompt present while these could be absent: "
+        + "; ".join(f"{t}/{st or '-'}/{c}" for t, c, st in undeclared)
+    )
+
+    # Keys loaded with a VARIABLE category, which a literal scan cannot see. The six catalog
+    # legend prompts go through `load_prompt("extraction", CATEGORY_BY_TYPE[legend_type],
+    # stage="discovery")`. They are genuinely required — /health must check them — so they are
+    # declared and excluded from the stale check rather than deleted.
+    #
+    # SHRINK-ONLY. An entry here is a claim that some call site loads this key dynamically; if
+    # that call site goes, the entry must go with it.
+    dynamically_keyed = {
+        ("extraction", "legend_care", "discovery"),
+        ("extraction", "legend_certifications", "discovery"),
+        ("extraction", "legend_icons", "discovery"),
+        ("extraction", "legend_installation", "discovery"),
+        ("extraction", "legend_regulations", "discovery"),
+        ("extraction", "legend_sustainability", "discovery"),
+    }
+    legend_src = (_APP / "services/knowledge/catalog_legend_extractor_v2.py").read_text(
+        encoding="utf-8")
+    assert "CATEGORY_BY_TYPE" in legend_src and "load_prompt(" in legend_src, (
+        "the legend extractor no longer loads its prompts dynamically — the "
+        "`dynamically_keyed` exemptions above are stale and must be removed."
+    )
+
+    stale = sorted(declared - called - dynamically_keyed)
+    assert stale == [], (
+        "REQUIRED_PROMPTS lists keys nothing loads any more — /health would fail a deploy over "
+        "a prompt no code needs: "
+        + "; ".join(f"{t}/{st or '-'}/{c}" for t, c, st in stale)
+    )

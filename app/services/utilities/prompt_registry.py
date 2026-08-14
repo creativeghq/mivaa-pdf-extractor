@@ -218,6 +218,87 @@ def render(template: str, **values: Any) -> str:
     return template
 
 
+#: Every prompt key this service loads with a literal (prompt_type, category, stage).
+#:
+#: No-fallback means a missing row stops the work cold — correct, but it must be discovered at
+#: deploy time, not at 2am halfway through a catalog. `check_required_prompts()` verifies these
+#: exist; /health reports the result (#347 phase 3P.6).
+#:
+#: This list is DECLARED, not derived, because a running service cannot AST-scan itself. It is
+#: kept honest by tests/unit/test_prompts_come_from_the_database.py, which walks every
+#: `load_prompt(...)` / `get_cached(...)` call in app/ and fails when one is missing here — so
+#: the declaration cannot drift from the code the way a hand-kept list normally would.
+REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
+    ("agent", "segmentation", None),
+    ("classification", "chunk_scope", "chunking"),
+    # Added by phase 4.1/4.3 after this list was written. The guard test found the drift
+    # on its first run, which is the point of deriving it from the call sites.
+    ("classification", "field_role", "metadata_extraction"),
+    ("classification", "chunk_type", "chunking"),
+    ("classification", "document_page", "discovery"),
+    ("classification", "product_classification", "entity_creation"),
+    ("extraction", "anthropic_chunk_analysis", "entity_creation"),
+    ("extraction", "anthropic_image_analysis", "image_analysis"),
+    ("extraction", "catalog_knowledge", "discovery"),
+    ("extraction", "fast_product_classifier_system", "discovery"),
+    ("extraction", "icon_metadata", "image_analysis"),
+    ("extraction", "legend_care", "discovery"),
+    ("extraction", "legend_certifications", "discovery"),
+    ("extraction", "legend_icons", "discovery"),
+    ("extraction", "legend_installation", "discovery"),
+    ("extraction", "legend_regulations", "discovery"),
+    ("extraction", "legend_sustainability", "discovery"),
+    ("extraction", "material_properties_system", "entity_creation"),
+    ("extraction", "product_deep_analysis", "entity_creation"),
+    ("extraction", "product_name_scope", "entity_creation"),
+    ("extraction", "product_spec_vision", "image_analysis"),
+    ("extraction", "rag_vision_analysis", "image_analysis"),
+    ("extraction", "sentiment", None),
+    ("generation", "product_description", None),
+    ("search", "query_parser_system", None),
+    ("search", "query_structuring", None),
+    ("tool", "price_monitor_facets", None),
+    ("tool", "price_monitor_match", None),
+)
+
+
+async def check_required_prompts() -> Dict[str, Any]:
+    """Verify every REQUIRED_PROMPTS key resolves. Never raises — this is a health probe.
+
+    Returns {status, required, missing, unavailable}. `missing` is a configuration problem
+    someone must fix in /admin/ai-configs; `unavailable` means the store could not be read at
+    all, which is a different alarm and must not be reported as 26 missing prompts.
+    """
+    missing: list = []
+    unavailable: Optional[str] = None
+
+    for prompt_type, category, stage in REQUIRED_PROMPTS:
+        try:
+            await load_prompt(prompt_type, category, stage=stage)
+        except PromptNotConfigured:
+            missing.append(f"{prompt_type}/{stage or '-'}/{category}")
+        except PromptStoreUnavailable as exc:
+            unavailable = str(exc)
+            break
+        except Exception as exc:  # noqa: BLE001 — a probe must not take the service down
+            unavailable = f"unexpected error checking prompts: {exc}"
+            break
+
+    if unavailable:
+        status = "unknown"
+    elif missing:
+        status = "unhealthy"
+    else:
+        status = "healthy"
+
+    return {
+        "status": status,
+        "required": len(REQUIRED_PROMPTS),
+        "missing": missing,
+        "unavailable": unavailable,
+    }
+
+
 def clear_cache() -> None:
     """Drop the cache — for tests and for the admin save path."""
     _CACHE.clear()

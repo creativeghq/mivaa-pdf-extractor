@@ -1767,6 +1767,41 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         if overall_status != "unhealthy":
             overall_status = "degraded"
 
+    # #347 phase 3P.6 — every prompt comes from the database with no code fallback, so a missing
+    # row stops the work it belongs to cold. That is the correct behaviour, but it has to be
+    # discoverable at deploy time rather than at 2am halfway through a catalog. A missing prompt
+    # is `unhealthy`; a store we cannot read at all is `degraded`, because that is an outage
+    # somewhere else and reporting it as 26 missing prompts would point at the wrong thing.
+    try:
+        from app.services.utilities.prompt_registry import check_required_prompts
+        prompt_health = await check_required_prompts()
+        services_status["prompts"] = {
+            "status": (
+                "healthy" if prompt_health["status"] == "healthy"
+                else "unhealthy" if prompt_health["status"] == "unhealthy"
+                else "degraded"
+            ),
+            "required": prompt_health["required"],
+            "missing": prompt_health["missing"],
+            "message": (
+                f"{len(prompt_health['missing'])} required prompt(s) missing from the database: "
+                + ", ".join(prompt_health["missing"][:5])
+                if prompt_health["missing"]
+                else prompt_health["unavailable"] or "all required prompts present"
+            ),
+        }
+        if prompt_health["status"] == "unhealthy":
+            overall_status = "unhealthy"
+        elif prompt_health["status"] == "unknown" and overall_status == "healthy":
+            overall_status = "degraded"
+    except Exception as e:
+        services_status["prompts"] = {
+            "status": "degraded",
+            "message": f"Prompt check failed: {str(e)}",
+        }
+        if overall_status == "healthy":
+            overall_status = "degraded"
+
     return HealthResponse(
         status=overall_status,
         timestamp=datetime.utcnow(),
