@@ -134,6 +134,10 @@ class JobHit:
     posted_at: Optional[str] = None  # ISO string, parsed by orchestrator
     source: str = "google_jobs"
     raw_payload: Dict[str, Any] = field(default_factory=dict)
+    # Set by the orchestrator's per-board cursor: this listing newly appeared at the
+    # top of a curated board since we last scraped it, so it's fresh by POSITION even
+    # with no printed date — the recency gate keeps it (see _mark_new_board_jobs).
+    is_new_on_board: bool = False
 
 
 # ────────────────────────────────────────────────────────────────────────────

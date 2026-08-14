@@ -942,6 +942,11 @@ class JobResearchService:
                                          duration_ms=int((_utcnow() - started_at).total_seconds() * 1000))
                 return outcome
 
+            # Position-based freshness: mark board jobs that newly appeared since our
+            # last scrape (per-board cursor) so the recency gate keeps them even with
+            # no printed date. Runs on `hits` so the flag rides through de-dup.
+            self._mark_new_board_jobs(hits)
+
             deduped = dedupe_hits(hits)
             # v0.4.6: URL-only dedup within the run. The content_hash dedup above
             # works on (canonical_url + title + company), so a single job returned
@@ -1034,6 +1039,13 @@ class JobResearchService:
             _cutoff = _utcnow() - timedelta(days=max_age_days)
 
             def _is_fresh(h: JobHit) -> bool:
+                # Freshness by POSITION: a job that newly appeared at the top of a
+                # curated board since our last scrape is new, so keep it even with no
+                # printed date. This is the ONLY undated-keep path — open-web links
+                # (Perplexity/SERP/LinkedIn), which re-post stale roles, still need a
+                # real date and are dropped when undated.
+                if getattr(h, "is_new_on_board", False):
+                    return True
                 iso = normalize_posted_at(getattr(h, "posted_at", None))
                 dt = _parse_dt(iso) if iso else None
                 if dt is None:
@@ -1252,6 +1264,84 @@ class JobResearchService:
             }).execute()
         except Exception as e:
             logger.warning(f"job-refresh cadence: {e}")
+
+    def _mark_new_board_jobs(self, hits: List[JobHit]) -> None:
+        """Position-based freshness for dateless job boards.
+
+        The strict recency gate drops any listing without a trustworthy posted date,
+        which silently wiped ~23 aggregator boards that just don't print per-job dates
+        (ai-native-builder, productbuilderjobs, choppingblock, 4dayweek, remoteok…).
+        Instead of a date we use POSITION: boards list newest-first, so we keep a
+        per-board cursor of the job hashes we saw last time. On the next scrape we walk
+        the board's listings from the top and everything ABOVE the first job we
+        recognise is genuinely NEW — fresh by first appearance. Those get
+        is_new_on_board=True and the recency gate keeps them; a job we've already seen
+        is not re-emitted. First contact seeds a small starter set so the board isn't
+        silent for a day, and a per-run cap bounds the flood if the cursor goes stale.
+        """
+        _STARTER = 8            # first-ever contact: surface the newest few immediately
+        _MAX_NEW_PER_BOARD = 25 # bound a flood when the cursor can't find its marker
+        _CAP = 600              # per-board cursor memory (hashes retained)
+
+        by_board: Dict[str, List[JobHit]] = {}
+        for h in hits:
+            if getattr(h, "source", "") != "firecrawl_careers":
+                continue
+            board = (getattr(h, "raw_payload", None) or {}).get("careers_page")
+            if board:
+                by_board.setdefault(board, []).append(h)
+        if not by_board:
+            return
+
+        for board, board_hits in by_board.items():
+            try:
+                row = (
+                    self.sb.table("job_board_seen")
+                    .select("seen_hashes, initialized")
+                    .eq("board_url", board)
+                    .maybe_single()
+                    .execute()
+                )
+                data = (row.data if row else None) or {}
+            except Exception as e:
+                logger.warning(f"job-board-cursor load ({board}): {e}")
+                data = {}
+            seen = set(data.get("seen_hashes") or [])
+            initialized = bool(data.get("initialized"))
+
+            new_count = 0
+            if not initialized:
+                for h in board_hits[:_STARTER]:
+                    h.is_new_on_board = True
+                new_count = min(_STARTER, len(board_hits))
+            else:
+                # board_hits keep extraction order (newest-first). Walk from the top,
+                # marking NEW until we recognise a previously-seen job (the marker).
+                for h in board_hits:
+                    if h.content_hash in seen:
+                        break
+                    if new_count >= _MAX_NEW_PER_BOARD:
+                        break
+                    h.is_new_on_board = True
+                    new_count += 1
+
+            # Advance the cursor: current top listings first, then prior memory, capped.
+            current = [h.content_hash for h in board_hits if h.content_hash]
+            updated = list(dict.fromkeys(current + list(seen)))[:_CAP]
+            try:
+                self.sb.table("job_board_seen").upsert(
+                    {
+                        "board_url": board,
+                        "seen_hashes": updated,
+                        "initialized": True,
+                        "updated_at": _iso(_utcnow()),
+                    },
+                    on_conflict="board_url",
+                ).execute()
+            except Exception as e:
+                logger.warning(f"job-board-cursor save ({board}): {e}")
+            if new_count:
+                logger.info(f"job-board-cursor: {board} → {new_count} new since last scrape")
 
     def _load_exclusions(self, tracked_job_id: str) -> Dict[str, set]:
         try:
