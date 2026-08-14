@@ -39,7 +39,7 @@ from app.schemas.api_responses import (
     CheckpointListResponse, RelevancyListResponse, StatsResponse,
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
-from app.dependencies import get_current_user, get_optional_workspace_context, resolve_workspace_id
+from app.dependencies import get_current_user, get_optional_workspace_context, resolve_workspace_id, verify_internal_access
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
 # Importing it at the top triggers `app.api.documents.__init__` →
 # `management_routes` → `app.orchestration` → back into this (still partially
@@ -1252,7 +1252,7 @@ async def upload_document(
         )
 
 
-@router.get("/documents/job/{job_id}", responses={200: {"model": JobInfoResponse}})
+@router.get("/documents/job/{job_id}", responses={200: {"model": JobInfoResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_job_status(job_id: str):
     """
     Get the status of an async document processing job with checkpoint information.
@@ -1387,7 +1387,7 @@ async def get_job_status(job_id: str):
     )
 
 
-@router.get("/documents/job/{job_id}/full-status")
+@router.get("/documents/job/{job_id}/full-status", dependencies=[Depends(verify_internal_access)])
 async def get_job_full_status(job_id: str):
     """Single round-trip endpoint for the full state of a job.
 
@@ -1426,7 +1426,7 @@ async def get_job_full_status(job_id: str):
     })
 
 
-@router.get("/jobs/{job_id}/checkpoints", responses={200: {"model": CheckpointListResponse}})
+@router.get("/jobs/{job_id}/checkpoints", responses={200: {"model": CheckpointListResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_job_checkpoints(job_id: str):
     """Returns the stage history for a job (alias maintained for older
     clients — `/documents/job/{id}/full-status` is the consolidated read).
@@ -2056,7 +2056,7 @@ async def reprocess_document(
         )
 
 
-@router.get("/documents/jobs", responses={200: {"model": ListDataResponse}})
+@router.get("/documents/jobs", responses={200: {"model": ListDataResponse}}, dependencies=[Depends(verify_internal_access)])
 async def list_jobs(
     limit: int = 10,
     offset: int = 0,
@@ -2581,7 +2581,7 @@ async def get_embeddings(
         )
 
 
-@router.get("/relevancies", responses={200: {"model": RelevancyListResponse}})
+@router.get("/relevancies", responses={200: {"model": RelevancyListResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_relevancies(
     document_id: Optional[str] = Query(None, description="Filter by document ID"),
     limit: int = Query(100, ge=1, le=1000, description="Maximum number of relevancies to return"),
@@ -5338,7 +5338,7 @@ async def search_documents(
             detail=f"Search processing failed: {str(e)}"
         )
 
-@router.get("/documents/documents/{document_id}/content", responses={200: {"model": DocumentContentResponse}})
+@router.get("/documents/documents/{document_id}/content", responses={200: {"model": DocumentContentResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_document_content(
     document_id: str,
     include_chunks: bool = Query(True, description="Include document chunks"),
@@ -5499,7 +5499,7 @@ async def rag_health_check(
             timestamp=datetime.utcnow().isoformat()
         )
 
-@router.get("/stats", responses={200: {"model": StatsResponse}})
+@router.get("/stats", responses={200: {"model": StatsResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_rag_statistics(
     rag_service: RAGService = Depends(get_rag_service)
 ):
@@ -5629,7 +5629,7 @@ async def get_workspace_statistics(
 
 
 
-@router.get("/job/{job_id}/ai-tracking", responses={200: {"model": AITrackingResponse}})
+@router.get("/job/{job_id}/ai-tracking", responses={200: {"model": AITrackingResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_job_ai_tracking(job_id: str):
     """
     Get detailed AI model tracking information for a job.
@@ -5679,7 +5679,7 @@ async def get_job_ai_tracking(job_id: str):
         )
 
 
-@router.get("/job/{job_id}/ai-tracking/stage/{stage}", responses={200: {"model": AITrackingResponse}})
+@router.get("/job/{job_id}/ai-tracking/stage/{stage}", responses={200: {"model": AITrackingResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_job_ai_tracking_by_stage(job_id: str, stage: str):
     """
     Get AI model tracking information for a specific processing stage.
@@ -5727,7 +5727,7 @@ async def get_job_ai_tracking_by_stage(job_id: str, stage: str):
         )
 
 
-@router.get("/job/{job_id}/ai-tracking/model/{model_name}", responses={200: {"model": AITrackingResponse}})
+@router.get("/job/{job_id}/ai-tracking/model/{model_name}", responses={200: {"model": AITrackingResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
     """
     Get AI model tracking information for a specific AI model.
@@ -5794,7 +5794,7 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
         )
 
 
-@router.get("/admin/stuck-jobs/analyze/{job_id}", responses={200: {"model": StuckJobsResponse}})
+@router.get("/admin/stuck-jobs/analyze/{job_id}", responses={200: {"model": StuckJobsResponse}}, dependencies=[Depends(verify_internal_access)])
 async def analyze_stuck_job(job_id: str):
     """
     Analyze a stuck job to determine root cause and get recommendations.
@@ -5817,7 +5817,7 @@ async def analyze_stuck_job(job_id: str):
         )
 
 
-@router.get("/admin/stuck-jobs/statistics", responses={200: {"model": StuckJobsResponse}})
+@router.get("/admin/stuck-jobs/statistics", responses={200: {"model": StuckJobsResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_stuck_job_statistics():
     """
     Get overall statistics about stuck jobs.

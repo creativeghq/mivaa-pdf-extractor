@@ -10,6 +10,8 @@ Security Note: Authentication dependencies enforce JWT validation and workspace 
 """
 
 from typing import Optional, Dict, Any
+import os
+
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
@@ -150,6 +152,44 @@ def _get_jwt_middleware() -> JWTAuthMiddleware:
     if _jwt_middleware_singleton is None:
         _jwt_middleware_singleton = JWTAuthMiddleware(None)
     return _jwt_middleware_singleton
+
+
+async def verify_internal_access(request: Request) -> Optional[Dict[str, Any]]:
+    """Auth gate for routes the JWT middleware cannot cover.
+
+    Some prefixes are in ``JWTAuthMiddleware.exclude_paths`` because their real
+    callers cannot present a Supabase *user* JWT -- edge functions calling with a
+    service-role token, pg_cron calling with ``x-cron-secret``, the ``mk_``
+    platform key. Excluding them from the middleware is correct; leaving them with
+    no gate at all is not, and invariant 5 requires both.
+
+    Accepts EITHER the shared ``x-cron-secret`` OR any token
+    ``JWTAuthMiddleware._validate_token`` accepts (user JWT, service-role JWT, or
+    the ``mk_`` platform key). Rejects anonymous callers, fail-closed.
+
+    Returns the validated claims for the token path and ``None`` for the
+    ``x-cron-secret`` path. Routes that scope by a body-supplied ``workspace_id``
+    need that distinction: this gate admits ANY valid platform token, including an
+    end user's, so without the claims a route cannot tell a trusted cron call from
+    a user naming someone else's workspace. Declaring it as a parameter as well as
+    a decorator dependency is free -- FastAPI caches a dependency per request.
+
+    Originally ``internal_routes.verify_internal_access`` (pentest #250 D19/D20);
+    promoted here by audit #12 so the 15 other excluded-and-ungated routes it
+    found could use the same gate instead of growing a second copy.
+    """
+    secret = os.getenv("CRON_SECRET")
+    if secret and request.headers.get("x-cron-secret") == secret:
+        return None
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        try:
+            claims = await _get_jwt_middleware()._validate_token(auth.split(" ", 1)[1])
+            if claims:
+                return claims
+        except Exception:
+            pass
+    raise HTTPException(status_code=401, detail="Unauthorized: internal endpoint requires a valid token or x-cron-secret")
 
 
 async def get_current_user(

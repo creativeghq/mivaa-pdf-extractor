@@ -13,7 +13,7 @@ Features:
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 from enum import Enum
 
@@ -50,6 +50,12 @@ class CheckpointRecoveryService:
     Allows jobs to resume from last successful checkpoint instead of restarting.
     """
     
+    # Slack added on top of a slow operation's own declared expected_max_seconds
+    # before recovery is allowed to treat it as stuck. Generous on purpose: the
+    # cost of waiting another 10 minutes on a live job is nothing next to the cost
+    # of restarting one mid-flight and paying for the same document twice.
+    SLOW_OP_GRACE_SECONDS = 600
+
     def __init__(self):
         self.supabase_client = get_supabase_client()
         self.jobs_table = "background_jobs"
@@ -335,32 +341,114 @@ class CheckpointRecoveryService:
         logger.info(f"✅ Job {job_id} can resume from {stage.value}")
         return True, stage
     
+    @staticmethod
+    def _iso_z(dt: datetime) -> str:
+        """UTC ISO-8601 with a ``Z`` suffix.
+
+        A PostgREST ``or=(...)`` filter carries the whole expression as a single
+        query param, where a ``+00:00`` offset is ambiguous with ``+``-as-space
+        form encoding. ``Z`` is accepted by Postgres and has no such ambiguity.
+        """
+        return dt.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
+
+    def _slow_operation_within_grace(self, job: Dict[str, Any], now: datetime) -> bool:
+        """True while a declared long-running stage is still inside its budget.
+
+        ``current_slow_operation`` is written by
+        ``ProgressTracker.set_slow_operation`` as
+        ``{operation, started_at, expected_max_seconds}`` and exists precisely so
+        auto-recovery does not false-positive on a legitimately slow stage.
+
+        Grace is the declared budget plus ``SLOW_OP_GRACE_SECONDS``. Past that
+        the marker stops protecting the job, so a leaked marker (stages 1.5 and 3
+        can both leak one on an exception path) cannot shield a dead job forever.
+        """
+        marker = job.get("current_slow_operation")
+        if not isinstance(marker, dict):
+            return False
+        started_raw = marker.get("started_at")
+        if not started_raw:
+            return False
+        try:
+            started = datetime.fromisoformat(normalize_timestamp(started_raw)).replace(tzinfo=None)
+        except (ValueError, TypeError):
+            logger.debug(f"unparseable current_slow_operation.started_at: {started_raw!r}")
+            return False
+        try:
+            budget = int(marker.get("expected_max_seconds") or 0)
+        except (ValueError, TypeError):
+            budget = 0
+        deadline = started + timedelta(seconds=budget + self.SLOW_OP_GRACE_SECONDS)
+        return now < deadline
+
     @track_query_performance("background_jobs", "select_stuck_jobs")
-    async def detect_stuck_jobs(self, timeout_minutes: int = 30) -> List[Dict[str, Any]]:
+    async def detect_stuck_jobs(
+        self,
+        timeout_minutes: int = 30,
+        heartbeat_timeout_seconds: int = 900,
+    ) -> List[Dict[str, Any]]:
         """
         Detect jobs that are stuck (processing for too long without progress).
 
+        A job counts as stuck only when ALL THREE hold:
+
+        1. ``updated_at`` is older than ``timeout_minutes`` (no stage progress);
+        2. ``last_heartbeat`` is null or older than ``heartbeat_timeout_seconds``
+           (the worker process is not alive);
+        3. it is not inside a declared slow operation still within its budget.
+
+        Audit #12 finding 2: this used to test (1) alone. ``JobHeartbeat`` writes
+        ONLY ``last_heartbeat``, never ``updated_at``, so a worker 35 minutes into
+        a Stage 3 vision call has a fresh heartbeat and a stale ``updated_at`` --
+        and was restarted while still running, duplicating the work and
+        double-spending on Claude/Voyage. Both protective mechanisms already
+        existed; neither was read here.
+
         Args:
-            timeout_minutes: Consider job stuck if processing longer than this
+            timeout_minutes: No-progress threshold on ``updated_at``.
+            heartbeat_timeout_seconds: Liveness threshold on ``last_heartbeat``.
+                Defaults to 900s to match ``_detect_heartbeat_timeout_jobs``.
 
         Returns:
             List of stuck job records
         """
         try:
-            cutoff_time = (datetime.utcnow() - timedelta(minutes=timeout_minutes)).isoformat()
+            now = datetime.now(timezone.utc)
+            cutoff_time = self._iso_z(now - timedelta(minutes=timeout_minutes))
+            heartbeat_cutoff = self._iso_z(now - timedelta(seconds=heartbeat_timeout_seconds))
 
             result = self.supabase_client.client.table(self.jobs_table)\
                 .select("*")\
                 .eq("status", "processing")\
                 .lt("updated_at", cutoff_time)\
+                .or_(f"last_heartbeat.is.null,last_heartbeat.lt.{heartbeat_cutoff}")\
                 .execute()
 
-            stuck_jobs = result.data or []
+            candidates = result.data or []
+
+            now_naive = now.replace(tzinfo=None)
+            stuck_jobs = []
+            for job in candidates:
+                if self._slow_operation_within_grace(job, now_naive):
+                    op = (job.get("current_slow_operation") or {}).get("operation")
+                    logger.info(
+                        f"⏳ Job {job['id']} is inside slow operation '{op}' "
+                        f"within its budget -- not stuck"
+                    )
+                    continue
+                stuck_jobs.append(job)
 
             if stuck_jobs:
-                logger.warning(f"🛑 Found {len(stuck_jobs)} stuck jobs (>{timeout_minutes}min without update)")
+                logger.warning(
+                    f"🛑 Found {len(stuck_jobs)} stuck jobs "
+                    f"(>{timeout_minutes}min without update AND no heartbeat for "
+                    f">{heartbeat_timeout_seconds}s)"
+                )
                 for job in stuck_jobs:
-                    logger.warning(f"   - {job['id']}: {job.get('filename', 'unknown')} (updated: {job['updated_at']})")
+                    logger.warning(
+                        f"   - {job['id']}: {job.get('filename', 'unknown')} "
+                        f"(updated: {job['updated_at']}, heartbeat: {job.get('last_heartbeat')})"
+                    )
 
             return stuck_jobs
 
@@ -368,12 +456,27 @@ class CheckpointRecoveryService:
             logger.error(f"❌ Failed to detect stuck jobs: {e}")
             return []
     
-    async def auto_restart_stuck_job(self, job_id: str) -> bool:
+    async def auto_restart_stuck_job(
+        self,
+        job_id: str,
+        expected_updated_at: Optional[str] = None,
+    ) -> bool:
         """
         Automatically restart a stuck job from last checkpoint.
-        
+
+        The status flip is a compare-and-swap claim, not a blind write. Audit #12
+        finding 2: the update matched on ``id`` alone and the restart metadata went
+        out in a *second* call, so two cron ticks could both "restart" the same
+        job, and a job that recovered on its own between detection and restart was
+        yanked back to ``pending`` anyway.
+
         Args:
             job_id: Job identifier
+            expected_updated_at: The ``updated_at`` observed when the job was
+                detected as stuck. The claim succeeds only if the row still
+                carries it, i.e. nothing has touched the job since. Omit only for
+                callers with no observation to compare against; the claim then
+                degrades to ``status == 'processing'``.
             
         Returns:
             bool: True if restart initiated successfully
@@ -384,18 +487,33 @@ class CheckpointRecoveryService:
             
             if not can_resume:
                 logger.warning(f"⚠️ Cannot resume {job_id} from checkpoint - marking as failed")
-                await self._mark_job_failed(job_id, "Stuck without valid checkpoint")
+                await self._mark_job_failed(
+                    job_id, "Stuck without valid checkpoint",
+                    expected_updated_at=expected_updated_at,
+                )
                 return False
             
-            # Mark job as pending for restart — merge metadata so we don't
-            # clobber existing progress counters (pages_completed, etc.)
-            self.supabase_client.client.table(self.jobs_table)\
+            # Atomic claim: flip processing -> pending only if the row is still
+            # exactly as observed. A losing racer matches zero rows and bails out
+            # before writing any restart metadata. Metadata is merged rather than
+            # replaced so existing progress counters survive.
+            claim = self.supabase_client.client.table(self.jobs_table)\
                 .update({
                     "status": "pending",
                     "updated_at": datetime.utcnow().isoformat()
                 })\
                 .eq("id", job_id)\
-                .execute()
+                .eq("status", "processing")
+            if expected_updated_at:
+                claim = claim.eq("updated_at", expected_updated_at)
+            claimed = claim.execute()
+
+            if not (claimed.data or []):
+                logger.info(
+                    f"↻ Lost the restart claim for {job_id} (another recovery pass "
+                    f"or the worker itself got there first) -- skipping"
+                )
+                return False
             self.supabase_client.client.rpc("merge_background_job_metadata", {
                 "p_job_id": job_id,
                 "p_metadata": {
@@ -608,10 +726,20 @@ class CheckpointRecoveryService:
             logger.error(f"❌ Failed to cleanup stage_history: {e}")
             return 0
     
-    async def _mark_job_failed(self, job_id: str, reason: str):
-        """Mark a job as failed and deregister from endpoint controller."""
+    async def _mark_job_failed(
+        self,
+        job_id: str,
+        reason: str,
+        expected_updated_at: Optional[str] = None,
+    ):
+        """Mark a job as failed and deregister from endpoint controller.
+
+        Same compare-and-swap discipline as ``auto_restart_stuck_job``: a job that
+        started making progress again between detection and this write must not be
+        failed out from under its own live worker.
+        """
         try:
-            self.supabase_client.client.table(self.jobs_table)\
+            update = self.supabase_client.client.table(self.jobs_table)\
                 .update({
                     "status": "failed",
                     "error": reason,
@@ -619,7 +747,16 @@ class CheckpointRecoveryService:
                     "updated_at": datetime.utcnow().isoformat()
                 })\
                 .eq("id", job_id)\
-                .execute()
+                .eq("status", "processing")
+            if expected_updated_at:
+                update = update.eq("updated_at", expected_updated_at)
+            result = update.execute()
+            if not (result.data or []):
+                logger.info(
+                    f"↻ Skipped failing {job_id} -- it is no longer the "
+                    f"'processing' row that was observed as stuck"
+                )
+                return
         except Exception as e:
             logger.error(f"Failed to mark job as failed: {e}")
 

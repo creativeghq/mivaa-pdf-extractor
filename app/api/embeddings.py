@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
+from app.dependencies import verify_internal_access
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
@@ -103,7 +104,7 @@ async def get_embedding_service() -> RealEmbeddingsService:
         )
 
 
-@router.post("/clip-image", response_model=EmbeddingResponse)
+@router.post("/clip-image", response_model=EmbeddingResponse, dependencies=[Depends(verify_internal_access)])
 async def generate_clip_image_embedding(
     request: ClipImageRequest,
     embedding_service: RealEmbeddingsService = Depends(get_embedding_service)
@@ -196,7 +197,7 @@ async def generate_clip_image_embedding(
         )
 
 
-@router.post("/clip-text", response_model=EmbeddingResponse)
+@router.post("/clip-text", response_model=EmbeddingResponse, dependencies=[Depends(verify_internal_access)])
 async def generate_clip_text_embedding(
     request: ClipTextRequest,
     embedding_service: RealEmbeddingsService = Depends(get_embedding_service)

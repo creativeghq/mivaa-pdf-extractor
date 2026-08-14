@@ -326,7 +326,13 @@ class JobMonitorService:
                 
                 if is_valid:
                     # Restart from checkpoint
-                    success = await checkpoint_recovery_service.auto_restart_stuck_job(job_id)
+                    # Pass the observed updated_at so the restart is an atomic
+                    # claim -- two monitor ticks cannot both restart this job,
+                    # and a job that resumed on its own since detection is left
+                    # alone (audit #12 finding 2).
+                    success = await checkpoint_recovery_service.auto_restart_stuck_job(
+                        job_id, expected_updated_at=job.get("updated_at")
+                    )
                     
                     if success:
                         self.stats["jobs_restarted"] += 1

@@ -37,7 +37,7 @@ from app.services.core.supabase_client import get_supabase_client, SupabaseClien
 from app.services.tracking.progress_tracker import get_progress_service
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 from app.schemas.jobs import JobStatus, ProcessingStage
-from app.dependencies import get_current_user, resolve_workspace_id
+from app.dependencies import get_current_user, resolve_workspace_id, verify_internal_access
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module — importing
 # from `app.api.documents` at the top triggers a circular-import cycle on startup
 # (app.api.documents → management_routes → app.orchestration → rag_routes). It is only
@@ -148,36 +148,6 @@ router = APIRouter(
         404: {"description": "Job not found"}
     }
 )
-
-
-async def verify_internal_access(request: Request) -> Optional[Dict[str, Any]]:
-    """Pentest #250 D19/D20: `/api/internal` is service-to-service and excluded from the
-    JWT middleware, yet these thin HTTP wrappers (the pipeline calls the underlying
-    services in-process — it never hits these routes) were fully unauthenticated while
-    reachable via the public gateway URL. Accept EITHER the `x-cron-secret` used by the
-    other internal endpoints OR a valid platform JWT (the admin UI / mivaaApiClient sends
-    one); reject anonymous external callers.
-
-    Returns the validated claims when the caller authenticated with a token, and None
-    for the `x-cron-secret` path. Routes that scope by a body-supplied `workspace_id`
-    need that distinction: this gate admits ANY valid platform token, including an end
-    user's, so without the claims a route cannot tell a trusted cron call from a user
-    naming someone else's workspace. Declaring it as a parameter as well as a decorator
-    dependency is free — FastAPI caches a dependency per request.
-    """
-    secret = os.getenv("CRON_SECRET")
-    if secret and request.headers.get("x-cron-secret") == secret:
-        return None
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        try:
-            from app.dependencies import _get_jwt_middleware
-            claims = await _get_jwt_middleware()._validate_token(auth.split(" ", 1)[1])
-            if claims:
-                return claims
-        except Exception:
-            pass
-    raise HTTPException(status_code=401, detail="Unauthorized: internal endpoint requires a valid token or x-cron-secret")
 
 
 # ============================================================================

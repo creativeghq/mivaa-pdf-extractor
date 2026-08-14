@@ -835,6 +835,7 @@ jobs:
           Environment=SUPABASE_PROJECT_ID=${{ secrets.SUPABASE_PROJECT_ID }}
           Environment=ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
           Environment=CRON_SECRET=${{ secrets.CRON_SECRET }}
+          Environment=MIVAA_DEPLOY_TOKEN=${{ secrets.MIVAA_DEPLOY_TOKEN }}
           Environment=OPENAI_API_KEY=${{ secrets.OPENAI_API_KEY }}
           Environment=VOYAGE_API_KEY=${{ secrets.VOYAGE_API_KEY }}
           # SLIG (SigLIP2) visual embeddings — Modal-hosted (modal_app/slig.py),
@@ -988,6 +989,7 @@ jobs:
             # block longer than the SSH keepalive can sustain.
             DRAIN_RESP=$(curl -s -X POST -m 130 \
               -H "Content-Type: application/json" \
+              -H "X-Admin-Token: ${{ secrets.MIVAA_DEPLOY_TOKEN }}" \
               "http://localhost:8000/api/admin/pause-for-deploy?max_wait_seconds=120" || echo '{"ready":false,"error":"call_failed_or_timeout"}')
             echo "Drain response: ${DRAIN_RESP}"
             READY=$(echo "$DRAIN_RESP" | jq -r '.ready // false' 2>/dev/null || echo 'false')

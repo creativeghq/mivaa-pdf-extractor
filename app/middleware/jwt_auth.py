@@ -147,13 +147,16 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # (audit #304 finding 8). Re-adding a PBR route means giving it its own
             # Depends(...) guard, not restoring this line.
             "/api/embeddings",            # SLIG/Voyage text+image embeddings (edge callers)
-            # Deploy/restart infra hooks — called by CI/ops via ADMIN_RESTART_TOKEN or
-            # no token (route-level), NOT a Supabase JWT. Specific paths only, so the
-            # rest of /api/admin (e.g. /api/admin/logs) stays JWT-enforced. FOLLOW-UP
-            # (#250): give pause/resume-for-deploy an explicit token check.
+            # Deploy drain hooks — called by CI over SSH with no Supabase JWT, so
+            # they cannot pass this middleware. Specific paths only, so the rest of
+            # /api/admin (logs, backfills, facets — all called by the admin UI and
+            # edge functions) stays JWT-enforced. Both now carry their own
+            # fail-closed X-Admin-Token guard (require_deploy_token in api/admin.py);
+            # the #250 follow-up is done. "/api/admin/restart-service" was here too —
+            # a root systemd-restart endpoint with zero callers in either repo and an
+            # unset token; deleted in audit #12 rather than gated.
             "/api/admin/pause-for-deploy",
             "/api/admin/resume-from-deploy",
-            "/api/admin/restart-service",
         ]
         
         # Initialize Supabase client for token validation (lazy initialization)

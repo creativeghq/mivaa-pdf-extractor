@@ -9,13 +9,15 @@ This module provides comprehensive administrative and monitoring capabilities in
 - System monitoring and performance metrics
 """
 
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query
+from app.dependencies import verify_internal_access
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query, Header
 from fastapi.responses import JSONResponse
 from typing import List, Optional, Dict, Any
 import logging
 from datetime import datetime, timedelta
 import psutil
 import os
+import hmac
 
 from app.utils.timestamp_utils import normalize_timestamp
 from app.schemas.api_responses import (
@@ -62,12 +64,37 @@ def _set_draining(value: bool, reason: Optional[str] = None) -> None:
     _DRAINING["reason"] = reason
 
 
+def require_deploy_token(x_admin_token: Optional[str] = Header(None)) -> None:
+    """Route-level gate for the deploy drain hooks.
+
+    These two paths are in ``JWTAuthMiddleware.exclude_paths`` — they are called
+    by CI over SSH with no Supabase JWT — so the middleware cannot protect them.
+    Invariant 5 requires such a route to carry its own guard rather than relying
+    on the network boundary: audit creativeghq/mivaa-pdf-extractor#12 confirmed
+    the deployed nginx proxies ``/api/`` wholesale, so ``pause-for-deploy`` was
+    reachable unauthenticated from the public internet and any caller could hold
+    every upload at 503 indefinitely.
+
+    Fails closed: an unset secret is a 503, never a fall-through to processing.
+    """
+    expected = os.getenv("MIVAA_DEPLOY_TOKEN")
+    if not expected:
+        logger.error("MIVAA_DEPLOY_TOKEN is not configured — refusing deploy-hook call")
+        raise HTTPException(
+            status_code=503,
+            detail="Deploy hooks unavailable: MIVAA_DEPLOY_TOKEN not configured on server",
+        )
+    if not x_admin_token or not hmac.compare_digest(x_admin_token, expected):
+        logger.warning("Rejected deploy-hook call with missing/invalid X-Admin-Token")
+        raise HTTPException(status_code=403, detail="Invalid admin token")
+
+
 # Global job tracking
 active_jobs: Dict[str, Dict[str, Any]] = {}
 job_history: List[Dict[str, Any]] = []
 
 
-@router.post("/admin/pause-for-deploy")
+@router.post("/admin/pause-for-deploy", dependencies=[Depends(require_deploy_token)])
 async def pause_for_deploy(
     max_wait_seconds: int = Query(300, ge=10, le=900),
 ):
@@ -78,8 +105,9 @@ async def pause_for_deploy(
     `{ready: True}` when the queue is empty, or `{ready: False, active_jobs: N}`
     on timeout.
 
-    Auth boundary is the network (the workflow calls this over SSH on
-    localhost), so no application-level token is required.
+    Gated by ``require_deploy_token`` (X-Admin-Token). The network is NOT the
+    auth boundary — nginx proxies /api/ wholesale, so this was publicly
+    reachable until audit #12.
     """
     import asyncio as _asyncio_drain
 
@@ -143,7 +171,7 @@ async def pause_for_deploy(
         return {"ready": False, "error": str(e), "drain_state": _DRAINING}
 
 
-@router.post("/admin/resume-from-deploy")
+@router.post("/admin/resume-from-deploy", dependencies=[Depends(require_deploy_token)])
 async def resume_from_deploy():
     """Clear the draining flag — uploads accepted again. Called automatically
     by the lifespan startup hook on a fresh process boot, but exposed here so
@@ -154,7 +182,12 @@ async def resume_from_deploy():
 
 @router.get("/admin/drain-status")
 async def drain_status():
-    """Read-only view of the current drain flag (no auth, low-info)."""
+    """Read-only view of the current drain flag.
+
+    NOT in ``JWTAuthMiddleware.exclude_paths``, so the middleware enforces a
+    Supabase JWT on it (verified: an anonymous GET returns 401). Keep it out of
+    that list.
+    """
     return {"drain_state": _DRAINING}
 
 def migrate_job_data():
@@ -283,7 +316,7 @@ async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, 
 
 # Job Management Endpoints
 
-@router.get("/jobs", response_model=JobListResponse)
+@router.get("/jobs", response_model=JobListResponse, dependencies=[Depends(verify_internal_access)])
 async def list_jobs(
     status: Optional[str] = Query(None, description="Filter by job status"),
     job_type: Optional[str] = Query(None, description="Filter by job type"),
@@ -336,7 +369,7 @@ async def list_jobs(
         logger.error(f"Error listing jobs: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to list jobs: {str(e)}")
 
-@router.get("/jobs/statistics", response_model=Dict[str, Any])
+@router.get("/jobs/statistics", response_model=Dict[str, Any], dependencies=[Depends(verify_internal_access)])
 async def get_job_statistics():
     """
     Get comprehensive job statistics and metrics
@@ -414,7 +447,7 @@ async def jobs_health_check():
     }
 
 
-@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
+@router.get("/jobs/{job_id}", response_model=JobStatusResponse, dependencies=[Depends(verify_internal_access)])
 async def get_job_status(
     job_id: str,
 
@@ -475,7 +508,7 @@ async def get_job_status(
         logger.error(f"Error getting job status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
 
-@router.get("/jobs/{job_id}/status", response_model=DataResponse)
+@router.get("/jobs/{job_id}/status", response_model=DataResponse, dependencies=[Depends(verify_internal_access)])
 async def get_job_status_alt(
     job_id: str,
 ):
@@ -754,7 +787,7 @@ async def get_system_health(
         logger.error(f"Error getting system health: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get system health: {str(e)}")
 
-@router.get("/system/metrics", response_model=SystemMetricsResponse)
+@router.get("/system/metrics", response_model=SystemMetricsResponse, dependencies=[Depends(verify_internal_access)])
 async def get_system_metrics():
     """
     Get detailed system performance metrics
@@ -1129,7 +1162,7 @@ async def get_basic_package_status():
     }
 
 
-@router.get("/jobs/{job_id}/products", response_model=DataResponse)
+@router.get("/jobs/{job_id}/products", response_model=DataResponse, dependencies=[Depends(verify_internal_access)])
 async def get_job_product_progress(job_id: str, supabase: SupabaseClient = Depends(get_supabase_client)):
     """
     Get product-level progress for a PDF processing job.
