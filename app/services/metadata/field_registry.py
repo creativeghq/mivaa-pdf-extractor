@@ -29,7 +29,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field as dc_field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from app.services.core.supabase_client import get_supabase_client
 

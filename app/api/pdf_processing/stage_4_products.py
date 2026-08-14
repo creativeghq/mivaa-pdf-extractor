@@ -1686,7 +1686,9 @@ def _normalize_material_category(raw: str) -> Optional[str]:
         return None
 
     if field_registry.is_loaded and mapped not in field_registry.all_controlled_vocab():
-        logger.error(
+        # `logger` is a PARAMETER throughout this module, not a global — see line ~310, which
+        # resolves it inline for the same reason. This function takes no logger.
+        logging.getLogger(__name__).error(
             "_MATERIAL_TYPE_TO_CATEGORY maps '%s' to '%s', which is no longer in "
             "material_categories.controlled_vocab — dropping. Fix the map or restore the value.",
             key, mapped,
