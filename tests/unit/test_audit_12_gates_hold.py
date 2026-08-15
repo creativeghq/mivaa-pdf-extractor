@@ -229,3 +229,68 @@ def test_discovery_rejects_gpt_rather_than_silently_using_claude():
         "the module-load OpenAI key capture is back"
     )
     assert "is not supported" in src, "a GPT model request must be rejected explicitly"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Finding 4, as a class rather than a file
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The check above pins `product_discovery_service`, the one file finding 4 named.
+# That left the same vestigial-OpenAI shape live in three other places, found by
+# looking for the class instead of the file:
+#
+#   * dynamic_metadata_extractor.py held its own module-load OPENAI_API_KEY,
+#     read by nothing
+#   * ai_call_logger carried log_gpt_call + _calculate_gpt_cost — ~100 lines of
+#     OpenAI BILLING path with zero callers
+#   * rag_routes still advertised discovery_model='gpt-vision' in the OpenAPI
+#     description and the endpoint docstring, so a caller following the docs got
+#     a rejection from a model the API told them to use
+#
+# None of it could execute; all of it read as an OpenAI integration. That is what
+# makes a future reader re-raise the refuted Critical, which is the stated reason
+# finding 4 was recorded at all.
+
+def _app_root() -> Path:
+    return Path(__file__).resolve().parents[2] / "app"
+
+
+def test_no_module_load_openai_key_capture_anywhere():
+    """Vision is Anthropic-only and there is no OpenAI execution path. A key read
+    at import time, for a provider nothing calls, is the vestige finding 4 is about."""
+    offenders = []
+    for path in sorted(_app_root().rglob("*.py")):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.match(r"^\s*[A-Z_]*OPENAI[A-Z_]*\s*=\s*os\.getenv", line):
+                offenders.append(f"{path.name}:{i}")
+    assert not offenders, (
+        "module-load OpenAI key capture(s) at " + ", ".join(offenders) +
+        " — there is no OpenAI path in MIVAA, so this reads as an integration that "
+        "does not exist (and the platform rules forbid capturing env at import)"
+    )
+
+
+def test_no_openai_billing_path_survives():
+    """A billing helper for a provider with no execution path is worse than dead
+    code: it makes the cost surface look wider than it is. Same call as deleting
+    EscalationEngine — the only reachable part reported counters that could never
+    be anything but zero."""
+    src = _src(_app_root() / "services" / "core" / "ai_call_logger.py")
+    for name in ("log_gpt_call", "_calculate_gpt_cost", "gpt_api"):
+        assert name not in src, (
+            f"{name} is back in ai_call_logger — an OpenAI billing path with no "
+            "OpenAI calls behind it"
+        )
+
+
+def test_the_api_does_not_advertise_a_model_it_rejects():
+    """stage_0_discovery rejects 'gpt'/'gpt-vision' explicitly (the check above).
+    While the OpenAPI description still offered them, the docs and the code
+    disagreed and the caller lost."""
+    src = _src(_app_root() / "api" / "rag_routes.py")
+    assert '`discovery_model="gpt-vision"`' not in src, (
+        "the endpoint docstring offers gpt-vision again, which stage 0 now rejects"
+    )
+    assert "'gpt-vision' (GPT-4o Vision)" not in src, (
+        "the discovery_model description offers gpt-vision again"
+    )

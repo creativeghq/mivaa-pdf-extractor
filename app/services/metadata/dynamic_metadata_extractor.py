@@ -33,9 +33,11 @@ from app.services.utilities.prompt_registry import workspace_scope, prefer_works
 
 logger = logging.getLogger(__name__)
 
-# Get API keys from environment
+# Get API keys from environment.
+# There was an OPENAI_API_KEY capture here too, read by nothing — the same
+# vestigial-OpenAI shape audit #12 finding 4 recorded in product_discovery_service,
+# in a file that fix did not reach. There is no OpenAI execution path in MIVAA.
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
 
 # ============================================================================

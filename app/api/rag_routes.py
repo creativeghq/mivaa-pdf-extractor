@@ -589,7 +589,7 @@ async def upload_document(
     # Discovery settings
     discovery_model: str = Form(
         "claude-vision",
-        description="AI model for discovery: 'claude-vision' (Claude Opus 4.7 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'gpt-vision' (GPT-4o Vision), 'claude' (text-only, legacy), 'gpt' (text-only, legacy), 'haiku' (text-only, legacy)"
+        description="AI model for discovery: 'claude-vision' (Claude Opus 4.7 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'claude' (text-only, legacy), 'haiku' (text-only, legacy). 'gpt'/'gpt-vision' are REJECTED - there is no OpenAI path in MIVAA (audit #12 finding 4)."
     ),
 
     # Processing settings
@@ -692,7 +692,6 @@ async def upload_document(
     Choose:
     - `discovery_model="claude-vision"` - Claude Opus 4.7 (default)
     - `discovery_model="claude-haiku-vision"` - Claude Haiku 4.5 (cheaper, fast)
-    - `discovery_model="gpt-vision"` - GPT-4o
 
     Real vision DOES run at Stage 3 per-image material analysis (Claude Opus
     4.7 with Anthropic `tool_use` + the `VISION_ANALYSIS_TOOL` schema lock).

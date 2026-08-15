@@ -439,99 +439,6 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log Claude call: {e}")
             return False
 
-    async def log_gpt_call(
-        self,
-        task: str,
-        model: str,
-        response: Any,
-        latency_ms: int,
-        confidence_score: float,
-        confidence_breakdown: Dict[str, float],
-        action: str,
-        job_id: Optional[str] = None,
-        fallback_reason: Optional[str] = None,
-        request_data: Optional[Dict[str, Any]] = None,
-        user_id: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-        module_slug: Optional[str] = None,
-        product_id: Optional[str] = None,
-        image_id: Optional[str] = None,
-        system_initiated: bool = False,
-    ) -> bool:
-        """
-        Log a GPT API call and debit credits from user account.
-
-        Args:
-            task: Type of task
-            model: GPT model (gpt-5, gpt-4o)
-            response: OpenAI API response object
-            latency_ms: Latency in milliseconds
-            confidence_score: Calculated confidence score
-            confidence_breakdown: Confidence breakdown dict
-            action: 'use_ai_result' or 'fallback_to_rules'
-            job_id: Optional job ID
-            fallback_reason: Optional fallback reason
-            request_data: Optional request data
-            user_id: Optional user ID for credit debit
-            workspace_id: Optional workspace ID for credit debit
-
-        Returns:
-            bool: True if logged successfully
-        """
-        try:
-            # Extract token usage from GPT response
-            input_tokens = response.usage.prompt_tokens if hasattr(response, 'usage') else 0
-            output_tokens = response.usage.completion_tokens if hasattr(response, 'usage') else 0
-
-            # Calculate cost based on model
-            cost = self._calculate_gpt_cost(model, input_tokens, output_tokens)
-
-            # Record the billing outcome either way - see log_claude_call.
-            if user_id:
-                unbilled_reason = await self._debit(
-                    user_id=user_id,
-                    workspace_id=workspace_id,
-                    operation_type=task,
-                    model_name=model,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    job_id=job_id,
-                    metadata={'source': 'gpt_api'},
-                    module_slug=module_slug
-                )
-            elif system_initiated:
-                unbilled_reason = 'system_initiated'
-            else:
-                unbilled_reason = self._record_missing_principal(task, model, cost)
-
-            # Extract response text
-            response_text = response.choices[0].message.content if hasattr(response, 'choices') else str(response)
-
-            return await self.log_ai_call(
-                task=task,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cost=cost,
-                latency_ms=latency_ms,
-                confidence_score=confidence_score,
-                confidence_breakdown=confidence_breakdown,
-                action=action,
-                job_id=job_id,
-                fallback_reason=fallback_reason,
-                request_data=request_data,
-                response_data={"text": response_text[:500]},
-                user_id=user_id,
-                workspace_id=workspace_id,
-                module_slug=module_slug,
-                product_id=product_id,
-                image_id=image_id,
-                unbilled_reason=unbilled_reason,
-            )
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to log GPT call: {e}")
-            return False
     
     # All GPU-endpoint billing goes through `log_time_based_call`
     # (per-GPU-second pricing), which is the only correct path for SLIG
@@ -683,10 +590,6 @@ class AICallLogger:
         cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="anthropic")
         return float(cost_data['billed_cost_usd'])
 
-    def _calculate_gpt_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
-        """Calculate cost for GPT API call using centralized pricing (returns billed cost with markup)"""
-        cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="openai")
-        return float(cost_data['billed_cost_usd'])
 
     async def log_firecrawl_call(
         self,
