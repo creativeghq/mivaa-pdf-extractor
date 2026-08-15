@@ -106,6 +106,7 @@ async def semantic_search(
             document_ids = request.document_ids
         else:
             documents = await supabase.list_documents(
+                workspace_id=str(workspace_context.workspace_id),
                 limit=1000,
                 status_filter="completed"
             )
@@ -359,9 +360,10 @@ async def multimodal_search(
     - Image content analysis
     - Combined multi-modal scoring
     """
-    # Authorize the caller for the requested workspace (invariant 1); the route
-    # does not filter by it, so this is the check, not a value.
-    await resolve_workspace_id(current_user, request.workspace_id)
+    # Authorize the caller AND keep the value: the document list below is
+    # scoped by it. Discarding it here is what let these routes build their
+    # candidate id set from every document on the platform.
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         # Get configuration for multi-modal settings
         from app.config import get_settings
@@ -395,6 +397,7 @@ async def multimodal_search(
         else:
             # Get all available documents
             documents = await supabase.list_documents(
+                workspace_id=workspace_id,
                 limit=1000,
                 status_filter="completed"
             )
@@ -550,9 +553,10 @@ async def multimodal_query(
     - Image analysis and descriptions
     - Multi-modal LLM reasoning
     """
-    # Authorize the caller for the requested workspace (invariant 1); the route
-    # does not filter by it, so this is the check, not a value.
-    await resolve_workspace_id(current_user, request.workspace_id)
+    # Authorize the caller AND keep the value: the document list below is
+    # scoped by it. Discarding it here is what let these routes build their
+    # candidate id set from every document on the platform.
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         # Get configuration
         from app.config import get_settings
@@ -583,6 +587,7 @@ async def multimodal_query(
         else:
             # Get all available documents
             documents = await supabase.list_documents(
+                workspace_id=workspace_id,
                 limit=1000,
                 status_filter="completed"
             )
@@ -698,9 +703,10 @@ async def image_search(
     - Image similarity matching
     - Visual element detection
     """
-    # Authorize the caller for the requested workspace (invariant 1); the route
-    # does not filter by it, so this is the check, not a value.
-    await resolve_workspace_id(current_user, request.workspace_id)
+    # Authorize the caller AND keep the value: the document list below is
+    # scoped by it. Discarding it here is what let these routes build their
+    # candidate id set from every document on the platform.
+    workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:
         import time
         search_start_time = time.time()
@@ -746,6 +752,7 @@ async def image_search(
         else:
             # Get documents that have images
             documents = await supabase.list_documents(
+                workspace_id=workspace_id,
                 limit=1000,
                 status_filter="completed"
             )
@@ -753,7 +760,7 @@ async def image_search(
             document_ids = []
             for doc in documents.get("documents", []):
                 # Check if document has associated images
-                images = await supabase.get_document_images(doc["id"])
+                images = await supabase.get_document_images(doc["id"], workspace_id)
                 if images:
                     document_ids.append(doc["id"])
         
@@ -853,7 +860,11 @@ async def image_search(
 async def multimodal_analysis(
     request: MultiModalAnalysisRequest,
     rag: RAGService = Depends(get_rag_service),
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    # This route had no auth dependency at all: it fetched any document by id
+    # for any caller. The tenant has to come from the verified JWT before the
+    # document read below can be scoped by it (invariant 1).
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
 ) -> MultiModalAnalysisResponse:
     """
     Perform comprehensive multi-modal analysis of a document.
@@ -867,7 +878,9 @@ async def multimodal_analysis(
     """
     try:
         # Verify document exists
-        document_data = await supabase.get_document_by_id(request.document_id)
+        document_data = await supabase.get_document_by_id(
+            request.document_id, str(workspace_context.workspace_id)
+        )
         if not document_data:
             raise HTTPException(
                 status_code=404,

@@ -821,9 +821,12 @@ class MaterialVisualSearchService:
 
         except Exception as e:
             logger.error(f"Database search failed: {str(e)}")
-            # Return empty results instead of mock data
+            # Return empty results instead of mock data — but NOT as a success.
+            # M3-12 (#16): reporting success=True here made a search that threw
+            # indistinguishable from a search that matched nothing, and the
+            # `error` key sitting in the metadata was never read by anyone.
             return MaterialSearchResponse(
-                success=True,
+                success=False,
                 results=[],
                 total_results=0,
                 search_metadata={

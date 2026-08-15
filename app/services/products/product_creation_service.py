@@ -10,14 +10,111 @@ import logging
 import re  # module level: three functions imported it locally, a fourth used it without
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-import json
 import time
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.ai_client_service import get_ai_client_service
 from app.services.products.material_quota import material_quota_remaining_sync
 from app.services.utilities.prompt_registry import get_cached, prefetch, render
+from app.utils.exceptions import TenancyViolation
 
 logger = logging.getLogger(__name__)
+
+
+#: M3-11 (#16). Stage 1 decides which chunks become product candidates and
+#: Stage 2 decides what data is written to the gold layer. Both used to be
+#: plain-text Claude responses mined with `re.search(r'(\{.*\}|\[.*\])')`, with
+#: heuristic fallbacks when the regex missed. Invariant 9 requires forced
+#: tool_choice for any classifier whose verdict drives a DB write: a supplier
+#: PDF is untrusted input, and injected text shaping free-form JSON stops
+#: mattering once the only thing the model can emit is a validated schema.
+STAGE1_CLASSIFICATION_TOOL = {
+    "name": "record_chunk_classifications",
+    "description": (
+        "Record, for every chunk in the batch, whether it describes a concrete "
+        "purchasable product."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "results": {
+                "type": "array",
+                "description": "One entry per chunk considered.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "chunk_index": {
+                            "type": "integer",
+                            "description": "Zero-based index of the chunk within this batch.",
+                        },
+                        "is_product": {
+                            "type": "boolean",
+                            "description": "True only for a concrete purchasable product.",
+                        },
+                        "confidence": {
+                            "type": "number",
+                            "description": "Confidence in the verdict, 0.0 to 1.0.",
+                        },
+                        "product_name": {
+                            "type": "string",
+                            "description": "Product name if is_product, else omit.",
+                        },
+                        "reasoning": {
+                            "type": "string",
+                            "description": "One short sentence of justification.",
+                        },
+                    },
+                    "required": ["chunk_index", "is_product", "confidence"],
+                },
+            }
+        },
+        "required": ["results"],
+    },
+}
+
+STAGE2_ENRICHMENT_TOOL = {
+    "name": "record_product_enrichment",
+    "description": "Record the enriched attributes of one candidate product.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "is_valid_product": {
+                "type": "boolean",
+                "description": "False if the content is not actually a product.",
+            },
+            "rejection_reason": {
+                "type": "string",
+                "description": "Why it was rejected, when is_valid_product is false.",
+            },
+            "product_name": {"type": "string"},
+            "category": {"type": "string"},
+            "collection": {"type": "string"},
+            "designer": {"type": "string"},
+            "dimensions": {"type": "array", "items": {"type": "string"}},
+            "materials": {"type": "array", "items": {"type": "string"}},
+            "colors": {"type": "array", "items": {"type": "string"}},
+            "description": {"type": "string"},
+            "specifications": {
+                "type": "object",
+                "description": "Free-form specification key/value pairs.",
+                "additionalProperties": True,
+            },
+            "metadata": {
+                "type": "object",
+                "description": "Any further extracted metadata.",
+                "additionalProperties": True,
+            },
+            "confidence_score": {
+                "type": "number",
+                "description": "Confidence in the extraction, 0.0 to 1.0.",
+            },
+            "quality_assessment": {
+                "type": "string",
+                "enum": ["high", "medium", "low", "rejected"],
+            },
+        },
+        "required": ["is_valid_product", "confidence_score", "quality_assessment"],
+    },
+}
 
 
 class ProductCreationService:
@@ -33,6 +130,56 @@ class ProductCreationService:
         self.supabase = supabase_client
         self.logger = logging.getLogger(__name__)
         self.ai_logger = AICallLogger()
+
+    def _resolve_document_workspace(
+        self,
+        document_id: str,
+        workspace_id: Optional[str]
+    ) -> str:
+        """Derive the workspace to write products into from the SOURCE DOCUMENT.
+
+        Two ids that are each individually valid are not a tenancy check
+        (invariant 1, #250). Before this, chunks were read by `document_id`
+        alone and products were written with a caller-supplied `workspace_id`
+        that nothing reconciled against the document — so a product could be
+        written into tenant B out of tenant A's catalogue, and because
+        products are the GOLD layer it would then propagate into embeddings,
+        facets and search.
+
+        The document wins: it is the row the content actually came from. A
+        caller-supplied workspace_id is accepted only as an assertion, and a
+        disagreement raises rather than picking one.
+
+        Raises:
+            TenancyViolation: if the document does not exist, carries no
+                workspace, or belongs to a different workspace than the caller
+                claimed. Its own type so the broad handlers below re-raise it.
+        """
+        response = self.supabase.client.table('documents')\
+            .select('id, workspace_id')\
+            .eq('id', document_id)\
+            .maybe_single()\
+            .execute()
+
+        document = getattr(response, 'data', None)
+        if not document:
+            raise TenancyViolation(f"document {document_id} not found - refusing to create products")
+
+        source_workspace = document.get('workspace_id')
+        if not source_workspace:
+            raise TenancyViolation(
+                f"document {document_id} has no workspace_id - refusing to create "
+                "products with no tenant"
+            )
+
+        if workspace_id and str(workspace_id) != str(source_workspace):
+            # Deliberately does not say which workspace owns it - that would
+            # confirm the id for a caller probing with someone else's document.
+            raise TenancyViolation(
+                f"document {document_id} does not belong to workspace {workspace_id}"
+            )
+
+        return str(source_workspace)
 
     async def create_products_from_layout_candidates(
         self,
@@ -56,9 +203,11 @@ class ProductCreationService:
             Dictionary with creation statistics
         """
         try:
-            # Use default workspace ID from config if not provided
-            from app.config import get_settings
-            workspace_id = workspace_id or get_settings().default_workspace_id
+            # The document decides the tenant, not the caller and not a config
+            # default. Falling back to default_workspace_id here wrote another
+            # tenant's catalogue into the platform workspace whenever the
+            # argument was omitted.
+            workspace_id = self._resolve_document_workspace(document_id, workspace_id)
 
             self.logger.info(f"🎯 Starting layout-based product creation for document {document_id}")
 
@@ -179,6 +328,10 @@ class ProductCreationService:
                 "message": f"Created {products_created} products from {len(high_quality_candidates)} layout-detected candidates"
             }
 
+        except TenancyViolation:
+            # Never fall back on a tenancy refusal - the chunk path would just
+            # resolve the same document and raise again, one log line quieter.
+            raise
         except Exception as e:
             self.logger.error(f"Failed to create products from layout candidates: {e}")
             # Fallback to original method
@@ -188,7 +341,7 @@ class ProductCreationService:
     async def create_products_from_chunks(
         self,
         document_id: str,
-        workspace_id: str = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        workspace_id: Optional[str] = None,
         max_products: Optional[int] = None,
         min_chunk_length: int = 100,
         enrich_products: bool = True
@@ -209,10 +362,22 @@ class ProductCreationService:
             Dictionary with creation statistics including timing metrics
         """
         try:
+            # Same rule as the layout path: the document decides the tenant.
+            # This is also reached as a fallback from there, so it must resolve
+            # for itself rather than trusting what it was handed down.
+            workspace_id = self._resolve_document_workspace(document_id, workspace_id)
+
             self.logger.info(f"🏭 Starting two-stage product creation for document {document_id}")
 
-            # Fetch all chunks for this document
-            chunks_response = self.supabase.client.table('document_chunks').select('*').eq('document_id', document_id).order('chunk_index').execute()
+            # Fetch all chunks for this document. Scoped by workspace too: the
+            # document is verified above, but a chunk row carries its own
+            # workspace_id and a mismatched one must not become a product.
+            chunks_response = self.supabase.client.table('document_chunks')\
+                .select('*')\
+                .eq('document_id', document_id)\
+                .eq('workspace_id', workspace_id)\
+                .order('chunk_index')\
+                .execute()
 
             if not chunks_response.data:
                 self.logger.warning(f"No chunks found for document {document_id}")
@@ -352,6 +517,10 @@ class ProductCreationService:
                 "message": f"Two-stage creation: {products_created} products from {len(product_candidates)} candidates in {total_time:.2f}s"
             }
 
+        except TenancyViolation:
+            # Must not become a soft {"success": false}: that reads as a bad
+            # document, not as a caller reaching into another tenant.
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error in create_products_from_chunks: {str(e)}")
             return {
@@ -1207,11 +1376,12 @@ class ProductCreationService:
                 # Build batch classification prompt
                 batch_prompt = self._build_stage1_batch_prompt(batch)
 
-                # Call Claude Haiku for fast classification
-                response = await self._call_claude_haiku(client, batch_prompt)
+                # Forced tool_choice: this verdict decides what becomes a
+                # product, so it may not arrive as prose to be regex-mined.
+                tool_input = await self._call_claude_haiku(client, batch_prompt)
 
-                # Parse batch results
-                batch_results = self._parse_stage1_results(response, batch)
+                # Read results straight off the validated tool input
+                batch_results = self._read_stage1_results(tool_input, batch)
 
                 # Add valid candidates to results
                 for result in batch_results:
@@ -1271,11 +1441,12 @@ class ProductCreationService:
             # Build enrichment prompt
             enrichment_prompt = self._build_stage2_enrichment_prompt(content, candidate)
 
-            # Call Claude Opus for deep analysis
-            response = await self._call_claude_opus(client, enrichment_prompt)
+            # Forced tool_choice, same reasoning as Stage 1 - this verdict is
+            # what gets written into the products table.
+            tool_input = await self._call_claude_opus(client, enrichment_prompt)
 
-            # Parse enrichment results
-            enrichment_data = self._parse_stage2_results(response)
+            # Read the enrichment straight off the validated tool input
+            enrichment_data = self._read_stage2_results(tool_input)
 
             # Validate enrichment quality
             if not self._validate_enrichment_quality(enrichment_data):
@@ -1328,7 +1499,9 @@ class ProductCreationService:
             response = client.messages.create(
                 model=settings.anthropic_model_classification,  # claude-4-5-haiku-20250514
                 max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
+                tools=[STAGE1_CLASSIFICATION_TOOL],
+                tool_choice={"type": "tool", "name": STAGE1_CLASSIFICATION_TOOL["name"]},
             )
 
             # Calculate latency
@@ -1361,7 +1534,7 @@ class ProductCreationService:
                 request_data={"prompt_length": len(prompt)}
             )
 
-            return response.content[0].text if response.content else ""
+            return self._tool_input(response, STAGE1_CLASSIFICATION_TOOL["name"])
 
         except Exception as e:
             self.logger.error(f"Claude Haiku call failed: {str(e)}")
@@ -1383,7 +1556,9 @@ class ProductCreationService:
                 error_message=str(e)
             )
 
-            return ""
+            # No verdict. Distinct from "the model said nothing matched" -
+            # callers must not treat a failed call as an empty result.
+            return None
 
     async def _call_claude_opus(self, client, prompt: str, job_id: Optional[str] = None) -> str:
         """Call Claude Opus 4.7 for deep enrichment."""
@@ -1394,6 +1569,8 @@ class ProductCreationService:
 
             response = client.messages.create(
                 model=settings.anthropic_model_enrichment,  # claude-opus-4-8
+                tools=[STAGE2_ENRICHMENT_TOOL],
+                tool_choice={"type": "tool", "name": STAGE2_ENRICHMENT_TOOL["name"]},
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -1428,7 +1605,7 @@ class ProductCreationService:
                 request_data={"prompt_length": len(prompt)}
             )
 
-            return response.content[0].text if response.content else ""
+            return self._tool_input(response, STAGE2_ENRICHMENT_TOOL["name"])
 
         except Exception as e:
             self.logger.error(f"Claude Opus call failed: {str(e)}")
@@ -1450,67 +1627,53 @@ class ProductCreationService:
                 error_message=str(e)
             )
 
-            return ""
+            # No verdict. Distinct from "the model said nothing matched" -
+            # callers must not treat a failed call as an empty result.
+            return None
 
-    def _extract_json_from_response(self, response: str) -> Dict[str, Any]:
+    # _extract_json_from_response removed (M3-11, #16): its only two callers
+    # were the Stage 1 and Stage 2 parsers, both of which now read a forced
+    # tool_use block instead. Kept nowhere on purpose — a regex that mines
+    # `(\{.*\}|\[.*\])` out of model prose is the exact affordance the
+    # invariant-9 change removes, and leaving it in the class invites the
+    # next verdict to reach for it.
+
+    @staticmethod
+    def _tool_input(response: Any, tool_name: str) -> Optional[Dict[str, Any]]:
+        """Pull the forced tool_use block off a Claude response.
+
+        Returns None when the block is absent. tool_choice was forced, so that
+        means the API contract broke - there is nothing to salvage, and
+        guessing is what this change removes.
         """
-        Robust JSON extraction from Claude responses.
-        Handles cases where Claude returns extra text before/after JSON.
+        for block in (getattr(response, "content", None) or []):
+            if getattr(block, "type", None) == "tool_use" and getattr(block, "name", None) == tool_name:
+                value = getattr(block, "input", None)
+                return value if isinstance(value, dict) else None
+        return None
+
+    def _read_stage1_results(
+        self,
+        tool_input: Optional[Dict[str, Any]],
+        chunks: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Read Stage 1 classifications off the validated tool input.
+
+        Replaces `_parse_stage1_results`, which regex-mined a JSON blob out of
+        prose and, on failure, fell back to `_is_valid_product_chunk` over
+        EVERY chunk - so a broken classifier silently promoted the whole
+        document to candidates and the run looked normal.
         """
-        import re
-
-        if not response or not response.strip():
-            raise ValueError("Empty response from Claude")
-
-        response_clean = response.strip()
-
-        # Remove markdown code blocks
-        if response_clean.startswith('```json'):
-            response_clean = response_clean[7:]
-        elif response_clean.startswith('```'):
-            response_clean = response_clean[3:]
-
-        if response_clean.endswith('```'):
-            response_clean = response_clean[:-3]
-
-        response_clean = response_clean.strip()
-
-        # Try to find JSON object or array in the response
-        # Look for { ... } or [ ... ]
-        json_match = re.search(r'(\{.*\}|\[.*\])', response_clean, re.DOTALL)
-
-        if json_match:
-            json_str = json_match.group(1)
-            try:
-                return json.loads(json_str)
-            except json.JSONDecodeError as e:
-                # If that fails, try to extract just the first complete JSON object
-                brace_count = 0
-                start_idx = json_str.find('{')
-                if start_idx == -1:
-                    start_idx = json_str.find('[')
-                    if start_idx == -1:
-                        raise ValueError("No JSON object found in response")
-
-                for i in range(start_idx, len(json_str)):
-                    if json_str[i] == '{' or json_str[i] == '[':
-                        brace_count += 1
-                    elif json_str[i] == '}' or json_str[i] == ']':
-                        brace_count -= 1
-                        if brace_count == 0:
-                            # Found complete JSON object
-                            complete_json = json_str[start_idx:i+1]
-                            return json.loads(complete_json)
-
-                raise ValueError(f"Could not extract complete JSON object: {str(e)}")
-        else:
-            # Last resort: try parsing the whole thing
-            return json.loads(response_clean)
-
-    def _parse_stage1_results(self, response: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Parse Stage 1 classification results from Claude Haiku."""
+        if not tool_input:
+            # Forced tool_choice returned nothing usable. Fail the batch rather
+            # than substituting a heuristic whose output is indistinguishable
+            # from a real classification.
+            raise ValueError(
+                "Stage 1 classifier returned no tool_use block for a forced "
+                "tool_choice - refusing to fall back to keyword heuristics"
+            )
         try:
-            data = self._extract_json_from_response(response)
+            data = tool_input
             results = []
 
             for result in data.get('results', []):
@@ -1531,23 +1694,28 @@ class ProductCreationService:
             return results
 
         except Exception as e:
-            self.logger.error(f"Failed to parse Stage 1 results: {str(e)}")
-            # Fallback to basic filtering
-            return [
-                {
-                    'chunk': chunk,
-                    'is_product_candidate': self._is_valid_product_chunk(chunk),
-                    'confidence': 0.5,
-                    'classification_method': 'fallback'
-                }
-                for chunk in chunks
-                if self._is_valid_product_chunk(chunk)
-            ]
+            # The schema is enforced by the API, so reaching here means the
+            # shape changed. Surface it; the keyword fallback that used to live
+            # here turned a classifier outage into a full-document promotion.
+            self.logger.error(f"Failed to read Stage 1 tool input: {str(e)}")
+            raise
 
-    def _parse_stage2_results(self, response: str) -> Dict[str, Any]:
-        """Parse Stage 2 enrichment results from Claude Opus."""
+    def _read_stage2_results(self, tool_input: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Read Stage 2 enrichment off the validated tool input.
+
+        Replaces `_parse_stage2_results` and its regex salvage. The old
+        except-branch returned a well-formed dict with
+        `rejection_reason: 'Parse error'`, which the validator then rejected as
+        a non-product - so a parse failure and a genuine "this is not a
+        product" verdict were the same event in the data.
+        """
+        if not tool_input:
+            raise ValueError(
+                "Stage 2 enrichment returned no tool_use block for a forced "
+                "tool_choice"
+            )
         try:
-            data = self._extract_json_from_response(response)
+            data = tool_input
 
             # Check if Stage 2 rejected this as non-product
             is_valid_product = data.get('is_valid_product', True)
@@ -1573,15 +1741,10 @@ class ProductCreationService:
             return enrichment_data
 
         except Exception as e:
-            self.logger.error(f"Failed to parse Stage 2 results: {str(e)}")
-            return {
-                'is_valid_product': False,
-                'rejection_reason': 'Parse error',
-                'product_name': 'Unknown Product',
-                'category': 'Unknown',
-                'confidence_score': 0.3,
-                'quality_assessment': 'low'
-            }
+            # Not a rejection - a malfunction. Returning a rejection-shaped
+            # dict here made the two indistinguishable downstream.
+            self.logger.error(f"Failed to read Stage 2 tool input: {str(e)}")
+            raise
 
     def _validate_enrichment_quality(self, enrichment_data: Dict[str, Any]) -> bool:
         """Validate the quality of Stage 2 enrichment results."""

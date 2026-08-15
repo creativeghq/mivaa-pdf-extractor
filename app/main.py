@@ -1109,6 +1109,30 @@ try:
 except ImportError:
     logger.warning("MaterialKaiIntegrationError not available for exception handling")
 
+
+from app.utils.exceptions import TenancyViolation
+
+
+@app.exception_handler(TenancyViolation)
+async def tenancy_violation_handler(request, exc: TenancyViolation):
+    """A tenancy check failed: answer 404, and say nothing about what exists.
+
+    404 rather than 403 on purpose (invariant 1, #250) — a 403 tells a caller
+    probing ids that the object is real and belongs to somebody else, which is
+    the enumeration oracle the check exists to remove. The real reason is
+    logged at ERROR, not returned.
+    """
+    logger.error(f"Tenancy violation on {getattr(request, 'url', 'unknown')}: {exc}")
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content=ErrorResponse(
+            error="Not found",
+            detail="The requested resource does not exist.",
+            timestamp=datetime.utcnow().isoformat()
+        ).model_dump()
+    )
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc: HTTPException):
     """Handle HTTP exceptions with structured error responses."""

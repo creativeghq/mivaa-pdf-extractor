@@ -434,10 +434,13 @@ def _tier_a_pymupdf(
     try:
         doc = fitz.open(pdf_path)
     except Exception as e:
+        # M3-15 (#16): a bare {} here is indistinguishable from "this page had
+        # no specs on it". The marker keeps the two apart for the caller and in
+        # the _source_tiers audit trail (pipeline convention 1).
         logger.warning(
             f"product_spec_extractor_v2: fitz.open failed for tier_a: {e}"
         )
-        return {}
+        return {"_tier_error": f"tier_a_open_failed: {str(e)[:200]}"}
     try:
         for idx in page_indices:
             if not (0 <= idx < doc.page_count):
@@ -578,7 +581,7 @@ def _tier_b_opus(
         logger.warning(
             f"product_spec_extractor_v2: tier_b opus fallback failed: {e}"
         )
-        return {}
+        return {"_tier_error": f"tier_b_failed: {str(e)[:200]}"}
 
     if not raw:
         return {}

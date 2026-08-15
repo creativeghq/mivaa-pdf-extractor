@@ -1100,7 +1100,7 @@ async def regenerate_image_embeddings(
     **Example Request:**
     ```json
     {
-      "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+      "workspace_id": "00000000-0000-0000-0000-000000000000",
       "document_id": "doc-123",  // Optional: limit to specific document
       "image_ids": ["img-1", "img-2"],  // Optional: specific images
       "force_regenerate": false  // Optional: regenerate even if embeddings exist

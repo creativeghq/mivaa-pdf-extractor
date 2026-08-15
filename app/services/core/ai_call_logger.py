@@ -59,13 +59,18 @@ class AICallLogger:
         from app.services.integrations.credits_integration_service import get_credits_service
         self.credits_service = get_credits_service()
 
-    async def _debit(self, **kwargs):
+    async def _debit(self, **kwargs) -> Optional[str]:
         """Debit AI credits and DON'T silently swallow a failure.
 
         `debit_credits_for_ai_operation` returns {'success': False, ...} (it does not
         raise) when the balance is exhausted or the RPC fails. The AI call already ran,
         so we can't refuse it post-hoc — but a failed debit is unbilled revenue and must
         be visible/alertable, not dropped. Log it at ERROR with enough context to recover.
+
+        Returns:
+            The `unbilled_reason` to persist on the log row, or None when the
+            debit actually succeeded. Returning it (rather than only logging)
+            is what makes unbilled spend a SQL question instead of a grep.
         """
         try:
             result = await self.credits_service.debit_credits_for_ai_operation(**kwargs)
@@ -74,14 +79,32 @@ class AICallLogger:
                 "[ai_call_logger] credit debit raised (UNBILLED) user=%s op=%s model=%s: %s",
                 kwargs.get('user_id'), kwargs.get('operation_type'), kwargs.get('model_name'), e,
             )
-            return None
+            return 'debit_raised'
         if isinstance(result, dict) and result.get('success') is False:
             self.logger.error(
                 "[ai_call_logger] credit debit FAILED (UNBILLED) user=%s op=%s model=%s: %s",
                 kwargs.get('user_id'), kwargs.get('operation_type'), kwargs.get('model_name'),
                 result.get('error') or result,
             )
-        return result
+            return 'debit_failed'
+        return None
+
+    def _record_missing_principal(self, task: str, model: str, cost: float) -> str:
+        """An AI call ran with nobody to bill. Say so on the row, loudly.
+
+        This is the M3-2 defect (#16): the debit was guarded by `if user_id:`,
+        and the UNBILLED markers only fire when the debit RAISES or FAILS. With
+        no user_id the branch was never entered, so nothing was recorded at all
+        — 51 call sites of the logged Claude wrappers, one of which passed a
+        user_id. "Unbilled revenue" therefore read as zero because the
+        recording path was unreachable, not because it was zero.
+        """
+        self.logger.error(
+            "[ai_call_logger] UNBILLED (no principal) task=%s model=%s cost=$%.6f - "
+            "the call ran with no user_id, so no debit was even attempted",
+            task, model, cost,
+        )
+        return 'no_principal'
 
     @async_retry_with_backoff(max_retries=3, initial_delay=1.0, backoff_multiplier=2.0, max_delay=10.0)
     async def log_ai_call(
@@ -105,6 +128,7 @@ class AICallLogger:
         module_slug: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
+        unbilled_reason: Optional[str] = None,
     ) -> bool:
         """
         Log an AI call to the database.
@@ -156,7 +180,14 @@ class AICallLogger:
                 "fallback_reason": fallback_reason,
                 "request_data": json_dumps(request_data) if request_data else None,  # Use custom encoder
                 "response_data": json_dumps(response_data) if response_data else None,  # Use custom encoder
-                "error_message": error_message
+                "error_message": error_message,
+                # M3-3: the PRIMARY log table carried no attribution at all.
+                # Only the ai_usage_logs mirror did, so anything grouping by
+                # tenant in the table actually named for AI calls found nothing.
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                # NULL here means billed. Anything else names why it was not.
+                "unbilled_reason": unbilled_reason,
             }
 
             # Insert into database
@@ -296,6 +327,7 @@ class AICallLogger:
         module_slug: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
+        system_initiated: bool = False,
     ) -> bool:
         """
         Log a Claude API call and debit credits from user account.
@@ -311,8 +343,14 @@ class AICallLogger:
             job_id: Optional job ID
             fallback_reason: Optional fallback reason
             request_data: Optional request data
-            user_id: Optional user ID for credit debit
-            workspace_id: Optional workspace ID for credit debit
+            user_id: Principal to bill. Absent, the call is recorded as
+                UNBILLED with reason `no_principal` and logged at ERROR - it is
+                never silently skipped.
+            workspace_id: Tenant the spend is attributed to
+            system_initiated: Declare platform work that legitimately has
+                nobody to bill. Records `system_initiated` instead of
+                `no_principal`, so deliberate and accidental gaps stay
+                distinguishable in the data.
 
         Returns:
             bool: True if logged successfully
@@ -325,9 +363,11 @@ class AICallLogger:
             # Calculate cost based on model
             cost = self._calculate_claude_cost(model, input_tokens, output_tokens)
 
-            # Debit credits if user_id provided (with job_id for cost aggregation)
+            # Debit credits, and record the outcome either way. The `if user_id:`
+            # that used to wrap this was the whole of M3-2: with no principal the
+            # branch was skipped and nothing — not even a marker — was written.
             if user_id:
-                await self._debit(
+                unbilled_reason = await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -338,6 +378,12 @@ class AICallLogger:
                     metadata={'source': 'claude_api'},
                     module_slug=module_slug
                 )
+            elif system_initiated:
+                # Declared by the caller: platform work with no tenant to bill.
+                # Still recorded, so it is countable rather than invisible.
+                unbilled_reason = 'system_initiated'
+            else:
+                unbilled_reason = self._record_missing_principal(task, model, cost)
 
             # Extract response text. content[0] may be a tool_use block whose
             # .text is None (forced tool_choice paths) — fall back to the tool
@@ -372,6 +418,7 @@ class AICallLogger:
                 module_slug=module_slug,
                 product_id=product_id,
                 image_id=image_id,
+                unbilled_reason=unbilled_reason,
             )
 
         except Exception as e:
@@ -395,6 +442,7 @@ class AICallLogger:
         module_slug: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
+        system_initiated: bool = False,
     ) -> bool:
         """
         Log a GPT API call and debit credits from user account.
@@ -424,9 +472,9 @@ class AICallLogger:
             # Calculate cost based on model
             cost = self._calculate_gpt_cost(model, input_tokens, output_tokens)
 
-            # Debit credits if user_id provided (with job_id for cost aggregation)
+            # Record the billing outcome either way - see log_claude_call.
             if user_id:
-                await self._debit(
+                unbilled_reason = await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -437,6 +485,10 @@ class AICallLogger:
                     metadata={'source': 'gpt_api'},
                     module_slug=module_slug
                 )
+            elif system_initiated:
+                unbilled_reason = 'system_initiated'
+            else:
+                unbilled_reason = self._record_missing_principal(task, model, cost)
 
             # Extract response text
             response_text = response.choices[0].message.content if hasattr(response, 'choices') else str(response)
@@ -460,6 +512,7 @@ class AICallLogger:
                 module_slug=module_slug,
                 product_id=product_id,
                 image_id=image_id,
+                unbilled_reason=unbilled_reason,
             )
 
         except Exception as e:
@@ -668,8 +721,19 @@ class AICallLogger:
                 "latency_ms": latency_ms
             }
 
-            # Debit credits from user account
-            if user_id:
+            # Debit credits from user account. Firecrawl is a paid upstream, so
+            # a call with no principal is real money nobody was charged for -
+            # log it rather than stepping over the branch. Written as
+            # if/else, not two ifs: an `if user_id:` with no else is the exact
+            # shape the M3-2 guard rejects, and rightly so.
+            if not user_id:
+                self.logger.error(
+                    "[ai_call_logger] UNBILLED (no principal) firecrawl op=%s url=%s "
+                    "credits=%s - the scrape ran with no user_id, so no debit was "
+                    "even attempted",
+                    operation_type, url, credits_used,
+                )
+            else:
                 await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,

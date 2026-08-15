@@ -2296,6 +2296,10 @@ async def enrich_products_from_chunks_and_vision(
         "products_updated": 0,
         "fields_filled": set(),
         "spec_vision_calls": 0,
+        # M3-15 (#16): failures used to increment spec_vision_calls alongside
+        # successes, so a tier that threw on every product looked like a tier
+        # that ran fine and found nothing. Counted separately.
+        "spec_vision_failures": 0,
         "description_writes": 0,
         "kb_docs_created": 0,
         "kb_attachments_created": 0,
@@ -2596,13 +2600,32 @@ async def enrich_products_from_chunks_and_vision(
                         enable_tier_b=True,
                     )
                     if spec_vision_candidates:
-                        stats["spec_vision_calls"] += 1
                         tiers = spec_vision_candidates.pop("_source_tiers", [])
-                        logger.info(
-                            f"   ✅ spec_v2 '{product_name}': tiers={tiers}, "
-                            f"pages={resolved_page_indices}"
-                        )
+                        # The extractor reports its own failure in-band rather
+                        # than raising, so a truthy dict is not automatically a
+                        # successful extraction.
+                        extract_error = spec_vision_candidates.get("_error")
+                        tier_errors = [
+                            v for k, v in spec_vision_candidates.items()
+                            if k == "_tier_error"
+                        ]
+                        if extract_error or tier_errors:
+                            stats["spec_vision_failures"] += 1
+                            logger.error(
+                                f"   ❌ spec_v2 '{product_name}' FAILED: "
+                                f"{extract_error or tier_errors}, tiers={tiers}"
+                            )
+                            # Nothing usable came back; do not let the marker
+                            # dict count as candidates downstream.
+                            spec_vision_candidates = {}
+                        else:
+                            stats["spec_vision_calls"] += 1
+                            logger.info(
+                                f"   ✅ spec_v2 '{product_name}': tiers={tiers}, "
+                                f"pages={resolved_page_indices}"
+                            )
                 except Exception as e:
+                    stats["spec_vision_failures"] += 1
                     logger.warning(f"   ⚠️ spec_v2 failed for '{product_name}': {e}")
                     with sentry_sdk.configure_scope() as scope:
                         scope.set_tag("job_id", job_id)

@@ -610,7 +610,11 @@ async def upload_document(
 
     # Workspace
     workspace_id: str = Form(
-        "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        # Kept as a form default because the cron path sends no JWT and relies
+        # on it; the JWT path below overrides it with the caller's own
+        # workspace. Read from settings so an env override is honoured rather
+        # than shadowed by a literal (M3-14, #16).
+        default_factory=lambda: get_settings().default_workspace_id,
         description="Workspace ID"
     ),
     # Auth (added 2026-05-23). The route was previously anonymous, allowing
@@ -862,7 +866,7 @@ async def upload_document(
         # the cross-workspace data-leak hole flagged in the 2026-05-23 audit.
         # On a cron-secret call there is no JWT workspace, so the form-supplied
         # `workspace_id` (defaulting to the platform default) is trusted as-is.
-        _PLATFORM_DEFAULT_WS = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
+        _PLATFORM_DEFAULT_WS = get_settings().default_workspace_id
         if workspace_context is not None:
             _jwt_ws = str(workspace_context.workspace_id)
             if workspace_id == _PLATFORM_DEFAULT_WS:
@@ -6047,7 +6051,14 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
 # Operator root workspace = the platform-default / shared KB (all KB docs currently
 # live here). Tenant callers also retrieve its published + non-private, agent/public
 # docs so the shared KB reaches every workspace's agent.
-KB_SHARED_WORKSPACE_ID = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
+def _kb_shared_workspace_id() -> str:
+    """The operator root workspace that holds the shared KB.
+
+    A function, not a module constant: a constant is evaluated at import time,
+    which shadows any DEFAULT_WORKSPACE_ID env override set afterwards, and it
+    was one of the 11 copies of this UUID (M3-14, #16).
+    """
+    return get_settings().default_workspace_id
 
 
 def _resolve_kb_access_scope(
@@ -6074,7 +6085,7 @@ def _resolve_kb_access_scope(
             "allowed_access_levels": ["admin", "agent", "public"],
             "accessible_category_ids": None,
             "shared_workspace_id": (
-                KB_SHARED_WORKSPACE_ID if workspace_id != KB_SHARED_WORKSPACE_ID else None
+                _kb_shared_workspace_id() if workspace_id != _kb_shared_workspace_id() else None
             ),
             "include_private": True,
         }
@@ -6094,8 +6105,8 @@ def _resolve_kb_access_scope(
     # access_level + trigger_keyword rules instead of being dropped by the post-filter
     # for not belonging to the caller's workspace.
     kb_ws_scope = [workspace_id]
-    if workspace_id != KB_SHARED_WORKSPACE_ID:
-        kb_ws_scope.append(KB_SHARED_WORKSPACE_ID)
+    if workspace_id != _kb_shared_workspace_id():
+        kb_ws_scope.append(_kb_shared_workspace_id())
     cats_resp = supabase.client.table("kb_categories").select(
         "id, access_level, trigger_keyword"
     ).in_("workspace_id", kb_ws_scope).in_(
@@ -6124,7 +6135,7 @@ def _resolve_kb_access_scope(
         "allowed_access_levels": ["agent", "public"],
         "accessible_category_ids": accessible_category_ids,
         "shared_workspace_id": (
-            KB_SHARED_WORKSPACE_ID if workspace_id != KB_SHARED_WORKSPACE_ID else None
+            _kb_shared_workspace_id() if workspace_id != _kb_shared_workspace_id() else None
         ),
         # 'private' visibility means "not published to the public KB website" — it is
         # NOT an agent gate. Agent readability is governed by category access_level +

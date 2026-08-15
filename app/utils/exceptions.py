@@ -14,6 +14,34 @@ class MaterialKaiIntegrationError(Exception):
     pass
 
 
+class TenancyViolation(Exception):
+    """A tenancy check failed and the operation must not proceed (invariant 1).
+
+    Its own class so that the broad `except Exception` handlers wrapping most
+    pipeline stages can RE-RAISE it instead of absorbing it. A tenancy refusal
+    swallowed into a fallback path or a soft `{"success": false}` is worse
+    than the original bug: the operation looks merely unlucky, retries, and
+    nothing surfaces that a caller reached for another tenant's data.
+
+    Callers that map this to HTTP should return 404, not 403 — a 403 confirms
+    the id exists to someone probing for it.
+    """
+    pass
+
+
+class SupabaseQueryError(Exception):
+    """A database query failed. Distinct from "the query ran and matched nothing".
+
+    The shared client used to catch, log, and return `[]` / `None` / zeros. Every
+    caller then read that as an empty result, which is why a misconfigured
+    deployment presented as "the platform found nothing" instead of "the platform
+    is broken" — the silent-zero shape this codebase keeps rediscovering.
+
+    Raise this so emptiness stays unambiguous: empty means empty.
+    """
+    pass
+
+
 class ServiceError(Exception):
     """Base exception for service-related errors."""
 

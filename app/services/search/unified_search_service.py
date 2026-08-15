@@ -11,17 +11,40 @@ Consolidates all search strategies into a single, unified service:
 Replaces multiple search implementations with a single unified approach.
 """
 
+import contextvars
 import logging
 import asyncio
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from datetime import datetime
-from app.services.core.ai_client_service import get_ai_client_service
 
 from app.services.utilities.prompt_registry import load_prompt
 
 logger = logging.getLogger(__name__)
+
+
+#: M3-12 (#16). Every search strategy catches broadly and returns [] so that one
+#: failing strategy cannot take down a multi-strategy search - which is the right
+#: behaviour. The defect was that `search()` then reported `success=True` with no
+#: trace, so "all seven strategies threw" and "nothing matched your query" were
+#: the same response. A ContextVar collects degradations per call without
+#: threading a parameter through six signatures, and is asyncio-safe: each task
+#: gets its own copy of the context.
+_degraded_strategies: contextvars.ContextVar[Optional[List[Dict[str, str]]]] = (
+    contextvars.ContextVar("unified_search_degraded", default=None)
+)
+
+
+def _record_degradation(strategy: str, exc: BaseException) -> None:
+    """Note that `strategy` returned nothing because it FAILED, not because it
+    matched nothing. No-op outside a search() call, so the strategies stay
+    usable standalone."""
+    collector = _degraded_strategies.get()
+    if collector is None:
+        return
+    collector.append({"strategy": strategy, "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+
 
 
 class SearchStrategy(str, Enum):
@@ -169,6 +192,10 @@ class UnifiedSearchService:
         Returns:
             SearchResponse with results
         """
+        # Collect strategy degradations for THIS call. Reset in the finally so a
+        # reused service instance never inherits a previous search's failures.
+        degraded: List[Dict[str, str]] = []
+        collector_token = _degraded_strategies.set(degraded)
         try:
             # 🧠 STEP 1: Query Understanding (if enabled)
             # Parse natural language query into structured filters + dynamic weight profile
@@ -228,10 +255,22 @@ class UnifiedSearchService:
             # Calculate search time
             search_time_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
 
+            if degraded:
+                self.logger.error(
+                    "⚠️ Search degraded: %d strategy/strategies failed - %s",
+                    len(degraded), [d["strategy"] for d in degraded],
+                )
+
+            # A search that returned nothing BECAUSE every strategy it ran threw
+            # is not a successful empty result, and must not be reported as one.
+            # Partial degradation with results still succeeds, but says so in
+            # metadata rather than silently.
+            all_failed = bool(degraded) and not limited_results
+
             self.logger.info(f"✅ Search completed: {len(limited_results)} results in {search_time_ms:.2f}ms (profile={weight_profile})")
 
             return SearchResponse(
-                success=True,
+                success=not all_failed,
                 query=query,
                 results=limited_results,
                 total_found=len(results),
@@ -244,6 +283,9 @@ class UnifiedSearchService:
                     "workspace_id": workspace_id,
                     "weight_profile": weight_profile,
                     "dynamic_weights": dynamic_weights,
+                    # Always present, so a consumer can tell "matched nothing"
+                    # from "could not look".
+                    "degraded_strategies": degraded,
                     **strategy_metadata
                 }
             )
@@ -257,8 +299,12 @@ class UnifiedSearchService:
                 total_found=0,
                 search_time_ms=0.0,
                 strategy_used=str(strategy or self.config.strategy),
-                metadata={"error": str(e)}
+                metadata={"error": str(e), "degraded_strategies": degraded}
             )
+        finally:
+            # Unset regardless of path, so a strategy called outside search()
+            # never appends into a finished call's collector.
+            _degraded_strategies.reset(collector_token)
 
     async def _search_single_strategy(
         self,
@@ -455,6 +501,7 @@ class UnifiedSearchService:
             
         except Exception as e:
             self.logger.error(f"Semantic search failed: {e}")
+            _record_degradation("semantic", e)
             return []
     
     async def _search_visual(
@@ -514,6 +561,7 @@ class UnifiedSearchService:
             
         except Exception as e:
             self.logger.error(f"Visual search failed: {e}")
+            _record_degradation("visual", e)
             return []
     
     async def _search_multi_vector(
@@ -606,6 +654,7 @@ class UnifiedSearchService:
             
         except Exception as e:
             self.logger.error(f"Multi-vector search failed: {e}")
+            _record_degradation("multi_vector", e)
             return []
     
     async def _search_hybrid(
@@ -644,6 +693,7 @@ class UnifiedSearchService:
             
         except Exception as e:
             self.logger.error(f"Hybrid search failed: {e}")
+            _record_degradation("hybrid", e)
             return []
     
     async def _search_material(
@@ -700,6 +750,7 @@ class UnifiedSearchService:
             
         except Exception as e:
             self.logger.error(f"Material search failed: {e}")
+            _record_degradation("material", e)
             return []
     
     async def _search_keyword(
@@ -757,6 +808,7 @@ class UnifiedSearchService:
                 sentry_sdk.capture_exception(e)
             except Exception:
                 pass
+            _record_degradation("keyword_fts", e)
             return []
 
     # Specialized embedding search methods
@@ -810,6 +862,7 @@ class UnifiedSearchService:
 
         except Exception as e:
             self.logger.error(f"Understanding search failed: {e}")
+            _record_degradation("understanding", e)
             return []
 
     async def _search_aspect(
@@ -886,6 +939,7 @@ class UnifiedSearchService:
 
         except Exception as e:
             self.logger.error(f"{aspect.title()} search failed: {e}")
+            _record_degradation(f"aspect:{aspect}", e)
             return []
 
     async def _search_color(
@@ -924,7 +978,12 @@ class UnifiedSearchService:
         """Material type search — see `_search_aspect`."""
         return await self._search_aspect("material", query, filters, workspace_id)
 
-    async def _parse_query_with_haiku(self, query: str, system_prompt: str) -> Optional[Dict[str, Any]]:
+    async def _parse_query_with_haiku(
+        self,
+        query: str,
+        system_prompt: str,
+        workspace_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Parse a search query into structured filters using Anthropic Claude
         Haiku 4.5 (fast, cheap, structured-output friendly). Returns the
@@ -934,37 +993,37 @@ class UnifiedSearchService:
         removed from the platform but this method retained the legacy
         name + log strings, which were misleading to operators reading
         the search-side logs.
+
+        M3-13 (#16): this was a bare `httpx.post` to the Anthropic messages
+        endpoint — no debit, no cost log, no attribution at all, so every
+        query-understanding call was free as far as the platform could tell.
+        It now goes through `tracked_claude_call_async` (pipeline convention
+        10), which logs and debits automatically.
         """
         import json
-        import os
-        import httpx
 
-        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
-        if not anthropic_api_key:
-            raise ValueError("ANTHROPIC_API_KEY not configured")
+        from app.services.core.claude_helper import tracked_claude_call_async
 
-        async with httpx.AsyncClient(timeout=30.0) as http:
-            response = await http.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-haiku-4-5",
-                    "max_tokens": 1024,
-                    "system": system_prompt,
-                    "messages": [
-                        {"role": "user", "content": f"Parse this query: {query}"},
-                    ],
-                },
-            )
+        response = await tracked_claude_call_async(
+            task="search_query_understanding",
+            model="claude-haiku-4-5",
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": f"Parse this query: {query}"},
+            ],
+            workspace_id=workspace_id,
+        )
 
-        if response.status_code != 200:
-            raise ValueError(f"Anthropic API error: {response.status_code}")
-
-        content = response.json()["content"][0]["text"].strip()
+        blocks = getattr(response, "content", None) or []
+        content = ""
+        for block in blocks:
+            text = getattr(block, "text", None)
+            if text:
+                content = text.strip()
+                break
+        if not content:
+            raise ValueError("Anthropic returned no text content for query parsing")
 
         if content.startswith("```json"):
             content = content[7:]
@@ -1024,7 +1083,6 @@ class UnifiedSearchService:
 
         try:
             import json
-            from app.services.core.ai_call_logger import AICallLogger
 
             system_prompt = await load_prompt("search", "query_parser_system")
 
@@ -1034,17 +1092,28 @@ class UnifiedSearchService:
             parsed_data = None
             model_used = "claude-haiku-4-5"
             try:
-                parsed_data = await self._parse_query_with_haiku(query, system_prompt)
+                parsed_data = await self._parse_query_with_haiku(
+                    query, system_prompt, workspace_id=workspace_id
+                )
                 self.logger.debug("🤖 Query parsed with Haiku 4.5")
             except Exception as parse_err:
                 self.logger.debug(f"Primary query parse failed ({parse_err}), falling back to Claude Haiku")
 
-            # Fallback: Claude Haiku 4.5
+            # Fallback: Claude Haiku 4.5.
+            #
+            # M3-13 (#16): this used to call the SDK client directly and then
+            # hand-roll a log_claude_call AFTER json.loads succeeded — so a
+            # parse failure threw past the logging and the call was billed by
+            # Anthropic but recorded nowhere, and neither user_id nor
+            # workspace_id was ever passed. tracked_claude_call_async logs and
+            # debits around the call itself, which is why the parse can now sit
+            # outside it.
             if parsed_data is None:
                 model_used = "claude-haiku-4-5"
-                ai_service = get_ai_client_service()
-                client = ai_service.anthropic_async
-                response = await client.messages.create(
+                from app.services.core.claude_helper import tracked_claude_call_async
+
+                response = await tracked_claude_call_async(
+                    task="search_query_understanding_fallback",
                     model="claude-haiku-4-5",
                     max_tokens=1024,
                     temperature=0.1,
@@ -1052,34 +1121,20 @@ class UnifiedSearchService:
                     messages=[
                         {"role": "user", "content": f"Parse this query: {query}"},
                     ],
-                )
-                content = response.content[0].text.strip()
-                # Strip markdown fences if present
-                if content.startswith("```"):
-                    content = content.split("```", 2)[1].lstrip("json\n").rstrip("`").strip()
-                parsed_data = json.loads(content)
-
-                # Log Claude call (cost calculated from token usage)
-                ai_logger = AICallLogger()
-                latency_ms = int((time.time() - start_time) * 1000)
-                await ai_logger.log_claude_call(
-                    task="query_understanding",
-                    model="claude-haiku-4-5",
-                    response=response,
-                    latency_ms=latency_ms,
+                    workspace_id=workspace_id,
                     confidence_score=0.90,
                     confidence_breakdown={
                         "model_confidence": 0.92,
                         "completeness": 0.95,
                         "consistency": 0.88,
-                        "validation": 0.85
+                        "validation": 0.85,
                     },
-                    action="use_ai_result",
-                    request_data={
-                        "query": query,
-                        "parsed_fields": {k: v for k, v in parsed_data.items() if v is not None and v != [] and v != ""}
-                    }
                 )
+                content = (response.content[0].text or "").strip()
+                # Strip markdown fences if present
+                if content.startswith("```"):
+                    content = content.split("```", 2)[1].lstrip("json\n").rstrip("`").strip()
+                parsed_data = json.loads(content)
 
             # Select dynamic weight profile based on parsed query intent
             profile_name, dynamic_weights = self._select_weight_profile(parsed_data)

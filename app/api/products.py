@@ -22,6 +22,7 @@ from app.middleware.jwt_auth import WorkspaceContext
 logger = logging.getLogger(__name__)
 
 from app.services.integrations.mention_cost_logger import debit_credits, refund_credits
+from app.utils.exceptions import TenancyViolation
 
 router = APIRouter(prefix="/api/products", tags=["Products"])
 
@@ -39,9 +40,13 @@ CREATE_MANUAL_IMAGE_CREDITS = 1
 class ProductCreationRequest(BaseModel):
     """Request model for creating products from chunks."""
     document_id: str = Field(..., description="UUID of the processed document")
-    workspace_id: str = Field(
-        default="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
-        description="UUID of the workspace"
+    # No default. M3-14 (#16): defaulting this to the platform workspace meant
+    # a request that simply omitted the field silently targeted that tenant.
+    # None lets resolve_workspace_id bind the caller's own workspace from the
+    # verified JWT, which is what every caller actually wants.
+    workspace_id: Optional[str] = Field(
+        default=None,
+        description="UUID of the workspace (defaults to the caller's own)"
     )
     max_products: Optional[int] = Field(
         default=None,
@@ -56,7 +61,7 @@ class ProductCreationRequest(BaseModel):
         schema_extra = {
             "example": {
                 "document_id": "69cba085-9c2d-405c-aff2-8a20caf0b568",
-                "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+                "workspace_id": "00000000-0000-0000-0000-000000000000",
                 "max_products": None,
                 "min_chunk_length": 100
             }
@@ -122,7 +127,7 @@ class ProductCreationResponse(BaseModel):
     ```json
     {
       "document_id": "69cba085-9c2d-405c-aff2-8a20caf0b568",
-      "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+      "workspace_id": "00000000-0000-0000-0000-000000000000",
       "max_products": null,
       "min_chunk_length": 100
     }
@@ -147,7 +152,7 @@ class ProductCreationResponse(BaseModel):
 
     **Parameters:**
     - `document_id`: UUID of processed document (required)
-    - `workspace_id`: UUID of workspace (default: ffafc28b-1b8b-4b0d-b226-9f9a6154004e)
+    - `workspace_id`: UUID of workspace (defaults to the caller's own workspace)
     - `max_products`: Maximum products to create (null = unlimited)
     - `min_chunk_length`: Minimum chunk content length (default: 100)
 
@@ -248,6 +253,10 @@ async def create_products_from_chunks(
             error=result.get("error")
         )
         
+    except TenancyViolation:
+        # Let the app-level handler answer 404. Wrapped in a 500 here it would
+        # read as a server fault and get retried.
+        raise
     except HTTPException:
         # Re-raise HTTP exceptions
         raise
@@ -317,6 +326,10 @@ async def create_products_from_layout(
             message=result.get("message", "Layout-based product creation completed")
         )
         
+    except TenancyViolation:
+        # Let the app-level handler answer 404. Wrapped in a 500 here it would
+        # read as a server fault and get retried.
+        raise
     except HTTPException:
         # Re-raise HTTP exceptions
         raise

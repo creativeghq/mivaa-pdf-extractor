@@ -20,6 +20,7 @@ import os
 import hmac
 
 from app.utils.timestamp_utils import normalize_timestamp
+from app.utils.exceptions import TenancyViolation
 from app.schemas.api_responses import (
     StatusResponse, DataResponse, SystemHealthResponse, SystemMetricsResponse,
     CleanupResponse, PackageStatusResponse, ProductTestResponse, OCRProcessResponse,
@@ -1291,6 +1292,10 @@ async def test_product_creation(
             "message": "Enhanced product creation test completed"
         }
 
+    except TenancyViolation:
+        # Let the app-level handler answer 404. Wrapped in a 500 here it would
+        # read as a server fault and get retried.
+        raise
     except Exception as e:
         logger.error(f"❌ Product creation test failed: {str(e)}")
         raise HTTPException(

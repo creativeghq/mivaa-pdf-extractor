@@ -11,6 +11,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 
 
+#: The platform's own workspace. ONE literal (M3-14, #16): the same UUID was
+#: hardcoded in 11 places - two settings defaults, a FastAPI Query default, two
+#: module constants and a set of OpenAPI examples - any of which could drift
+#: from the configured value while every one of them still looked authoritative.
+#:
+#: Some uses are legitimate: the shared knowledge base genuinely lives here. The
+#: defect was the copies, and in particular a ROUTE DEFAULT - omitting
+#: workspace_id silently targeted this tenant.
+#:
+#: Read it through `get_settings().default_workspace_id` so an env override
+#: actually takes effect; import the constant only where a settings call is
+#: impossible (i.e. defining the settings defaults themselves).
+PLATFORM_DEFAULT_WORKSPACE_ID = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
+
+
 class Settings(BaseSettings):
     """
     Application settings with environment variable support.
@@ -669,14 +684,14 @@ class Settings(BaseSettings):
         env="MATERIAL_KAI_API_KEY"
     )
     material_kai_workspace_id: str = Field(
-        default="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        default=PLATFORM_DEFAULT_WORKSPACE_ID,
         env="MATERIAL_KAI_WORKSPACE_ID",
         description="Default workspace ID for Material Kai operations"
     )
 
     # ✅ Default workspace ID used across all services (can be overridden per-request)
     default_workspace_id: str = Field(
-        default="ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+        default=PLATFORM_DEFAULT_WORKSPACE_ID,
         env="DEFAULT_WORKSPACE_ID",
         description="Default workspace ID used when no workspace is specified"
     )

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from app.services.core.async_supabase import AsyncSupabaseClient  # noqa: F401
 from supabase import create_client, Client, ClientOptions
 from app.config import Settings
+from app.utils.exceptions import SupabaseQueryError, TenancyViolation
 
 logger = logging.getLogger(__name__)
 
@@ -222,9 +223,12 @@ class SupabaseClient:
             if not settings.supabase_url:
                 raise ValueError("SUPABASE_URL is required but not provided")
             
-            if not settings.supabase_anon_key:
-                raise ValueError("SUPABASE_ANON_KEY is required but not provided")
-            
+            # SUPABASE_ANON_KEY is deliberately NOT required: nothing in MIVAA
+            # reads it any more (the only two references were this check and the
+            # config field). Requiring a credential the service never uses just
+            # blocks startup on a deployment that is actually configured
+            # correctly. The key that matters is asserted below.
+
             # Create httpx client with connection pooling.
             # keepalive_expiry=30s makes the client recycle idle connections
             # BEFORE PostgREST's gateway closes them, which is the root cause of
@@ -233,9 +237,24 @@ class SupabaseClient:
             self._httpx_client = self._create_httpx_client()
             logger.info("✅ Created httpx client with connection pooling (max_connections=50, max_keepalive=20)")
 
-            # Create Supabase client
-            # Use service role key if available, otherwise use anon key
-            supabase_key = settings.supabase_service_role_key or settings.supabase_anon_key
+            # Create Supabase client.
+            #
+            # The service-role key is REQUIRED, not preferred. MIVAA has no RLS
+            # backstop by design — the architecture assumes service role — so
+            # falling back to the anon key does not degrade gracefully: writes
+            # fail and reads come back RLS-filtered, which the helpers below
+            # then report as "found nothing" rather than "misconfigured". One
+            # missing env var used to present as an empty platform.
+            #
+            # If an anon-scoped client is ever genuinely needed, build it
+            # separately and name it as such; never silently substitute it here.
+            supabase_key = settings.supabase_service_role_key
+            if not supabase_key:
+                raise ValueError(
+                    "SUPABASE_SERVICE_ROLE_KEY is required - MIVAA runs every query "
+                    "on the service-role client and has no RLS backstop. Refusing to "
+                    "start on the anon key, which would silently return empty results."
+                )
             # Inject the tuned httpx client so the pool config above actually
             # applies to PostgREST (supabase plumbs options.httpx_client into the
             # postgrest sub-client). Without this the config was dead.
@@ -359,19 +378,41 @@ class SupabaseClient:
                 "error": str(e)
             }
 
-    async def list_documents(self, limit: int = 100, status_filter: str = None) -> dict:
+    async def list_documents(
+        self,
+        workspace_id: str,
+        limit: int = 100,
+        status_filter: str = None,
+    ) -> dict:
         """
-        List documents from the documents table.
+        List documents from the documents table, for ONE workspace.
+
+        `workspace_id` is required and first. This ran on the service-role
+        client with no tenant predicate, so it listed every document on the
+        platform; four search routes used it to build their candidate id set.
 
         Args:
+            workspace_id: Tenant to list within (required)
             limit: Maximum number of documents to return
             status_filter: Filter by document processing status
 
         Returns:
             Dictionary containing documents list
+
+        Raises:
+            TenancyViolation: If workspace_id is missing.
+            SupabaseQueryError: If the query fails. An empty list means the
+                query ran and matched nothing - it never means it failed.
         """
+        if not workspace_id:
+            raise TenancyViolation(
+                "list_documents requires a workspace_id - an unscoped list "
+                "returns every tenant's documents"
+            )
         try:
-            query = self._client.table('documents').select('*')
+            query = self._client.table('documents')\
+                .select('*')\
+                .eq('workspace_id', workspace_id)
 
             # Filter by processing status if provided
             if status_filter:
@@ -386,20 +427,41 @@ class SupabaseClient:
             }
         except Exception as e:
             logger.error(f"Failed to list documents: {str(e)}")
-            return {"documents": [], "count": 0}
+            raise SupabaseQueryError(f"list_documents failed: {e}") from e
 
-    async def get_document_by_id(self, document_id: str) -> dict:
+    async def get_document_by_id(self, document_id: str, workspace_id: str) -> dict:
         """
-        Get a specific document by ID.
+        Get a specific document by ID, within one workspace.
+
+        An id alone is not an authorisation. Scoped here rather than at each
+        call site so a new caller inherits the check instead of having to
+        remember it.
 
         Args:
             document_id: The document ID to retrieve
+            workspace_id: Tenant the document must belong to (required)
 
         Returns:
-            Dictionary containing document data or error information
+            Dictionary containing document data, or a not-found result. A
+            document owned by another workspace reports "not found" - the same
+            answer as a document that does not exist, so the response cannot
+            be used to enumerate ids.
+
+        Raises:
+            TenancyViolation: If workspace_id is missing.
+            SupabaseQueryError: If the query fails - distinct from not found.
         """
+        if not workspace_id:
+            raise TenancyViolation(
+                "get_document_by_id requires a workspace_id - an id alone is "
+                "not an authorisation"
+            )
         try:
-            response = self._client.table('processed_documents').select('*').eq('id', document_id).execute()
+            response = self._client.table('processed_documents')\
+                .select('*')\
+                .eq('id', document_id)\
+                .eq('workspace_id', workspace_id)\
+                .execute()
 
             if response.data:
                 return {
@@ -413,33 +475,45 @@ class SupabaseClient:
                 }
         except Exception as e:
             logger.error(f"Failed to get document {document_id}: {str(e)}")
-            return {
-                "success": False,
-                "error": f"Failed to retrieve document: {str(e)}"
-            }
+            raise SupabaseQueryError(f"get_document_by_id failed: {e}") from e
 
-    async def get_document_images(self, document_id: str) -> list:
+    async def get_document_images(self, document_id: str, workspace_id: str) -> list:
         """
-        Get images associated with a document.
+        Get images associated with a document, within one workspace.
 
         Args:
             document_id: The document ID
+            workspace_id: Tenant the images must belong to (required)
 
         Returns:
-            List of image records
+            List of image records. Empty means the document has no images in
+            this workspace - it never means the query failed.
+
+        Raises:
+            TenancyViolation: If workspace_id is missing.
+            SupabaseQueryError: If the query fails.
         """
+        if not workspace_id:
+            raise TenancyViolation(
+                "get_document_images requires a workspace_id - document_id "
+                "alone does not establish who may read the images"
+            )
         try:
-            response = self._client.table('document_images').select('*').eq('document_id', document_id).execute()
+            response = self._client.table('document_images')\
+                .select('*')\
+                .eq('document_id', document_id)\
+                .eq('workspace_id', workspace_id)\
+                .execute()
             return response.data or []
         except Exception as e:
             logger.error(f"Failed to get images for document {document_id}: {str(e)}")
-            return []
+            raise SupabaseQueryError(f"get_document_images failed: {e}") from e
 
     async def save_single_image(
         self,
         image_info: Dict[str, Any],
         document_id: str,
-        workspace_id: Optional[str] = None,
+        workspace_id: str,
         image_index: int = 0,
         category: Optional[str] = None,
         job_id: Optional[str] = None,
@@ -476,7 +550,32 @@ class SupabaseClient:
 
         Returns:
             Image ID if successful, None otherwise
+
+        Raises:
+            TenancyViolation: If workspace_id is missing, or names a different
+                workspace than the parent document belongs to.
         """
+        if not workspace_id:
+            raise TenancyViolation(
+                "save_single_image requires a workspace_id - a document_images "
+                "row with no tenant is invisible to every scoped read afterwards"
+            )
+
+        # document_id and workspace_id are each valid on their own; that is not
+        # a check. Reconcile them against the source document before writing,
+        # or an image lands in a tenant the document does not belong to.
+        document = self._client.table('documents')            .select('workspace_id')            .eq('id', document_id)            .maybe_single()            .execute()
+        source_workspace = (getattr(document, 'data', None) or {}).get('workspace_id')
+        if not source_workspace:
+            raise TenancyViolation(
+                f"document {document_id} not found or has no workspace - refusing "
+                "to save an image against it"
+            )
+        if str(source_workspace) != str(workspace_id):
+            raise TenancyViolation(
+                f"document {document_id} does not belong to workspace {workspace_id}"
+            )
+
         try:
             # Extract image URL (try multiple possible keys)
             # Priority: storage_url (cloud) > public_url (cloud) > url > path (local fallback)
@@ -662,9 +761,12 @@ class SupabaseClient:
                 }
             }
 
-            # Add workspace_id if provided
-            if workspace_id:
-                image_entry['workspace_id'] = workspace_id
+            # Always stamped, never conditional. An optional tenant on a write
+            # is how child rows ended up with workspace_id NULL - invisible to
+            # every workspace-scoped read afterwards, and indistinguishable
+            # from a row that legitimately has no tenant. Asserted at the top
+            # of the method, so by here it is present.
+            image_entry['workspace_id'] = workspace_id
 
             # Insert into database
             response = self._client.table('document_images').insert(image_entry).execute()
@@ -742,7 +844,23 @@ class SupabaseClient:
                     logger.info(f"   Workspace ID: {workspace_id}")
 
             except Exception as doc_error:
-                logger.warning(f"⚠️ Document creation failed: {doc_error}")
+                # Must not continue. Everything below writes CHILD rows keyed on
+                # this document; without its workspace they are written with no
+                # tenant at all, invisible to every scoped read afterwards and
+                # counted as saved. A failed parent lookup ends the save.
+                logger.error(f"❌ Document lookup/creation failed: {doc_error}")
+                raise SupabaseQueryError(
+                    f"could not establish document {document_id} before saving "
+                    f"knowledge base entries: {doc_error}"
+                ) from doc_error
+
+            if not workspace_id:
+                # Same reasoning as above, for the case where the lookup
+                # succeeded but the document carries no tenant.
+                raise TenancyViolation(
+                    f"document {document_id} has no workspace_id - refusing to "
+                    "write chunks and images with no tenant"
+                )
 
             # Save text chunks to document_chunks table
             if chunks:
@@ -864,17 +982,20 @@ class SupabaseClient:
                 'total_saved': saved_chunks + saved_images
             }
 
+        except (TenancyViolation, SupabaseQueryError):
+            # Already precise about what went wrong. Flattening these into a
+            # zero-count result is exactly the shape being removed here.
+            raise
         except Exception as e:
             logger.error(f"❌ Failed to save knowledge base entries: {str(e)}")
             logger.error(f"   Error type: {type(e).__name__}")
             import traceback
             logger.error(f"   Traceback: {traceback.format_exc()}")
-            return {
-                'chunks_saved': 0,
-                'images_saved': 0,
-                'total_saved': 0,
-                'error': str(e)
-            }
+            # Zeros used to be returned here, which is indistinguishable from a
+            # document that genuinely had nothing to save.
+            raise SupabaseQueryError(
+                f"failed to save knowledge base entries for {document_id}: {e}"
+            ) from e
 
     async def upload_file(self, bucket_name: str, file_path: str, file_data: bytes,
                          content_type: str = None, upsert: bool = False) -> dict:

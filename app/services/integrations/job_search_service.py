@@ -65,11 +65,36 @@ def _get_firecrawl_sem() -> asyncio.Semaphore:
     return _firecrawl_sem
 
 
+#: Ceiling on a single RSS response body. Well above any real feed.
+_RSS_MAX_BYTES = 8 * 1024 * 1024
+
+
 async def firecrawl_scrape(payload: Dict[str, Any], *, api_key: str,
                            timeout: float = 75.0, max_retries: int = 5) -> Dict[str, Any]:
     """POST to Firecrawl /scrape under the global concurrency cap, retrying on
     429 (and transient 5xx / timeouts) with exponential backoff. Returns the
-    parsed JSON body; raises on non-retryable errors or exhausted retries."""
+    parsed JSON body; raises on non-retryable errors or exhausted retries.
+
+    The target URL is SSRF-checked here, at the chokepoint, rather than at each
+    call site (M3-9, #16). Fetching *through* a third party does not remove the
+    primitive, it relocates it: Firecrawl will happily resolve an internal
+    hostname or a link-local address on our behalf and hand back the body. Both
+    call sites feed it model-derived or stored URLs, and the RSS path in this
+    same file was already guarded — the asymmetry was the bug.
+
+    Raises:
+        SSRFError: if the payload names a URL that must not be fetched.
+    """
+    from app.utils.ssrf_guard import assert_safe_url
+
+    target = payload.get("url")
+    if not target:
+        raise ValueError("firecrawl_scrape called with no url in the payload")
+    # Raises SSRFError, which callers surface as a failed scrape. Deliberately
+    # not caught-and-logged here: a blocked target is not a transient failure
+    # and must not be retried into the backoff loop below.
+    assert_safe_url(str(target))
+
     sem = _get_firecrawl_sem()
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     last_exc: Optional[Exception] = None
@@ -401,6 +426,48 @@ def content_hash(canonical_url: str, title: Optional[str], company: Optional[str
 
 _DATAFORSEO_BASE = "https://api.dataforseo.com/v3"
 
+#: DataForSEO's "everything worked" code, at both the envelope and task level.
+_DFS_OK = 20000
+
+
+def _assert_dataforseo_ok(data: Optional[Dict[str, Any]]) -> None:
+    """Raise unless the DataForSEO envelope actually reports success.
+
+    HTTP 200 means "the API received your request", not "your request worked".
+    Auth failures, unknown locations and rejected tasks all come back 200 with
+    a non-20000 `status_code` in the body, and iterating `tasks` then yields
+    nothing — which the caller recorded as `hits_returned=0, success=True`,
+    identical to a query that genuinely matched nothing.
+
+    The task-based Google Jobs path in this same file already checks per-task
+    `status_code`; the live SERP path did not.
+    """
+    if not isinstance(data, dict):
+        raise RuntimeError("dataforseo returned a non-object body")
+
+    envelope_code = data.get("status_code")
+    if envelope_code is not None and envelope_code != _DFS_OK:
+        raise RuntimeError(
+            f"dataforseo envelope {envelope_code}: {data.get('status_message')}"
+        )
+
+    tasks_error = data.get("tasks_error")
+    if isinstance(tasks_error, int) and tasks_error > 0:
+        raise RuntimeError(f"dataforseo reported {tasks_error} failed task(s)")
+
+    tasks = data.get("tasks") or []
+    if not tasks:
+        # An empty task list is not an empty result set - a successful call
+        # always echoes at least the task it ran.
+        raise RuntimeError("dataforseo returned no tasks")
+
+    for task in tasks:
+        code = (task or {}).get("status_code")
+        if code is not None and code != _DFS_OK:
+            raise RuntimeError(
+                f"dataforseo task {code}: {(task or {}).get('status_message')}"
+            )
+
 
 def _dfs_auth_header() -> Optional[str]:
     b64 = os.getenv("DATAFORSEO_BASE64") or ""
@@ -646,6 +713,15 @@ async def search_via_dataforseo_serp(
                 )
                 resp.raise_for_status()
                 data = resp.json()
+
+            # M3-10 (#16): DataForSEO answers 200 OK and reports the real outcome
+            # in the BODY. Without these checks a provider-side failure - bad
+            # credentials, an unknown location, a rejected task - iterated an
+            # empty `tasks` list and recorded hits_returned=0, success=True:
+            # indistinguishable from a query that genuinely matched nothing.
+            # Second instance of this exact defect, after the shared client in #14.
+            _assert_dataforseo_ok(data)
+
             for task in ((data or {}).get("tasks") or []):
                 for result in (task.get("result") or []):
                     for item in (result.get("items") or []):
@@ -1711,6 +1787,12 @@ async def search_via_rss_feeds(
     async def _fetch_one(url: str) -> List[JobHit]:
         started = time.time()
         out: List[JobHit] = []
+        # M3-8 (#16): `success=True` used to be hardcoded in the finally below,
+        # so a blocked URL, a dead host, a 500 and a malformed feed all logged
+        # exactly like a healthy feed with no new jobs - items_extracted=0,
+        # success=True. None means "nothing went wrong"; anything else is the
+        # reason it did.
+        failure: Optional[str] = None
         try:
             # Pentest #250 E5/E6: user-supplied RSS feed URL — block SSRF to internal hosts.
             from app.utils.ssrf_guard import assert_safe_url, SSRFError
@@ -1718,16 +1800,28 @@ async def search_via_rss_feeds(
                 assert_safe_url(url)
             except SSRFError as _e:
                 logger.warning(f"rss feed blocked (ssrf): {url} — {_e}")
+                # Not a healthy empty poll. Recorded as a failure below.
+                failure = f"ssrf_blocked: {str(_e)[:120]}"
                 return out
             async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
                 resp = await client.get(url, headers={"User-Agent": "MaterialKAI-JobBot/1.0"}, follow_redirects=False)
                 resp.raise_for_status()
-                body = resp.text
+                # Size cap: the SSRF guard vets WHERE we fetch from, not HOW
+                # MUCH comes back. An 8 MiB ceiling is far above any real job
+                # feed and stops one hostile response exhausting the worker.
+                raw = resp.content[:_RSS_MAX_BYTES]
+                if len(resp.content) > _RSS_MAX_BYTES:
+                    logger.warning(
+                        f"job-search rss: {url} returned {len(resp.content)} bytes, "
+                        f"truncated to {_RSS_MAX_BYTES}"
+                    )
+                body = raw.decode(resp.encoding or "utf-8", errors="replace")
 
             try:
                 root = _ET.fromstring(body)
             except _ET.ParseError as pe:
                 logger.warning(f"job-search rss parse failed for {url}: {pe}")
+                failure = f"parse_error: {str(pe)[:120]}"
                 return []
 
             # RSS 2.0: root.channel.item
@@ -1801,6 +1895,7 @@ async def search_via_rss_feeds(
                 ))
         except Exception as e:
             logger.warning(f"job-search rss ({url}): {str(e)[:200]}")
+            failure = f"{type(e).__name__}: {str(e)[:120]}"
         finally:
             # Free (no per-call billing for RSS); still emit a log row for visibility.
             costs.log_external_call(
@@ -1809,8 +1904,14 @@ async def search_via_rss_feeds(
                 raw_cost_usd=0.0,
                 attribution=attribution,
                 latency_ms=int((time.time() - started) * 1000),
-                extra_metadata={"url": url[:200], "items_extracted": len(out)},
-                success=True,
+                extra_metadata={
+                    "url": url[:200],
+                    "items_extracted": len(out),
+                    # Present only when something actually went wrong, so the
+                    # log row says WHICH failure produced the zero.
+                    **({"failure_reason": failure} if failure else {}),
+                },
+                success=failure is None,
                 markup_multiplier=1.0,
             )
         return out
