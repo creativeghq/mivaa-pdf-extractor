@@ -294,3 +294,84 @@ def test_the_api_does_not_advertise_a_model_it_rejects():
     assert "'gpt-vision' (GPT-4o Vision)" not in src, (
         "the discovery_model description offers gpt-vision again"
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# consensus_validator — the second ai_validation classifier
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# The third pass fixed its confidence FLOOR (below LOW_AGREEMENT now returns
+# success=False) and recorded the extraction as "a different fix from
+# document_classifier", which was never made. It is a different fix, but for a
+# sharper reason than invariant 9 alone:
+#
+# consensus compares the extracted VALUES across two models. With both voters
+# returning free text, "The product name is VALENOVA sofa." and "VALENOVA sofa"
+# scored as a disagreement — and worse, `_calculate_agreement` read keys
+# (`name`, `category`, …) that this path's voters never returned at all, so it
+# fell through to comparing the two hardcoded confidences, "0.7" vs "0.95".
+# Agreement was 0.0 on every call. Once the floor landed, that meant
+# success=False on every call. The mechanism was not weak; it was measuring
+# something else.
+
+def _consensus_path():
+    return _app_root() / "services" / "ai_validation" / "consensus_validator.py"
+
+
+def test_both_consensus_voters_state_their_answer_through_a_tool():
+    src = _src(_consensus_path())
+    assert "CONSENSUS_EXTRACTION_TOOL" in src, "the consensus tool schema is gone"
+    assert '"tools": [CONSENSUS_EXTRACTION_TOOL]' in src, (
+        "the voters no longer force a tool, so two correct answers can differ in "
+        "prose and score as a disagreement"
+    )
+    # Formatting-agnostic: what matters is that tool_choice names THIS tool, not how
+    # the dict happens to be wrapped.
+    forced = re.search(
+        r'"tool_choice"\s*:\s*\{[^}]*"type"\s*:\s*"tool"[^}]*'
+        r'CONSENSUS_EXTRACTION_TOOL\["name"\]',
+        src, re.S,
+    )
+    assert forced, "tool_choice is not forced — the model may answer in prose again"
+
+
+def test_the_agreement_comparison_reads_the_field_the_voters_return():
+    """A vote that compares a key nobody emits is a vote that always ties at zero."""
+    # Scoped to the two voting functions, not the file: the old code mentioned
+    # `extracted_value` five times in its RETURN dicts while neither comparator
+    # looked at it, so a file-wide count passed against the bug.
+    src = _src(_consensus_path())
+    for fn in ("_calculate_agreement", "_majority_vote"):
+        start = src.index(f"def {fn}")
+        nxt = src.find("\n    def ", start + 1)
+        body = src[start: nxt if nxt != -1 else len(src)]
+        assert '"extracted_value"' in body, (
+            f"{fn} does not compare `extracted_value`, which is the ONLY key "
+            "validate_critical_extraction's voters return — so every pair falls "
+            "through to comparing the two confidences and agreement is 0.0 forever"
+        )
+
+
+def test_no_consensus_voter_bypasses_the_tracked_claude_helper():
+    """Half of every consensus run was a hand-rolled httpx POST, so its cost reached
+    no cost table (pipeline convention 10)."""
+    src = _src(_consensus_path())
+    assert "tracked_claude_call_async" in src, "the tracked helper is gone"
+    assert "api.anthropic.com" not in src, (
+        "a hand-rolled Anthropic POST is back in consensus_validator — its tokens "
+        "will not reach ai_usage_logs"
+    )
+    assert "anthropic_api_key" not in src, (
+        "the validator holds an API key again, which means something is calling the "
+        "provider directly"
+    )
+
+
+def test_the_consensus_prompt_comes_from_the_database_and_fences_its_input():
+    src = _src(_consensus_path())
+    assert 'load_prompt("extraction", "consensus_extraction"' in src, (
+        "the consensus prompt is no longer loaded from the prompts table"
+    )
+    assert 'f"Extract {extraction_type} from' not in src, (
+        "the hardcoded extraction prompt is back"
+    )

@@ -298,6 +298,7 @@ REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("extraction", "anthropic_chunk_analysis", "entity_creation"),
     ("extraction", "anthropic_image_analysis", "image_analysis"),
     ("extraction", "catalog_knowledge", "discovery"),
+    ("extraction", "consensus_extraction", "validation"),
     ("extraction", "fast_product_classifier_system", "discovery"),
     ("extraction", "icon_metadata", "image_analysis"),
     ("extraction", "legend_care", "discovery"),

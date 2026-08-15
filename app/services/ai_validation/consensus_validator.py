@@ -16,11 +16,40 @@ from typing import Dict, Any, List, Optional, Callable
 from datetime import datetime
 import logging
 from collections import Counter
-import httpx
 
 from app.services.core.ai_call_logger import AICallLogger
+from app.services.utilities.prompt_registry import load_prompt, render
 
 logger = logging.getLogger(__name__)
+
+
+#: Both voters state their answer through this tool. Invariant 9 wants it because a
+#: verdict drives a write — but the voting is why it MATTERS here: consensus compares
+#: the extracted values across models, and free text made two correct answers look
+#: like a disagreement ("The product name is VALENOVA sofa." vs "VALENOVA sofa").
+#: A forced tool makes the two voters emit the same shape, so the comparison is about
+#: the answer instead of about the prose around it.
+CONSENSUS_EXTRACTION_TOOL = {
+    "name": "record_extracted_value",
+    "description": "Record one extracted field value and how confident you are in it.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "extracted_value": {
+                "type": "string",
+                "description": (
+                    "The value itself and nothing else — no sentence, no label. "
+                    "Empty string if the text does not contain it."
+                ),
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Your confidence in the value, 0.0 to 1.0. 0 if not found.",
+            },
+        },
+        "required": ["extracted_value", "confidence"],
+    },
+}
 
 
 class ConsensusValidator:
@@ -58,9 +87,14 @@ class ConsensusValidator:
     }
     
     def __init__(self, ai_logger: Optional[AICallLogger] = None):
-        """Initialize consensus validator (Anthropic Claude)."""
-        import os
-        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        """Initialize consensus validator (Anthropic Claude).
+
+        No API key is held here any more: both voters go through
+        `tracked_claude_call_async`, which owns the credential and writes the call
+        to `ai_usage_logs`. The Haiku voter used to be a hand-rolled httpx POST, so
+        half of every consensus run cost money that reached no cost table
+        (pipeline convention 10).
+        """
         self.ai_logger = ai_logger or AICallLogger()
     
     async def validate_with_consensus(
@@ -193,7 +227,13 @@ class ConsensusValidator:
         def _extract_key(r: Dict[str, Any]) -> str:
             res = r.get("result", {})
             parts = []
-            for k in ("name", "product_name", "category", "material_type", "description"):
+            # `extracted_value` first: validate_critical_extraction's voters return
+            # ONLY that key, so without it every pair fell through to comparing
+            # "0.7" against "0.95" — agreement was 0.0 on every call, and after the
+            # confidence floor landed that meant success=False on every call. The
+            # consensus mechanism was not weak, it was comparing the wrong thing.
+            for k in ("extracted_value", "name", "product_name", "category",
+                      "material_type", "description"):
                 v = res.get(k)
                 if v:
                     parts.append(str(v).strip().lower())
@@ -219,7 +259,8 @@ class ConsensusValidator:
             res = r.get("result", {})
             return " ".join(
                 str(res.get(k, "")).strip().lower()
-                for k in ("name", "product_name", "category", "material_type")
+                for k in ("extracted_value", "name", "product_name",
+                          "category", "material_type")
                 if res.get(k)
             )
 
@@ -285,61 +326,69 @@ class ConsensusValidator:
         # Two consensus extractors, both Anthropic — Haiku (fast) + Opus
         # (high-fidelity). Disagreement between them surfaces low-confidence
         # extractions that need a human review or downstream rechecking.
-        async def haiku_extract(data):
-            prompt = f"Extract {extraction_type} from: {data['content'][:1000]}"
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={
-                            "x-api-key": self.anthropic_api_key,
-                            "anthropic-version": "2023-06-01",
-                            "content-type": "application/json",
-                        },
-                        json={
-                            "model": "claude-haiku-4-5",
-                            "max_tokens": 256,
-                            "messages": [{"role": "user", "content": prompt}],
-                        },
-                    )
-                    response.raise_for_status()
-                    response_data = response.json()
-                    extracted_text = response_data["content"][0]["text"]
-                    return {
-                        "success": True,
-                        "extracted_value": extracted_text,
-                        "confidence_score": 0.7,
-                    }
-            except Exception as e:
-                logger.error(f"Haiku extraction failed: {e}")
-                return {
-                    "success": False,
-                    "extracted_value": "",
-                    "confidence_score": 0.0,
-                }
+        #
+        # Both run the SAME prompt through the SAME forced tool. That is the point:
+        # a consensus vote between two differently-shaped answers measures the
+        # shapes, not the answers. The prompt is a database row (there is no code
+        # fallback, by rule), and the document text is fenced as DATA because it
+        # comes out of a supplier PDF (invariant 9).
+        template = await load_prompt("extraction", "consensus_extraction", stage="validation")
+        prompt = render(template, extraction_type=extraction_type, content=content[:1000])
 
-        async def claude_opus_extract(data):
+        async def _extract(model: str) -> Dict[str, Any]:
             try:
                 from app.services.core.claude_helper import tracked_claude_call_async
+
                 response = await tracked_claude_call_async(
                     task=f"consensus_{extraction_type}_extraction",
-                    model="claude-opus-4-8",
-                    max_tokens=200,
-                    messages=[{
-                        "role": "user",
-                        "content": f"Extract {extraction_type} from: {data['content'][:1000]}",
-                    }],
+                    model=model,
+                    max_tokens=256,
+                    messages=[{"role": "user", "content": prompt}],
                     job_id=job_id,
-                    confidence_score=0.95,
+                    extra_kwargs={
+                        "tools": [CONSENSUS_EXTRACTION_TOOL],
+                        "tool_choice": {
+                            "type": "tool",
+                            "name": CONSENSUS_EXTRACTION_TOOL["name"],
+                        },
+                    },
                 )
+
+                tool_input = None
+                for block in (response.content or []):
+                    if getattr(block, "type", None) == "tool_use":
+                        tool_input = getattr(block, "input", None)
+                        break
+                if not isinstance(tool_input, dict):
+                    # tool_choice was forced, so this is a broken API contract.
+                    # A voter that guesses is worse than a voter that abstains.
+                    raise ValueError("no tool_use block for a forced tool_choice")
+
+                value = str(tool_input.get("extracted_value", "")).strip()
+                try:
+                    confidence = float(tool_input.get("confidence"))
+                except (TypeError, ValueError):
+                    raise ValueError("voter returned a non-numeric confidence")
+
                 return {
                     "success": True,
-                    "extracted_value": response.content[0].text.strip(),
-                    "confidence_score": 0.95,  # Highest confidence — Opus
+                    "extracted_value": value,
+                    # The model's own confidence, not a constant per model. The
+                    # per-model trust weighting is MODEL_WEIGHTS' job and is applied
+                    # separately in _weighted_vote; baking 0.7/0.95 in here made the
+                    # two indistinguishable and meant a voter could never report
+                    # that it was unsure about a particular value.
+                    "confidence_score": max(0.0, min(1.0, confidence)),
                 }
             except Exception as e:
-                logger.error(f"Claude Opus extraction failed: {e}")
+                logger.error(f"{model} consensus extraction failed: {e}")
                 return {"success": False, "extracted_value": "", "confidence_score": 0.0}
+
+        async def haiku_extract(data):
+            return await _extract("claude-haiku-4-5")
+
+        async def claude_opus_extract(data):
+            return await _extract("claude-opus-4-8")
 
         # Run consensus validation
         task_data = {"content": content}
