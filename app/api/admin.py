@@ -447,11 +447,20 @@ async def get_job_statistics():
 
 # Bulk Operations
 
-@router.get("/jobs/health", response_model=DataResponse, dependencies=[Depends(verify_internal_access)])
+@router.get("/jobs/health", response_model=DataResponse)
 async def jobs_health_check():
     """
     Health check endpoint for the jobs subsystem.
     Prevents /jobs/{job_id} from catching health-check probes that hit /api/jobs/health.
+
+    DELIBERATELY PUBLIC, and the one member of the /api/jobs subtree that is.
+    `/api/jobs` is in `JWTAuthMiddleware.exclude_paths`, so audit #12 gated every
+    other route under it with `verify_internal_access` and left this one open on
+    purpose. Audit #13 MI-5 asked for a route-level gate on all four diagnostics;
+    that is right for the other three — /api/system/health hands out host CPU,
+    memory and disk, and /api/packages/status is a dependency inventory an attacker
+    can match against CVEs — but this endpoint exists TO BE PROBED and discloses two
+    integers. Gating it turns a liveness probe into a 401.
     """
     return {
         "status": "healthy",

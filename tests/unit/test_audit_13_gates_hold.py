@@ -222,14 +222,37 @@ def test_job_readers_confine_a_non_trusted_caller(path: str):
 
 
 @pytest.mark.parametrize("path", [
-    "/admin/drain-status", "/jobs/health", "/system/health", "/packages/status",
+    "/admin/drain-status", "/system/health", "/packages/status",
 ])
 def test_diagnostics_carry_a_route_level_gate(path: str):
     """Invariant 5 wants the gate at the route as well as the middleware — #361
-    showed gateway path normalisation can reach past the middleware."""
+    showed gateway path normalisation can reach past the middleware.
+
+    /system/health hands out host CPU, memory and disk (the same data #12 gated
+    /system/metrics for); /packages/status is a dependency inventory an attacker can
+    match against CVEs; /admin/drain-status was already 401 via the middleware, so
+    its gate is pure defence in depth.
+    """
     body = _route(ADMIN, path)
     assert "verify_internal_access" in body, (
         f"{path} has no route-level gate; it relies entirely on the middleware"
+    )
+
+
+def test_the_jobs_liveness_probe_stays_public():
+    """MI-5 listed four diagnostics; this is the one that must NOT be gated.
+
+    `/api/jobs` is in exclude_paths, so #12 gated every other route in that subtree
+    and deliberately left this one open. It exists to be probed — its own docstring
+    says so — and discloses two integers. Gating it (which this fix briefly did)
+    turns a liveness endpoint into a 401 for whatever is watching it, and nothing in
+    either repo calls it, so nothing in either repo would have told us.
+    """
+    body = _route(ADMIN, "/jobs/health")
+    decorator = body.split("\n")[0]
+    assert "verify_internal_access" not in decorator, (
+        "/api/jobs/health has been gated again. It is the deliberate public member of "
+        "the /api/jobs subtree — see #12's ungated-route triage before changing this."
     )
 
 
