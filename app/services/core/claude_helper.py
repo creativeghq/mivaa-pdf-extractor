@@ -368,6 +368,11 @@ async def tracked_claude_call_async(
     extra_kwargs: Optional[Dict[str, Any]] = None,
     product_id: Optional[str] = None,
     image_id: Optional[str] = None,
+    # Platform work with genuinely nobody to bill (health checks, cron probes).
+    # Recorded as `system_initiated` rather than flagged as `no_principal`,
+    # which is what keeps a deliberate gap distinguishable from a call that
+    # simply lost its user_id on the way down (M3-2, #16).
+    system_initiated: bool = False,
 ) -> ClaudeResponse:
     """Async Claude messages.create with automatic logging + credit debit.
 
@@ -421,6 +426,7 @@ async def tracked_claude_call_async(
         workspace_id=workspace_id,
         product_id=product_id,
         image_id=image_id,
+        system_initiated=system_initiated,
     )
     return response
 
@@ -442,6 +448,11 @@ def tracked_claude_call(
     extra_kwargs: Optional[Dict[str, Any]] = None,
     product_id: Optional[str] = None,
     image_id: Optional[str] = None,
+    # Platform work with genuinely nobody to bill (health checks, cron probes).
+    # Recorded as `system_initiated` rather than flagged as `no_principal`,
+    # which is what keeps a deliberate gap distinguishable from a call that
+    # simply lost its user_id on the way down (M3-2, #16).
+    system_initiated: bool = False,
 ) -> ClaudeResponse:
     """Sync Claude messages.create with automatic logging + credit debit.
 
@@ -496,6 +507,7 @@ def tracked_claude_call(
         workspace_id=workspace_id,
         product_id=product_id,
         image_id=image_id,
+        system_initiated=system_initiated,
     )
 
     try:

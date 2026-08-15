@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field
 
 from app.api.price_lookup_routes import ApiKeyContext, authenticate_api_key
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.postgrest_filters import escape_like
 
 logger = logging.getLogger(__name__)
 
@@ -587,7 +588,11 @@ async def invite_collaborator(
         sb.table("project_collaborators")
         .select("id")
         .eq("project_id", project_id)
-        .ilike("email", email)
+        # escape_like, because `_` is a LIKE single-character wildcard and is
+        # perfectly legal in an email address: `john_doe@x.com` would otherwise
+        # also match `johnXdoe@x.com` and reject a genuine invite with a false
+        # "active invitation already exists".
+        .ilike("email", escape_like(email))
         .is_("revoked_at", "null")
         .execute()
     )

@@ -24,6 +24,8 @@ from ..schemas.suggestions import (
 )
 from ..services.search.search_suggestions_service import SearchSuggestionsService
 from ..services.core.supabase_client import SupabaseClient
+from ..dependencies import get_workspace_context
+from ..schemas.auth import WorkspaceContext
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +54,11 @@ async def get_suggestions_service() -> SearchSuggestionsService:
 )
 async def autocomplete(
     request: AutoCompleteRequest,
-    service: SearchSuggestionsService = Depends(get_suggestions_service)
+    service: SearchSuggestionsService = Depends(get_suggestions_service),
+    # The route bound no workspace at all, and one of the sources it queries
+    # (products) is tenant data - so autocomplete surfaced every tenant's
+    # product names to any authenticated caller. Same shape as M3-1 (#16).
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
 ) -> AutoCompleteResponse:
     """
     Get auto-complete suggestions for a partial query.
@@ -69,6 +75,7 @@ async def autocomplete(
         
         suggestions, metadata = await service.get_autocomplete_suggestions(
             query=request.query,
+            workspace_id=str(workspace_context.workspace_id),
             limit=request.limit,
             user_id=request.user_id,
             session_id=request.session_id,

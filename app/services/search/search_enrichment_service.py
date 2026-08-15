@@ -13,6 +13,7 @@ for search results, including related products, chunks, and relevance scores.
 import logging
 from typing import List, Dict, Any, Optional
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.exceptions import TenancyViolation
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class SearchEnrichmentService:
     async def enrich_image_results(
         self,
         image_results: List[Dict[str, Any]],
+        workspace_id: str,
         include_products: bool = True,
         include_chunks: bool = True,
         min_relevance: float = 0.0,
@@ -46,6 +48,12 @@ class SearchEnrichmentService:
 
         Args:
             image_results: List of image results from VECS search
+            workspace_id: Tenant every enriched row must belong to (required).
+                The image ids arriving here are already scoped, but the
+                association tables are NOT: image_product_associations and
+                chunk_image_relationships carry no workspace_id of their own,
+                so a row in either can point from a correctly-scoped image at
+                another tenant's product or chunk. Follow-up to #16.
             include_products: Whether to include related products
             include_chunks: Whether to include related chunks
             min_relevance: Minimum relevance score to include (0.0-1.0)
@@ -64,6 +72,12 @@ class SearchEnrichmentService:
         Note:
             Total weights = 1.0 (22% visual + 18% understanding + 15% relevance + 45% specialized)
         """
+        if not workspace_id:
+            raise TenancyViolation(
+                "enrich_image_results requires a workspace_id - the association "
+                "tables carry none, so without it an enriched row can cross tenants"
+            )
+
         try:
             enriched_results = []
 
@@ -80,7 +94,7 @@ class SearchEnrichmentService:
                 }
 
                 # Get image details including caption (actual description)
-                image_details = await self.get_image_details(image_id)
+                image_details = await self.get_image_details(image_id, workspace_id)
                 enriched['image_details'] = image_details
 
                 # Use caption as description if available
@@ -90,7 +104,9 @@ class SearchEnrichmentService:
                 # Get related products (pass image caption as fallback for empty descriptions)
                 if include_products:
                     image_caption = image_details.get('caption') if image_details else None
-                    products = await self.get_related_products(image_id, min_relevance, image_caption)
+                    products = await self.get_related_products(
+                        image_id, workspace_id, min_relevance, image_caption
+                    )
                     enriched['related_products'] = products
 
                     # Multi-vector combined score across all 6 embedding types.
@@ -163,7 +179,7 @@ class SearchEnrichmentService:
 
                 # Get related chunks
                 if include_chunks:
-                    chunks = await self.get_related_chunks(image_id, min_relevance)
+                    chunks = await self.get_related_chunks(image_id, workspace_id, min_relevance)
                     enriched['related_chunks'] = chunks
 
                 enriched_results.append(enriched)
@@ -186,6 +202,7 @@ class SearchEnrichmentService:
     async def get_related_products(
         self,
         image_id: str,
+        workspace_id: str,
         min_relevance: float = 0.0,
         image_caption: Optional[str] = None
     ) -> List[Dict[str, Any]]:
@@ -202,9 +219,12 @@ class SearchEnrichmentService:
             List of related products with relevance scores
         """
         try:
+            # !inner so a cross-tenant product DROPS the association row rather
+            # than nulling the embed and leaving a half-populated result.
             response = self.supabase.client.table('image_product_associations')\
-                .select('product_id, overall_score, reasoning, products(id, name, description, metadata)')\
+                .select('product_id, overall_score, reasoning, products!inner(id, name, description, metadata, workspace_id)')\
                 .eq('image_id', image_id)\
+                .eq('products.workspace_id', workspace_id)\
                 .gte('overall_score', min_relevance)\
                 .order('overall_score', desc=True)\
                 .execute()
@@ -238,6 +258,7 @@ class SearchEnrichmentService:
     async def get_related_chunks(
         self,
         image_id: str,
+        workspace_id: str,
         min_relevance: float = 0.0
     ) -> List[Dict[str, Any]]:
         """
@@ -252,9 +273,12 @@ class SearchEnrichmentService:
         """
         try:
             # Query chunk_image_relationships with chunk details
+            # Same shape as get_related_products: the relationship row carries
+            # no tenant, so the predicate lands on the chunk it points at.
             response = self.supabase.client.table('chunk_image_relationships')\
-                .select('chunk_id, relevance_score, relationship_type, document_chunks(id, content, metadata)')\
+                .select('chunk_id, relevance_score, relationship_type, document_chunks!inner(id, content, metadata, workspace_id)')\
                 .eq('image_id', image_id)\
+                .eq('document_chunks.workspace_id', workspace_id)\
                 .gte('relevance_score', min_relevance)\
                 .order('relevance_score', desc=True)\
                 .execute()
@@ -278,7 +302,7 @@ class SearchEnrichmentService:
             self.logger.error(f"❌ Failed to get related chunks for image {image_id}: {e}")
             return []
 
-    async def get_image_details(self, image_id: str) -> Dict[str, Any]:
+    async def get_image_details(self, image_id: str, workspace_id: str) -> Dict[str, Any]:
         """
         Get image details including caption from document_images.
 
@@ -295,6 +319,7 @@ class SearchEnrichmentService:
             response = self.supabase.client.table('document_images')\
                 .select('id, caption, product_name, contextual_name, image_url, image_type, category')\
                 .eq('id', image_id)\
+                .eq('workspace_id', workspace_id)\
                 .single()\
                 .execute()
 

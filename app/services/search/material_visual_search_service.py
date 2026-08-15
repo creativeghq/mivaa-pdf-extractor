@@ -740,6 +740,7 @@ class MaterialVisualSearchService:
             enrichment_service = SearchEnrichmentService()
             enriched_results = await enrichment_service.enrich_image_results(
                 image_results=filtered_results,
+                workspace_id=request.workspace_id,
                 include_products=True,
                 include_chunks=True,
                 min_relevance=0.5

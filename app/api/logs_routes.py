@@ -13,6 +13,7 @@ import uuid
 from app.services.core.supabase_client import get_supabase_client
 from app.schemas.api_responses import StatusResponse, LogStatsResponse
 from app.dependencies import require_admin
+from app.utils.postgrest_filters import escape_like
 
 
 router = APIRouter(prefix="/api/admin/logs", tags=["Admin", "Logs"])
@@ -146,7 +147,7 @@ async def get_logs(
             query = query.eq('job_id', job_id)
 
         if search:
-            query = query.ilike('message', f'%{search}%')
+            query = query.ilike('message', f'%{escape_like(search)}%')
 
         if source:
             # Filter by source (frontend or backend) using context->source

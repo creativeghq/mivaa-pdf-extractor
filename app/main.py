@@ -1395,6 +1395,10 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                         model="claude-haiku-4-5",
                         max_tokens=1,
                         messages=[{"role": "user", "content": "hi"}],
+                        # There is no tenant behind a health probe. Declared, so
+                        # it records `system_initiated` instead of tripping the
+                        # no-principal ERROR on every /health call.
+                        system_initiated=True,
                     )
                     latency_ms = int((time.time() - start_time) * 1000)
 

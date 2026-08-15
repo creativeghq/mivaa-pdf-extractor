@@ -90,7 +90,7 @@ class AICallLogger:
         return None
 
     def _record_missing_principal(self, task: str, model: str, cost: float) -> str:
-        """An AI call ran with nobody to bill. Say so on the row, loudly.
+        """An AI call ran with nobody to bill. Record it on the row.
 
         This is the M3-2 defect (#16): the debit was guarded by `if user_id:`,
         and the UNBILLED markers only fire when the debit RAISES or FAILS. With
@@ -98,8 +98,22 @@ class AICallLogger:
         — 51 call sites of the logged Claude wrappers, one of which passed a
         user_id. "Unbilled revenue" therefore read as zero because the
         recording path was unreachable, not because it was zero.
+
+        WARNING, not ERROR, and deliberately so. Sentry is wired with
+        `event_level=logging.ERROR` (main.py), so an ERROR here would raise one
+        Sentry event per unattributed call — roughly every AI call the
+        ingestion pipeline makes. An alert that fires on the common case is not
+        an alert, it is a thing that buries the uncommon ones. The measurement
+        the audit actually asked for is the `unbilled_reason` COLUMN, which is
+        aggregatable and silent:
+
+            select unbilled_reason, count(*), sum(cost)
+              from ai_call_logs where unbilled_reason is not null group by 1;
+
+        The genuinely exceptional cases — `debit_failed` and `debit_raised`,
+        where money was owed and not taken — keep their ERROR in `_debit`.
         """
-        self.logger.error(
+        self.logger.warning(
             "[ai_call_logger] UNBILLED (no principal) task=%s model=%s cost=$%.6f - "
             "the call ran with no user_id, so no debit was even attempted",
             task, model, cost,
@@ -727,7 +741,9 @@ class AICallLogger:
             # if/else, not two ifs: an `if user_id:` with no else is the exact
             # shape the M3-2 guard rejects, and rightly so.
             if not user_id:
-                self.logger.error(
+                # WARNING for the same reason as _record_missing_principal:
+                # ERROR is a Sentry event, and this is the common case.
+                self.logger.warning(
                     "[ai_call_logger] UNBILLED (no principal) firecrawl op=%s url=%s "
                     "credits=%s - the scrape ran with no user_id, so no debit was "
                     "even attempted",

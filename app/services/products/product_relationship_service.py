@@ -26,6 +26,7 @@ import json
 from typing import List, Dict, Any, Optional
 from app.config import get_settings
 from app.services.core.ai_client_service import get_ai_client_service
+from app.utils.postgrest_filters import escape_like
 
 logger = logging.getLogger(__name__)
 
@@ -412,7 +413,7 @@ class ProductRelationshipService:
             try:
                 resp = self.supabase.table('products').select('id').eq(
                     'workspace_id', workspace_id
-                ).ilike(column, ident).neq('id', exclude_id).limit(2).execute()
+                ).ilike(column, escape_like(ident)).neq('id', exclude_id).limit(2).execute()
             except Exception:
                 continue
             data = resp.data or []

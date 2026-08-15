@@ -472,3 +472,104 @@ def test_extractor_tiers_mark_failure_rather_than_returning_bare_empty():
         "tier failures return a bare {} again, which is indistinguishable "
         "from a page that genuinely had no specs on it"
     )
+
+
+# ═══════════════════════════ follow-ups found while closing the audit ════════
+
+
+ENRICHMENT = APP / "services" / "search" / "search_enrichment_service.py"
+SUGGESTIONS = APP / "services" / "search" / "search_suggestions_service.py"
+
+
+def test_enrichment_joins_cannot_bridge_workspaces():
+    """The association tables carry no tenant of their own.
+
+    `image_product_associations` and `chunk_image_relationships` have no
+    workspace_id column, so a correctly-scoped image can still point at
+    another tenant's product or chunk. The predicate has to land on the
+    embedded row, as an inner join.
+    """
+    func = _function(ENRICHMENT, "enrich_image_results")
+    assert "workspace_id" in _required_args(func), (
+        "enrich_image_results no longer requires a workspace_id"
+    )
+
+    src = _read(ENRICHMENT)
+    for embed, table in (("products!inner", "get_related_products"),
+                         ("document_chunks!inner", "get_related_chunks")):
+        assert embed in src, (
+            f"{table} no longer inner-joins its embedded row - a plain embed "
+            "nulls the child instead of dropping the association"
+        )
+    for predicate in ("products.workspace_id", "document_chunks.workspace_id"):
+        assert predicate in src, (
+            f"no {predicate} filter - the association row carries no tenant, so "
+            "this is the only place the check can land"
+        )
+
+
+def test_autocomplete_scopes_the_one_tenant_table_it_reads():
+    """products is tenant data; the other three sources are not.
+
+    search_suggestions and trending_searches are global reference data and
+    search_analytics is keyed by user, so only the products lookup needs a
+    workspace — but it had none, and the route bound none either, so
+    autocomplete surfaced every tenant's product names.
+    """
+    func = _function(SUGGESTIONS, "_get_product_matches")
+    assert "workspace_id" in _args(func), (
+        "_get_product_matches takes no workspace_id"
+    )
+    src = _read(SUGGESTIONS)
+    assert '.eq("workspace_id", workspace_id)' in src, (
+        "the products lookup in autocomplete is unscoped again"
+    )
+    entry = _function(SUGGESTIONS, "get_autocomplete_suggestions")
+    assert "workspace_id" in _required_args(entry), (
+        "get_autocomplete_suggestions must require the workspace it passes down"
+    )
+
+
+def test_no_user_supplied_ilike_pattern_is_left_unescaped():
+    """A `%` typed into a search box must not match the whole table.
+
+    Sweeps the app rather than naming files, so a new ilike is covered by
+    default. Interpolating anything into a like/ilike pattern without
+    escape_like() fails here.
+    """
+    offenders = []
+    for path in APP.rglob("*.py"):
+        tree = ast.parse(_read(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not (isinstance(node.func, ast.Attribute) and node.func.attr in ("ilike", "like")):
+                continue
+            if len(node.args) < 2:
+                continue
+            pattern = node.args[1]
+            if isinstance(pattern, ast.Constant):
+                continue  # a literal pattern has no user input in it
+            interpolations = []
+            if isinstance(pattern, ast.JoinedStr):
+                interpolations = [
+                    p.value for p in pattern.values if isinstance(p, ast.FormattedValue)
+                ]
+            else:
+                interpolations = [pattern]
+            for expr in interpolations:
+                escaped = (
+                    isinstance(expr, ast.Call)
+                    and isinstance(expr.func, ast.Name)
+                    and expr.func.id == "escape_like"
+                ) or (isinstance(expr, ast.Name) and "escaped" in expr.id.lower()) or (
+                    isinstance(expr, ast.Name) and expr.id == "like_pattern"
+                )
+                if not escaped:
+                    offenders.append(
+                        f"{path.relative_to(APP)}:{node.lineno}"
+                    )
+    assert not offenders, (
+        f"unescaped user input in a like/ilike pattern at: {sorted(set(offenders))}. "
+        "Wrap the term in escape_like() from app.utils.postgrest_filters."
+    )

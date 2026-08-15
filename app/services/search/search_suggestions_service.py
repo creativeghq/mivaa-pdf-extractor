@@ -16,6 +16,8 @@ from app.schemas.suggestions import (
     ExpandedQuery
 )
 from app.utils.text_similarity import calculate_string_similarity
+from app.utils.postgrest_filters import escape_like
+from app.utils.exceptions import TenancyViolation
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +53,7 @@ class SearchSuggestionsService:
     async def get_autocomplete_suggestions(
         self,
         query: str,
+        workspace_id: str,
         limit: int = 10,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
@@ -103,7 +106,9 @@ class SearchSuggestionsService:
             
             # 5. Get product/material name matches
             if len(suggestions) < limit:
-                product_matches = await self._get_product_matches(query, limit - len(suggestions))
+                product_matches = await self._get_product_matches(
+                    query, limit - len(suggestions), workspace_id
+                )
                 suggestions.extend(product_matches)
                 if product_matches:
                     metadata["sources"].append("products")
@@ -147,7 +152,7 @@ class SearchSuggestionsService:
             query_builder = self.client.table("search_suggestions") \
                 .select("*") \
                 .eq("is_active", True) \
-                .ilike("suggestion_text", f"{query}%") \
+                .ilike("suggestion_text", f"{escape_like(query)}%") \
                 .order("popularity_score", desc=True) \
                 .limit(limit)
             
@@ -181,7 +186,7 @@ class SearchSuggestionsService:
         try:
             response = self.client.table("trending_searches") \
                 .select("*") \
-                .ilike("query_text", f"%{query}%") \
+                .ilike("query_text", f"%{escape_like(query)}%") \
                 .eq("time_window", "daily") \
                 .order("trend_score", desc=True) \
                 .limit(limit) \
@@ -221,7 +226,7 @@ class SearchSuggestionsService:
             response = self.client.table("search_analytics") \
                 .select("query_text, created_at") \
                 .eq("user_id", user_id) \
-                .ilike("query_text", f"%{query}%") \
+                .ilike("query_text", f"%{escape_like(query)}%") \
                 .order("created_at", desc=True) \
                 .limit(limit) \
                 .execute()
@@ -280,12 +285,25 @@ class SearchSuggestionsService:
             logger.warning(f"Popular searches function not available: {e}")
             return []
     
-    async def _get_product_matches(self, query: str, limit: int) -> List[SearchSuggestion]:
+    async def _get_product_matches(
+        self, query: str, limit: int, workspace_id: str
+    ) -> List[SearchSuggestion]:
         """Get product/material name matches."""
         try:
+            # products is the ONE tenant-scoped table this service reads;
+            # search_suggestions and trending_searches are global reference
+            # data and search_analytics is keyed by user. Unscoped, this fed
+            # every tenant's product names into an autocomplete box - the same
+            # shape as M3-1 (#16), reached through a different door.
+            if not workspace_id:
+                raise TenancyViolation(
+                    "_get_product_matches requires a workspace_id - product "
+                    "names are tenant data"
+                )
             response = self.client.table("products") \
                 .select("id, name, metadata") \
-                .ilike("name", f"%{query}%") \
+                .eq("workspace_id", workspace_id) \
+                .ilike("name", f"%{escape_like(query)}%") \
                 .limit(limit) \
                 .execute()
             
@@ -549,7 +567,7 @@ Return as JSON: {{"related": [], "broader": [], "narrower": []}}"""
             # Get queries that users searched after this query
             response = self.client.table("search_analytics") \
                 .select("follow_up_queries") \
-                .ilike("query_text", f"%{query}%") \
+                .ilike("query_text", f"%{escape_like(query)}%") \
                 .not_.is_("follow_up_queries", "null") \
                 .limit(100) \
                 .execute()
