@@ -28,7 +28,6 @@ import json
 import logging
 import os
 import re
-import unicodedata
 from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -36,6 +35,9 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.utils.text_fold import (
+    GREEK_TO_LATIN, fold_identity, fold_model_token, strip_accents,
+)
 from app.services.core.supabase_client import get_supabase_client
 
 from app.services.utilities.prompt_registry import load_prompt
@@ -48,51 +50,16 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────────────────
 # Covers the visually-identical lookalikes we keep seeing in product codes.
 # "7012ΜΤ" (Greek Μ + Τ) and "7012MT" (Latin M + T) must compare equal.
-_GREEK_TO_LATIN: Dict[str, str] = {
-    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K",
-    "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
-    "α": "a", "β": "b", "ε": "e", "ζ": "z", "η": "h", "ι": "i", "κ": "k",
-    "μ": "m", "ν": "n", "ο": "o", "ρ": "p", "τ": "t", "υ": "y", "χ": "x",
-}
-
-# Separators that routinely drift between versions of the same model number:
-#   "7012-MT" / "7012 MT" / "7012_MT" / "7012.MT" → normalized as "7012MT"
+# The map, the fold and the model-token normalizer all used to be written out here.
+# `normalize_text` did NOT apply the lookalike map while `normalize_model_token` in the
+# same file did, so the two disagreed about whether Greek M equals Latin M depending on
+# which one you happened to call, and neither folded the final sigma (#18 M5-9).
+# One fold now, in app.utils.text_fold.
+_GREEK_TO_LATIN = GREEK_TO_LATIN
 _MODEL_SEP_RE = re.compile(r"[\s\-_./]+")
-
-
-def _strip_accents(text: str) -> str:
-    """Accent-insensitive compare: 'Νιπτήρα' ≡ 'Νιπτηρα'."""
-    nfd = unicodedata.normalize("NFD", text)
-    return "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
-
-
-def normalize_text(text: Optional[str]) -> str:
-    """
-    Lowercase, accent-strip, collapse whitespace. Used for general
-    facet matching (product type, variants, freeform strings).
-    """
-    if not text:
-        return ""
-    return " ".join(_strip_accents(text).lower().split())
-
-
-def normalize_model_token(token: Optional[str]) -> str:
-    """
-    Aggressive normalization for model/SKU tokens where we want strict
-    equality across Greek/Latin lookalikes + separator drift.
-
-      "7012ΜΤ"   → "7012MT"
-      "7012 MT"  → "7012MT"
-      "preciosa-01" → "PRECIOSA01"
-    """
-    if not token:
-        return ""
-    # Greek → Latin (preserve case for readability, uppercase after)
-    mapped = "".join(_GREEK_TO_LATIN.get(ch, ch) for ch in token)
-    # Strip accents + uppercase
-    mapped = _strip_accents(mapped).upper()
-    # Remove separators
-    return _MODEL_SEP_RE.sub("", mapped)
+_strip_accents = strip_accents
+normalize_text = fold_identity
+normalize_model_token = fold_model_token
 
 
 # ────────────────────────────────────────────────────────────────────────────

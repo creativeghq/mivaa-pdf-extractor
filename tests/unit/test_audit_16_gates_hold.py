@@ -311,12 +311,25 @@ def test_the_dataforseo_serp_call_checks_the_envelope():
         "provider-side failure comes back 200 OK and iterates to "
         "hits_returned=0, success=True"
     )
-    func = _function(JOBS, "_assert_dataforseo_ok")
-    raises = [n for n in ast.walk(func) if isinstance(n, ast.Raise)]
-    assert len(raises) >= 4, (
+    # The check moved out of this file in #18 M5-8, once the same defect had been found
+    # a fourth time and one validator replaced four copies. Follow it there rather than
+    # asserting on where it used to live.
+    envelope = APP / "services" / "integrations" / "dataforseo_envelope.py"
+    assert "dataforseo_envelope" in src, (
+        "the SERP path no longer imports the shared envelope validator"
+    )
+    func = _function(envelope, "check")
+    rejects = [
+        n for n in ast.walk(func)
+        if isinstance(n, ast.Return)
+        and isinstance(n.value, ast.Tuple)
+        and isinstance(n.value.elts[0], ast.Constant)
+        and n.value.elts[0].value is False
+    ]
+    assert len(rejects) >= 4, (
         "the envelope check should reject on the envelope code, tasks_error, "
         "an empty task list AND per-task codes; found "
-        f"{len(raises)} raise(s)"
+        f"{len(rejects)} rejection(s)"
     )
 
 

@@ -63,6 +63,10 @@ from app.services.integrations.product_identity_service import (
 )
 from app.services.integrations.tracked_queries_service import get_tracked_queries_service
 from app.services.integrations.cron_billing import charge_cron
+from app.services.integrations.price_cost_logger import (
+    PRICE_OP_CREDIT_COST, debit_credits, refund_credits,
+)
+from app.utils.paid_door import metered_door
 
 logger = logging.getLogger(__name__)
 
@@ -363,18 +367,33 @@ async def track_product(
     country = body.country_code or _resolve_user_country_code((profile.data if profile else None) or {})
 
     service = get_tracked_queries_service()
-    tq = await service.find_or_create_for_product(
-        product_id=product_id,
-        product_name=ctx["name"],
-        manufacturer=ctx["manufacturer"],
-        dimensions=ctx["dimensions"],
-        country_code=country,
+    # run_first_refresh=True runs full discovery (Perplexity + DataForSEO + Firecrawl
+    # verify) inline. Paid work behind a user button, so it debits first (#18 M5-3).
+    async with metered_door(
         user_id=str(user.id),
         workspace_id=workspace.workspace_id if workspace else None,
-        run_first_refresh=True,
-        force=body.force_refresh,
-    )
-    return {"success": True, "data": {"product_id": product_id, "tracked_query_id": tq.get("id"), "tracked_query": tq}}
+        cost=PRICE_OP_CREDIT_COST["track"],
+        operation_type="price_monitoring.track",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        tq = await service.find_or_create_for_product(
+            product_id=product_id,
+            product_name=ctx["name"],
+            manufacturer=ctx["manufacturer"],
+            dimensions=ctx["dimensions"],
+            country_code=country,
+            user_id=str(user.id),
+            workspace_id=workspace.workspace_id if workspace else None,
+            run_first_refresh=True,
+            force=body.force_refresh,
+        )
+        if not tq:
+            paid.refund("enrolment produced no tracked query")
+    return {
+        "success": True,
+        "credits_debited": paid.charged,
+        "data": {"product_id": product_id, "tracked_query_id": tq.get("id"), "tracked_query": tq},
+    }
 
 
 @router.delete(
@@ -437,18 +456,28 @@ async def refresh_product(
             .execute()
         )
         country = _resolve_user_country_code((profile.data if profile else None) or {})
-        tq = await service.find_or_create_for_product(
-            product_id=product_id,
-            product_name=ctx["name"],
-            manufacturer=ctx["manufacturer"],
-            dimensions=ctx["dimensions"],
-            country_code=country,
+        # Auto-enrolment here runs the same paid discovery as /track.
+        async with metered_door(
             user_id=str(user.id),
             workspace_id=workspace.workspace_id if workspace else None,
-            run_first_refresh=True,
-            force=True,
-        )
-        return {"success": True, "data": tq}
+            cost=PRICE_OP_CREDIT_COST["track"],
+            operation_type="price_monitoring.track",
+            debit=debit_credits, refund=refund_credits,
+        ) as paid:
+            tq = await service.find_or_create_for_product(
+                product_id=product_id,
+                product_name=ctx["name"],
+                manufacturer=ctx["manufacturer"],
+                dimensions=ctx["dimensions"],
+                country_code=country,
+                user_id=str(user.id),
+                workspace_id=workspace.workspace_id if workspace else None,
+                run_first_refresh=True,
+                force=True,
+            )
+            if not tq:
+                paid.refund("enrolment produced no tracked query")
+        return {"success": True, "credits_debited": paid.charged, "data": tq}
 
     # Force refresh requires admin (matches the old /discover semantics).
     if body.force_refresh:
@@ -462,8 +491,22 @@ async def refresh_product(
     if body.verify_prices != bool(tq.get("verify_prices", True)):
         await service.update(tq["id"], verify_prices=body.verify_prices)
 
-    outcome = await service.refresh(tq["id"], force=body.force_refresh)
-    return {"success": outcome.get("status") == "refreshed", "data": outcome}
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=tq.get("workspace_id") or (workspace.workspace_id if workspace else None),
+        cost=PRICE_OP_CREDIT_COST["refresh"],
+        operation_type="price_monitoring.refresh",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        outcome = await service.refresh(tq["id"], force=body.force_refresh)
+        # A skipped refresh never reached a provider; an errored one paid for nothing.
+        if outcome.get("skipped") or outcome.get("error") or outcome.get("status") != "refreshed":
+            paid.refund("refresh delivered no new prices")
+    return {
+        "success": outcome.get("status") == "refreshed",
+        "credits_debited": paid.charged,
+        "data": outcome,
+    }
 
 
 @router.get(
@@ -609,7 +652,17 @@ async def verify_product_sources(
             "message": "Product is not enrolled in monitoring.",
         }
     _enforce_tracked_query_owner(tq, user_id=str(user.id))
-    return await service.reverify(tq["id"], urls=body.urls)
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=tq.get("workspace_id"),
+        cost=PRICE_OP_CREDIT_COST["verify"],
+        operation_type="price_monitoring.verify",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        outcome = await service.reverify(tq["id"], urls=body.urls)
+        if not (outcome or {}).get("rows_processed"):
+            paid.refund("re-verify scraped nothing")
+    return {**(outcome or {}), "credits_debited": paid.charged}
 
 
 # ============================================================================
@@ -631,15 +684,24 @@ async def add_url_only(
     sb = get_supabase_client().client
     ctx = _resolve_product_context(sb, product_id)
     service = get_tracked_queries_service()
-    tq = await service.add_url_only(
-        product_id=product_id,
-        url=body.url,
-        product_name=ctx["name"],
+    async with metered_door(
         user_id=str(user.id),
         workspace_id=workspace.workspace_id if workspace else None,
-        country_code=body.country_code,
-    )
-    return {"success": True, "data": tq}
+        cost=PRICE_OP_CREDIT_COST["url_only"],
+        operation_type="price_monitoring.url_only",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        tq = await service.add_url_only(
+            product_id=product_id,
+            url=body.url,
+            product_name=ctx["name"],
+            user_id=str(user.id),
+            workspace_id=workspace.workspace_id if workspace else None,
+            country_code=body.country_code,
+        )
+        if not tq:
+            paid.refund("no tracked query was pinned")
+    return {"success": True, "credits_debited": paid.charged, "data": tq}
 
 
 @router.get(
@@ -830,17 +892,28 @@ async def market_check(
             enriched_query = " ".join([*prefix_parts, query_text])
 
     service_search = get_perplexity_price_search_service()
-    result = await service_search.search_prices(
-        product_name=enriched_query,
-        dimensions=None,
-        country_code=country_code,
-        limit=10,
-        user_id=user.id,
+    # The cache shortcut above returns before here, so reaching this point always
+    # means a real Perplexity scan is about to run (#18 M5-3).
+    async with metered_door(
+        user_id=str(user.id),
         workspace_id=workspace.workspace_id if workspace else None,
-        verify_prices=body.verify_prices,
-        query_facets=catalog_facets,
-        manufacturer_hint=manufacturer,
-    )
+        cost=PRICE_OP_CREDIT_COST["market_check"],
+        operation_type="price_monitoring.market_check",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        result = await service_search.search_prices(
+            product_name=enriched_query,
+            dimensions=None,
+            country_code=country_code,
+            limit=10,
+            user_id=user.id,
+            workspace_id=workspace.workspace_id if workspace else None,
+            verify_prices=body.verify_prices,
+            query_facets=catalog_facets,
+            manufacturer_hint=manufacturer,
+        )
+        if not result.success or not result.hits:
+            paid.refund("market scan returned no priced hits")
 
     if not result.success:
         return MarketCheckResponse(
@@ -849,7 +922,7 @@ async def market_check(
             query=query_text,
             country_code=country_code,
             stats=MarketStats(count=0, verified_count=0),
-            credits_used=result.credits_used,
+            credits_used=paid.charged,
             latency_ms=result.latency_ms,
             error=result.error or "market scan failed",
         )
@@ -863,7 +936,7 @@ async def market_check(
         total_results=len(result.hits),
         stats=_compute_market_stats(result.hits),
         summary=result.summary,
-        credits_used=result.credits_used,
+        credits_used=paid.charged,
         latency_ms=result.latency_ms,
         from_monitoring_cache=False,
     )
@@ -1302,21 +1375,44 @@ async def legacy_check_now(
             .execute()
         )
         country = _resolve_user_country_code((profile.data if profile else None) or {})
-        tq = await service.find_or_create_for_product(
-            product_id=body.product_id,
-            product_name=ctx["name"],
-            manufacturer=ctx["manufacturer"],
-            dimensions=ctx["dimensions"],
-            country_code=country,
+        # Deprecated, but live and paid: both branches here run real discovery. The
+        # enumerating half of test_paid_route_metering found this one; the hand-listed
+        # doors in #18 M5-3 did not.
+        async with metered_door(
             user_id=str(user.id),
             workspace_id=workspace.workspace_id if workspace else None,
-            run_first_refresh=True,
-            force=True,
-        )
-        return {"success": True, "message": "first refresh complete", "data": tq}
+            cost=PRICE_OP_CREDIT_COST["track"],
+            operation_type="price_monitoring.track",
+            debit=debit_credits, refund=refund_credits,
+        ) as paid:
+            tq = await service.find_or_create_for_product(
+                product_id=body.product_id,
+                product_name=ctx["name"],
+                manufacturer=ctx["manufacturer"],
+                dimensions=ctx["dimensions"],
+                country_code=country,
+                user_id=str(user.id),
+                workspace_id=workspace.workspace_id if workspace else None,
+                run_first_refresh=True,
+                force=True,
+            )
+            if not tq:
+                paid.refund("enrolment produced no tracked query")
+        return {"success": True, "message": "first refresh complete",
+                "credits_debited": paid.charged, "data": tq}
     _enforce_tracked_query_owner(tq, user_id=str(user.id))
-    outcome = await service.refresh(tq["id"], force=True)
-    return {"success": outcome.get("status") == "refreshed", "message": outcome.get("status"), "data": outcome}
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=tq.get("workspace_id") or (workspace.workspace_id if workspace else None),
+        cost=PRICE_OP_CREDIT_COST["refresh"],
+        operation_type="price_monitoring.refresh",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        outcome = await service.refresh(tq["id"], force=True)
+        if outcome.get("skipped") or outcome.get("error") or outcome.get("status") != "refreshed":
+            paid.refund("refresh delivered no new prices")
+    return {"success": outcome.get("status") == "refreshed", "message": outcome.get("status"),
+            "credits_debited": paid.charged, "data": outcome}
 
 
 @router.post("/discover", deprecated=True)

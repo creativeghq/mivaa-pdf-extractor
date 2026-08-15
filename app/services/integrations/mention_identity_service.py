@@ -27,13 +27,13 @@ import json
 import logging
 import os
 import re
-import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from app.utils.text_fold import GREEK_TO_LATIN, fold_identity, strip_accents
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_haiku_call,
@@ -59,24 +59,12 @@ CACHE_TTL_DAYS = 7
 # Greek↔Latin lookalikes + accent normalization (reused pattern)
 # ────────────────────────────────────────────────────────────────────────────
 
-_GREEK_TO_LATIN: Dict[str, str] = {
-    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K",
-    "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
-    "α": "a", "β": "b", "ε": "e", "ζ": "z", "η": "h", "ι": "i", "κ": "k",
-    "μ": "m", "ν": "n", "ο": "o", "ρ": "p", "τ": "t", "υ": "y", "χ": "x",
-}
-
-
-def _strip_accents(text: str) -> str:
-    nfd = unicodedata.normalize("NFD", text)
-    return "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
-
-
-def normalize_text(text: Optional[str]) -> str:
-    if not text:
-        return ""
-    mapped = "".join(_GREEK_TO_LATIN.get(ch, ch) for ch in text)
-    return " ".join(_strip_accents(mapped).lower().split())
+# This file used to carry its own copy of the map and the fold. It missed the final
+# sigma, so an alias ending in `ς` never matched the same word written medially
+# (#18 M5-9). One fold now, in app.utils.text_fold.
+_GREEK_TO_LATIN = GREEK_TO_LATIN
+_strip_accents = strip_accents
+normalize_text = fold_identity
 
 
 # ────────────────────────────────────────────────────────────────────────────

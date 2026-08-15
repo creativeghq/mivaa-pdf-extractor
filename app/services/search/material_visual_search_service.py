@@ -921,10 +921,11 @@ class MaterialVisualSearchService:
             }
     
     async def search_similar_materials(
-        self, 
-        reference_material_id: str, 
+        self,
+        reference_material_id: str,
         similarity_threshold: float = 0.75,
-        limit: int = 20
+        limit: int = 20,
+        workspace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Find materials similar to a reference material.
@@ -933,16 +934,33 @@ class MaterialVisualSearchService:
             reference_material_id: ID of reference material
             similarity_threshold: Minimum similarity threshold
             limit: Maximum number of results
+            workspace_id: Tenant the search is scoped to. Required — the bridge
+                otherwise falls back to its own service-level workspace, which
+                is not the caller's.
             
         Returns:
             Dict containing similar materials
         """
         try:
-            # Use Material Kai service to find similar materials
+            if not workspace_id:
+                # Refusing beats searching the bridge's own workspace on the
+                # caller's behalf: a result from the wrong tenant is still a
+                # valid-looking result (invariant 1).
+                raise MaterialKaiIntegrationError(
+                    "search_similar_materials requires a workspace_id"
+                )
+
+            # Use Material Kai service to find similar materials.
+            # NB: these keywords are `query_image_id` / `limit`, not
+            # `reference_image_id` / `max_results`. The old names bound nothing
+            # and raised TypeError on every call, which the `except Exception`
+            # below turned into a flat "search failed" — so this endpoint had
+            # never once succeeded. Same shape as #277.
             similarity_result = await self.material_kai_service.search_similar_images(
-                reference_image_id=reference_material_id,
+                query_image_id=reference_material_id,
                 similarity_threshold=similarity_threshold,
-                max_results=limit
+                limit=limit,
+                workspace_id=workspace_id,
             )
             
             if not similarity_result.get("success", False):

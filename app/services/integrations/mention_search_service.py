@@ -48,6 +48,8 @@ logger = logging.getLogger(__name__)
 
 
 PERPLEXITY_API = "https://api.perplexity.ai/chat/completions"
+from app.services.integrations import dataforseo_envelope
+
 DATAFORSEO_NEWS_API = "https://api.dataforseo.com/v3/serp/google/news/live/advanced"
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
 
@@ -393,6 +395,11 @@ class MentionSearchService:
                         )
                         resp.raise_for_status()
                         data = resp.json()
+                    # raise_for_status() only clears the HTTP layer. A rejected task
+                    # comes back 200 with a non-20000 body code, and the `tasks` walk
+                    # below then yields nothing — which logged as a clean zero-hit
+                    # search, identical to a query that really found none (#18 M5-8).
+                    dataforseo_envelope.assert_ok(data)
                     credits += 1
                 except Exception as e:
                     logger.warning(f"dataforseo_news: request '{query}' [{language_code}] failed: {e}")

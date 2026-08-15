@@ -28,6 +28,9 @@ PRICE_OP_CREDIT_COST: Dict[str, int] = {
     "refresh": 5,         # forced refresh (full discovery + verify)
     "lookup_search": 3,   # /lookup search-query mode (Perplexity + DataForSEO + Firecrawl verify)
     "lookup_url": 1,      # /lookup url mode (single Firecrawl scrape)
+    "verify": 2,          # on-demand re-verify of known URLs (Firecrawl only, no discovery)
+    "url_only": 1,        # pin one retailer URL + its first scrape
+    "market_check": 3,    # stateless market scan (Perplexity + optional Firecrawl verify)
 }
 
 

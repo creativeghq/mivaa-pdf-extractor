@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.services.integrations import dataforseo_envelope
 from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_dataforseo_labs_call, log_dataforseo_serp_call,
 )
@@ -184,6 +185,17 @@ class DataForSEOUnifiedClient:
             data = resp.json()
         except Exception as e:
             return DataForSEOResult(ok=False, error=f"json parse: {e}", latency_ms=elapsed)
+
+        # HTTP 2xx is not success. A rejected task returns 200 with a non-20000 body
+        # code and an empty `tasks` walk, which fell through to ok=True/items=[] --
+        # a caller cannot tell that from a query that genuinely matched nothing.
+        # #14 was believed to have fixed this here; it had not (#18 M5-8).
+        envelope_ok, envelope_reason = dataforseo_envelope.check(data)
+        if not envelope_ok:
+            self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed,
+                           success=False, error=envelope_reason)
+            return DataForSEOResult(ok=False, error=envelope_reason, raw=data,
+                                    status_code=resp.status_code, latency_ms=elapsed)
 
         items: List[Dict[str, Any]] = []
         cost = 0.0

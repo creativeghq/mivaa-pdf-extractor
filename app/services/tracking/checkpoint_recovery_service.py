@@ -43,6 +43,33 @@ class ProcessingStage(str, Enum):
     COMPLETED = "completed"
 
 
+class RestartOutcome(str, Enum):
+    """Why ``auto_restart_stuck_job`` stopped, so callers can tell the two
+    failures apart.
+
+    ``bool`` collapsed ``LOST_CLAIM`` and ``ERROR`` into one ``False``, and the
+    job monitor read that False as "restart failed" and marked the row failed.
+    LOST_CLAIM is the compare-and-swap working: another recovery tick, or the
+    worker itself waking up, got there first. Failing on it kills a job that is
+    alive and making progress (audit #18 M5-5).
+    """
+
+    RESTARTED = "restarted"      # we claimed the job and queued it for resume
+    LOST_CLAIM = "lost_claim"    # benign and expected — someone else has it
+    NO_CHECKPOINT = "no_checkpoint"  # nothing to resume from; already failed out
+    ERROR = "error"              # the restart genuinely broke
+
+    @property
+    def is_restarted(self) -> bool:
+        return self is RestartOutcome.RESTARTED
+
+    @property
+    def should_fail_the_job(self) -> bool:
+        """Only a real error warrants killing the job. NO_CHECKPOINT has already
+        failed the row itself inside auto_restart_stuck_job."""
+        return self is RestartOutcome.ERROR
+
+
 class CheckpointRecoveryService:
     """
     Service for checkpoint-based recovery of PDF processing jobs.
@@ -448,7 +475,7 @@ class CheckpointRecoveryService:
         self,
         job_id: str,
         expected_updated_at: Optional[str] = None,
-    ) -> bool:
+    ) -> RestartOutcome:
         """
         Automatically restart a stuck job from last checkpoint.
 
@@ -467,7 +494,8 @@ class CheckpointRecoveryService:
                 degrades to ``status == 'processing'``.
             
         Returns:
-            bool: True if restart initiated successfully
+            RestartOutcome: RESTARTED / LOST_CLAIM / NO_CHECKPOINT / ERROR. Callers
+            must NOT treat LOST_CLAIM as a failure — see the enum's docstring.
         """
         try:
             # Check if we can resume from checkpoint
@@ -479,7 +507,7 @@ class CheckpointRecoveryService:
                     job_id, "Stuck without valid checkpoint",
                     expected_updated_at=expected_updated_at,
                 )
-                return False
+                return RestartOutcome.NO_CHECKPOINT
             
             # Atomic claim: flip processing -> pending only if the row is still
             # exactly as observed. A losing racer matches zero rows and bails out
@@ -501,7 +529,7 @@ class CheckpointRecoveryService:
                     f"↻ Lost the restart claim for {job_id} (another recovery pass "
                     f"or the worker itself got there first) -- skipping"
                 )
-                return False
+                return RestartOutcome.LOST_CLAIM
             self.supabase_client.client.rpc("merge_background_job_metadata", {
                 "p_job_id": job_id,
                 "p_metadata": {
@@ -512,11 +540,11 @@ class CheckpointRecoveryService:
             }).execute()
             
             logger.info(f"🔄 Marked {job_id} for restart from {last_stage.value}")
-            return True
-            
+            return RestartOutcome.RESTARTED
+
         except Exception as e:
             logger.error(f"❌ Failed to restart stuck job {job_id}: {e}")
-            return False
+            return RestartOutcome.ERROR
     
     async def verify_checkpoint_data(self, job_id: str, stage: ProcessingStage) -> bool:
         """

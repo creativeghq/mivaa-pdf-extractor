@@ -12,12 +12,14 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Union, BinaryIO
 import aiohttp
+from urllib.parse import urlparse
 from pydantic import BaseModel, Field
 import base64
 import mimetypes
 from functools import wraps
 import random
 
+from app.utils.ssrf_guard import SSRFError, assert_safe_url
 from app.config import get_settings
 from app.utils.exceptions import MaterialKaiIntegrationError
 
@@ -176,7 +178,13 @@ class MaterialKaiService:
         self._is_connected = False
         self._last_sync = None
 
-        # Check if platform integration is enabled
+        # Check if platform integration is enabled. The URL is validated FIRST and
+        # the bridge stays disabled if it does not pass — every request from here
+        # carries `Authorization: Bearer <api_key>` and `X-Workspace-ID`, so a
+        # misconfigured or injected platform_url hands MIVAA's bridge credential to
+        # an arbitrary host and turns the bridge into an authenticated SSRF probe of
+        # whatever is reachable from the container (audit #18 M5-6).
+        self.platform_url = self._validated_platform_url(self.platform_url)
         self.platform_enabled = bool(self.platform_url and self.api_key)
 
         if self.platform_enabled:
@@ -184,6 +192,65 @@ class MaterialKaiService:
         else:
             logger.info("Material Kai platform integration disabled (no platform URL or API key configured)")
     
+    def _validated_platform_url(self, url: str) -> str:
+        """Return `url` if it is a safe bridge target, else "" (bridge stays off).
+
+        Fails CLOSED and at startup rather than per-request: a bridge that only
+        discovers its target is unsafe on the first credentialed call has already
+        sent the credential. Requirements:
+
+        * https only — the bearer token must not cross the wire in clear text
+        * no userinfo and no fragment — `https://user:pass@host` and `#frag` are
+          both signs the value came from somewhere it should not have
+        * host must resolve to a public address — the shared SSRF guard rejects
+          RFC1918, loopback, link-local and 169.254.169.254
+        * if MATERIAL_KAI_ALLOWED_HOSTS is set, the host must be one of them
+          exactly (no suffix matching: `evil-materialkai.com` must not pass a
+          `materialkai.com` allowlist)
+        """
+        if not url:
+            return ""
+
+        try:
+            parsed = urlparse(url)
+        except (ValueError, TypeError):
+            logger.error("Material Kai bridge disabled: platform_url is not a URL")
+            return ""
+
+        if parsed.scheme != "https":
+            logger.error(
+                "Material Kai bridge disabled: platform_url must be https, got %r",
+                parsed.scheme or "(none)",
+            )
+            return ""
+
+        if parsed.username or parsed.password or parsed.fragment:
+            logger.error(
+                "Material Kai bridge disabled: platform_url carries credentials or a fragment"
+            )
+            return ""
+
+        allowed = [
+            h.strip().lower()
+            for h in str(getattr(self.settings, "material_kai_allowed_hosts", "") or "").split(",")
+            if h.strip()
+        ]
+        if allowed and (parsed.hostname or "").lower() not in allowed:
+            logger.error(
+                "Material Kai bridge disabled: platform_url host %r is not in "
+                "MATERIAL_KAI_ALLOWED_HOSTS",
+                parsed.hostname,
+            )
+            return ""
+
+        try:
+            assert_safe_url(url, allow_schemes=("https",))
+        except SSRFError as e:
+            logger.error("Material Kai bridge disabled: platform_url is not a safe target: %s", e)
+            return ""
+
+        return url.rstrip("/")
+
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration from settings."""
         return {
@@ -855,7 +922,8 @@ class MaterialKaiService:
         query_image_id: str,
         limit: int = 10,
         similarity_threshold: float = 0.75,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Search for visually similar images in the platform.
@@ -865,6 +933,9 @@ class MaterialKaiService:
             limit: Maximum number of results to return
             similarity_threshold: Minimum similarity score
             filters: Additional search filters
+            workspace_id: Tenant to scope the search to. Falls back to the
+                service-level workspace only for MIVAA's own internal calls;
+                anything serving a user request must pass the caller's.
             
         Returns:
             Dict containing similar images and similarity scores
@@ -877,7 +948,7 @@ class MaterialKaiService:
                 "query_image_id": query_image_id,
                 "limit": limit,
                 "similarity_threshold": similarity_threshold,
-                "workspace_id": self.workspace_id,
+                "workspace_id": workspace_id or self.workspace_id,
                 "service_source": self.service_name,
                 "filters": filters or {},
                 "timestamp": datetime.utcnow().isoformat()

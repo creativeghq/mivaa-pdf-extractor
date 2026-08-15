@@ -424,49 +424,17 @@ def content_hash(canonical_url: str, title: Optional[str], company: Optional[str
 # Source 1 — DataForSEO Google Jobs
 # ────────────────────────────────────────────────────────────────────────────
 
+from app.services.integrations import dataforseo_envelope
+
 _DATAFORSEO_BASE = "https://api.dataforseo.com/v3"
 
 #: DataForSEO's "everything worked" code, at both the envelope and task level.
-_DFS_OK = 20000
+_DFS_OK = dataforseo_envelope.DFS_OK
 
-
-def _assert_dataforseo_ok(data: Optional[Dict[str, Any]]) -> None:
-    """Raise unless the DataForSEO envelope actually reports success.
-
-    HTTP 200 means "the API received your request", not "your request worked".
-    Auth failures, unknown locations and rejected tasks all come back 200 with
-    a non-20000 `status_code` in the body, and iterating `tasks` then yields
-    nothing — which the caller recorded as `hits_returned=0, success=True`,
-    identical to a query that genuinely matched nothing.
-
-    The task-based Google Jobs path in this same file already checks per-task
-    `status_code`; the live SERP path did not.
-    """
-    if not isinstance(data, dict):
-        raise RuntimeError("dataforseo returned a non-object body")
-
-    envelope_code = data.get("status_code")
-    if envelope_code is not None and envelope_code != _DFS_OK:
-        raise RuntimeError(
-            f"dataforseo envelope {envelope_code}: {data.get('status_message')}"
-        )
-
-    tasks_error = data.get("tasks_error")
-    if isinstance(tasks_error, int) and tasks_error > 0:
-        raise RuntimeError(f"dataforseo reported {tasks_error} failed task(s)")
-
-    tasks = data.get("tasks") or []
-    if not tasks:
-        # An empty task list is not an empty result set - a successful call
-        # always echoes at least the task it ran.
-        raise RuntimeError("dataforseo returned no tasks")
-
-    for task in tasks:
-        code = (task or {}).get("status_code")
-        if code is not None and code != _DFS_OK:
-            raise RuntimeError(
-                f"dataforseo task {code}: {(task or {}).get('status_message')}"
-            )
+#: This lived here as its own implementation until #18 M5-8 found the same defect a
+#: third time. The logic now lives in one module; this name stays as the local alias
+#: every call site in this file already uses.
+_assert_dataforseo_ok = dataforseo_envelope.assert_ok
 
 
 def _dfs_auth_header() -> Optional[str]:
@@ -576,7 +544,7 @@ async def search_via_dataforseo_jobs(
                         gd = get_resp.json() or {}
                         task0 = (gd.get("tasks") or [{}])[0]
                         sc = task0.get("status_code")
-                        if sc == 20000:
+                        if sc == _DFS_OK:
                             data = gd
                             break
                         if sc in (40602, 40100, 40101, 20100):

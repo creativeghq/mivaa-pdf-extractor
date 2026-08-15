@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional
 import httpx
 from pydantic import BaseModel
 
+from app.services.integrations import dataforseo_envelope
+
 logger = logging.getLogger(__name__)
 
 
@@ -208,8 +210,8 @@ class DataForSeoMerchantService:
                     get_json = get_resp.json()
                     got_task = (get_json.get("tasks") or [{}])[0]
                     status_code = int(got_task.get("status_code") or 0)
-                    # 20000 = OK, completed. 40602 = not ready yet.
-                    if status_code == 20000:
+                    # DFS_OK = completed. 40602 = not ready yet.
+                    if status_code == dataforseo_envelope.DFS_OK:
                         latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
                         hits, raw_count = self._parse_response(get_json, limit=limit)
                         cost_usd = float(get_json.get("cost") or post_json.get("cost") or 0.002)

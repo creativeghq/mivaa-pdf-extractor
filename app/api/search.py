@@ -1105,7 +1105,13 @@ async def find_similar_materials(
     material_id: str,
     similarity_threshold: float = Query(0.75, ge=0.0, le=1.0, description="Minimum similarity threshold"),
     limit: int = Query(20, ge=1, le=100, description="Maximum number of results"),
-    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
+    material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service),
+    # This route had no route-level gate at all: a caller-supplied material_id
+    # went straight into a service-role search. The JWT middleware proves the
+    # caller is *someone*, which is not authorization — MIVAA has no RLS
+    # backstop, so the tenant has to come from the verified JWT and scope the
+    # search (invariant 1 / 5, audit #18 M5-2).
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
 ) -> SuccessResponse:
     """
     Find materials similar to a reference material.
@@ -1121,7 +1127,8 @@ async def find_similar_materials(
         result = await material_search_service.search_similar_materials(
             reference_material_id=material_id,
             similarity_threshold=similarity_threshold,
-            limit=limit
+            limit=limit,
+            workspace_id=str(workspace_context.workspace_id),
         )
         
         if not result.get("success", False):

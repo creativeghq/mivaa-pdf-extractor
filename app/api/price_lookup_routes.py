@@ -45,6 +45,8 @@ router = APIRouter(
     },
 )
 
+# The lookup route's own path. Kept for documentation and tests only — it is
+# NOT what the scope check compares against; see authenticate_api_key.
 ENDPOINT_PATH = "/api/v1/prices/lookup"
 DEFAULT_RATE_LIMIT_PER_MIN = 60
 MAX_RATE_LIMIT_PER_MIN = 600
@@ -106,13 +108,23 @@ async def authenticate_api_key(
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key expired")
 
     # allowed_endpoints: None means allow-all. A non-empty list must include
-    # the lookup endpoint path (or a trailing-wildcard prefix match).
+    # the path of the route ACTUALLY being served (or a trailing-wildcard prefix
+    # match).
+    #
+    # This used to check the module constant ENDPOINT_PATH instead, which
+    # inverted scoping in both directions for every importer of this dependency
+    # (audit #18 M5-1). Four other route modules mount it —
+    # /api/v1/jobs/track, /api/v1/mentions/track, /api/v1/projects and
+    # /api/v1/prices/track, 54 routes in total — so a key scoped only to
+    # /api/v1/prices/lookup passed all of them, and a key scoped correctly to
+    # /api/v1/projects/* was rejected on every project route.
+    requested_path = request.url.path
     allowed = key.get("allowed_endpoints")
     if allowed:
-        if not _endpoint_allowed(ENDPOINT_PATH, allowed):
+        if not _endpoint_allowed(requested_path, allowed):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="This API key does not permit access to /api/v1/prices/lookup",
+                detail=f"This API key does not permit access to {requested_path}",
             )
 
     user_id = key.get("user_id")

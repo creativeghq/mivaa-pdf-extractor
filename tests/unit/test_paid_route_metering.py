@@ -109,3 +109,109 @@ def test_both_refresh_doors_agree_on_the_price():
         assert 'JOB_OP_CREDIT_COST.get("refresh"' in body, (
             f"{path.name} hard-codes a refresh price instead of reading JOB_OP_CREDIT_COST"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The monitoring modules — enumerated, not listed
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Everything above pins THREE doors by hand. That is why audit #18 M5-3 found
+# thirteen more entering Perplexity / DataForSEO / Firecrawl / LLM work with no
+# debit at all: they were outside a test whose reassuring name ("paid route
+# metering") is exactly why nobody looked.
+#
+# So this half does not name doors. It finds every route in the two monitoring
+# modules that reaches a paid operation and asserts each one meters — which means
+# a NEW paid door fails this test on the day it is written, without anyone
+# remembering to add it here.
+
+MONITORING_MODULES = [
+    ROOT / "app" / "api" / "price_monitoring_routes.py",
+    ROOT / "app" / "api" / "mention_monitoring_routes.py",
+]
+
+#: Calls that spend money at a provider. A route reaching one of these is a paid door.
+PAID_CALLS = (
+    ".refresh(",
+    ".reverify(",
+    ".probe(",
+    ".generate(",
+    ".search_prices(",
+    ".find_or_create_for_product(",
+    ".add_url_only(",
+)
+
+#: `find_or_create_for_product` is the one call above that is only SOMETIMES paid --
+#: enrolling a subject is free, running its first discovery sweep is not. Enrolment-only
+#: calls say so explicitly, so they are excised before a route is judged. Without this
+#: the sweep flags /start (enrol, no sweep) and reads the free auto-enrol at the top of
+#: mention's refresh/probe routes as spend that happens before the debit.
+_FREE_ENROLMENT = re.compile(
+    r"\.find_or_create_for_product\((?:[^()]|\([^()]*\))*run_first_refresh=False(?:[^()]|\([^()]*\))*\)"
+)
+
+#: The two ways a door may meter: a user wallet through the shared wrapper, or the
+#: cron meter for scheduled callers.
+METERS = ("metered_door(", "charge_cron(")
+
+
+def _routes(src: str):
+    """(decorator_line, body) for every @router.<verb> handler in the module."""
+    for m in re.finditer(r"^@router\.(get|post|put|patch|delete)\(", src, re.MULTILINE):
+        nxt = src.find("\n@router.", m.end())
+        yield src[m.start(): m.start() + src[m.start():].index("\n")], \
+            src[m.start(): nxt if nxt != -1 else len(src)]
+
+
+def _paid_doors():
+    for path in MONITORING_MODULES:
+        src = _read(path)
+        for decorator, body in _routes(src):
+            stripped = _FREE_ENROLMENT.sub("", _strip_comments(body))
+            if any(call in stripped for call in PAID_CALLS):
+                yield pytest.param(path, decorator, stripped,
+                                   id=f"{path.stem.split('_')[0]}:{decorator[8:60]}")
+
+
+@pytest.mark.parametrize("path, decorator, body", list(_paid_doors()))
+def test_every_monitoring_door_that_spends_money_meters_first(path, decorator, body):
+    meter_at = min((body.index(m) for m in METERS if m in body), default=-1)
+    assert meter_at != -1, (
+        f"{path.name} {decorator} reaches a paid provider call with no metering.\n"
+        "Wrap the call in `metered_door(...)` (user-triggered) or gate it on "
+        "`charge_cron(...)` (scheduled). Invariant 10: debit BEFORE the upstream call."
+    )
+
+    spend_at = min(body.index(c) for c in PAID_CALLS if c in body)
+    assert meter_at < spend_at, (
+        f"{path.name} {decorator} meters AFTER it spends. A caller with no credits still "
+        "burned the operator's provider budget."
+    )
+
+
+def test_the_paid_door_wrapper_refunds_at_most_once():
+    """The wrapper is what makes refunds idempotent — without it, a door that grows a
+    second refund branch hands the credit back twice, and an over-refund is as invisible
+    as an under-charge (#18 M5-3)."""
+    src = _read(ROOT / "app" / "utils" / "paid_door.py")
+    body = _strip_comments(src)
+    assert "_refunded" in body, "PaidWork no longer tracks whether it already refunded"
+    assert re.search(r"if self\._refunded[^\n]*:\s*\n\s*return", body), (
+        "PaidWork.refund() no longer short-circuits on a second call"
+    )
+
+
+def test_cron_metering_fails_closed_on_a_charge_failure():
+    """A cron is the highest-volume caller of these endpoints, so failing open converts a
+    billing outage into unbounded free provider spend across every scheduled run
+    (#18 M5-4). Invariant 10 is explicit: on debit failure, do not perform the work."""
+    body = _strip_comments(_read(ROOT / "app" / "services" / "integrations" / "cron_billing.py"))
+    assert "return True  # nothing returned -> fail open" not in body
+    assert not re.search(r"except Exception[^\n]*\n(?:[^\n]*\n){0,3}?\s*return True", body), (
+        "charge_cron returns True from its exception handler again — a failed charge "
+        "must skip the unit, not spend on the payer's behalf"
+    )
+    assert "_record_unmetered" in body, (
+        "an unmetered scheduled unit leaves no durable record, so it is indistinguishable "
+        "from a metered one by the time anyone looks (#17 M4-2)"
+    )

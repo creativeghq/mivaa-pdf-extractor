@@ -55,6 +55,10 @@ from app.services.integrations.llm_mention_probe_service import (
 )
 from app.services.integrations.mention_identity_service import SubjectFacets
 from app.services.integrations.cron_billing import charge_cron
+from app.services.integrations.mention_cost_logger import (
+    MENTION_OP_CREDIT_COST, debit_credits, refund_credits,
+)
+from app.utils.paid_door import metered_door
 from app.services.integrations.mention_opportunity_service import (
     get_mention_opportunity_service,
 )
@@ -251,23 +255,34 @@ async def track_product(
     if not aliases and (metadata.get("sku") or metadata.get("model")):
         aliases = [str(metadata.get("sku") or metadata.get("model"))]
 
-    row = await svc.find_or_create_for_product(
-        product_id=product_id,
-        product_name=product.get("name") or product_id,
-        brand_name=brand,
-        aliases=aliases,
-        auto_expand_aliases=(body.auto_expand_aliases if body else False),
+    # Only the first-refresh sweep costs money; enrolling without it is free (#18 M5-3).
+    run_first = (body.run_first_refresh if body else True)
+    async with metered_door(
         user_id=str(user.id),
         workspace_id=getattr(workspace, "workspace_id", None) if workspace else None,
-        country_codes=(body.country_codes if body else None) or [],
-        run_first_refresh=(body.run_first_refresh if body else True),
-    )
+        cost=MENTION_OP_CREDIT_COST["track"] if run_first else 0,
+        operation_type="mention_monitoring.track",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        row = await svc.find_or_create_for_product(
+            product_id=product_id,
+            product_name=product.get("name") or product_id,
+            brand_name=brand,
+            aliases=aliases,
+            auto_expand_aliases=(body.auto_expand_aliases if body else False),
+            user_id=str(user.id),
+            workspace_id=getattr(workspace, "workspace_id", None) if workspace else None,
+            country_codes=(body.country_codes if body else None) or [],
+            run_first_refresh=run_first,
+        )
+        if not row:
+            paid.refund("enrolment produced no tracked mention")
     # Apply alert prefs from body, if any
     if body:
         updates = body.model_dump(exclude_unset=True, exclude={"product_id", "subject_type", "subject_label", "brand_name", "run_first_refresh"})
         if updates:
             row = svc.update(row["id"], **updates) or row
-    return {"success": True, "data": row}
+    return {"success": True, "credits_debited": paid.charged, "data": row}
 
 
 @router.delete("/products/{product_id}/track")
@@ -323,8 +338,17 @@ async def refresh_product(
     force = bool(body.force) if body else False
     if force and not _is_admin(sb, str(user.id)):
         raise HTTPException(status_code=403, detail="force_refresh requires admin")
-    outcome = await svc.refresh(existing["id"], force=force)
-    return {"success": True, "data": outcome}
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=existing.get("workspace_id"),
+        cost=MENTION_OP_CREDIT_COST["refresh"],
+        operation_type="mention_monitoring.refresh",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        outcome = await svc.refresh(existing["id"], force=force)
+        if (outcome or {}).get("skipped") or (outcome or {}).get("error"):
+            paid.refund("refresh never reached a provider")
+    return {"success": True, "credits_debited": paid.charged, "data": outcome}
 
 
 @router.get("/products/{product_id}/feed")
@@ -429,12 +453,21 @@ async def probe_product_llm(
         tracked_mention_id=existing["id"],
         product_id=existing.get("product_id"),
     )
-    res = await get_llm_mention_probe_service().probe(
-        tracked_mention_id=existing["id"],
-        facets=facets,
-        models=(body.models if body else None),
-        attribution=probe_attribution,
-    )
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=existing.get("workspace_id"),
+        cost=MENTION_OP_CREDIT_COST["probe_llm"],
+        operation_type="mention_monitoring.probe_llm",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        res = await get_llm_mention_probe_service().probe(
+            tracked_mention_id=existing["id"],
+            facets=facets,
+            models=(body.models if body else None),
+            attribution=probe_attribution,
+        )
+        if not res:
+            paid.refund("the probe matrix returned nothing")
     # After probe, check for visibility-shift alerts
     try:
         snapshot = get_llm_mention_probe_service().visibility_snapshot(
@@ -547,12 +580,21 @@ async def refresh_tracked_mention(
     user: User = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _owner_row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
     force = bool(body.force) if body else False
     if force and not _is_admin(sb, str(user.id)):
         raise HTTPException(status_code=403, detail="force_refresh requires admin")
-    outcome = await get_tracked_mentions_service().refresh(tracked_mention_id, force=force)
-    return {"success": True, "data": outcome}
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=(_owner_row or {}).get("workspace_id"),
+        cost=MENTION_OP_CREDIT_COST["refresh"],
+        operation_type="mention_monitoring.refresh",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        outcome = await get_tracked_mentions_service().refresh(tracked_mention_id, force=force)
+        if (outcome or {}).get("skipped") or (outcome or {}).get("error"):
+            paid.refund("refresh never reached a provider")
+    return {"success": True, "credits_debited": paid.charged, "data": outcome}
 
 
 @router.get("/track/{tracked_mention_id}/feed")
@@ -627,13 +669,22 @@ async def probe_tracked_llm(
         tracked_mention_id=tracked_mention_id,
         product_id=row.get("product_id"),
     )
-    res = await get_llm_mention_probe_service().probe(
-        tracked_mention_id=tracked_mention_id,
-        facets=facets,
-        models=(body.models if body else None),
-        attribution=probe_attribution,
-    )
-    return {"success": True, "data": res}
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=row.get("workspace_id"),
+        cost=MENTION_OP_CREDIT_COST["probe_llm"],
+        operation_type="mention_monitoring.probe_llm",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        res = await get_llm_mention_probe_service().probe(
+            tracked_mention_id=tracked_mention_id,
+            facets=facets,
+            models=(body.models if body else None),
+            attribution=probe_attribution,
+        )
+        if not res:
+            paid.refund("the probe matrix returned nothing")
+    return {"success": True, "credits_debited": paid.charged, "data": res}
 
 
 @router.post("/track/{tracked_mention_id}/exclude")
@@ -756,14 +807,25 @@ async def get_product_opportunities(
         return {"success": True, "data": {"opportunities": [], "errors": {}},
                 "skipped": "module_disabled"}
     body = body or OpportunitiesRequest()
-    out = await get_mention_opportunity_service().generate(
-        tracked_mention_id=existing["id"],
-        types=body.types,
-        days=body.days,
-        limit_per_type=body.limit_per_type,
-        use_llm_summary=body.use_llm_summary,
-    )
-    return {"success": True, "data": out}
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=existing.get("workspace_id"),
+        cost=MENTION_OP_CREDIT_COST[
+            "opportunities_with_llm" if body.use_llm_summary else "opportunities"
+        ],
+        operation_type="mention_monitoring.opportunities",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        out = await get_mention_opportunity_service().generate(
+            tracked_mention_id=existing["id"],
+            types=body.types,
+            days=body.days,
+            limit_per_type=body.limit_per_type,
+            use_llm_summary=body.use_llm_summary,
+        )
+        if not (out or {}).get("opportunities"):
+            paid.refund("generated no opportunities")
+    return {"success": True, "credits_debited": paid.charged, "data": out}
 
 
 @router.post("/track/{tracked_mention_id}/opportunities")
@@ -774,7 +836,7 @@ async def get_tracked_opportunities(
 ):
     """Generate content + outreach opportunities for any tracked subject."""
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _owner_row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
     # A disabled module must not run paid discovery. The refresh routes below already gate
     # on this; these three did not, so `mention-monitoring` kept billing DataForSEO Labs
     # while switched off — 3 calls on 2026-08-02 alone, months after the toggle went false.
@@ -783,14 +845,25 @@ async def get_tracked_opportunities(
         return {"success": True, "data": {"opportunities": [], "errors": {}},
                 "skipped": "module_disabled"}
     body = body or OpportunitiesRequest()
-    out = await get_mention_opportunity_service().generate(
-        tracked_mention_id=tracked_mention_id,
-        types=body.types,
-        days=body.days,
-        limit_per_type=body.limit_per_type,
-        use_llm_summary=body.use_llm_summary,
-    )
-    return {"success": True, "data": out}
+    async with metered_door(
+        user_id=str(user.id),
+        workspace_id=(_owner_row or {}).get("workspace_id"),
+        cost=MENTION_OP_CREDIT_COST[
+            "opportunities_with_llm" if body.use_llm_summary else "opportunities"
+        ],
+        operation_type="mention_monitoring.opportunities",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        out = await get_mention_opportunity_service().generate(
+            tracked_mention_id=tracked_mention_id,
+            types=body.types,
+            days=body.days,
+            limit_per_type=body.limit_per_type,
+            use_llm_summary=body.use_llm_summary,
+        )
+        if not (out or {}).get("opportunities"):
+            paid.refund("generated no opportunities")
+    return {"success": True, "credits_debited": paid.charged, "data": out}
 
 
 # ============================================================================
@@ -1040,6 +1113,17 @@ async def opportunities_stateless(
         # did not pre-build one. Absent, every external call in this run logs with no tenant.
         "workspace_id": body.workspace_id,
     }
+    # Cron-authenticated, so it bills the subject's workspace through the shared
+    # cron meter rather than a user wallet — but it MUST still meter (#18 M5-3).
+    if not charge_cron(
+        sb, "mention_opportunities_stateless",
+        workspace_id=body.workspace_id,
+        units=1,
+        description="stateless opportunity generation",
+        subject={"subject_label": body.subject_label},
+    ):
+        return {"success": True, "data": {"opportunities": [], "errors": {}},
+                "skipped": "insufficient_credits"}
     out = await get_mention_opportunity_service().generate(
         subject_override=subject_override,
         types=body.types,

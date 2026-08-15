@@ -7,8 +7,19 @@ via debit_credits) or, when the subject has no workspace, the user's personal ba
   - False -> skip this subject (payer out of credits). The next cron tick re-charges and
              auto-resumes the moment the owner tops up.
 
-Fails OPEN on any error (missing payer, RPC failure) so metering can NEVER block or mis-charge
-scheduled work -- worst case it silently no-ops.
+FAILURE MODES ARE NOT THE SAME THING, and this used to treat them as one (audit #18 M5-4).
+
+  - No payer at all (subject has neither workspace nor user): proceeds. There is nobody to
+    bill; skipping would just stop the work forever. Recorded, not silent.
+  - The charge RPC failed, or returned nothing: SKIPS. Invariant 10 is explicit -- "on debit
+    failure, do not perform the work" -- and a cron is the highest-volume caller of these
+    endpoints, so failing open converts a billing outage into unbounded free provider spend
+    across every scheduled run. The next tick re-charges and auto-resumes, exactly as it does
+    for an out-of-credit payer, so a transient outage costs a delay and not a bill.
+
+Both non-charging outcomes leave a durable breadcrumb in `system_logs`, because "we could not
+meter this run" that exists only in a container log is indistinguishable from "we metered it"
+by the time anyone looks (#17 M4-2).
 """
 from __future__ import annotations
 
@@ -31,7 +42,8 @@ def charge_cron(
     """Charge one unit of a metered cron's work; return True to proceed, False to skip.
 
     Pass the RAW supabase client (e.g. ``service.supabase.client``). Workspace subjects bill the
-    workspace owner; workspace-less subjects bill ``user_id``. Fails OPEN on any error.
+    workspace owner; workspace-less subjects bill ``user_id``. Fails CLOSED when the charge
+    itself fails -- see the module docstring for why that is not the same as having no payer.
 
     ``subject`` is merged into ``credit_transactions.metadata`` so the charge can be attributed
     back to what it paid for -- e.g. ``{"tracked_job_id": "..."}``. Without it the ledger recorded
@@ -63,7 +75,10 @@ def charge_cron(
                 },
             ).execute()
         else:
-            return True  # no payer to bill -> free pass
+            # Nobody to bill. Proceed -- but say so, so an unbillable subject is a
+            # visible fact rather than an invisible one.
+            _record_unmetered(supabase_client, cron_key, "no_payer", subject)
+            return True
 
         data = getattr(res, "data", None)
         row: Any = None
@@ -72,8 +87,36 @@ def charge_cron(
         elif isinstance(data, dict):
             row = data
         if not row:
-            return True  # nothing returned -> fail open
+            # The RPC answered with nothing. We do not know whether the payer was
+            # charged, so we must not spend on their behalf.
+            _record_unmetered(supabase_client, cron_key, "empty_charge_response", subject)
+            return False
         return bool(row.get("allowed", True))
-    except Exception as e:  # noqa: BLE001 -- metering must never break the cron
-        logger.warning("[cron-billing] %s charge failed (failing open): %s", cron_key, e)
-        return True
+    except Exception as e:  # noqa: BLE001 -- a metering fault must not raise into the cron
+        logger.warning("[cron-billing] %s charge failed (skipping this unit): %s", cron_key, e)
+        _record_unmetered(supabase_client, cron_key, f"charge_error: {e}"[:300], subject)
+        return False
+
+
+def _record_unmetered(
+    supabase_client: Any,
+    cron_key: str,
+    reason: str,
+    subject: Optional[Dict[str, Any]],
+) -> None:
+    """Leave a durable trace that a scheduled unit was not metered.
+
+    Best-effort and never raises: this runs on the path that already failed, and a
+    logging failure must not be the thing that breaks the cron.
+    """
+    try:
+        supabase_client.table("system_logs").insert({
+            "level": "WARNING",
+            "logger_name": "cron_billing",
+            "message": f"cron unit not metered: {cron_key} ({reason})",
+            # `context`, not `metadata` — system_logs has no metadata column, and this
+            # insert is inside a bare except, so the wrong name would fail invisibly.
+            "context": {"cron_key": cron_key, "reason": reason, "subject": subject},
+        }).execute()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[cron-billing] could not record unmetered unit for %s: %s", cron_key, e)

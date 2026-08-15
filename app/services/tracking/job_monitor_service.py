@@ -14,11 +14,12 @@ Run as a background task in the FastAPI application.
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.tracking.checkpoint_recovery_service import (
-    checkpoint_recovery_service
+    RestartOutcome,
+    checkpoint_recovery_service,
 )
 from app.utils.query_metrics import track_query_performance
 
@@ -330,25 +331,47 @@ class JobMonitorService:
                     # claim -- two monitor ticks cannot both restart this job,
                     # and a job that resumed on its own since detection is left
                     # alone (audit #12 finding 2).
-                    success = await checkpoint_recovery_service.auto_restart_stuck_job(
+                    outcome = await checkpoint_recovery_service.auto_restart_stuck_job(
                         job_id, expected_updated_at=job.get("updated_at")
                     )
-                    
-                    if success:
+
+                    if outcome.is_restarted:
                         self.stats["jobs_restarted"] += 1
                         logger.info(f"✅ Restarted {job_id} from {last_stage.value}")
+                    elif outcome is RestartOutcome.LOST_CLAIM:
+                        # The CAS did its job: another recovery tick, or the worker
+                        # waking up on its own, holds this job. Leave it alone. This
+                        # branch used to call _mark_job_failed, so recovery killed
+                        # live jobs precisely when it behaved correctly (#18 M5-5).
+                        self.stats["jobs_left_to_owner"] = self.stats.get("jobs_left_to_owner", 0) + 1
+                        logger.info(
+                            f"↻ {job_id} is already claimed elsewhere — leaving it to its owner"
+                        )
+                    elif outcome.should_fail_the_job:
+                        await self._mark_job_failed(
+                            job_id, "Failed to restart from checkpoint",
+                            expected_updated_at=job.get("updated_at"),
+                        )
+                        self.stats["jobs_failed"] += 1
                     else:
-                        await self._mark_job_failed(job_id, "Failed to restart from checkpoint")
+                        # NO_CHECKPOINT - auto_restart_stuck_job already failed the
+                        # row itself, under its own CAS. Do not write it twice.
                         self.stats["jobs_failed"] += 1
                 else:
                     # Checkpoint data is invalid - cleanup and fail
                     await checkpoint_recovery_service.cleanup_invalid_checkpoints(job_id)
-                    await self._mark_job_failed(job_id, "Invalid checkpoint data")
+                    await self._mark_job_failed(
+                        job_id, "Invalid checkpoint data",
+                        expected_updated_at=job.get("updated_at"),
+                    )
                     self.stats["jobs_failed"] += 1
                     logger.warning(f"⚠️ Invalid checkpoint for {job_id} - marked as failed")
             else:
                 # No valid checkpoint - mark as failed
-                await self._mark_job_failed(job_id, "Stuck without valid checkpoint")
+                await self._mark_job_failed(
+                    job_id, "Stuck without valid checkpoint",
+                    expected_updated_at=job.get("updated_at"),
+                )
                 self.stats["jobs_failed"] += 1
                 logger.warning(f"⚠️ No valid checkpoint for {job_id} - marked as failed")
                 
@@ -357,13 +380,28 @@ class JobMonitorService:
             await self._mark_job_failed(job_id, f"Recovery error: {str(e)}")
             self.stats["jobs_failed"] += 1
     
-    async def _mark_job_failed(self, job_id: str, reason: str):
+    async def _mark_job_failed(
+        self,
+        job_id: str,
+        reason: str,
+        expected_updated_at: Optional[str] = None,
+    ):
         """
         Mark a job as failed and send Sentry alert.
+
+        The write is a compare-and-swap, not a blind update by id. It used to match
+        on ``id`` alone, so a job that started making progress again between
+        detection and this call was failed out from under its own live worker
+        (audit #18 M5-5) - the same shape checkpoint_recovery_service._mark_job_failed
+        already guards against.
 
         Args:
             job_id: Job ID to mark as failed
             reason: Reason for failure
+            expected_updated_at: The ``updated_at`` observed when the job was judged
+                stuck. The write lands only if the row still carries it. Omit only
+                when there is no observation to compare against; the claim then
+                degrades to ``status == 'processing'``.
         """
         try:
             # Get job details for Sentry context
@@ -411,8 +449,8 @@ class JobMonitorService:
                 except Exception as sentry_error:
                     logger.warning(f"Failed to send Sentry alert: {sentry_error}")
 
-            # Update job status in database
-            self.supabase_client.client.table("background_jobs")\
+            # Update job status in database - compare-and-swap, see docstring.
+            update = self.supabase_client.client.table("background_jobs")\
                 .update({
                     "status": "failed",
                     "error": reason,
@@ -420,7 +458,17 @@ class JobMonitorService:
                     "updated_at": datetime.utcnow().isoformat()
                 })\
                 .eq("id", job_id)\
-                .execute()
+                .eq("status", "processing")
+            if expected_updated_at:
+                update = update.eq("updated_at", expected_updated_at)
+            result = update.execute()
+
+            if not (result.data or []):
+                logger.info(
+                    f"↻ Did not fail {job_id}: it moved since it was observed "
+                    f"(reason would have been: {reason})"
+                )
+                return
 
             logger.info(f"❌ Marked job {job_id} as failed: {reason}")
         except Exception as e:
@@ -655,19 +703,26 @@ class JobMonitorService:
                 }
             
             # Restart
-            success = await checkpoint_recovery_service.auto_restart_stuck_job(job_id)
-            
-            if success:
+            outcome = await checkpoint_recovery_service.auto_restart_stuck_job(job_id)
+
+            if outcome.is_restarted:
                 return {
                     "success": True,
                     "message": f"Job restarted from {last_stage.value}",
                     "restart_stage": last_stage.value
                 }
-            else:
+            if outcome is RestartOutcome.LOST_CLAIM:
+                # Not an error to report as one: the job is alive and owned.
                 return {
                     "success": False,
-                    "error": "Failed to restart job"
+                    "outcome": outcome.value,
+                    "error": "Job is already being processed — nothing to restart"
                 }
+            return {
+                "success": False,
+                "outcome": outcome.value,
+                "error": "Failed to restart job"
+            }
                 
         except Exception as e:
             logger.error(f"❌ Force restart error: {e}", exc_info=True)

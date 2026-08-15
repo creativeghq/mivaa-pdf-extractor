@@ -683,6 +683,16 @@ class Settings(BaseSettings):
         default="",
         env="MATERIAL_KAI_API_KEY"
     )
+    material_kai_allowed_hosts: str = Field(
+        default="",
+        env="MATERIAL_KAI_ALLOWED_HOSTS",
+        description=(
+            "Comma-separated exact hostnames platform_url may point at. Empty means "
+            "'any public https host' — the URL is still https-only, credential-free "
+            "and SSRF-checked, but pinning the host is what stops a swapped config "
+            "value from walking off with the bridge bearer token (audit #18 M5-6)."
+        ),
+    )
     material_kai_workspace_id: str = Field(
         default=PLATFORM_DEFAULT_WORKSPACE_ID,
         env="MATERIAL_KAI_WORKSPACE_ID",

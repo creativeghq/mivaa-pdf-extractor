@@ -221,10 +221,19 @@ async def analyze_image(
         # Perform real analysis using Material Kai service
         _billed = await meter_operation(current_user, "image-analyze", "image_analyze")  # #250 H1
         try:
+            # The bridge takes (image_id, analysis_types, options). It was being
+            # called with `image_url=` and `confidence_threshold=`, neither of
+            # which it accepts, so every call raised TypeError, the `except`
+            # below refunded and served stale database rows, and the response
+            # still said success — this endpoint had never once run a vision
+            # model (audit #18, found by the widened kwargs guard).
             analysis_result = await material_kai.analyze_image(
-                image_url=image_url,
+                image_id=request.image_id or image_data.get("id", ""),
                 analysis_types=request.analysis_types,
-                confidence_threshold=request.confidence_threshold
+                options={
+                    "image_url": image_url,
+                    "confidence_threshold": request.confidence_threshold,
+                },
             )
             
             # Create proper metadata
@@ -345,9 +354,12 @@ async def analyze_batch_images(
                     _billed = await meter_operation(current_user, "image-analyze", "image_analyze_batch")
                     try:
                         analysis_result = await material_kai.analyze_image(
-                            image_url=img_data.get("image_url"),
+                            image_id=image_id,
                             analysis_types=request.analysis_types,
-                            confidence_threshold=request.confidence_threshold
+                            options={
+                                "image_url": img_data.get("image_url"),
+                                "confidence_threshold": request.confidence_threshold,
+                            },
                         )
 
                         # Create proper metadata

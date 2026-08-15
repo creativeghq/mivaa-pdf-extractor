@@ -313,6 +313,7 @@ def log_youtube_call(
 
 # Per-operation credit cost. Tunable.
 MENTION_OP_CREDIT_COST: Dict[str, int] = {
+    "track": 5,                  # enrol + synchronous first discovery sweep
     "refresh": 5,
     "probe_llm": 15,
     "opportunities": 2,
