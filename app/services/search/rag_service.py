@@ -2372,7 +2372,11 @@ class RAGService:
                 "confidence_score": confidence,
                 "sources": sources,
                 "retrieval_stats": {
-                    "total_chunks_retrieved": len(all_chunks),
+                    # The similarity floor is applied inside search_rag_context_chunks
+                    # now, so there is no separate pre-filter population to count.
+                    # Both keys are kept because callers read them, and both report the
+                    # same honest number rather than inventing a wider one.
+                    "total_chunks_retrieved": len(filtered_chunks),
                     "chunks_after_filtering": len(filtered_chunks),
                     "similarity_threshold": similarity_threshold,
                     "average_score": avg_score
