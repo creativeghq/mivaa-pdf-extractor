@@ -1221,14 +1221,11 @@ async def discover_local_job_boards(
     if not api_key:
         return []
     role = ", ".join([k for k in (keywords or []) if k][:6]) or "professional"
-    prompt = (
-        f"Roles being searched: {role}.\n"
-        f"Location: {where}.\n\n"
-        f"List up to {limit} job-board / careers-website DOMAINS where such roles in this "
-        f"location are most commonly posted. PRIORITISE local / national boards for the "
-        f"country (for Greece e.g. kariera.gr, skywalker.gr, jobfind.gr, careernet.gr, "
-        f"randstad.gr) over global ones. Return BARE domains only — no https://, no path. "
-        f"Only real, well-known boards. NEVER invent a domain."
+    prompt = render(
+        await load_prompt("extraction", "job_board_domains", stage="job_research"),
+        role=role,
+        where=where,
+        limit=limit,
     )
     headers = {
         "x-api-key": api_key,
@@ -1358,33 +1355,15 @@ async def search_via_perplexity(
     # sequential/palindromic IDs) catch fabricated entries; more headroom lets
     # Sonar surface 2-3 real listings per call instead of stopping at 1-2.
     capped_limit = min(limit, 7)
-    user_prompt = (
-        f"Find INDIVIDUAL JOB POSTINGS for: {keyword_str} {location_clause}. "
-        f"{remote_clause} {seniority_clause} "
-        f"Exclude: {excl_kw} {excl_co}. "
-        f"\n\n"
-        f"⚠️ CRITICAL ANTI-HALLUCINATION RULES — DO NOT VIOLATE:\n"
-        f"  - ONLY return URLs you have ACTUALLY found through search. NEVER guess, infer,\n"
-        f"    or invent a URL/job-ID/company-name that you have not verified.\n"
-        f"  - Return EVERY real posting you find — aim for {capped_limit}. Omit one ONLY if\n"
-        f"    you cannot verify it exists. Do not pad, but do NOT stop early either.\n"
-        f"  - NEVER use placeholder company names like 'Acme Inc.', 'CompanyXYZ',\n"
-        f"    'Example Co.', 'Sample Corp', '[Company Name]', or any obvious placeholder.\n"
-        f"    If you don't know the company, leave the field blank rather than inventing one.\n"
-        f"  - NEVER fabricate sequential or palindromic numeric IDs in URLs. Real IDs are\n"
-        f"    typically large random-looking integers or hashes.\n"
-        f"\n"
-        f"URL FILTER — each result must be a SPECIFIC JOB AD, not a listing page:\n"
-        f"  ✅ ACCEPT: URLs that resolve to ONE position with title + company + apply CTA.\n"
-        f"     Examples: linkedin.com/jobs/view/<id>, indeed.com/viewjob?jk=<hash>,\n"
-        f"     glassdoor.com/job-listing/<slug>-JV_<id>.htm, <co>.greenhouse.io/jobs/<id>,\n"
-        f"     <co>.lever.co/<job-id>, weworkremotely.com/remote-jobs/<id>-<slug>.\n"
-        f"  ❌ REJECT: search-results pages, /q- paths, /search paths, /SRCH paths,\n"
-        f"     category landing pages, 'X jobs in Y' aggregator pages.\n"
-        f"\n"
-        f"Return UP TO {capped_limit} verified postings as JSON, posted within the last 30 days. "
-        f"Set `company` to the actual hiring employer (NEVER 'Indeed'/'Glassdoor' or a placeholder); "
-        f"leave blank if unknown."
+    user_prompt = render(
+        await load_prompt("extraction", "job_posting_search", stage="job_research"),
+        keyword_str=keyword_str,
+        location_clause=location_clause,
+        remote_clause=remote_clause,
+        seniority_clause=seniority_clause,
+        excl_kw=excl_kw,
+        excl_co=excl_co,
+        capped_limit=capped_limit,
     )
 
     # v0.4: load the operator-curated list from job_research_sites (editable in the
@@ -1573,22 +1552,14 @@ async def search_via_firecrawl_careers(
         # sent-ledger dedup means an overlapping window never double-delivers.
         if recent_days and recent_days > 0:
             _TOP_N_UNDATED = 30
-            _EXTRACT_PROMPT = (
-                f"Extract only the MOST RECENT job postings on this careers / job-board page — "
-                f"those posted within the last {recent_days} days. Job boards list newest first, so: "
-                f"if the page shows posting dates, return ONLY postings from the last {recent_days} days; "
-                f"if NO posting dates are shown, return the FIRST {_TOP_N_UNDATED} postings at the top of "
-                f"the list (these are the newest). Do NOT extract the entire archive or older postings. "
-                f"For each posting return: url (the direct link to that specific job), title, company, "
-                f"location, and when shown employment_type, seniority, posted_at, and whether it is remote."
+            _EXTRACT_PROMPT = render(
+                await load_prompt("extraction", "job_page_recent", stage="job_research"),
+                recent_days=recent_days,
+                top_n_undated=_TOP_N_UNDATED,
             )
         else:
-            _EXTRACT_PROMPT = (
-                "Extract EVERY job posting listed on this careers / job-board page. "
-                "For each posting return: url (the direct link to that specific job), "
-                "title, company, location, and when shown employment_type, seniority, "
-                "posted_at, and whether it is remote. Return ALL postings on the page, "
-                "not just the first few."
+            _EXTRACT_PROMPT = await load_prompt(
+                "extraction", "job_page_all", stage="job_research"
             )
 
         def _body(wait_ms: int) -> Dict[str, Any]:
@@ -1715,6 +1686,7 @@ async def search_via_firecrawl_careers(
 # fromstring + ParseError surface); feeds never carry a legitimate DTD.
 import defusedxml.ElementTree as _ET
 from datetime import datetime, timezone
+from app.services.utilities.prompt_registry import load_prompt, render
 
 
 def _strip_html(s: str) -> str:

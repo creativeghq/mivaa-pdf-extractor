@@ -18,6 +18,7 @@ from app.schemas.suggestions import (
 from app.utils.text_similarity import calculate_string_similarity
 from app.utils.postgrest_filters import escape_like
 from app.utils.exceptions import TenancyViolation
+from app.services.utilities.prompt_registry import load_prompt, render
 
 logger = logging.getLogger(__name__)
 
@@ -513,13 +514,10 @@ class SearchSuggestionsService:
                     from app.services.core.ai_client_service import get_ai_client_service
                     get_ai_client_service()
 
-                    prompt = f"""Given the search query "{query}" for a materials database, suggest:
-1. 5-10 semantically related terms
-2. 3-5 broader concepts
-3. 3-5 narrower/specific terms
-
-Focus on materials, textures, colors, patterns, and applications.
-Return as JSON: {{"related": [], "broader": [], "narrower": []}}"""
+                    prompt = render(
+                        await load_prompt("extraction", "search_query_expansion", stage="search"),
+                        query=query,
+                    )
 
                     from app.services.core.claude_helper import tracked_claude_call_async
                     response = await tracked_claude_call_async(

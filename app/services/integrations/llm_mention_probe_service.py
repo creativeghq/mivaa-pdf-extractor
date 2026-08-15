@@ -35,6 +35,7 @@ from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_llm_probe_call, log_haiku_call,
     recompute_lifetime_cost,
 )
+from app.services.utilities.prompt_registry import load_prompt, render
 
 logger = logging.getLogger(__name__)
 
@@ -428,6 +429,12 @@ class LlmMentionProbeService:
         if not self.anthropic_key:
             return self._extract_deterministic(response_text, facets)
 
+        # Loaded before the request dict is assembled — the prompt sits several levels
+        # deep inside it, where an await would be awkward (audit #14 MV-2).
+        _MENTION_PROBE_PROMPT = await load_prompt(
+            "classification", "llm_mention_probe", stage="mention_monitoring"
+        )
+
         call_start = time.time()
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
@@ -459,14 +466,12 @@ class LlmMentionProbeService:
                         "tool_choice": {"type": "tool", "name": "record_mention"},
                         "messages": [{
                             "role": "user",
-                            "content": (
-                                f"Subject we are tracking: {facets.label}\n"
-                                f"Aliases: {', '.join(facets.aliases[:5])}\n"
-                                f"Brand (if any): {facets.brand or '(none)'}\n\n"
-                                f"Model response to analyze:\n{response_text[:4000]}\n\n"
-                                "Determine: was the subject mentioned? At what rank (1-based) in any "
-                                "list? Sentiment of the surrounding context? Other brands mentioned in "
-                                "the same answer (competitors). One short context snippet."
+                            "content": render(
+                                _MENTION_PROBE_PROMPT,
+                                label=facets.label,
+                                aliases=", ".join(facets.aliases[:5]),
+                                brand=facets.brand or "(none)",
+                                response_text=response_text[:4000],
                             ),
                         }],
                     },

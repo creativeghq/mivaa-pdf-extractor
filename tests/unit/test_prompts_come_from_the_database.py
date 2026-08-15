@@ -47,33 +47,6 @@ _MODEL_ARGS = frozenset({"messages", "system", "prompt", "input", "contents"})
 _MIN_PROMPT_CHARS = 220
 
 
-#: MIGRATION RATCHET — shrink-only, and DELETED (not emptied) when it reaches zero.
-#:
-#: Widening this guard (audit #14 MV-2) turned up 16 hardcoded prompts, not the 2 the
-#: audit named. They did not regress: 2 lived in a file the guard never opened
-#: (perplexity_price_search_service has no Anthropic marker) and 14 were skipped by the
-#: old `>= 2 hints` filter — EIGHT of them hitting zero hints. The prompts-from-the-
-#: database migration covered exactly what the guard could see, and the guard saw less
-#: than anyone believed. The test reported all-clear the whole time.
-#:
-#: Each entry is a prompt still to move. A file:line pair here is a promise, not a
-#: permanent exemption: the count may only fall, which `test_the_ratchet_only_shrinks`
-#: enforces. Do NOT add to this list — a NEW hardcoded prompt must fail the build.
-_MIGRATION_RATCHET = frozenset({
-    "app/api/sam_routes.py",
-    "app/services/integrations/job_search_service.py",
-    "app/services/integrations/llm_mention_probe_service.py",
-    "app/services/integrations/mention_opportunity_service.py",
-    "app/services/products/product_enrichment_service.py",
-    "app/services/products/product_relationship_service.py",
-    "app/services/search/search_prompt_service.py",
-    "app/services/search/search_suggestions_service.py",
-})
-
-#: How many offenders those files still hold. Falls to 0, then both go.
-_RATCHET_COUNT = 12
-
-
 def _sources():
     for path in sorted(_APP.rglob("*.py")):
         yield path, path.read_text(encoding="utf-8")
@@ -214,45 +187,13 @@ def test_no_prompt_is_hardcoded():
                 f"({len(text)} chars) {' '.join(text.split())[:60]!r}"
             )
 
-    remaining = [o for o in offenders
-                 if o.split(":")[0] in _MIGRATION_RATCHET]
-    fresh = [o for o in offenders if o not in remaining]
-
-    assert fresh == [], (
+    assert offenders == [], (
         "a prompt is hardcoded in a file that calls a model:\n  " + "\n  ".join(offenders)
         + "\n\nPrompts live in the `prompts` table (#347 phase 3P). Load with "
           "`prompt_registry.load_prompt(...)`, or `get_cached(...)` at a sync site whose async "
           "entry point called `prefetch(...)`. Seed the row before deleting the literal."
     )
 
-
-
-def test_the_ratchet_only_shrinks():
-    """The migration ratchet is a promise that the count falls. If it rises, a new
-    hardcoded prompt was added to a file that already had one — which the offender
-    check above cannot see, because that file is on the list."""
-    offenders = []
-    for path, src in _sources():
-        if not any(m in src for m in _LLM_MARKERS):
-            continue
-        try:
-            tree = ast.parse(src)
-        except SyntaxError:  # pragma: no cover
-            continue
-        for node, _text in _prompt_literals(tree):
-            offenders.append(f"{path.relative_to(_ROOT).as_posix()}:{node.lineno}")
-
-    still_listed = [o for o in offenders if o.split(":")[0] in _MIGRATION_RATCHET]
-    assert len(still_listed) <= _RATCHET_COUNT, (
-        f"{len(still_listed)} hardcoded prompts remain but the ratchet says "
-        f"{_RATCHET_COUNT}. The list is shrink-only — a new prompt belongs in the "
-        "`prompts` table, not here."
-    )
-    assert len(still_listed) == _RATCHET_COUNT, (
-        f"{len(still_listed)} remain and the ratchet still says {_RATCHET_COUNT}. "
-        "Lower _RATCHET_COUNT (and drop the file from _MIGRATION_RATCHET when it hits "
-        "zero) so the next migration cannot silently stall."
-    )
 
 
 def test_no_loader_falls_back_to_code():

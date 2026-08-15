@@ -26,6 +26,7 @@ from app.services.core.supabase_client import get_supabase_client
 from app.utils.ssrf_guard import assert_safe_url, SSRFError
 from app.dependencies import get_current_user, resolve_workspace_id
 from app.utils.credit_metering import meter_operation as _meter, refund_operation as _refund
+from app.services.utilities.prompt_registry import load_prompt, render
 
 logger = logging.getLogger(__name__)
 
@@ -527,11 +528,11 @@ async def generate_inpainting_prompt(request: GeneratePromptRequest, user: Dict[
             ctx_parts.append(f"finish: {request.zone_context['finish']}")
     ctx_note = f" ({', '.join(ctx_parts)})" if ctx_parts else ""
 
-    user_message = (
-        f"Write a technical inpainting prompt for FLUX Fill Pro to replace a {request.zone_label}{ctx_note} "
-        f"in a photorealistic interior scene with the following look:\n\"{request.description}\"\n\n"
-        "Include: material physics, perspective cues, lighting response (glossy/matte), seamless blending. "
-        "Max 80 words. Return only the prompt text."
+    user_message = render(
+        await load_prompt("extraction", "inpaint_prompt_writer", stage="image_analysis"),
+        zone_label=request.zone_label,
+        ctx_note=ctx_note,
+        description=request.description,
     )
 
     from app.services.core.claude_helper import tracked_claude_call

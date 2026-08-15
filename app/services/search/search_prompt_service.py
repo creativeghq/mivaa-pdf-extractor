@@ -13,6 +13,7 @@ import json
 
 from app.services.utilities.unified_prompt_service import UnifiedPromptService
 from app.services.core.ai_client_service import get_ai_client_service
+from app.services.utilities.prompt_registry import load_prompt, render
 
 logger = logging.getLogger(__name__)
 
@@ -433,14 +434,12 @@ class SearchPromptService:
                     max_tokens=1024,
                     messages=[{
                         "role": "user",
-                        "content": (
-                            f"{prompt_text}\n\n"
-                            f"Results to enrich (JSON):\n{json.dumps(items)}\n\n"
-                            "Return a JSON array where each item has 'index' and 'enrichment' "
-                            "(an object with any additional fields to add). "
-                            "Example: [{\"index\": 0, \"enrichment\": {\"ai_summary\": \"...\"}}]. "
-                            "Return ONLY the JSON array."
-                        )
+                        "content": render(
+                            await load_prompt("extraction", "search_result_enrichment",
+                                              stage="search"),
+                            prompt_text=prompt_text,
+                            items=json.dumps(items),
+                        ),
                     }],
                 )
                 raw = response.content[0].text.strip()

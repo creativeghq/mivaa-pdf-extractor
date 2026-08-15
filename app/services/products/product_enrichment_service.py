@@ -29,6 +29,7 @@ from app.services.ai_validation.real_quality_scoring_service import RealQualityS
 
 # Anthropic shim (httpx-backed, no SDK dependency)
 from app.services.core.ai_client_service import get_ai_client_service
+from app.services.utilities.prompt_registry import load_prompt, render
 
 
 class ProductEnrichmentService:
@@ -236,29 +237,18 @@ class ProductEnrichmentService:
                 self.logger.warning("Anthropic client not available, using basic description")
                 return product_data.get('description', '')
             
-            prompt = f"""Based on the following product information, generate a compelling and detailed product description:
-
-PRODUCT NAME: {product_data.get('name', 'Unknown')}
-CURRENT DESCRIPTION: {product_data.get('description', 'N/A')}
-
-MATERIAL PROPERTIES:
-- Colors: {', '.join(material_properties.get('colors', []))}
-- Finishes: {', '.join(material_properties.get('finishes', []))}
-- Patterns: {', '.join(material_properties.get('patterns', []))}
-- Textures: {', '.join(material_properties.get('textures', []))}
-- Materials: {', '.join(material_properties.get('materials', []))}
-
-IMAGE ANALYSIS:
-{json.dumps(image_analysis, indent=2)[:500]}
-
-Generate a professional, engaging product description that:
-1. Highlights the key material properties
-2. Emphasizes design and aesthetic qualities
-3. Mentions practical applications
-4. Is 150-300 words long
-5. Uses professional language suitable for a design catalog
-
-RESPOND WITH ONLY THE DESCRIPTION, NO ADDITIONAL TEXT."""
+            prompt = render(
+                await load_prompt("extraction", "product_description_writer",
+                                  stage="entity_creation"),
+                product_name=product_data.get('name', 'Unknown'),
+                current_description=product_data.get('description', 'N/A'),
+                colors=', '.join(material_properties.get('colors', [])),
+                finishes=', '.join(material_properties.get('finishes', [])),
+                patterns=', '.join(material_properties.get('patterns', [])),
+                textures=', '.join(material_properties.get('textures', [])),
+                materials=', '.join(material_properties.get('materials', [])),
+                image_analysis=json.dumps(image_analysis, indent=2)[:500],
+            )
 
             from app.services.core.claude_helper import tracked_claude_call
             response = tracked_claude_call(

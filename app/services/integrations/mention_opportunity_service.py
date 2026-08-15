@@ -46,6 +46,7 @@ from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_dataforseo_labs_call, log_dataforseo_serp_call,
     log_haiku_call, recompute_lifetime_cost,
 )
+from app.services.utilities.prompt_registry import load_prompt, render
 
 logger = logging.getLogger(__name__)
 
@@ -2032,19 +2033,15 @@ class MentionOpportunityService:
         # Send up to 12 opportunities at once, ask Haiku to rewrite rationale
         # and suggested_action in tighter, more actionable language.
         batch = ops[:12]
-        prompt = f"""Polish each opportunity below into more actionable, concrete language.
-Return ONLY a JSON array, same length, each entry: {{"rationale": "...", "suggested_action": "..."}}.
-Keep rationale ≤ 240 chars, suggested_action ≤ 160 chars. No prose, no markdown.
-
-Subject: {subject.get('subject_label')}
-Brand: {subject.get('brand_name') or '(none)'}
-
-Opportunities:
-{json.dumps([{
-    "type": o.type, "title": o.title,
-    "rationale": o.rationale, "suggested_action": o.suggested_action,
-} for o in batch], ensure_ascii=False)}
-"""
+        prompt = render(
+            await load_prompt("extraction", "opportunity_polish", stage="mention_monitoring"),
+            subject_label=subject.get('subject_label'),
+            brand_name=subject.get('brand_name') or '(none)',
+            opportunities_json=json.dumps([{
+                "type": o.type, "title": o.title,
+                "rationale": o.rationale, "suggested_action": o.suggested_action,
+            } for o in batch], ensure_ascii=False),
+        )
         call_start = time.time()
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
