@@ -1993,7 +1993,6 @@ from app.api.search import router as search_router
 from app.api.images import router as images_router
 from app.api.admin import router as admin_router
 from app.api.rag_routes import router as rag_router
-from app.api.documents import management_router  # query_router removed 2026-08-09 and upload_router 2026-05-23 — both were dead-code duplicates of rag_routes.py handlers
 from app.api.anthropic_routes import router as anthropic_router
 from app.api.products import router as products_router
 from app.api.document_entities import router as document_entities_router
@@ -2039,13 +2038,20 @@ app.include_router(search_router)
 app.include_router(images_router)
 app.include_router(admin_router)
 app.include_router(rag_router)
-# upload_router removed 2026-05-23 — was unreachable duplicate of rag_router's
-# `/documents/upload` handler (FastAPI keeps the first-registered route).
-# query_router removed 2026-08-09 for the same reason: its /query, /chat and /search
-# were all declared in rag_routes.py too, and rag_router is included ABOVE this line,
-# so they never served a request — but they did define the published OpenAPI for
-# /api/rag/search, which is why the docs showed no `aspect` field (#277).
-app.include_router(management_router, prefix="/api/rag")  # NEW: Refactored management routes (job status, content, AI tracking)
+# NOTHING from app.api.documents is registered here, deliberately. Three routers have
+# now been removed from that package for one repeating reason: they were mounted into
+# rag_router's namespace and rag_router is included ABOVE this line, so FastAPI (first
+# registration wins) served the rag_routes handler and never theirs.
+#   upload_router  removed 2026-05-23 — duplicate of `/documents/upload`.
+#   query_router   removed 2026-08-09 — /query, /chat, /search. Unreachable, but they
+#                  still defined the published OpenAPI for /api/rag/search, which is
+#                  why the docs showed no `aspect` field (#277).
+#   management_router removed 2026-08-15 (#15 MV2-11) — 10 handlers, ALL ungated,
+#                  two of them destructive (DELETE a job, restart a job). Same
+#                  last-write-wins OpenAPI problem, now on a delete endpoint: the
+#                  published contract said no auth was required.
+# Adding a router here again re-creates the bug. Routes under /api/rag go in
+# rag_routes.py, next to the gates.
 app.include_router(anthropic_router)
 app.include_router(products_router)
 app.include_router(document_entities_router) 

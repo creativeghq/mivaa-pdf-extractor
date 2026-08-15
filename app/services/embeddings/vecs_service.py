@@ -24,10 +24,32 @@ from app.services.search.weight_profiles import image_only_weights
 logger = logging.getLogger(__name__)
 
 
+def _is_page_space_model(model: Optional[str]) -> bool:
+    """Does this model name identify the voyage-MULTIMODAL page space?
+
+    Deliberately a name test rather than an allow-list of exact versions: the page
+    collection is written by `_settings.voyage_multimodal_model`, which moves
+    (voyage-multimodal-3 → -3.5 → next), and an exact list would start rejecting the
+    CORRECT model the day that setting is bumped — a guard that fails closed on the
+    right answer gets deleted by the next person in a hurry. "multimodal" is exactly
+    the property that matters: it is what separates this space from voyage-4 text,
+    which is the only vector anyone would plausibly pass here by mistake.
+    """
+    return bool(model) and "multimodal" in str(model).lower()
+
+
 class VecsService:
     """Service for managing vector embeddings using Supabase vecs library."""
 
     _instance = None
+
+    #: The four aspect collections (color / texture / style / material) are Voyage
+    #: 1024D, full stop. Declared as a constant rather than derived per call because
+    #: a dimension that is inferred from the input is not a contract — it is whatever
+    #: the caller happened to send, which is how the removed `*_slig_768` space stayed
+    #: writable long after every reader dropped it. See the check in
+    #: `store_specialized_embeddings`.
+    ASPECT_DIMENSION = 1024
 
     def __init__(self):
         """Initialize VECS client with Supabase connection."""
@@ -381,18 +403,31 @@ class VecsService:
             "material": "image_material_embeddings"
         }
 
-        # Derive dimension from the first non-empty embedding. The 4 vectors
-        # are always the same dim (all 768 SLIG OR all 1024 Voyage — never
-        # mixed in a single call) so one peek is enough. If all 4 are empty,
-        # fall back to 1024 (the post-migration shape) so vecs.collection
-        # creation doesn't fail on the lookup before we know we have nothing
-        # to write.
-        derived_dim: Optional[int] = None
-        for emb in embeddings.values():
-            if emb:
-                derived_dim = len(emb)
-                break
-        if derived_dim is None:
+        # MV2-8: the four aspect collections are contractually 1024D Voyage, and the
+        # legacy `*_slig_768` aspect keys were REMOVED — no consumer accepts them. This
+        # used to derive the dimension from whatever arrived (`derived_dim = len(emb)`,
+        # commented "768 legacy SLIG or 1024 Voyage"), which meant a 768D vector would
+        # CREATE a 768D aspect collection in any fresh or partially-migrated environment
+        # and set the presence flags for it. That is the removed space quietly kept
+        # alive by the write path, and nothing raises: a 768D vector is a perfectly
+        # valid list of floats.
+        #
+        # Reject instead of coerce. There is no correct way to turn a SLIG vector into a
+        # Voyage one, and writing it into a 1024D collection would be the fallback-
+        # embedder mistake wearing a different hat — same shape, different space.
+        for aspect_name, emb in embeddings.items():
+            if emb and len(emb) != self.ASPECT_DIMENSION:
+                logger.error(
+                    f"❌ Aspect '{aspect_name}' for image {image_id} is {len(emb)}D, expected "
+                    f"{self.ASPECT_DIMENSION}D (Voyage). Refusing to store — a wrong-space "
+                    f"vector is accepted and ranked by pgvector instead of raising."
+                )
+                for collection_name in collection_mapping.values():
+                    results[collection_name] = False
+                return results
+
+        derived_dim: Optional[int] = self.ASPECT_DIMENSION
+        if not any(embeddings.values()):
             logger.debug(f"⏭️ All aspect embeddings empty for image {image_id} — nothing to upsert")
             for collection_name in collection_mapping.values():
                 results[collection_name] = False
@@ -676,6 +711,8 @@ class VecsService:
     async def search_page_embeddings(
         self,
         query_embedding: List[float],
+        *,
+        embedding_model: str,
         limit: int = 10,
         workspace_id: Optional[str] = None,
         document_id: Optional[str] = None,
@@ -683,12 +720,39 @@ class VecsService:
     ) -> List[Dict[str, Any]]:
         """Search page embeddings. Query must come from the SAME multimodal model.
 
+        MV2-7: `embedding_model` is REQUIRED and keyword-only, and it is checked. This
+        used to be a docstring sentence over an untyped `List[float]` — the invariant
+        held only because the single caller happened to be right. `page_embeddings` is
+        the one collection in a different latent space from everything else in this
+        service, and voyage-4 and voyage-multimodal are BOTH 1024D, so a wrong-space
+        query is accepted by the collection and returns confidently-scored nonsense
+        instead of raising. A guard on the PRODUCER (`test_page_embeddings`) cannot see
+        that; the hazard is at the boundary, so the check belongs at the boundary. The
+        second caller was always the risk, and this is what a second caller now hits.
+
         Inherits the Phase-0 read invariant (0.1): no workspace/document filter means
         no results. Fails closed, and loudly — an unfiltered vector search is the
         cheapest possible cross-tenant leak, and returning [] makes the bug show up as
         "search found nothing" instead of "search found someone else's catalog".
         """
         try:
+            if not _is_page_space_model(embedding_model):
+                logger.error(
+                    f"search_page_embeddings called with a vector from '{embedding_model}', "
+                    f"which is not a multimodal page-space model. Refusing — the collection "
+                    f"would ACCEPT this vector (same 1024 dimensions) and rank it against "
+                    f"pages it shares no space with. Build it with "
+                    f"generate_page_query_embedding()."
+                )
+                return []
+
+            if len(query_embedding) != self.PAGE_DIMENSION:
+                logger.error(
+                    f"search_page_embeddings got a {len(query_embedding)}D query; "
+                    f"the collection is {self.PAGE_DIMENSION}D"
+                )
+                return []
+
             if not workspace_id and not document_id:
                 logger.error(
                     "search_page_embeddings called without workspace_id/document_id - "
@@ -962,10 +1026,23 @@ class VecsService:
                 logger.error(f"{embedding_type} aspect search called without workspace_id — refusing (returning empty)")
                 return []
 
+            # MV2-8, read side. Auto-detecting the dimension from the QUERY is worse than
+            # on the write side: a 768D query would create (or hit) a 768D collection and
+            # return confident matches out of a space nothing writes to any more, which
+            # reads to the caller as "search worked, few results" rather than as an error.
+            if len(query_embedding) != self.ASPECT_DIMENSION:
+                logger.error(
+                    f"{embedding_type} aspect search called with a {len(query_embedding)}D "
+                    f"query; the aspect collections are {self.ASPECT_DIMENSION}D Voyage. "
+                    f"Refusing — matching dimensions would prove nothing anyway, but "
+                    f"mismatched ones prove this is the wrong vector."
+                )
+                return []
+
             collection_name = collection_mapping[embedding_type]
             collection = self.get_or_create_collection(
                 name=collection_name,
-                dimension=len(query_embedding),  # Auto-detect: 768 (legacy SLIG) or 1024 (Voyage v2)
+                dimension=self.ASPECT_DIMENSION,
             )
 
             # Build filters

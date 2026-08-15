@@ -111,6 +111,17 @@ class ProgressTracker:
     _supabase: Any = field(default=None, init=False, repr=False)
     _db_sync_enabled: bool = field(default=True, init=False)
 
+    # MV2-3. Boundary-event bookkeeping.
+    # `_last_history_stage` is the stage whose `in_progress` event has already been
+    # written, so `_sync_to_database` emits one per TRANSITION rather than one per
+    # progress tick (stage_history trims to 100 — flooding it evicts the boundaries).
+    # `_last_real_stage` is the last NON-terminal stage, kept because the terminal
+    # paths overwrite `current_stage` with COMPLETED/FAILED before the closing event
+    # is appended, which made every terminal event name a synthetic stage instead of
+    # the real one that ended. "Job failed during FAILED" answers nothing.
+    _last_history_stage: Optional[str] = field(default=None, init=False, repr=False)
+    _last_real_stage: Optional[str] = field(default=None, init=False, repr=False)
+
     # Heartbeat monitoring
     # Note (2026-05-23 round-3 cleanup): the asyncio-based heartbeat loop
     # (start_heartbeat / stop_heartbeat / _heartbeat_task / _heartbeat_running)
@@ -217,45 +228,75 @@ class ProgressTracker:
                 'updated_at': datetime.utcnow().isoformat()
             }
 
-            # The audit log append runs FIRST so a crash between the two
-            # writes can't leave the metadata/progress moved forward with
-            # no corresponding stage_history entry. The progress write
-            # below is naturally idempotent (next sync overwrites), so
-            # ordering the audit log first is the safer atomicity stance
-            # without requiring a custom combined-write RPC.
-            if stage:
-                try:
-                    self._supabase.client.rpc(
-                        'append_stage_history',
-                        {
-                            'p_job_id': self.job_id,
-                            'p_event': {
-                                'stage': stage,
-                                'status': 'in_progress',
-                                'progress': int(progress_pct),
-                                'completed_at': datetime.utcnow().isoformat(),
-                                'data': {
-                                    'total_items': self.total_pages,
-                                    'completed_items': self.pages_completed,
-                                    'images_extracted': self.images_extracted,
-                                    'total_images_extracted': self.total_images_extracted,
-                                    'chunks_created': self.chunks_created,
-                                    'products_created': self.products_created,
-                                    'text_embeddings_generated': self.text_embeddings_generated,
-                                    'image_embeddings_generated': self.image_embeddings_generated,
-                                    'ocr_pages_processed': self.ocr_pages_processed,
-                                },
-                                'source': 'progress_tracker',
-                            },
-                        },
-                    ).execute()
-                except Exception as hist_err:
-                    logger.warning(f"stage_history append failed: {hist_err}")
+            # MV2-3: the boundary event is no longer OPTIONAL. It used to be emitted
+            # only `if stage:` — and `stage` came from `update_stage(stage_name=None)`,
+            # an Optional parameter — so any caller that omitted the name silently
+            # skipped its own history entry. `start_processing()` was one: it moved the
+            # job to DOWNLOADING through a bare `_sync_to_database()`, so the FIRST
+            # stage of every job emitted no `in_progress` at all. Pipeline convention 9
+            # asks for a boundary event on EVERY stage because "the audit log must show
+            # why a job ended"; a log that can silently omit stages shows a job stuck
+            # mid-stage forever instead.
+            #
+            # The stage now falls back to the enum the tracker is actually in, so
+            # `stage_name` is a finer-grained LABEL (sub_stage) rather than the switch
+            # that decides whether history happens.
+            effective_stage = stage or getattr(self.current_stage, 'value', None)
 
-            self._supabase.client.table('background_jobs')\
-                .update(job_update)\
-                .eq('id', self.job_id)\
-                .execute()
+            # Remember the last stage that was real work, for the terminal event.
+            if self.current_stage not in (ProcessingStage.COMPLETED, ProcessingStage.FAILED):
+                self._last_real_stage = effective_stage
+
+            # Emit once per TRANSITION, not once per sync. `_sync_to_database` runs on
+            # every progress tick; an unconditional append would flood stage_history
+            # (which trims to 100) and evict the very boundary events this exists to
+            # keep. "Entered this stage" is the event, and it happens once.
+            emit_event = bool(effective_stage) and effective_stage != self._last_history_stage
+
+            event_payload = None
+            if emit_event:
+                event_payload = {
+                    'stage': effective_stage,
+                    'status': 'in_progress',
+                    'progress': int(progress_pct),
+                    'completed_at': datetime.utcnow().isoformat(),
+                    'data': {
+                        'total_items': self.total_pages,
+                        'completed_items': self.pages_completed,
+                        'images_extracted': self.images_extracted,
+                        'total_images_extracted': self.total_images_extracted,
+                        'chunks_created': self.chunks_created,
+                        'products_created': self.products_created,
+                        'text_embeddings_generated': self.text_embeddings_generated,
+                        'image_embeddings_generated': self.image_embeddings_generated,
+                        'ocr_pages_processed': self.ocr_pages_processed,
+                    },
+                    'source': 'progress_tracker',
+                }
+
+            # MV2-2: ONE call, not two. This used to be an `append_stage_history` RPC
+            # (wrapped in a bare `except` that only logged) followed by a separate
+            # `background_jobs` update. A crash in the window left history and status
+            # disagreeing, and a swallowed append let a job complete with no audit entry
+            # explaining why — the append was best-effort for a record whose entire
+            # purpose is to be the reliable one. `update_job_progress_and_append_history`
+            # is the atomic twin of `update_checkpoint_and_append_history`, which
+            # pipeline convention 3 names as the pattern.
+            self._supabase.client.rpc(
+                'update_job_progress_and_append_history',
+                {
+                    'p_job_id': self.job_id,
+                    'p_status': job_update['status'],
+                    'p_progress': job_update['progress'],
+                    'p_metadata': job_update['metadata'],
+                    'p_event': event_payload,
+                },
+            ).execute()
+
+            # Only after the write lands — otherwise a failed sync would suppress the
+            # event forever, since the next call would think it had already been sent.
+            if emit_event:
+                self._last_history_stage = effective_stage
 
             # 3. Update job_storage (in-memory)
             if self.job_storage and self.job_id in self.job_storage:
@@ -521,6 +562,27 @@ class ProgressTracker:
                 .execute()
             actual_embeddings = embeddings_result.count if embeddings_result.count is not None else 0
 
+            # 5. Count IMAGE embeddings from the presence flags on document_images.
+            # MV2-1: the text count above only sees document_chunks.text_embedding, so
+            # even once assigned it leaves image embeddings uncounted — and those are
+            # the ones that live in VECS, where a round-trip is expensive. The boolean
+            # presence flags are the canonical O(1) "does this image have embedding X?"
+            # check for exactly this reason.
+            actual_image_embeddings = 0
+            try:
+                slig_result = self._supabase.client.table('document_images')\
+                    .select('id', count='exact')\
+                    .eq('document_id', self.document_id)\
+                    .eq('has_slig_embedding', True)\
+                    .execute()
+                actual_image_embeddings = slig_result.count if slig_result.count is not None else 0
+            except Exception as img_emb_err:
+                # Leave it at the tracker's own count rather than reconciling to a
+                # number we could not read — overwriting a real count with 0 because
+                # a query failed is the silent zero this function exists to prevent.
+                logger.warning(f"⚠️ Could not count image embeddings: {img_emb_err}")
+                actual_image_embeddings = self.image_embeddings_generated
+
             # Log differences if any
             if actual_chunks != self.chunks_created:
                 logger.warning(f"⚠️ Chunk count mismatch: tracker={self.chunks_created}, DB={actual_chunks}")
@@ -528,24 +590,58 @@ class ProgressTracker:
                 logger.warning(f"⚠️ Image count mismatch: tracker={self.images_extracted}, DB={actual_images}")
             if actual_products != self.products_created:
                 logger.warning(f"⚠️ Product count mismatch: tracker={self.products_created}, DB={actual_products}")
+            # MV2-1: this warning did not exist. `actual_embeddings` was queried,
+            # logged, and never assigned to anything — the ONE field of the four that
+            # this function failed to reconcile was also the one field with no drift
+            # signal, so `_sync_to_database()` on the very next line wrote the stale
+            # in-memory counter and nothing anywhere said so. That is the platform's
+            # dominant documented failure ("a number that should be non-zero sitting
+            # at zero forever while nothing complains") occurring inside the function
+            # whose entire purpose is to prevent it.
+            if actual_embeddings != self.text_embeddings_generated:
+                logger.warning(
+                    f"⚠️ Text embedding count mismatch: tracker={self.text_embeddings_generated}, "
+                    f"DB={actual_embeddings}"
+                )
+            if actual_image_embeddings != self.image_embeddings_generated:
+                logger.warning(
+                    f"⚠️ Image embedding count mismatch: tracker={self.image_embeddings_generated}, "
+                    f"DB={actual_image_embeddings}"
+                )
 
             # Update tracker with actual counts
             self.chunks_created = actual_chunks
             self.images_extracted = actual_images
             self.products_created = actual_products
+            self.text_embeddings_generated = actual_embeddings
+            self.image_embeddings_generated = actual_image_embeddings
 
             logger.info("✅ Synced counts from database:")
             logger.info(f"   Chunks: {actual_chunks}")
             logger.info(f"   Images: {actual_images}")
             logger.info(f"   Products: {actual_products}")
-            logger.info(f"   Embeddings: {actual_embeddings}")
+            logger.info(f"   Text embeddings: {actual_embeddings}")
+            logger.info(f"   Image embeddings: {actual_image_embeddings}")
 
             # Sync updated counts to database
             await self._sync_to_database()
 
         except Exception as e:
             logger.error(f"❌ Failed to sync counts from database: {e}")
-            # Don't raise - count sync failures shouldn't block processing
+            # Don't raise - count sync failures shouldn't block processing.
+            # But DO record it on the job: swallowing this whole meant a total
+            # reconciliation failure looked identical to a clean run whose counts
+            # happened to match, and the counts it left behind were the unverified
+            # in-memory ones. A warning on the job says which it was.
+            try:
+                self.add_warning(
+                    "Count reconciliation failed",
+                    f"Could not reconcile counts against the database: {e}. "
+                    f"The counts on this job are the tracker's own, unverified.",
+                    {"document_id": self.document_id},
+                )
+            except Exception:
+                pass  # never let the warning path mask the original failure
 
     def add_error(self, title: str, message: str, context: Dict[str, Any] = None):
         """Add an error to the tracking."""
@@ -1110,7 +1206,14 @@ class ProgressTracker:
                 {
                     'p_job_id': self.job_id,
                     'p_event': {
-                        'stage': getattr(self.current_stage, 'value', None) or 'job',
+                        # MV2-3: the stage that ENDED, not the synthetic terminal one.
+                        # `complete_processing`/`fail_processing` set current_stage to
+                        # COMPLETED/FAILED before calling this, so reading it here
+                        # produced `{"stage": "failed", "status": "failed"}` — an event
+                        # that names no real stage and cannot answer which one broke.
+                        'stage': self._last_real_stage
+                                 or getattr(self.current_stage, 'value', None)
+                                 or 'job',
                         'status': status,
                         'progress': 100 if status == 'completed' else int(
                             self.calculate_progress_percentage()

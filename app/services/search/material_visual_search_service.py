@@ -524,17 +524,31 @@ class MaterialVisualSearchService:
                 # Generate SLIG embedding from image using SLIG client
                 from app.services.embeddings.endpoint_registry import endpoint_registry
                 import base64
-                import requests
                 from io import BytesIO
                 from PIL import Image
 
-                # Load image
-                if request.query_image.startswith('http'):
-                    response = requests.get(request.query_image, timeout=30)
-                    image = Image.open(BytesIO(response.content))
-                else:
-                    image_data = base64.b64decode(request.query_image)
-                    image = Image.open(BytesIO(image_data))
+                # Issue #15. `requests.get(request.query_image, timeout=30)` used to sit
+                # here: a URL taken STRAIGHT off the request body, fetched server-side,
+                # with no SSRF guard, no redirect ban and no size cap — so an
+                # authenticated caller could point it at 169.254.169.254 or any RFC1918
+                # address and use this service as a proxy into the private network
+                # (invariant 7).
+                #
+                # `aspect_query._resolve_image_base64` already does exactly this job
+                # correctly — assert_safe_url, follow_redirects=False, 20MB cap — for
+                # the SAME `query_image` field on the sibling endpoint. Two
+                # implementations of one operation, one of them guarded, is how the
+                # guarded one stops being the one that runs. Reuse it.
+                #
+                # The old SSRF guard test declared ONE file (image_download_service),
+                # which is why this survived. It now walks the tree.
+                from app.services.search.aspect_query import _resolve_image_base64
+
+                encoded, resolve_err = await _resolve_image_base64(request.query_image)
+                if resolve_err or not encoded:
+                    logger.error(f"❌ query_image rejected: {resolve_err}")
+                    raise ValueError(f"query_image could not be used: {resolve_err}")
+                image = Image.open(BytesIO(base64.b64decode(encoded)))
 
                 # Get SLIG client and generate embedding
                 slig_client = endpoint_registry.get_slig_client()

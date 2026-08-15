@@ -155,11 +155,20 @@ class CleanupService:
             except Exception as e:
                 self.logger.error(f"❌ Failed to clean directory {dir_path}: {e}")
         
-        # Clean old files in temp directories (older than 1 hour)
+        # Clean old files in temp directories (older than 1 hour).
+        # MV2-6: this is a GLOBAL sweep running inside a PER-JOB cleanup, so it reaps
+        # other jobs' working files. Resolve liveness once and skip anything belonging
+        # to a job that is still running — the job that just finished is terminal by
+        # definition, so its own directories (already removed above) are unaffected.
+        live_ids = self.live_job_ids()
+        if live_ids is not None:
+            # This job is finished; never let a stale row keep its own files alive.
+            live_ids.discard(str(job_id))
+            live_ids.discard(str(document_id))
         for temp_dir in self.temp_dirs:
             try:
                 if os.path.exists(temp_dir):
-                    self._clean_old_files(temp_dir, max_age_hours=1)
+                    self._clean_old_files(temp_dir, max_age_hours=1, live_ids=live_ids)
             except Exception as e:
                 self.logger.error(f"❌ Failed to clean old files in {temp_dir}: {e}")
         
@@ -168,32 +177,114 @@ class CleanupService:
         
         return cleaned_count
     
-    def _clean_old_files(self, directory: str, max_age_hours: int = 1):
+    def live_job_ids(self) -> Optional[set]:
+        """Ids (job AND document) whose working directories must NOT be reaped.
+
+        MV2-6: the temp sweeps deleted purely by age — `if file_age > max_age_seconds:
+        os.remove(...)` on a ONE HOUR threshold, with no check against a live job. Age
+        is not a reference check. This platform has `current_slow_operation` precisely
+        because legitimate stages run long, so a slow OCR or extraction pass crossing
+        the hour mark had its working directory removed underneath it — by a sweep that
+        `cleanup_after_processing` runs for a DIFFERENT job, on every job completion.
+
+        Returns None — meaning "liveness unknown" — on any failure, and callers skip
+        the age-based reap entirely when they get it. An empty set would mean "nothing
+        is running, delete freely", which is the exact opposite conclusion to draw from
+        a failed query. A reaper that cannot see the world must not act on the
+        assumption that the world is empty; that is the direction the platform's
+        janitor bugs have always gone wrong.
         """
-        Clean files older than max_age_hours from directory.
-        
+        live: set = set()
+        try:
+            from app.services.core.supabase_client import get_supabase_client
+            from app.schemas.jobs import JOB_STATUS_ACTIVE
+
+            sb = get_supabase_client()
+            resp = sb.client.table('background_jobs')\
+                .select('id, document_id')\
+                .in_('status', [s.value for s in JOB_STATUS_ACTIVE])\
+                .execute()
+            for row in (resp.data or []):
+                if row.get('id'):
+                    live.add(str(row['id']))
+                if row.get('document_id'):
+                    live.add(str(row['document_id']))
+        except Exception as e:
+            self.logger.warning(f"⚠️ Could not resolve live jobs; skipping age-based reap: {e}")
+            return None
+        return live
+
+    def _is_live_path(self, path: str, root: str, live_ids: set) -> bool:
+        """Does `path` sit under a top-level entry named after a live job/document?
+
+        The temp layout is `/tmp/pdf_processing/{job_id|document_id}/...` (see
+        `_clean_temp_directories`), so the first segment below the root IS the owner.
+        """
+        try:
+            rel = os.path.relpath(path, root)
+        except ValueError:
+            return False
+        head = rel.split(os.sep, 1)[0]
+        return head in live_ids
+
+    def _clean_old_files(
+        self,
+        directory: str,
+        max_age_hours: int = 1,
+        live_ids: Optional[set] = None,
+    ) -> Dict[str, int]:
+        """
+        Clean files older than max_age_hours from directory, skipping live jobs.
+
         Args:
             directory: Directory path
             max_age_hours: Maximum age in hours
+            live_ids: Job/document ids currently processing. Files under a directory
+                named after one of these are reported as "skipped, live" and left
+                alone — see `live_job_ids`. `None` means the caller could not resolve
+                liveness, and the sweep does nothing at all rather than guess.
+
+        Returns:
+            {'deleted': n, 'skipped_live': n} — the reaper reports what it did NOT
+            do as well as what it did. A janitor that only reports deletions cannot
+            be distinguished from one that is silently eating live work.
         """
         import time
-        
+
+        counts = {'deleted': 0, 'skipped_live': 0}
+
         if not os.path.exists(directory):
-            return
-        
+            return counts
+
+        if live_ids is None:
+            self.logger.warning(
+                f"⏭️ Skipping age-based reap of {directory}: liveness unknown"
+            )
+            return counts
+
         current_time = time.time()
         max_age_seconds = max_age_hours * 3600
-        
+
         for root, dirs, files in os.walk(directory):
             for file in files:
                 file_path = os.path.join(root, file)
                 try:
+                    if self._is_live_path(file_path, directory, live_ids):
+                        counts['skipped_live'] += 1
+                        continue
                     file_age = current_time - os.path.getmtime(file_path)
                     if file_age > max_age_seconds:
                         os.remove(file_path)
+                        counts['deleted'] += 1
                         self.logger.debug(f"🗑️ Deleted old file: {file_path}")
                 except Exception as e:
                     self.logger.error(f"❌ Failed to delete old file {file_path}: {e}")
+
+        if counts['skipped_live']:
+            self.logger.info(
+                f"⏭️ Left {counts['skipped_live']} file(s) in {directory} alone — live job"
+            )
+        return counts
     
     def _get_memory_usage_mb(self) -> float:
         """
@@ -435,10 +526,11 @@ class CleanupService:
         document_id: str,
         supabase_client,
         document_row: Optional[Dict[str, Any]] = None,
+        derived_only: bool = False,
+        source_only: bool = False,
     ) -> int:
         """
-        Wipe every storage object that belongs to a document across all buckets
-        we know it could live in.
+        Wipe storage objects that belong to a document.
 
         - `pdf-tiles` under `extracted/{document_id}/` (Stage 1.5 + Phase 3 outputs)
         - the legacy `documents` bucket under `{document_id}/`
@@ -446,24 +538,40 @@ class CleanupService:
           `documents.storage_bucket` / `storage_object_path`, falling back to
           `metadata.file_url`)
 
+        MV2-5: those are TWO different layers and callers need to pick. The tiles are
+        SILVER — they are the bytes `document_images.storage_object_path` and
+        `document_page_embeddings` point at. The original PDF is BRONZE — the source
+        the silver layer was derived from. `source_only=True` deletes the PDF and
+        leaves the derived tiles intact, which is what "preserve the outputs" has to
+        mean if the preserved rows are to keep resolving.
+
         Args:
             document_id: Document UUID
             supabase_client: Supabase client
             document_row: Optional pre-fetched document row to avoid an extra
                 round trip when called from delete_job_completely().
+            derived_only: Delete only the tiles / legacy-bucket objects.
+            source_only: Delete only the original source PDF.
 
         Returns:
             Total objects removed.
         """
+        if derived_only and source_only:
+            raise ValueError("derived_only and source_only are mutually exclusive")
+
         total = 0
 
         # Tiles + legacy documents bucket — always keyed by document_id prefix.
-        total += self.cleanup_storage_bucket(
-            'pdf-tiles', f"extracted/{document_id}", supabase_client
-        )
-        total += self.cleanup_storage_bucket(
-            'documents', document_id, supabase_client
-        )
+        if not source_only:
+            total += self.cleanup_storage_bucket(
+                'pdf-tiles', f"extracted/{document_id}", supabase_client
+            )
+            total += self.cleanup_storage_bucket(
+                'documents', document_id, supabase_client
+            )
+
+        if derived_only:
+            return total
 
         # Original PDF — resolve the explicit storage path if present.
         try:
@@ -548,14 +656,22 @@ class CleanupService:
           - documents, document_chunks, document_images
           - products and all product child tables
           - VECS embeddings
-          - storage bucket files
+          - the DERIVED storage objects those rows point at
+            (`pdf-tiles/extracted/{document_id}/`, incl. rendered pages)
+        Also removes, when delete_storage_files=True:
+          - the original source PDF only (bronze). It is no longer load-bearing
+            once the catalog outputs are durable, and leaving it behind was the
+            leak that filled `pdf-documents` with zombie PDFs.
 
         Args:
             job_id: Job ID to delete
             supabase_client: Supabase client instance
             vecs_service: Optional vecs service for embedding deletion
-            delete_storage_files: If True AND preserve_outputs=False, delete
-                storage bucket files. Ignored when preserve_outputs=True
+            delete_storage_files: If True, delete storage bucket files. Under
+                preserve_outputs=False that is everything; under
+                preserve_outputs=True it is the source PDF only. NOT ignored when
+                preserve_outputs=True — the docstring used to claim it was, while
+                the code below acted on it (MV2-5).
                 (storage is always preserved in that mode).
             preserve_outputs: If True, keep all produced catalog data
                 (documents/products/chunks/images/embeddings/storage). Use this
@@ -700,8 +816,27 @@ class CleanupService:
                             )
                             raise
 
+                        # MV2-5: `source_only=True`. This used to call
+                        # cleanup_document_storage() unqualified, which ALSO wiped
+                        # `pdf-tiles/extracted/{document_id}` — while this same branch
+                        # deliberately preserves `documents`, `document_chunks`,
+                        # `document_images` and `products`. Those preserved rows carry
+                        # `storage_bucket='pdf-tiles'` and a path under that very
+                        # prefix, and `document_page_embeddings` records its render
+                        # path there too, so "preserve the outputs" was deleting the
+                        # bytes every preserved output pointed at and leaving a catalog
+                        # of permanent 404s. The docstring for this mode said storage
+                        # was preserved; the code deleted it. An operator picking the
+                        # safe-sounding mode got the destructive one.
+                        #
+                        # This is also prefix deletion, not reference-set GC: it cannot
+                        # know whether another row still references a tile. Restricting
+                        # it to the source PDF — the one object this document
+                        # unambiguously owns, and the actual leak that filled
+                        # `pdf-documents` — keeps the win and drops the corruption.
                         stats['storage_files_deleted'] = self.cleanup_document_storage(
-                            document_id, supabase_client, document_row=document_row
+                            document_id, supabase_client, document_row=document_row,
+                            source_only=True,
                         )
                     except Exception as e:
                         self.logger.warning(f"⚠️ Storage cleanup failed: {e}")
@@ -946,27 +1081,27 @@ class CleanupService:
                 self.logger.warning(f"⚠️ Failed to clean product_processing_status: {e}")
                 stats['errors'].append(f"product_processing_status deletion failed: {str(e)}")
 
-            # 8. Delete files from storage (only if delete_storage_files=True).
-            # cleanup_document_storage covers pdf-tiles + the legacy
-            # `documents` bucket + the original file in pdf-documents
-            # resolved from documents.storage_bucket / storage_object_path.
-            if document_id and delete_storage_files:
-                try:
-                    stats['storage_files_deleted'] = self.cleanup_document_storage(
-                        document_id, supabase_client, document_row=document_row
-                    )
-                    self.logger.info(f"✅ Deleted {stats['storage_files_deleted']} storage files")
-                except Exception as e:
-                    self.logger.error(f"Failed to delete storage files: {e}")
-                    stats['errors'].append(f"Storage deletion failed: {str(e)}")
-            elif document_id and not delete_storage_files:
-                self.logger.info("⏭️ Skipping storage file deletion (automatic cleanup mode)")
-
             # Checkpoints now live on background_jobs.stage_history; deleted
             # automatically when the job row is removed in step 10.
             stats['checkpoints_deleted'] = 0
 
-            # 9. Delete document record
+            # 8. Delete the document ROW first, then the storage bytes.
+            #
+            # MV2-4: this order used to be reversed — storage was wiped in step 8 and
+            # the row deleted in step 9, with a storage failure caught, appended to
+            # stats['errors'], and execution CONTINUING to the row delete anyway.
+            #
+            # Only one direction of that race is serious, so be precise about which.
+            # Files orphaned by a failed/partial delete SELF-HEAL: they drop out of
+            # `build_storage_reference_set()` the moment the row is gone and
+            # `storage-orphan-cleanup-cron` reaps them. The state that does NOT heal is
+            # a crash inside the window with the OLD order — bytes gone, row still live
+            # — leaving a `documents` row pointing at objects that no longer exist, and
+            # nothing in the platform sweeps a dangling pointer.
+            #
+            # Deleting the row first inverts the race into the harmless direction, and
+            # is the platform's stated model for entity-delete cleanup: drop the row,
+            # let GC reap the files.
             if document_id:
                 try:
                     doc_response = supabase_client.client.table('documents')\
@@ -979,6 +1114,27 @@ class CleanupService:
                 except Exception as e:
                     self.logger.error(f"Failed to delete document: {e}")
                     stats['errors'].append(f"Document deletion failed: {str(e)}")
+
+            # 9. Delete files from storage (only if delete_storage_files=True).
+            # cleanup_document_storage covers pdf-tiles + the legacy
+            # `documents` bucket + the original file in pdf-documents
+            # resolved from documents.storage_bucket / storage_object_path —
+            # which is why `document_row` is passed: the row is gone by now, so the
+            # path can no longer be looked up, only read from the copy fetched at the
+            # top of this function.
+            if document_id and delete_storage_files:
+                try:
+                    stats['storage_files_deleted'] = self.cleanup_document_storage(
+                        document_id, supabase_client, document_row=document_row
+                    )
+                    self.logger.info(f"✅ Deleted {stats['storage_files_deleted']} storage files")
+                except Exception as e:
+                    # Non-fatal by design now: the row is already gone, so anything left
+                    # behind is an orphan the GC cron collects. Logged, not escalated.
+                    self.logger.error(f"Failed to delete storage files: {e}")
+                    stats['errors'].append(f"Storage deletion failed: {str(e)}")
+            elif document_id and not delete_storage_files:
+                self.logger.info("⏭️ Skipping storage file deletion (automatic cleanup mode)")
 
             # 9b. Delete XML import companion tables.
             # XML jobs maintain three companion tables that the cleanup
@@ -1124,6 +1280,11 @@ class CleanupService:
                 'pycache_folders_deleted': 0,
                 'pycache_size_mb': 0,
                 'temp_processing_files_deleted': 0,
+                # Report what was LEFT as well as what was removed — a janitor that
+                # only reports deletions reads identically whether it is working or
+                # eating live work (the `ops.test_artifacts_accumulating` lesson:
+                # watch the output, not the exit code).
+                'temp_processing_skipped_live': 0,
                 'temp_processing_size_mb': 0,
                 'total_size_freed_mb': 0,
                 'errors': []
@@ -1241,13 +1402,25 @@ class CleanupService:
                 self.logger.error(f"Failed to clean __pycache__ folders: {e}")
                 stats['errors'].append(f"__pycache__ cleanup failed: {str(e)}")
 
-            # 5. Clean temp processing directories
+            # 5. Clean temp processing directories.
+            # MV2-6: same liveness rule as _clean_old_files. Here the top-level entry
+            # IS the job/document id, so the check is a direct membership test. The
+            # 24h default makes this less trigger-happy than the 1h sweep, but "less
+            # often" is not "never" — a long XML import or a large catalog re-run
+            # crosses a day, and losing its working set at hour 24 is the same bug.
+            live_ids = self.live_job_ids()
             try:
-                for temp_dir in self.temp_dirs:
+                if live_ids is None:
+                    self.logger.warning("⏭️ Skipping temp-processing reap: liveness unknown")
+                for temp_dir in ([] if live_ids is None else self.temp_dirs):
                     if os.path.exists(temp_dir):
                         for item in os.listdir(temp_dir):
                             item_path = os.path.join(temp_dir, item)
                             try:
+                                if item in live_ids:
+                                    stats['temp_processing_skipped_live'] += 1
+                                    self.logger.debug(f"⏭️ Live job — keeping {item_path}")
+                                    continue
                                 item_age = current_time - os.path.getmtime(item_path)
                                 if item_age > max_age_seconds:
                                     if os.path.isfile(item_path):
@@ -1270,7 +1443,11 @@ class CleanupService:
                                 self.logger.error(f"Failed to delete temp item {item_path}: {e}")
                                 stats['errors'].append(f"Temp item deletion failed: {item}")
 
-                self.logger.info(f"✅ Temp processing files: {stats['temp_processing_files_deleted']} items, {stats['temp_processing_size_mb']:.2f} MB")
+                self.logger.info(
+                    f"✅ Temp processing files: {stats['temp_processing_files_deleted']} items, "
+                    f"{stats['temp_processing_size_mb']:.2f} MB, "
+                    f"{stats['temp_processing_skipped_live']} left alone (live)"
+                )
 
             except Exception as e:
                 self.logger.error(f"Failed to clean temp processing directories: {e}")

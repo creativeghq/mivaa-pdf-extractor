@@ -42,6 +42,75 @@ def _require_uuid(doc_id: str) -> None:
         raise HTTPException(status_code=404, detail="Document not found")
 
 
+def _load_own_doc(
+    doc_id: str,
+    ctx: WorkspaceContext,
+    supabase_client: SupabaseClient,
+) -> Dict[str, Any]:
+    """Fetch a kb_doc and prove the CALLER's workspace owns it, or 404.
+
+    Issue #15: `GET`/`PATCH`/`DELETE /api/kb/documents/{doc_id}` and the two
+    attachment readers took a doc_id straight off the path and queried it with the
+    service-role client — no workspace predicate anywhere. The audit asked whether
+    those routes were shadowed by a gated twin the way `management_routes.py` is.
+    They are NOT: `/api/kb` is a prefix no other router declares, so they were live,
+    and any authenticated member of ANY workspace could read, edit or delete another
+    tenant's KB document by id. MIVAA holds no RLS backstop (service-role client), so
+    this predicate is the only thing between the two tenants.
+
+    404 rather than 403 on mismatch, per invariant 1 — a 403 confirms the id exists
+    and turns the endpoint into an existence oracle.
+    """
+    _require_uuid(doc_id)
+    caller_ws = getattr(ctx, "workspace_id", None)
+    if not caller_ws:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    result = supabase_client.client.table("kb_docs").select("*").eq("id", doc_id).execute()
+    rows = result.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    row = rows[0]
+    if str(row.get("workspace_id")) != str(caller_ws):
+        logger.warning(
+            "KB doc %s requested by user %s of workspace %s — refusing (cross-tenant)",
+            doc_id, getattr(ctx, "user_id", None), caller_ws,
+        )
+        raise HTTPException(status_code=404, detail="Document not found")
+    return row
+
+
+async def _caller_is_workspace_admin(
+    supabase_client: SupabaseClient,
+    user_id: str,
+    workspace_id: str,
+) -> bool:
+    """Is this caller an owner/admin of this workspace? Read it from the DB.
+
+    Issue #15 (MV2-12): the search route took `is_admin_caller` off the REQUEST BODY
+    and passed it to `kb_match_docs(include_private => ...)`, so any member could
+    hand themselves the admin read scope by sending one boolean. Trust fields are
+    derived server-side (invariant 8).
+
+    Deliberately NOT `WorkspaceContext.role` / `has_permission("admin:all")`: that
+    role is parsed from a JWT `role` claim which on a real Supabase token reads
+    "authenticated", falls through `UserRole(...)` to MEMBER, and carries an empty
+    `permissions` list. Deriving admin from it would make every admin a member —
+    the silent-zero shape pointed at an access gate. `workspace_members.role` is the
+    value the rest of the platform means by "admin of this workspace".
+    """
+    try:
+        resp = supabase_client.client.table("workspace_members").select("role").eq(
+            "user_id", user_id
+        ).eq("workspace_id", workspace_id).eq("status", "active").execute()
+        return any((r.get("role") in ("owner", "admin")) for r in (resp.data or []))
+    except Exception as e:
+        # Fail closed: an unreadable membership table must not grant private access.
+        logger.warning("Could not resolve workspace admin status for %s: %s", user_id, e)
+        return False
+
+
 # ============================================================================
 # Request/Response Models
 # ============================================================================
@@ -140,6 +209,33 @@ async def create_kb_document(
     """
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
+    return await _upsert_kb_document(
+        request, supabase_client, workspace_id,
+        user_id=str((current_user or {}).get("sub") or "") or None,
+    )
+
+
+async def _upsert_kb_document(
+    request: CreateKBDocRequest,
+    supabase_client: SupabaseClient,
+    workspace_id: Optional[str],
+    user_id: Optional[str] = None,
+) -> KBDocResponse:
+    """Create-or-update a KB doc against an ALREADY-RESOLVED workspace_id.
+
+    MV2-15: `create_kb_document_from_pdf` used to finish with
+    `await create_kb_document(create_request, supabase_client)` — calling the route
+    function directly, two positional args, so `current_user` kept its DEFAULT value,
+    which is the `Depends(get_current_user)` marker object itself. That object was then
+    handed to `resolve_workspace_id`, which reads `.get("sub")` off it. FastAPI only
+    resolves dependencies for requests it ROUTES; a direct call gets the marker.
+    `/api/kb/documents/from-pdf` therefore failed 100% of the time, silently, in the
+    body of a `try` that reported it as a generic 500 — the third endpoint in this repo
+    found sitting at a 100% failure rate with nothing complaining.
+
+    The workspace is resolved by the CALLER and passed in, so this helper cannot be
+    invoked without one having been bound to a verified identity first.
+    """
     try:
         if request.price_doc_type is not None and request.price_doc_type not in PRICE_DOC_TYPES:
             raise HTTPException(
@@ -181,6 +277,12 @@ async def create_kb_document(
                     entity_id="temp",
                     entity_type="kb_doc",
                     text_content=request.content,
+                    # MV2-14: this is a paid Voyage call. It carried NO tenant and NO
+                    # payer, so every KB embedding landed in ai_usage_logs with
+                    # workspace_id NULL — invisible to per-workspace cost views and
+                    # unmatchable by that table's own is_workspace_admin() policy.
+                    workspace_id=workspace_id,
+                    user_id=user_id,
                 )
                 if embedding_result.get("success"):
                     update_payload["text_embedding"] = embedding_result.get("embeddings", {}).get("text_1024")
@@ -206,7 +308,9 @@ async def create_kb_document(
         embedding_result = await embeddings_service.generate_all_embeddings(
             entity_id="temp",
             entity_type="kb_doc",
-            text_content=request.content
+            text_content=request.content,
+            workspace_id=workspace_id,
+            user_id=user_id,
         )
 
         text_embedding = None
@@ -262,18 +366,14 @@ async def create_kb_document(
 )
 async def get_kb_document(
     doc_id: str,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
 ) -> KBDocResponse:
     """Get a knowledge base document by ID."""
-    _require_uuid(doc_id)
     try:
-        result = supabase_client.client.table("kb_docs").select("*").eq("id", doc_id).execute()
-        
-        if not result.data:
-            raise HTTPException(status_code=404, detail="Document not found")
-        
-        return KBDocResponse(**result.data[0])
-        
+        return KBDocResponse(**_load_own_doc(doc_id, ctx, supabase_client))
+    except HTTPException:
+        raise  # 404 from the ownership check — never repackage it as a 500
     except Exception as e:
         logger.error(f"Error fetching KB document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -288,18 +388,14 @@ async def get_kb_document(
 async def update_kb_document(
     doc_id: str,
     request: UpdateKBDocRequest,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
 ) -> KBDocResponse:
     """Update a knowledge base document."""
-    _require_uuid(doc_id)
     try:
-        # Get current document
-        current = supabase_client.client.table("kb_docs").select("*").eq("id", doc_id).execute()
-        if not current.data:
-            raise HTTPException(status_code=404, detail="Document not found")
-        
-        current_doc = current.data[0]
-        
+        # Get current document — and prove this workspace owns it before editing.
+        current_doc = _load_own_doc(doc_id, ctx, supabase_client)
+
         # Check if content changed OR embedding is missing/pending/failed
         force_regenerate = bool(
             request.metadata and request.metadata.get("force_regenerate")
@@ -349,7 +445,9 @@ async def update_kb_document(
             embedding_result = await embeddings_service.generate_all_embeddings(
                 entity_id="temp",
                 entity_type="kb_doc",
-                text_content=request.content or current_doc.get("content")
+                text_content=request.content or current_doc.get("content"),
+                workspace_id=str(ctx.workspace_id),
+                user_id=str(getattr(ctx, "user_id", "") or "") or None,
             )
             
             if embedding_result.get("success"):
@@ -362,13 +460,21 @@ async def update_kb_document(
         
         update_data["updated_at"] = datetime.utcnow().isoformat()
         
-        result = supabase_client.client.table("kb_docs").update(update_data).eq("id", doc_id).execute()
-        
+        # workspace_id predicate as well as the id: ownership is already proven
+        # above, but a write that carries its tenant filter cannot be turned into a
+        # cross-tenant write by a later edit that moves the check.
+        result = supabase_client.client.table("kb_docs").update(update_data)\
+            .eq("id", doc_id)\
+            .eq("workspace_id", str(ctx.workspace_id))\
+            .execute()
+
         if not result.data:
             raise HTTPException(status_code=500, detail="Failed to update document")
-        
+
         return KBDocResponse(**result.data[0])
-        
+
+    except HTTPException:
+        raise  # 404 (not yours / not found) and 400 (bad price_doc_type) stay as-is
     except Exception as e:
         logger.error(f"Error updating KB document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -382,12 +488,18 @@ async def update_kb_document(
 )
 async def delete_kb_document(
     doc_id: str,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
 ) -> None:
     """Delete a knowledge base document."""
-    _require_uuid(doc_id)
     try:
-        supabase_client.client.table("kb_docs").delete().eq("id", doc_id).execute()
+        _load_own_doc(doc_id, ctx, supabase_client)
+        supabase_client.client.table("kb_docs").delete()\
+            .eq("id", doc_id)\
+            .eq("workspace_id", str(ctx.workspace_id))\
+            .execute()
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error deleting KB document: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -441,8 +553,15 @@ async def create_kb_document_from_pdf(
             visibility="workspace"
         )
 
-        return await create_kb_document(create_request, supabase_client)
+        # The shared helper, NOT the route function — see `_upsert_kb_document`.
+        # `workspace_id` here is already the resolved value from the top of this route.
+        return await _upsert_kb_document(
+            create_request, supabase_client, workspace_id,
+            user_id=str((current_user or {}).get("sub") or "") or None,
+        )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating KB document from PDF: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -587,6 +706,27 @@ async def attach_document_to_product(
     """Attach a document to a product."""
     _assert_own_workspace(ctx, request.workspace_id)
     try:
+        # MV2-13: the workspace was reconciled against the JWT above, but document_id
+        # and product_id were then inserted unchecked — two ids each individually
+        # valid, never checked against EACH OTHER or against the workspace. That let a
+        # caller staple another tenant's KB document onto their own product (and the
+        # reverse), which `get_product_documents` above would then happily serve.
+        # Verify both ends belong to the caller's workspace before writing the edge.
+        _require_uuid(request.document_id)
+        _require_uuid(request.product_id)
+        _load_own_doc(request.document_id, ctx, supabase_client)
+
+        product = supabase_client.client.table("products").select("id")\
+            .eq("id", request.product_id)\
+            .eq("workspace_id", request.workspace_id)\
+            .execute()
+        if not (product.data or []):
+            logger.warning(
+                "KB attachment refused: product %s is not in workspace %s",
+                request.product_id, request.workspace_id,
+            )
+            raise HTTPException(status_code=404, detail="Product not found")
+
         # Allowlisted payload, never `request.dict()` (invariant 8) — same reasoning as
         # create_category above.
         payload = {
@@ -603,6 +743,8 @@ async def attach_document_to_product(
 
         return AttachmentResponse(**result.data[0])
 
+    except HTTPException:
+        raise  # the 404s above are the answer, not an internal error
     except Exception as e:
         logger.error(f"Error creating attachment: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -616,15 +758,21 @@ async def attach_document_to_product(
 )
 async def get_document_attachments(
     doc_id: str,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
 ) -> List[AttachmentResponse]:
     """Get all product attachments for a document."""
-    _require_uuid(doc_id)
     try:
-        result = supabase_client.client.table("kb_doc_attachments").select("*").eq("document_id", doc_id).execute()
+        _load_own_doc(doc_id, ctx, supabase_client)
+        result = supabase_client.client.table("kb_doc_attachments").select("*")\
+            .eq("document_id", doc_id)\
+            .eq("workspace_id", str(ctx.workspace_id))\
+            .execute()
 
         return [AttachmentResponse(**att) for att in result.data or []]
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching attachments: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -638,23 +786,39 @@ async def get_document_attachments(
 )
 async def get_product_documents(
     product_id: str,
-    supabase_client: SupabaseClient = Depends()
+    supabase_client: SupabaseClient = Depends(),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
 ) -> List[KBDocResponse]:
     """Get all documents attached to a product."""
+    _require_uuid(product_id)
     try:
-        # Get attachments
-        attachments = supabase_client.client.table("kb_doc_attachments").select("document_id").eq("product_id", product_id).execute()
+        workspace_id = str(ctx.workspace_id)
+
+        # Get attachments — scoped to the caller's workspace. Unscoped, a product_id
+        # from another tenant returned that tenant's attachment rows, and the doc
+        # fetch below then returned their KB documents in full.
+        attachments = supabase_client.client.table("kb_doc_attachments").select("document_id")\
+            .eq("product_id", product_id)\
+            .eq("workspace_id", workspace_id)\
+            .execute()
 
         if not attachments.data:
             return []
 
         doc_ids = [att["document_id"] for att in attachments.data]
 
-        # Get documents
-        result = supabase_client.client.table("kb_docs").select("*").in_("id", doc_ids).execute()
+        # Get documents. The workspace predicate repeats here rather than relying on
+        # the attachment scope: the two tables are joined by an id that the caller
+        # influenced, so each side carries its own tenant filter.
+        result = supabase_client.client.table("kb_docs").select("*")\
+            .in_("id", doc_ids)\
+            .eq("workspace_id", workspace_id)\
+            .execute()
 
         return [KBDocResponse(**doc) for doc in result.data or []]
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error fetching product documents: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -672,22 +836,23 @@ class SearchKBRequest(BaseModel):
         None,
         description="Restrict to pricing sub-type: price_list | discount_rule | contract_terms | promotion"
     )
-    allowed_access_levels: Optional[List[str]] = Field(
-        None,
-        description="Overrides category access gating. Defaults to admin+agent+public."
-    )
     require_published: bool = Field(
         default=False,
         description="When true, only published docs are returned (semantic only). "
                     "Default False preserves admin management search behavior — "
                     "agent-facing search should pass True explicitly."
     )
-    is_admin_caller: bool = Field(
-        default=False,
-        description="When true, 'private' visibility docs are included in results. "
-                    "Set this only when the calling user is an admin / super_admin. "
-                    "Default False matches the safe behavior for end-user agent calls."
-    )
+    # MV2-12: `is_admin_caller` and `allowed_access_levels` USED TO LIVE HERE, as
+    # request-body fields fed straight into `kb_match_docs(include_private => ...)`
+    # and its access-level gate — one of which was documented, in the API contract,
+    # as "Overrides category access gating". Any authenticated member could send
+    # `{"is_admin_caller": true}` and read the workspace's private KB.
+    #
+    # They are gone rather than defaulted-and-ignored: a field the published OpenAPI
+    # still advertises is one a caller still sends, and the next person to wire it up
+    # re-opens the hole. Both values are now derived server-side in the handler from
+    # `workspace_members.role`. Pydantic ignores unknown keys, so an existing caller
+    # that still sends them keeps working — it just no longer gets to decide.
     match_threshold: float = Field(default=0.5, description="Minimum similarity for semantic search", ge=0.0, le=1.0)
 
 
@@ -782,6 +947,17 @@ async def search_kb_documents(
     """
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
+
+    # MV2-12: derive the read scope from who the caller IS, not from what they sent.
+    # `include_private` and the access-level list are the same gate expressed twice,
+    # so they are resolved together and once — a non-admin cannot widen either.
+    is_admin_caller = await _caller_is_workspace_admin(
+        supabase_client, str((current_user or {}).get("sub") or ""), str(workspace_id)
+    )
+    allowed_access_levels = (
+        ["admin", "agent", "public"] if is_admin_caller else ["agent", "public"]
+    )
+
     try:
         import time
         start_time = time.time()
@@ -792,7 +968,9 @@ async def search_kb_documents(
             embedding_result = await embeddings_service.generate_all_embeddings(
                 entity_id="search_query",
                 entity_type="search",
-                text_content=request.query
+                text_content=request.query,
+                workspace_id=str(workspace_id) if workspace_id else None,
+                user_id=str((current_user or {}).get("sub") or "") or None,
             )
 
             if not embedding_result.get("success"):
@@ -815,10 +993,9 @@ async def search_kb_documents(
                 'match_threshold': request.match_threshold,
                 'match_count': request.limit,
                 'require_published': request.require_published,
-                'include_private': request.is_admin_caller,
+                'include_private': is_admin_caller,
+                'allowed_access_levels': allowed_access_levels,
             }
-            if request.allowed_access_levels:
-                rpc_args['allowed_access_levels'] = request.allowed_access_levels
             if request.category_id:
                 rpc_args['match_category_id'] = request.category_id
             if request.category_slug:
@@ -837,10 +1014,9 @@ async def search_kb_documents(
                 'search_workspace_id': workspace_id,
                 'search_type': request.search_type,
                 'result_limit': request.limit,
-                'include_private': request.is_admin_caller,
+                'include_private': is_admin_caller,
+                'allowed_access_levels': allowed_access_levels,
             }
-            if request.allowed_access_levels:
-                rpc_args['allowed_access_levels'] = request.allowed_access_levels
             if request.category_id:
                 rpc_args['match_category_id'] = request.category_id
             if request.category_slug:

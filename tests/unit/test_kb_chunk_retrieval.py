@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.unit._router_mounts import routers_mounted_at
+
 pytestmark = pytest.mark.unit
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -76,14 +78,19 @@ def test_route_is_declared_exactly_once(route_path):
     # "/search" is declared by images.py and knowledge_base.py too, but those routers
     # carry different prefixes (/api/images, /api/kb) so they resolve to different full
     # paths and are not duplicates. The hazard is specifically two routers sharing one
-    # prefix, which is these three and only these three.
-    mounted_at_api_rag = [
-        _ROOT / "app" / "api" / "rag_routes.py",
-        _ROOT / "app" / "api" / "documents" / "query_routes.py",
-        _ROOT / "app" / "api" / "documents" / "management_routes.py",
-    ]
-    for path in mounted_at_api_rag:
-        assert path.exists(), f"{path} moved — this guard is scoped by filename and is now blind"
+    # prefix.
+    #
+    # That set is DERIVED from main.py, not listed here. Issue #15's headline finding
+    # is that this repo's guards read as though they cover their class while actually
+    # scanning a hardcoded list, and every defect found landed in the gap. This test
+    # was an instance: it named three files, one of which (management_routes.py) has
+    # since been deleted, and a fourth router mounted at /api/rag tomorrow would be
+    # invisible to it while the test kept passing and kept sounding comprehensive.
+    mounted_at_api_rag = routers_mounted_at(_ROOT, "/api/rag")
+    assert mounted_at_api_rag, (
+        "no routers resolved for /api/rag — the include_router parser in "
+        "tests/unit/_router_mounts.py has gone blind, which makes this guard vacuous"
+    )
 
     needle = f'"{route_path}"'
     declarations = sorted(
@@ -91,6 +98,7 @@ def test_route_is_declared_exactly_once(route_path):
         for path in mounted_at_api_rag
         if needle in path.read_text(encoding="utf-8")
     )
+
     assert declarations == ["rag_routes.py"], (
         f"{route_path} is declared in {declarations}. Two routers claiming one path "
         "means the served implementation is decided by include_router order in main.py, "

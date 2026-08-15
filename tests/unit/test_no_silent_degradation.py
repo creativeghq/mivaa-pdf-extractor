@@ -32,9 +32,23 @@ expression and asserts the scanner flags it.
 
 SCOPE
 -----
-Python only, and only the ingest/enrichment tree. The same defect class in TypeScript is
-supabase-js resolving instead of throwing on an RLS denial -- guarded separately by
-``tests/unit/uncheckedSupabaseWrites.test.ts`` in the parent repo.
+**The whole of ``app/``.** It used to be five declared subtrees -- ``products``, ``discovery``,
+``metadata``, ``facets``, ``api/pdf_processing`` -- while the docstring above described the
+defect CLASS. Issue #15 measured that gap across every guard in this repo and found the same
+thing each time: the guards read as though they cover their class, none did, and every defect
+found in #14 and #15 landed in the gap. ``services/search`` was the miss here specifically.
+
+The repo already knew this. ``test_prompts_come_from_the_database`` refuses to keep a declared
+file list because *"a declared list is exactly the kind that rots"*, and
+``test_workspace_binding_coverage`` -- the one guard that walks the full tree -- covers the class
+with the LEAST evidence of defects.
+
+Widening cost exactly one allowlist entry (see ALLOWLIST), which is the useful measurement: the
+narrow scope was not buying quiet, it was buying blindness.
+
+Python only. The same defect class in TypeScript is supabase-js resolving instead of throwing on
+an RLS denial -- guarded separately by ``tests/unit/uncheckedSupabaseWrites.test.ts`` in the
+parent repo.
 """
 import ast
 import re
@@ -44,13 +58,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
-TARGETS = [
-    "app/services/products",
-    "app/services/discovery",
-    "app/services/metadata",
-    "app/services/facets",
-    "app/api/pdf_processing",
-]
+#: The whole application tree. Deliberately NOT a list of subtrees -- see SCOPE above.
+#: If you ever need to exclude something, exclude it HERE with a written reason, so the
+#: gap is visible to the next reader instead of being implied by an absence.
+TARGET_ROOT = "app"
 
 COLLECTION_OPS = {"set", "sorted", "min", "max", "sum"}
 
@@ -60,9 +71,14 @@ UNTRUSTED = re.compile(
     r"params|meta_fields|properties|specifications|payload|candidate|record)\b"
 )
 
-#: Known-benign: the value is a text column, so it cannot be a non-string.
+#: Known-benign, each with its reason. Shrink-only.
 ALLOWLIST = {
+    # The value is a text column, so it cannot be a non-string.
     ("app/api/pdf_processing/stage_4_products.py", "row['field_name']"),
+    # Surfaced when the scan widened to the whole tree (#15). `min(1.0, len(metadata) / 5)`
+    # is a min over two NUMBERS -- the untrusted `metadata` is only ever passed to `len()`,
+    # which cannot raise on element type. The regex matches the identifier, not the risk.
+    ("app/services/ai_validation/real_quality_scoring_service.py", "len(metadata) / 5"),
 }
 
 
@@ -105,15 +121,28 @@ def scan_source(text: str, rel_path: str = "<memory>") -> list[tuple[int, str]]:
 
 def _scan_tree() -> list[tuple[str, int, str]]:
     out: list[tuple[str, int, str]] = []
-    for target in TARGETS:
-        for path in (ROOT / target).rglob("*.py"):
-            rel = path.relative_to(ROOT).as_posix()
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
-                continue
-            for lineno, expr in scan_source(text, rel):
-                out.append((rel, lineno, expr))
+    scanned = 0
+    for path in (ROOT / TARGET_ROOT).rglob("*.py"):
+        rel = path.relative_to(ROOT).as_posix()
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            hits = scan_source(text, rel)
+        except SyntaxError:
+            # A file this scanner cannot parse is a file it is NOT covering. Say so
+            # rather than skipping in silence -- an unparseable file is exactly where
+            # someone would hide from a source-text guard, deliberately or not.
+            pytest.fail(f"{rel} does not parse; this guard is blind to it")
+        scanned += 1
+        for lineno, expr in hits:
+            out.append((rel, lineno, expr))
+    # A detector that scanned nothing reports clean. Refuse to be that.
+    assert scanned > 100, (
+        f"only {scanned} files scanned under {TARGET_ROOT}/ -- the walk is broken and "
+        "this guard is now vacuous"
+    )
     return out
 
 

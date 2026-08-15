@@ -781,6 +781,7 @@ class RAGService:
             text_embedding = None
             understanding_embedding = None
             page_embedding = None
+            page_embedding_model = None
 
             # Build embedding tasks to run in parallel
             async def _get_visual_embedding():
@@ -860,7 +861,11 @@ class RAGService:
                 if result.get("success"):
                     emb = result.get("embedding", [])
                     self.logger.info(f"✅ Page query embedding: {len(emb)}D")
-                    return emb
+                    # Carry the MODEL alongside the vector, not just the vector.
+                    # MV2-7: search_page_embeddings now requires the provenance and
+                    # checks it, so the space this vector lives in has to survive the
+                    # trip from here to there instead of being assumed at the far end.
+                    return emb, result.get("model")
                 return None
 
             # Run all embedding generations in parallel, each with its own timeout.
@@ -886,8 +891,8 @@ class RAGService:
                 understanding_embedding = understanding_result
             if isinstance(page_result, Exception):
                 self.logger.warning(f"⚠️ Page query embedding failed/timed out: {page_result}")
-            else:
-                page_embedding = page_result
+            elif page_result:
+                page_embedding, page_embedding_model = page_result
 
             # ============================================================================
             # STEP 2A: Search VISUAL + UNDERSTANDING embeddings (6 VECS collections)
@@ -1093,6 +1098,7 @@ class RAGService:
                 try:
                     page_results = await self.vecs_service.search_page_embeddings(
                         query_embedding=page_embedding,
+                        embedding_model=page_embedding_model,
                         limit=top_k * 3,
                         workspace_id=workspace_id,
                         include_metadata=True,

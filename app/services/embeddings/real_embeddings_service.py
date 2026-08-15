@@ -205,6 +205,7 @@ class RealEmbeddingsService:
         # on the instance — this service is reused across tenants (rag_service holds one on
         # self), so instance state would misattribute confidently instead of leaving a blank.
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -252,6 +253,7 @@ class RealEmbeddingsService:
                 input_type=input_type,
                 job_id=job_id,
                 workspace_id=workspace_id,
+                user_id=user_id,
                 product_id=product_id,
                 image_id=image_id,
             )
@@ -280,6 +282,7 @@ class RealEmbeddingsService:
                     image_url, image_data,
                     job_id=job_id,
                     workspace_id=workspace_id,
+                    user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -316,6 +319,7 @@ class RealEmbeddingsService:
                     vision_analysis=vision_analysis,
                     job_id=job_id,
                     workspace_id=workspace_id,
+                    user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -351,6 +355,7 @@ class RealEmbeddingsService:
                     material_properties=material_properties,
                     job_id=job_id,
                     workspace_id=workspace_id,
+                    user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -411,6 +416,7 @@ class RealEmbeddingsService:
         dimensions: int = 1024,
         job_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Dict[str, Any]:
@@ -436,6 +442,7 @@ class RealEmbeddingsService:
                 dimensions=dimensions,
                 job_id=job_id,
                 workspace_id=workspace_id,
+                user_id=user_id,
                 product_id=product_id,
                 image_id=image_id,
             )
@@ -455,7 +462,10 @@ class RealEmbeddingsService:
 
     async def generate_visual_embedding(
         self,
-        query: str
+        query: str,
+        workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Public method to generate a visual-space embedding from text query.
@@ -464,12 +474,49 @@ class RealEmbeddingsService:
         embedding space (768D), enabling text-to-image search across visual,
         color, texture, style, and material embeddings.
 
+        MV2-9: this method hit a billed GPU endpoint and returned WITHOUT calling the
+        logger at all — every text-to-visual query in the search path was free as far
+        as `ai_usage_logs` was concerned. It is a search entry point, so it is called
+        far more often than ingestion; the spend it hid was not a rounding error. The
+        attribution args are optional because a couple of callers genuinely have no
+        tenant (health probes), and a required arg would have been supplied as `None`
+        at those sites anyway — better an honest blank than a confident wrong tenant.
+
         Args:
             query: Text query to convert to visual embedding space
+            workspace_id: Tenant to attribute the GPU spend to
+            user_id: Principal to bill
+            job_id: Optional job for cost roll-up
 
         Returns:
             Dict with {"success": bool, "embedding": list} format
         """
+        start_time = time.time()
+
+        async def _log(action: str, failure: Optional[str] = None) -> None:
+            try:
+                await self.ai_logger.log_time_based_call(
+                    task="visual_query_embedding_generation",
+                    model="slig-768d",
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    action=action,
+                    confidence_score=0.95 if action == "use_ai_result" else 0.0,
+                    confidence_breakdown={
+                        "model_confidence": 0.98 if action == "use_ai_result" else 0.0,
+                        "completeness": 1.0 if action == "use_ai_result" else 0.0,
+                        "consistency": 0.95 if action == "use_ai_result" else 0.0,
+                        "validation": 0.90 if action == "use_ai_result" else 0.0,
+                        "vectors_generated": 1 if action == "use_ai_result" else 0,
+                        "vector_kind": "visual_query",
+                        **({"failure": failure} if failure else {}),
+                    },
+                    job_id=job_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+            except Exception as log_err:
+                self.logger.warning(f"Could not log visual query embedding call: {log_err}")
+
         try:
             # Initialize SLIG client if needed
             if self._slig_client is None:
@@ -488,11 +535,14 @@ class RealEmbeddingsService:
             embedding = await self._slig_client.get_text_embedding(query)
             if embedding:
                 self.logger.info(f"✅ Visual embedding from text: {len(embedding)}D via SLIG")
+                await _log("use_ai_result")
                 return {"success": True, "embedding": embedding}
 
+            await _log("fallback_failed", failure="empty_response")
             return {"success": False, "error": "SLIG text-to-visual embedding returned None"}
         except Exception as e:
             self.logger.error(f"❌ generate_visual_embedding failed: {e}")
+            await _log("fallback_failed", failure=type(e).__name__)
             return {"success": False, "error": str(e)}
 
     @staticmethod
@@ -505,6 +555,7 @@ class RealEmbeddingsService:
         material_properties: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -590,6 +641,7 @@ class RealEmbeddingsService:
                 input_type="document",
                 job_id=job_id,
                 workspace_id=workspace_id,
+                user_id=user_id,
                 product_id=product_id,
                 image_id=image_id,
             )
@@ -655,6 +707,7 @@ class RealEmbeddingsService:
         input_type: str,
         job_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
         task: str = "page_embedding_generation",
@@ -711,6 +764,7 @@ class RealEmbeddingsService:
                 # Same 429 discipline as the text path: honour Retry-After instead of
                 # letting a rate-limit window look like a hard failure.
                 rate_limit_attempt = 0
+                throttled_ms = 0
                 while response.status_code == 429 and rate_limit_attempt < 3:
                     try:
                         retry_after = min(60.0, float(response.headers.get("Retry-After", "5")))
@@ -720,6 +774,9 @@ class RealEmbeddingsService:
                         f"⚠️ Voyage multimodal 429 (attempt {rate_limit_attempt+1}/3); "
                         f"sleeping {retry_after}s"
                     )
+                    # MV2-10, same as the text path: record the throttling so a clean
+                    # call and a thrice-throttled one are not the same log row.
+                    throttled_ms += int(retry_after * 1000)
                     await asyncio.sleep(retry_after)
                     response = await _post()
                     rate_limit_attempt += 1
@@ -771,12 +828,15 @@ class RealEmbeddingsService:
                         "vectors_generated": 1,
                         "vector_dimension": expected_dim,
                         "vector_kind": "page",
+                        "rate_limit_retries": rate_limit_attempt,
+                        "throttled_ms": throttled_ms,
                         "image_pixels": image_pixels,
                         "billable_pixels": int(costs["billable_pixels"]),
                     },
                     action="use_ai_result",
                     job_id=job_id,
                     workspace_id=workspace_id,
+                    user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -814,6 +874,7 @@ class RealEmbeddingsService:
                     action="fallback_failed",
                     job_id=job_id,
                     workspace_id=workspace_id,
+                    user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
                     fallback_reason="no fallback provider for multimodal embeddings",
@@ -829,6 +890,7 @@ class RealEmbeddingsService:
         page_text: Optional[str] = None,
         job_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -865,6 +927,7 @@ class RealEmbeddingsService:
             input_type="document",
             job_id=job_id,
             workspace_id=workspace_id,
+            user_id=user_id,
             product_id=product_id,
             image_id=image_id,
         )
@@ -897,6 +960,7 @@ class RealEmbeddingsService:
         output_dtype: str = "float",
         job_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> List[Optional[List[float]]]:
@@ -1043,6 +1107,7 @@ class RealEmbeddingsService:
                         action="use_ai_result",
                         job_id=job_id,
                         workspace_id=workspace_id,
+                        user_id=user_id,
                         product_id=product_id,
                         image_id=image_id,
                     )
@@ -1087,6 +1152,7 @@ class RealEmbeddingsService:
                     action="fallback_failed",
                     job_id=job_id,
                     workspace_id=workspace_id,
+                    user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
                     fallback_reason="no fallback provider for text embeddings",
@@ -1108,6 +1174,7 @@ class RealEmbeddingsService:
         text: str,
         job_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         dimensions: int = 1024,
         input_type: Optional[str] = None,
         truncation: bool = True,
@@ -1179,6 +1246,7 @@ class RealEmbeddingsService:
                     # Respect Retry-After header (Voyage sets it). Up to 3 retries
                     # with capped backoff before giving up to fallback.
                     rate_limit_attempt = 0
+                    throttled_ms = 0
                     while response.status_code == 429 and rate_limit_attempt < 3:
                         retry_after_raw = response.headers.get("Retry-After", "5")
                         try:
@@ -1189,6 +1257,14 @@ class RealEmbeddingsService:
                             f"⚠️ Voyage 429 rate-limit (attempt {rate_limit_attempt+1}/3); "
                             f"sleeping {retry_after}s before retry"
                         )
+                        # MV2-10: count the throttling. Up to 3 retries collapsed into
+                        # one log row, so a clean first-call success and a success after
+                        # three throttled attempts were indistinguishable — and the
+                        # latency of the second is dominated by sleep, not by Voyage.
+                        # Carried into confidence_breakdown below rather than emitted as
+                        # extra rows: the retries cost WAITING, not tokens, and a row per
+                        # attempt would triple the apparent spend of one embedding.
+                        throttled_ms += int(retry_after * 1000)
                         await asyncio.sleep(retry_after)
                         response = await client.post(
                             "https://api.voyageai.com/v1/embeddings",
@@ -1226,11 +1302,14 @@ class RealEmbeddingsService:
                                 "model_confidence": 0.98,
                                 "completeness": 1.0,
                                 "consistency": 0.95,
-                                "validation": 0.90
+                                "validation": 0.90,
+                                "rate_limit_retries": rate_limit_attempt,
+                                "throttled_ms": throttled_ms,
                             },
                             action="use_ai_result",
                             job_id=job_id,
                             workspace_id=workspace_id,
+                            user_id=user_id,
                             product_id=product_id,
                             image_id=image_id,
                         )
@@ -1270,6 +1349,7 @@ class RealEmbeddingsService:
                     action="fallback_failed",
                     job_id=job_id,
                     workspace_id=workspace_id,
+                    user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
                     fallback_reason="no fallback provider for text embeddings",
@@ -1293,6 +1373,7 @@ class RealEmbeddingsService:
         pil_image = None,  # NEW: Accept pre-decoded PIL image
         job_id: Optional[str] = None,  # NEW: Add job_id for logging
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> tuple[Optional[List[float]], str, Optional[any]]:
@@ -1331,6 +1412,7 @@ class RealEmbeddingsService:
         pil_image = None,  # NEW: Accept pre-decoded PIL image
         job_id: Optional[str] = None,  # NEW: Add job_id for logging
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> tuple[Optional[List[float]], Optional[any]]:
@@ -1456,6 +1538,36 @@ class RealEmbeddingsService:
                             "refusing to store. The endpoint is likely misconfigured "
                             "(serving wrong model). Operator action required."
                         )
+                        # MV2-9: log the FAILURE too. Three GPU calls were made and paid
+                        # for on the way here; returning without a log row meant a
+                        # misconfigured endpoint burned real money that appeared nowhere —
+                        # the spend was invisible precisely when it was pure waste. The
+                        # latency is the whole retry loop, which is what was actually
+                        # billed. action="fallback_failed" so this cannot be mistaken for
+                        # a successful embed in the dashboards.
+                        await self.ai_logger.log_time_based_call(
+                            task="visual_embedding_generation",
+                            model="slig-768d",
+                            latency_ms=latency_ms,
+                            action="fallback_failed",
+                            confidence_score=0.0,
+                            confidence_breakdown={
+                                "model_confidence": 0.0,
+                                "completeness": 0.0,
+                                "consistency": 0.0,
+                                "validation": 0.0,
+                                "vectors_generated": 0,
+                                "attempts": 3,
+                                "failure": "dimension_mismatch",
+                                "expected_dimension": self.slig_embedding_dimension,
+                                "endpoint_model": self.slig_model_name,
+                            },
+                            job_id=job_id,
+                            workspace_id=workspace_id,
+                            user_id=user_id,
+                            product_id=product_id,
+                            image_id=image_id,
+                        )
                         return None, None
 
                     self.logger.info(f"✅ SLIG embedding generated: {len(embedding)}D (latency={latency_ms}ms)")
@@ -1488,6 +1600,7 @@ class RealEmbeddingsService:
                         },
                         job_id=job_id,
                         workspace_id=workspace_id,
+                        user_id=user_id,
                         product_id=product_id,
                         image_id=image_id,
                     )
@@ -1496,6 +1609,34 @@ class RealEmbeddingsService:
 
                 except Exception as e:
                     self.logger.error(f"❌ SLIG cloud endpoint failed: {e}")
+                    # Same reasoning as the dim-mismatch arm above: the request was
+                    # issued, so GPU time was consumed whatever the exception was.
+                    # A timeout on a paid endpoint costs exactly as much as a success.
+                    try:
+                        await self.ai_logger.log_time_based_call(
+                            task="visual_embedding_generation",
+                            model="slig-768d",
+                            latency_ms=int((time.time() - start_time) * 1000),
+                            action="fallback_failed",
+                            confidence_score=0.0,
+                            confidence_breakdown={
+                                "model_confidence": 0.0,
+                                "completeness": 0.0,
+                                "consistency": 0.0,
+                                "validation": 0.0,
+                                "vectors_generated": 0,
+                                "failure": type(e).__name__,
+                                "endpoint_model": self.slig_model_name,
+                            },
+                            job_id=job_id,
+                            workspace_id=workspace_id,
+                            user_id=user_id,
+                            product_id=product_id,
+                            image_id=image_id,
+                        )
+                    except Exception as log_err:
+                        # Never let the cost log turn a soft failure into a hard one.
+                        self.logger.warning(f"Could not log failed SLIG call: {log_err}")
                     return None, None
             else:
                 self.logger.error("❌ SLIG visual embeddings are disabled")
@@ -1515,6 +1656,7 @@ class RealEmbeddingsService:
         vision_analysis: Any,
         job_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Optional[Dict[str, List[float]]]:
@@ -1607,6 +1749,7 @@ class RealEmbeddingsService:
                     input_type="document",
                     job_id=job_id,
                     workspace_id=workspace_id,
+                    user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
                 )
@@ -1659,6 +1802,7 @@ class RealEmbeddingsService:
                 action="use_ai_result",
                 job_id=job_id,
                 workspace_id=workspace_id,
+                user_id=user_id,
                 product_id=product_id,
                 image_id=image_id,
             )
