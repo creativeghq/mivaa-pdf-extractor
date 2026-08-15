@@ -38,7 +38,6 @@ This service is designed to support future extraction types:
 import logging
 import os
 import asyncio
-import json
 import re
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
@@ -303,6 +302,75 @@ class ProductCatalog:
                 pass
         if self.supplementary_pages is None:
             self.supplementary_pages = []
+
+
+#: Every field below is one the parser actually reads (`_parse_discovery_results`
+#: and the vision path). Item objects allow additional properties on purpose: the
+#: DB-held prompt is the thing that tells the model WHAT to look for, and it may
+#: legitimately ask for more than this schema names. The schema's job is to make
+#: the RESPONSE SHAPE guaranteed, not to re-specify the prompt.
+_DISCOVERY_ITEM = {
+    "type": "object",
+    "additionalProperties": True,
+    "properties": {
+        "name": {"type": "string", "description": "Item name as printed in the catalog."},
+        "description": {"type": "string"},
+        "page_range": {
+            "type": "array",
+            "items": {"type": "integer"},
+            "description": "1-based physical page numbers this item occupies.",
+        },
+        "start_page": {"type": "integer", "description": "1-based page from the index, if known."},
+        "confidence": {"type": "number", "description": "0.0-1.0."},
+    },
+    "required": ["name"],
+}
+
+PRODUCT_DISCOVERY_TOOL = {
+    "name": "record_catalog_discovery",
+    "description": (
+        "Record everything discovered in this catalog: products, certificates, "
+        "logos, specifications, and the per-page classification."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "products": {"type": "array", "items": _DISCOVERY_ITEM},
+            "certificates": {"type": "array", "items": _DISCOVERY_ITEM},
+            "logos": {"type": "array", "items": _DISCOVERY_ITEM},
+            "specifications": {"type": "array", "items": _DISCOVERY_ITEM},
+            "page_classification": {
+                "type": "object",
+                "additionalProperties": True,
+                "description": "Map of page number (as a string) to its classification.",
+            },
+            "confidence_score": {"type": "number", "description": "Overall confidence, 0.0-1.0."},
+        },
+        "required": ["products"],
+    },
+}
+
+
+def _tool_input_or_raise(response, where: str) -> Dict[str, Any]:
+    """Pull the forced tool_use payload out of a Claude response.
+
+    Audit #12: discovery used to ask for JSON in prose, strip ``` fences, then
+    json.loads with a regex "repair" behind it that deleted trailing commas and
+    guessed at missing separators. A repair that succeeds is indistinguishable
+    from a response that was correct, so a subtly mangled catalog parsed clean and
+    became pipeline state. With a forced tool_choice the shape is guaranteed by
+    the API and there is nothing left to repair — if no tool_use block comes back,
+    that is a broken contract, not something to salvage.
+    """
+    for block in (getattr(response, "content", None) or []):
+        if getattr(block, "type", None) == "tool_use":
+            payload = getattr(block, "input", None)
+            if isinstance(payload, dict):
+                return payload
+    raise ValueError(
+        f"{where}: Claude returned no tool_use block for a forced tool_choice "
+        f"(types: {[getattr(b, 'type', '?') for b in (getattr(response, 'content', None) or [])]})"
+    )
 
 
 class ProductDiscoveryService:
@@ -856,9 +924,11 @@ class ProductDiscoveryService:
                 model=model_to_use,
                 max_tokens=8000,
                 messages=[{"role": "user", "content": content_blocks}],
+                tools=[PRODUCT_DISCOVERY_TOOL],
+                tool_choice={"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]},
             )
             # Log the cost HERE — the call has completed and Anthropic has billed for
-            # it. This used to sit after json.loads/_repair_json, so every response
+            # it. This used to sit after the JSON parse + regex repair, so every response
             # that failed to parse (and every empty/no-text-block response above)
             # returned without writing an ai_usage_logs row. That lost attribution
             # precisely on the failures, on the path that only runs when a catalog is
@@ -896,28 +966,11 @@ class ProductDiscoveryService:
                 ),
                 None,
             )
-            if _text_block is None:
-                self.logger.error(
-                    "   vision retry: Claude returned no text block "
-                    f"(types: {[getattr(b, 'type', '?') for b in response.content]})"
-                )
-                return None
-            raw = _text_block.text.strip()
-
-            # Strip code fences if present (same shape as text-path response).
-            if "```json" in raw:
-                js = raw.find("```json") + 7
-                je = raw.find("```", js)
-                raw = raw[js:je].strip()
-            elif "```" in raw:
-                js = raw.find("```") + 3
-                je = raw.find("```", js)
-                raw = raw[js:je].strip()
-
             try:
-                result = json.loads(raw)
-            except json.JSONDecodeError:
-                result = json.loads(self._repair_json(raw))
+                result = _tool_input_or_raise(response, "vision retry")
+            except ValueError as shape_err:
+                self.logger.error(f"   {shape_err}")
+                return None
 
             # (cost already logged immediately after the call returned — logging it
             # again here would double-count the spend)
@@ -1117,16 +1170,6 @@ class ProductDiscoveryService:
             pass
 
 
-    def _repair_json(self, json_str: str) -> str:
-        """Attempt to repair common JSON issues"""
-        # Remove trailing commas before closing brackets/braces
-        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-        # Fix missing commas between array elements
-        json_str = re.sub(r'}\s*{', r'},{', json_str)
-        # Fix missing commas between object properties
-        json_str = re.sub(r'"\s*"', r'","', json_str)
-        return json_str
-
     async def _discover_with_claude(
         self,
         prompt: str,
@@ -1159,43 +1202,15 @@ class ProductDiscoveryService:
                     max_tokens=16000,
                     messages=[
                         {"role": "user", "content": prompt}
-                    ]
+                    ],
+                    tools=[PRODUCT_DISCOVERY_TOOL],
+                    tool_choice={"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]},
                 )
                 if not getattr(response, "content", None):
                     raise ValueError("Claude returned empty content (no blocks)")
-                text_block = next(
-                    (
-                        b for b in response.content
-                        if getattr(b, "type", None) == "text" and getattr(b, "text", None)
-                    ),
-                    None,
+                result = _tool_input_or_raise(
+                    response, f"discovery attempt {attempt_idx}/{len(attempts)} {model_to_use}"
                 )
-                if text_block is None:
-                    raise ValueError(
-                        "Claude returned no text block in content "
-                        f"(types: {[getattr(b, 'type', '?') for b in response.content]})"
-                    )
-                content = text_block.text.strip()
-
-                if "```json" in content:
-                    json_start = content.find("```json") + 7
-                    json_end = content.find("```", json_start)
-                    content = content[json_start:json_end].strip()
-                elif "```" in content:
-                    json_start = content.find("```") + 3
-                    json_end = content.find("```", json_start)
-                    content = content[json_start:json_end].strip()
-
-                try:
-                    result = json.loads(content)
-                except json.JSONDecodeError as first_error:
-                    self.logger.warning(
-                        f"[discovery attempt {attempt_idx}/{len(attempts)} {model_to_use}] "
-                        f"JSON parse failed, attempting repair: {first_error}"
-                    )
-                    repaired = self._repair_json(content)
-                    result = json.loads(repaired)  # raises if still bad
-                    self.logger.info("Repaired JSON parsed successfully")
 
                 products_found = len(result.get("products", []))
                 self.logger.info(f"🔍 {model_to_use} discovered {products_found} products")

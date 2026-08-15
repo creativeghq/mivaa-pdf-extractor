@@ -42,6 +42,7 @@ _ADMIN = _APP / "api" / "admin.py"
 _ASSOC = _APP / "services" / "images" / "multi_modal_image_product_association_service.py"
 _PRICING = _APP / "config" / "ai_pricing.py"
 _SUPA = _APP / "services" / "core" / "supabase_client.py"
+_DISCOVERY = _APP / "services" / "discovery" / "product_discovery_service.py"
 
 
 def _src(path: Path) -> str:
@@ -189,3 +190,42 @@ def test_postgrest_retry_does_not_repeat_writes():
     src = _src(_SUPA)
     assert "_is_safe_to_repeat" in src, "the idempotency gate on retry is gone"
     assert "resolution=" in src, "upserts must stay retryable (they collapse on conflict)"
+
+
+# ───────────────── 7. discovery states its findings structurally ────────────
+
+
+def test_discovery_uses_forced_tool_use_on_both_paths():
+    """Discovery is the pipeline's first step; its output becomes catalog state.
+
+    It used to ask for JSON in prose, strip ``` fences, json.loads, and fall back
+    to _repair_json — regex that deleted trailing commas and guessed at missing
+    separators. A repair that SUCCEEDS is indistinguishable from a response that
+    was correct, so a subtly mangled catalog parsed clean and became pipeline
+    state. Both the text path and the vision retry now force the tool.
+    """
+    src = _src(_DISCOVERY)
+    assert "PRODUCT_DISCOVERY_TOOL" in src, "the discovery tool schema is gone"
+    assert src.count("tools=[PRODUCT_DISCOVERY_TOOL]") >= 2, (
+        "both the text path and the vision retry must force the tool"
+    )
+    assert src.count('"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]') >= 2, (
+        "tool_choice must be forced, or the model may still answer in prose"
+    )
+
+
+def test_discovery_has_no_json_repair_left():
+    """There is nothing to repair once the shape is guaranteed by the API."""
+    src = _src(_DISCOVERY)
+    assert "_repair_json" not in src, "the regex JSON repair is back"
+    assert "```json" not in src, "code-fence stripping implies a prose response again"
+
+
+def test_discovery_rejects_gpt_rather_than_silently_using_claude():
+    """Finding 4: `gpt-vision` was accepted, validated an OpenAI key, and had no
+    code path — so it ran on Claude while recording gpt-vision as the model."""
+    src = _src(_DISCOVERY)
+    assert "OPENAI_API_KEY" not in src or "os.getenv(\"OPENAI_API_KEY\"" not in src, (
+        "the module-load OpenAI key capture is back"
+    )
+    assert "is not supported" in src, "a GPT model request must be rejected explicitly"
