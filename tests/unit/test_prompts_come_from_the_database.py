@@ -27,18 +27,51 @@ _APP = _ROOT / "app"
 _REGISTRY = _APP / "services/utilities/prompt_registry.py"
 
 #: A file that reaches a model.
+#: A file is only scanned if it makes an outbound model call. This list used to be
+#: ANTHROPIC-ONLY, so `perplexity_price_search_service` — which posts to
+#: api.perplexity.ai — was invisible to the whole guard while holding a 2,000-char
+#: system prompt that decides what price data enters the platform (audit #14 MV-2).
+#: Vision is Anthropic-only; TEXT generation is not, and the rule is about prompts.
 _LLM_MARKERS = (
+    # Anthropic
     "tracked_claude_call_async", "messages.create", "anthropic.com/v1/messages",
     "claude_helper", "_call_claude",
+    # everyone else this platform actually calls
+    "api.perplexity.ai", "api.openai.com", "api.voyageai.com",
+    "api.replicate.com", "generativelanguage.googleapis.com",
 )
 
-#: Instruction-shaped text. Used only to describe a literal we ALREADY know is long and lives in
-#: a file that calls a model — never as the sole test, because prompts do not reliably look like
-#: anything (the edge-side count was wrong twice for exactly that reason).
-_HINTS = ("you are", "respond", "return json", "extract", "analyze", "analyse",
-          "classify", "json object", "rules:")
+#: Argument names and payload keys that hand text to a model.
+_MODEL_ARGS = frozenset({"messages", "system", "prompt", "input", "contents"})
 
 _MIN_PROMPT_CHARS = 220
+
+
+#: MIGRATION RATCHET — shrink-only, and DELETED (not emptied) when it reaches zero.
+#:
+#: Widening this guard (audit #14 MV-2) turned up 16 hardcoded prompts, not the 2 the
+#: audit named. They did not regress: 2 lived in a file the guard never opened
+#: (perplexity_price_search_service has no Anthropic marker) and 14 were skipped by the
+#: old `>= 2 hints` filter — EIGHT of them hitting zero hints. The prompts-from-the-
+#: database migration covered exactly what the guard could see, and the guard saw less
+#: than anyone believed. The test reported all-clear the whole time.
+#:
+#: Each entry is a prompt still to move. A file:line pair here is a promise, not a
+#: permanent exemption: the count may only fall, which `test_the_ratchet_only_shrinks`
+#: enforces. Do NOT add to this list — a NEW hardcoded prompt must fail the build.
+_MIGRATION_RATCHET = frozenset({
+    "app/api/sam_routes.py",
+    "app/services/integrations/job_search_service.py",
+    "app/services/integrations/llm_mention_probe_service.py",
+    "app/services/integrations/mention_opportunity_service.py",
+    "app/services/products/product_enrichment_service.py",
+    "app/services/products/product_relationship_service.py",
+    "app/services/search/search_prompt_service.py",
+    "app/services/search/search_suggestions_service.py",
+})
+
+#: How many offenders those files still hold. Falls to 0, then both go.
+_RATCHET_COUNT = 12
 
 
 def _sources():
@@ -46,8 +79,61 @@ def _sources():
         yield path, path.read_text(encoding="utf-8")
 
 
+def _model_payload_regions(tree):
+    """AST subtrees that hand text to a model.
+
+    Two shapes, because the payload is not always inline at the call:
+      * a Call with a `messages=` / `system=` / `prompt=` keyword, or `json={...}`
+        whose dict has one of those keys;
+      * ANY dict literal carrying one of those keys — which is how
+        `perplexity_price_search_service` does it: `body = {"messages": [...]}` is
+        built first and passed as `json=body` several lines later, so the literal
+        never appears inside the call node at all.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if {k.arg for k in node.keywords if k.arg} & _MODEL_ARGS:
+                yield node
+                continue
+            for kw in node.keywords:
+                if kw.arg == "json" and isinstance(kw.value, ast.Dict):
+                    keys = {
+                        k.value for k in kw.value.keys
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                    }
+                    if keys & _MODEL_ARGS:
+                        yield node
+                        break
+        elif isinstance(node, ast.Dict):
+            keys = {
+                k.value for k in node.keys
+                if isinstance(k, ast.Constant) and isinstance(k.value, str)
+            }
+            if keys & _MODEL_ARGS:
+                yield node
+
+
 def _prompt_literals(tree):
-    """Long instruction-shaped literals, excluding docstrings and f-string innards."""
+    """Long literals that REACH a model call. Structural, not keyword-based.
+
+    The rule used to be `length >= 220 AND >= 2 words from a hint list`, and the
+    hints were the only discriminator after length — which this file's own docstring
+    forbids, in those words, because "prompts do not reliably look like anything".
+    It let through `rag_service`'s "You are an expert document analyst. Answer the
+    following question based ONLY on the provided context." — 376 chars, in a file
+    with four LLM markers — because "document analyst" does not contain "analyze"
+    and one hint is not two (audit #14 MV-2).
+
+    A literal now offends if it is long and either sits inside a model payload, or is
+    bound to a NAME that appears inside one. The name hop is what reaches across a
+    function boundary: Perplexity's system prompt is assigned in `_build_messages`
+    and consumed in the caller's `body["messages"]`.
+
+    This is deliberately not "every long literal in a file that calls a model" —
+    that flags 56 strings including a base64 test fixture, an OpenAPI description and
+    an HTML page, and would need an allowlist big enough to rot.
+    """
+    candidates = {}
     docstrings, nested = set(), set()
     for node in ast.walk(tree):
         if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -68,8 +154,48 @@ def _prompt_literals(tree):
             continue
         if len(text) < _MIN_PROMPT_CHARS:
             continue
-        if sum(h in text.lower() for h in _HINTS) < 2:
+        # A prompt is prose. This drops base64 blobs and minified payloads without
+        # asking what WORDS they contain — the base64 JPEG fixture in
+        # anthropic_routes is 378 chars and reaches a model payload, and it is not
+        # a prompt. Structural, so it cannot become a keyword list by drift.
+        if len(text.split()) < 10:
             continue
+        candidates[id(node)] = (node, text)
+
+    if not candidates:
+        return
+
+    regions = list(_model_payload_regions(tree))
+    if not regions:
+        return
+
+    # Names (and attribute names) referenced anywhere inside a model payload.
+    reachable = set()
+    for region in regions:
+        for sub in ast.walk(region):
+            if isinstance(sub, ast.Name):
+                reachable.add(sub.id)
+            elif isinstance(sub, ast.Attribute):
+                reachable.add(sub.attr)
+
+    offending = {}
+    for region in regions:
+        for sub in ast.walk(region):
+            if id(sub) in candidates:
+                offending[id(sub)] = candidates[id(sub)]
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if id(node.value) not in candidates:
+            continue
+        for target in node.targets:
+            name = (target.id if isinstance(target, ast.Name)
+                    else target.attr if isinstance(target, ast.Attribute) else None)
+            if name and name in reachable:
+                offending[id(node.value)] = candidates[id(node.value)]
+
+    for node, text in offending.values():
         yield node, text
 
 
@@ -88,11 +214,44 @@ def test_no_prompt_is_hardcoded():
                 f"({len(text)} chars) {' '.join(text.split())[:60]!r}"
             )
 
-    assert offenders == [], (
+    remaining = [o for o in offenders
+                 if o.split(":")[0] in _MIGRATION_RATCHET]
+    fresh = [o for o in offenders if o not in remaining]
+
+    assert fresh == [], (
         "a prompt is hardcoded in a file that calls a model:\n  " + "\n  ".join(offenders)
         + "\n\nPrompts live in the `prompts` table (#347 phase 3P). Load with "
           "`prompt_registry.load_prompt(...)`, or `get_cached(...)` at a sync site whose async "
           "entry point called `prefetch(...)`. Seed the row before deleting the literal."
+    )
+
+
+
+def test_the_ratchet_only_shrinks():
+    """The migration ratchet is a promise that the count falls. If it rises, a new
+    hardcoded prompt was added to a file that already had one — which the offender
+    check above cannot see, because that file is on the list."""
+    offenders = []
+    for path, src in _sources():
+        if not any(m in src for m in _LLM_MARKERS):
+            continue
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:  # pragma: no cover
+            continue
+        for node, _text in _prompt_literals(tree):
+            offenders.append(f"{path.relative_to(_ROOT).as_posix()}:{node.lineno}")
+
+    still_listed = [o for o in offenders if o.split(":")[0] in _MIGRATION_RATCHET]
+    assert len(still_listed) <= _RATCHET_COUNT, (
+        f"{len(still_listed)} hardcoded prompts remain but the ratchet says "
+        f"{_RATCHET_COUNT}. The list is shrink-only — a new prompt belongs in the "
+        "`prompts` table, not here."
+    )
+    assert len(still_listed) == _RATCHET_COUNT, (
+        f"{len(still_listed)} remain and the ratchet still says {_RATCHET_COUNT}. "
+        "Lower _RATCHET_COUNT (and drop the file from _MIGRATION_RATCHET when it hits "
+        "zero) so the next migration cannot silently stall."
     )
 
 

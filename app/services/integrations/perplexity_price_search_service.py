@@ -46,6 +46,7 @@ from app.services.integrations.dataforseo_merchant_service import (
 from app.services.integrations.firecrawl_client import get_firecrawl_client
 from app.models.extraction import PriceExtraction
 from app.utils.price_parsing import parse_price
+from app.services.utilities.prompt_registry import get_cached, prefetch, render
 from app.services.integrations.product_identity_service import (
     get_product_identity_service,
     QueryFacets,
@@ -710,6 +711,13 @@ class PerplexityPriceSearchService:
         tracked_query_id: Optional[str] = None,
         product_id: Optional[str] = None,
     ) -> "PriceSearchResult":
+        # _build_messages is sync and reads the prompt cache, so the async entry point
+        # warms it first. load_prompt has no fallback by design: if the rows are absent
+        # this raises here rather than silently searching with a different prompt.
+        await prefetch(
+            ("extraction", "price_search_system", "price_monitoring"),
+            ("extraction", "price_search_user", "price_monitoring"),
+        )
         system_prompt, user_prompt = self._build_messages(
             product_name, dimensions, country_code, limit, known_retailer_domains,
         )
@@ -867,32 +875,14 @@ class PerplexityPriceSearchService:
                 "ships_from_abroad=true."
             )
 
-        system_prompt = (
-            "You are a price-research tool for building materials (tiles, stone, wood, fabric, "
-            "paint, hardware, etc). Your job is to return a clean, deduplicated list of retailers "
-            "with VISIBLE numeric prices for the product the user asks about.\n\n"
-            "CRITICAL — Include out-of-stock listings as long as a numeric price is printed on the page.\n"
-            "An out-of-stock listing with a posted price is valuable market data and MUST be included.\n"
-            "Concrete example: a page showing 'Keros Ferrara Beige 60x120 — €25.00/m² — Out of stock' "
-            "(or the local-language equivalent such as 'Εκτός διαθεσιμότητας' in Greek, 'Nicht auf Lager' "
-            "in German, 'Agotado' in Spanish, 'Rupture de stock' in French) MUST be returned with "
-            "price=25.00, currency=EUR, availability=out_of_stock. Do NOT exclude it just because it "
-            "isn't currently buyable — the price tells the user what the market reference is.\n\n"
-            "Other rules:\n"
-            "- One row per unique retailer domain. Pick the cheapest variant if a retailer lists multiple.\n"
-            "- When the page displays a was/now promo (e.g. 'Was €89, Now €79', '€89 €79', "
-            "  strikethrough on the old price), populate BOTH: `price` = current, `original_price` = was. "
-            "  Only set `original_price` when the previous price is actually visible on the page — never invent it.\n"
-            "- EXCLUDE only when the retailer truly has NO price on the page: 'quote only', 'contact for "
-            "  price', 'price on request', 'login for pricing', or a price that's completely missing. "
-            "  Do NOT fabricate prices to fill the list.\n"
-            "- EXCLUDE the manufacturer's own site unless they publish retail prices.\n"
-            "- Sort by price ascending.\n"
-            "- Include the product's real page URL — not a search page or homepage.\n"
-            "- For aggregator / price-comparison portals that list 'Retailer X: €N' inline, treat each "
-            "  listed retailer as its own row and note the aggregator in `notes`.\n"
-            f"- Use today's date ({today}) for last_verified unless you have a more specific one.\n"
-            f"{local_directive}"
+        # The instruction text lives in the `prompts` table (audit #14 MV-2). Only the
+        # CONDITIONAL fragments above stay in code: each is a runtime-composed sentence
+        # that depends on whether a country / size / retailer-memory was supplied, so it
+        # cannot be a static row. They arrive as placeholders.
+        system_prompt = render(
+            get_cached("extraction", "price_search_system", stage="price_monitoring"),
+            today=today,
+            local_directive=local_directive,
         )
 
         dim_directive = ""
@@ -920,11 +910,12 @@ class PerplexityPriceSearchService:
                     + "."
                 )
 
-        user_prompt = (
-            f"Find current published retail prices for: {product_spec}.{dim_directive}{memory_directive} "
-            f"Return up to {limit} retailers. After the list, write a 2-3 sentence `summary` noting: "
-            "the closest retailer to the user (if country is known), any manufacturer showroom "
-            "presence in-country, and any pricing outliers worth questioning."
+        user_prompt = render(
+            get_cached("extraction", "price_search_user", stage="price_monitoring"),
+            product_spec=product_spec,
+            dim_directive=dim_directive,
+            memory_directive=memory_directive,
+            limit=limit,
         )
         return system_prompt, user_prompt
 

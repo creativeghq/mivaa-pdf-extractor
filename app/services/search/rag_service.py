@@ -38,7 +38,7 @@ from ..embeddings.vecs_service import get_vecs_service
 from ..core.ai_client_service import get_ai_client_service
 from ..core.ai_call_logger import AICallLogger
 from ..chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
-from app.services.utilities.prompt_registry import load_prompt
+from app.services.utilities.prompt_registry import load_prompt, render
 
 
 
@@ -2146,21 +2146,12 @@ class RAGService:
             # Step 2: Build context from retrieved chunks, fenced as DATA (MV-11).
             context = self._build_fenced_context(chunks)
 
-            # Step 3: Build prompt for Claude 4.5
-            prompt = f"""You are an expert document analyst. Answer the following question based ONLY on the provided context.
-
-**Question:** {query}
-
-**Context from Document:**
-{context}
-
-**Instructions:**
-- Provide a clear, accurate answer based on the context
-- If the context doesn't contain enough information, say so
-- Cite specific parts of the context when relevant
-- Be concise but comprehensive
-
-**Answer:**"""
+            # Step 3: Build prompt for Claude 4.5 — from the database (audit #14 MV-2).
+            prompt = render(
+                await load_prompt("extraction", "rag_document_answer", stage="rag"),
+                question=query,
+                context=context,
+            )
 
             # Step 4: Call Claude Opus 4.7
             client = self.ai_client_service.anthropic
@@ -2303,22 +2294,14 @@ class RAGService:
 {context_summary}
 """
 
-            prompt = f"""You are an expert AI assistant specializing in {query_type} queries.
-
-{conversation_section}
-**Current Question:** {query}
-
-**Retrieved Context:**
-{context}
-
-**Instructions:**
-- {instruction}
-- Base your answer ONLY on the provided context
-- If information is insufficient, clearly state what's missing
-- Cite sources when making specific claims
-- Maintain conversation continuity if context is provided
-
-**Response:**"""
+            prompt = render(
+                await load_prompt("extraction", "rag_advanced_answer", stage="rag"),
+                query_type=query_type,
+                conversation_section=conversation_section,
+                question=query,
+                context=context,
+                instruction=instruction,
+            )
 
             # Step 6: Call Claude Opus 4.7
             client = self.ai_client_service.anthropic
