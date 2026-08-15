@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.utils.exceptions import MaterialKaiIntegrationError
+from app.utils.postgrest_filters import escape_like
 
 logger = logging.getLogger(__name__)
 
@@ -705,13 +706,17 @@ class MaterialVisualSearchService:
 
             # ✅ Step 2.5: Text-based search on product descriptions and image captions
             # When query_text is provided, also search for matching products by description
-            if request.query_text:
+            # Skipped without a workspace_id, matching the VECS half above:
+            # this reads products and captions on the service-role client, so
+            # unscoped means every tenant's rows.
+            if request.query_text and request.workspace_id:
                 try:
                     logger.info(f"🔍 Searching product descriptions and image captions for: {request.query_text[:50]}...")
                     text_matches = await self._search_by_text_description(
                         query_text=request.query_text,
                         limit=request.limit,
-                        supabase=get_supabase_client()
+                        supabase=get_supabase_client(),
+                        workspace_id=request.workspace_id
                     )
 
                     if text_matches:
@@ -961,37 +966,64 @@ class MaterialVisualSearchService:
         self,
         query_text: str,
         limit: int,
-        supabase: Any
+        supabase: Any,
+        workspace_id: str
     ) -> List[Dict[str, Any]]:
         """
         Search for products and images by text description matching.
 
-        Searches products.description, document_images.caption, and
-        document_chunks.content for text matches.
+        Searches products.name, products.description and
+        document_images.caption for text matches, scoped to one workspace.
+
+        `workspace_id` is required and this raises without it. MIVAA runs
+        every query on the service-role client, so there is no RLS backstop:
+        an unscoped predicate here returns products, descriptions and
+        metadata from every tenant on the platform. The VECS half of this
+        same search fails closed for the same reason — see the filter built
+        in `_perform_database_search`. Sharing a catalog across workspaces is
+        a deliberate, granted act that publishes into `catalog_master_products`
+        or `marketplace_listings`; it is never a widened read of `products`.
 
         Args:
             query_text: Text query to search for
             limit: Maximum results to return
             supabase: Supabase client
+            workspace_id: Tenant to scope every query to (required)
 
         Returns:
             List of matching results with similarity scores
+
+        Raises:
+            ValueError: If workspace_id is missing.
         """
+        if not workspace_id:
+            raise ValueError(
+                "workspace_id is required for text description search - "
+                "refusing to run an unscoped cross-tenant query"
+            )
+
         results = []
         seen_product_ids = set()
+
+        # Wildcards in the raw term would let a user widen the match to the
+        # whole table (`%`, `_`, and `*` which PostgREST aliases to `%`).
+        # Score comparisons below deliberately keep using the raw term.
+        like_pattern = f'%{escape_like(query_text)}%'
 
         try:
             # Search 1a: Products by description (ILIKE search)
             products_by_desc = supabase.client.table('products')\
                 .select('id, name, description, metadata')\
-                .ilike('description', f'%{query_text}%')\
+                .eq('workspace_id', workspace_id)\
+                .ilike('description', like_pattern)\
                 .limit(limit)\
                 .execute()
 
             # Search 1b: Products by name (ILIKE search)
             products_by_name = supabase.client.table('products')\
                 .select('id, name, description, metadata')\
-                .ilike('name', f'%{query_text}%')\
+                .eq('workspace_id', workspace_id)\
+                .ilike('name', like_pattern)\
                 .limit(limit)\
                 .execute()
 
@@ -1013,15 +1045,26 @@ class MaterialVisualSearchService:
             if products_response_data:
                 for product in products_response_data:
                     # Get associated images for this product
+                    # image_product_associations carries no workspace_id, so the
+                    # tenant check has to happen on the image it points at. The
+                    # !inner join makes that a server-side filter, which also
+                    # keeps limit(3) meaningful — filtering after the fact would
+                    # let three cross-tenant rows fill the quota and return none.
                     images_response = supabase.client.table('image_product_associations')\
-                        .select('image_id, overall_score, document_images(id, image_url, caption, page_number)')\
+                        .select('image_id, overall_score, document_images!inner(id, image_url, caption, page_number, workspace_id)')\
                         .eq('product_id', product['id'])\
+                        .eq('document_images.workspace_id', workspace_id)\
                         .limit(3)\
                         .execute()
 
                     if images_response.data:
                         for assoc in images_response.data:
                             image_data = assoc.get('document_images', {})
+                            # Re-check in Python: an embedded filter that silently
+                            # stops applying would reopen the leak with nothing
+                            # failing. A NULL stamp is not a match.
+                            if image_data and image_data.get('workspace_id') != workspace_id:
+                                continue
                             if image_data and image_data.get('id'):
                                 # Calculate text match score (simple keyword match)
                                 desc_lower = (product.get('description') or '').lower()
@@ -1042,9 +1085,13 @@ class MaterialVisualSearchService:
                                 })
 
             # Search 2: Images by caption
+            # workspace_id is nullable on document_images; eq() excludes NULL,
+            # which is the behaviour we want — an image with no tenant stamp
+            # must not be served to a tenant.
             images_response = supabase.client.table('document_images')\
                 .select('id, image_url, caption, page_number, product_name')\
-                .ilike('caption', f'%{query_text}%')\
+                .eq('workspace_id', workspace_id)\
+                .ilike('caption', like_pattern)\
                 .limit(limit)\
                 .execute()
 
