@@ -424,3 +424,205 @@ async def get_optional_workspace_context(
         return await get_workspace_context(request, user)
     except HTTPException:
         return None
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Authorization for the /api/internal surface (audit #13)
+# ────────────────────────────────────────────────────────────────────────────
+#
+# `verify_internal_access` above proves AUTHENTICATION and says so in its own
+# docstring: it admits any valid platform token, including an end user's. Seven
+# `/api/internal` mutation routes used it as their only gate and then took the
+# object id straight from the path, so any authenticated user could name another
+# tenant's document, product or job and have MIVAA mutate it with service-role
+# DB access and no RLS behind it (audit #13 MI-1).
+#
+# There are two correct answers, and which one applies depends on whether the
+# route has a real user caller:
+#
+#   * no user caller  -> `require_trusted_service`, which admits ONLY the cron
+#     secret, the `mk_` platform key or a service-role token.
+#   * real user caller (the Admin UI sends the operator's own Supabase JWT
+#     straight to MIVAA) -> keep the user in, and check that they own the id.
+#     That is `assert_job_in_workspace` / `assert_document_in_workspace` /
+#     `assert_product_in_workspace` below.
+#
+# Applying the first to a route that has a user caller breaks it; applying the
+# second to a route that has none is busywork. The split is recorded per route.
+
+
+def is_trusted_service_caller(claims: Optional[Dict[str, Any]]) -> bool:
+    """True for the cron secret, the `mk_` platform key, or a service-role token.
+
+    `verify_internal_access` returns None for the x-cron-secret path, which is by
+    construction a trusted caller. Otherwise the token's own claims say what it is:
+    the platform key stamps `service='mivaa'`, and a service-role JWT carries
+    `role`/`aud` of `service_role`. An end user's Supabase JWT has neither.
+    """
+    if claims is None:
+        return True
+    return (
+        claims.get("service") == "mivaa"
+        or claims.get("role") == "service_role"
+        or claims.get("aud") == "service_role"
+    )
+
+
+async def require_trusted_service(request: Request) -> Optional[Dict[str, Any]]:
+    """Gate for internal routes that have NO user caller.
+
+    Fails closed, and refuses an ordinary user JWT rather than admitting it the way
+    `verify_internal_access` does. Use this only where a search across both repos
+    shows no frontend/edge caller — otherwise the route needs an ownership check
+    instead, or this will 403 a legitimate operator.
+    """
+    claims = await verify_internal_access(request)
+    if not is_trusted_service_caller(claims):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint is callable only by the platform itself",
+        )
+    return claims
+
+
+def _caller_workspace_or_none(claims: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The workspace a NON-trusted caller is confined to, else None (no confinement).
+
+    A trusted caller is not confined — a cron sweep legitimately spans tenants.
+    """
+    if is_trusted_service_caller(claims):
+        return None
+    ws = claims.get("workspace_id") if claims else None
+    return str(ws) if ws else None
+
+
+async def _assert_row_in_caller_workspace(
+    *,
+    table: str,
+    column: str,
+    row_id: str,
+    claims: Optional[Dict[str, Any]],
+    what: str,
+) -> Dict[str, Any]:
+    """Fetch `row_id` from `table` and confirm the caller may act on it.
+
+    Returns the row. Raises 404 — never 403 — on a mismatch: telling an attacker
+    "that exists but is not yours" is an id oracle (invariant 1).
+    """
+    sb = _get_supabase_client().client
+    res = (
+        sb.table(table)
+        .select(f"id, {column}")
+        .eq("id", row_id)
+        .maybe_single()
+        .execute()
+    )
+    row = getattr(res, "data", None)
+    if not row:
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+
+    caller_ws = _caller_workspace_or_none(claims)
+    if caller_ws is None:
+        return row
+
+    owner_ws = row.get(column)
+    if not owner_ws:
+        # An unowned row is not "everyone's". Only a trusted caller may touch it —
+        # `reset-job` could reset null-workspace jobs for any caller (audit #13).
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+    if str(owner_ws) != str(caller_ws):
+        raise HTTPException(status_code=404, detail=f"{what} not found")
+    return row
+
+
+async def assert_job_in_workspace(job_id: str, claims: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return await _assert_row_in_caller_workspace(
+        table="background_jobs", column="workspace_id", row_id=job_id,
+        claims=claims, what="Job",
+    )
+
+
+async def assert_document_in_workspace(document_id: str, claims: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return await _assert_row_in_caller_workspace(
+        table="documents", column="workspace_id", row_id=document_id,
+        claims=claims, what="Document",
+    )
+
+
+async def assert_product_in_workspace(product_id: str, claims: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return await _assert_row_in_caller_workspace(
+        table="products", column="workspace_id", row_id=product_id,
+        claims=claims, what="Product",
+    )
+
+
+async def assert_document_belongs_to(document_id: str, workspace_id: Optional[str]) -> None:
+    """The document must live in the workspace the caller was already authorized for.
+
+    `authorize_rag_workspace(claims, body.workspace_id)` proves the caller may act in
+    the workspace they named. It says nothing about the OTHER id in the same request.
+    Naming your own workspace and another tenant's `document_id` produced chunks,
+    image rows, embeddings and relationships with cross-tenant references baked in
+    (audit #13 MI-2) — the "two ids each individually valid, never checked against
+    each other" class, and its sixth confirmed instance across the two repos.
+
+    404, not 403: see _assert_row_in_caller_workspace.
+    """
+    if not document_id or not workspace_id:
+        return
+    sb = _get_supabase_client().client
+    res = (
+        sb.table("documents")
+        .select("id, workspace_id")
+        .eq("id", document_id)
+        .maybe_single()
+        .execute()
+    )
+    row = getattr(res, "data", None)
+    if not row or str(row.get("workspace_id") or "") != str(workspace_id):
+        raise HTTPException(status_code=404, detail="Document not found")
+
+
+async def assert_job_belongs_to(job_id: Optional[str], workspace_id: Optional[str]) -> None:
+    """The job must live in the workspace the caller was already authorized for.
+
+    `regenerate-image-embeddings` scoped the IMAGES it processed to the caller's
+    workspace correctly, then wrote `background_jobs` by id alone — so passing
+    another tenant's job UUID marked their job processing/completed/failed with
+    attacker-controlled progress metadata, which then fed their dashboards and any
+    recovery logic keyed on status (audit #13 MI-3).
+    """
+    if not job_id or not workspace_id:
+        return
+    sb = _get_supabase_client().client
+    res = (
+        sb.table("background_jobs")
+        .select("id, workspace_id")
+        .eq("id", job_id)
+        .maybe_single()
+        .execute()
+    )
+    row = getattr(res, "data", None)
+    if not row or str(row.get("workspace_id") or "") != str(workspace_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+
+
+def caller_workspace_or_none(claims: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Public form of _caller_workspace_or_none, for routes that filter a query.
+
+    Returns the workspace a non-trusted caller must be confined to, or None when
+    the caller is trusted (cron / platform key / service role) and legitimately
+    spans tenants.
+    """
+    return _caller_workspace_or_none(claims)
+
+
+async def assert_job_readable(job_id: str, claims: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Alias of assert_job_in_workspace, named for read paths.
+
+    `/api/jobs/{id}` and `/api/jobs/{id}/products` are not admin-only despite the
+    path — they used `verify_internal_access` and no workspace filter, so any
+    authenticated caller could read another tenant's filenames, document ids,
+    errors and product-processing metadata (audit #13 MI-4).
+    """
+    return await assert_job_in_workspace(job_id, claims)

@@ -9,7 +9,11 @@ This module provides comprehensive administrative and monitoring capabilities in
 - System monitoring and performance metrics
 """
 
-from app.dependencies import verify_internal_access
+from app.dependencies import (
+    assert_job_readable,
+    caller_workspace_or_none,
+    verify_internal_access,
+)
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query, Header
 from fastapi.responses import JSONResponse
 from typing import List, Optional, Dict, Any
@@ -181,7 +185,7 @@ async def resume_from_deploy():
     return {"ok": True, "drain_state": _DRAINING}
 
 
-@router.get("/admin/drain-status")
+@router.get("/admin/drain-status", dependencies=[Depends(verify_internal_access)])
 async def drain_status():
     """Read-only view of the current drain flag.
 
@@ -317,12 +321,12 @@ async def track_job(job_id: str, job_type: str, status: str, details: Dict[str, 
 
 # Job Management Endpoints
 
-@router.get("/jobs", response_model=JobListResponse, dependencies=[Depends(verify_internal_access)])
+@router.get("/jobs", response_model=JobListResponse)
 async def list_jobs(
     status: Optional[str] = Query(None, description="Filter by job status"),
     job_type: Optional[str] = Query(None, description="Filter by job type"),
     pagination: PaginationParams = Depends(),
-
+    claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ):
     """
     List all jobs with optional filtering and pagination
@@ -335,6 +339,15 @@ async def list_jobs(
     try:
         # Combine active jobs and job history
         all_jobs = list(active_jobs.values()) + job_history
+
+        # A non-trusted caller sees only their own tenant's jobs. This listing
+        # exposed filenames, document ids and error text platform-wide (#13 MI-4).
+        caller_ws = caller_workspace_or_none(claims)
+        if caller_ws:
+            all_jobs = [
+                j for j in all_jobs
+                if str(j.get("workspace_id") or "") == str(caller_ws)
+            ]
         
         # Apply filters
         filtered_jobs = all_jobs
@@ -434,7 +447,7 @@ async def get_job_statistics():
 
 # Bulk Operations
 
-@router.get("/jobs/health", response_model=DataResponse)
+@router.get("/jobs/health", response_model=DataResponse, dependencies=[Depends(verify_internal_access)])
 async def jobs_health_check():
     """
     Health check endpoint for the jobs subsystem.
@@ -448,10 +461,13 @@ async def jobs_health_check():
     }
 
 
-@router.get("/jobs/{job_id}", response_model=JobStatusResponse, dependencies=[Depends(verify_internal_access)])
+@router.get("/jobs/{job_id}", response_model=JobStatusResponse)
 async def get_job_status(
     job_id: str,
-
+    # Despite the path, this is NOT admin-only — verify_internal_access admits any
+    # valid platform token. Without a workspace filter it returned another tenant's
+    # filename, document id, error text and progress (audit #13 MI-4).
+    claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ):
     """
     Get detailed status information for a specific job
@@ -477,7 +493,11 @@ async def get_job_status(
             if not job_info:
                 from app.services.core.supabase_client import get_supabase_client
                 supabase_client = get_supabase_client()
-                response = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
+                query = supabase_client.client.table('background_jobs').select('*').eq('id', job_id)
+                caller_ws = caller_workspace_or_none(claims)
+                if caller_ws:
+                    query = query.eq('workspace_id', caller_ws)
+                response = query.execute()
 
                 if response.data and len(response.data) > 0:
                     db_job = response.data[0]
@@ -509,9 +529,10 @@ async def get_job_status(
         logger.error(f"Error getting job status: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get job status: {str(e)}")
 
-@router.get("/jobs/{job_id}/status", response_model=DataResponse, dependencies=[Depends(verify_internal_access)])
+@router.get("/jobs/{job_id}/status", response_model=DataResponse)
 async def get_job_status_alt(
     job_id: str,
+    claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ):
     """
     Get detailed status information for a specific job (alternative endpoint)
@@ -690,7 +711,7 @@ async def cancel_job(
 
 # System Monitoring
 
-@router.get("/system/health", response_model=SystemHealthResponse)
+@router.get("/system/health", response_model=SystemHealthResponse, dependencies=[Depends(verify_internal_access)])
 async def get_system_health(
 
 ):
@@ -1041,7 +1062,7 @@ async def cleanup_temp_files(
         logger.error(f"Error during temp file cleanup: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to cleanup temp files: {str(e)}")
 
-@router.get("/packages/status", response_model=PackageStatusResponse)
+@router.get("/packages/status", response_model=PackageStatusResponse, dependencies=[Depends(verify_internal_access)])
 async def get_package_status():
     """
     Get the status of all system packages and dependencies.
@@ -1163,8 +1184,12 @@ async def get_basic_package_status():
     }
 
 
-@router.get("/jobs/{job_id}/products", response_model=DataResponse, dependencies=[Depends(verify_internal_access)])
-async def get_job_product_progress(job_id: str, supabase: SupabaseClient = Depends(get_supabase_client)):
+@router.get("/jobs/{job_id}/products", response_model=DataResponse)
+async def get_job_product_progress(
+    job_id: str,
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
+):
     """
     Get product-level progress for a PDF processing job.
 
@@ -1177,6 +1202,8 @@ async def get_job_product_progress(job_id: str, supabase: SupabaseClient = Depen
     - Error messages if failed
     - Processing time
     """
+    # The job decides the tenant; product rows hang off it (audit #13 MI-4).
+    await assert_job_readable(job_id, claims)
     try:
         # Query product_processing_status table
         response = supabase.client.table("product_processing_status")\

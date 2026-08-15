@@ -36,7 +36,17 @@ from app.services.core.supabase_client import get_supabase_client, SupabaseClien
 from app.services.tracking.progress_tracker import get_progress_service
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 from app.schemas.jobs import JobStatus, ProcessingStage
-from app.dependencies import get_current_user, resolve_workspace_id, verify_internal_access
+from app.dependencies import (
+    is_trusted_service_caller,
+    assert_document_belongs_to,
+    assert_job_belongs_to,
+    assert_document_in_workspace,
+    assert_job_in_workspace,
+    get_current_user,
+    require_trusted_service,
+    resolve_workspace_id,
+    verify_internal_access,
+)
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module — importing
 # from `app.api.documents` at the top triggers a circular-import cycle on startup
 # (app.api.documents → management_routes → app.orchestration → rag_routes). It is only
@@ -284,10 +294,11 @@ class CreateRelationshipsResponse(BaseModel):
 # ENDPOINTS
 # ============================================================================
 
-@router.post("/classify-images/{job_id}", response_model=ClassifyImagesResponse, dependencies=[Depends(verify_internal_access)])
+@router.post("/classify-images/{job_id}", response_model=ClassifyImagesResponse)
 async def classify_images(
     job_id: str,
-    request: ClassifyImagesRequest
+    request: ClassifyImagesRequest,
+    _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
 ):
     """
     Classify images as material or non-material using Claude Vision (+ Claude validation).
@@ -368,10 +379,11 @@ async def classify_images(
         raise HTTPException(status_code=500, detail=f"Image classification failed: {str(e)}")
 
 
-@router.post("/upload-images/{job_id}", response_model=UploadImagesResponse, dependencies=[Depends(verify_internal_access)])
+@router.post("/upload-images/{job_id}", response_model=UploadImagesResponse)
 async def upload_images(
     job_id: str,
-    request: UploadImagesRequest
+    request: UploadImagesRequest,
+    _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
 ):
     """
     Upload material images to Supabase Storage.
@@ -472,6 +484,10 @@ async def save_images_to_db(
     workspace_id = await resolve_workspace_id(
         internal_claims or {"service": "mivaa"}, request.workspace_id
     )
+    # The workspace is bound to the caller; the document_id in the same body is not
+    # (audit #13 MI-2). Without this, naming your own workspace and another tenant's
+    # document writes image rows and SLIG embeddings across the boundary.
+    await assert_document_belongs_to(request.document_id, workspace_id)
     try:
         logger.info(f"💾 [Job {job_id}] Starting DB save and SLIG generation for {len(request.material_images)} images")
 
@@ -543,6 +559,10 @@ async def create_chunks(
     """
     try:
         await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
+        # ...and the OTHER id in the request, which that call says nothing about
+        # (audit #13 MI-2). No-ops when document_id is None: a workspace-wide
+        # sweep names no document and needs no reconciliation.
+        await assert_document_belongs_to(request.document_id, request.workspace_id)
         logger.info(f"📝 [Job {job_id}] Starting chunking for document {request.document_id}")
 
         await report_stage(job_id, "CHUNKING", 0)
@@ -694,10 +714,11 @@ async def create_chunks(
         raise HTTPException(status_code=500, detail=f"Chunking failed: {str(e)}")
 
 
-@router.post("/create-relationships/{job_id}", response_model=CreateRelationshipsResponse, dependencies=[Depends(verify_internal_access)])
+@router.post("/create-relationships/{job_id}", response_model=CreateRelationshipsResponse)
 async def create_relationships(
     job_id: str,
-    request: CreateRelationshipsRequest
+    request: CreateRelationshipsRequest,
+    _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
 ):
     """
     Create all relationships between chunks, images, and products.
@@ -923,6 +944,10 @@ async def generate_product_embeddings(
     """
     try:
         await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
+        # ...and the OTHER id in the request, which that call says nothing about
+        # (audit #13 MI-2). No-ops when document_id is None: a workspace-wide
+        # sweep names no document and needs no reconciliation.
+        await assert_document_belongs_to(request.document_id, request.workspace_id)
         logger.info(f"🎨 Starting product embedding generation for workspace: {request.workspace_id}")
 
         # Build query to find products
@@ -1037,8 +1062,11 @@ async def generate_product_embeddings(
 
         logger.info(f"✅ Product embedding generation complete: {products_processed} processed, {chunks_created} chunks created, {embeddings_queued} embeddings queued")
 
+        # `success` is DERIVED, not asserted: a run that collected errors did not
+        # succeed, and returning True beside a populated errors[] is what let a
+        # dashboard record a clean backfill over failed rows (audit #13 MI-6).
         return GenerateProductEmbeddingsResponse(
-            success=True,
+            success=not errors,
             message=message,
             products_processed=products_processed,
             chunks_created=chunks_created,
@@ -1115,6 +1143,14 @@ async def regenerate_image_embeddings(
     """
     try:
         await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
+        # ...and the OTHER id in the request, which that call says nothing about
+        # (audit #13 MI-2). No-ops when document_id is None: a workspace-wide
+        # sweep names no document and needs no reconciliation.
+        await assert_document_belongs_to(request.document_id, request.workspace_id)
+        # This route scopes the IMAGES it processes correctly and then wrote
+        # background_jobs by id alone (audit #13 MI-3).
+        await assert_job_belongs_to(request.job_id, request.workspace_id)
+
         from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
         from app.services.embeddings.vecs_service import get_vecs_service
         import base64
@@ -1171,7 +1207,7 @@ async def regenerate_image_embeddings(
                     'embeddings_generated': 0,
                     'skipped': 0
                 }
-            }).eq('id', request.job_id).execute()
+            }).eq('id', request.job_id).eq('workspace_id', request.workspace_id).execute()
 
         for image in images:
             try:
@@ -1320,7 +1356,7 @@ async def regenerate_image_embeddings(
                             'skipped': skipped,
                             'current_image': image_id
                         }
-                    }).eq('id', request.job_id).execute()
+                    }).eq('id', request.job_id).eq('workspace_id', request.workspace_id).execute()
 
             except Exception as e:
                 error_msg = f"Failed to process image {image.get('id')}: {str(e)}"
@@ -1349,7 +1385,7 @@ async def regenerate_image_embeddings(
                     'skipped': skipped,
                     'errors': errors
                 }
-            }).eq('id', request.job_id).execute()
+            }).eq('id', request.job_id).eq('workspace_id', request.workspace_id).execute()
 
             try:
                 from app.services.core.endpoint_controller import endpoint_controller
@@ -1358,7 +1394,7 @@ async def regenerate_image_embeddings(
                 logger.warning(f"⚠️ scale_all_to_zero failed on regen completion: {scale_err}")
 
         return RegenerateImageEmbeddingsResponse(
-            success=True,
+            success=not errors,
             message=message,
             images_processed=images_processed,
             embeddings_generated=embeddings_generated,
@@ -1378,7 +1414,7 @@ async def regenerate_image_embeddings(
                 'error': str(e),
                 'failed_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat()
-            }).eq('id', request.job_id).execute()
+            }).eq('id', request.job_id).eq('workspace_id', request.workspace_id).execute()
 
             try:
                 from app.services.core.endpoint_controller import endpoint_controller
@@ -1440,6 +1476,12 @@ async def reset_job(
         _job_ws = job_resp.data.get('workspace_id')
         if _job_ws:
             await authorize_rag_workspace(claims, _job_ws)
+        elif not is_trusted_service_caller(claims):
+            # A job with no workspace is not everyone's job. `if _job_ws:` skipped
+            # the check entirely for null-workspace rows, so any authenticated
+            # caller could flip one back to pending (audit #13, destructive
+            # inventory). 404 rather than 403 — see assert_job_in_workspace.
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
         previous_status = job_resp.data.get('status')
 
@@ -1523,6 +1565,10 @@ async def extract_entities(
     """
     try:
         await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
+        # ...and the OTHER id in the request, which that call says nothing about
+        # (audit #13 MI-2). No-ops when document_id is None: a workspace-wide
+        # sweep names no document and needs no reconciliation.
+        await assert_document_belongs_to(request.document_id, request.workspace_id)
         from app.services.discovery.document_entity_service import DocumentEntityService
 
         logger.info(f"🔗 Matching entities for document {request.document_id}")
@@ -1588,6 +1634,10 @@ async def generate_entity_embeddings(
     """
     try:
         await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
+        # ...and the OTHER id in the request, which that call says nothing about
+        # (audit #13 MI-2). No-ops when document_id is None: a workspace-wide
+        # sweep names no document and needs no reconciliation.
+        await assert_document_belongs_to(request.document_id, request.workspace_id)
         from app.services.discovery.document_entity_service import DocumentEntityService
 
         logger.info(f"🎨 Generating entity embeddings for document {request.document_id}")
@@ -1657,6 +1707,10 @@ async def regenerate_text_embeddings(
     """
     try:
         await authorize_rag_workspace(claims, request.workspace_id)  # audit #217 H7
+        # ...and the OTHER id in the request, which that call says nothing about
+        # (audit #13 MI-2). No-ops when document_id is None: a workspace-wide
+        # sweep names no document and needs no reconciliation.
+        await assert_document_belongs_to(request.document_id, request.workspace_id)
         from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
         logger.info(f"📝 Starting text embedding regeneration for workspace: {request.workspace_id}")
@@ -1734,7 +1788,7 @@ async def regenerate_text_embeddings(
         logger.info(f"✅ Text embedding regeneration complete: {embeddings_generated} embeddings generated")
 
         return RegenerateTextEmbeddingsResponse(
-            success=True,
+            success=not errors,
             message=message,
             chunks_processed=chunks_processed,
             embeddings_generated=embeddings_generated,
@@ -1768,10 +1822,14 @@ class ValidatePipelineResponse(BaseModel):
     recommendations: List[str]
 
 
-@router.post("/validate-pipeline/{job_id}", response_model=ValidatePipelineResponse, dependencies=[Depends(verify_internal_access)])
+@router.post("/validate-pipeline/{job_id}", response_model=ValidatePipelineResponse)
 async def validate_pipeline(
     job_id: str,
-    supabase: SupabaseClient = Depends(get_supabase_client)
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    # Real user caller: AsyncJobQueueMonitor sends the operator's own Supabase JWT.
+    # So this keeps the permissive gate and checks ownership of the id instead
+    # (audit #13 MI-1) — a trusted-only dependency would break the Admin UI.
+    claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ):
     """
     Audit pipeline completion status for a job.
@@ -1785,6 +1843,8 @@ async def validate_pipeline(
     Returns:
         ValidatePipelineResponse with per-stage completion status and recommendations
     """
+    # 404 (not 403) on someone else's job — a distinct status is an id oracle.
+    await assert_job_in_workspace(job_id, claims)
     try:
         # Get job record
         job_resp = supabase.client.table('background_jobs').select('*').eq('id', job_id).single().execute()
@@ -1886,8 +1946,11 @@ class EnrichExistingProductResponse(BaseModel):
     message: str
 
 
-@router.post("/enrich-existing-product/{product_id}", response_model=EnrichExistingProductResponse, dependencies=[Depends(verify_internal_access)])
-async def enrich_existing_product(product_id: str) -> EnrichExistingProductResponse:
+@router.post("/enrich-existing-product/{product_id}", response_model=EnrichExistingProductResponse)
+async def enrich_existing_product(
+    product_id: str,
+    _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
+) -> EnrichExistingProductResponse:
     """
     Retroactively run Stage 4.7 enrichment (chunk regex + vision_analysis rollup)
     on an existing product row. Only fills null/empty fields — never overwrites.
@@ -1972,8 +2035,15 @@ class RunCatalogKnowledgeResponse(BaseModel):
     message: str
 
 
-@router.post("/run-catalog-knowledge/{document_id}", response_model=RunCatalogKnowledgeResponse, dependencies=[Depends(verify_internal_access)])
-async def run_catalog_knowledge(document_id: str, force: bool = False) -> RunCatalogKnowledgeResponse:
+@router.post("/run-catalog-knowledge/{document_id}", response_model=RunCatalogKnowledgeResponse)
+async def run_catalog_knowledge(
+    document_id: str,
+    force: bool = False,
+    # Real user caller (mivaaApiClient), so: keep the user, check the document.
+    # This reprocesses and mutates a whole document plus every kb_doc derived
+    # from it — the largest blast radius in this file (audit #13 MI-1).
+    claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
+) -> RunCatalogKnowledgeResponse:
     """
     Standalone runner for Layer 1 (catalog layout analyzer) + Layer 2
     (catalog legend extractor) against a single document.
@@ -1987,6 +2057,7 @@ async def run_catalog_knowledge(document_id: str, force: bool = False) -> RunCat
     Query param `force=true` bypasses the idempotency check and re-analyzes
     even if `documents.metadata.catalog_layout.analyzed_at` exists.
     """
+    await assert_document_in_workspace(document_id, claims)
     try:
         supabase = get_supabase_client()
 
@@ -2088,10 +2159,15 @@ class DocumentExtractionStatusResponse(BaseModel):
     products_sample: List[ProductCoverage]
 
 
-@router.get("/document-extraction-status/{document_id}", response_model=DocumentExtractionStatusResponse, dependencies=[Depends(verify_internal_access)])
+@router.get("/document-extraction-status/{document_id}", response_model=DocumentExtractionStatusResponse)
 async def document_extraction_status(
     document_id: str,
     sample_limit: int = 10,
+    # Real user caller: DocumentHealthPanel reads this through mivaaApiClient with
+    # the operator's own JWT. So it keeps the permissive gate and checks that the
+    # caller owns the document (audit #13 MI-1) — a trusted-only dependency here
+    # would 403 the Admin UI's health panel.
+    claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ) -> DocumentExtractionStatusResponse:
     """
     Observability endpoint — returns a snapshot of how well a document has
@@ -2109,6 +2185,7 @@ async def document_extraction_status(
     are underfilled and which legends are missing, and decide whether to
     re-run a specific layer or accept the current state.
     """
+    await assert_document_in_workspace(document_id, claims)
     try:
         supabase = get_supabase_client()
 
@@ -2295,6 +2372,7 @@ async def backfill_page_embeddings(
     try:
         # Tenancy from the verified JWT, not from the body (security invariant 1).
         await authorize_rag_workspace(claims, request.workspace_id)
+        await assert_document_belongs_to(request.document_id, request.workspace_id)  # audit #13 MI-2
 
         from app.services.embeddings.page_embedding_service import get_page_embedding_service
         from app.config import settings
@@ -2364,7 +2442,7 @@ async def backfill_page_embeddings(
                 errors.append(f"{doc_id}: {doc_err}")
 
         return BackfillPageEmbeddingsResponse(
-            success=True,
+            success=not errors,
             message=(
                 f"Backfilled {len(selected)} document(s); {remaining} still queued"
                 if remaining else f"Backfilled {len(selected)} document(s)"
