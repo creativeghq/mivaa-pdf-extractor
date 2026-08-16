@@ -1402,19 +1402,26 @@ async def reprocess_image_ocr(
         
         logger.info(f"📷 Processing image: {image_url}")
         
-        # Step 2: Download image temporarily
-        import httpx
+        # Step 2: Download image temporarily.
+        # `document_images.image_url` is a DB column written from PDF extraction or a
+        # supplier feed, so it is attacker-influenced at one remove — this is an
+        # invariant-7 fetch and goes through the guarded helper (scheme + resolved
+        # address checked on every redirect hop, body capped while streaming).
         import tempfile
-        
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(image_url)
-            if response.status_code != 200:
-                raise HTTPException(status_code=400, detail=f"Failed to download image: {response.status_code}")
-            
-            # Save to temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
-                tmp_file.write(response.content)
-                tmp_image_path = tmp_file.name
+
+        from ..utils.ssrf_guard import MAX_IMAGE_BYTES, SSRFError, safe_fetch_bytes
+
+        try:
+            fetched = await safe_fetch_bytes(image_url, max_bytes=MAX_IMAGE_BYTES)
+        except SSRFError as ssrf_err:
+            raise HTTPException(status_code=400, detail=f"Blocked image URL: {ssrf_err}")
+        if not fetched.ok:
+            raise HTTPException(status_code=400, detail=f"Failed to download image: {fetched.status_code}")
+
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
+            tmp_file.write(fetched.content)
+            tmp_image_path = tmp_file.name
         
         try:
             # Step 3: Run PaddleOCR OCR

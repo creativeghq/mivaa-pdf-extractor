@@ -414,21 +414,37 @@ class PDFProcessor:
         document_id = document_id or str(uuid.uuid4())
         self.logger.info("Downloading PDF from URL for document %s: %s", document_id, pdf_url)
         
+        # `pdf_url` arrives from a caller-supplied or DB-stored location, so this is an
+        # invariant-7 fetch: the guarded helper checks the scheme and resolved address of
+        # the URL AND of every redirect hop, and caps the body while streaming. The cap is
+        # the same one upload accepts (Settings.max_file_size), so a document we took by
+        # upload cannot be refused on the re-download path.
+        #
+        # Imported OUTSIDE the try on purpose: an `except SSRFError` whose name is bound
+        # by a statement inside the same try turns an ImportError into a NameError raised
+        # from the handler, which is a worse error than the one it was hiding.
+        from app.utils.ssrf_guard import MAX_PDF_BYTES, SSRFError, safe_fetch_bytes
+
         try:
-            # Download PDF with timeout
             timeout = processing_options.get('download_timeout', 30) if processing_options else 30
-            
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(pdf_url)
-                response.raise_for_status()
-                
-                # Validate content type
-                content_type = response.headers.get('content-type', '').lower()
-                if 'application/pdf' not in content_type and not pdf_url.lower().endswith('.pdf'):
-                    self.logger.warning("Unexpected content type for PDF: %s", content_type)
-                
-                pdf_bytes = response.content
-                
+
+            fetched = await safe_fetch_bytes(pdf_url, max_bytes=MAX_PDF_BYTES, timeout=timeout)
+            if not fetched.ok:
+                raise PDFDownloadError(
+                    f"Failed to download PDF from {pdf_url}: HTTP {fetched.status_code}"
+                )
+
+            # Validate content type
+            content_type = fetched.content_type.lower()
+            if 'application/pdf' not in content_type and not pdf_url.lower().endswith('.pdf'):
+                self.logger.warning("Unexpected content type for PDF: %s", content_type)
+
+            pdf_bytes = fetched.content
+
+        except SSRFError as e:
+            raise PDFDownloadError(f"Blocked PDF URL {pdf_url}: {str(e)}") from e
+        except PDFDownloadError:
+            raise
         except httpx.HTTPError as e:
             raise PDFDownloadError(f"Failed to download PDF from {pdf_url}: {str(e)}") from e
         except Exception as e:

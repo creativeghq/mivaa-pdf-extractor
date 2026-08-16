@@ -34,6 +34,7 @@ from app.services.embeddings.real_embeddings_service import RealEmbeddingsServic
 from app.services.search.relevancy_service import RelevancyService
 from app.services.core.supabase_client import get_supabase_client, SupabaseClient
 from app.services.tracking.progress_tracker import get_progress_service
+from app.utils.ssrf_guard import MAX_IMAGE_BYTES, SSRFError, safe_fetch_bytes
 from app.models.ai_config import AIModelConfig, DEFAULT_AI_CONFIG
 from app.schemas.jobs import JobStatus, ProcessingStage
 from app.dependencies import (
@@ -1154,7 +1155,6 @@ async def regenerate_image_embeddings(
         from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
         from app.services.embeddings.vecs_service import get_vecs_service
         import base64
-        import aiohttp
 
         logger.info(f"🎨 Starting image embedding regeneration for workspace: {request.workspace_id}")
 
@@ -1234,18 +1234,29 @@ async def regenerate_image_embeddings(
                     except Exception as e:
                         logger.debug(f"   No existing embeddings for {image_id}: {e}")
 
-                # Download image from Supabase Storage
+                # Download image from Supabase Storage.
+                # `document_images.image_url` is written from PDF extraction / a
+                # supplier feed, so this is an invariant-7 fetch: guarded helper, every
+                # redirect hop re-validated, body capped while streaming. The previous
+                # `await response.read()` had no cap at all — one oversized row could
+                # take the whole backfill loop out of memory.
                 logger.info(f"   📥 Downloading image {image_id}...")
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(image_url) as response:
-                        if response.status != 200:
-                            error_msg = f"Failed to download image {image_id}: HTTP {response.status}"
-                            logger.error(f"   ❌ {error_msg}")
-                            errors.append(error_msg)
-                            continue
+                try:
+                    fetched = await safe_fetch_bytes(image_url, max_bytes=MAX_IMAGE_BYTES)
+                except SSRFError as ssrf_err:
+                    error_msg = f"Blocked image URL for {image_id}: {ssrf_err}"
+                    logger.error(f"   ❌ {error_msg}")
+                    errors.append(error_msg)
+                    continue
 
-                        image_bytes = await response.read()
-                        image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+                if not fetched.ok:
+                    error_msg = f"Failed to download image {image_id}: HTTP {fetched.status_code}"
+                    logger.error(f"   ❌ {error_msg}")
+                    errors.append(error_msg)
+                    continue
+
+                image_bytes = fetched.content
+                image_base64 = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
 
                 # Generate all embeddings (visual, color, texture, style, material, understanding)
                 logger.info(f"   🎨 Generating embeddings for image {image_id}...")

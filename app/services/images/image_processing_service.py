@@ -234,7 +234,6 @@ class ImageProcessingService:
             actual model is always `claude-opus-4-8`.
             """
             import time
-            import httpx
             from app.services.core.ai_call_logger import AICallLogger
 
             start_time = time.time()
@@ -527,14 +526,19 @@ class ImageProcessingService:
                 storage_url = img_data.get('storage_url') or img_data.get('url') or img_data.get('public_url')
                 if storage_url:
                     logger.info(f"   📥 Image missing locally ({filename}), downloading from storage for classification...")
+                    # `storage_url` / `url` / `public_url` reach this dict from PDF
+                    # extraction or a supplier feed, so this is an invariant-7 fetch:
+                    # guarded helper, every redirect hop re-validated (Supabase public
+                    # URLs redirect through the CDN), body capped while streaming.
+                    from app.utils.ssrf_guard import MAX_IMAGE_BYTES, safe_fetch_bytes
+
                     try:
-                        async with httpx.AsyncClient(timeout=30.0) as client:
-                            resp = await client.get(storage_url)
-                            if resp.status_code == 200:
-                                image_base64 = base64.b64encode(resp.content).decode('utf-8')
-                                logger.info(f"   ✅ Downloaded {len(resp.content)} bytes from storage")
-                            else:
-                                logger.error(f"   ❌ Storage download failed: HTTP {resp.status_code}")
+                        fetched = await safe_fetch_bytes(storage_url, max_bytes=MAX_IMAGE_BYTES)
+                        if fetched.ok:
+                            image_base64 = base64.b64encode(fetched.content).decode('utf-8')
+                            logger.info(f"   ✅ Downloaded {len(fetched.content)} bytes from storage")
+                        else:
+                            logger.error(f"   ❌ Storage download failed: HTTP {fetched.status_code}")
                     except Exception as e:
                         logger.error(f"   ❌ Error downloading from storage: {e}")
 

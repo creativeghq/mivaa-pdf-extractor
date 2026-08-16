@@ -18,7 +18,6 @@ from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Q
 from fastapi.responses import JSONResponse
 import asyncio
 import aiohttp
-import httpx
 import sentry_sdk
 from pydantic import BaseModel, Field, model_validator
 
@@ -1617,11 +1616,36 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 file_response = supabase_client.client.storage.from_(storage_bucket).download(storage_object_path)
             elif file_path and (file_path.startswith('http://') or file_path.startswith('https://')):
                 # Legacy URL-based path (pre-storage_object_path migration).
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    response = await client.get(file_path)
-                    response.raise_for_status()
-                    file_response = response.content
-                    logger.info(f"✅ Downloaded file from URL: {len(file_response)} bytes")
+                # `documents.file_path` is a DB column, so this is an invariant-7 fetch:
+                # guarded helper, every redirect hop re-validated, body capped while
+                # streaming at the same limit upload accepts.
+                #
+                # `http` is allowed here and nowhere else: these rows predate the storage
+                # migration and some carry plaintext URLs. Refusing them would turn a
+                # resumable job into a permanently unresumable one, which is a worse
+                # outcome than a plaintext fetch whose host has still been DNS-resolved
+                # and checked against every private range. New code uses https only.
+                from app.utils.ssrf_guard import MAX_PDF_BYTES, SSRFError, safe_fetch_bytes
+
+                try:
+                    fetched = await safe_fetch_bytes(
+                        file_path,
+                        max_bytes=MAX_PDF_BYTES,
+                        timeout=60.0,
+                        allow_schemes=("http", "https"),
+                    )
+                except SSRFError as ssrf_err:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Blocked document file_path: {ssrf_err}",
+                    )
+                if not fetched.ok:
+                    raise HTTPException(
+                        status_code=status.HTTP_502_BAD_GATEWAY,
+                        detail=f"Failed to download file from URL: HTTP {fetched.status_code}",
+                    )
+                file_response = fetched.content
+                logger.info(f"✅ Downloaded file from URL: {len(file_response)} bytes")
             else:
                 # Legacy: file_path encodes "{bucket}/{key}"
                 bucket_name = file_path.split('/')[0] if '/' in file_path else 'pdf-documents'

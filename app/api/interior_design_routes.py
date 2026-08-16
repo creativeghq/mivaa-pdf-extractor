@@ -453,40 +453,52 @@ async def download_and_upload_to_supabase(image_url: str, job_id: str, model_id:
     Returns:
         Public URL of the uploaded image in Supabase Storage
     """
+    from app.utils.ssrf_guard import MAX_IMAGE_BYTES, SSRFError, safe_fetch_bytes
+
+    # A generation provider's output URL is not our own config — it is whatever came
+    # back in a JSON response, so it is invariant-7 territory. Redirects are followed
+    # and re-validated hop by hop rather than banned, because `replicate.delivery`
+    # genuinely redirects; a blanket ban here would have broken every generation.
     try:
-        # Download image from temporary URL
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(image_url)
-            if response.status_code != 200:
-                raise Exception(f"Failed to download image: {response.status_code}")
+        fetched = await safe_fetch_bytes(image_url, max_bytes=MAX_IMAGE_BYTES, timeout=60.0)
+    except SSRFError:
+        # Deliberately NOT the fallback below. Returning the original URL would persist
+        # a URL we just refused to fetch, and every later reader of that row would try
+        # it themselves — turning one blocked fetch into a stored one. Let the caller
+        # record this model as failed.
+        raise
 
-            image_data = response.content
+    try:
+        if not fetched.ok:
+            raise Exception(f"Failed to download image: {fetched.status_code}")
 
-            # Determine file extension from URL or content-type
-            content_type = response.headers.get('content-type', 'image/webp')
-            if 'png' in content_type or image_url.endswith('.png'):
-                ext = 'png'
-            elif 'jpeg' in content_type or 'jpg' in content_type or image_url.endswith(('.jpg', '.jpeg')):
-                ext = 'jpg'
-            else:
-                ext = 'webp'
+        image_data = fetched.content
 
-            # Create unique filename
-            filename = f"{job_id}/{model_id}_{uuid.uuid4().hex[:8]}.{ext}"
+        # Determine file extension from URL or content-type
+        content_type = fetched.content_type or 'image/webp'
+        if 'png' in content_type or image_url.endswith('.png'):
+            ext = 'png'
+        elif 'jpeg' in content_type or 'jpg' in content_type or image_url.endswith(('.jpg', '.jpeg')):
+            ext = 'jpg'
+        else:
+            ext = 'webp'
 
-            # Upload to Supabase Storage
-            supabase = get_supabase_client()
-            supabase.client.storage.from_('generation-images').upload(
-                filename,
-                image_data,
-                file_options={"content-type": content_type}
-            )
+        # Create unique filename
+        filename = f"{job_id}/{model_id}_{uuid.uuid4().hex[:8]}.{ext}"
 
-            # Get public URL
-            public_url = supabase.client.storage.from_('generation-images').get_public_url(filename)
+        # Upload to Supabase Storage
+        supabase = get_supabase_client()
+        supabase.client.storage.from_('generation-images').upload(
+            filename,
+            image_data,
+            file_options={"content-type": content_type}
+        )
 
-            print(f"✅ Uploaded image to Supabase Storage: {public_url}")
-            return public_url
+        # Get public URL
+        public_url = supabase.client.storage.from_('generation-images').get_public_url(filename)
+
+        print(f"✅ Uploaded image to Supabase Storage: {public_url}")
+        return public_url
 
     except Exception as e:
         print(f"❌ Error uploading to Supabase Storage: {e}")
@@ -782,10 +794,18 @@ async def derive_product_pbr_maps(
 
     supabase = get_supabase_client()
 
+    # #250 invariant #1 (BOLA): this runs on a service-role client with no RLS backstop,
+    # so ownership is checked here or nowhere. `workspace_id` was already SELECTed and
+    # then never compared — the row was read, and later written, on a body-supplied id
+    # alone. 404 rather than 403 so the endpoint is not a product-id oracle.
+    _ws = user.get("workspace_id") or user.get("active_workspace_id")
+    if not _ws:
+        raise HTTPException(status_code=401, detail="Unauthenticated")
+
     prod = supabase.client.table("products") \
         .select("id, workspace_id, metadata") \
         .eq("id", body.product_id).maybe_single().execute()
-    if not prod or not prod.data:
+    if not prod or not prod.data or str(prod.data.get("workspace_id")) != str(_ws):
         raise HTTPException(status_code=404, detail="product not found")
     metadata = prod.data.get("metadata") or {}
 
@@ -800,13 +820,26 @@ async def derive_product_pbr_maps(
         # explicitly beats a 500 that looks like the deriver is broken.
         return {"success": False, "error": "product has no source image", "pbr_maps": None}
 
+    # `body.image_url` is a URL off the REQUEST BODY — the sharpest shape invariant 7
+    # covers, and the one #15 recorded as absent from this list. `follow_redirects=False`
+    # was already here and is half the job: it stops a 302 into link-local, but nothing
+    # stopped the FIRST hop pointing straight at 169.254.169.254, and nothing bounded the
+    # body. The guarded helper does both, and re-validates each hop so a product image
+    # served through a redirecting CDN still works.
+    from app.utils.ssrf_guard import MAX_IMAGE_BYTES, SSRFError, safe_fetch_bytes
+
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
-            resp = await client.get(albedo_url)
-            resp.raise_for_status()
-            image_bytes = resp.content
+        fetched = await safe_fetch_bytes(albedo_url, max_bytes=MAX_IMAGE_BYTES)
+    except SSRFError as e:
+        raise HTTPException(status_code=400, detail=f"source image URL rejected: {e}")
     except Exception as e:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"could not fetch source image: {e}")
+    if not fetched.ok:
+        raise HTTPException(
+            status_code=502,
+            detail=f"could not fetch source image: HTTP {fetched.status_code}",
+        )
+    image_bytes = fetched.content
 
     maps = derive_pbr_maps(image_bytes)
     if not maps:
@@ -827,7 +860,9 @@ async def derive_product_pbr_maps(
             logger.error("[pbr] upload failed for %s of product %s: %s", kind, body.product_id, e)
 
     metadata["pbr_maps"] = stored
+    # Workspace predicate on the write as well as the read: the row was verified above,
+    # but a write scoped by id alone is one refactor away from being reachable without it.
     supabase.client.table("products").update({"metadata": metadata}) \
-        .eq("id", body.product_id).execute()
+        .eq("id", body.product_id).eq("workspace_id", _ws).execute()
 
     return {"success": True, "product_id": body.product_id, "pbr_maps": stored}

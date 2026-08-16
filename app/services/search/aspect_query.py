@@ -47,9 +47,10 @@ _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 async def _resolve_image_base64(query_image: str) -> Tuple[Optional[str], Optional[str]]:
     """`(base64, error)` from a data URL, an https URL, or a raw base64 string.
 
-    The https branch goes through the shared SSRF guard with redirects DISABLED — a permitted
-    external host can 302 straight into link-local metadata, so validating the first URL only
-    is not enough (invariant 7).
+    The https branch goes through `safe_fetch_bytes`, which validates the scheme and
+    resolved address of every redirect hop — a permitted external host can 302 straight
+    into link-local metadata, so validating the first URL only is not enough
+    (invariant 7) — and caps the body while streaming.
     """
     if query_image.startswith("data:"):
         from app.utils.image_payload import normalize_base64_image
@@ -62,28 +63,28 @@ async def _resolve_image_base64(query_image: str) -> Tuple[Optional[str], Option
         return encoded, None
 
     if query_image.startswith("http"):
-        from app.utils.ssrf_guard import assert_safe_url, SSRFError
-        import httpx
+        # This was the correct hand-rolled copy, and it had still drifted: the cap was
+        # checked AFTER `resp.content` had pulled the whole body into memory, so it
+        # rejected an oversized image only once the cost had been paid. `safe_fetch_bytes`
+        # aborts mid-stream. Same reason escapeHtml has one owner — two implementations of
+        # one rule end up at two strengths, and you find out which is weaker afterwards.
+        #
+        # This also tightens the scheme: `assert_safe_url`'s default allowed plaintext
+        # http, while invariant 7 and `image_download_service` both say https-only. A
+        # plaintext query_image now comes back as "blocked url scheme: 'http'" rather
+        # than being fetched. That is a deliberate narrowing, not a side effect.
+        from app.utils.ssrf_guard import SSRFError, safe_fetch_bytes
 
         try:
-            assert_safe_url(query_image)
+            fetched = await safe_fetch_bytes(query_image, max_bytes=_MAX_IMAGE_BYTES)
         except SSRFError as e:
             return None, f"query_image URL rejected: {e}"
-
-        try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
-                resp = await client.get(query_image)
-                if resp.status_code != 200:
-                    return None, f"Failed to fetch query_image (HTTP {resp.status_code})"
-                content = resp.content
-                if len(content) > _MAX_IMAGE_BYTES:
-                    return None, (
-                        f"query_image too large ({len(content)} bytes, "
-                        f"max {_MAX_IMAGE_BYTES})"
-                    )
-                return _b64.b64encode(content).decode(), None
         except Exception as e:
             return None, f"Failed to fetch query_image: {e}"
+
+        if not fetched.ok:
+            return None, f"Failed to fetch query_image (HTTP {fetched.status_code})"
+        return _b64.b64encode(fetched.content).decode(), None
 
     # Assume raw base64.
     return query_image, None

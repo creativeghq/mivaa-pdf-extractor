@@ -23,7 +23,12 @@ from typing import Any, Dict
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from app.services.core.supabase_client import get_supabase_client
-from app.utils.ssrf_guard import assert_safe_url, SSRFError
+from app.utils.ssrf_guard import (
+    MAX_IMAGE_BYTES,
+    SSRFError,
+    assert_safe_url,
+    safe_fetch_bytes,
+)
 from app.dependencies import get_current_user, resolve_workspace_id
 from app.utils.credit_metering import meter_operation as _meter, refund_operation as _refund
 from app.services.utilities.prompt_registry import load_prompt, render
@@ -136,9 +141,23 @@ async def _generate_sam2_mask(
                     logger.warning("SAM 2 returned no output URL")
                     return None
 
-                # Download the mask PNG
-                dl = await client.get(mask_url, follow_redirects=True)
-                if dl.status_code != 200:
+                # Download the mask PNG.
+                # `mask_url` is whatever Replicate put in its response — not our own
+                # config, so invariant 7 applies to it exactly as it does to a body
+                # field. `follow_redirects=True` was doing the one thing the guard
+                # forbids: replicate.delivery genuinely redirects, so the fix is to
+                # re-validate each hop rather than to stop following.
+                try:
+                    dl = await safe_fetch_bytes(
+                        mask_url,
+                        max_bytes=MAX_IMAGE_BYTES,
+                        timeout=120.0,
+                        client=client,
+                    )
+                except SSRFError as _e:
+                    logger.warning("SAM 2 mask URL rejected: %s", _e)
+                    return None
+                if not dl.ok:
                     logger.warning("Failed to download SAM 2 mask: %s", dl.status_code)
                     return None
 
@@ -185,12 +204,15 @@ async def generate_sam_mask(request: SAMMaskRequest, user: Dict[str, Any] = Depe
 
         # ── Determine image dimensions ─────────────────────────────────────
         if request.image_url and (request.image_width is None or request.image_height is None):
-            # Fetch just enough bytes to decode dimensions without full download
+            # The comment here used to say "just enough bytes to decode dimensions
+            # without full download" while doing `head.content` — an unbounded read of a
+            # request-body URL. `assert_safe_url` above covers the target; the cap is what
+            # was missing, and the guarded fetch supplies it.
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
-                    head = await client.get(request.image_url, follow_redirects=False)
-                    img_bytes = head.content
-                img_pil = Image.open(io.BytesIO(img_bytes))
+                head = await safe_fetch_bytes(
+                    request.image_url, max_bytes=MAX_IMAGE_BYTES, timeout=15,
+                )
+                img_pil = Image.open(io.BytesIO(head.content))
                 src_w, src_h = img_pil.size
             except Exception:
                 src_w, src_h = request.image_width or 1024, request.image_height or 768
@@ -552,12 +574,23 @@ async def generate_inpainting_prompt(request: GeneratePromptRequest, user: Dict[
 
 
 async def _upload_to_storage(client: httpx.AsyncClient, image_url: str, job_id: str) -> str:
-    """Download a Replicate URL and upload to Supabase Storage. Returns the public URL."""
-    dl_resp = await client.get(image_url, follow_redirects=True)
-    if dl_resp.status_code != 200:
+    """Download a Replicate URL and upload to Supabase Storage. Returns the public URL.
+
+    The URL is a provider response value, so it goes through the guarded fetch:
+    scheme + resolved address checked on every redirect hop (replicate.delivery
+    redirects, so banning redirects would break this rather than secure it), and the
+    body capped while streaming instead of read whole.
+    """
+    try:
+        dl_resp = await safe_fetch_bytes(
+            image_url, max_bytes=MAX_IMAGE_BYTES, timeout=120.0, client=client,
+        )
+    except SSRFError as _e:
+        raise HTTPException(status_code=400, detail=f"Inpainted image URL rejected: {_e}")
+    if not dl_resp.ok:
         raise HTTPException(status_code=502, detail=f"Failed to download inpainted image: {dl_resp.status_code}")
 
-    content_type = dl_resp.headers.get("content-type", "image/webp")
+    content_type = dl_resp.content_type or "image/webp"
     ext = "png" if "png" in content_type else "jpg"
     path = f"product-crops/{job_id}/{int(datetime.utcnow().timestamp() * 1000)}.{ext}"
 

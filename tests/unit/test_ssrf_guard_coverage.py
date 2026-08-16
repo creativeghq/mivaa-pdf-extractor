@@ -36,13 +36,15 @@ The enclosing function must then mention `assert_safe_url`. Function-level rathe
 line-level on purpose: the guard legitimately runs a few lines above the fetch, and
 demanding adjacency would push people to satisfy the test rather than the invariant.
 
-THE ALLOWLIST IS THE POINT
---------------------------
-`KNOWN_UNGUARDED` holds the sites that widening surfaced and that are NOT fixed here —
-each one named, with what its URL actually is. That list is the honest version of what
-the old one-file guard was communicating by silence. It is shrink-only: adding to it
-requires writing down why, which is the whole mechanism. Deleting an entry (by fixing
-the site) needs no permission.
+In practice almost nothing should trip this now, because almost nothing should be making
+the raw call: `app.utils.ssrf_guard.safe_fetch_bytes` performs the fetch itself, so a
+guarded site has no `client.get(...)` for this scanner to find. That is the intended end
+state — the detector is here for the next person who reaches for httpx directly.
+
+THERE IS NO ALLOWLIST
+---------------------
+#15 shipped `KNOWN_UNGUARDED` with nine named entries, and all nine are now fixed. The
+set was deleted rather than emptied, for the reason set out where it used to live.
 """
 
 from __future__ import annotations
@@ -71,28 +73,33 @@ _USER_INFLUENCED = re.compile(
     re.I,
 )
 
-#: Surfaced by widening (#15), deliberately NOT fixed in that change, each with what the
-#: URL actually is. Shrink-only — fix a site and delete its line.
-#:
-#: These are pre-existing and none of them is a request-body URL (the one that was,
-#: material_visual_search_service, is fixed). They are DB columns, provider callbacks and
-#: configured endpoints, which need individual judgement about reachability rather than a
-#: blanket edit. Listing them is the point: the previous guard reported this same set as
-#: clean by scanning one file.
-KNOWN_UNGUARDED = {
-    # `document_images.image_url` / storage URLs — DB columns, ultimately written from
-    # PDF extraction or a supplier feed, so attacker-influenced at one remove.
-    ("app/api/admin.py", "reprocess_image_ocr"),
-    ("app/api/internal_routes.py", "regenerate_image_embeddings"),
-    ("app/services/images/image_processing_service.py", "classify_with_two_stage"),
-    ("app/services/pdf/pdf_processor.py", "process_pdf_from_url"),
-    ("app/api/rag_routes.py", "restart_job_from_checkpoint"),
-    # Generation-provider output URLs (Replicate / Gemini / Modal responses).
-    ("app/api/interior_design_routes.py", "download_and_upload_to_supabase"),
-    ("app/api/interior_design_routes.py", "derive_product_pbr_maps"),
-    ("app/api/sam_routes.py", "_generate_sam2_mask"),
-    ("app/api/sam_routes.py", "_upload_to_storage"),
-}
+# THERE IS NO ALLOWLIST ANY MORE.
+#
+# #15 shipped `KNOWN_UNGUARDED` with nine entries — the sites widening had surfaced,
+# named honestly rather than hidden by a narrow scan. All nine are now fixed, and the
+# set is DELETED rather than left empty, which is the same call the frontend made for
+# `KNOWN_UNCLUSTERED` / `KNOWN_UNBOUND`: an empty allowlist is a furnished place to put
+# the next exception, and the next exception is always "just this one, it's a provider
+# URL". With the name gone, adding one means re-introducing the mechanism on purpose
+# and writing down why.
+#
+# What the nine turned out to be, since this list was the only record of them:
+#   - Five DB-column URLs (`document_images.image_url`, `documents.file_path`, a
+#     `storage_url` on the classification path, a `pdf_url`) — attacker-influenced at
+#     one remove, through PDF extraction or a supplier feed.
+#   - Four provider-output URLs from Replicate / Gemini / Modal responses.
+#   - And one that #15 recorded as NOT being a request-body URL, wrongly:
+#     `interior_design_routes.derive_product_pbr_maps` fetches `body.image_url` straight
+#     off the request. It also read AND wrote `products` on a body-supplied id with no
+#     workspace check, against a service-role client. Both fixed.
+#
+# They are all fixed the same way, which is the other half of the lesson: nine sites
+# held nine opinions about how much of invariant 7 to implement, and each one looked
+# fine on its own. The guard now owns the FETCH as well as the check —
+# `app.utils.ssrf_guard.safe_fetch_bytes` validates the scheme and resolved address of
+# every redirect hop and caps the body while streaming — so a raw client call on a
+# user-influenced URL is now the thing that is wrong, rather than the thing that needs
+# a correct-looking comment in its enclosing function.
 
 #: NOT matched, deliberately: a bare `url` identifier. Nearly every one in this tree is a
 #: module constant or an f-string over a configured base (ANTHROPIC_API, DATAFORSEO_*,
@@ -184,34 +191,18 @@ def test_no_new_unguarded_user_url_fetch():
         "is vacuous"
     )
 
-    new = [
-        (rel, fn, lineno, expr)
-        for rel, fn, lineno, expr in unguarded
-        if (rel, fn) not in KNOWN_UNGUARDED
-    ]
-    assert not new, (
-        "server-side fetch of a user-influenced URL with no assert_safe_url "
-        "(invariant 7):\n"
-        + "\n".join(f"  {rel}:{lineno} in {fn}() — {expr}" for rel, fn, lineno, expr in new)
-        + "\n\nRoute it through app.utils.ssrf_guard.assert_safe_url (https-only, "
-        "DNS-resolve + reject RFC1918/loopback/link-local/169.254.169.254), fetch with "
-        "follow_redirects=False, and cap the body size."
-    )
-
-
-def test_the_allowlist_does_not_rot():
-    """Every KNOWN_UNGUARDED entry must still be a real unguarded site.
-
-    A stale allowlist is the same disease as a stale file list — it silently widens
-    what the guard forgives. If an entry no longer fires, the site was fixed or moved,
-    and the line must go.
-    """
-    unguarded, _ = _scan()
-    live = {(rel, fn) for rel, fn, _, _ in unguarded}
-    stale = sorted(KNOWN_UNGUARDED - live)
-    assert not stale, (
-        "these KNOWN_UNGUARDED entries no longer match an unguarded fetch — delete "
-        f"them: {stale}"
+    assert not unguarded, (
+        "server-side fetch of a user-influenced URL that is neither guarded nor routed "
+        "through the guarded fetch (invariant 7):\n"
+        + "\n".join(
+            f"  {rel}:{lineno} in {fn}() — {expr}" for rel, fn, lineno, expr in unguarded
+        )
+        + "\n\nReplace the raw client call with:\n"
+        "    from app.utils.ssrf_guard import safe_fetch_bytes, MAX_IMAGE_BYTES\n"
+        "    result = await safe_fetch_bytes(the_url, max_bytes=MAX_IMAGE_BYTES)\n"
+        "It validates the scheme and resolved address of the URL AND of every redirect "
+        "hop, and aborts mid-stream at the cap. Do NOT add an allowlist here — there is "
+        "deliberately nowhere left to put one."
     )
 
 

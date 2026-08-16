@@ -156,13 +156,23 @@ def test_the_page_channel_needs_words():
 
 def test_query_image_fetch_goes_through_the_ssrf_guard():
     """
-    Invariant 7. This helper fetches a user-supplied https URL; it previously used a raw
+    Invariant 7. This helper fetches a user-supplied https URL; it originally used a raw
     httpx.get with follow_redirects=True, so a permitted host could 302 into link-local
     metadata. Wiring these endpoints up made that reachable.
+
+    This asserted `follow_redirects=False` in the source for as long as the fetch was
+    hand-rolled here. It now delegates to `ssrf_guard.safe_fetch_bytes`, which follows
+    redirects and RE-VALIDATES each hop — strictly stronger, and necessary because a
+    blanket ban breaks the provider URLs that legitimately redirect. Asserting the old
+    spelling would now fail on the safer code, which is the failure mode where a guard
+    starts pinning an implementation detail instead of the rule. So: assert the fetch is
+    the guarded one, and let `test_safe_fetch_bytes` own what "guarded" means.
     """
-    assert "assert_safe_url" in ASPECT_QUERY_SRC, "user-supplied query_image URL must be validated"
-    assert "follow_redirects=False" in ASPECT_QUERY_SRC, (
-        "redirects must be disabled — validating only the first URL is not enough"
+    assert "safe_fetch_bytes" in ASPECT_QUERY_SRC, (
+        "the query_image fetch must go through the guarded fetch, not a raw client"
+    )
+    assert "httpx" not in ASPECT_QUERY_SRC.split("async def _resolve_image_base64", 1)[1].split("\n\n\n", 1)[0], (
+        "a raw httpx call has come back into _resolve_image_base64 alongside the guard"
     )
     assert "_MAX_IMAGE_BYTES" in ASPECT_QUERY_SRC, "an unbounded fetch is a memory DoS"
 
