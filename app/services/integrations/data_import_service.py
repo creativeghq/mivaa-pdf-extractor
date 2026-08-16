@@ -37,6 +37,7 @@ from app.services.metadata.metadata_normalizer import normalize_factory_keys
 from app.services.facets import canonicalize_product_attributes
 from app.services.products.material_quota import material_quota_remaining_async
 import sentry_sdk
+from app.utils.text_fold import fold_model_token
 
 # Category → default unit mapping (mirrors material_categories.default_unit)
 _CATEGORY_DEFAULT_UNITS = {
@@ -46,6 +47,20 @@ _CATEGORY_DEFAULT_UNITS = {
 }
 
 logger = logging.getLogger(__name__)
+
+
+#: Keys a supplier feed may never set: identity, tenancy, provenance, and the two fields the
+#: platform derives rather than accepts. Invariant 8 wants an allowlisted payload; the
+#: product_metadata literal below IS that allowlist, and this set is what stops the feed's own
+#: blob from being spread over it. Kept narrow on purpose — a supplier sending `finish` or
+#: `pei_rating` is exactly what an import is for. (audit #17 M4-5)
+_SUPPLIER_RESERVED_METADATA_KEYS = frozenset({
+    'workspace_id', 'user_id', 'created_by', 'owner_id',
+    'id', 'product_id_internal', 'source_job_id', 'import_job_id', 'import_batch_id',
+    'extracted_from', 'extraction_date', 'source_type', 'created_from_type',
+    'status', 'is_verified', 'is_locked', 'credits',
+    'external_sku_folded',
+})
 
 
 class DataImportService:
@@ -61,6 +76,9 @@ class DataImportService:
         # via env vars for ops flexibility without redeploy.
         self.batch_size = _env_int('XML_IMPORT_BATCH_SIZE', 5)
         self.max_concurrent_images = _env_int('XML_IMPORT_MAX_CONCURRENT_IMAGES', 5)
+        # Retained for back-compat with callers that pass it, and deliberately NOT read as
+        # the tenant anywhere: every method that needs a workspace takes one as an argument.
+        # Reading this instead is audit #17 M4-8, and it was None at both call sites.
         self.workspace_id = workspace_id
 
         # ✅ Initialize chunking service for quality scoring and smart chunking
@@ -154,8 +172,19 @@ class DataImportService:
                     level="info"
                 )
 
-                # Get job details
-                job = await self._get_job(job_id)
+                # Get job details.
+                #
+                # audit #17 M4-4 — TENTH instance of "two ids each individually valid, never
+                # checked against each other", and the second this session that writes to the
+                # gold layer. The route authorizes the caller against `request.workspace_id`
+                # (authorize_rag_workspace), which is real protection — for the WORKSPACE side.
+                # Nothing checked the JOB. So a member of workspace A could pass workspace A
+                # plus a job id belonging to workspace B and import B's supplier feed into
+                # their own catalogue: every product, price and image, with the tenancy check
+                # passing cleanly the whole way.
+                #
+                # MIVAA has no RLS, so this fetch IS the boundary.
+                job = await self._get_job(job_id, workspace_id)
                 if not job:
                     raise ValueError(f"Job {job_id} not found")
 
@@ -208,6 +237,18 @@ class DataImportService:
                     batch_start = batch_index * self.batch_size
                     batch_end = min(batch_start + self.batch_size, total_products)
                     batch = await self._fetch_products_batch(job_id, batch_start, batch_end - batch_start)
+                    if batch is None:
+                        # audit #17 M4-7: `_fetch_products_batch` returned [] on a DB failure
+                        # and the loop treated an empty batch as skippable, so a job with
+                        # total_products > 0 completed with zero processed and zero failed —
+                        # a clean, successful, entirely empty import. It now returns None for
+                        # "the read failed" and [] for "there is genuinely nothing here",
+                        # which is pipeline convention 1: an explicit failure marker, because
+                        # emptiness alone is ambiguous.
+                        raise RuntimeError(
+                            f"Could not read products {batch_start}-{batch_end} for job "
+                            f"{job_id}. Failing the job rather than completing it short."
+                        )
                     if not batch:
                         logger.warning(
                             f"   ⚠️ Empty batch at {batch_start}-{batch_end} for job {job_id} — skipping"
@@ -258,6 +299,26 @@ class DataImportService:
                     )
 
                     logger.info(f"✅ Batch {batch_index + 1} complete: {batch_result['processed']} processed, {batch_result['failed']} failed")
+
+                # audit #17 M4-7: every product the job claimed must be accounted for. This
+                # single assertion closes the whole silent-zero class on this path — a
+                # swallowed batch read, a skipped range, an off-by-one in the batch maths, a
+                # quota clamp that lost count — because all of them arrive here as a number
+                # that does not add up. Without it, the only signal was a completed job whose
+                # processed count nobody compared to anything.
+                # A quota-skipped product is counted inside `processed` — _process_batch
+                # increments one of the two for EVERY product it is handed, and a quota skip
+                # returns None from create_product_from_payload rather than raising. So the
+                # invariant is the pair, not a triple; adding _quota_skipped here would fail
+                # every clamped job.
+                accounted = processed_count + failed_count
+                if accounted != total_products:
+                    raise RuntimeError(
+                        f"Import job {job_id} does not reconcile: {processed_count} processed "
+                        f"+ {failed_count} failed = {accounted}, but the job declared "
+                        f"{total_products} products. Refusing to mark it completed — "
+                        f"{total_products - accounted} product(s) were never seen."
+                    )
 
                 # Mark job as completed
                 await self._update_job_status(
@@ -513,7 +574,14 @@ class DataImportService:
         # key (it would overwrite the orchestrator's resolved + manual-value
         # fallback). field_mappings is retained in the signature for callers /
         # back-compat but is intentionally no longer re-applied.
-        normalized = {k: v for k, v in product.items() if k != 'metadata'}
+        # audit #17 M4-5: this was a DENYLIST of exactly one key ('metadata'), so every other
+        # supplier-controlled key rode straight through into the normalized product. It stays
+        # a copy of the feed — this function's job is shape, not trust — but the keys the
+        # platform owns are removed here too, so they cannot arrive pre-set from outside.
+        normalized = {
+            k: v for k, v in product.items()
+            if k != 'metadata' and k not in _SUPPLIER_RESERVED_METADATA_KEYS
+        }
 
         normalize_factory_keys(normalized)
 
@@ -628,7 +696,29 @@ class DataImportService:
             normalize_factory_keys(inner_meta)
 
             mat_cat = product_data.get('material_category')
+            # audit #17 M4-5 / invariant 8. `**inner_meta` used to be spread LAST, over
+            # everything above it — so a supplier feed carrying a `workspace_id`,
+            # `import_job_id`, `unit` or `material_category` key silently rewrote the
+            # provenance and classification of the product being created. (The products row's
+            # own workspace_id column was never reachable this way; what a supplier could
+            # rewrite is this jsonb, which is what canonicalization, faceting and the admin UI
+            # all read.)
+            #
+            # Supplier content still arrives — it is the point of an import — but it goes in
+            # FIRST, and the fields we own are written over it afterwards. Reserved keys are
+            # dropped rather than merged, so their loss is logged instead of inferred.
+            supplier_meta = dict(inner_meta)
+            rejected = [k for k in supplier_meta if k in _SUPPLIER_RESERVED_METADATA_KEYS]
+            for k in rejected:
+                supplier_meta.pop(k, None)
+            if rejected:
+                logger.warning(
+                    "   WARN supplier feed tried to set reserved metadata key(s) %s on '%s' "
+                    "— dropped", rejected, product_name,
+                )
+
             product_metadata = {
+                **supplier_meta,
                 "extracted_from": source,
                 "import_job_id": job_id,
                 "extraction_date": datetime.utcnow().isoformat(),
@@ -645,7 +735,6 @@ class DataImportService:
                 "finish": product_data.get('finish'),
                 "material": product_data.get('material'),
                 "size": product_data.get('size'),
-                **inner_meta,
             }
             if factory_obj:
                 product_metadata['factory'] = factory_obj
@@ -690,22 +779,34 @@ class DataImportService:
                        or product_data.get('sku')
                        or (inner_meta.get('product_id') if isinstance(inner_meta, dict) else None))
             external_sku = str(sku_raw).strip() if sku_raw else None
+            # audit #17 M4-6. `.strip()` was the entire normalization, so identity was decided
+            # byte-exactly. Greek capital M (U+039C) and Latin M render identically, so
+            # "7012<greek-M><greek-T>" and "7012MT" are one product that compared unequal, and
+            # every re-import of that feed minted a duplicate. "7012-MT" and "7012 mt" did the
+            # same through separators and case.
+            #
+            # Raw stays raw (it is what the supplier calls it, and what a PO has to quote);
+            # `external_sku_folded` is what identity is decided on, with a unique index behind
+            # it. Same helper the CRM company dedupe and mention identity use — one fold, not
+            # a fourth one.
+            external_sku_folded = fold_model_token(external_sku) if external_sku else None
             if external_sku:
                 product_record['external_sku'] = external_sku
+                product_record['external_sku_folded'] = external_sku_folded
 
             existing_id: Optional[str] = None
-            if external_sku:
+            if external_sku_folded:
                 try:
                     existing = await self.db.table('products') \
                         .select('id') \
                         .eq('workspace_id', workspace_id) \
-                        .eq('external_sku', external_sku) \
+                        .eq('external_sku_folded', external_sku_folded) \
                         .limit(1) \
                         .execute()
                     if existing.data:
                         existing_id = existing.data[0]['id']
                 except Exception as lookup_err:
-                    logger.warning(f"   ⚠️ SKU lookup failed for {external_sku}: {lookup_err}")
+                    logger.warning(f"   WARN SKU lookup failed for {external_sku}: {lookup_err}")
 
             # Materials quota (#214): a NEW row consumes the workspace's remaining
             # allowance — skip BEFORE the canonicalize/embedding spend when exhausted.
@@ -734,7 +835,18 @@ class DataImportService:
                 canonical = await canonicalize_product_attributes(
                     self.db, product_metadata, source=source,
                     product_id=existing_id if existing_id else None,
-                    workspace_id=self.workspace_id,
+                    # audit #17 M4-8: was `self.workspace_id`, an instance field set only by a
+                    # constructor argument that NEITHER call site passes — so it was None on
+                    # every import this platform has ever run. With workspace_id=None the
+                    # canonicalizer drops its tenancy predicate entirely: `_fetch_existing`
+                    # prefetches facet values across ALL workspaces, and
+                    # `resolve_facet_values_batch` writes any new canonical value with a NULL
+                    # workspace, i.e. into the shared/golden namespace. One supplier's raw
+                    # Greek finish name would become everyone's canonical.
+                    #
+                    # The argument the method was already given is the tenant. A mutable
+                    # instance field is not a tenant source of truth.
+                    workspace_id=workspace_id,
                 )
                 product_record['attributes'] = canonical.attributes
                 product_record['attributes_raw'] = canonical.attributes_raw
@@ -750,9 +862,13 @@ class DataImportService:
             # into both the insert and the update_payload via product_record).
             try:
                 _factory_name = (product_metadata.get('factory_name') or '').strip()
-                if _factory_name and _factory_name.lower() != 'unknown factory' and self.workspace_id:
+                # Same field, and here the None made the whole branch unreachable: guarded on
+                # `self.workspace_id`, which is always None, so brand resolution never ran on a
+                # single imported product and `brand_company_id` was silently NULL forever.
+                # A silent zero hiding inside a tenancy bug (audit #17 M4-8).
+                if _factory_name and _factory_name.lower() != 'unknown factory' and workspace_id:
                     _bc = await self.db.rpc('resolve_brand_company', {
-                        'p_workspace_id': self.workspace_id,
+                        'p_workspace_id': workspace_id,
                         'p_name': _factory_name,
                     }).execute()
                     product_record['brand_company_id'] = _bc.data if (_bc and _bc.data) else None
@@ -1147,10 +1263,24 @@ class DataImportService:
                 f"no text-embedding coverage."
             )
 
-    async def _get_job(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Get job details from database."""
+    async def _get_job(
+        self,
+        job_id: str,
+        workspace_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Get job details, scoped to the workspace the caller was authorized for.
+
+        `workspace_id` is not optional in practice — it defaults to None only so the
+        single-product path (which has no job) keeps working. Passing a job id whose row
+        belongs to another workspace returns None, so the caller raises "job not found"
+        rather than reporting a permissions problem: same reason the platform's rule is
+        404-not-403 on an ownership mismatch, since a distinguishable error is an id oracle.
+        """
         try:
-            response = await self.db.table('data_import_jobs').select('*').eq('id', job_id).single().execute()
+            q = self.db.table('data_import_jobs').select('*').eq('id', job_id)
+            if workspace_id:
+                q = q.eq('workspace_id', workspace_id)
+            response = await q.single().execute()
             return response.data
         except Exception as e:
             logger.error(f"Failed to get job {job_id}: {e}")
@@ -1161,9 +1291,11 @@ class DataImportService:
         job_id: str,
         offset: int,
         limit: int,
-    ) -> List[Dict[str, Any]]:
+    ) -> Optional[List[Dict[str, Any]]]:
         """
         Fetch a single batch of products for this job, ordered by product_index.
+
+        Returns None when the READ FAILED, [] when the range is genuinely empty.
 
         Products are stored in data_import_job_products (one row per product).
         Range is inclusive on both ends per PostgREST `.range(start, end)`.
@@ -1183,7 +1315,9 @@ class DataImportService:
                 f"Failed to fetch products batch for job {job_id} "
                 f"(offset={offset}, limit={limit}): {e}"
             )
-            return []
+            # None, not []. The caller cannot tell a broken read from an empty range
+            # otherwise, and it used to skip both (audit #17 M4-7).
+            return None
 
     async def _update_job_status(self, job_id: str, status: str, **kwargs) -> None:
         """Update job status in database."""

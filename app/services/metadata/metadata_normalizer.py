@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # `flatten_extracted_metadata` lives in `metadata_shape.py` — a leaf module with no app
 # imports, so the guard test can load it directly without dragging in the DB client.
 from app.services.metadata.metadata_shape import flatten_extracted_metadata  # noqa: E402,F401
+from app.services.metadata.field_registry import field_registry  # noqa: E402
 
 
 # ============================================================================
@@ -284,8 +285,20 @@ def normalize_factory_keys(metadata: Dict[str, Any]) -> Dict[str, Any]:
 # MATERIAL CATEGORY NORMALIZATION
 # ============================================================================
 
-# Standard material categories - normalize variations to these
-# NOTE: Material type (e.g., "Tile") is separate from composition (e.g., "ceramic", "porcelain")
+# ALIASES, not a vocabulary. audit #17 M4-9.
+#
+# This map used to BE the list of categories: whatever it returned was the answer, and a value
+# it did not know became `category.title()` — an invented category, spelled plausibly, that no
+# validator accepts and no prompt offers. That is the shape which made `cladding` re-classify
+# on every run.
+#
+# What a category IS lives in `material_categories.controlled_vocab` (the DB registry). This map
+# only says which FREEFORM SPELLINGS collapse onto one of those values — "ceramic tiles" and
+# "stoneware" are supplier prose, not category keys, and the registry has no place to hold every
+# way a supplier might write them. Every value on the right-hand side is checked against the live
+# vocabulary at runtime by `normalize_material_category`, exactly as
+# `stage_4_products._normalize_material_category` checks its own alias map. An alias pointing at
+# a value an admin has since removed is dropped and logged, never written.
 MATERIAL_CATEGORY_MAPPING = {
     # Tiles — all tile variations keep their controlled-vocab slug
     "tile": "floor_tile",
@@ -418,22 +431,27 @@ def normalize_material_category(category: str) -> Tuple[str, Optional[str]]:
 
     normalized = category.lower().strip()
 
-    # Get the base material category (controlled-vocab slug)
-    base_category = MATERIAL_CATEGORY_MAPPING.get(normalized, None)
+    # An alias, or a value that is already a controlled-vocab slug.
+    base_category = MATERIAL_CATEGORY_MAPPING.get(normalized) or normalized
 
-    # If no mapping found, preserve the original value as-is (it may already
-    # be a valid controlled-vocab slug like "floor_tile" from the AI extractor)
-    if base_category is None:
-        # Keep snake_case slugs unchanged, Title-case free-form text
-        if "_" in normalized or normalized in {
-            "floor_tile", "wall_tile", "wood_flooring", "laminate", "vinyl_flooring",
-            "wall_paint", "wallpaper", "stone_slab", "metal_panel", "glass_panel",
-            "radiator", "towel_rail", "toilet", "basin", "bathtub", "lighting",
-            "pendant_light", "ceiling_light", "kitchen_cabinet", "kitchen_hood",
-        }:
-            base_category = normalized
-        else:
-            base_category = category.title()
+    # audit #17 M4-9. The registry decides what a category is; this function only spells
+    # things. The old code kept any snake_case string unchanged and Title-cased everything
+    # else, so "Ceramic Composite Panel" became a category by virtue of having been typed.
+    #
+    # `is_loaded` rather than a try/except: this is a SYNC function reachable from paths that
+    # have not loaded the registry, and it must degrade to its previous behaviour there rather
+    # than raise mid-extraction. Where the registry IS loaded — every ingest path — an
+    # unknown value is dropped instead of invented.
+    if field_registry.is_loaded:
+        vocab = field_registry.all_controlled_vocab()
+        if base_category not in vocab:
+            logging.getLogger(__name__).warning(
+                "normalize_material_category: '%s' resolved to '%s', which is not in "
+                "material_categories.controlled_vocab — dropping rather than inventing a "
+                "category. Add the value, or add an alias for it.",
+                category, base_category,
+            )
+            return (None, None)
 
     # Extract composition for tiles
     composition = None

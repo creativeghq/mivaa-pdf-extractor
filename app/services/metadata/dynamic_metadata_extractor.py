@@ -129,6 +129,23 @@ METADATA_CATEGORY_HINTS = {
         "specifications", "construction", "manufacturing_process", "grade", "class", "rating"
     ]
 }
+def _determine_property_category(property_key: str) -> str:
+    """Which METADATA_CATEGORY_HINTS section does this key belong to?
+
+    Module-level because it was written out TWICE, byte-identically, on two different classes
+    in this file — the same duplication shape as the two `_ensure_properties_exist` copies
+    #347 phase 4.1 removed from here. Two copies of a mapping is one copy that can drift.
+    """
+    for category, hints in METADATA_CATEGORY_HINTS.items():
+        if property_key in hints:
+            return category
+
+    if property_key.startswith('_custom_'):
+        return 'custom'
+
+    return 'other'
+
+
 # The extraction prompt lives in the `prompts` table
 # (prompt_type='extraction', stage='entity_creation', category='products') and is loaded by
 # _load_prompt_from_database. A hardcoded builder used to live here as well: 7,558 characters
@@ -431,7 +448,7 @@ class DynamicMetadataExtractor:
             # Step 5: register every discovered field in the ONE registry and classify it
             # (#347 phase 4.1/4.2). Best-effort: a registry write must never fail an extraction.
             try:
-                await self._register_and_classify_fields(extracted_data)
+                await self._register_and_classify_fields(extracted_data, category_hint)
             except Exception as prop_error:
                 self.logger.warning(f"Failed to register/classify fields: {prop_error}")
 
@@ -651,7 +668,7 @@ class DynamicMetadataExtractor:
             }
         }
 
-    async def _register_and_classify_fields(self, extracted_data):
+    async def _register_and_classify_fields(self, extracted_data, category_hint=None):
         """Register discovered fields in `material_metadata_fields` and classify each one.
 
         #347 phase 4.1/4.2. This replaced two BYTE-IDENTICAL copies of
@@ -706,6 +723,26 @@ class DynamicMetadataExtractor:
         existing = supabase.client.table("material_metadata_fields").select("field_name").execute()
         known = {r["field_name"] for r in (existing.data or [])}
 
+        # audit #17 M4-10. `applies_to_categories: []` was the defect, and it is not the same
+        # thing as "no categories": `_load_blocking` reads a falsy value as None, and None means
+        # APPLIES TO EVERY CATEGORY. So one field seen once in a tile catalogue was registered
+        # as a field of lighting, sanitary, kitchen and every other category at once — offered
+        # by their extraction prompts and accepted by their validators. That is a plausible
+        # mechanism for the original `cladding` divergence, and the reason a discovered field
+        # must carry the scope it was actually observed in.
+        #
+        # Scope resolution order: the caller's category_hint (the upload category, which is
+        # exactly this question answered by a human), else the category that owns the extracted
+        # material_category value, derived from the registry's own controlled vocabulary. If
+        # neither yields anything we write NULL and say so — an unknown scope is a fact, and
+        # asserting "all categories" in its place is what this fix removes.
+        observed_category = self._observed_category(extracted_data, category_hint)
+        if observed_category is None:
+            self.logger.warning(
+                "Field registration: could not determine the category for this document; "
+                "new fields will be registered as global. Pass category_hint to scope them."
+            )
+
         new_rows = []
         for key in discovered:
             if key in known:
@@ -715,18 +752,25 @@ class DynamicMetadataExtractor:
                 "display_name": key.replace("_", " ").title(),
                 "description": "Auto-discovered during extraction: " + key,
                 "field_type": "text",
-                "extraction_hints": self._determine_property_category(key),
+                "extraction_hints": _determine_property_category(key),
+                # Stays 'active' deliberately. A 'candidate' status would make this a review
+                # queue, and ingest would stall whenever nobody was looking — which is how the
+                # retired material_properties table ended up holding nothing at all. See the
+                # docstring on the FieldRoleAudit screen, which argues the same point.
                 "status": "active",
                 # Registered as descriptive; the pass below promotes it through the RPC, so the
                 # ladder is applied in exactly one place.
                 "role": "descriptive",
                 "destination": "metadata",
                 "canonicalize": False,
-                "is_global": False,
-                "applies_to_categories": [],
+                "is_global": observed_category is None,
+                "applies_to_categories": [observed_category] if observed_category else None,
                 "classified_by": "ingest",
                 "classified_signal": "seed",
-                "classified_reason": "Registered at ingest, awaiting classification.",
+                "classified_reason": (
+                    "Registered at ingest from a %s document, awaiting classification."
+                    % (observed_category or "category-unknown")
+                ),
             })
 
         if new_rows:
@@ -766,6 +810,27 @@ class DynamicMetadataExtractor:
         # 4.3 — one batched call for everything the deterministic signals could not settle.
         if residual:
             await self._classify_residual_fields_with_llm(supabase, residual)
+
+    def _observed_category(self, extracted_data, category_hint):
+        """The category group this document was actually about, or None.
+
+        `category_hint` is the upload category — already one of the registry's group keys.
+        Otherwise the extracted `material_category` is a FINE-GRAINED vocab value
+        (`floor_tile`), and the registry itself says which group owns it. No second map.
+        """
+        if category_hint:
+            return str(category_hint).strip().lower() or None
+        if not field_registry.is_loaded:
+            return None
+        crit = (extracted_data or {}).get("critical") or {}
+        raw = crit.get("material_category")
+        value = raw.get("value") if isinstance(raw, dict) else raw
+        if not value:
+            return None
+        try:
+            return field_registry.category_for_vocab(str(value))
+        except Exception:  # noqa: BLE001
+            return None
 
     async def _classify_residual_fields_with_llm(self, supabase, residual):
         """Classify what plurality and SKU correlation could not (#347 phase 4.3).
@@ -936,18 +1001,8 @@ class DynamicMetadataExtractor:
         return varying
 
     def _determine_property_category(self, property_key: str) -> str:
-        """Determine which category a property belongs to."""
-        # Check each category's hints
-        for category, hints in METADATA_CATEGORY_HINTS.items():
-            if property_key in hints:
-                return category
-
-        # Check if it's a custom field
-        if property_key.startswith('_custom_'):
-            return 'custom'
-
-        # Default to 'other'
-        return 'other'
+        """Determine which category a property belongs to. See the module-level function."""
+        return _determine_property_category(property_key)
 
 
 # ============================================================================
@@ -1124,17 +1179,7 @@ class MetadataScopeDetector:
             }
 
     def _determine_property_category(self, property_key: str) -> str:
-        """Determine which category a property belongs to."""
-        # Check each category's hints
-        for category, hints in METADATA_CATEGORY_HINTS.items():
-            if property_key in hints:
-                return category
-
-        # Check if it's a custom field
-        if property_key.startswith('_custom_'):
-            return 'custom'
-
-        # Default to 'other'
-        return 'other'
+        """Determine which category a property belongs to. See the module-level function."""
+        return _determine_property_category(property_key)
 
 

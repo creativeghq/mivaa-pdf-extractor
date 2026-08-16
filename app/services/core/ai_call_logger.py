@@ -81,12 +81,21 @@ class AICallLogger:
             )
             return 'debit_raised'
         if isinstance(result, dict) and result.get('success') is False:
-            self.logger.error(
-                "[ai_call_logger] credit debit FAILED (UNBILLED) user=%s op=%s model=%s: %s",
-                kwargs.get('user_id'), kwargs.get('operation_type'), kwargs.get('model_name'),
-                result.get('error') or result,
+            # Carry the RPC's own reason through instead of flattening everything to
+            # 'debit_failed' (mivaa#17 M4-1). The reasons are not equivalent:
+            # `below_quantum` means the charge was smaller than the 0.01 a wallet can hold —
+            # true of 7,701 of the 8,567 usage rows ever written — while `debit_failed`
+            # means money was owed and refused. Logging the first at ERROR would raise a
+            # Sentry event per AI call and bury the second, which is exactly the argument
+            # `_record_missing_principal` below makes about `no_principal`.
+            reason = result.get('unbilled_reason') or 'debit_failed'
+            log = self.logger.warning if reason == 'below_quantum' else self.logger.error
+            log(
+                "[ai_call_logger] credit debit UNBILLED (%s) user=%s op=%s model=%s: %s",
+                reason, kwargs.get('user_id'), kwargs.get('operation_type'),
+                kwargs.get('model_name'), result.get('error') or result,
             )
-            return 'debit_failed'
+            return reason
         return None
 
     def _record_missing_principal(self, task: str, model: str, cost: float) -> str:

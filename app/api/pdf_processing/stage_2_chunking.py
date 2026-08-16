@@ -361,7 +361,13 @@ async def process_product_chunking(
     # falls back to Claude (Sonnet) for ambiguous cases, then bulk-updates the metadata.
     if chunk_ids and config.get('enable_chunk_classification', True):
         try:
-            classification_service = ChunkTypeClassificationService()
+            # audit #17 M4-11: the classifier makes a paid Sonnet call per ambiguous chunk.
+            # It could not attribute one because it was never told whose document this is.
+            classification_service = ChunkTypeClassificationService(
+                workspace_id=workspace_id,
+                job_id=job_id,
+                product_id=product_id,
+            )
             await _classify_and_update_chunks(
                 chunk_ids=chunk_ids,
                 classification_service=classification_service,
@@ -422,7 +428,19 @@ async def _classify_and_update_chunks(
     )
 
     updates_made = 0
+    failed_chunks = 0
     for row, cls in zip(rows, classifications):
+        # audit #17 M4-12. A classifier crash used to arrive here wearing a verdict:
+        # ChunkType.UNCLASSIFIED at confidence 0.0, which this loop then stamped
+        # `chunk_type_status='classified'`. The stage's own `failed` branch below was
+        # unreachable for anything the service caught, which was everything.
+        if getattr(cls, 'failed', False):
+            failed_chunks += 1
+            try:
+                supabase.client.table('document_chunks')                     .update({'chunk_type_status': 'failed'})                     .eq('id', row['id'])                     .execute()
+            except Exception as _mark_err:
+                logger.debug(f"      could not mark chunk {row['id']} failed: {_mark_err}")
+            continue
         try:
             existing_meta = row.get('metadata') or {}
             existing_meta['chunk_type'] = cls.chunk_type.value
@@ -464,6 +482,11 @@ async def _classify_and_update_chunks(
             except Exception:
                 pass
 
+    if failed_chunks:
+        logger.warning(
+            f"   ⚠️ {failed_chunks}/{len(rows)} chunk(s) have NO verdict — marked "
+            f"chunk_type_status='failed' for re-classification"
+        )
     logger.info(f"   ✅ Classified {updates_made}/{len(rows)} chunks")
 
 

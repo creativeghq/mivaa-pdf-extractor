@@ -936,8 +936,51 @@ class JobResearchService:
                 )
 
             if not hits:
+                # audit #17 M4-3. Failed sources are recorded as -1 above and skipped; a run
+                # where EVERY source raised therefore arrived here and completed as a clean,
+                # successful, zero-result refresh. Three things followed from that, all wrong:
+                # the user was charged for a run that found nothing because nothing ran, the
+                # cadence advanced as though it had succeeded (so the NEXT run was delayed
+                # too), and the source_report / sources_empty detail was dropped on this
+                # early return — so not even a human could reconstruct which it had been.
+                _attempted = [n for n in per_source_counts.values()]
+                _all_failed = bool(_attempted) and all(n == -1 for n in _attempted)
+
+                outcome = {
+                    "refresh_run_id": run_id,
+                    "discovered": 0,
+                    "persisted": 0,
+                    "matches": 0,
+                    "by_source": per_source_counts,
+                    # Carried through on this path too, not only the success path.
+                    "source_report": source_report,
+                    "sources_empty": sources_empty,
+                    "all_sources_failed": _all_failed,
+                }
+
+                if _all_failed:
+                    # Do NOT advance the cadence: nothing was searched, so nothing about the
+                    # next scheduled run should move. The run is recorded as failed, which is
+                    # what makes "every provider was down" distinguishable from "there are no
+                    # new jobs today" — two states that produce identical numbers.
+                    logger.error(
+                        "job-refresh %s: every one of the %d configured source(s) failed — "
+                        "recording the run as failed, not as an empty result",
+                        tracked_job_id, len(_attempted),
+                    )
+                    bookkeeping.append_log(
+                        run_id=agent_run_id, level="error",
+                        message=f"All {len(_attempted)} source(s) failed: "
+                                + ", ".join(sources_empty[:20]),
+                    )
+                    bookkeeping.fail_run(
+                        run_id=agent_run_id,
+                        error_message=f"all {len(_attempted)} source(s) failed",
+                        duration_ms=int((_utcnow() - started_at).total_seconds() * 1000),
+                    )
+                    return outcome
+
                 self._update_after_refresh(tracked_job_id, run_id, persisted=0, new_matches=0)
-                outcome = {"refresh_run_id": run_id, "discovered": 0, "persisted": 0, "matches": 0, "by_source": per_source_counts}
                 bookkeeping.complete_run(run_id=agent_run_id, output_data=outcome,
                                          duration_ms=int((_utcnow() - started_at).total_seconds() * 1000))
                 return outcome

@@ -283,6 +283,28 @@ class FieldRegistry:
         cache = self._require()
         return frozenset(v for c in cache.categories.values() for v in c.controlled_vocab)
 
+    def category_for_vocab(self, value: str) -> Optional[str]:
+        """Which category group owns this fine-grained value? `floor_tile` -> `tiles`.
+
+        Derived from `material_categories.controlled_vocab`, never from a second map. Added
+        for audit #17 M4-10: the ingest field-registration path had no way to say WHICH
+        category a newly discovered field was observed under, so it wrote
+        `applies_to_categories: []` — which `_load_blocking` above reads as `None`, i.e.
+        "applies to EVERY category". A field seen once in a tile catalogue was then offered
+        in the lighting prompt and accepted by the lighting validator.
+
+        Returns None when the value belongs to no category, which is itself the answer:
+        do not assert a scope you cannot evidence.
+        """
+        if not value:
+            return None
+        needle = value.strip().lower()
+        cache = self._require()
+        for cat in cache.categories.values():
+            if any(needle == str(v).strip().lower() for v in cat.controlled_vocab):
+                return cat.key
+        return None
+
     def controlled_vocab_by_category(self) -> List[tuple]:
         """(label, values) pairs for prompt rendering; empty categories omitted.
 
