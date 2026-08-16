@@ -43,7 +43,7 @@ import httpx as _httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 
-from app.dependencies import get_current_user, get_workspace_context
+from app.dependencies import current_user_id, get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
 from app.schemas.api_responses import (
     DataResponse,
@@ -167,7 +167,7 @@ def _module_enabled(sb, slug: str) -> bool:
 
 
 def _require_admin(user: User) -> None:
-    if not _is_admin(get_supabase_client().client, str(user.id)):
+    if not _is_admin(get_supabase_client().client, current_user_id(user)):
         raise HTTPException(status_code=403, detail="admin role required")
 
 
@@ -350,7 +350,7 @@ class BroadcastApiAnnouncementRequest(BaseModel):
 async def track_product(
     product_id: str,
     body: Optional[TrackProductRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     body = body or TrackProductRequest()
@@ -360,7 +360,7 @@ async def track_product(
     profile = (
         sb.table("user_profiles")
         .select("location_country_code, location")
-        .eq("user_id", user.id)
+        .eq("user_id", current_user_id(user))
         .maybe_single()
         .execute()
     )
@@ -370,7 +370,7 @@ async def track_product(
     # run_first_refresh=True runs full discovery (Perplexity + DataForSEO + Firecrawl
     # verify) inline. Paid work behind a user button, so it debits first (#18 M5-3).
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=workspace.workspace_id if workspace else None,
         cost=PRICE_OP_CREDIT_COST["track"],
         operation_type="price_monitoring.track",
@@ -382,7 +382,7 @@ async def track_product(
             manufacturer=ctx["manufacturer"],
             dimensions=ctx["dimensions"],
             country_code=country,
-            user_id=str(user.id),
+            user_id=current_user_id(user),
             workspace_id=workspace.workspace_id if workspace else None,
             run_first_refresh=True,
             force=body.force_refresh,
@@ -403,13 +403,13 @@ async def track_product(
 )
 async def untrack_product(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = get_tracked_queries_service()
     tq = await service.find_for_product(product_id)
     if not tq:
         raise HTTPException(status_code=404, detail="product is not enrolled in monitoring")
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     ok = await service.deactivate(tq["id"])
     return {"success": ok, "message": "monitoring stopped" if ok else "failed to stop"}
 
@@ -421,11 +421,11 @@ async def untrack_product(
 )
 async def get_product_monitoring(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = get_tracked_queries_service()
     tq = await service.find_for_product(product_id)
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     return {"success": True, "data": tq}
 
 
@@ -437,7 +437,7 @@ async def get_product_monitoring(
 async def refresh_product(
     product_id: str,
     body: Optional[RefreshProductRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     body = body or RefreshProductRequest()
@@ -451,14 +451,14 @@ async def refresh_product(
         profile = (
             sb.table("user_profiles")
             .select("location_country_code, location")
-            .eq("user_id", user.id)
+            .eq("user_id", current_user_id(user))
             .maybe_single()
             .execute()
         )
         country = _resolve_user_country_code((profile.data if profile else None) or {})
         # Auto-enrolment here runs the same paid discovery as /track.
         async with metered_door(
-            user_id=str(user.id),
+            user_id=current_user_id(user),
             workspace_id=workspace.workspace_id if workspace else None,
             cost=PRICE_OP_CREDIT_COST["track"],
             operation_type="price_monitoring.track",
@@ -470,7 +470,7 @@ async def refresh_product(
                 manufacturer=ctx["manufacturer"],
                 dimensions=ctx["dimensions"],
                 country_code=country,
-                user_id=str(user.id),
+                user_id=current_user_id(user),
                 workspace_id=workspace.workspace_id if workspace else None,
                 run_first_refresh=True,
                 force=True,
@@ -486,13 +486,13 @@ async def refresh_product(
         # Non-admin caller: must own the tracked_query for this product.
         # Class #13 — without this, any authed user could trigger paid
         # refreshes on someone else's monitored product.
-        _enforce_tracked_query_owner(tq, user_id=str(user.id))
+        _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     # Toggle verify_prices on the row in case the caller wants to flip it.
     if body.verify_prices != bool(tq.get("verify_prices", True)):
         await service.update(tq["id"], verify_prices=body.verify_prices)
 
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=tq.get("workspace_id") or (workspace.workspace_id if workspace else None),
         cost=PRICE_OP_CREDIT_COST["refresh"],
         operation_type="price_monitoring.refresh",
@@ -516,13 +516,13 @@ async def refresh_product(
 )
 async def get_product_sources(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = get_tracked_queries_service()
     tq = await service.find_for_product(product_id)
     if not tq:
         return {"success": True, "data": {"results": [], "family_results": []}}
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     split = await service.latest_results_split(tq["id"])
     return {"success": True, "data": {**split, "tracked_query_id": tq["id"]}}
 
@@ -535,13 +535,13 @@ async def get_product_sources(
 async def get_product_history(
     product_id: str,
     limit: int = Query(default=200, ge=1, le=2000),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = get_tracked_queries_service()
     tq = await service.find_for_product(product_id)
     if not tq:
         return {"success": True, "history": [], "count": 0}
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     rows = await service.history(tq["id"], limit=limit)
     return {"success": True, "history": rows, "count": len(rows)}
 
@@ -560,7 +560,7 @@ async def get_product_history(
 async def exclude_product_result(
     product_id: str,
     body: ProductExcludeRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     if not body.url and not body.domain:
         raise HTTPException(status_code=400, detail="Either `url` or `domain` is required.")
@@ -568,7 +568,7 @@ async def exclude_product_result(
     tq = await service.find_for_product(product_id)
     if not tq:
         raise HTTPException(status_code=404, detail="product is not enrolled in monitoring")
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     row = await service.add_exclusion(
         tq["id"],
         url=body.url,
@@ -589,7 +589,7 @@ async def exclude_product_result(
 async def include_product_result(
     product_id: str,
     body: ProductExcludeRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     if not body.url and not body.domain:
         raise HTTPException(status_code=400, detail="Either `url` or `domain` is required.")
@@ -597,7 +597,7 @@ async def include_product_result(
     tq = await service.find_for_product(product_id)
     if not tq:
         return {"success": True, "product_id": product_id, "removed_count": 0}
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     removed = await service.remove_exclusion(
         tq["id"], url=body.url, domain=_normalize_domain(body.domain),
     )
@@ -611,13 +611,13 @@ async def include_product_result(
 )
 async def list_product_exclusions(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = get_tracked_queries_service()
     tq = await service.find_for_product(product_id)
     if not tq:
         return []
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     rows = await service.list_exclusions(tq["id"])
     return [
         ProductExclusionRow(
@@ -638,7 +638,7 @@ async def list_product_exclusions(
 async def verify_product_sources(
     product_id: str,
     body: ProductVerifyRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = get_tracked_queries_service()
     tq = await service.find_for_product(product_id)
@@ -651,9 +651,9 @@ async def verify_product_sources(
             "results": [],
             "message": "Product is not enrolled in monitoring.",
         }
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=tq.get("workspace_id"),
         cost=PRICE_OP_CREDIT_COST["verify"],
         operation_type="price_monitoring.verify",
@@ -678,14 +678,14 @@ async def verify_product_sources(
 async def add_url_only(
     product_id: str,
     body: AddUrlOnlyRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     sb = get_supabase_client().client
     ctx = _resolve_product_context(sb, product_id)
     service = get_tracked_queries_service()
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=workspace.workspace_id if workspace else None,
         cost=PRICE_OP_CREDIT_COST["url_only"],
         operation_type="price_monitoring.url_only",
@@ -695,7 +695,7 @@ async def add_url_only(
             product_id=product_id,
             url=body.url,
             product_name=ctx["name"],
-            user_id=str(user.id),
+            user_id=current_user_id(user),
             workspace_id=workspace.workspace_id if workspace else None,
             country_code=body.country_code,
         )
@@ -711,7 +711,7 @@ async def add_url_only(
 )
 async def list_url_only_for_product(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = get_tracked_queries_service()
     rows = await service.list_url_only_for_product(product_id)
@@ -775,12 +775,12 @@ def _compute_market_stats(hits: List[PriceHit]) -> MarketStats:
 )
 async def market_check(
     body: MarketCheckRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ) -> MarketCheckResponse:
     sb = get_supabase_client().client
 
-    if not _is_admin(sb, user.id):
+    if not _is_admin(sb, current_user_id(user)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="market-check requires admin or super_admin role.",
@@ -806,7 +806,7 @@ async def market_check(
     profile = (
         sb.table("user_profiles")
         .select("location_country_code, location")
-        .eq("user_id", user.id)
+        .eq("user_id", current_user_id(user))
         .maybe_single()
         .execute()
     )
@@ -895,7 +895,7 @@ async def market_check(
     # The cache shortcut above returns before here, so reaching this point always
     # means a real Perplexity scan is about to run (#18 M5-3).
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=workspace.workspace_id if workspace else None,
         cost=PRICE_OP_CREDIT_COST["market_check"],
         operation_type="price_monitoring.market_check",
@@ -906,7 +906,7 @@ async def market_check(
             dimensions=None,
             country_code=country_code,
             limit=10,
-            user_id=user.id,
+            user_id=current_user_id(user),
             workspace_id=workspace.workspace_id if workspace else None,
             verify_prices=body.verify_prices,
             query_facets=catalog_facets,
@@ -1029,7 +1029,7 @@ async def cron_refresh_tracked_queries(request: Request, limit: int = Query(defa
 @router.post("/classifier-correction", response_model=StatusResponse)
 async def submit_classifier_correction(
     body: MatchCorrectionRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Admin feedback on the identity classifier. Writes to `match_corrections`.
     Recent rows are pulled into the classifier system prompt on every classify
@@ -1066,7 +1066,7 @@ async def submit_classifier_correction(
             **snapshot,
             "corrected_match_kind": body.corrected_match_kind,
             "correction_note": body.correction_note,
-            "created_by": str(user.id),
+            "created_by": current_user_id(user),
         }).execute()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"insert failed: {e}")
@@ -1076,7 +1076,7 @@ async def submit_classifier_correction(
 @router.post("/promote-family-row", response_model=StatusResponse)
 async def promote_family_row(
     body: PromoteFamilyRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Promote a family/mismatch row to tracked. Sticky — every future refresh
     of the same URL keeps the override until the admin demotes it back.
@@ -1101,7 +1101,7 @@ async def promote_family_row(
         "product_url": product_url,
         "override_kind": body.override_kind,
         "reason": body.reason,
-        "created_by": str(user.id),
+        "created_by": current_user_id(user),
     }, on_conflict="tracked_query_id,product_url").execute()
 
     sb.table("tracked_query_price_history").update({
@@ -1118,7 +1118,7 @@ async def promote_family_row(
         "original_match_kind": original_kind,
         "corrected_match_kind": body.override_kind,
         "correction_note": body.reason or "promoted via UI",
-        "created_by": str(user.id),
+        "created_by": current_user_id(user),
     }).execute()
 
     return {"success": True, "message": "row promoted"}
@@ -1127,7 +1127,7 @@ async def promote_family_row(
 @router.post("/demote-to-family", response_model=StatusResponse)
 async def demote_to_family(
     body: DemoteFamilyRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Undo a prior promotion. The URL goes back to whatever the classifier
     decides on the next refresh.
@@ -1156,7 +1156,7 @@ async def demote_to_family(
         "product_url": row.get("product_url"),
         "corrected_match_kind": "should_drop",
         "correction_note": body.reason or "demoted via UI",
-        "created_by": str(user.id),
+        "created_by": current_user_id(user),
     }).execute()
     return {"success": True, "message": "row demoted"}
 
@@ -1169,14 +1169,14 @@ async def demote_to_family(
 @router.post("/broadcast-api-announcement", response_model=DataResponse)
 async def broadcast_api_announcement(
     body: BroadcastApiAnnouncementRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Admin-only one-shot broadcast to every distinct user_id that owns at
     least one active api_key. Renders the template against each recipient and
     dispatches via the `email-api` edge function (Resend-backed).
     """
     sb = get_supabase_client().client
-    if not _is_admin(sb, user.id):
+    if not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="admin role required")
 
     keys = (
@@ -1313,7 +1313,7 @@ class _LegacyProductBody(BaseModel):
 @router.post("/start", response_model=MonitoringActionResponse, deprecated=True)
 async def legacy_start(
     body: _LegacyProductBody,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     sb = get_supabase_client().client
@@ -1321,7 +1321,7 @@ async def legacy_start(
     profile = (
         sb.table("user_profiles")
         .select("location_country_code, location")
-        .eq("user_id", user.id)
+        .eq("user_id", current_user_id(user))
         .maybe_single()
         .execute()
     )
@@ -1333,7 +1333,7 @@ async def legacy_start(
         manufacturer=ctx["manufacturer"],
         dimensions=ctx["dimensions"],
         country_code=country,
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=workspace.workspace_id if workspace else None,
         run_first_refresh=False,
     )
@@ -1345,13 +1345,13 @@ async def legacy_start(
 @router.post("/stop", response_model=MonitoringActionResponse, deprecated=True)
 async def legacy_stop(
     product_id: str = Query(...),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     service = get_tracked_queries_service()
     tq = await service.find_for_product(product_id)
     if not tq:
         return {"success": True, "message": "not enrolled"}
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     await service.deactivate(tq["id"])
     return {"success": True, "message": "monitoring stopped"}
 
@@ -1359,7 +1359,7 @@ async def legacy_stop(
 @router.post("/check-now", response_model=MonitoringActionResponse, deprecated=True)
 async def legacy_check_now(
     body: _LegacyProductBody,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     sb = get_supabase_client().client
@@ -1370,7 +1370,7 @@ async def legacy_check_now(
         profile = (
             sb.table("user_profiles")
             .select("location_country_code, location")
-            .eq("user_id", user.id)
+            .eq("user_id", current_user_id(user))
             .maybe_single()
             .execute()
         )
@@ -1379,7 +1379,7 @@ async def legacy_check_now(
         # enumerating half of test_paid_route_metering found this one; the hand-listed
         # doors in #18 M5-3 did not.
         async with metered_door(
-            user_id=str(user.id),
+            user_id=current_user_id(user),
             workspace_id=workspace.workspace_id if workspace else None,
             cost=PRICE_OP_CREDIT_COST["track"],
             operation_type="price_monitoring.track",
@@ -1391,7 +1391,7 @@ async def legacy_check_now(
                 manufacturer=ctx["manufacturer"],
                 dimensions=ctx["dimensions"],
                 country_code=country,
-                user_id=str(user.id),
+                user_id=current_user_id(user),
                 workspace_id=workspace.workspace_id if workspace else None,
                 run_first_refresh=True,
                 force=True,
@@ -1400,9 +1400,9 @@ async def legacy_check_now(
                 paid.refund("enrolment produced no tracked query")
         return {"success": True, "message": "first refresh complete",
                 "credits_debited": paid.charged, "data": tq}
-    _enforce_tracked_query_owner(tq, user_id=str(user.id))
+    _enforce_tracked_query_owner(tq, user_id=current_user_id(user))
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=tq.get("workspace_id") or (workspace.workspace_id if workspace else None),
         cost=PRICE_OP_CREDIT_COST["refresh"],
         operation_type="price_monitoring.refresh",
@@ -1418,7 +1418,7 @@ async def legacy_check_now(
 @router.post("/discover", deprecated=True)
 async def legacy_discover(
     body: _LegacyProductBody,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     """Deprecated — use POST /products/{product_id}/refresh."""
@@ -1448,7 +1448,7 @@ async def legacy_discover(
 @router.get("/status/{product_id}", response_model=DataResponse, deprecated=True)
 async def legacy_status(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     return await get_product_monitoring(product_id, user)
 
@@ -1457,7 +1457,7 @@ async def legacy_status(
 async def legacy_history(
     product_id: str,
     limit: int = Query(default=200, ge=1, le=2000),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     return await get_product_history(product_id, limit, user)
 
@@ -1465,7 +1465,7 @@ async def legacy_history(
 @router.get("/sources/{product_id}", response_model=PriceSourceResponse, deprecated=True)
 async def legacy_sources(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     res = await get_product_sources(product_id, user)
     data = res.get("data") or {}

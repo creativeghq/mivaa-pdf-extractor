@@ -12,11 +12,12 @@ This module provides comprehensive administrative and monitoring capabilities in
 from app.dependencies import (
     assert_job_readable,
     caller_workspace_or_none,
+    current_user_id,
     verify_internal_access,
 )
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks, Query, Header
 from fastapi.responses import JSONResponse
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 import logging
 from datetime import datetime, timedelta
 import psutil
@@ -1466,7 +1467,7 @@ async def reprocess_image_ocr(
                     'ocr_metadata': {
                         'text_regions_count': len(ocr_results),
                         'reprocessed_at': datetime.utcnow().isoformat(),
-                        'reprocessed_by': current_user.id,
+                        'reprocessed_by': current_user_id(current_user),
                         'can_reprocess': False
                     }
                 }
@@ -1619,7 +1620,7 @@ async def queue_regenerate_image_embeddings(
     request: RegenerateImageEmbeddingsJobRequest,
     background_tasks: BackgroundTasks,
     workspace_context: WorkspaceContext = Depends(get_workspace_context),
-    current_user: User = Depends(get_current_user),
+    current_user: Dict[str, Any] = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ):
     """

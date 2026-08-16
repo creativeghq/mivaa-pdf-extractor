@@ -14,7 +14,7 @@ thirteen more times is how the fourteenth copy ends up subtly different.
 So it lives here once:
 
     async with metered_door(
-        user_id=str(user.id), workspace_id=ws,
+        user_id=current_user_id(user), workspace_id=ws,
         cost=costs.PRICE_OP_CREDIT_COST["refresh"],
         operation_type="price_monitoring.refresh",
         debit=costs.debit_credits, refund=costs.refund_credits,

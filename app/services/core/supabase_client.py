@@ -11,6 +11,9 @@ import httpx
 import inspect
 import functools
 import importlib
+import sys
+import threading
+from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional, TYPE_CHECKING
 
@@ -29,6 +32,27 @@ logger = logging.getLogger(__name__)
 # Guard so the central PostgREST .execute() retry patch is installed once per
 # process, no matter how many times initialize() runs.
 _postgrest_retry_installed = False
+
+#: Set while the LOG SINK is writing its own batch. Thread-local because
+#: SupabaseLoggingHandler flushes on its own worker thread, so this can never leak into a
+#: request's retry decisions. See `log_sink_write()`.
+_log_sink_guard = threading.local()
+
+
+@contextmanager
+def log_sink_write():
+    """Mark this thread as being inside the log sink's own Supabase write.
+
+    Everything under here reports retry decisions to stderr instead of through `logging`.
+    Without it the sink's failure is logged, which re-enters the sink that just failed and
+    (via Sentry's `event_level=ERROR`) raises an alert about the alerting.
+    """
+    previous = getattr(_log_sink_guard, "active", False)
+    _log_sink_guard.active = True
+    try:
+        yield
+    finally:
+        _log_sink_guard.active = previous
 
 
 def _install_postgrest_retry_once(
@@ -102,6 +126,26 @@ def _install_postgrest_retry_once(
         logger.warning(f"⚠️ PostgREST retry patch skipped (import failed): {e}")
         return
 
+    def _say(level: str, message: str) -> None:
+        """Report a retry decision — to stderr when the failing request IS the log sink.
+
+        `SupabaseLoggingHandler._write_batch` inserts into `system_logs`, which is a POST
+        and therefore non-idempotent, so a transient disconnect during a log flush lands
+        in the branch below. That branch called `logger.error(...)`, which the root logger
+        routes straight back into the handler that just failed — and, because Sentry's
+        LoggingIntegration has `event_level=ERROR`, raised a Sentry event for it.
+
+        The handler already prints to stderr precisely to avoid that recursion; this patch
+        sits underneath it and defeated it. 27 Sentry events in one day, all of them a
+        dropped LOG ROW rather than dropped business data.
+
+        Business callers still get the ERROR and the Sentry event, which is the point.
+        """
+        if getattr(_log_sink_guard, "active", False):
+            print(f"[postgrest-retry] {message}", file=sys.stderr)
+            return
+        getattr(logger, level)(message)
+
     def _wrap(original):
         @functools.wraps(original)
         def execute_with_retry(self, *args, **kwargs):
@@ -110,9 +154,10 @@ def _install_postgrest_retry_once(
                 try:
                     result = original(self, *args, **kwargs)
                     if attempt > 0:
-                        logger.info(
+                        _say(
+                            "info",
                             f"✅ PostgREST query succeeded on attempt "
-                            f"{attempt + 1}/{max_retries + 1}"
+                            f"{attempt + 1}/{max_retries + 1}",
                         )
                     return result
                 except Exception as e:
@@ -121,16 +166,18 @@ def _install_postgrest_retry_once(
                             # Surface it instead of silently risking a duplicate.
                             # The caller decides; most of these are inserts whose
                             # duplicate would be far more expensive than the error.
-                            logger.error(
+                            _say(
+                                "error",
                                 f"❌ PostgREST transient failure on a NON-IDEMPOTENT "
                                 f"request — not retrying (a repeat could duplicate the "
-                                f"write): {e}"
+                                f"write): {e}",
                             )
                             raise
-                        logger.warning(
+                        _say(
+                            "warning",
                             f"⚠️ PostgREST transient failure "
                             f"(attempt {attempt + 1}/{max_retries + 1}): {e}. "
-                            f"Retrying in {delay:.1f}s..."
+                            f"Retrying in {delay:.1f}s...",
                         )
                         time.sleep(delay)
                         delay = min(delay * 2.0, max_delay)

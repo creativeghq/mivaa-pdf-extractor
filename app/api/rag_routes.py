@@ -5511,7 +5511,15 @@ async def rag_health_check(
             status=overall_status,
             services={
                 "rag_service": rag_health,
-                "service_type": "Direct Vector DB"
+                # `services` is Dict[str, Dict[str, Any]]. This entry was the bare string
+                # "Direct Vector DB", so pydantic rejected the response and the endpoint
+                # answered 500 — while `overall_status` sitting right above it said
+                # "healthy". A health check that reports itself unhealthy because it cannot
+                # serialise its own healthy answer is worse than no health check: it was
+                # firing from 2026-04-07 to 2026-08-15 and read as a real outage every time.
+                # The vector store IS a service, so it gets a service entry rather than a
+                # loose descriptor.
+                "vector_store": {"status": "available", "type": "Direct Vector DB"},
             },
             timestamp=datetime.utcnow().isoformat()
         )

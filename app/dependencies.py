@@ -192,6 +192,38 @@ async def verify_internal_access(request: Request) -> Optional[Dict[str, Any]]:
     raise HTTPException(status_code=401, detail="Unauthorized: internal endpoint requires a valid token or x-cron-secret")
 
 
+def current_user_id(user: Any) -> str:
+    """The caller's user id, from whatever shape the auth dependency handed back.
+
+    `get_current_user` returns the raw JWT CLAIMS DICT, whose id lives under `sub`. Three
+    route files nevertheless annotated it `user: User` (the pydantic model in
+    `middleware/jwt_auth`, which does have `.id`) and then wrote `str(user.id)` — 81 times.
+    FastAPI does not coerce a `Depends()` parameter to its annotation, so the dict passed
+    straight through and every one of those routes raised
+    `AttributeError: 'dict' object has no attribute 'id'` on its first call. Sentry caught
+    it on `/api/v1/price-monitoring/products/{product_id}`; the other 80 sites were the
+    same bug waiting for traffic.
+
+    Accepts the model form too, so this stays correct if the dependency is ever changed to
+    return one. Raises 401 rather than returning None: a route that reached here has
+    already authenticated, so an unresolvable id is a broken token, not an anonymous call —
+    and returning None would push a `str(None)` = `"None"` user id into an ownership check.
+
+    NOT for the metering path: `credit_metering._user_id` deliberately returns Optional
+    because "no payer" is a legitimate state there (cron sweeps). Here it never is.
+    """
+    if isinstance(user, dict):
+        uid = user.get("sub") or user.get("user_id")
+    else:
+        uid = getattr(user, "id", None) or getattr(user, "sub", None)
+    if not uid:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authenticated token carries no user id",
+        )
+    return str(uid)
+
+
 async def get_current_user(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security)

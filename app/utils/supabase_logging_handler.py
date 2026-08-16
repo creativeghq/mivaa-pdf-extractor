@@ -223,11 +223,19 @@ class SupabaseLoggingHandler(logging.Handler):
             return
             
         try:
+            from app.services.core.supabase_client import log_sink_write
+
             supabase = get_supabase_client()
             # Check if client is initialized before attempting to write
             if supabase._client is None:
                 return  # Silently skip if not initialized yet
-            supabase.client.table('system_logs').insert(batch).execute()
+            # `log_sink_write()` keeps the PostgREST retry patch from reporting a failed
+            # log flush through `logging`. This insert is a POST, so a transient
+            # disconnect lands in that patch's non-idempotent branch, which logged at
+            # ERROR — straight back into this handler, and out to Sentry as an event
+            # about the log sink rather than about anything a user is doing.
+            with log_sink_write():
+                supabase.client.table('system_logs').insert(batch).execute()
         except Exception as e:
             # Print to stderr so we don't lose the error (but only if it's not an initialization error)
             if "not initialized" not in str(e):

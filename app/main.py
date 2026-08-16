@@ -1136,11 +1136,20 @@ async def tenancy_violation_handler(request, exc: TenancyViolation):
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc: HTTPException):
     """Handle HTTP exceptions with structured error responses."""
-    # Capture HTTP exceptions in Sentry — but skip the noisy client-error codes
-    # (401/403/404). Those mean "bad token", "no permission", "doesn't exist" —
-    # they aren't server bugs and they swamp the dashboard. Server errors (5xx)
-    # and unexpected client errors (4xx other than the three above) still go
-    # through.
+    # Capture 5xx in Sentry. NOT 4xx — any of them.
+    #
+    # This used to exempt only 401/403/404 and report every other 4xx as a warning
+    # event, on the theory that they were "unexpected client errors". In practice the
+    # commonest one is a caller omitting a required field: Sentry's top entry from that
+    # branch was `HTTP 400: document_id is required` on /api/rag/relevancies. A 400 is
+    # the server correctly rejecting bad input. Alerting on it means alerting whenever
+    # anyone calls the API wrong, which is not a signal about this service.
+    #
+    # It also put MIVAA at odds with the rule the platform already follows on the edge
+    # (CLAUDE.md, api-logger): "4xx are intentionally never reported (client errors, not
+    # bugs)". Two runtimes, one rule. A 4xx that IS a bug shows up as the 5xx it causes
+    # downstream, or as the response-status telemetry in api_usage_logs — neither of
+    # which pages anyone.
     try:
         import sentry_sdk
         if exc.status_code >= 500:
@@ -1153,16 +1162,6 @@ async def http_exception_handler(request, exc: HTTPException):
                     "headers": dict(request.headers)
                 })
             sentry_sdk.capture_exception(exc)
-        elif exc.status_code >= 400 and exc.status_code not in (401, 403, 404):
-            with sentry_sdk.configure_scope() as scope:
-                scope.set_tag("error_type", "http_exception")
-                scope.set_tag("status_code", exc.status_code)
-                scope.set_context("request", {
-                    "url": str(request.url),
-                    "method": request.method,
-                    "headers": dict(request.headers)
-                })
-            sentry_sdk.capture_message(f"HTTP {exc.status_code}: {exc.detail}", level="warning")
     except ImportError:
         pass  # Sentry not available
     except Exception:

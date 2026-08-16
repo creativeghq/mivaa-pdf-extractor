@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from app.dependencies import get_current_user, get_workspace_context
+from app.dependencies import current_user_id, get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.tracked_mentions_service import (
@@ -101,7 +101,7 @@ def _is_admin(sb, user_id: str) -> bool:
 
 
 def _require_admin(user: User) -> None:
-    if not _is_admin(get_supabase_client().client, str(user.id)):
+    if not _is_admin(get_supabase_client().client, current_user_id(user)):
         raise HTTPException(status_code=403, detail="admin role required")
 
 
@@ -242,7 +242,7 @@ class OpportunitiesRequest(BaseModel):
 async def track_product(
     product_id: str,
     body: Optional[TrackRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     sb = get_supabase_client().client
@@ -258,7 +258,7 @@ async def track_product(
     # Only the first-refresh sweep costs money; enrolling without it is free (#18 M5-3).
     run_first = (body.run_first_refresh if body else True)
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=getattr(workspace, "workspace_id", None) if workspace else None,
         cost=MENTION_OP_CREDIT_COST["track"] if run_first else 0,
         operation_type="mention_monitoring.track",
@@ -270,7 +270,7 @@ async def track_product(
             brand_name=brand,
             aliases=aliases,
             auto_expand_aliases=(body.auto_expand_aliases if body else False),
-            user_id=str(user.id),
+            user_id=current_user_id(user),
             workspace_id=getattr(workspace, "workspace_id", None) if workspace else None,
             country_codes=(body.country_codes if body else None) or [],
             run_first_refresh=run_first,
@@ -288,14 +288,14 @@ async def track_product(
 @router.delete("/products/{product_id}/track")
 async def untrack_product(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     svc = get_tracked_mentions_service()
     existing = svc.find_for_product(product_id)
     if not existing:
         return {"success": True, "message": "not tracked"}
     sb = get_supabase_client().client
-    if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
     ok = svc.deactivate(existing["id"])
     return {"success": ok}
@@ -304,14 +304,14 @@ async def untrack_product(
 @router.get("/products/{product_id}")
 async def get_product_monitoring(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     svc = get_tracked_mentions_service()
     row = svc.find_for_product(product_id)
     if not row:
         return {"success": True, "data": None}
     sb = get_supabase_client().client
-    if str(row.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+    if str(row.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
     return {"success": True, "data": row}
 
@@ -320,7 +320,7 @@ async def get_product_monitoring(
 async def refresh_product(
     product_id: str,
     body: Optional[RefreshRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     svc = get_tracked_mentions_service()
@@ -330,16 +330,16 @@ async def refresh_product(
         existing = await svc.find_or_create_for_product(
             product_id=product_id,
             product_name=product.get("name") or product_id,
-            user_id=str(user.id),
+            user_id=current_user_id(user),
             run_first_refresh=False,
         )
-    if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
     force = bool(body.force) if body else False
-    if force and not _is_admin(sb, str(user.id)):
+    if force and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="force_refresh requires admin")
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=existing.get("workspace_id"),
         cost=MENTION_OP_CREDIT_COST["refresh"],
         operation_type="mention_monitoring.refresh",
@@ -355,14 +355,14 @@ async def refresh_product(
 async def get_product_feed(
     product_id: str,
     limit: int = Query(default=100, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     svc = get_tracked_mentions_service()
     existing = svc.find_for_product(product_id)
     if not existing:
         return {"success": True, "data": []}
-    if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
     rows = svc.latest_results(existing["id"], limit=limit)
     return {"success": True, "data": rows}
@@ -375,14 +375,14 @@ async def get_product_history(
     sentiment: Optional[str] = None,
     outlet_type: Optional[str] = None,
     limit: int = Query(default=200, ge=1, le=2000),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     svc = get_tracked_mentions_service()
     existing = svc.find_for_product(product_id)
     if not existing:
         return {"success": True, "data": []}
-    if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
     rows = svc.history(existing["id"], days=days, limit=limit,
                        sentiment=sentiment, outlet_type=outlet_type)
@@ -393,14 +393,14 @@ async def get_product_history(
 async def get_product_summary(
     product_id: str,
     days: int = Query(default=30, ge=1, le=180),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     svc = get_tracked_mentions_service()
     existing = svc.find_for_product(product_id)
     if not existing:
         return {"success": True, "data": None}
-    if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
     summary = svc.summary(existing["id"], days=days)
     return {"success": True, "data": summary}
@@ -409,14 +409,14 @@ async def get_product_summary(
 @router.get("/products/{product_id}/llm-visibility")
 async def get_product_llm_visibility(
     product_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     svc = get_tracked_mentions_service()
     existing = svc.find_for_product(product_id)
     if not existing:
         return {"success": True, "data": {"present": False}}
-    if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
     snapshot = get_llm_mention_probe_service().visibility_snapshot(existing["id"])
     return {"success": True, "data": snapshot}
@@ -426,7 +426,7 @@ async def get_product_llm_visibility(
 async def probe_product_llm(
     product_id: str,
     body: Optional[ProbeLlmRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     _require_admin(user)
@@ -437,7 +437,7 @@ async def probe_product_llm(
         existing = await svc.find_or_create_for_product(
             product_id=product_id,
             product_name=product.get("name") or product_id,
-            user_id=str(user.id),
+            user_id=current_user_id(user),
             run_first_refresh=False,
         )
     facets = SubjectFacets.from_dict(existing.get("subject_facets") or {
@@ -449,12 +449,12 @@ async def probe_product_llm(
     # tracked_mention_id + product_id so per-subject cost dashboards work.
     from app.services.integrations.mention_cost_logger import CostAttribution as _CA
     probe_attribution = _CA(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         tracked_mention_id=existing["id"],
         product_id=existing.get("product_id"),
     )
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=existing.get("workspace_id"),
         cost=MENTION_OP_CREDIT_COST["probe_llm"],
         operation_type="mention_monitoring.probe_llm",
@@ -493,7 +493,7 @@ async def probe_product_llm(
 @router.post("/track")
 async def create_tracked_mention(
     body: TrackRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     if not body.subject_label and not body.product_id and not body.brand_name:
@@ -513,7 +513,7 @@ async def create_tracked_mention(
     svc = get_tracked_mentions_service()
     row = await svc.create(
         api_key_id=None,
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=getattr(workspace, "workspace_id", None) if workspace else None,
         subject_type=body.subject_type,
         subject_label=label or (brand or "untitled"),
@@ -542,10 +542,10 @@ async def create_tracked_mention(
 @router.get("/track/{tracked_mention_id}")
 async def get_tracked_mention(
     tracked_mention_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     return {"success": True, "data": row}
 
 
@@ -553,10 +553,10 @@ async def get_tracked_mention(
 async def update_tracked_mention(
     tracked_mention_id: str,
     body: UpdateRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     updates = body.model_dump(exclude_unset=True)
     row = get_tracked_mentions_service().update(tracked_mention_id, **updates)
     return {"success": True, "data": row}
@@ -565,10 +565,10 @@ async def update_tracked_mention(
 @router.delete("/track/{tracked_mention_id}")
 async def delete_tracked_mention(
     tracked_mention_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     ok = get_tracked_mentions_service().deactivate(tracked_mention_id)
     return {"success": ok}
 
@@ -577,15 +577,15 @@ async def delete_tracked_mention(
 async def refresh_tracked_mention(
     tracked_mention_id: str,
     body: Optional[RefreshRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _owner_row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _owner_row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     force = bool(body.force) if body else False
-    if force and not _is_admin(sb, str(user.id)):
+    if force and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="force_refresh requires admin")
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=(_owner_row or {}).get("workspace_id"),
         cost=MENTION_OP_CREDIT_COST["refresh"],
         operation_type="mention_monitoring.refresh",
@@ -601,10 +601,10 @@ async def refresh_tracked_mention(
 async def get_tracked_feed(
     tracked_mention_id: str,
     limit: int = Query(default=100, ge=1, le=500),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     rows = get_tracked_mentions_service().latest_results(tracked_mention_id, limit=limit)
     return {"success": True, "data": rows}
 
@@ -616,10 +616,10 @@ async def get_tracked_history(
     sentiment: Optional[str] = None,
     outlet_type: Optional[str] = None,
     limit: int = Query(default=200, ge=1, le=2000),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     rows = get_tracked_mentions_service().history(
         tracked_mention_id, days=days, sentiment=sentiment, outlet_type=outlet_type, limit=limit,
     )
@@ -630,10 +630,10 @@ async def get_tracked_history(
 async def get_tracked_summary(
     tracked_mention_id: str,
     days: int = Query(default=30, ge=1, le=180),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     summary = get_tracked_mentions_service().summary(tracked_mention_id, days=days)
     return {"success": True, "data": summary}
 
@@ -641,10 +641,10 @@ async def get_tracked_summary(
 @router.get("/track/{tracked_mention_id}/llm-visibility")
 async def get_tracked_llm_visibility(
     tracked_mention_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     snapshot = get_llm_mention_probe_service().visibility_snapshot(tracked_mention_id)
     return {"success": True, "data": snapshot}
 
@@ -653,11 +653,11 @@ async def get_tracked_llm_visibility(
 async def probe_tracked_llm(
     tracked_mention_id: str,
     body: Optional[ProbeLlmRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     _require_admin(user)
-    row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     facets = SubjectFacets.from_dict(row.get("subject_facets") or {
         "label": row.get("subject_label"),
         "aliases": row.get("aliases") or [],
@@ -665,12 +665,12 @@ async def probe_tracked_llm(
     })
     from app.services.integrations.mention_cost_logger import CostAttribution as _CA
     probe_attribution = _CA(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         tracked_mention_id=tracked_mention_id,
         product_id=row.get("product_id"),
     )
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=row.get("workspace_id"),
         cost=MENTION_OP_CREDIT_COST["probe_llm"],
         operation_type="mention_monitoring.probe_llm",
@@ -691,15 +691,15 @@ async def probe_tracked_llm(
 async def exclude_url(
     tracked_mention_id: str,
     body: ExcludeRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     if not body.url and not body.domain:
         raise HTTPException(status_code=400, detail="url or domain required")
     out = get_tracked_mentions_service().add_exclusion(
         tracked_mention_id, url=body.url, domain=body.domain,
-        reason=body.reason, user_id=str(user.id),
+        reason=body.reason, user_id=current_user_id(user),
     )
     return {"success": True, "data": out}
 
@@ -708,10 +708,10 @@ async def exclude_url(
 async def include_url(
     tracked_mention_id: str,
     body: ExcludeRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     removed = get_tracked_mentions_service().remove_exclusion(
         tracked_mention_id, url=body.url, domain=body.domain,
     )
@@ -721,10 +721,10 @@ async def include_url(
 @router.get("/track/{tracked_mention_id}/exclusions")
 async def list_exclusions(
     tracked_mention_id: str,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     rows = get_tracked_mentions_service().list_exclusions(tracked_mention_id)
     return {"success": True, "data": rows}
 
@@ -733,15 +733,15 @@ async def list_exclusions(
 async def promote_url(
     tracked_mention_id: str,
     body: PromoteRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     _require_admin(user)
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     out = get_tracked_mentions_service().add_promoted_url(
         tracked_mention_id,
         url=body.url, override_relevance=body.override_relevance,
-        reason=body.reason, user_id=str(user.id),
+        reason=body.reason, user_id=current_user_id(user),
     )
     return {"success": True, "data": out}
 
@@ -750,10 +750,10 @@ async def promote_url(
 async def share_of_voice(
     tracked_mention_id: str,
     days: int = Query(default=30, ge=1, le=180),
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     # Aggregate competitor-mentions across LLM probes for this subject
     try:
         r = (
@@ -786,7 +786,7 @@ async def share_of_voice(
 async def get_product_opportunities(
     product_id: str,
     body: Optional[OpportunitiesRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Generate content + outreach opportunities for a product's tracked mentions."""
     sb = get_supabase_client().client
@@ -797,7 +797,7 @@ async def get_product_opportunities(
             "tracked_mention_id": None, "opportunities": [],
             "errors": {"subject": "product is not enrolled in mention monitoring"},
         }}
-    if str(existing.get("user_id")) != str(user.id) and not _is_admin(sb, str(user.id)):
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
     # A disabled module must not run paid discovery. The refresh routes below already gate
     # on this; these three did not, so `mention-monitoring` kept billing DataForSEO Labs
@@ -808,7 +808,7 @@ async def get_product_opportunities(
                 "skipped": "module_disabled"}
     body = body or OpportunitiesRequest()
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=existing.get("workspace_id"),
         cost=MENTION_OP_CREDIT_COST[
             "opportunities_with_llm" if body.use_llm_summary else "opportunities"
@@ -832,11 +832,11 @@ async def get_product_opportunities(
 async def get_tracked_opportunities(
     tracked_mention_id: str,
     body: Optional[OpportunitiesRequest] = None,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Generate content + outreach opportunities for any tracked subject."""
     sb = get_supabase_client().client
-    _owner_row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=str(user.id))
+    _owner_row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     # A disabled module must not run paid discovery. The refresh routes below already gate
     # on this; these three did not, so `mention-monitoring` kept billing DataForSEO Labs
     # while switched off — 3 calls on 2026-08-02 alone, months after the toggle went false.
@@ -846,7 +846,7 @@ async def get_tracked_opportunities(
                 "skipped": "module_disabled"}
     body = body or OpportunitiesRequest()
     async with metered_door(
-        user_id=str(user.id),
+        user_id=current_user_id(user),
         workspace_id=(_owner_row or {}).get("workspace_id"),
         cost=MENTION_OP_CREDIT_COST[
             "opportunities_with_llm" if body.use_llm_summary else "opportunities"
@@ -873,7 +873,7 @@ async def get_tracked_opportunities(
 @router.post("/classifier-correction")
 async def classifier_correction(
     body: ClassifierCorrectionRequest,
-    user: User = Depends(get_current_user),
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
     # Look up the row, copy snapshot fields for few-shot examples
@@ -887,7 +887,7 @@ async def classifier_correction(
     row = (r.data if r else None) or None
     if not row:
         raise HTTPException(status_code=404, detail="mention_history row not found")
-    _check_owner_or_admin(sb, tracked_mention_id=row["tracked_mention_id"], user_id=str(user.id))
+    _check_owner_or_admin(sb, tracked_mention_id=row["tracked_mention_id"], user_id=current_user_id(user))
     sb.table("mention_match_corrections").insert({
         "tracked_mention_id": row["tracked_mention_id"],
         "mention_history_id": body.mention_history_id,
@@ -899,7 +899,7 @@ async def classifier_correction(
         "original_sentiment": row.get("sentiment"),
         "corrected_sentiment": body.corrected_sentiment,
         "correction_note": body.correction_note,
-        "created_by": str(user.id),
+        "created_by": current_user_id(user),
     }).execute()
     # Apply the correction directly to the row so the UI updates immediately
     if body.corrected_relevance or body.corrected_sentiment:
