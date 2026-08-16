@@ -29,6 +29,7 @@ from app.models.vision_analysis import (
 from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.embeddings.vecs_service import get_vecs_service
+from app.utils.ssrf_guard import SSRFError, assert_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -81,14 +82,38 @@ async def _fetch_stale_images(
     return stale
 
 
+#: 20 MB. An image that large is already pathological; the point is that the cap is
+#: enforced against the bytes DELIVERED, not against a Content-Length the server claims.
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
 async def _fetch_image_bytes(image_url: str) -> Optional[bytes]:
-    """Fetch the image bytes for analysis. Best-effort — None on failure."""
+    """Fetch the image bytes for analysis. Best-effort — None on failure.
+
+    This explicitly set `follow_redirects=True` with no SSRF guard and no size cap
+    (audit #14 MV-8), so a stored image_url could redirect the backfill into
+    169.254.169.254 or any RFC1918 address, and `except Exception: return None`
+    made a blocked fetch indistinguishable from "no image".
+    """
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-            resp = await client.get(image_url)
+        safe_url = assert_safe_url(image_url)
+    except SSRFError as e:
+        # Logged, not silent: "the URL was refused" and "the image is missing" need
+        # different fixes, and both used to arrive as None.
+        logger.warning("understanding backfill: refusing %s — %s", image_url, e)
+        return None
+    try:
+        # follow_redirects=False is load-bearing: the guard checked the host it was
+        # given, and a redirect moves the request to one nothing checked.
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+            resp = await client.get(safe_url)
             if resp.status_code != 200:
                 return None
-            return resp.content
+            body = resp.content
+            if len(body) > _MAX_IMAGE_BYTES:
+                logger.warning("understanding backfill: %s exceeded the size cap", image_url)
+                return None
+            return body
     except Exception:
         return None
 

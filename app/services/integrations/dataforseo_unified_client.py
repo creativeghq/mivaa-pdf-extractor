@@ -57,6 +57,17 @@ _BASE = "https://api.dataforseo.com/v3"
 _SANDBOX_BASE = "https://sandbox.dataforseo.com/v3"
 _HTTP_TIMEOUT = 30.0
 
+#: Credits charged per DataForSEO request. One flat unit: the provider bills per task
+#: and every path here issues exactly one, so a per-endpoint table would be a second
+#: source of truth for a number the response already reports as `cost`.
+_DFS_CALL_CREDITS = 1
+
+
+def log_operation_slug(operation: str) -> str:
+    """`serp.organic.live.advanced` -> `serp_organic_live_advanced`, for the ledger."""
+    return (operation or "call").replace(".", "_").replace("/", "_")[:60]
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Country / language code maps (full coverage from DataForSEO Appendix)
@@ -148,6 +159,27 @@ class DataForSEOUnifiedClient:
         """
         if not self.b64:
             return DataForSEOResult(ok=False, error="DataForSEO credentials not configured", status_code=401)
+
+        # audit #14 MV-3 — invariant 10: debit BEFORE the upstream call, and do not
+        # perform the work when the debit fails.
+        #
+        # This is the LAST layer that could have gated DataForSEO spend, and five audits
+        # confirmed none of the others does: #352 A18 (agent-tool wrappers), the MIVAA
+        # route check, #361 EG-4 (seo-api), #365 AD-13 (the shared edge client). So the
+        # spend was ungated end to end while seo_site_crawl_start accepts max_pages up
+        # to 1000.
+        #
+        # `attribution` is Optional by signature, which is how unattributed paid calls
+        # became permissible. A call that names a payer is metered; one that does not is
+        # recorded as unbilled rather than waved through silently — the distinction
+        # ai_call_logger already draws, and the reason its UNBILLED markers exist.
+        if not self._charge_for_call(attribution, operation):
+            return DataForSEOResult(
+                ok=False,
+                error="Insufficient credits for DataForSEO call",
+                status_code=402,
+            )
+
         url = f"{self.base_url}{path}"
         headers = {
             "Authorization": f"Basic {self.b64}",
@@ -167,14 +199,25 @@ class DataForSEOUnifiedClient:
 
         elapsed = int((time.time() - start) * 1000)
         if resp.status_code >= 500:
-            # 1 retry for 5xx
+            # 1 retry for 5xx. audit #14 MV-6: this used to issue client.post()
+            # unconditionally, so retrying a GET silently turned it into a POST against
+            # the same path — a different request to a paid API.
+            self._log_cost(log_kind, attribution, f"{operation}.attempt1", items=0,
+                           latency_ms=elapsed, success=False,
+                           error=f"{resp.status_code} — retrying")
             await asyncio.sleep(0.5)
+            retry_start = time.time()
             try:
                 async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-                    resp = await client.post(url, headers=headers, json=body or [])
+                    if method == "GET":
+                        resp = await client.get(url, headers=headers)
+                    else:
+                        resp = await client.post(url, headers=headers, json=body or [])
             except httpx.RequestError as e:
+                elapsed = int((time.time() - retry_start) * 1000)
                 self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed, success=False, error=str(e))
                 return DataForSEOResult(ok=False, error=f"retry network: {e}", latency_ms=elapsed)
+            elapsed = int((time.time() - start) * 1000)
 
         if resp.status_code >= 400:
             err_text = resp.text[:200]
@@ -184,6 +227,11 @@ class DataForSEOUnifiedClient:
         try:
             data = resp.json()
         except Exception as e:
+            # audit #14 MV-5: this returned without calling _log_cost, so a paid call
+            # that came back unparseable left no record at all — the one failure mode
+            # you would most want in the cost table.
+            self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed,
+                           success=False, error=f"json parse: {e}")
             return DataForSEOResult(ok=False, error=f"json parse: {e}", latency_ms=elapsed)
 
         # HTTP 2xx is not success. A rejected task returns 200 with a non-20000 body
@@ -212,6 +260,44 @@ class DataForSEOUnifiedClient:
         self._log_cost(log_kind, attribution, operation, items=len(items), latency_ms=elapsed, success=True)
         return DataForSEOResult(ok=True, items=items, raw=data, status_code=resp.status_code,
                                 cost_usd=cost, latency_ms=elapsed)
+
+    def _charge_for_call(
+        self,
+        attribution: Optional[CostAttribution],
+        operation: str,
+    ) -> bool:
+        """Debit the caller before the request goes out. True to proceed.
+
+        Returns True when there is no payer to charge, but RECORDS that — an
+        unattributed paid call is a real thing (cron sweeps, health probes) and must be
+        visible rather than silently free. See invariant 10 and audit #14 MV-3.
+        """
+        user_id = getattr(attribution, "user_id", None) if attribution else None
+        workspace_id = getattr(attribution, "workspace_id", None) if attribution else None
+
+        if not user_id:
+            logger.info(
+                "[dataforseo] %s: no payer on the attribution — proceeding UNBILLED",
+                operation or "call",
+            )
+            return True
+
+        try:
+            from app.services.integrations.job_cost_logger import debit_credits
+            ok = debit_credits(
+                user_id=str(user_id),
+                amount=_DFS_CALL_CREDITS,
+                operation_type=f"dataforseo.{log_operation_slug(operation)}",
+                workspace_id=str(workspace_id) if workspace_id else None,
+            )
+        except Exception as e:  # noqa: BLE001
+            # A metering fault must not become free spend (invariant 10).
+            logger.error("[dataforseo] debit raised for %s: %s — refusing the call", operation, e)
+            return False
+
+        if not ok:
+            logger.warning("[dataforseo] debit refused for %s — not calling the API", operation)
+        return ok
 
     def _log_cost(
         self, kind: str, attribution: Optional[CostAttribution], operation: str,

@@ -34,6 +34,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.ssrf_guard import SSRFError, assert_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -197,10 +198,21 @@ async def fetch_via_recipe(url: str, recipe: Dict[str, Any]) -> Optional[Dict[st
     if recipe.get("requires_js"):
         return None
 
+    # audit #14 MV-9: follow_redirects=True with no guard, reached from
+    # perplexity_price_search_service with `hit.product_url` — MODEL OUTPUT. That is a
+    # URL an injected page can choose, fetched by our runtime.
     try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url, headers={"User-Agent": _USER_AGENT})
+        safe_url = assert_safe_url(url)
+    except SSRFError as e:
+        logger.warning("extraction recipe: refusing %s — %s", url, e)
+        return None
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            resp = await client.get(safe_url, headers={"User-Agent": _USER_AGENT})
         if resp.status_code != 200:
+            return None
+        if len(resp.content) > 5 * 1024 * 1024:
             return None
         if "captcha" in resp.text.lower() or "cloudflare" in resp.text.lower()[:2000]:
             return None

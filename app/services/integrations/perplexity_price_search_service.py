@@ -749,6 +749,17 @@ class PerplexityPriceSearchService:
             if cleaned:
                 body["web_search_options"]["search_domain_filter"] = cleaned
 
+        # audit #14 MV-3 — invariant 10. search_prices() called the provider before any
+        # debit: credits were computed AFTER the response and logged, never charged, and
+        # check_throttle() exists but this client never applies it (it depends on a
+        # caller passing timestamps). A reservation is taken here and reconciled against
+        # actual usage below, because the true cost is only knowable from the response.
+        if not await self._reserve_spend(user_id, workspace_id):
+            return PriceSearchResult(
+                success=False,
+                error="Insufficient credits for a price search",
+            )
+
         start = datetime.now(timezone.utc)
         try:
             async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
@@ -761,13 +772,31 @@ class PerplexityPriceSearchService:
                     json=body,
                 )
         except httpx.TimeoutException as e:
+            # audit #14 MV-5: every one of these returned BEFORE _log_usage, so a
+            # timed-out or rejected paid call left no row at all — while Perplexity
+            # still bills for work it started.
+            await self._log_failed_call(
+                user_id, workspace_id, product_name, tracked_query_id, product_id,
+                latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
+                error=f"timeout: {e}",
+            )
             return PriceSearchResult(success=False, error=f"timeout: {e}")
         except Exception as e:
+            await self._log_failed_call(
+                user_id, workspace_id, product_name, tracked_query_id, product_id,
+                latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
+                error=f"request failed: {e}",
+            )
             return PriceSearchResult(success=False, error=f"request failed: {e}")
 
         latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
 
         if resp.status_code != 200:
+            await self._log_failed_call(
+                user_id, workspace_id, product_name, tracked_query_id, product_id,
+                latency_ms=latency_ms,
+                error=f"perplexity HTTP {resp.status_code}",
+            )
             return PriceSearchResult(
                 success=False,
                 latency_ms=latency_ms,
@@ -843,6 +872,67 @@ class PerplexityPriceSearchService:
         return False, None
 
     # ────────── Internals ──────────
+
+    async def _reserve_spend(
+        self,
+        user_id: Optional[str],
+        workspace_id: Optional[str],
+    ) -> bool:
+        """Debit the reservation for one price search. True to proceed.
+
+        No payer means no charge — cron sweeps legitimately have none — but that is
+        RECORDED rather than waved through, which is the distinction invariant 10 and
+        the ai_call_logger UNBILLED markers both draw.
+        """
+        if not user_id:
+            logger.info("perplexity: no payer on this search — proceeding UNBILLED")
+            return True
+        try:
+            from app.services.integrations.price_cost_logger import (
+                PRICE_OP_CREDIT_COST, debit_credits,
+            )
+            return debit_credits(
+                user_id=str(user_id),
+                amount=PRICE_OP_CREDIT_COST.get("lookup_search", 3),
+                operation_type="perplexity.price_search",
+                workspace_id=str(workspace_id) if workspace_id else None,
+            )
+        except Exception as e:  # noqa: BLE001
+            # A metering fault must not become free provider spend.
+            logger.error("perplexity: debit raised (%s) — refusing the search", e)
+            return False
+
+    async def _log_failed_call(
+        self,
+        user_id: Optional[str],
+        workspace_id: Optional[str],
+        product_name: str,
+        tracked_query_id: Optional[str],
+        product_id: Optional[str],
+        *,
+        latency_ms: int,
+        error: str,
+    ) -> None:
+        """Record a paid call that failed. Best-effort; never raises."""
+        try:
+            await self._log_usage(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                input_tokens=0,
+                output_tokens=0,
+                search_requests=0,
+                cost_usd=0.0,
+                platform_credits=0,
+                latency_ms=latency_ms,
+                product_name=product_name,
+                hits_count=0,
+                model_name="perplexity_failed",
+                tracked_query_id=tracked_query_id,
+                product_id=product_id,
+                error_message=error,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("perplexity: could not log the failed call: %s", e)
 
     def _build_messages(
         self,
@@ -1475,8 +1565,14 @@ class PerplexityPriceSearchService:
         model_name: str = MODEL,
         tracked_query_id: Optional[str] = None,
         product_id: Optional[str] = None,
+        error_message: Optional[str] = None,
     ) -> None:
         """Insert into ai_usage_logs.
+
+        `error_message` marks a call that FAILED. Timeouts, request failures and
+        non-200s all returned before reaching this method (audit #14 MV-5), so the one
+        class of paid call you would most want in the cost table was the one class that
+        never appeared in it.
 
         Class #5 (cost attribution gap): previously this row carried no
         module_slug / tracked_query_id / product_id, so per-subject cost
@@ -1502,6 +1598,11 @@ class PerplexityPriceSearchService:
             }
             if tracked_query_id:
                 metadata["tracked_query_id"] = tracked_query_id
+            if error_message:
+                # An explicit failure marker, so a failed paid call is distinguishable
+                # from a successful one that found nothing (pipeline convention 1).
+                metadata["error"] = error_message[:300]
+                metadata["call_failed"] = True
             self.supabase.client.table("ai_usage_logs").insert(
                 {
                     "user_id": user_id,

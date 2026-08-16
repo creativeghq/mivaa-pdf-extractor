@@ -1130,6 +1130,7 @@ class RAGService:
                     rel_response = self.supabase_client.client.table('image_product_associations')\
                         .select('product_id, image_id, overall_score')\
                         .in_('image_id', batch_ids)\
+                        .eq('workspace_id', workspace_id)\
                         .execute()
                     if rel_response.data:
                         all_image_rels.extend(rel_response.data)
@@ -1161,6 +1162,7 @@ class RAGService:
                     rel_response = self.supabase_client.client.table('chunk_product_relationships')\
                         .select('product_id, chunk_id, relevance_score')\
                         .in_('chunk_id', batch_ids)\
+                        .eq('workspace_id', workspace_id)\
                         .execute()
                     if rel_response.data:
                         all_chunk_rels.extend(rel_response.data)
@@ -1289,6 +1291,7 @@ class RAGService:
                     products_response = self.supabase_client.client.table('products')\
                         .select('id, name, description, metadata, workspace_id, source_document_id')\
                         .in_('id', batch_ids)\
+                        .eq('workspace_id', workspace_id)\
                         .execute()
                     if products_response.data:
                         all_products.extend(products_response.data)

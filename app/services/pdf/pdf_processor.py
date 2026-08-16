@@ -137,10 +137,21 @@ async def download_image_to_base64(image_url: str) -> str:
     """
     import httpx
 
+    # audit #14 MV-9: no SSRF guard and no size cap before the body was buffered and
+    # base64-encoded. httpx at least defaults to not following redirects, which is why
+    # this was the milder of the pair — but the guard is what makes that a decision.
+    from app.utils.ssrf_guard import assert_safe_url
+    safe_url = assert_safe_url(image_url)
+    max_bytes = 20 * 1024 * 1024
+
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(image_url)
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+            response = await client.get(safe_url)
             if response.status_code == 200:
+                if len(response.content) > max_bytes:
+                    raise Exception(
+                        f"Image at {image_url} exceeds the {max_bytes} byte cap"
+                    )
                 return base64.b64encode(response.content).decode('utf-8')
             else:
                 raise Exception(f"Failed to download image from {image_url}: HTTP {response.status_code}")

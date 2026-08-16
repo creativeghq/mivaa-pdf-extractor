@@ -28,6 +28,12 @@ from app.services.metadata.table_metadata_extractor import TableMetadataExtracto
 logger = logging.getLogger(__name__)
 
 
+#: Returned instead of 0 when linking could not RUN (audit #14 MV-14). A count of 0
+#: means "nothing eligible"; this means "we do not know", which is the difference
+#: between a clean document and a swallowed database outage.
+LINKING_FAILED = -1
+
+
 class EntityLinkingService:
     """
     Service for linking entities (images, chunks, products) using relationship tables.
@@ -471,8 +477,12 @@ class EntityLinkingService:
             return len(relationships)
 
         except Exception as e:
+            # audit #14 MV-14: `return 0` here made a DB outage indistinguishable from
+            # "nothing eligible to link", so nothing retried and products stayed
+            # silently unlinked. -1 is the explicit failure marker; callers that only
+            # sum counts still behave, and callers that check can now tell.
             self.logger.error(f"Failed to link images to chunks: {e}")
-            return 0
+            return LINKING_FAILED
 
     async def link_chunks_to_products(
         self,
@@ -589,7 +599,7 @@ class EntityLinkingService:
 
         except Exception as e:
             self.logger.error(f"Failed to link chunks to products: {e}")
-            return 0
+            return LINKING_FAILED
 
     def _calculate_chunk_product_relevance(
         self,
@@ -751,6 +761,46 @@ class EntityLinkingService:
                 'chunk_product_links': 0
             }
 
+    async def _assert_product_belongs_to_document(
+        self,
+        product_id: str,
+        document_id: str,
+        logger: logging.Logger,
+    ) -> bool:
+        """The two ids must describe the same thing before either is written against.
+
+        `link_product_entities` took `product_id` and `document_id` independently, read
+        images and chunks by document, then wrote relationships by product — without
+        ever proving they belong together (audit #14 MV-12). Seventh instance of the
+        two-unchecked-ids class, and MIVAA runs every query as service role, so there
+        is no RLS backstop underneath it.
+        """
+        try:
+            res = (
+                self.supabase.client.table('products')
+                .select('id, source_document_id, workspace_id')
+                .eq('id', product_id)
+                .maybe_single()
+                .execute()
+            )
+            product = getattr(res, 'data', None)
+            if not product:
+                logger.warning(f"   ⚠️ Refusing to link: product {product_id} not found")
+                return False
+
+            source_doc = product.get('source_document_id')
+            if source_doc and str(source_doc) != str(document_id):
+                logger.error(
+                    f"   ⛔ Refusing to link product {product_id} against document "
+                    f"{document_id}: the product came from {source_doc}"
+                )
+                return False
+            return True
+        except Exception as e:
+            # A check that cannot run is not a check that passed.
+            logger.error(f"   ⛔ Could not verify product/document pairing: {e}")
+            return False
+
     async def link_product_entities(
         self,
         product_id: str,
@@ -778,15 +828,19 @@ class EntityLinkingService:
         Returns:
             Statistics of relationships created
         """
+        stats = {
+            'image_product_links': 0,
+            'chunk_product_links': 0,
+            'tables_linked': 0,
+            'relationships_created': 0
+        }
+
+        # Two ids each individually valid is not a pairing (audit #14 MV-12).
+        if not await self._assert_product_belongs_to_document(product_id, document_id, logger):
+            return stats
+
         try:
             logger.info(f"Linking entities for product: {product_name}")
-
-            stats = {
-                'image_product_links': 0,
-                'chunk_product_links': 0,
-                'tables_linked': 0,
-                'relationships_created': 0
-            }
 
             # 1. Link images to this product (images on product pages)
             images_response = self.supabase.client.table('document_images')\
