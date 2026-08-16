@@ -661,11 +661,17 @@ async def create_manual_product(
         logger.warning(f"supply_mode set failed for {product_id}: {e}")
     if request.price is not None:
         try:
+            # The unique index is (workspace_id, product_id, variant_key) NULLS NOT DISTINCT.
+            # Naming only the first two is not a narrower match — Postgres raises 42P10 "no
+            # unique or exclusion constraint matching the ON CONFLICT specification", so this
+            # upsert failed on every call. It failed into the `logger.warning` below, which is
+            # why nobody noticed: the product was created, `success: True` came back, and the
+            # price was silently never stored.
             svc.supabase.table('product_prices').upsert({
                 'workspace_id': ws, 'product_id': product_id,
                 'list_price': request.price, 'currency': request.currency,
                 'unit': request.unit,
-            }, on_conflict='workspace_id,product_id').execute()
+            }, on_conflict='workspace_id,product_id,variant_key').execute()
         except Exception as e:
             logger.warning(f"product_prices upsert failed for {product_id}: {e}")
 
