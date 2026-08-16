@@ -142,8 +142,12 @@ def test_dataforseo_debits_before_the_upstream_call():
 
 
 def test_a_metering_fault_does_not_become_free_spend():
+    """`None` is the refusal, not `False` — see
+    test_an_unbilled_call_is_not_mistaken_for_a_refused_one for why the helper stopped
+    returning a bool. What this pins is unchanged: the EXCEPT branch must refuse."""
     body = _strip_comments(_func(DFS, "_charge_for_call"))
-    assert "return False" in body, (
+    tail = body.split("except Exception")[-1]
+    assert "return None" in tail, (
         "an exception in the debit path no longer refuses the call, so a billing "
         "outage converts straight into free provider spend"
     )
@@ -236,4 +240,87 @@ def test_model_output_does_not_become_a_product_field_on_its_own_say_so():
     assert "is_loaded" in body, (
         "the partition can now raise mid-pipeline instead of degrading to its previous "
         "behaviour"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# The other half of MV-3: a reservation the provider never earned
+#
+# MV-3 moved both paid clients to debit-BEFORE-call (invariant 10). That is right,
+# and it was only half a mechanism. Invariant 10 says take the money before the
+# upstream call; it does not say keep it when the upstream then refuses.
+#
+# Found live, one day after MV-3 shipped: the Perplexity account has been out of
+# quota since 2026-08-01 and answers EVERY request with HTTP 401
+# `insufficient_quota` — 70 consecutive failures over 16 days, ~$0.48 of phantom
+# cost logged for work that never happened. With a reservation and no refund, a
+# dead credential stops being an outage and becomes a credit drain that bills the
+# user forever while every metering signal reads as healthy.
+#
+# The route layer already had the shape right — `Reserve — find_competitors` is
+# always paired with `Refund — find_competitors` in credit_transactions, and
+# website crawls refund on `crawl_failed`. The clients were the layer that did not.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_perplexity_gives_back_a_reservation_the_provider_never_earned():
+    body = _strip_comments(_func(PPX, "_perplexity_call"))
+    assert "_refund_spend" in body, (
+        "a Perplexity search debits before the call and keeps the credits when the "
+        "call fails — with the account out of quota that charges the user for every "
+        "401 forever"
+    )
+    # timeout, request-failed, non-200: every return that hands the caller no result.
+    assert body.count("self._refund_spend(") >= 3, (
+        "a Perplexity failure path returns without refunding the reservation"
+    )
+
+
+def test_dataforseo_gives_back_a_reservation_the_provider_never_earned():
+    body = _strip_comments(_func(DFS, "_call"))
+    assert "_refund_call" in body, "the DataForSEO charge has no refund half"
+    # network, retry-network, HTTP>=400, json-parse, envelope-rejected.
+    assert body.count("self._refund_call(") >= 5, (
+        "a DataForSEO ok=False path returns without refunding what it charged"
+    )
+
+
+@pytest.mark.parametrize(
+    "path,fn,helper,gate",
+    [
+        (PPX, "_perplexity_call", "_reserve_spend", "reserved is None"),
+        (DFS, "_call", "_charge_for_call", "charged is None"),
+    ],
+)
+def test_an_unbilled_call_is_not_mistaken_for_a_refused_one(path, fn, helper, gate):
+    """The reservation reports an AMOUNT, and `0` means "proceed, nobody to charge".
+
+    A truthiness test at the call site (`if not self._charge_for_call(...)`) reads that
+    0 as a refusal and kills every unbilled cron call — the same shape as
+    `price_cost_logger.debit_credits` returning `bool(data)`, where a truthy row saying
+    `success: false` served a paid op for free (audit #217 H3). The amount has to be
+    carried anyway, because the refund cannot invent it.
+    """
+    body = _strip_comments(_func(path, fn))
+    assert gate in body, (
+        f"{fn} no longer distinguishes a refused reservation (None) from an unbilled "
+        f"one (0) — a truthiness test on {helper} refuses every call with no payer"
+    )
+    assert f"not self.{helper}(" not in body and f"not await self.{helper}(" not in body, (
+        f"{fn} truthiness-tests {helper} again, so an unbilled call is refused"
+    )
+
+
+@pytest.mark.parametrize(
+    "path,helper",
+    [(PPX, "_refund_spend"), (DFS, "_refund_call")],
+)
+def test_a_refund_of_nothing_does_not_mint_credits(path, helper):
+    """No payer means nothing was taken. Refunding then CREDITS a user who never paid,
+    which is the mirror image of the bug and strictly worse — it is free money rather
+    than free work."""
+    body = _strip_comments(_func(path, helper))
+    assert "if not amount" in body, (
+        f"{helper} no longer short-circuits on a zero/None amount, so an unbilled call "
+        "refunds credits that were never debited"
     )

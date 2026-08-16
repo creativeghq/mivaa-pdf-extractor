@@ -173,7 +173,8 @@ class DataForSEOUnifiedClient:
         # became permissible. A call that names a payer is metered; one that does not is
         # recorded as unbilled rather than waved through silently — the distinction
         # ai_call_logger already draws, and the reason its UNBILLED markers exist.
-        if not self._charge_for_call(attribution, operation):
+        charged = self._charge_for_call(attribution, operation)
+        if charged is None:
             return DataForSEOResult(
                 ok=False,
                 error="Insufficient credits for DataForSEO call",
@@ -195,6 +196,7 @@ class DataForSEOUnifiedClient:
         except httpx.RequestError as e:
             elapsed = int((time.time() - start) * 1000)
             self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed, success=False, error=str(e))
+            self._refund_call(attribution, operation, charged)
             return DataForSEOResult(ok=False, error=f"network: {e}", latency_ms=elapsed)
 
         elapsed = int((time.time() - start) * 1000)
@@ -216,12 +218,14 @@ class DataForSEOUnifiedClient:
             except httpx.RequestError as e:
                 elapsed = int((time.time() - retry_start) * 1000)
                 self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed, success=False, error=str(e))
+                self._refund_call(attribution, operation, charged)
                 return DataForSEOResult(ok=False, error=f"retry network: {e}", latency_ms=elapsed)
             elapsed = int((time.time() - start) * 1000)
 
         if resp.status_code >= 400:
             err_text = resp.text[:200]
             self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed, success=False, error=err_text)
+            self._refund_call(attribution, operation, charged)
             return DataForSEOResult(ok=False, status_code=resp.status_code, error=f"{resp.status_code}: {err_text}", latency_ms=elapsed)
 
         try:
@@ -232,6 +236,7 @@ class DataForSEOUnifiedClient:
             # you would most want in the cost table.
             self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed,
                            success=False, error=f"json parse: {e}")
+            self._refund_call(attribution, operation, charged)
             return DataForSEOResult(ok=False, error=f"json parse: {e}", latency_ms=elapsed)
 
         # HTTP 2xx is not success. A rejected task returns 200 with a non-20000 body
@@ -242,6 +247,7 @@ class DataForSEOUnifiedClient:
         if not envelope_ok:
             self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed,
                            success=False, error=envelope_reason)
+            self._refund_call(attribution, operation, charged)
             return DataForSEOResult(ok=False, error=envelope_reason, raw=data,
                                     status_code=resp.status_code, latency_ms=elapsed)
 
@@ -265,12 +271,17 @@ class DataForSEOUnifiedClient:
         self,
         attribution: Optional[CostAttribution],
         operation: str,
-    ) -> bool:
-        """Debit the caller before the request goes out. True to proceed.
+    ) -> Optional[int]:
+        """Debit the caller before the request goes out.
 
-        Returns True when there is no payer to charge, but RECORDS that — an
-        unattributed paid call is a real thing (cron sweeps, health probes) and must be
-        visible rather than silently free. See invariant 10 and audit #14 MV-3.
+        Returns the amount actually taken: `None` refuses the call, `0` proceeds
+        UNBILLED — an unattributed paid call is a real thing (cron sweeps, health probes)
+        and must be visible rather than silently free — and a positive number is a real
+        charge that `_refund_call` must give back if no billable work happened. See
+        invariant 10 and audit #14 MV-3.
+
+        NOT a bool: `0` is a legitimate "proceed", so a truthiness test at the call site
+        would refuse every unbilled cron call.
         """
         user_id = getattr(attribution, "user_id", None) if attribution else None
         workspace_id = getattr(attribution, "workspace_id", None) if attribution else None
@@ -280,7 +291,7 @@ class DataForSEOUnifiedClient:
                 "[dataforseo] %s: no payer on the attribution — proceeding UNBILLED",
                 operation or "call",
             )
-            return True
+            return 0
 
         try:
             from app.services.integrations.job_cost_logger import debit_credits
@@ -293,11 +304,44 @@ class DataForSEOUnifiedClient:
         except Exception as e:  # noqa: BLE001
             # A metering fault must not become free spend (invariant 10).
             logger.error("[dataforseo] debit raised for %s: %s — refusing the call", operation, e)
-            return False
+            return None
 
         if not ok:
             logger.warning("[dataforseo] debit refused for %s — not calling the API", operation)
-        return ok
+            return None
+        return _DFS_CALL_CREDITS
+
+    def _refund_call(
+        self,
+        attribution: Optional[CostAttribution],
+        operation: str,
+        amount: Optional[int],
+    ) -> None:
+        """Give back a reservation when the call returned no usable result.
+
+        Debiting before the request (invariant 10) is not a licence to keep the money
+        when the request then fails. Every `ok=False` return below hands the caller
+        nothing, so the credits go back — the same reserve/refund pair the route layer
+        already uses for `find_competitors` and website crawls.
+
+        A 0/None amount means nothing was taken; refunding then would MINT credits.
+        """
+        if not amount:
+            return
+        user_id = getattr(attribution, "user_id", None) if attribution else None
+        workspace_id = getattr(attribution, "workspace_id", None) if attribution else None
+        if not user_id:
+            return
+        try:
+            from app.services.integrations.job_cost_logger import refund_credits
+            refund_credits(
+                user_id=str(user_id),
+                amount=int(amount),
+                operation_type=f"dataforseo.{log_operation_slug(operation)}",
+                workspace_id=str(workspace_id) if workspace_id else None,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[dataforseo] refund failed for %s (non-fatal): %s", operation, e)
 
     def _log_cost(
         self, kind: str, attribution: Optional[CostAttribution], operation: str,

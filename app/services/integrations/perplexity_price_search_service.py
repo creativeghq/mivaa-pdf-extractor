@@ -754,7 +754,8 @@ class PerplexityPriceSearchService:
         # check_throttle() exists but this client never applies it (it depends on a
         # caller passing timestamps). A reservation is taken here and reconciled against
         # actual usage below, because the true cost is only knowable from the response.
-        if not await self._reserve_spend(user_id, workspace_id):
+        reserved = await self._reserve_spend(user_id, workspace_id)
+        if reserved is None:
             return PriceSearchResult(
                 success=False,
                 error="Insufficient credits for a price search",
@@ -780,6 +781,7 @@ class PerplexityPriceSearchService:
                 latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
                 error=f"timeout: {e}",
             )
+            self._refund_spend(user_id, workspace_id, reserved)
             return PriceSearchResult(success=False, error=f"timeout: {e}")
         except Exception as e:
             await self._log_failed_call(
@@ -787,6 +789,7 @@ class PerplexityPriceSearchService:
                 latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
                 error=f"request failed: {e}",
             )
+            self._refund_spend(user_id, workspace_id, reserved)
             return PriceSearchResult(success=False, error=f"request failed: {e}")
 
         latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
@@ -797,6 +800,7 @@ class PerplexityPriceSearchService:
                 latency_ms=latency_ms,
                 error=f"perplexity HTTP {resp.status_code}",
             )
+            self._refund_spend(user_id, workspace_id, reserved)
             return PriceSearchResult(
                 success=False,
                 latency_ms=latency_ms,
@@ -877,30 +881,70 @@ class PerplexityPriceSearchService:
         self,
         user_id: Optional[str],
         workspace_id: Optional[str],
-    ) -> bool:
-        """Debit the reservation for one price search. True to proceed.
+    ) -> Optional[int]:
+        """Debit the reservation for one price search.
 
-        No payer means no charge — cron sweeps legitimately have none — but that is
-        RECORDED rather than waved through, which is the distinction invariant 10 and
-        the ai_call_logger UNBILLED markers both draw.
+        Returns the amount actually taken: `None` refuses the call, `0` proceeds
+        UNBILLED (cron sweeps legitimately have no payer, and that is RECORDED rather
+        than waved through — invariant 10, the distinction ai_call_logger's UNBILLED
+        markers already draw), a positive number is a real charge that `_refund_spend`
+        must give back if the provider does no billable work.
+
+        The return type is deliberately NOT a bool. `0` is a legitimate "proceed", so a
+        truthiness test at the call site would abort every unbilled cron run — the same
+        shape that made `bool(data)` treat a failed debit as a successful one in
+        `price_cost_logger.debit_credits` (audit #217 H3).
         """
         if not user_id:
             logger.info("perplexity: no payer on this search — proceeding UNBILLED")
-            return True
+            return 0
         try:
             from app.services.integrations.price_cost_logger import (
                 PRICE_OP_CREDIT_COST, debit_credits,
             )
-            return debit_credits(
+            amount = int(PRICE_OP_CREDIT_COST.get("lookup_search", 3))
+            ok = debit_credits(
                 user_id=str(user_id),
-                amount=PRICE_OP_CREDIT_COST.get("lookup_search", 3),
+                amount=amount,
+                operation_type="perplexity.price_search",
+                workspace_id=str(workspace_id) if workspace_id else None,
+            )
+            return amount if ok else None
+        except Exception as e:  # noqa: BLE001
+            # A metering fault must not become free provider spend.
+            logger.error("perplexity: debit raised (%s) — refusing the search", e)
+            return None
+
+    def _refund_spend(
+        self,
+        user_id: Optional[str],
+        workspace_id: Optional[str],
+        amount: Optional[int],
+    ) -> None:
+        """Give back a reservation the provider never earned.
+
+        Invariant 10 says debit BEFORE the upstream call. It does not say keep the money
+        when the upstream then refuses to do the work. Perplexity's account has been out
+        of quota since 2026-08-01 and answers every request with 401 `insufficient_quota`,
+        so without this half the #14 MV-3 reservation turns a dead credential into a
+        credit drain: the user is charged for nothing, forever, while every signal reads
+        as correctly metered.
+
+        `amount` of 0/None means nothing was taken (no payer) — refunding then would MINT
+        credits, so it is a no-op, not a refund of zero.
+        """
+        if not amount or not user_id:
+            return
+        try:
+            from app.services.integrations.price_cost_logger import refund_credits
+            refund_credits(
+                user_id=str(user_id),
+                amount=int(amount),
                 operation_type="perplexity.price_search",
                 workspace_id=str(workspace_id) if workspace_id else None,
             )
         except Exception as e:  # noqa: BLE001
-            # A metering fault must not become free provider spend.
-            logger.error("perplexity: debit raised (%s) — refusing the search", e)
-            return False
+            logger.warning("perplexity: refund failed (non-fatal): %s", e)
 
     async def _log_failed_call(
         self,
