@@ -24,7 +24,15 @@ class MaterialSearchRequest(BaseModel):
     """Request model for material-specific visual search."""
     
     # Core search inputs
-    query_image: Optional[str] = Field(None, description="Base64 encoded image or image URL")
+    query_image: Optional[str] = Field(
+        None,
+        description=(
+            "Base64-encoded image, a data: URL, or an HTTPS URL. Plaintext http is "
+            "refused (invariant 7) — this said 'image URL' while the code enforced "
+            "https, and a description looser than the check is how a caller finds out "
+            "at runtime."
+        ),
+    )
     query_text: Optional[str] = Field(None, description="Text description for hybrid search")
     query_embedding: Optional[List[float]] = Field(None, description="Pre-computed SLIG (SigLIP2) embedding")
     
@@ -535,8 +543,9 @@ class MaterialVisualSearchService:
                 # (invariant 7).
                 #
                 # `aspect_query._resolve_image_base64` already does exactly this job
-                # correctly — assert_safe_url, follow_redirects=False, 20MB cap — for
-                # the SAME `query_image` field on the sibling endpoint. Two
+                # correctly for the SAME `query_image` field on the sibling endpoint —
+                # it now delegates to `ssrf_guard.safe_fetch_bytes` (https-only,
+                # every redirect hop re-validated, 20MB cap enforced mid-stream). Two
                 # implementations of one operation, one of them guarded, is how the
                 # guarded one stops being the one that runs. Reuse it.
                 #
