@@ -15,6 +15,7 @@ from typing import Dict, Any, List, Optional
 
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
 from app.services.facets import canonicalize_product_attributes
+from app.services.metadata.field_validation import validate_metadata_against_registry
 from app.services.metadata.field_registry import field_registry
 from app.services.utilities.prompt_registry import load_prompt, prefetch, render
 
@@ -527,6 +528,28 @@ async def create_single_product(
     # Set default unit from category if not already present
     if not metadata.get('unit'):
         metadata['unit'] = _resolve_default_unit(metadata.get('material_category'), supabase)
+
+    # ── Validate extracted values against the field registry ─────────────
+    # Runs BEFORE canonicalization on purpose: it rewrites enum values to the admin's curated
+    # spelling ("MATT" -> "Matt", "R 11" -> "R11"), and four of the enum-constrained fields
+    # (pei_rating, slip_resistance, wood_type, application_areas) are also canonicalizable, so
+    # the clusterer should see the curated form.
+    #
+    # The registry already declared what these values must be — dropdown_options for 51 fields,
+    # field_type number for 89 — and until now nothing on this path checked. The prompt offered
+    # the enum (`[one of: ...]`) and there was no validator at all, which is the exact asymmetry
+    # #347 exists to prevent, inverted.
+    #
+    # Nothing is dropped. An implausible value is kept and flagged, because a wrong rule must
+    # not be able to destroy extracted data, and the non-canonicalizable fields have no
+    # attributes_raw to replay from.
+    try:
+        metadata, _validation_report = await validate_metadata_against_registry(metadata)
+    except Exception as _val_err:
+        # Validation is advisory. It must never be the reason a product fails to ingest —
+        # but it also must not fail invisibly, so the product carries the marker.
+        logger.error(f"   ⚠️ Registry validation failed for {product.name}: {_val_err}")
+        metadata['_validation'] = {'status': 'validator_failed', 'error': str(_val_err)[:200]}
 
     # ── Auto-canonicalize descriptive facets (multilingual auto-merge) ────
     # Whitelisted facet values (color, material, finish, style, …) flow

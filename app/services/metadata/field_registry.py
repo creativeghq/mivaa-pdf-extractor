@@ -29,7 +29,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field as dc_field
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from app.services.core.supabase_client import get_supabase_client
 
@@ -76,6 +76,11 @@ class FieldSpec:
     extraction_hint: str = ""
     #: {category_key: description}. A field can mean different things in different categories.
     description_by_category: Optional[Dict[str, str]] = None
+    #: Plausibility rules the columns cannot express: min/max/unit/pattern/max_length. Enforced
+    #: by `field_validation.validate_value`, which treats the key set as CLOSED — an unknown key
+    #: is reported, not ignored. `field_type` + `dropdown_options` already cover enum membership
+    #: and numeric-ness, so most fields need nothing here.
+    validation_rules: Optional[Dict[str, Any]] = None
 
     def applies_to(self, category_key: str) -> bool:
         return self.categories is None or category_key in self.categories
@@ -147,7 +152,7 @@ class FieldRegistry:
             client.table("material_metadata_fields")
             .select("field_name, display_name, description, section, applies_to_categories, "
                     "role, destination, canonicalize, field_type, dropdown_options, "
-                    "extraction_hints, description_by_category")
+                    "extraction_hints, description_by_category, validation_rules")
             .eq("status", "active")
             .execute()
         ).data or []
@@ -186,6 +191,7 @@ class FieldRegistry:
                 dropdown_options=tuple(r.get("dropdown_options") or ()),
                 extraction_hint=r.get("extraction_hints") or "",
                 description_by_category=r.get("description_by_category") or None,
+                validation_rules=r.get("validation_rules") or None,
             )
             for r in field_rows
         }
@@ -202,10 +208,13 @@ class FieldRegistry:
 
         self._cache = _Cache(fields=fields, categories=categories, loaded_at=time.monotonic())
         logger.info(
-            "📋 Field registry loaded: %d fields (%d identity, %d canonicalizable), %d categories",
+            "📋 Field registry loaded: %d fields (%d identity, %d canonicalizable, "
+            "%d enum-constrained, %d with validation rules), %d categories",
             len(fields),
             sum(1 for f in fields.values() if f.role == "identity"),
             sum(1 for f in fields.values() if f.canonicalize),
+            sum(1 for f in fields.values() if f.field_type == "dropdown" and f.dropdown_options),
+            sum(1 for f in fields.values() if f.validation_rules),
             len(categories),
         )
 
@@ -225,6 +234,17 @@ class FieldRegistry:
             return False
         spec = self._require().fields.get(key)
         return bool(spec and spec.canonicalize)
+
+    def spec_for(self, key: str) -> Optional[FieldSpec]:
+        """The full spec for a field, or None when the registry does not know the key.
+
+        None is a real answer — the extractor emits keys the registry never claimed to describe
+        (`material_category`, `unit`, `factory_name`) — so callers must treat it as "no opinion",
+        never as "invalid".
+        """
+        if not key or key.startswith("_"):
+            return None
+        return self._require().fields.get(key)
 
     def destination_of(self, key: str) -> str:
         """'column' means this value has a real home and must NOT be written to attributes jsonb."""

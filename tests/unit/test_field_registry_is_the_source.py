@@ -79,7 +79,7 @@ def test_no_hardcoded_registry_comes_back():
 
 #: Synchronous accessors. Calling one before `ensure_loaded()` raises FieldRegistryNotLoaded.
 SYNC_ACCESSORS = {
-    "is_canonicalizable", "destination_of", "is_identity", "identity_fields",
+    "is_canonicalizable", "destination_of", "is_identity", "identity_fields", "spec_for",
     "fields_for_category", "category", "skip_fields", "controlled_vocab",
     "all_controlled_vocab", "controlled_vocab_by_category", "priority_fields_prompt",
     "extraction_tips_prompt", "skip_fields_prompt", "controlled_vocab_prompt",
