@@ -6047,17 +6047,16 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
     }
 
 
-# Operator root workspace = the platform-default / shared KB (all KB docs currently
-# live here). Tenant callers also retrieve its published + non-private, agent/public
-# docs so the shared KB reaches every workspace's agent.
-def _kb_shared_workspace_id() -> str:
-    """The operator root workspace that holds the shared KB.
-
-    A function, not a module constant: a constant is evaluated at import time,
-    which shadows any DEFAULT_WORKSPACE_ID env override set afterwards, and it
-    was one of the 11 copies of this UUID (M3-14, #16).
-    """
-    return get_settings().default_workspace_id
+# KB access derivations live in app/services/kb/kb_access.py — ONE definition shared
+# with /api/kb/search, which used to keep its own. See that module's docstring: the two
+# endpoints are genuinely different (whole-doc vs section-level corpus, admin UI vs
+# agent tool) but the query vector, the caller identity and the read scope must agree,
+# and the query vector had already drifted.
+from app.services.kb.kb_access import (  # noqa: E402
+    kb_query_vector,
+    resolve_kb_access_scope,
+    resolve_kb_caller,
+)
 
 
 def _resolve_kb_access_scope(
@@ -6066,81 +6065,19 @@ def _resolve_kb_access_scope(
     caller: str,
     query: str,
 ) -> Dict[str, Any]:
+    """Thin binding of the shared resolver to THIS file's corpus.
+
+    `per_doc_agent_gate=True` because both RPCs reached from here
+    (`kb_match_doc_chunks`, `kb_read_doc_section`) enforce category access_level AND
+    per-doc `allowed_agents` internally, which is what makes it correct for an agent to
+    read a `visibility='private'` doc — private means "not published to the public KB
+    website", not "hidden from agents". `/api/kb/search` runs `kb_match_docs`, which has
+    no such gate, so it passes False. Keeping that argument explicit at each corpus is
+    the point; there is no default that is right for both.
     """
-    Resolve what a caller may read from the KB: access levels, the trigger-keyword
-    gated category allow-list, and whether the shared root workspace is in scope.
-
-    ONE definition, shared by /search/knowledge-base and /search/read-section. A
-    read-by-id endpoint that re-derived this gate slightly differently would be a
-    BOLA hole (the caller supplies the kb_doc_id), so both paths call this.
-
-    Returns `accessible_category_ids=None` when no post-filter is needed (admin/public).
-    """
-    query_lower = (query or "").lower()
-
-    if caller == "admin":
-        # Admin sees everything — no keyword restriction
-        return {
-            "allowed_access_levels": ["admin", "agent", "public"],
-            "accessible_category_ids": None,
-            "shared_workspace_id": (
-                _kb_shared_workspace_id() if workspace_id != _kb_shared_workspace_id() else None
-            ),
-            "include_private": True,
-        }
-
-    if caller == "public":
-        return {
-            "allowed_access_levels": ["public"],
-            "accessible_category_ids": None,
-            # The public-website caller never reaches across workspaces.
-            "shared_workspace_id": None,
-            "include_private": False,
-        }
-
-    # Agent caller: public categories always accessible; agent-level categories only if
-    # trigger_keyword matches (or no keyword set).
-    # Include the shared root workspace's categories so root docs are gated by the SAME
-    # access_level + trigger_keyword rules instead of being dropped by the post-filter
-    # for not belonging to the caller's workspace.
-    kb_ws_scope = [workspace_id]
-    if workspace_id != _kb_shared_workspace_id():
-        kb_ws_scope.append(_kb_shared_workspace_id())
-    cats_resp = supabase.client.table("kb_categories").select(
-        "id, access_level, trigger_keyword"
-    ).in_("workspace_id", kb_ws_scope).in_(
-        "access_level", ["agent", "public"]
-    ).execute()
-
-    accessible_category_ids: List[str] = []
-    for cat in (cats_resp.data or []):
-        if cat["access_level"] == "public":
-            # Public categories: always accessible to agent
-            accessible_category_ids.append(cat["id"])
-        else:
-            # Agent-level: check trigger_keyword
-            kw = cat.get("trigger_keyword")
-            if kw is None or kw.strip() == "":
-                # No keyword restriction — always accessible
-                accessible_category_ids.append(cat["id"])
-            elif kw.lower() in query_lower:
-                # Keyword present in query — grant access
-                accessible_category_ids.append(cat["id"])
-            # else: keyword required but not found — skip this category
-
-    logger.info(f"   🔑 Accessible KB categories for query: {len(accessible_category_ids)}")
-
-    return {
-        "allowed_access_levels": ["agent", "public"],
-        "accessible_category_ids": accessible_category_ids,
-        "shared_workspace_id": (
-            _kb_shared_workspace_id() if workspace_id != _kb_shared_workspace_id() else None
-        ),
-        # 'private' visibility means "not published to the public KB website" — it is
-        # NOT an agent gate. Agent readability is governed by category access_level +
-        # per-doc allowed_agents.
-        "include_private": True,
-    }
+    return resolve_kb_access_scope(
+        supabase, workspace_id, caller, query, per_doc_agent_gate=True
+    )
 
 
 @router.post("/search/knowledge-base", response_model=KnowledgeBaseSearchResponse)
@@ -6216,22 +6153,15 @@ async def search_knowledge_base(
             so each branch can degrade rather than fail the whole search."""
             if "value" in _query_embedding_memo:
                 return _query_embedding_memo["value"]
-            value = None
-            try:
-                from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-                embeddings_service = RealEmbeddingsService()
-                embedding_result = await embeddings_service.generate_all_embeddings(
-                    entity_id="kb_search_query",
-                    # "query" → Voyage input_type="query" (optimized for retrieval).
-                    # Was "search", which fell through to input_type="document" and
-                    # slightly degraded match quality against document-side vectors.
-                    entity_type="query",
-                    text_content=request.query,
-                )
-                if embedding_result.get("success"):
-                    value = embedding_result.get("embeddings", {}).get("text_1024")
-            except Exception as embed_err:
-                logger.warning(f"   ⚠️ Query embedding failed: {embed_err}")
+            # `kb_query_vector` owns the input_type decision — see kb_access. The
+            # comment that used to live here explained why entity_type must be "query"
+            # and not "search"; /api/kb/search had the same code with the wrong value,
+            # which is what one derivation in one place prevents.
+            value = await kb_query_vector(
+                request.query,
+                workspace_id=request.workspace_id,
+                user_id=str((claims or {}).get("sub") or "") or None,
+            )
             _query_embedding_memo["value"] = value
             return value
 
@@ -6483,7 +6413,17 @@ async def search_knowledge_base(
         if "kb_docs" in request.search_types:
             logger.info("   📚 Searching KB docs...")
             try:
-                caller = request.caller or "agent"
+                # DERIVED, never taken from the body. `caller="admin"` grants admin
+                # access levels + private docs, and PriceLookupDrawer sends exactly that
+                # from the FRONTEND — through mivaa-gateway, which forwards the end
+                # user's own JWT for /api/rag/* paths. So the assertion arrived on an
+                # ordinary user token and was honoured unchecked. resolve_kb_caller
+                # honours a platform service credential (price-tools.ts calls MIVAA
+                # directly with MIVAA_API_KEY and asserts admin deliberately), lets any
+                # caller NARROW, and clamps a widening request to 'agent'.
+                caller = await resolve_kb_caller(
+                    supabase, claims, request.caller, request.workspace_id
+                )
                 # Access gate (levels + trigger-keyword category allow-list + shared-KB
                 # scope) is resolved by the SAME helper the read-section endpoint uses.
                 # Cross-workspace exposure is additionally gated inside kb_match_doc_chunks.
@@ -6733,7 +6673,13 @@ async def read_document_section(
                 detail="source must be 'kb' or 'pdf'",
             )
 
-        caller = request.caller or "agent"
+        # Derived, never body-supplied — same reasoning as the search route above.
+        # This one matters more: the caller also supplies `kb_doc_id`, so a
+        # self-declared admin here is a read-by-id of a document the gate would
+        # otherwise have refused.
+        caller = await resolve_kb_caller(
+            supabase, claims, request.caller, request.workspace_id
+        )
         from_idx = max(0, request.from_chunk_index)
         # Default span: the located section plus a little either side of it.
         to_idx = request.to_chunk_index if request.to_chunk_index is not None else from_idx + 3

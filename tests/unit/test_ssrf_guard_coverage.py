@@ -131,7 +131,17 @@ def _scan() -> tuple[list[tuple[str, str, int, str]], int]:
         try:
             tree = ast.parse(src)
         except SyntaxError:
-            pytest.fail(f"{rel} does not parse; this guard is blind to it")
+            # Retry ONCE before failing. A file caught mid-write by an editor parses on
+            # the second read; a genuinely broken one fails both times. Without this the
+            # guard is flaky in a working copy someone is editing — and a flaky guard
+            # gets deleted, which is the outcome this whole file argues against. It is
+            # not a weakening: an unparseable file is still a hard failure, because a
+            # file this scanner cannot read is a file it is not covering.
+            try:
+                src = path.read_text(encoding="utf-8")
+                tree = ast.parse(src)
+            except (OSError, SyntaxError):
+                pytest.fail(f"{rel} does not parse; this guard is blind to it")
         scanned += 1
 
         for node in ast.walk(tree):

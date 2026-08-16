@@ -29,6 +29,7 @@ _CLEANUP = ROOT / "app" / "services" / "utilities" / "cleanup_service.py"
 _VECS = ROOT / "app" / "services" / "embeddings" / "vecs_service.py"
 _EMB = ROOT / "app" / "services" / "embeddings" / "real_embeddings_service.py"
 _MAIN = ROOT / "app" / "main.py"
+_KB_ACCESS = ROOT / "app" / "services" / "kb" / "kb_access.py"
 
 
 def _src(p: Path) -> str:
@@ -158,8 +159,8 @@ def test_search_cannot_declare_itself_admin():
         raise AssertionError("SearchKBRequest not found")
 
     body = _func(_KB, "search_kb_documents")
-    assert "_caller_is_workspace_admin" in body, (
-        "the search route no longer derives admin status server-side"
+    assert "resolve_kb_caller" in body, (
+        "the search route no longer derives its caller server-side"
     )
     assert "request.is_admin_caller" not in body
 
@@ -171,11 +172,14 @@ def test_admin_status_is_read_from_workspace_members():
     `UserRole(...)` to MEMBER with an empty permissions list — deriving admin from it
     would make every admin a member, which is the silent-zero shape pointed at an access
     gate. `workspace_members.role` is what the platform means by admin-of-a-workspace.
+
+    Now lives in the shared module — this used to check a private copy in
+    knowledge_base.py, which was itself the second implementation.
     """
-    body = _func(_KB, "_caller_is_workspace_admin")
+    body = _func(_KB_ACCESS, "resolve_kb_caller")
     assert "workspace_members" in body
     assert "owner" in body and "admin" in body
-    assert "return False" in body, "the failure path must fail CLOSED"
+    assert 'return "agent"' in body, "the failure path must fail CLOSED, to agent"
 
 
 def test_kb_attachment_checks_both_ids_against_the_workspace():

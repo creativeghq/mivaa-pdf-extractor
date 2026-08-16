@@ -134,7 +134,12 @@ def _scan_tree() -> list[tuple[str, int, str]]:
             # A file this scanner cannot parse is a file it is NOT covering. Say so
             # rather than skipping in silence -- an unparseable file is exactly where
             # someone would hide from a source-text guard, deliberately or not.
-            pytest.fail(f"{rel} does not parse; this guard is blind to it")
+            # Retry once first: a file caught mid-write by an editor parses on the
+            # second read, and a guard that flakes in a live working copy gets deleted.
+            try:
+                hits = scan_source(path.read_text(encoding="utf-8"), rel)
+            except (OSError, SyntaxError):
+                pytest.fail(f"{rel} does not parse; this guard is blind to it")
         scanned += 1
         for lineno, expr in hits:
             out.append((rel, lineno, expr))

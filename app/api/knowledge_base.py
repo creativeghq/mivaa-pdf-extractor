@@ -16,6 +16,11 @@ from app.services.core.supabase_client import SupabaseClient
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.schemas.api_responses import KBHealthResponse
 from app.dependencies import get_workspace_context, WorkspaceContext, get_current_user, resolve_workspace_id
+from app.services.kb.kb_access import (
+    kb_query_vector,
+    resolve_kb_access_scope,
+    resolve_kb_caller,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,34 +86,13 @@ def _load_own_doc(
     return row
 
 
-async def _caller_is_workspace_admin(
-    supabase_client: SupabaseClient,
-    user_id: str,
-    workspace_id: str,
-) -> bool:
-    """Is this caller an owner/admin of this workspace? Read it from the DB.
-
-    Issue #15 (MV2-12): the search route took `is_admin_caller` off the REQUEST BODY
-    and passed it to `kb_match_docs(include_private => ...)`, so any member could
-    hand themselves the admin read scope by sending one boolean. Trust fields are
-    derived server-side (invariant 8).
-
-    Deliberately NOT `WorkspaceContext.role` / `has_permission("admin:all")`: that
-    role is parsed from a JWT `role` claim which on a real Supabase token reads
-    "authenticated", falls through `UserRole(...)` to MEMBER, and carries an empty
-    `permissions` list. Deriving admin from it would make every admin a member —
-    the silent-zero shape pointed at an access gate. `workspace_members.role` is the
-    value the rest of the platform means by "admin of this workspace".
-    """
-    try:
-        resp = supabase_client.client.table("workspace_members").select("role").eq(
-            "user_id", user_id
-        ).eq("workspace_id", workspace_id).eq("status", "active").execute()
-        return any((r.get("role") in ("owner", "admin")) for r in (resp.data or []))
-    except Exception as e:
-        # Fail closed: an unreadable membership table must not grant private access.
-        logger.warning("Could not resolve workspace admin status for %s: %s", user_id, e)
-        return False
+# `_caller_is_workspace_admin` lived here until the KB derivations were unified. It
+# read `workspace_members.role` to decide admin-ness — correct, but it was the SECOND
+# implementation of "who is this caller really", next to rag_routes' body-supplied
+# `caller` field. Fixing MV2-12 by adding another private copy is what prompted this
+# extraction. The one implementation is `resolve_kb_caller` in
+# app/services/kb/kb_access.py, and it now also clamps the widening request that the
+# rag path was honouring unchecked.
 
 
 # ============================================================================
@@ -949,37 +933,43 @@ async def search_kb_documents(
     workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
 
     # MV2-12: derive the read scope from who the caller IS, not from what they sent.
-    # `include_private` and the access-level list are the same gate expressed twice,
-    # so they are resolved together and once — a non-admin cannot widen either.
-    is_admin_caller = await _caller_is_workspace_admin(
-        supabase_client, str((current_user or {}).get("sub") or ""), str(workspace_id)
+    # `include_private` and the access-level list are the same gate expressed twice, so
+    # they are resolved together and once — a non-admin cannot widen either.
+    #
+    # Both derivations now come from app/services/kb/kb_access.py, shared with
+    # /api/rag/search/knowledge-base. This endpoint used to keep private copies of
+    # both, which is how its query vector ended up built in "document" mode while the
+    # sibling built its in "query" mode against the same document-side vectors.
+    #
+    # per_doc_agent_gate=False: this route runs `kb_match_docs`, which — unlike the
+    # agent path's `kb_match_doc_chunks` — applies NO per-doc `allowed_agents` or
+    # category access_level gate. `include_private` is therefore the only thing between
+    # a non-admin and private content here, so it must track admin-ness rather than
+    # following the agent path's "private just means unpublished" rule.
+    caller = await resolve_kb_caller(supabase_client, current_user, None, workspace_id)
+    kb_scope = resolve_kb_access_scope(
+        supabase_client, str(workspace_id), caller, request.query,
+        per_doc_agent_gate=False,
     )
-    allowed_access_levels = (
-        ["admin", "agent", "public"] if is_admin_caller else ["agent", "public"]
-    )
+    is_admin_caller = kb_scope["include_private"]
+    allowed_access_levels = kb_scope["allowed_access_levels"]
 
     try:
         import time
         start_time = time.time()
 
         if request.search_type == "semantic":
-            # Generate embedding for search query
-            embeddings_service = RealEmbeddingsService()
-            embedding_result = await embeddings_service.generate_all_embeddings(
-                entity_id="search_query",
-                entity_type="search",
-                text_content=request.query,
+            # ONE derivation — `entity_type="search"` used to be passed here, which
+            # falls through `input_type = "query" if entity_type == "query" else
+            # "document"` and embedded the QUERY as a DOCUMENT. Same model, same 1024
+            # dimensions, same column, plausible ranked results, quietly worse ranking.
+            # The sibling endpoint had already found and fixed this; the fix did not
+            # reach the copy. kb_query_vector is now the only way to build one.
+            query_embedding = await kb_query_vector(
+                request.query,
                 workspace_id=str(workspace_id) if workspace_id else None,
                 user_id=str((current_user or {}).get("sub") or "") or None,
             )
-
-            if not embedding_result.get("success"):
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to generate query embedding: {embedding_result.get('error')}"
-                )
-
-            query_embedding = embedding_result.get("embeddings", {}).get("text_1024")
             if not query_embedding:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
