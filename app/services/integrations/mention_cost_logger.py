@@ -32,7 +32,6 @@ from app.services.core.supabase_client import get_supabase_client
 from app.modules._core.provider_pricing import (
     DATAFORSEO_LABS_PER_CALL,
     DATAFORSEO_SERP_PER_CALL,
-    FIRECRAWL_PER_CREDIT,
     GEMINI_FLASH_INPUT_PER_1K,
     GEMINI_FLASH_OUTPUT_PER_1K,
     GPT4O_MINI_INPUT_PER_1K,
