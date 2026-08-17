@@ -31,10 +31,23 @@ MODULE_SLUG = "job-research"
 # DataForSEO Jobs SERP — flat per-call cost
 DATAFORSEO_JOBS_PER_CALL = 0.0006
 
-# Perplexity Sonar — base + token cost
-SONAR_PER_CALL = 0.005
-SONAR_PRO_PER_CALL = 0.01
-SONAR_TOKEN_PER_1K = 0.001
+# Perplexity Sonar — per-request search fee + token cost.
+#
+# The token rate is PER MODEL and PER DIRECTION. It used to be one constant applied to
+# (input + output) for both models, which is correct for Sonar ($1/$1 per 1M) and wrong for
+# Sonar Pro ($3 in / $15 out per 1M) — so every Sonar Pro call was recorded 3x light on input and
+# 15x light on output. Caught by solving `raw_cost_usd` back out of ai_usage_logs over 76 calls and
+# comparing with Perplexity's published rates (main repo #365).
+#
+# A wrong rate is a valid number: nothing raises, the row inserts, the dashboard totals look fine.
+# The only thing that catches it is checking the arithmetic against the provider.
+# Source: https://docs.perplexity.ai/getting-started/pricing (verified 2026-08-17)
+SONAR_PER_CALL = 0.005          # $5 / 1000 requests
+SONAR_PRO_PER_CALL = 0.01       # inside the published $6-14 / 1000 band
+SONAR_INPUT_PER_1K = 0.001      # $1 / 1M
+SONAR_OUTPUT_PER_1K = 0.001     # $1 / 1M
+SONAR_PRO_INPUT_PER_1K = 0.003  # $3 / 1M
+SONAR_PRO_OUTPUT_PER_1K = 0.015 # $15 / 1M
 
 # Firecrawl — per credit, ~1 credit per scrape on standard pages, 5 on JS render
 FIRECRAWL_PER_CREDIT = 0.002
@@ -92,8 +105,11 @@ def log_perplexity_call(
     success: bool = True,
     error_message: Optional[str] = None,
 ) -> None:
-    per_call = SONAR_PRO_PER_CALL if model == "sonar-pro" else SONAR_PER_CALL
-    token_cost = ((input_tokens + output_tokens) / 1000.0) * SONAR_TOKEN_PER_1K
+    is_pro = model == "sonar-pro"
+    per_call = SONAR_PRO_PER_CALL if is_pro else SONAR_PER_CALL
+    in_rate = SONAR_PRO_INPUT_PER_1K if is_pro else SONAR_INPUT_PER_1K
+    out_rate = SONAR_PRO_OUTPUT_PER_1K if is_pro else SONAR_OUTPUT_PER_1K
+    token_cost = (input_tokens / 1000.0) * in_rate + (output_tokens / 1000.0) * out_rate
     raw = per_call + token_cost
     log_external_call(
         operation_type=f"job_research.discovery.perplexity_{model}",

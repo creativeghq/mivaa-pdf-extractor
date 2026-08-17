@@ -83,11 +83,22 @@ class CostAttribution(_CoreCostAttribution):
 # DataForSEO: tiny per-request cost. The exact number depends on plan tier,
 # but $0.0006 is the documented standard rate for SERP / News.
 DATAFORSEO_NEWS_PER_CALL = 0.0006
-DATAFORSEO_LABS_PER_CALL = 0.001     # related-keywords endpoint
+# Labs is NOT the SERP rate. DataForSEO Labs Google is $0.012 per task plus $0.00012 per returned
+# item; this constant was $0.001, so the related-keywords endpoint was recorded ~12x light
+# (main repo #365). The per-item component is still not modelled — a large `limit` costs more than
+# this says. Setting include_clickstream_data doubles the real cost again.
+# Source: https://dataforseo.com/pricing/dataforseo-labs/dataforseo-google-api (verified 2026-08-17)
+DATAFORSEO_LABS_PER_CALL = 0.012     # related-keywords endpoint, per task
 
-# Perplexity Sonar: per-request fixed cost. Token cost is on top of this.
+# Perplexity Sonar: per-request search fee. Token cost is on top, PER MODEL and PER DIRECTION —
+# see job_cost_logger for why one shared token rate was wrong for Sonar Pro.
+# Source: https://docs.perplexity.ai/getting-started/pricing (verified 2026-08-17)
 SONAR_PER_CALL = 0.005
 SONAR_PRO_PER_CALL = 0.01
+SONAR_INPUT_PER_1K = 0.001
+SONAR_OUTPUT_PER_1K = 0.001
+SONAR_PRO_INPUT_PER_1K = 0.003
+SONAR_PRO_OUTPUT_PER_1K = 0.015
 
 # YouTube Data API: free quota; cost is 0 for our purposes.
 YOUTUBE_PER_CALL = 0.0
@@ -206,10 +217,14 @@ def log_perplexity_call(
     success: bool = True,
     error_message: Optional[str] = None,
 ) -> None:
-    per_call = SONAR_PRO_PER_CALL if model == "sonar-pro" else SONAR_PER_CALL
-    # Perplexity pricing: per_call + token cost. Token-cost rates are roughly
-    # equal to OpenAI's small-model band; we approximate at $0.001/1K both ways.
-    token_cost = ((input_tokens + output_tokens) / 1000.0) * 0.001
+    is_pro = model == "sonar-pro"
+    per_call = SONAR_PRO_PER_CALL if is_pro else SONAR_PER_CALL
+    # Perplexity pricing: per_call + token cost. The rates are the PUBLISHED ones per model and per
+    # direction — the previous "approximate at $0.001/1K both ways" was right for Sonar by accident
+    # and 3x/15x light for Sonar Pro.
+    in_rate = SONAR_PRO_INPUT_PER_1K if is_pro else SONAR_INPUT_PER_1K
+    out_rate = SONAR_PRO_OUTPUT_PER_1K if is_pro else SONAR_OUTPUT_PER_1K
+    token_cost = (input_tokens / 1000.0) * in_rate + (output_tokens / 1000.0) * out_rate
     raw = per_call + token_cost
     log_external_call(
         operation_type=f"mention_monitoring.discovery.perplexity_{model}",
