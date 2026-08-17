@@ -48,10 +48,11 @@ CHANNEL_CREDIT_COST: Dict[str, int] = {
     "webhook": 0,
 }
 
-# Cap per tracked_job in the email so the body stays scannable. Overflow beyond
-# this is NOT dropped — it carries forward to the next daily digest (see the
-# recency-window fetch in _dispatch_for_user), draining the backlog day by day.
-MAX_LISTINGS_PER_SECTION = 25
+# Per-user request (2026-08-17): NO per-email cap — every match found that day ships
+# that day. Set to PostgREST's own page ceiling so it never truncates in practice (a
+# 5-day window + daily purge keeps a real run to ~25-40). It stays a finite number
+# purely as a runaway guard; the carry-forward path only engages past this, i.e. never.
+MAX_LISTINGS_PER_SECTION = 1000
 
 
 def _utcnow() -> datetime:
