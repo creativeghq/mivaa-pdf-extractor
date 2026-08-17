@@ -19,6 +19,18 @@ import logging
 from typing import Dict, Optional
 
 from app.services.core.supabase_client import get_supabase_client
+from app.modules._core.provider_pricing import (
+    DATAFORSEO_LABS_PER_CALL,
+    DATAFORSEO_SERP_PER_CALL,
+    FIRECRAWL_PER_CREDIT,
+    GEMINI_FLASH_INPUT_PER_1K,
+    GEMINI_FLASH_OUTPUT_PER_1K,
+    GPT4O_MINI_INPUT_PER_1K,
+    GPT4O_MINI_OUTPUT_PER_1K,
+    YOUTUBE_PER_CALL,
+    haiku_token_cost,
+    sonar_rates,
+)
 from app.modules._core.cost_logger import (
     CostAttribution as _CoreCostAttribution,
     log_external_call as _core_log_external_call,
@@ -28,33 +40,15 @@ logger = logging.getLogger(__name__)
 
 MODULE_SLUG = "job-research"
 
-# DataForSEO Jobs SERP — flat per-call cost
-DATAFORSEO_JOBS_PER_CALL = 0.0006
-
-# Perplexity Sonar — per-request search fee + token cost.
+# Provider rates live in ONE place — app/modules/_core/provider_pricing.py. This file used to
+# carry its own copies of the six Sonar constants, the two Haiku constants and the DataForSEO SERP
+# rate, all duplicated verbatim in mention_cost_logger. Two copies of a price cannot disagree
+# loudly: a wrong rate is a valid number, nothing raises, and the totals look plausible. That is
+# precisely how Sonar Pro ended up 3x/15x light and DataForSEO Labs ~12x light, and why fixing them
+# meant editing two files that nothing tied together. (main repo #365)
 #
-# The token rate is PER MODEL and PER DIRECTION. It used to be one constant applied to
-# (input + output) for both models, which is correct for Sonar ($1/$1 per 1M) and wrong for
-# Sonar Pro ($3 in / $15 out per 1M) — so every Sonar Pro call was recorded 3x light on input and
-# 15x light on output. Caught by solving `raw_cost_usd` back out of ai_usage_logs over 76 calls and
-# comparing with Perplexity's published rates (main repo #365).
-#
-# A wrong rate is a valid number: nothing raises, the row inserts, the dashboard totals look fine.
-# The only thing that catches it is checking the arithmetic against the provider.
-# Source: https://docs.perplexity.ai/getting-started/pricing (verified 2026-08-17)
-SONAR_PER_CALL = 0.005          # $5 / 1000 requests
-SONAR_PRO_PER_CALL = 0.01       # inside the published $6-14 / 1000 band
-SONAR_INPUT_PER_1K = 0.001      # $1 / 1M
-SONAR_OUTPUT_PER_1K = 0.001     # $1 / 1M
-SONAR_PRO_INPUT_PER_1K = 0.003  # $3 / 1M
-SONAR_PRO_OUTPUT_PER_1K = 0.015 # $15 / 1M
-
-# Firecrawl — per credit, ~1 credit per scrape on standard pages, 5 on JS render
-FIRECRAWL_PER_CREDIT = 0.002
-
-# Anthropic Haiku 4.5
-HAIKU_INPUT_PER_1K = 0.001
-HAIKU_OUTPUT_PER_1K = 0.005
+# `DATAFORSEO_SERP_PER_CALL` is gone: it held the same $0.0006 standard-queue rate as the News
+# constant next door, under a second name, which read as two independent facts and was one.
 
 
 class CostAttribution(_CoreCostAttribution):
@@ -85,7 +79,7 @@ def log_dataforseo_jobs_call(
     log_external_call(
         operation_type="job_research.discovery.dataforseo_jobs",
         model_name="dataforseo-google-jobs",
-        raw_cost_usd=DATAFORSEO_JOBS_PER_CALL,
+        raw_cost_usd=DATAFORSEO_SERP_PER_CALL,
         attribution=attribution,
         latency_ms=latency_ms,
         extra_metadata={"query": query[:120], "location": location[:80], "hits_returned": hits_returned},
@@ -105,10 +99,7 @@ def log_perplexity_call(
     success: bool = True,
     error_message: Optional[str] = None,
 ) -> None:
-    is_pro = model == "sonar-pro"
-    per_call = SONAR_PRO_PER_CALL if is_pro else SONAR_PER_CALL
-    in_rate = SONAR_PRO_INPUT_PER_1K if is_pro else SONAR_INPUT_PER_1K
-    out_rate = SONAR_PRO_OUTPUT_PER_1K if is_pro else SONAR_OUTPUT_PER_1K
+    per_call, in_rate, out_rate = sonar_rates(model)
     token_cost = (input_tokens / 1000.0) * in_rate + (output_tokens / 1000.0) * out_rate
     raw = per_call + token_cost
     log_external_call(
@@ -158,10 +149,9 @@ def log_haiku_call(
     success: bool = True,
     error_message: Optional[str] = None,
 ) -> None:
-    raw = (
-        (input_tokens / 1000.0) * HAIKU_INPUT_PER_1K
-        + (output_tokens / 1000.0) * HAIKU_OUTPUT_PER_1K
-    )
+    # Resolved through ai_model_pricing, not restated. `claude-haiku-4-5` has a row there, and a
+    # literal beside it is a second USD source that keeps the old number after any admin edit.
+    raw = haiku_token_cost(input_tokens, output_tokens)
     log_external_call(
         operation_type=f"job_research.{operation}",
         model_name="claude-haiku-4-5-20251001",

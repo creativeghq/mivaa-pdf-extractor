@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from pydantic import BaseModel, Field
 
+from app.modules._core.provider_pricing import sonar_rates
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.dataforseo_merchant_service import (
     get_dataforseo_merchant_service,
@@ -70,10 +71,10 @@ MAX_TOKENS = 3000
 HTTP_TIMEOUT_S = 90.0
 THROTTLE_HOURS = 6
 
-# sonar-pro pricing, ballpark — real debit is metered server-side.
-SONAR_PRO_INPUT_PER_1K = 0.003   # $3 / 1M
-SONAR_PRO_OUTPUT_PER_1K = 0.015  # $15 / 1M
-SONAR_SEARCH_PER_CALL = 0.005    # $5 / 1K requests (high context)
+# Sonar rates come from app/modules/_core/provider_pricing.py — this file used to hold a THIRD
+# copy of them, alongside job_cost_logger and mention_cost_logger, and hand-rolled the
+# sonar-vs-sonar-pro branch twice more below. Three copies of a price cannot disagree loudly.
+# (main repo #365)
 
 
 # Country → local TLD (used only as a soft hint in the system prompt).
@@ -820,14 +821,12 @@ class PerplexityPriceSearchService:
         # Cost calc honors the actual model used. Class #5: previously every
         # call was billed at SONAR_PRO rates even when model_override='sonar'
         # made the cheaper model do the work, overstating raw_cost_usd by ~3×.
-        if model_name == "sonar":
-            input_per_1k = 0.001
-            output_per_1k = 0.001
-            search_per_call = SONAR_SEARCH_PER_CALL / 2
-        else:
-            input_per_1k = SONAR_PRO_INPUT_PER_1K
-            output_per_1k = SONAR_PRO_OUTPUT_PER_1K
-            search_per_call = SONAR_SEARCH_PER_CALL
+        # NOTE: the numbers move slightly. This file previously used $0.005/request for sonar-pro
+        # and half that for sonar, both BELOW Perplexity's published search-fee bands ($5-14 per
+        # 1000, and $6-14 for Pro). The shared rates are inside them, so this is more correct, not
+        # merely more consistent. Safe to change: this service has never written an ai_usage_logs
+        # row, so there is no historical series to keep compatible.
+        search_per_call, input_per_1k, output_per_1k = sonar_rates(model_name)
         cost_usd = (
             (input_tokens / 1000) * input_per_1k
             + (output_tokens / 1000) * output_per_1k
@@ -1625,12 +1624,7 @@ class PerplexityPriceSearchService:
         `sonar` (model_override path), corrupting per-model spend dashboards.
         """
         # Compute the true input/output costs at the actual model's rates.
-        if model_name == "sonar":
-            in_per_1k = 0.001
-            out_per_1k = 0.001
-        else:
-            in_per_1k = SONAR_PRO_INPUT_PER_1K
-            out_per_1k = SONAR_PRO_OUTPUT_PER_1K
+        _, in_per_1k, out_per_1k = sonar_rates(model_name)
         try:
             metadata: Dict[str, Any] = {
                 "api_provider": "perplexity",

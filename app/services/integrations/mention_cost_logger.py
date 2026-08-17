@@ -29,6 +29,18 @@ from typing import Dict, Optional
 
 
 from app.services.core.supabase_client import get_supabase_client
+from app.modules._core.provider_pricing import (
+    DATAFORSEO_LABS_PER_CALL,
+    DATAFORSEO_SERP_PER_CALL,
+    FIRECRAWL_PER_CREDIT,
+    GEMINI_FLASH_INPUT_PER_1K,
+    GEMINI_FLASH_OUTPUT_PER_1K,
+    GPT4O_MINI_INPUT_PER_1K,
+    GPT4O_MINI_OUTPUT_PER_1K,
+    YOUTUBE_PER_CALL,
+    haiku_token_cost,
+    sonar_rates,
+)
 from app.modules._core.cost_logger import (
     CostAttribution as _CoreCostAttribution,
     log_external_call as _core_log_external_call,
@@ -75,46 +87,10 @@ class CostAttribution(_CoreCostAttribution):
         super().__init__(subject_key="tracked_mention_id", subject_id=tracked_mention_id, **kwargs)
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Pricing tables — used when we only know the count of "calls" not tokens.
-# Per-call costs (USD) for each external provider. Markup is applied on top.
-# ────────────────────────────────────────────────────────────────────────────
-
-# DataForSEO: tiny per-request cost. The exact number depends on plan tier,
-# but $0.0006 is the documented standard rate for SERP / News.
-DATAFORSEO_NEWS_PER_CALL = 0.0006
-# Labs is NOT the SERP rate. DataForSEO Labs Google is $0.012 per task plus $0.00012 per returned
-# item; this constant was $0.001, so the related-keywords endpoint was recorded ~12x light
-# (main repo #365). The per-item component is still not modelled — a large `limit` costs more than
-# this says. Setting include_clickstream_data doubles the real cost again.
-# Source: https://dataforseo.com/pricing/dataforseo-labs/dataforseo-google-api (verified 2026-08-17)
-DATAFORSEO_LABS_PER_CALL = 0.012     # related-keywords endpoint, per task
-
-# Perplexity Sonar: per-request search fee. Token cost is on top, PER MODEL and PER DIRECTION —
-# see job_cost_logger for why one shared token rate was wrong for Sonar Pro.
-# Source: https://docs.perplexity.ai/getting-started/pricing (verified 2026-08-17)
-SONAR_PER_CALL = 0.005
-SONAR_PRO_PER_CALL = 0.01
-SONAR_INPUT_PER_1K = 0.001
-SONAR_OUTPUT_PER_1K = 0.001
-SONAR_PRO_INPUT_PER_1K = 0.003
-SONAR_PRO_OUTPUT_PER_1K = 0.015
-
-# YouTube Data API: free quota; cost is 0 for our purposes.
-YOUTUBE_PER_CALL = 0.0
-
-# Anthropic Haiku 4.5: per 1K tokens. Used by classifier + facet extraction
-# + opportunity LLM polish.
-HAIKU_INPUT_PER_1K = 0.001
-HAIKU_OUTPUT_PER_1K = 0.005
-
-# OpenAI gpt-4o-mini: per 1K tokens (LLM probe).
-GPT4O_MINI_INPUT_PER_1K = 0.00015
-GPT4O_MINI_OUTPUT_PER_1K = 0.0006
-
-# Gemini 2.0 Flash: per 1K tokens (LLM probe).
-GEMINI_FLASH_INPUT_PER_1K = 0.00010
-GEMINI_FLASH_OUTPUT_PER_1K = 0.0004
+# Provider rates live in ONE place — app/modules/_core/provider_pricing.py. Every constant that
+# used to sit here was duplicated verbatim in job_cost_logger, which is how the Sonar Pro token
+# rate (3x/15x light) and the DataForSEO Labs rate (~12x light) each had to be corrected twice
+# with nothing connecting the two edits. (main repo #365)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -152,7 +128,7 @@ def log_dataforseo_news_call(
     log_external_call(
         operation_type="mention_monitoring.discovery.dataforseo_news",
         model_name="dataforseo-news",
-        raw_cost_usd=DATAFORSEO_NEWS_PER_CALL,
+        raw_cost_usd=DATAFORSEO_SERP_PER_CALL,
         attribution=attribution,
         latency_ms=latency_ms,
         extra_metadata={"query": query[:120], "hits_returned": hits_returned},
@@ -197,7 +173,7 @@ def log_dataforseo_serp_call(
         module_slug=_slug_for(attribution),
         operation_type=f"{_op_prefix(attribution)}.dataforseo_serp.{operation}",
         model_name="dataforseo-serp-google-organic",
-        raw_cost_usd=DATAFORSEO_NEWS_PER_CALL,  # SERP API priced same as News
+        raw_cost_usd=DATAFORSEO_SERP_PER_CALL,  # SERP API priced same as News
         attribution=attribution,
         latency_ms=latency_ms,
         extra_metadata={"query": query[:120], "items_returned": items_returned},
@@ -217,13 +193,8 @@ def log_perplexity_call(
     success: bool = True,
     error_message: Optional[str] = None,
 ) -> None:
-    is_pro = model == "sonar-pro"
-    per_call = SONAR_PRO_PER_CALL if is_pro else SONAR_PER_CALL
-    # Perplexity pricing: per_call + token cost. The rates are the PUBLISHED ones per model and per
-    # direction — the previous "approximate at $0.001/1K both ways" was right for Sonar by accident
-    # and 3x/15x light for Sonar Pro.
-    in_rate = SONAR_PRO_INPUT_PER_1K if is_pro else SONAR_INPUT_PER_1K
-    out_rate = SONAR_PRO_OUTPUT_PER_1K if is_pro else SONAR_OUTPUT_PER_1K
+    # Per-request search fee plus tokens, at the PUBLISHED per-model, per-direction rates.
+    per_call, in_rate, out_rate = sonar_rates(model)
     token_cost = (input_tokens / 1000.0) * in_rate + (output_tokens / 1000.0) * out_rate
     raw = per_call + token_cost
     log_external_call(
@@ -250,10 +221,7 @@ def log_haiku_call(
     success: bool = True,
     error_message: Optional[str] = None,
 ) -> None:
-    raw = (
-        (input_tokens / 1000.0) * HAIKU_INPUT_PER_1K
-        + (output_tokens / 1000.0) * HAIKU_OUTPUT_PER_1K
-    )
+    raw = haiku_token_cost(input_tokens, output_tokens)
     log_external_call(
         operation_type=f"mention_monitoring.{operation}",
         model_name="claude-haiku-4-5-20251001",
@@ -278,16 +246,20 @@ def log_llm_probe_call(
     error_message: Optional[str] = None,
 ) -> None:
     if model.startswith("claude-haiku"):
-        rates = (HAIKU_INPUT_PER_1K, HAIKU_OUTPUT_PER_1K)
-    elif model == "gpt-4o-mini":
-        rates = (GPT4O_MINI_INPUT_PER_1K, GPT4O_MINI_OUTPUT_PER_1K)
-    elif model.startswith("gemini"):
-        rates = (GEMINI_FLASH_INPUT_PER_1K, GEMINI_FLASH_OUTPUT_PER_1K)
-    elif model == "sonar":
-        rates = (0.001, 0.001)
+        # Resolved through ai_model_pricing rather than a literal — this model has a row there.
+        raw = haiku_token_cost(input_tokens, output_tokens)
     else:
-        rates = (0.0005, 0.0015)  # conservative default
-    raw = (input_tokens / 1000.0) * rates[0] + (output_tokens / 1000.0) * rates[1]
+        if model == "gpt-4o-mini":
+            rates = (GPT4O_MINI_INPUT_PER_1K, GPT4O_MINI_OUTPUT_PER_1K)
+        elif model.startswith("gemini"):
+            rates = (GEMINI_FLASH_INPUT_PER_1K, GEMINI_FLASH_OUTPUT_PER_1K)
+        elif model.startswith("sonar"):
+            # Tokens only — the per-request search fee belongs to log_perplexity_call, not here.
+            _, in_rate, out_rate = sonar_rates(model)
+            rates = (in_rate, out_rate)
+        else:
+            rates = (0.0005, 0.0015)  # conservative default for an unrecognised probe model
+        raw = (input_tokens / 1000.0) * rates[0] + (output_tokens / 1000.0) * rates[1]
     log_external_call(
         operation_type="mention_monitoring.llm_probe",
         model_name=model,
