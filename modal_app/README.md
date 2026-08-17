@@ -18,6 +18,10 @@ a small custom contract that the MIVAA `PaddleOCRManager` speaks:
 
 ```
 GET  /health           → 200 once models are loaded (unauth; the warmup probe)
+                       → {"status","model","pkg_version","pipeline_version"}
+                         pkg_version/pipeline_version report what is ACTUALLY
+                         loaded — this is how you check which model version is
+                         serving traffic (see "Which version is running?" below)
 POST /parse  (bearer)  → {"image_b64": "...", "mode": "page"|"block"}
                          → {"regions":[{bbox:[x0,y0,x1,y1] px, label, content, order}],
                             "width", "height"}
@@ -160,6 +164,17 @@ All are read in `paddleocr_vl.py`:
 | `PADDLEOCR_MAX_CONTAINERS` | `4` | Burst ceiling |
 | `PADDLEOCR_MAX_CONCURRENT` | `16` | Max in-flight requests per container (keep > 1 so `/health` never queues behind `/parse`) |
 | `PADDLEOCR_PADDLE_VERSION` | `3.2.1` | `paddlepaddle-gpu` version |
+| `PADDLEOCR_PKG_VERSION` | `3.6.0` | `paddleocr` package version. **Pinned on purpose** — unpinned, the model serving traffic was whatever PyPI resolved at the last (cached) image build, and nothing could report it. `3.6.0` is the release that shipped PaddleOCR-VL-1.6 |
+| `PADDLEOCR_PIPELINE_VERSION` | `v1.6` | PaddleOCR-VL model generation: `v1` \| `v1.5` \| `v1.6`. Stated explicitly so a package bump can never move it silently |
+
+### Which version is running?
+```bash
+curl -s https://<your-workspace>--paddleocr-vl-paddleservice-web.modal.run/health
+# {"status":"ok","model":"paddleocr-vl","pkg_version":"3.6.0","pipeline_version":"v1.6"}
+```
+The container also prints `PADDLEOCR pkg=… pipeline_version=…` on load, so the
+same fact is in the Modal logs. Before this existed, `/health` returned a
+hardcoded string and the running version was unknowable from outside.
 
 Example — keep one replica always hot:
 ```bash

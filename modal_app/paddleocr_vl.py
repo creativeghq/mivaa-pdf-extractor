@@ -18,6 +18,10 @@ PaddleOCR-VL needs nightly builds and only covers the VLM half. We run the full
 small custom contract the MIVAA PaddleOCRManager speaks:
 
   GET  /health           → 200 once models are loaded + warmed (unauth probe)
+                           → {"status","model","pkg_version","pipeline_version"}
+                             — the version fields report what is ACTUALLY loaded,
+                             so "which model is in production?" is answerable
+                             without reading a cached Modal image layer.
   POST /parse  (bearer)  → {"image_b64": "...", "mode": "page"|"block"}
                            → {"regions":[{"bbox":[x0,y0,x1,y1] px,"label","content",
                                           "order"}], "width", "height"}
@@ -65,6 +69,26 @@ MAX_CONTAINERS = int(os.environ.get("PADDLEOCR_MAX_CONTAINERS", "8"))        # a
 MAX_CONCURRENT = int(os.environ.get("PADDLEOCR_MAX_CONCURRENT", "2"))
 PADDLE_VERSION = os.environ.get("PADDLEOCR_PADDLE_VERSION", "3.2.1")
 
+# The `paddleocr` package version, PINNED. This used to be unpinned, which meant
+# the model actually serving traffic was "whatever PyPI resolved the last time
+# Modal rebuilt this image" — and since the resolved layer is cached and the
+# weights live in a persistent volume, nothing here or in MIVAA could answer
+# "which version is in production?". Every other dependency in this image was
+# already pinned; the model was the one that floated.
+#   3.6.0 (2026-05-28) is the release that shipped PaddleOCR-VL-1.6.
+#   3.7.0 (2026-06-11) is newer but its headline change is PP-OCRv6, a different
+#   model family this pipeline does not use — no reason to take that risk on a
+#   deployment with the cold-start fragility documented above. Moving is now a
+#   deliberate one-line change, which is the point.
+PADDLEOCR_VERSION = os.environ.get("PADDLEOCR_PKG_VERSION", "3.6.0")
+
+# The PaddleOCR-VL model generation, stated EXPLICITLY rather than inherited from
+# the package default. Accepted: "v1" | "v1.5" | "v1.6". v1.6 scores 96.33 on
+# OmniDocBench v1.6 vs v1.5's 94.5, and is the same architecture at the same cost
+# (0.9B, NaViT + ERNIE-4.5-0.3B) — the gain is data engine + post-training, so
+# nothing downstream changes: same region boxes, same labels, same reading order.
+PIPELINE_VERSION = os.environ.get("PADDLEOCR_PIPELINE_VERSION", "v1.6")
+
 # Build: CUDA devel base + standalone Python, paddlepaddle-gpu from Paddle's cu126
 # index, then paddleocr[doc-parser] (the PaddleOCR-VL pipeline) from PyPI.
 image = (
@@ -75,7 +99,11 @@ image = (
         f"paddlepaddle-gpu=={PADDLE_VERSION}",
         index_url="https://www.paddlepaddle.org.cn/packages/stable/cu126/",
     )
-    .pip_install("paddleocr[doc-parser]", "fastapi[standard]", "pillow")
+    .pip_install(
+        f"paddleocr[doc-parser]=={PADDLEOCR_VERSION}",
+        "fastapi[standard]",
+        "pillow",
+    )
     # paddle needs numpy 1.x. Pin AFTER paddleocr so this layer DOWNGRADES
     # whatever it resolved (the unpinned image pulled numpy 2.3.5 / scipy 1.17.1).
     .pip_install("numpy==1.26.4", "scipy==1.11.4")
@@ -111,7 +139,17 @@ class PaddleService:
         state so a silent CPU fallback is visible.
         """
         import paddle
+        import paddleocr
         from paddleocr import PaddleOCRVL
+
+        # Recorded here and served by /health so the running version is an
+        # observable fact rather than a guess about a cached image layer.
+        self.pkg_version = getattr(paddleocr, "__version__", "unknown")
+        self.pipeline_version = PIPELINE_VERSION
+        print(
+            f"PADDLEOCR pkg={self.pkg_version} (pinned {PADDLEOCR_VERSION}) "
+            f"pipeline_version={self.pipeline_version}"
+        )
 
         print(
             f"PADDLE cuda_compiled={paddle.is_compiled_with_cuda()} "
@@ -129,14 +167,21 @@ class PaddleService:
         # producer/consumer pipeline whose VLM worker (_worker_vlm) deadlocks at
         # startup on this GPU/container (queue_cv/queue_vlm block forever) — the
         # root cause of the cold-start hang. The sync path has no worker thread.
-        try:
-            self.pipeline = PaddleOCRVL(device="gpu", use_queues=False)
-        except TypeError:
-            try:
-                self.pipeline = PaddleOCRVL(use_queues=False)
-            except TypeError:
-                # Older signature without these kwargs — rely on set_device above.
-                self.pipeline = PaddleOCRVL()
+        #
+        # Constructed with all three kwargs EXPLICITLY and no fallback cascade.
+        # The old code tried three signatures in turn and, on the last branch,
+        # fell through to a bare ``PaddleOCRVL()`` — which is `use_queues=True`,
+        # i.e. the deadlock path this whole comment block exists to avoid, taken
+        # silently. That fallback was only there to tolerate an unknown package
+        # version; now that the version is pinned above, the signature is known,
+        # so a TypeError here means a real mismatch and must fail loudly (Modal
+        # recycles the container and the deploy is visibly broken) rather than
+        # quietly serving from a configuration we know hangs.
+        self.pipeline = PaddleOCRVL(
+            device="gpu",
+            use_queues=False,
+            pipeline_version=PIPELINE_VERSION,
+        )
 
         # Cold-start warmup with SELF-RECYCLE. Even on the sync path, PaddleOCR-VL's
         # native VLM generation INTERMITTENTLY wedges on the first predict() of a
@@ -240,7 +285,17 @@ class PaddleService:
 
         @api.get("/health")
         def health():
-            return {"status": "ok", "model": "paddleocr-vl"}
+            # `model` stays a constant for the existing MIVAA warmup probe;
+            # the version fields are ADDITIVE so nothing downstream breaks.
+            # Before this, /health answered with a hardcoded string, so the one
+            # place that could have reported the running model version reported
+            # a literal instead — the version was unknowable from outside.
+            return {
+                "status": "ok",
+                "model": "paddleocr-vl",
+                "pkg_version": getattr(self, "pkg_version", "unknown"),
+                "pipeline_version": getattr(self, "pipeline_version", PIPELINE_VERSION),
+            }
 
         @api.post("/parse")
         def parse(body: ParseBody, authorization: str = Header(None)):
