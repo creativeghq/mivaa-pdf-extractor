@@ -31,8 +31,8 @@ POST /parse  (bearer)  → {"image_b64": "...", "mode": "page"|"block"}
 
 Lifecycle: scale-to-zero (`min_containers=0` + `scaledown_window=120`) so it costs
 **$0 idle**; the first request after idle cold-starts a GPU container (~90s, model
-load + first-call JIT); MIVAA health-probes `/health` as its warmup. GPU is `L4`,
-autoscale ceiling `max_containers=4`.
+load + first-call JIT); MIVAA health-probes `/health` as its warmup. GPU is `A10G`,
+autoscale ceiling `max_containers=8`.
 
 **Already deployed**: app `paddleocr-vl` at
 `https://basilakis--paddleocr-vl-paddleservice-web.modal.run` (workspace
@@ -157,12 +157,13 @@ All are read in `paddleocr_vl.py`:
 
 | Env | Default | Meaning |
 |---|---|---|
-| `PADDLEOCR_GPU` | `L4` | GPU type (`L4` 24 GB fits the 0.9B VLM + detector; bump for higher concurrency) |
+| `PADDLEOCR_GPU` | `A10G` | GPU type (`A10G` 24 GB fits the 0.9B VLM ~2-4 GB + the small detector; `L4`/`T4` also fit) |
 | `PADDLEOCR_CUDA_TAG` | `12.6.3-devel-ubuntu22.04` | CUDA base image (matches the cu126 paddle wheel) |
 | `PADDLEOCR_SCALEDOWN_WINDOW` | `120` | Idle seconds before the GPU container drains to $0 |
 | `PADDLEOCR_MIN_CONTAINERS` | `0` | `1` = keep one replica always warm (no cold starts, costs ~1 GPU/h) |
-| `PADDLEOCR_MAX_CONTAINERS` | `4` | Burst ceiling |
-| `PADDLEOCR_MAX_CONCURRENT` | `16` | Max in-flight requests per container (keep > 1 so `/health` never queues behind `/parse`) |
+| `PADDLEOCR_MAX_CONTAINERS` | `8` | Burst ceiling |
+| `PADDLEOCR_MAX_CONCURRENT` | `2` | Max in-flight requests per container. Keep it **LOW**: a container runs inferences serially (one VLM), and Modal only spreads load to a new container once in-flight hits this number — so a high value queues N parses onto one GPU instead of fanning them out. `2` rather than `1` leaves a slot so a `/health` probe never waits behind a full parse |
+| `PADDLEOCR_WARMUP_BUDGET` | `35` | Seconds the cold-start warmup may take before the container is treated as wedged and raised on, so Modal recycles it (successful warmup is ~4s; see the cold-start notes in `paddleocr_vl.py`) |
 | `PADDLEOCR_PADDLE_VERSION` | `3.2.1` | `paddlepaddle-gpu` version |
 | `PADDLEOCR_PKG_VERSION` | `3.6.0` | `paddleocr` package version. **Pinned on purpose** — unpinned, the model serving traffic was whatever PyPI resolved at the last (cached) image build, and nothing could report it. `3.6.0` is the release that shipped PaddleOCR-VL-1.6 |
 | `PADDLEOCR_PIPELINE_VERSION` | `v1.6` | PaddleOCR-VL model generation: `v1` \| `v1.5` \| `v1.6`. Stated explicitly so a package bump can never move it silently |
@@ -266,7 +267,7 @@ curl -X POST https://<workspace>--slig-sligservice-web.modal.run/infer \
 
 | Env | Default | Meaning |
 |---|---|---|
-| `SLIG_GPU` | `L4` | GPU type (`T4` 16 GB is cheaper and fits the ~400M model; `L4`/`A10G` give more batch throughput on big catalog ingests) |
+| `SLIG_GPU` | `A10G` | GPU type (`T4` 16 GB is cheaper and fits the ~400M model; `L4`/`A10G` give more batch throughput on big catalog ingests) |
 | `SLIG_SCALEDOWN_WINDOW` | `120` | Idle seconds before the GPU container drains to $0 |
 | `SLIG_MIN_CONTAINERS` | `0` | `1` = keep one replica always warm (no cold starts on search; costs ~1 GPU/h) |
 | `SLIG_MAX_CONTAINERS` | `4` | Burst ceiling for ingest |
