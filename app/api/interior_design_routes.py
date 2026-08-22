@@ -14,7 +14,7 @@ from datetime import datetime
 import uuid
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.credits_integration_service import get_credits_service
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, is_service_caller
 from app.utils.credit_metering import refund_operation
 from app.schemas.api_responses import InteriorDesignResponse
 
@@ -96,9 +96,9 @@ def _build_generation_prompt(
 # Replicate model on the account 402s — so a "multi-model grid" was structurally a
 # single image next to three failures.
 TEXT_TO_IMAGE_MODELS = [
-    {"id": "gemini-interior", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
-    {"id": "gemini-interior-pro", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "pro"},
-    {"id": "grok-aurora-interior", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "grok"},
+    {"id": "gemini-interior", "registry_id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
+    {"id": "gemini-interior-pro", "registry_id": "gemini-3-pro-image", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "pro"},
+    {"id": "grok-aurora-interior", "registry_id": "xai-aurora", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "grok"},
     {"id": "flux-2-pro", "name": "FLUX.2 Pro", "provider": "replicate", "model": "black-forest-labs/flux-2-pro", "capability": "text-to-image", "cost_per_generation": 0.05},
     {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01, "input_schema": "playground_v25"},
     # sd3 was RETIRED 2026-08-17 — `generation_models` carries it as status='dead',
@@ -109,9 +109,9 @@ TEXT_TO_IMAGE_MODELS = [
 
 # Image-to-Image Models (for interior design transformation with reference images)
 IMAGE_TO_IMAGE_MODELS = [
-    {"id": "gemini-interior", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "fast"},
-    {"id": "gemini-interior-pro", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "pro"},
-    {"id": "grok-aurora-interior", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "grok"},
+    {"id": "gemini-interior", "registry_id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "fast"},
+    {"id": "gemini-interior-pro", "registry_id": "gemini-3-pro-image", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "pro"},
+    {"id": "grok-aurora-interior", "registry_id": "xai-aurora", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "grok"},
     {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02, "input_schema": "comfyui_interior"},
     {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
      "input_schema": "flux_lora_interior"},
@@ -413,6 +413,70 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                 raise
 
 
+def _registry_id(model: dict) -> str:
+    """The `generation_models` row this roster entry stands for."""
+    return model.get("registry_id") or model["id"]
+
+
+def _drop_models_the_registry_says_are_down(models: List[dict]) -> tuple:
+    """
+    Filter the hardcoded roster through `public.generation_models`.
+
+    That table is the platform's declared source for "which generation models exist and
+    are usable", and the health check writes `status` back to it — but this roster never
+    consulted it, so the grid queued models the registry already knew were down. Measured
+    2026-08-22: every Replicate model 402s ("insufficient credit") and XAI_API_KEY is
+    unset in the edge environment, so 3 of 5 text-to-image tiles were guaranteed to fail
+    on every single run while the registry recorded exactly that.
+
+    Only `enabled AND status = 'active'` survives. Restoring a model is therefore a DB
+    flip, not a deploy — which is the whole point of having a registry.
+
+    FAILS OPEN: if the registry cannot be read we keep the full roster and log loudly. A
+    transient DB error should degrade the grid to noisy, never to nothing.
+
+    Returns (runnable, dropped_with_reason).
+    """
+    wanted = {_registry_id(m) for m in models}
+    if not wanted:
+        return models, []
+    try:
+        supabase = get_supabase_client()
+        rows = (
+            supabase.client.table("generation_models")
+            .select("id, enabled, status, last_probe_status, last_probe_error")
+            .in_("id", sorted(wanted))
+            .execute()
+        ).data or []
+    except Exception as exc:  # noqa: BLE001 — see FAILS OPEN above
+        logger.error(
+            "[interior_design] generation_models unreadable (%s); keeping the full roster "
+            "-- some tiles may fail",
+            exc,
+        )
+        return models, []
+
+    by_id = {r["id"]: r for r in rows}
+    runnable, dropped = [], []
+    for m in models:
+        row = by_id.get(_registry_id(m))
+        # A roster entry with NO registry row is kept: the registry is the health signal,
+        # not a whitelist, and silently dropping an unregistered model would be the same
+        # invisible-shrink failure this function exists to end.
+        if row is None:
+            runnable.append(m)
+            continue
+        if row.get("enabled") and row.get("status") == "active":
+            runnable.append(m)
+        else:
+            dropped.append((
+                m,
+                row.get("last_probe_error")
+                or f"registry: status={row.get('status')}, enabled={row.get('enabled')}",
+            ))
+    return runnable, dropped
+
+
 def _runs_via_gemini_edge(model: dict) -> bool:
     """
     True when this roster row is served by the generate-interior-gemini edge function.
@@ -697,14 +761,41 @@ async def create_interior_design(
     Creates job in database and processes in background.
     Frontend polls database for updates.
     """
-    # #250 invariant #1 (BOLA): derive identity from the verified JWT — never trust the
-    # user_id/workspace_id the client put in the request body. Overwrite them so every
-    # downstream reader (job insert, per-model debit, refunds) uses the trusted values.
-    _uid = user.get("sub") or user.get("user_id")
-    if not _uid:
-        raise HTTPException(status_code=401, detail="Unauthenticated")
-    request.user_id = _uid
-    request.workspace_id = user.get("workspace_id") or user.get("active_workspace_id")
+    # #250 invariant #1 (BOLA): identity comes from the verified credential, never from
+    # the request body — with the ONE exception the platform already models, below.
+    #
+    # This route is reached two ways, and they carry identity differently:
+    #   - an end-user Supabase token, whose `sub` IS the user  → overwrite the body
+    #   - the platform service key (`generate_3d` in agent-chat), whose `sub` is the
+    #     literal string "material-kai-platform" → the body is the ONLY identity present
+    #
+    # Overwriting unconditionally put "material-kai-platform" into `generation_3d.user_id`
+    # and Postgres rejected it — `invalid input syntax for type uuid` — so EVERY agent call
+    # to this endpoint returned 500 before a job row existed. That is why `generate_3d` has
+    # one tool-call log in the platform's lifetime and no job to show for it: the grid was
+    # not merely under-populated, it could not be created at all.
+    #
+    # `is_service_caller` is the platform's existing test for this and is forge-proof: the
+    # `service` claim is set only by `_validate_simple_api_key`, and a Supabase-signed user
+    # token cannot carry it. On that trusted channel the edge function has already bound the
+    # request to a verified user (agent-chat derives both ids from the caller's JWT), so the
+    # body is authoritative — but it is still validated as a UUID rather than trusted blindly.
+    if is_service_caller(user):
+        _uid = (request.user_id or "").strip()
+        try:
+            uuid.UUID(_uid)
+        except (ValueError, AttributeError, TypeError):
+            raise HTTPException(
+                status_code=400,
+                detail="A service-authenticated call must supply a UUID user_id in the body.",
+            )
+        # workspace_id stays as supplied (may be None); the per-model debit scopes to it.
+    else:
+        _uid = user.get("sub") or user.get("user_id")
+        if not _uid:
+            raise HTTPException(status_code=401, detail="Unauthenticated")
+        request.user_id = _uid
+        request.workspace_id = user.get("workspace_id") or user.get("active_workspace_id")
 
     # Determine which models to use based on request type
     if request.models:
@@ -731,11 +822,19 @@ async def create_interior_design(
     # marker; it is a provider that is not configured, and the honest thing is to not
     # promise the tile. The skip is RECORDED in models_errors (never silently swallowed —
     # a shrinking model list with no explanation is the silent-zero shape) and logged.
-    skipped_models: List[dict] = []
+    skip_reasons: dict = {}
     if not os.getenv("REPLICATE_API_TOKEN"):
-        runnable = [m for m in models_to_use if m.get("provider") != "replicate"]
-        skipped_models = [m for m in models_to_use if m.get("provider") == "replicate"]
-        models_to_use = runnable
+        for m in models_to_use:
+            if m.get("provider") == "replicate":
+                skip_reasons[m["id"]] = "skipped: REPLICATE_API_TOKEN not configured in this environment"
+        models_to_use = [m for m in models_to_use if m.get("provider") != "replicate"]
+
+    # A configured credential is not a WORKING one. The registry carries the health
+    # verdict (a valid Replicate token whose account 402s reads `credit_exhausted`, not
+    # `auth_failed`), so ask it rather than re-deriving reachability here.
+    models_to_use, registry_dropped = _drop_models_the_registry_says_are_down(models_to_use)
+    for m, reason in registry_dropped:
+        skip_reasons[m["id"]] = f"skipped: {reason}"
 
     if not models_to_use:
         # Every requested model belongs to an unconfigured provider. Returning a job here
@@ -745,8 +844,8 @@ async def create_interior_design(
             detail=(
                 "No generation model is available for this request. "
                 + (
-                    f"Skipped {len(skipped_models)} Replicate model(s): REPLICATE_API_TOKEN is not configured."
-                    if skipped_models
+                    "Skipped: " + "; ".join(f"{k} ({v})" for k, v in skip_reasons.items())
+                    if skip_reasons
                     else "The requested model ids matched nothing in the roster."
                 )
             ),
@@ -783,10 +882,7 @@ async def create_interior_design(
         'request_type': request_type,
         'models_queue': models_queue,  # Supabase handles JSONB automatically
         'models_results': {},  # Empty dict
-        'models_errors': {
-            m["id"]: "skipped: REPLICATE_API_TOKEN not configured in this environment"
-            for m in skipped_models
-        },
+        'models_errors': dict(skip_reasons),
         'workflow_status': 'processing'  # Use valid constraint value
     }).execute()
 
@@ -806,13 +902,12 @@ async def create_interior_design(
     )
     task.add_done_callback(_on_generation_done)
 
-    if skipped_models:
+    if skip_reasons:
         logger.warning(
-            "[interior_design] job %s: skipped %d Replicate model(s) — REPLICATE_API_TOKEN "
-            "not configured: %s",
+            "[interior_design] job %s: %d model(s) not queued — %s",
             job_id,
-            len(skipped_models),
-            ", ".join(m["id"] for m in skipped_models),
+            len(skip_reasons),
+            "; ".join(f"{k}: {v}" for k, v in skip_reasons.items()),
         )
 
     # Return job info immediately. model_count counts what will ACTUALLY be attempted —
@@ -823,7 +918,7 @@ async def create_interior_design(
         "job_id": job_id,
         "model_count": len(models_to_use),
         "models": [{"id": m["id"], "name": m["name"], "provider": m["provider"]} for m in models_to_use],
-        "skipped_models": [{"id": m["id"], "reason": "provider_not_configured"} for m in skipped_models],
+        "skipped_models": [{"id": k, "reason": v} for k, v in skip_reasons.items()],
         "message": f"Started generating {len(models_to_use)} interior design variations"
     })
 
