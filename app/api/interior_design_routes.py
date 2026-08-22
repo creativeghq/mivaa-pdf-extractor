@@ -87,16 +87,31 @@ def _build_generation_prompt(
 
 # Model configurations
 # Text-to-Image Models (for prompts without reference images)
+# The three `gemini_edge` entries below are ONE upstream (the generate-interior-gemini
+# edge function) reached with three different `model_tier` values, which is what selects
+# the model that actually runs: fast → gemini-3.1-flash-image, pro → gemini-3-pro-image,
+# grok → grok-aurora. They are separate roster rows because the GRID shows one tile per
+# row, and the whole point of the grid is seeing the same brief rendered by different
+# models. Before this, the roster was 1 Gemini tile + 3 Replicate tiles and every
+# Replicate model on the account 402s — so a "multi-model grid" was structurally a
+# single image next to three failures.
 TEXT_TO_IMAGE_MODELS = [
-    {"id": "gemini-interior", "name": "Gemini 3 Flash Image", "provider": "gemini", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
+    {"id": "gemini-interior", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
+    {"id": "gemini-interior-pro", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "pro"},
+    {"id": "grok-aurora-interior", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "grok"},
     {"id": "flux-2-pro", "name": "FLUX.2 Pro", "provider": "replicate", "model": "black-forest-labs/flux-2-pro", "capability": "text-to-image", "cost_per_generation": 0.05},
     {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01, "input_schema": "playground_v25"},
-    {"id": "sd3", "name": "Stable Diffusion 3", "provider": "replicate", "model": "stability-ai/stable-diffusion-3", "capability": "text-to-image", "cost_per_generation": 0.055},
+    # sd3 was RETIRED 2026-08-17 — `generation_models` carries it as status='dead',
+    # enabled=false, and its ai_model_pricing row is deactivated. It stayed here because
+    # this roster is hardcoded and never consulted the registry; a queued dead model is
+    # just a guaranteed failure tile.
 ]
 
 # Image-to-Image Models (for interior design transformation with reference images)
 IMAGE_TO_IMAGE_MODELS = [
-    {"id": "gemini-interior", "name": "Gemini 3 Flash Image", "provider": "gemini", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "fast"},
+    {"id": "gemini-interior", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "fast"},
+    {"id": "gemini-interior-pro", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "pro"},
+    {"id": "grok-aurora-interior", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "grok"},
     {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02, "input_schema": "comfyui_interior"},
     {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
      "input_schema": "flux_lora_interior"},
@@ -398,6 +413,18 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                 raise
 
 
+def _runs_via_gemini_edge(model: dict) -> bool:
+    """
+    True when this roster row is served by the generate-interior-gemini edge function.
+
+    Dispatch is on `route`, NOT on `provider`: Grok Aurora is an xAI model that reaches
+    us through the same edge function, so a `provider == "gemini"` test would have to
+    either miss it or lie about who made the image in `models_queue` — which is what the
+    grid labels each tile with.
+    """
+    return model.get("route") == "gemini_edge" or model.get("provider") == "gemini"
+
+
 async def generate_with_gemini_edge(
     prompt: str,
     room_type: Optional[str],
@@ -550,9 +577,9 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
             replicate_models = [m for m in models_to_use if m.get("provider") == "replicate"]
             for m in replicate_models:
                 await atomic_update_model_result(job_id, m['id'], False, None, 0.0, "REPLICATE_API_TOKEN not configured")
-            if not any(m.get("provider") == "gemini" for m in models_to_use):
+            if not any(_runs_via_gemini_edge(m) for m in models_to_use):
                 return
-            replicate_token = ""  # allow gemini-only runs to proceed
+            replicate_token = ""  # allow edge-served runs to proceed
 
         # Semaphore to limit concurrent requests (3 at a time)
         semaphore = asyncio.Semaphore(3)
@@ -562,7 +589,7 @@ async def process_generation_background(job_id: str, request: InteriorRequest, m
                 try:
                     print(f"🎨 Starting generation for {model['name']}")
 
-                    if model.get("provider") == "gemini":
+                    if _runs_via_gemini_edge(model):
                         # Gemini path — edge function handles its own credit debit + returns permanent URL
                         permanent_url = await generate_with_gemini_edge(
                             prompt=enhanced_prompt,
@@ -695,6 +722,36 @@ async def create_interior_design(
     if request.exclude_models:
         models_to_use = [m for m in models_to_use if m["id"] not in request.exclude_models]
 
+    # Drop providers that cannot run in THIS environment before the job is sized.
+    #
+    # `process_generation_background` already fails every Replicate model instantly when
+    # the token is missing, but by then the job has been created claiming N models and the
+    # grid renders N tiles — so the user is told "Started generating 4 variations" and
+    # watches 3 of them go red on every single run. That is not a per-run failure worth a
+    # marker; it is a provider that is not configured, and the honest thing is to not
+    # promise the tile. The skip is RECORDED in models_errors (never silently swallowed —
+    # a shrinking model list with no explanation is the silent-zero shape) and logged.
+    skipped_models: List[dict] = []
+    if not os.getenv("REPLICATE_API_TOKEN"):
+        runnable = [m for m in models_to_use if m.get("provider") != "replicate"]
+        skipped_models = [m for m in models_to_use if m.get("provider") == "replicate"]
+        models_to_use = runnable
+
+    if not models_to_use:
+        # Every requested model belongs to an unconfigured provider. Returning a job here
+        # would create a row that can only ever report 0/0 — say so instead.
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "No generation model is available for this request. "
+                + (
+                    f"Skipped {len(skipped_models)} Replicate model(s): REPLICATE_API_TOKEN is not configured."
+                    if skipped_models
+                    else "The requested model ids matched nothing in the roster."
+                )
+            ),
+        )
+
     # Build rich generation prompt
     enhanced_prompt = _build_generation_prompt(
         prompt=request.prompt,
@@ -726,6 +783,10 @@ async def create_interior_design(
         'request_type': request_type,
         'models_queue': models_queue,  # Supabase handles JSONB automatically
         'models_results': {},  # Empty dict
+        'models_errors': {
+            m["id"]: "skipped: REPLICATE_API_TOKEN not configured in this environment"
+            for m in skipped_models
+        },
         'workflow_status': 'processing'  # Use valid constraint value
     }).execute()
 
@@ -745,12 +806,24 @@ async def create_interior_design(
     )
     task.add_done_callback(_on_generation_done)
 
-    # Return job info immediately
+    if skipped_models:
+        logger.warning(
+            "[interior_design] job %s: skipped %d Replicate model(s) — REPLICATE_API_TOKEN "
+            "not configured: %s",
+            job_id,
+            len(skipped_models),
+            ", ".join(m["id"] for m in skipped_models),
+        )
+
+    # Return job info immediately. model_count counts what will ACTUALLY be attempted —
+    # the grid sizes itself from this, so an optimistic count is a promise of tiles that
+    # never arrive.
     return JSONResponse({
         "success": True,
         "job_id": job_id,
         "model_count": len(models_to_use),
-        "models": [{"id": m["id"], "name": m["name"]} for m in models_to_use],
+        "models": [{"id": m["id"], "name": m["name"], "provider": m["provider"]} for m in models_to_use],
+        "skipped_models": [{"id": m["id"], "reason": "provider_not_configured"} for m in skipped_models],
         "message": f"Started generating {len(models_to_use)} interior design variations"
     })
 
