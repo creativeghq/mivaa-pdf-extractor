@@ -453,6 +453,7 @@ async def probe_llm(
         result = await get_llm_mention_probe_service().probe(
             tracked_mention_id=tracking_id, facets=facets,
             attribution=probe_attribution,
+            homepage_domain=(row or {}).get("homepage_domain"),
         )
     except Exception:
         refund_credits(user_id=ctx.user_id or "", amount=cost,

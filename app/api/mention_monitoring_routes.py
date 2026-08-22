@@ -12,6 +12,7 @@ Internal flow (product enrollment, session JWT):
   GET    /api/v1/mention-monitoring/products/{product_id}/history
   GET    /api/v1/mention-monitoring/products/{product_id}/summary
   GET    /api/v1/mention-monitoring/products/{product_id}/llm-visibility
+  GET    /api/v1/mention-monitoring/products/{product_id}/llm-visibility-trend
   POST   /api/v1/mention-monitoring/products/{product_id}/probe-llm
 
 Subject-id flow (brand/keyword + admin lookups):
@@ -24,6 +25,7 @@ Subject-id flow (brand/keyword + admin lookups):
   GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/history
   GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/summary
   GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/llm-visibility
+  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/llm-visibility-trend
   POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/probe-llm
   POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/exclude
   POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/include
@@ -422,6 +424,24 @@ async def get_product_llm_visibility(
     return {"success": True, "data": snapshot}
 
 
+@router.get("/products/{product_id}/llm-visibility-trend")
+async def get_product_llm_visibility_trend(
+    product_id: str,
+    days: int = Query(default=90, ge=1, le=365),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Visibility across probe RUNS, not the latest one (issue #349 A2)."""
+    sb = get_supabase_client().client
+    svc = get_tracked_mentions_service()
+    existing = svc.find_for_product(product_id)
+    if not existing:
+        return {"success": True, "data": {"present": False, "days": days, "points": []}}
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
+        raise HTTPException(status_code=403, detail="not the owner")
+    trend = get_llm_mention_probe_service().visibility_trend(existing["id"], days=days)
+    return {"success": True, "data": trend}
+
+
 @router.post("/products/{product_id}/probe-llm")
 async def probe_product_llm(
     product_id: str,
@@ -465,6 +485,7 @@ async def probe_product_llm(
             facets=facets,
             models=(body.models if body else None),
             attribution=probe_attribution,
+            homepage_domain=existing.get("homepage_domain"),
         )
         if not res:
             paid.refund("the probe matrix returned nothing")
@@ -649,6 +670,19 @@ async def get_tracked_llm_visibility(
     return {"success": True, "data": snapshot}
 
 
+@router.get("/track/{tracked_mention_id}/llm-visibility-trend")
+async def get_tracked_llm_visibility_trend(
+    tracked_mention_id: str,
+    days: int = Query(default=90, ge=1, le=365),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Visibility across probe RUNS, not the latest one (issue #349 A2)."""
+    sb = get_supabase_client().client
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
+    trend = get_llm_mention_probe_service().visibility_trend(tracked_mention_id, days=days)
+    return {"success": True, "data": trend}
+
+
 @router.post("/track/{tracked_mention_id}/probe-llm")
 async def probe_tracked_llm(
     tracked_mention_id: str,
@@ -681,6 +715,7 @@ async def probe_tracked_llm(
             facets=facets,
             models=(body.models if body else None),
             attribution=probe_attribution,
+            homepage_domain=row.get("homepage_domain"),
         )
         if not res:
             paid.refund("the probe matrix returned nothing")
@@ -752,34 +787,26 @@ async def share_of_voice(
     days: int = Query(default=30, ge=1, le=180),
     user: Dict[str, Any] = Depends(get_current_user),
 ):
+    """Share of voice: the subject against its competitors, bucketed per probe run.
+
+    Two defects fixed here (issue #349 A4). It counted competitors ONLY, so the one
+    brand whose page this is had no share of its own voice; and `days` was declared,
+    validated and then never applied to the query, which filtered on the subject and
+    took the newest 500 rows whatever window you asked for. Both produce a number
+    that looks like an answer, which is why neither surfaced on its own.
+    """
     sb = get_supabase_client().client
-    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
-    # Aggregate competitor-mentions across LLM probes for this subject
-    try:
-        r = (
-            sb.table("llm_mention_probes")
-            .select("competitors_mentioned, run_at")
-            .eq("tracked_mention_id", tracked_mention_id)
-            .order("run_at", desc=True)
-            .limit(500)
-            .execute()
-        )
-        rows = r.data or []
-    except Exception:
-        rows = []
-    counts: Dict[str, int] = {}
-    for r in rows:
-        for c in r.get("competitors_mentioned") or []:
-            cn = (c or "").strip()
-            if cn:
-                counts[cn] = counts.get(cn, 0) + 1
-    return {"success": True, "data": {
-        "tracked_mention_id": tracked_mention_id,
-        "competitor_mentions": [
-            {"name": k, "count": v}
-            for k, v in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
-        ],
-    }}
+    row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
+    data = get_llm_mention_probe_service().share_of_voice_series(
+        tracked_mention_id,
+        subject_label=(row.get("subject_label") or row.get("brand_name") or ""),
+        days=days,
+    )
+    # `competitor_mentions` at the top level is what the pre-#349 clients read. Kept
+    # pointing at the same totals rather than dropped, so an old caller reading it
+    # gets the windowed answer instead of a 500.
+    data["competitor_mentions"] = (data.get("totals") or {}).get("competitor_mentions", [])
+    return {"success": True, "data": data}
 
 
 @router.post("/products/{product_id}/opportunities")
@@ -1033,7 +1060,10 @@ async def cron_probe_llm(
                 product_id=full.get("product_id"),
                 api_key_id=full.get("api_key_id"),
             )
-            await probe.probe(tracked_mention_id=tm_id, facets=facets, attribution=cron_attr)
+            await probe.probe(
+                tracked_mention_id=tm_id, facets=facets, attribution=cron_attr,
+                homepage_domain=full.get("homepage_domain"),
+            )
             succeeded += 1
         except Exception as e:
             failed += 1

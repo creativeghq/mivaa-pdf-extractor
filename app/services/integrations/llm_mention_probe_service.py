@@ -8,6 +8,12 @@ processes responses with a Haiku tool-use call to extract:
   - sentiment: positive | neutral | negative
   - competitors_mentioned: list of competitor names
   - context_snippet: the sentence containing the mention
+  - cited_urls: the sources the answer pointed at (native for Sonar, extracted
+    from the prose for the models that inline their links)
+
+`cited_urls` + `brand_cited` are what make a GHOST CITATION visible: our page used
+as a source while the brand is never named in the answer. That is invisible to a
+mention count, and it is the single measurement this pipeline was missing.
 
 Cost discipline:
   - Default 4 templates × 4 cheap models = 16 calls/subject/cycle
@@ -23,11 +29,16 @@ import os
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import httpx
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.llm_visibility_math import (
+    citation_rollup, dedupe_urls, domain_is_ours, position_rollup,
+    sentiment_rollup, share_of_voice_from_rows, trend_from_rows,
+)
 from app.services.integrations.mention_identity_service import (
     SubjectFacets, normalize_text,
 )
@@ -59,6 +70,21 @@ COST_TABLE: Dict[str, Dict[str, float]] = {
     GEMINI_FLASH: {"input": 0.00010, "output": 0.0004},
     SONAR: {"input": 0.0010, "output": 0.0010},
 }
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Citations
+# ────────────────────────────────────────────────────────────────────────────
+
+class ModelReply(NamedTuple):
+    """One answering model's reply. Was a bare 5-tuple until citations arrived —
+    a NamedTuple so the next field does not silently shift every unpack."""
+    text: str
+    input_tokens: int
+    output_tokens: int
+    latency_ms: int
+    error: Optional[str]
+    citations: List[str]
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -134,7 +160,15 @@ class LlmMentionProbeService:
         models: Optional[List[str]] = None,
         templates: Optional[List[Dict[str, str]]] = None,
         attribution: Optional[CostAttribution] = None,
+        homepage_domain: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Run the probe matrix and persist one row per (template × model).
+
+        `homepage_domain` is the subject's own domain (the `homepage_domain` column
+        on `tracked_mentions`, passed in rather than copied into `subject_facets` so
+        there is one place it is edited). Without it `brand_cited` stays NULL —
+        undecidable, not false.
+        """
         run_id = str(uuid.uuid4())
         models_to_use = models or self.enabled_models()
         if not models_to_use:
@@ -147,27 +181,30 @@ class LlmMentionProbeService:
         for p in probes:
             for model in models_to_use:
                 try:
-                    text, in_tok, out_tok, latency_ms, err = await self._call_model(
-                        model=model, prompt=p["prompt"],
-                    )
+                    reply = await self._call_model(model=model, prompt=p["prompt"])
                 except Exception as e:
-                    text, in_tok, out_tok, latency_ms, err = ("", 0, 0, 0, str(e))
+                    reply = ModelReply("", 0, 0, 0, str(e), [])
 
-                cost = self._cost(model, in_tok, out_tok)
+                cost = self._cost(model, reply.input_tokens, reply.output_tokens)
                 total_cost += cost
 
                 # Layer A: log every probe call with attribution
                 log_llm_probe_call(
                     attribution=attribution, model=model,
-                    input_tokens=in_tok, output_tokens=out_tok,
-                    latency_ms=latency_ms,
-                    success=err is None, error_message=err,
+                    input_tokens=reply.input_tokens, output_tokens=reply.output_tokens,
+                    latency_ms=reply.latency_ms,
+                    success=reply.error is None, error_message=reply.error,
                 )
 
                 # Post-process: extract structured signal via Haiku tool use
                 extraction = await self._extract(
-                    response_text=text or "", facets=facets, model_used=model,
+                    response_text=reply.text or "", facets=facets, model_used=model,
                     attribution=attribution,
+                )
+                # Native citations first — Sonar returns a real list and the extractor
+                # would only be re-reading the same links back out of the prose, worse.
+                cited_urls = dedupe_urls(
+                    [*reply.citations, *(extraction.get("cited_urls") or [])]
                 )
                 rows.append({
                     "tracked_mention_id": tracked_mention_id,
@@ -175,17 +212,22 @@ class LlmMentionProbeService:
                     "probe_template_key": p["key"],
                     "prompt_text": p["prompt"],
                     "model": model,
-                    "response_text": (text or "")[:6000],
+                    "response_text": (reply.text or "")[:6000],
                     "mentioned": extraction.get("mentioned"),
                     "position": extraction.get("position"),
                     "sentiment": extraction.get("sentiment"),
                     "competitors_mentioned": extraction.get("competitors_mentioned") or [],
                     "context_snippet": extraction.get("context_snippet"),
-                    "input_tokens": in_tok,
-                    "output_tokens": out_tok,
+                    "cited_urls": cited_urls,
+                    "brand_cited": (
+                        any(domain_is_ours(u, homepage_domain) for u in cited_urls)
+                        if homepage_domain else None
+                    ),
+                    "input_tokens": reply.input_tokens,
+                    "output_tokens": reply.output_tokens,
                     "cost_usd": cost,
-                    "latency_ms": latency_ms,
-                    "error": err,
+                    "latency_ms": reply.latency_ms,
+                    "error": reply.error,
                 })
 
         try:
@@ -210,7 +252,12 @@ class LlmMentionProbeService:
     def visibility_snapshot(
         self, tracked_mention_id: str, *, run_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Latest probe run aggregated → share-of-voice + position trend."""
+        """ONE probe run, aggregated.
+
+        This is a point measurement and nothing more - it used to claim "position
+        trend" in its docstring while reading a single `probe_run_id`. The movement
+        over time is `visibility_trend()`, which is a different read.
+        """
         try:
             if run_id:
                 q = (
@@ -245,7 +292,6 @@ class LlmMentionProbeService:
 
         per_model: Dict[str, Dict[str, Any]] = {}
         competitors: Dict[str, int] = {}
-        positions: List[int] = []
         for row in rows:
             m = row.get("model")
             d = per_model.setdefault(m, {"probes": 0, "mentioned": 0, "positions": [], "samples": []})
@@ -254,7 +300,6 @@ class LlmMentionProbeService:
                 d["mentioned"] += 1
                 if row.get("position"):
                     d["positions"].append(int(row["position"]))
-                    positions.append(int(row["position"]))
             # Keep the raw probe answer (trimmed) so the UI can let users read exactly
             # what each model said, not just the aggregate counts. Capped per model.
             if len(d["samples"]) < 4:
@@ -265,29 +310,94 @@ class LlmMentionProbeService:
                     "position": row.get("position"),
                     "sentiment": row.get("sentiment"),
                     "context_snippet": row.get("context_snippet"),
+                    "cited_urls": row.get("cited_urls") or [],
+                    "brand_cited": row.get("brand_cited"),
                 })
             for c in row.get("competitors_mentioned") or []:
                 cn = (c or "").strip()
                 if cn:
                     competitors[cn] = competitors.get(cn, 0) + 1
 
+        # Sentiment and citations are rolled up PER MODEL as well as overall: the
+        # article's whole point is that the same brand reads differently on different
+        # answer engines, and a single blended number hides exactly that.
+        for m, d in per_model.items():
+            model_rows = [r for r in rows if r.get("model") == m]
+            d["sentiment"] = sentiment_rollup(model_rows)
+            d["citations"] = citation_rollup(model_rows)
+
         total_probes = len(rows)
         total_mentioned = sum(1 for r in rows if r.get("mentioned"))
+        _, avg_position = position_rollup(rows)
         return {
             "present": True,
             "probe_run_id": run_id,
+            "run_at": (rows[0] or {}).get("run_at") if rows else None,
             "total_probes": total_probes,
             "share_of_voice": (total_mentioned / total_probes) if total_probes else 0.0,
-            "avg_position": (sum(positions) / len(positions)) if positions else None,
+            "avg_position": avg_position,
+            "sentiment": sentiment_rollup(rows),
+            "citations": citation_rollup(rows),
             "per_model": per_model,
             "top_competitors": sorted(competitors.items(), key=lambda kv: kv[1], reverse=True)[:10],
         }
 
+    # ---- Windowed reads (A2 / A4) ----
+    #
+    # `MAX_WINDOW_ROWS` bounds a windowed read at ~8x a year of weekly 16-call runs.
+    # Every read that hits it says so in `truncated` rather than quietly returning a
+    # short answer: a capped aggregate that looks complete is the silent-zero shape.
+    MAX_WINDOW_ROWS = 2000
+
+    def _window_rows(
+        self, tracked_mention_id: str, *, days: int,
+    ) -> tuple[List[Dict[str, Any]], bool, Optional[str]]:
+        """Every probe row for this subject inside `days`, newest first."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+        try:
+            r = (
+                self.supabase.client.table("llm_mention_probes")
+                .select(
+                    "probe_run_id, run_at, model, mentioned, position, sentiment, "
+                    "competitors_mentioned, cited_urls, brand_cited"
+                )
+                .eq("tracked_mention_id", tracked_mention_id)
+                .gte("run_at", cutoff)
+                .order("run_at", desc=True)
+                .limit(self.MAX_WINDOW_ROWS)
+                .execute()
+            )
+            rows = r.data or []
+        except Exception as e:
+            logger.warning(f"llm probe window read failed: {e}")
+            return [], False, str(e)
+        return rows, len(rows) >= self.MAX_WINDOW_ROWS, None
+
+    def visibility_trend(self, tracked_mention_id: str, *, days: int = 90) -> Dict[str, Any]:
+        """Visibility across probe RUNS. Fetch here, derive in llm_visibility_math."""
+        rows, truncated, err = self._window_rows(tracked_mention_id, days=days)
+        if err:
+            return {"present": False, "error": err, "days": days, "points": []}
+        return trend_from_rows(rows, days=days, truncated=truncated)
+
+    def share_of_voice_series(
+        self, tracked_mention_id: str, *, subject_label: str, days: int = 30,
+    ) -> Dict[str, Any]:
+        """The subject's share against its competitors, bucketed per run."""
+        rows, truncated, err = self._window_rows(tracked_mention_id, days=days)
+        if err:
+            return {"tracked_mention_id": tracked_mention_id, "days": days,
+                    "error": err, "buckets": [], "totals": None}
+        out = share_of_voice_from_rows(
+            rows, subject_label=subject_label, days=days, truncated=truncated,
+        )
+        out["tracked_mention_id"] = tracked_mention_id
+        return out
+
+
     # ───── Internal: model calls ─────
 
-    async def _call_model(
-        self, *, model: str, prompt: str,
-    ) -> tuple[str, int, int, int, Optional[str]]:
+    async def _call_model(self, *, model: str, prompt: str) -> ModelReply:
         start = time.time()
         try:
             if model == HAIKU:
@@ -298,15 +408,14 @@ class LlmMentionProbeService:
                 return await self._call_gemini(prompt, model=GEMINI_FLASH, start=start)
             if model == SONAR:
                 return await self._call_perplexity(prompt, model=SONAR, start=start)
-            return "", 0, 0, 0, f"unsupported model {model}"
+            return ModelReply("", 0, 0, 0, f"unsupported model {model}", [])
         except httpx.HTTPStatusError as e:
-            return "", 0, 0, int((time.time() - start) * 1000), f"HTTP {e.response.status_code}"
+            return ModelReply("", 0, 0, int((time.time() - start) * 1000),
+                              f"HTTP {e.response.status_code}", [])
         except Exception as e:
-            return "", 0, 0, int((time.time() - start) * 1000), str(e)[:200]
+            return ModelReply("", 0, 0, int((time.time() - start) * 1000), str(e)[:200], [])
 
-    async def _call_anthropic(
-        self, prompt: str, *, model: str, start: float,
-    ) -> tuple[str, int, int, int, Optional[str]]:
+    async def _call_anthropic(self, prompt: str, *, model: str, start: float) -> ModelReply:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 ANTHROPIC_API,
@@ -326,17 +435,18 @@ class LlmMentionProbeService:
             blocks = data.get("content") or []
             text = "\n".join([b.get("text", "") for b in blocks if b.get("type") == "text"]).strip()
             usage = data.get("usage") or {}
-            return (
+            # No native citation channel — anything cited is inline in the prose and
+            # comes back through the record_mention tool call instead.
+            return ModelReply(
                 text,
                 int(usage.get("input_tokens") or 0),
                 int(usage.get("output_tokens") or 0),
                 int((time.time() - start) * 1000),
                 None,
+                [],
             )
 
-    async def _call_openai(
-        self, prompt: str, *, model: str, start: float,
-    ) -> tuple[str, int, int, int, Optional[str]]:
+    async def _call_openai(self, prompt: str, *, model: str, start: float) -> ModelReply:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 OPENAI_API,
@@ -352,17 +462,16 @@ class LlmMentionProbeService:
             data = resp.json()
             text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
             u = data.get("usage") or {}
-            return (
+            return ModelReply(
                 text.strip(),
                 int(u.get("prompt_tokens") or 0),
                 int(u.get("completion_tokens") or 0),
                 int((time.time() - start) * 1000),
                 None,
+                [],
             )
 
-    async def _call_gemini(
-        self, prompt: str, *, model: str, start: float,
-    ) -> tuple[str, int, int, int, Optional[str]]:
+    async def _call_gemini(self, prompt: str, *, model: str, start: float) -> ModelReply:
         url = f"{GEMINI_API}/{model}:generateContent?key={self.gemini_key}"
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
@@ -379,17 +488,24 @@ class LlmMentionProbeService:
             parts = ((cands[0] or {}).get("content") or {}).get("parts") if cands else []
             text = "".join(p.get("text", "") for p in (parts or []))
             u = data.get("usageMetadata") or {}
-            return (
+            # Grounding is off for these probes, so `groundingMetadata` is absent and
+            # there is nothing native to read — same as Anthropic/OpenAI above.
+            return ModelReply(
                 text.strip(),
                 int(u.get("promptTokenCount") or 0),
                 int(u.get("candidatesTokenCount") or 0),
                 int((time.time() - start) * 1000),
                 None,
+                [],
             )
 
-    async def _call_perplexity(
-        self, prompt: str, *, model: str, start: float,
-    ) -> tuple[str, int, int, int, Optional[str]]:
+    async def _call_perplexity(self, prompt: str, *, model: str, start: float) -> ModelReply:
+        """Sonar is the only probe model that answers WITH ITS SOURCES.
+
+        Re-deriving them from the prose via the extractor would be a second, worse
+        copy of a list the API already returns — so the native array is read here and
+        the extractor's guesses are merged behind it.
+        """
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 PERPLEXITY_API,
@@ -405,12 +521,20 @@ class LlmMentionProbeService:
             data = resp.json()
             text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
             u = data.get("usage") or {}
-            return (
+            # `citations` is the legacy flat list of URLs; `search_results` is the
+            # current shape ({title, url, date}). Both are read — a Sonar version bump
+            # that drops one would otherwise take citations to zero without an error.
+            native: List[str] = [c for c in (data.get("citations") or []) if isinstance(c, str)]
+            for sr in (data.get("search_results") or []):
+                if isinstance(sr, dict) and sr.get("url"):
+                    native.append(str(sr["url"]))
+            return ModelReply(
                 text.strip(),
                 int(u.get("prompt_tokens") or 0),
                 int(u.get("completion_tokens") or 0),
                 int((time.time() - start) * 1000),
                 None,
+                dedupe_urls(native),
             )
 
     # ───── Internal: extraction (Haiku) ─────
@@ -423,7 +547,8 @@ class LlmMentionProbeService:
         Falls back to deterministic parsing if Haiku is unavailable."""
         if not response_text or not response_text.strip():
             return {"mentioned": False, "position": None, "sentiment": "neutral",
-                    "competitors_mentioned": [], "context_snippet": None}
+                    "competitors_mentioned": [], "context_snippet": None,
+                    "cited_urls": []}
 
         # Deterministic fallback
         if not self.anthropic_key:
@@ -459,6 +584,15 @@ class LlmMentionProbeService:
                                     "sentiment": {"type": "string", "enum": ["positive", "neutral", "negative"]},
                                     "competitors_mentioned": {"type": "array", "items": {"type": "string"}},
                                     "context_snippet": {"type": ["string", "null"]},
+                                    "cited_urls": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                        "description": (
+                                            "Source URLs the answer points at — markdown links, bare "
+                                            "URLs, footnote lists. Copy verbatim; never invent or "
+                                            "complete one. Empty when the answer cites nothing."
+                                        ),
+                                    },
                                 },
                                 "required": ["mentioned", "sentiment", "competitors_mentioned"],
                             },
@@ -505,6 +639,7 @@ class LlmMentionProbeService:
                     "sentiment": inp.get("sentiment") or "neutral",
                     "competitors_mentioned": inp.get("competitors_mentioned") or [],
                     "context_snippet": (inp.get("context_snippet") or "")[:400] or None,
+                    "cited_urls": dedupe_urls(inp.get("cited_urls") or []),
                 }
         return self._extract_deterministic(response_text, facets)
 
@@ -535,6 +670,9 @@ class LlmMentionProbeService:
             "sentiment": sentiment,
             "competitors_mentioned": list(facets.competitor_brands)[:5],
             "context_snippet": None,
+            # Bare URL scrape. Cruder than the tool call but not a guess — a link that
+            # is literally in the text is a link the answer cited.
+            "cited_urls": dedupe_urls(re.findall(r"https?://[^\s)\]<>\"']+", text)),
         }
 
     def _cost(self, model: str, in_tok: int, out_tok: int) -> float:
