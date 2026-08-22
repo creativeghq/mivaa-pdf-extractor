@@ -352,6 +352,37 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                     json=prediction_payload
                 )
 
+                # 429 is a THROTTLE, not a failure. Replicate drops the account to
+                # 6 requests/minute with a burst of 1 whenever the balance is under $5
+                # (verified 2026-08-22 — the message says so verbatim), and the grid fans
+                # 11 image-to-image models out behind a semaphore of 3, so under that tier
+                # almost every tile 429s at once. The generic retry below backs off
+                # 1s/2s/4s, all shorter than the ~10s reset, so all three attempts burn
+                # inside one window and the tile is reported "failed" for a reason that is
+                # not a failure at all. Honour the server's own `retry_after` instead, and
+                # do not spend one of the real attempts on it.
+                if response.status_code == 429:
+                    try:
+                        retry_after = int(
+                            response.headers.get("retry-after")
+                            or response.json().get("retry_after")
+                            or 11
+                        )
+                    except (ValueError, TypeError, KeyError):
+                        retry_after = 11
+                    # +2s of slack: the window is per-minute and the reset is approximate.
+                    wait_s = min(max(retry_after, 1) + 2, 60)
+                    print(f"⏳ [{model['name']}] throttled by Replicate; waiting {wait_s}s")
+                    await asyncio.sleep(wait_s)
+                    response = await client.post(
+                        url,
+                        headers={
+                            "Authorization": f"Bearer {api_token}",
+                            "Content-Type": "application/json"
+                        },
+                        json=prediction_payload
+                    )
+
                 if response.status_code != 201:
                     raise Exception(f"Replicate API error: {response.text}")
 
