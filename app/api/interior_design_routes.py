@@ -143,11 +143,31 @@ IMAGE_TO_IMAGE_MODELS = [
      "version": "ba0425bc2e4bebafa8bd918519fdf3b5a022969a6a7c8ba0746b807bb5b541a3",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.014,
      "input_schema": "flux_lora_interior", "trigger_word": "INTR"},
-    # SD-based img2img models
-    {"id": "stable-interiors-v2-pb", "name": "Stable Interiors V2", "provider": "replicate", "model": "pointblack/stable-interiors-v2",
-     "version": "569b1bd6e4df6c9c900ad932d4a3a9f05585fac957dc6bc627aa1654853a97b5",
+    # 648,561 lifetime runs, the second-most-used interior model on Replicate after adirik,
+    # and it was simply missing from this roster. Proven 2026-08-22 against its real adapter:
+    # succeeded in 5.6s, and its output differs from every model we already run by 35-43 mean
+    # abs pixel diff against a 17-23 same-model noise floor — i.e. it adds a genuinely
+    # different take rather than a duplicate tile.
+    {"id": "stabledesign-interior", "registry_id": "stabledesign-interior",
+     "name": "StableDesign", "provider": "replicate", "model": "melgor/stabledesign_interiordesign",
+     "version": "5e13482ea317670bfc797bb18bace359860a721a39b5bbcaa1ffcd241d62bca0",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
-     "input_schema": "stable_interiors"},
+     "input_schema": "stabledesign"},
+    # SD-based img2img models
+    #
+    # `pointblack/stable-interiors-v2` was REMOVED 2026-08-22 as a proven duplicate of the
+    # youzu fork below. This was previously argued and correctly rejected as "a cost opinion,
+    # not evidence of breakage", so it was settled by measurement instead:
+    #
+    #   same model, different seed (noise floor)   17.44 - 23.29 mean abs pixel diff
+    #   pointblack vs youzu                        19.56 / 22.70   <- inside the noise floor
+    #   genuinely different models (control)       36.20 - 45.10   <- ~2x, so the metric
+    #                                                                 does discriminate
+    #
+    # Identical brief, identical source photo, both through their real adapter. The two
+    # differ no more than each differs from ITSELF between runs. Kept the youzu fork: 7,494
+    # lifetime runs vs pointblack's 395, and it advertises an improved diffusion model. Usage
+    # also predicts warm capacity, which is exactly what erayyavuz-interior-ai died of.
     {"id": "stable-interiors-v2-yz", "name": "Stable Interiors V2 (Fast)", "provider": "replicate", "model": "youzu/stable-interiors-v2",
      "version": "4836eb257a4fb8b87bac9eacbef9292ee8e1a497398ab96207067403a4be2daf",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
@@ -231,6 +251,16 @@ def _build_model_input(
         data = {"prompt": prompt, "num_inference_steps": 30, "guidance_scale": 7.5, "strength": 0.8}
         if image_url:
             data["input"] = image_url  # NOTE: 'input', not 'image'
+        return data
+
+    if schema == "stabledesign":
+        # melgor/stabledesign_interiordesign: the image param is `image_base` (not `image`,
+        # not `input`) and it is REQUIRED alongside `prompt` — a prompt-only call 422s. Its
+        # `strength`/`num_steps`/`guidance_scale` defaults (0.9/50/10) are the ones the model
+        # card publishes, and it returns in ~6s at those settings, so they are kept as-is.
+        data = {"prompt": prompt, "strength": 0.9, "num_steps": 50, "guidance_scale": 10, "img_size": 640}
+        if image_url:
+            data["image_base"] = image_url  # NOTE: 'image_base'
         return data
 
     if schema == "interior_v2":
