@@ -99,6 +99,12 @@ TEXT_TO_IMAGE_MODELS = [
     {"id": "gemini-interior", "registry_id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
     {"id": "gemini-interior-pro", "registry_id": "gemini-3-pro-image", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "pro"},
     {"id": "grok-aurora-interior", "registry_id": "xai-aurora", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "grok"},
+    {"id": "seedream-4", "registry_id": "seedream-4", "name": "Seedream 4", "provider": "replicate",
+     "model": "bytedance/seedream-4", "capability": "text-to-image", "cost_per_generation": 0.03,
+     "input_schema": "seedream"},
+    {"id": "z-image-turbo", "registry_id": "z-image-turbo", "name": "Z-Image Turbo", "provider": "replicate",
+     "model": "prunaai/z-image-turbo", "capability": "text-to-image", "cost_per_generation": 0.01,
+     "input_schema": "z_image"},
     {"id": "flux-2-pro", "name": "FLUX.2 Pro", "provider": "replicate", "model": "black-forest-labs/flux-2-pro", "capability": "text-to-image", "cost_per_generation": 0.05},
     {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01, "input_schema": "playground_v25"},
     # sd3 was RETIRED 2026-08-17 — `generation_models` carries it as status='dead',
@@ -143,6 +149,11 @@ IMAGE_TO_IMAGE_MODELS = [
      "version": "ba0425bc2e4bebafa8bd918519fdf3b5a022969a6a7c8ba0746b807bb5b541a3",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.014,
      "input_schema": "flux_lora_interior", "trigger_word": "INTR"},
+    # The one dual-direction model here: same id and adapter as its text-to-image row, which
+    # is why `registry_id` matters — one registry row, two rosters.
+    {"id": "seedream-4", "registry_id": "seedream-4", "name": "Seedream 4", "provider": "replicate",
+     "model": "bytedance/seedream-4", "capability": "image-to-image", "status": "working",
+     "cost_per_generation": 0.03, "input_schema": "seedream"},
     # 648,561 lifetime runs, the second-most-used interior model on Replicate after adirik,
     # and it was simply missing from this roster. Proven 2026-08-22 against its real adapter:
     # succeeded in 5.6s, and its output differs from every model we already run by 35-43 mean
@@ -251,6 +262,30 @@ def _build_model_input(
         data = {"prompt": prompt, "num_inference_steps": 30, "guidance_scale": 7.5, "strength": 0.8}
         if image_url:
             data["input"] = image_url  # NOTE: 'input', not 'image'
+        return data
+
+    if schema == "seedream":
+        # bytedance/seedream-4 — the only model in this roster that serves BOTH directions.
+        # The reference goes in `image_input`, an ARRAY (it accepts several), and only
+        # `prompt` is required, so the same adapter covers text-to-image by omitting it.
+        # Verified 2026-08-22: with the image it lands 42.3 mean abs diff from the source
+        # photo, without it 61.6 — i.e. it is genuinely conditioned on the reference rather
+        # than quietly ignoring it.
+        data = {"prompt": prompt, "size": "2K"}
+        if image_url:
+            data["image_input"] = [image_url]
+        else:
+            data["aspect_ratio"] = "4:3"
+        return data
+
+    if schema == "z_image":
+        # prunaai/z-image-turbo — TEXT-TO-IMAGE ONLY. Its schema has no image parameter at
+        # all, and Replicate silently DROPS unknown keys rather than rejecting them: passing
+        # an image returns 200 with a pure text-to-image result (measured 61.8 from the source
+        # vs 60.2 for the same call with no image — statistically identical). Never put this
+        # model in IMAGE_TO_IMAGE_MODELS: it would report success while ignoring the room.
+        # 8 steps is the turbo default and what makes it the cheap fast tile.
+        data = {"prompt": prompt, "aspect_ratio": "4:3", "num_inference_steps": 8}
         return data
 
     if schema == "stabledesign":
