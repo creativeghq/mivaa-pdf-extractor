@@ -1467,14 +1467,21 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
                     start_time = time.time()
 
-                    # Just retrieve an embedding model to verify API key works (free, no tokens consumed).
-                    # Platform uses OpenAI only for embeddings — chat models are Claude exclusively.
-                    client.models.retrieve("text-embedding-3-small")
+                    # Retrieve a model to verify the API key works (free, no tokens consumed).
+                    #
+                    # It asks about `gpt-4o-mini`, because that is the ONLY thing this
+                    # platform still uses OpenAI for: the LLM mention probe compares it
+                    # against haiku / gemini / sonar, deliberately. It used to ask about
+                    # `text-embedding-3-small` under a comment reading "Platform uses
+                    # OpenAI only for embeddings" — true when it was written, false since
+                    # the Voyage-or-nothing rule landed on 2026-08-08. A health check on a
+                    # capability nothing uses reports green about nothing.
+                    client.models.retrieve("gpt-4o-mini")
                     latency_ms = int((time.time() - start_time) * 1000)
 
                     status_result = {
                         "status": "healthy",
-                        "message": "OpenAI Embeddings API operational",
+                        "message": "OpenAI chat API operational (mention probe)",
                         "latency_ms": latency_ms,
                         "last_checked": datetime.fromtimestamp(current_time).isoformat(),
                         "cached": False

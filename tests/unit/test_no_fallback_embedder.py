@@ -113,6 +113,50 @@ def test_the_per_call_opt_out_is_gone():
     )
 
 
+def test_nothing_calls_an_openai_embedding_endpoint():
+    """The check this file's NAME implies, which it did not previously make.
+
+    Every other assertion here is about the removed opt-out flag and the dead config
+    keys — the *mechanism* of the old fallback. None of them looked for the thing itself:
+    a call to an OpenAI embeddings endpoint.
+
+    So one survived. `search_deduplication_service._generate_clip_embedding` called
+    `openai.embeddings.create(model="text-embedding-3-small")` — under a name that says
+    CLIP, for a service whose docstring said CLIP, in a codebase where CLIP was removed —
+    and returned `[0.0] * 1024` on failure. With `OPENAI_API_KEY` unset the client raises
+    on property access, so every call took that path: a zero vector, cosine 0.0 against
+    everything, semantic dedup silently answering "nothing similar" for as long as it has
+    existed. Voyage-or-nothing is the rule; this is the assertion for it.
+
+    Deliberately about the CALL, not the package: `gpt-4o-mini` in the mention probe is a
+    legitimate OpenAI use and the test below pins it.
+    """
+    offenders = []
+    for path in _APP.rglob("*.py"):
+        try:
+            src = _executable_source(path)
+        except SyntaxError:  # pragma: no cover - a broken file is another test's job
+            continue
+        rel = path.relative_to(_ROOT).as_posix()
+        # The PRICE TABLE is reference data, not a call. `ai_pricing` carries rows for
+        # models this platform does not call — that is what a price table is for, and
+        # deleting them would only mean an unrecognised model gets costed by a guess.
+        if rel.endswith("app/config/ai_pricing.py"):
+            continue
+        if re.search(r"embeddings\s*\.\s*create\s*\(", src):
+            offenders.append(f"{rel}: openai embeddings.create(")
+        if re.search(r"text-embedding-3-(small|large)", src):
+            offenders.append(f"{rel}: names an OpenAI embedding model")
+        if re.search(r"api\.openai\.com/v1/embeddings", src):
+            offenders.append(f"{rel}: raw OpenAI embeddings endpoint")
+    assert not offenders, (
+        "OpenAI embedding call(s) found: " + "; ".join(offenders) + ". Voyage is the only "
+        "embedding provider on this platform — two models at one dimension are the same "
+        "SHAPE and a different SPACE, so a substituted vector is stored, indexed and "
+        "ranked without anything raising."
+    )
+
+
 def test_no_dead_fallback_config_remains():
     """A setting nobody reads is an invitation to wire it back up."""
     config = _executable_source(_APP / "config.py")

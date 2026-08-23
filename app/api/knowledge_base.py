@@ -300,10 +300,23 @@ async def _upsert_kb_document(
         text_embedding = None
         embedding_status = "pending"
         embedding_error = None
+        embedding_model = None
 
         if embedding_result.get("success"):
             text_embedding = embedding_result.get("embeddings", {}).get("text_1024")
             embedding_status = "success"
+            # Provenance comes from the EMBEDDER, not from a literal.
+            #
+            # This row used to be stamped `"text-embedding-3-small"` unconditionally,
+            # written next to a vector that Voyage produced. The column exists so a model
+            # change can be found across the collection — a hardcoded name means the one
+            # query it was added for returns the exact wrong set. (The 677 live rows all
+            # read `voyage-4`, so this was latent rather than realised: the literal was
+            # wrong for whatever the next doc created through THIS path would have been.)
+            embedding_model = (
+                embedding_result.get("models", {}).get("text")
+                or embedding_result.get("model")
+            )
         else:
             embedding_error = embedding_result.get("error", "Unknown error")
             embedding_status = "failed"
@@ -322,7 +335,9 @@ async def _upsert_kb_document(
             "price_doc_type": request.price_doc_type,
             "text_embedding": text_embedding,
             "embedding_status": embedding_status,
-            "embedding_model": "text-embedding-3-small",
+            # None rather than a guess when the embedder did not say: an unknown
+            # provenance is recoverable, a confidently wrong one is not.
+            "embedding_model": embedding_model,
             "embedding_generated_at": datetime.utcnow().isoformat() if embedding_status == "success" else None,
             "embedding_error_message": embedding_error
         }
@@ -879,7 +894,7 @@ async def search_kb_documents(
 
     **Architecture:**
     1. Frontend calls MIVAA API with search query
-    2. MIVAA generates embedding for query using OpenAI (text-embedding-3-small)
+    2. MIVAA generates the query embedding through Voyage (the platform's only embedder)
     3. MIVAA calls Supabase `kb_match_docs()` RPC function with query embedding
     4. Supabase performs vector similarity search using pgvector `<=>` operator
     5. Returns ranked results with similarity scores
@@ -887,7 +902,7 @@ async def search_kb_documents(
     **Why MIVAA Backend is Required:**
     - Document embeddings already stored in `kb_docs.text_embedding` (generated when doc created)
     - Search only generates ONE embedding (for the query)
-    - Cannot generate embeddings in Supabase RPC (requires OpenAI API call)
+    - Cannot generate embeddings in Supabase RPC (requires an outbound API call)
     - Uses pgvector's optimized cosine similarity for fast search
 
     **Search Types:**

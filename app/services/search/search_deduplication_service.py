@@ -6,13 +6,14 @@ database bloat while respecting important contextual differences.
 
 Features:
 - Claude Haiku 4.5 for semantic analysis
-- CLIP embeddings for similarity matching
+- Voyage text embeddings for similarity matching
 - Multi-layer matching (exact, semantic, metadata)
 - Context-aware merging (floor vs wall, indoor vs outdoor)
 - Attribute conflict detection
 """
 
 import json
+import logging
 from typing import Optional, Tuple, Dict, List, Any
 from dataclasses import dataclass
 import numpy as np
@@ -20,6 +21,8 @@ import numpy as np
 from app.config import get_settings
 from ..core.supabase_client import get_supabase_client
 from app.services.utilities.prompt_registry import load_prompt, render
+
+logger = logging.getLogger(__name__)
 
 # Get settings
 settings = get_settings()
@@ -32,7 +35,9 @@ class SearchAnalysis:
     attributes: Dict[str, Any]
     application_context: Optional[str]
     intent_category: str
-    semantic_fingerprint: List[float]
+    #: None when the query could not be embedded. NOT a zero vector — see
+    #: `_generate_semantic_fingerprint`. Callers must skip semantic matching.
+    semantic_fingerprint: Optional[List[float]]
     normalized_query: str
 
 
@@ -44,7 +49,6 @@ class SearchDeduplicationService:
         from app.services.core.ai_client_service import get_ai_client_service
         ai_service = get_ai_client_service()
         self.anthropic = ai_service.anthropic_async
-        self.openai = ai_service.openai_async
         self.supabase = get_supabase_client().client
         
         # Configuration
@@ -86,7 +90,7 @@ class SearchDeduplicationService:
             analysis = json.loads(content)
             
             # Generate CLIP embedding for semantic similarity
-            embedding = await self._generate_clip_embedding(query)
+            embedding = await self._generate_semantic_fingerprint(query)
             
             # Normalize query
             normalized = self._normalize_query(query)
@@ -108,22 +112,49 @@ class SearchDeduplicationService:
                 attributes={},
                 application_context=None,
                 intent_category="product_search",
-                semantic_fingerprint=await self._generate_clip_embedding(query),
+                semantic_fingerprint=await self._generate_semantic_fingerprint(query),
                 normalized_query=self._normalize_query(query)
             )
     
-    async def _generate_clip_embedding(self, text: str) -> List[float]:
-        """Generate CLIP embedding for text."""
+    async def _generate_semantic_fingerprint(self, text: str) -> Optional[List[float]]:
+        """Embed a search query through Voyage, the platform's only embedder.
+
+        THREE THINGS WERE WRONG HERE, and each was individually silent.
+
+        1. It called OpenAI `text-embedding-3-small`. This platform is Voyage-or-nothing
+           for embeddings — the OpenAI fallback was deleted on 2026-08-08 precisely
+           because two models at the same dimension are the same SHAPE and a different
+           SPACE, so a substituted vector stores, indexes and ranks without anything
+           raising. This call site survived that deletion.
+
+        2. It was called `_generate_clip_embedding` and its docstring said "CLIP". It was
+           neither CLIP nor, since the deletion, anything this codebase still uses. A name
+           that describes no provider and no model is a name that stops anyone looking.
+
+        3. On any failure it returned `[0.0] * 1024` — a zero vector, at a dimension the
+           model it called does not even produce (`text-embedding-3-small` is 1536D).
+           A zero vector has cosine similarity 0.0 with everything, so every candidate
+           scored below `SEMANTIC_THRESHOLD` and semantic dedup silently returned "no
+           matches" forever. With `OPENAI_API_KEY` unset — which it is: the
+           `platform_secrets` row is empty — `.openai_async` raises on property access, so
+           this was EVERY call. Saved-search dedup has been doing exact matching only.
+
+        `None` means NO VECTOR. Callers skip semantic matching rather than compare against
+        a number that means nothing.
+        """
         try:
-            response = await self.openai.embeddings.create(
-                model="text-embedding-3-small",
-                input=text
-            )
-            return response.data[0].embedding
+            from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+
+            result = await RealEmbeddingsService().generate_text_embedding(text, dimensions=1024)
+            if not result.get("success") or not result.get("embedding"):
+                logger.warning("dedup fingerprint: embedder returned no vector")
+                return None
+            return result["embedding"]
         except Exception as e:
-            print(f"Error generating embedding: {e}")
-            # Return zero vector as fallback
-            return [0.0] * 1024
+            # Logged, not printed: a swallowed print in a service is invisible in
+            # production, which is how the zero-vector path survived unnoticed.
+            logger.warning(f"dedup fingerprint failed: {e}")
+            return None
     
     def _normalize_query(self, query: str) -> str:
         """Normalize query for exact matching."""
@@ -235,6 +266,13 @@ class SearchDeduplicationService:
             candidates = response.data if response.data else []
             
             # Calculate similarity scores
+            if not analysis.semantic_fingerprint:
+                # No vector for the incoming query, so there is nothing to compare. Say so
+                # rather than return an empty list, which reads as "no similar searches"
+                # and is what the zero-vector fallback used to fake.
+                logger.info("dedup: no fingerprint for this query - semantic matching skipped")
+                return []
+
             results = []
             for candidate in candidates:
                 if not candidate.get("semantic_fingerprint"):
