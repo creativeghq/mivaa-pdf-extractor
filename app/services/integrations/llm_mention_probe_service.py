@@ -28,7 +28,6 @@ name existed in this comment and nowhere else — no column, no code path, no ca
 from __future__ import annotations
 
 import logging
-import os
 import re
 import time
 import uuid
@@ -49,6 +48,7 @@ from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_llm_probe_call, log_haiku_call,
     recompute_lifetime_cost,
 )
+from app.services.integrations.platform_secret_resolver import resolve_secret
 from app.services.utilities.prompt_registry import load_prompt, render
 
 logger = logging.getLogger(__name__)
@@ -169,12 +169,69 @@ def build_probes(facets: SubjectFacets) -> List[Dict[str, str]]:
 # ────────────────────────────────────────────────────────────────────────────
 
 class LlmMentionProbeService:
+    """Probe matrix runner.
+
+    KEYS ARE RESOLVED, NOT CAPTURED. This class used to read `os.getenv` for all four
+    providers in `__init__`, and `get_llm_mention_probe_service()` returns a module-level
+    singleton — so the four keys were read once per worker process, from env only.
+
+    Two consequences, both silent:
+
+      - `platform_secrets` was never consulted. An admin pasting a key into
+        /admin → Keys saved it correctly and this service could not see it, which is the
+        same shape as the Zernio outage (env-only read of an admin-editable secret).
+        `GEMINI_API_KEY` is empty in that table today and Gemini has produced ZERO probe
+        rows since the feature shipped — not failures, none at all, because a provider
+        with no key never enters `enabled_models()` and therefore never appears in the
+        matrix it is advertised as part of.
+      - Even a real env value was captured at first use, so a key added later needed a
+        process restart to take effect.
+
+    `resolve_secret` is env-first with a DB fallback and a 30s cache, so per-call
+    resolution is both correct and cheap.
+    """
+
     def __init__(self) -> None:
         self.supabase = get_supabase_client()
-        self.anthropic_key = os.getenv("ANTHROPIC_API_KEY") or ""
-        self.openai_key = os.getenv("OPENAI_API_KEY") or ""
-        self.gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY") or ""
-        self.perplexity_key = os.getenv("PERPLEXITY_API_KEY") or ""
+
+    @property
+    def anthropic_key(self) -> str:
+        return resolve_secret("ANTHROPIC_API_KEY").value or ""
+
+    @property
+    def openai_key(self) -> str:
+        return resolve_secret("OPENAI_API_KEY").value or ""
+
+    @property
+    def gemini_key(self) -> str:
+        # Two names for one credential, kept because deployments use both.
+        return (
+            resolve_secret("GEMINI_API_KEY").value
+            or resolve_secret("GOOGLE_GENAI_API_KEY").value
+            or ""
+        )
+
+    @property
+    def perplexity_key(self) -> str:
+        return resolve_secret("PERPLEXITY_API_KEY").value or ""
+
+    def key_sources(self) -> Dict[str, str]:
+        """Where each provider's key came from — 'env', 'db', 'default' or 'missing'.
+
+        Exposed so "why is this provider not in my probe matrix" is answerable without
+        shell access to the host. A missing key is the commonest cause and the least
+        visible: the provider simply does not appear.
+        """
+        return {
+            "anthropic": resolve_secret("ANTHROPIC_API_KEY").source,
+            "openai": resolve_secret("OPENAI_API_KEY").source,
+            "gemini": (
+                resolve_secret("GEMINI_API_KEY").source
+                if resolve_secret("GEMINI_API_KEY").value
+                else resolve_secret("GOOGLE_GENAI_API_KEY").source
+            ),
+            "perplexity": resolve_secret("PERPLEXITY_API_KEY").source,
+        }
 
     def _key_for(self, model: str) -> str:
         """The credential a model needs. One place, so a new model cannot be added to a
@@ -304,6 +361,9 @@ class LlmMentionProbeService:
             # since this feature shipped, and nothing ever said so. A run where every call
             # to a provider errored is a run with a smaller matrix than it claims.
             "models_unavailable": unavailable,
+            # Paired with the above: which provider a missing model belongs to, and
+            # whether its key was absent everywhere or merely absent from env.
+            "key_sources": self.key_sources(),
             "failed_calls": failed,
             "total_cost_usd": total_cost,
         }
