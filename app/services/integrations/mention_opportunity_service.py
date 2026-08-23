@@ -1006,6 +1006,12 @@ class MentionOpportunityService:
                 blocks["pao"], used_seed, seed_was_fallback, limit,
             )
         if "ai_overview" in types_wanted:
+            # RECORD first, then build. The opportunity is advice and may be filtered out
+            # by the caller; the observation is a fact about a moment in time and is the
+            # only thing that can ever answer "were we in the AI Overview last month".
+            self._record_ai_overview_check(
+                blocks["ai_overview"], subject, used_seed, seed_was_fallback,
+            )
             out["ai_overview"] = self._build_ai_overview_opps(
                 blocks["ai_overview"], subject, used_seed, seed_was_fallback,
             )
@@ -1266,6 +1272,145 @@ class MentionOpportunityService:
             ))
         return out
 
+    @staticmethod
+    def _subject_alias_strings(subject: Dict[str, Any]) -> List[str]:
+        """Every string that counts as naming this subject, deduped on normalized form.
+
+        Shared by the AI Overview builder and the recorder so the two cannot disagree
+        about what "mentioned" means — the whole point of persisting the check is that it
+        can be compared with the live answer later.
+        """
+        candidates = [
+            subject.get("subject_label"), subject.get("brand_name"),
+            *(subject.get("aliases") or []),
+        ]
+        seen: set = set()
+        out: List[str] = []
+        for c in candidates:
+            if not c or not str(c).strip():
+                continue
+            n = normalize_text(str(c))
+            if n and n not in seen:
+                seen.add(n)
+                out.append(str(c).strip())
+        return out
+
+    def _record_ai_overview_check(
+        self, ai_overview: Optional[Dict[str, Any]],
+        subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
+    ) -> None:
+        """Persist one AI Overview observation (issue #349 A6).
+
+        Best-effort: a failed write must not cost the caller their SERP call, which has
+        already been made and billed. Logged rather than swallowed, so a broken insert is
+        visible as something other than "the AI Overview never appears".
+        """
+        tracked_mention_id = subject.get("id")
+        if not tracked_mention_id:
+            return  # stateless/override subject — there is no row to hang history on
+
+        row: Dict[str, Any] = {
+            "tracked_mention_id": tracked_mention_id,
+            "workspace_id": subject.get("workspace_id"),
+            "user_id": subject.get("user_id"),
+            "seed_keyword": used_seed,
+            "seed_was_fallback": bool(seed_was_fallback),
+            "present": False,
+            "brand_mentioned": None,
+            "brand_in_references": None,
+            "cited_domains": [],
+            "reference_count": 0,
+            "ai_text_snippet": None,
+        }
+
+        if ai_overview and ai_overview.get("text"):
+            ai_text = ai_overview["text"]
+            references = ai_overview.get("references") or []
+            aliases = self._subject_alias_strings(subject)
+
+            # The answer TEXT and the CITED SOURCES are matched separately. The builder
+            # folds them into one haystack because it only needs "do we appear at all";
+            # the two apart are what make a ghost citation visible.
+            nt_text = normalize_text(ai_text)
+            nt_refs = " ".join(
+                normalize_text(r.get("title") or "") + " " + normalize_text(r.get("domain") or "")
+                for r in references
+            )
+            row.update({
+                "present": True,
+                "brand_mentioned": any(normalize_text(a) in nt_text for a in aliases),
+                "brand_in_references": any(normalize_text(a) in nt_refs for a in aliases),
+                "cited_domains": [
+                    d for d in {(r.get("domain") or "").strip().lower() for r in references} if d
+                ],
+                "reference_count": len(references),
+                "ai_text_snippet": ai_text[:1000],
+            })
+
+        try:
+            self.supabase.client.table("mention_ai_overview_checks").insert(row).execute()
+        except Exception as e:
+            logger.warning(f"ai_overview check persist failed for {tracked_mention_id}: {e}")
+
+    def ai_overview_history(
+        self, tracked_mention_id: str, *, days: int = 90, limit: int = 500,
+    ) -> Dict[str, Any]:
+        """AI Overview presence over a window, newest first, plus the counts.
+
+        `present_rate` is over the checks we actually made — not over calendar days, which
+        would silently report a subject nobody has refreshed as one Google has dropped.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+        try:
+            r = (
+                self.supabase.client.table("mention_ai_overview_checks")
+                .select("*")
+                .eq("tracked_mention_id", tracked_mention_id)
+                .gte("checked_at", cutoff)
+                .order("checked_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            rows = r.data or []
+        except Exception as e:
+            logger.warning(f"ai_overview history read failed: {e}")
+            return {"present": False, "error": str(e), "days": days, "checks": []}
+
+        if not rows:
+            return {"present": False, "days": days, "checks": [], "totals": None}
+
+        appeared = sum(1 for x in rows if x.get("present"))
+        named = sum(1 for x in rows if x.get("brand_mentioned"))
+        cited = sum(1 for x in rows if x.get("brand_in_references"))
+        ghosts = sum(
+            1 for x in rows
+            if x.get("brand_in_references") and not x.get("brand_mentioned")
+        )
+        domains: Dict[str, int] = {}
+        for x in rows:
+            for d in x.get("cited_domains") or []:
+                domains[d] = domains.get(d, 0) + 1
+
+        return {
+            "present": True,
+            "days": days,
+            "truncated": len(rows) >= limit,
+            "checks": rows,
+            "totals": {
+                "checks": len(rows),
+                "ai_overview_appeared": appeared,
+                # Denominator is CHECKS, not days: a subject nobody refreshed has no
+                # opinion about Google, and averaging over days would invent one.
+                "present_rate": appeared / len(rows),
+                "brand_named": named,
+                "brand_cited": cited,
+                "ghost_citations": ghosts,
+                "top_cited_domains": sorted(
+                    domains.items(), key=lambda kv: kv[1], reverse=True
+                )[:10],
+            },
+        }
+
     def _build_ai_overview_opps(
         self, ai_overview: Optional[Dict[str, Any]],
         subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
@@ -1284,19 +1429,7 @@ class MentionOpportunityService:
         )
         haystack = nt_ai + " " + nt_refs
 
-        candidates: List[str] = []
-        for s in [subject.get("subject_label"), subject.get("brand_name"),
-                  *(subject.get("aliases") or [])]:
-            if s and s.strip():
-                candidates.append(s.strip())
-        # Dedup normalized candidates
-        seen: set = set()
-        unique_candidates: List[str] = []
-        for c in candidates:
-            n = normalize_text(c)
-            if n and n not in seen:
-                seen.add(n)
-                unique_candidates.append(c)
+        unique_candidates = self._subject_alias_strings(subject)
 
         brand_mentioned = any(normalize_text(c) in haystack for c in unique_candidates if normalize_text(c))
 

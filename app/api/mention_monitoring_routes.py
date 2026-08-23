@@ -13,6 +13,7 @@ Internal flow (product enrollment, session JWT):
   GET    /api/v1/mention-monitoring/products/{product_id}/summary
   GET    /api/v1/mention-monitoring/products/{product_id}/llm-visibility
   GET    /api/v1/mention-monitoring/products/{product_id}/llm-visibility-trend
+  GET    /api/v1/mention-monitoring/products/{product_id}/ai-overview-history
   POST   /api/v1/mention-monitoring/products/{product_id}/probe-llm
 
 Subject-id flow (brand/keyword + admin lookups):
@@ -26,6 +27,7 @@ Subject-id flow (brand/keyword + admin lookups):
   GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/summary
   GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/llm-visibility
   GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/llm-visibility-trend
+  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/ai-overview-history
   POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/probe-llm
   POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/exclude
   POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/include
@@ -424,6 +426,24 @@ async def get_product_llm_visibility(
     return {"success": True, "data": snapshot}
 
 
+@router.get("/products/{product_id}/ai-overview-history")
+async def get_product_ai_overview_history(
+    product_id: str,
+    days: int = Query(default=90, ge=1, le=365),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Google AI Overview presence over a window (issue #349 A6)."""
+    sb = get_supabase_client().client
+    svc = get_tracked_mentions_service()
+    existing = svc.find_for_product(product_id)
+    if not existing:
+        return {"success": True, "data": {"present": False, "days": days, "checks": []}}
+    if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
+        raise HTTPException(status_code=403, detail="not the owner")
+    data = get_mention_opportunity_service().ai_overview_history(existing["id"], days=days)
+    return {"success": True, "data": data}
+
+
 @router.get("/products/{product_id}/llm-visibility-trend")
 async def get_product_llm_visibility_trend(
     product_id: str,
@@ -668,6 +688,24 @@ async def get_tracked_llm_visibility(
     _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     snapshot = get_llm_mention_probe_service().visibility_snapshot(tracked_mention_id)
     return {"success": True, "data": snapshot}
+
+
+@router.get("/track/{tracked_mention_id}/ai-overview-history")
+async def get_tracked_ai_overview_history(
+    tracked_mention_id: str,
+    days: int = Query(default=90, ge=1, le=365),
+    user: Dict[str, Any] = Depends(get_current_user),
+):
+    """Google AI Overview presence over a window (issue #349 A6).
+
+    A read of already-recorded observations — no SERP call, no credits. The checks are
+    written by the opportunity pass, so history only accumulates for subjects somebody
+    actually refreshes.
+    """
+    sb = get_supabase_client().client
+    _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
+    data = get_mention_opportunity_service().ai_overview_history(tracked_mention_id, days=days)
+    return {"success": True, "data": data}
 
 
 @router.get("/track/{tracked_mention_id}/llm-visibility-trend")
