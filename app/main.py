@@ -160,22 +160,13 @@ async def lifespan(app: FastAPI):
             # before_send filter — drops events we don't want noise from.
             # Currently filters:
             #   1. All events when debug mode is on
-            #   2. RateLimitError from openai.* — these are quota / billing issues
-            #      that are already handled gracefully by query understanding's
-            #      fallback path. Sentry's auto-instrumentation captures them
-            #      from inside the openai library before our try/except can
-            #      catch them, which is why a logging-level demotion alone
-            #      isn't enough.
+            #
+            # It used to also drop `RateLimitError` raised from inside the `openai`
+            # library. That package is no longer a dependency (2026-08-23) — a filter for
+            # exceptions nothing can raise is a rule that reads as coverage.
             def _before_send(event, hint):
                 if settings.debug:
                     return None
-                exc_info = hint.get("exc_info") if hint else None
-                if exc_info:
-                    exc_type = exc_info[0]
-                    exc_module = getattr(exc_type, "__module__", "")
-                    exc_name = getattr(exc_type, "__name__", "")
-                    if exc_module.startswith("openai") and exc_name == "RateLimitError":
-                        return None
                 return event
 
             # Initialize Sentry SDK
@@ -1252,7 +1243,6 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
 
     ### AI API Services
     - **Anthropic (Claude)** - Language model for discovery & validation
-    - **OpenAI (GPT)** - Language model & text embeddings (fallback)
     - **Voyage AI** - Primary text embeddings provider
 
     ### HuggingFace Inference Endpoints
@@ -1285,10 +1275,6 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         "anthropic": {
           "status": "healthy",
           "message": "Claude Opus 4.7 available"
-        },
-        "openai": {
-          "status": "healthy",
-          "message": "GPT-5 available"
         },
         "rag": {
           "status": "healthy",
@@ -1441,74 +1427,6 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                 overall_status = "degraded"
     except Exception as e:
         services_status["anthropic"] = {
-            "status": "unknown",
-            "message": str(e)
-        }
-
-    # OpenAI (GPT)
-    try:
-        import os
-        if os.getenv("OPENAI_API_KEY"):
-            # Check cache first (unless force_refresh is True)
-            cache_key = "openai"
-            current_time = time.time()
-
-            if not force_refresh and cache_key in _ai_health_cache and (current_time - _ai_health_cache[cache_key]["timestamp"]) < _ai_health_cache_ttl:
-                cached_status = _ai_health_cache[cache_key]["status"].copy()
-                cached_status["last_checked"] = datetime.fromtimestamp(_ai_health_cache[cache_key]["timestamp"]).isoformat()
-                cached_status["cached"] = True
-                services_status["openai"] = cached_status
-            else:
-                # Lightweight check: verify client initializes and key is set.
-                # Never make real completions calls from health checks — they
-                # cost money and hit rate limits during crash-loop restarts.
-                try:
-                    from openai import OpenAI
-                    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-                    start_time = time.time()
-
-                    # Retrieve a model to verify the API key works (free, no tokens consumed).
-                    #
-                    # It asks about `gpt-4o-mini`, because that is the ONLY thing this
-                    # platform still uses OpenAI for: the LLM mention probe compares it
-                    # against haiku / gemini / sonar, deliberately. It used to ask about
-                    # `text-embedding-3-small` under a comment reading "Platform uses
-                    # OpenAI only for embeddings" — true when it was written, false since
-                    # the Voyage-or-nothing rule landed on 2026-08-08. A health check on a
-                    # capability nothing uses reports green about nothing.
-                    client.models.retrieve("gpt-4o-mini")
-                    latency_ms = int((time.time() - start_time) * 1000)
-
-                    status_result = {
-                        "status": "healthy",
-                        "message": "OpenAI chat API operational (mention probe)",
-                        "latency_ms": latency_ms,
-                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                        "cached": False
-                    }
-                    services_status["openai"] = status_result
-                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
-                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time}
-                except Exception as api_error:
-                    status_result = {
-                        "status": "unhealthy",
-                        "message": f"API error: {str(api_error)[:100]}",
-                        "last_checked": datetime.fromtimestamp(current_time).isoformat(),
-                        "cached": False
-                    }
-                    services_status["openai"] = status_result
-                    overall_status = "unhealthy"
-                    cache_data = {k: v for k, v in status_result.items() if k not in ["last_checked", "cached"]}
-                    _ai_health_cache[cache_key] = {"status": cache_data, "timestamp": current_time - _ai_health_cache_ttl + 60}
-        else:
-            services_status["openai"] = {
-                "status": "degraded",
-                "message": "API key not configured"
-            }
-            if overall_status == "healthy":
-                overall_status = "degraded"
-    except Exception as e:
-        services_status["openai"] = {
             "status": "unknown",
             "message": str(e)
         }

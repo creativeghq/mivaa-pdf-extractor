@@ -166,10 +166,12 @@ class TestCitationsAreCaptured:
             n for n in ast.walk(tree)
             if isinstance(n, ast.AsyncFunctionDef) and n.name.startswith("_call_")
         ]
+        # `_call_openai` is deliberately absent — OpenAI was removed from the platform
+        # on 2026-08-23, package and all.
         assert {c.name for c in callers} >= {
-            "_call_model", "_call_anthropic", "_call_openai",
-            "_call_gemini", "_call_perplexity",
+            "_call_model", "_call_anthropic", "_call_gemini", "_call_perplexity",
         }
+        assert "_call_openai" not in {c.name for c in callers}
         for fn in callers:
             ann = ast.unparse(fn.returns) if fn.returns else ""
             assert ann == "ModelReply", f"{fn.name} returns {ann!r}, not ModelReply"
@@ -408,14 +410,16 @@ class TestProbeTierIsWired:
         src = _SERVICE.read_text(encoding="utf-8")
         block = src[src.index("TIER_MODELS"):src.index("# ─", src.index("TIER_MODELS"))]
         assert "CHEAP_TIER" in block and "FRONTIER_TIER" in block
-        # OpenAI is deliberately absent from the frontier tier: no chat model of theirs is
-        # priced, and gpt-4o-mini has failed every probe it has ever run. Slice to the
-        # frontier LIST only — reading to end-of-block would pick GPT4O_MINI back up out
-        # of the cheap tier and pass for the wrong reason.
+        # OpenAI is absent from BOTH tiers now — it was removed from the platform
+        # outright (2026-08-23) after 212 probe rows without a single success.
+        assert "GPT4O_MINI" not in block
         frontier = block[block.index("FRONTIER_TIER:"):]
         frontier = frontier[:frontier.index("]")]
-        assert "GPT4O_MINI" not in frontier
         assert "OPUS" in frontier
+        cheap = block[block.index("CHEAP_TIER:"):]
+        cheap = cheap[:cheap.index("]")]
+        # Three answer engines, one per provider we actually have a path to.
+        assert "HAIKU" in cheap and "GEMINI_FLASH" in cheap and "SONAR" in cheap
 
     def test_every_frontier_model_has_a_cost_entry(self):
         """An unpriced model is costed by a conservative default that is right for a cheap

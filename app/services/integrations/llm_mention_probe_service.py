@@ -16,7 +16,7 @@ as a source while the brand is never named in the answer. That is invisible to a
 mention count, and it is the single measurement this pipeline was missing.
 
 Cost discipline:
-  - Default 4 templates × the CHEAP tier = up to 16 calls/subject/cycle
+  - Default 4 templates × the CHEAP tier = up to 12 calls/subject/cycle
   - Frontier models are OPT-IN per subject via `tracked_mentions.probe_tier`
   - Weekly cadence by default
 
@@ -55,13 +55,11 @@ logger = logging.getLogger(__name__)
 
 
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
-OPENAI_API = "https://api.openai.com/v1/chat/completions"
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models"
 PERPLEXITY_API = "https://api.perplexity.ai/chat/completions"
 
 # Cheap tier — Haiku uses the dated form because we hit Anthropic's HTTP API directly
 HAIKU = "claude-haiku-4-5-20251001"
-GPT4O_MINI = "gpt-4o-mini"
 GEMINI_FLASH = "gemini-2.0-flash"
 SONAR = "sonar"
 
@@ -72,11 +70,14 @@ SONAR = "sonar"
 # at a cheap-tier guess under-reports spend by more than an order of magnitude. If you add
 # a model here, add its price row first.
 #
-# OpenAI is ABSENT, and that is a statement rather than an oversight: no OpenAI chat model
-# has a price row, and `gpt-4o-mini` has produced 212 probe rows with 212 failures since
-# the feature shipped. Probing "what does ChatGPT say" is the most valuable answer this
-# feature could give and it is the one we cannot currently give — better to show that gap
-# than to quietly return a three-model matrix labelled as four.
+# OpenAI IS NOT A PROVIDER ON THIS PLATFORM. It was removed outright on 2026-08-23 — the
+# package, the clients, the settings and this probe's `gpt-4o-mini`, which had produced 212
+# probe rows and 212 failures without ever succeeding once.
+#
+# The cost of that decision, stated where it will be read: this probe can no longer answer
+# "what does ChatGPT say", which is the single most valuable answer it could give. Three
+# answer engines are covered — Claude, Gemini, Perplexity — and the largest one is not.
+# Restoring it means adding a provider back, not flipping a flag.
 OPUS = "claude-opus-5"
 GEMINI_PRO = "gemini-3.1-pro"
 SONAR_PRO = "sonar-pro"
@@ -86,7 +87,7 @@ FRONTIER_TIER = "frontier"
 
 #: Which models each tier asks for. What actually runs is this ∩ the configured keys.
 TIER_MODELS: Dict[str, List[str]] = {
-    CHEAP_TIER: [HAIKU, GPT4O_MINI, GEMINI_FLASH, SONAR],
+    CHEAP_TIER: [HAIKU, GEMINI_FLASH, SONAR],
     FRONTIER_TIER: [OPUS, GEMINI_PRO, SONAR_PRO],
 }
 
@@ -94,7 +95,6 @@ TIER_MODELS: Dict[str, List[str]] = {
 COST_TABLE: Dict[str, Dict[str, float]] = {
     HAIKU: {"input": 0.001, "output": 0.005},
     "claude-haiku-4-5": {"input": 0.001, "output": 0.005},  # alias still tracked
-    GPT4O_MINI: {"input": 0.00015, "output": 0.0006},
     GEMINI_FLASH: {"input": 0.00010, "output": 0.0004},
     SONAR: {"input": 0.0010, "output": 0.0010},
     # Frontier. These are a LOCAL ESTIMATE for the `total_cost_usd` the probe reports back
@@ -199,10 +199,6 @@ class LlmMentionProbeService:
         return resolve_secret("ANTHROPIC_API_KEY").value or ""
 
     @property
-    def openai_key(self) -> str:
-        return resolve_secret("OPENAI_API_KEY").value or ""
-
-    @property
     def gemini_key(self) -> str:
         # Two names for one credential, kept because deployments use both.
         return (
@@ -224,7 +220,6 @@ class LlmMentionProbeService:
         """
         return {
             "anthropic": resolve_secret("ANTHROPIC_API_KEY").source,
-            "openai": resolve_secret("OPENAI_API_KEY").source,
             "gemini": (
                 resolve_secret("GEMINI_API_KEY").source
                 if resolve_secret("GEMINI_API_KEY").value
@@ -238,8 +233,6 @@ class LlmMentionProbeService:
         tier and then silently skipped because nothing knew which key it wanted."""
         if model in (HAIKU, OPUS):
             return self.anthropic_key
-        if model == GPT4O_MINI:
-            return self.openai_key
         if model in (GEMINI_FLASH, GEMINI_PRO):
             return self.gemini_key
         if model in (SONAR, SONAR_PRO):
@@ -523,8 +516,6 @@ class LlmMentionProbeService:
         try:
             if model == HAIKU:
                 return await self._call_anthropic(prompt, model=HAIKU, start=start)
-            if model == GPT4O_MINI:
-                return await self._call_openai(prompt, model=GPT4O_MINI, start=start)
             if model == GEMINI_FLASH:
                 return await self._call_gemini(prompt, model=GEMINI_FLASH, start=start)
             if model == SONAR:
@@ -562,31 +553,6 @@ class LlmMentionProbeService:
                 text,
                 int(usage.get("input_tokens") or 0),
                 int(usage.get("output_tokens") or 0),
-                int((time.time() - start) * 1000),
-                None,
-                [],
-            )
-
-    async def _call_openai(self, prompt: str, *, model: str, start: float) -> ModelReply:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                OPENAI_API,
-                headers={"Authorization": f"Bearer {self.openai_key}",
-                         "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 800,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-            u = data.get("usage") or {}
-            return ModelReply(
-                text.strip(),
-                int(u.get("prompt_tokens") or 0),
-                int(u.get("completion_tokens") or 0),
                 int((time.time() - start) * 1000),
                 None,
                 [],

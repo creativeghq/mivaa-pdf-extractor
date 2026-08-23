@@ -3,7 +3,7 @@ from __future__ import annotations
 """
 Centralized AI Client Service
 
-Provides singleton instances of AI API clients (Anthropic, OpenAI, HuggingFace)
+Provides singleton instances of AI API clients (Anthropic, HuggingFace)
 with proper connection pooling, configuration management, and logging.
 
 This service eliminates the need to create new clients in every function,
@@ -12,12 +12,8 @@ configuration across the application.
 """
 
 import logging
-from typing import Any, Optional, TYPE_CHECKING
-import openai
+from typing import Any, Optional
 import httpx
-
-if TYPE_CHECKING:
-    from openai import OpenAI, AsyncOpenAI
 
 from app.config import get_settings
 from .ai_call_logger import AICallLogger
@@ -124,8 +120,6 @@ class AIClientService:
         # backed by httpx — no SDK dependency. See module docstring.
         self._anthropic_client: Optional[_AnthropicShimSync] = None
         self._anthropic_async_client: Optional[_AnthropicShimAsync] = None
-        self._openai_client: Optional[openai.OpenAI] = None
-        self._openai_async_client: Optional[openai.AsyncOpenAI] = None
         self._httpx_client: Optional[httpx.AsyncClient] = None
         
         AIClientService._initialized = True
@@ -150,38 +144,6 @@ class AIClientService:
             self._anthropic_async_client = _AnthropicShimAsync(api_key=self.settings.anthropic_api_key)
             logger.info("✅ Anthropic async shim initialized (httpx-backed)")
         return self._anthropic_async_client
-    
-    @property
-    def openai(self) -> "OpenAI":
-        """Get synchronous OpenAI client (lazy initialization)."""
-        if self._openai_client is None:
-            if not self.settings.openai_api_key:
-                raise ValueError("OPENAI_API_KEY not configured")
-
-            self._openai_client = openai.OpenAI(
-                api_key=self.settings.openai_api_key,
-                timeout=self.settings.openai_timeout,
-                max_retries=3
-            )
-            logger.info("✅ OpenAI sync client initialized")
-
-        return self._openai_client
-
-    @property
-    def openai_async(self) -> "AsyncOpenAI":
-        """Get asynchronous OpenAI client (lazy initialization)."""
-        if self._openai_async_client is None:
-            if not self.settings.openai_api_key:
-                raise ValueError("OPENAI_API_KEY not configured")
-            
-            self._openai_async_client = openai.AsyncOpenAI(
-                api_key=self.settings.openai_api_key,
-                timeout=self.settings.openai_timeout,
-                max_retries=3
-            )
-            logger.info("✅ OpenAI async client initialized")
-        
-        return self._openai_async_client
     
     @property
     def httpx(self) -> httpx.AsyncClient:

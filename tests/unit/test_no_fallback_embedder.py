@@ -167,19 +167,58 @@ def test_no_dead_fallback_config_remains():
     )
 
 
-def test_openai_survives_only_where_it_is_deliberate():
-    """This guard must not be read as 'OpenAI is banned'.
+def test_openai_is_gone_entirely():
+    """OpenAI was removed from this platform on 2026-08-23. Not narrowed — removed.
 
-    The multi-provider LLM mention probe compares gpt-4o-mini against haiku / gemini /
-    sonar on purpose — that is a comparison of models, not a substitution of one for
-    another. Asserting it still exists keeps a future over-zealous cleanup (or an
-    over-broad reading of this file) from deleting a real feature.
+    This assertion used to be the OPPOSITE. It asserted `gpt-4o-mini` still existed in the
+    mention probe, to stop an over-broad cleanup deleting a real feature — which was the
+    right call while the probe genuinely compared four providers.
+
+    It stopped being right once the evidence came in: 212 probe rows, 212 failures, not
+    one success since the feature shipped; no OpenAI chat model priced in
+    `ai_model_pricing`; and an embedding call that had quietly survived the
+    Voyage-or-nothing rule. The package, the clients, the settings, the health check and
+    the probe model are all gone.
+
+    THE COST, recorded so it is a decision and not an accident: the mention probe can no
+    longer answer "what does ChatGPT say", which is the single most valuable answer it
+    could give. Three answer engines are covered — Claude, Gemini, Perplexity — and the
+    largest one is not. Restoring it means adding a provider back deliberately, with a
+    price row, not flipping a flag.
     """
-    probe = _APP / "services" / "integrations" / "llm_mention_probe_service.py"
-    assert probe.exists()
-    assert "gpt-4o-mini" in probe.read_text(encoding="utf-8")
-    settings = (_APP / "config.py").read_text(encoding="utf-8")
-    assert "openai_api_key" in settings, "the mention probe still needs its key"
+    offenders = []
+    for path in _APP.rglob("*.py"):
+        try:
+            src = _executable_source(path)
+        except SyntaxError:  # pragma: no cover
+            continue
+        rel = path.relative_to(_ROOT).as_posix()
+        # Reference data, and the guards that REJECT a gpt model, are not usage.
+        if rel.endswith(("app/config/ai_pricing.py", "app/utils/supabase_logging_handler.py")):
+            continue
+        for pattern, what in (
+            (r"^\s*import openai", "imports the openai package"),
+            (r"from openai import", "imports from the openai package"),
+            (r"api\.openai\.com", "calls an OpenAI endpoint"),
+            (r"OPENAI_API_KEY", "reads an OpenAI key"),
+        ):
+            if re.search(pattern, src, re.M):
+                offenders.append(f"{rel}: {what}")
+    assert not offenders, (
+        "OpenAI is back: " + "; ".join(offenders) + ". It was removed outright, package "
+        "and all. Adding it again is a provider decision — it needs a working key, a row "
+        "in ai_model_pricing, and this test rewritten to say so."
+    )
+
+
+def test_the_openai_package_is_not_a_dependency():
+    """A package in requirements is a package someone will import."""
+    reqs = (_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    offenders = [
+        line for line in reqs.splitlines()
+        if line.strip().lower().startswith("openai")
+    ]
+    assert not offenders, f"openai is back in requirements.txt: {offenders}"
 
 
 def test_failure_returns_nothing_rather_than_something_else():

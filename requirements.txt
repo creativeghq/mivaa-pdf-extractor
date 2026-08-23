@@ -47,7 +47,6 @@ imagehash==4.3.1
 # anthropic SDK dropped 2026-05-23 — standardized on httpx. The shim in
 # ai_client_service._AnthropicShim* + claude_helper._call_anthropic_async/sync
 # provides the same `.messages.create()` API without the SDK pin trap.
-openai>=2.31.0
 voyageai==0.3.7
 
 # (huggingface-hub removed 2026-06-14 — SLIG moved to Modal; no app code imports it.

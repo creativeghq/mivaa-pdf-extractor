@@ -256,8 +256,6 @@ class Settings(BaseSettings):
     # purpose. The embedding-model key was deleted with the embedding fallback
     # (2026-08-08) — a config key naming an embedding model this platform will not
     # call reads as an invitation to call it.
-    openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
-    openai_timeout: int = Field(default=30, env="OPENAI_TIMEOUT")
 
     # ============================================================================
     # Voyage AI Settings (the ONLY text embedding provider)
@@ -449,7 +447,7 @@ class Settings(BaseSettings):
     vision_guided_provider: str = Field(
         default="anthropic",
         env="VISION_GUIDED_PROVIDER",
-        description="Vision model provider: 'anthropic' (Claude — primary), 'openai' (GPT-4o, fallback only)"
+        description="Vision model provider. Anthropic only — there is no other code path."
     )
     vision_guided_model: str = Field(
         default="claude-opus-4-8",
