@@ -1145,7 +1145,7 @@ async def get_basic_package_status():
     critical_packages = {
         'fastapi', 'uvicorn', 'pydantic', 'supabase', 'pymupdf4llm',
         'numpy', 'pandas', 'opencv-python-headless', 'pillow',
-        'openai', 'anthropic', 'voyageai', 'torch'
+        'anthropic', 'voyageai', 'torch'
     }
 
     for package_name, info in packages_from_requirements.items():

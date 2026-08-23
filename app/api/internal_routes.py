@@ -465,8 +465,7 @@ async def save_images_to_db(
       "document_id": "doc123",
       "workspace_id": "ws123",
       "ai_config": {
-        "visual_embedding_primary": "google/siglip-so400m-patch14-384",
-        "visual_embedding_fallback": "openai/clip-vit-base-patch32"
+        "visual_embedding_primary": "google/siglip-so400m-patch14-384"
       }
     }
     ```
