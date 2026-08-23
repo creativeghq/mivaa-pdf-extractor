@@ -1636,6 +1636,9 @@ class PerplexityPriceSearchService:
             }
             if tracked_query_id:
                 metadata["tracked_query_id"] = tracked_query_id
+            # `success` is the key `ops.silent_zero_provider` reads. `call_failed` said the
+            # same thing in a name nothing queries — a marker only its author knew about.
+            metadata["success"] = not error_message
             if error_message:
                 # An explicit failure marker, so a failed paid call is distinguishable
                 # from a successful one that found nothing (pipeline convention 1).

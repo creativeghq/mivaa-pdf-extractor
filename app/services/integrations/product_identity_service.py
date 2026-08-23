@@ -881,6 +881,10 @@ class ProductIdentityService:
                     "query_facets": facets.to_dict(),
                     "candidates": candidates,
                     "verdicts": verdicts,
+                    # This row is only written once the classifier has returned verdicts,
+                    # so reaching here IS the success. Declared rather than implied,
+                    # because `ops.silent_zero_provider` cannot infer it.
+                    "success": True,
                 },
             }).execute()
         except Exception as e:

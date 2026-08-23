@@ -95,6 +95,10 @@ def _log_paddleocr_gpu_cost(
                 "billing": "time_based",
                 "gpu_hourly_usd": 1.0,
                 "outcome": outcome,
+                # `outcome` already carries the answer; `success` is the key
+                # `ops.silent_zero_provider` actually reads. Derived from the one field
+                # rather than passed separately, so the two cannot disagree.
+                "success": outcome == "success",
             },
             "created_at": datetime.now(timezone.utc).isoformat(),
         }).execute()

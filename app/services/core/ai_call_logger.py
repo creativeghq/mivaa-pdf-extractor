@@ -267,6 +267,19 @@ class AICallLogger:
                         "confidence_score": round(confidence_score, 2),
                         "latency_ms": latency_ms,
                         "fallback_reason": fallback_reason,
+                        # DECLARE THE OUTCOME. `ops.silent_zero_provider` judges a provider
+                        # only on rows carrying this key, and correctly so: a row that never
+                        # claimed to succeed is not evidence that it failed. But nothing on
+                        # this path set it, so every call it mirrors was outside the probe's
+                        # view — 510 Voyage and 596 Anthropic calls in one week, against 30
+                        # Perplexity calls that were watched and duly caught at 401.
+                        #
+                        # The consequence is not theoretical: on 2026-08-22 the Anthropic
+                        # account hit zero and every agent, vision and classifier call began
+                        # returning 400. This probe said nothing and could not have. A human
+                        # noticed the agent replying with an error string.
+                        "success": error_message is None,
+                        "error": error_message,
                     },
                 }
                 mirror_attempt = 0
