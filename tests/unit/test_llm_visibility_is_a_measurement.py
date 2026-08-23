@@ -351,6 +351,108 @@ class TestShareOfVoiceIncludesTheSubject:
 
 
 # ────────────────────────────────────────────────────────────────────────────
+# A7 — a tier change is an INSTRUMENT change
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestTrendRefusesToCompareAcrossTiers:
+    """A frontier run and a cheap run are not two readings of the same thing.
+
+    Different models give different answers, so a subject moved between tiers gets a step
+    in its trend line that is an artefact of the instrument, not of its visibility. Both
+    numbers are valid; the comparison is not. Nothing about the shape of the data says so,
+    which is why it has to be derived and stated.
+    """
+
+    def _cheap_then_frontier(self):
+        return [
+            _row(probe_run_id="r2", run_at="2026-08-08T00:00:00+00:00",
+                 model="claude-opus-5", mentioned=True, position=1),
+            _row(probe_run_id="r1", run_at="2026-08-01T00:00:00+00:00",
+                 model="claude-haiku-4-5-20251001", mentioned=True, position=5),
+        ]
+
+    def test_each_point_records_which_models_measured_it(self):
+        trend = _FakeService(self._cheap_then_frontier()).visibility_trend("tm", days=30)
+        assert trend["points"][0]["models"] == ["claude-haiku-4-5-20251001"]
+        assert trend["points"][1]["models"] == ["claude-opus-5"]
+
+    def test_the_first_point_after_a_change_is_flagged(self):
+        trend = _FakeService(self._cheap_then_frontier()).visibility_trend("tm", days=30)
+        assert trend["points"][0]["comparable_with_previous"] is True   # nothing before it
+        assert trend["points"][1]["comparable_with_previous"] is False
+
+    def test_change_is_withheld_when_the_instrument_changed(self):
+        """Rank 5 -> rank 1 looks like a triumph. It is a different model answering."""
+        trend = _FakeService(self._cheap_then_frontier()).visibility_trend("tm", days=30)
+        assert trend["model_set_changed"] is True
+        assert trend["change"]["avg_position"] is None
+        assert trend["change"]["share_of_voice"] is None
+        # A dash with no reason is indistinguishable from missing data.
+        assert trend["change"]["not_comparable_reason"]
+
+    def test_a_stable_model_set_still_gets_its_answer(self):
+        rows = [
+            _row(probe_run_id="r2", run_at="2026-08-08T00:00:00+00:00",
+                 model="claude-haiku-4-5-20251001", mentioned=True, position=2),
+            _row(probe_run_id="r1", run_at="2026-08-01T00:00:00+00:00",
+                 model="claude-haiku-4-5-20251001", mentioned=True, position=5),
+        ]
+        trend = _FakeService(rows).visibility_trend("tm", days=30)
+        assert trend["model_set_changed"] is False
+        assert trend["change"]["avg_position"] == -3
+        assert trend["change"]["not_comparable_reason"] is None
+
+
+class TestProbeTierIsWired:
+    def test_the_tiers_name_real_models_and_do_not_overlap(self):
+        src = _SERVICE.read_text(encoding="utf-8")
+        block = src[src.index("TIER_MODELS"):src.index("# ─", src.index("TIER_MODELS"))]
+        assert "CHEAP_TIER" in block and "FRONTIER_TIER" in block
+        # OpenAI is deliberately absent from the frontier tier: no chat model of theirs is
+        # priced, and gpt-4o-mini has failed every probe it has ever run. Slice to the
+        # frontier LIST only — reading to end-of-block would pick GPT4O_MINI back up out
+        # of the cheap tier and pass for the wrong reason.
+        frontier = block[block.index("FRONTIER_TIER:"):]
+        frontier = frontier[:frontier.index("]")]
+        assert "GPT4O_MINI" not in frontier
+        assert "OPUS" in frontier
+
+    def test_every_frontier_model_has_a_cost_entry(self):
+        """An unpriced model is costed by a conservative default that is right for a cheap
+        model and wrong by an order of magnitude for a frontier one."""
+        src = _SERVICE.read_text(encoding="utf-8")
+        cost_table = src[src.index("COST_TABLE"):src.index("# ─", src.index("COST_TABLE"))]
+        for const in ("OPUS", "GEMINI_PRO", "SONAR_PRO"):
+            assert f"{const}: {{" in cost_table, f"{const} missing from COST_TABLE"
+
+    def test_the_probe_reports_what_the_tier_could_not_run(self):
+        """A frontier run that silently drops to one model is still billed as frontier."""
+        src = _SERVICE.read_text(encoding="utf-8")
+        assert '"models_unavailable": unavailable' in src
+        assert '"failed_calls": failed' in src
+
+    def test_the_frontier_tier_costs_more_credits_than_the_cheap_one(self):
+        logger_src = (_SERVICE.parent.parent / "integrations" / "mention_cost_logger.py").read_text(encoding="utf-8")
+        assert '"probe_llm_frontier"' in logger_src
+        routes = _ROUTES.read_text(encoding="utf-8")
+        # Both metered doors, not just one — the cheaper door is the one that gets used.
+        assert routes.count('"probe_llm_frontier" if') == 2
+
+    def test_probe_cost_is_resolved_from_ai_model_pricing_not_a_guess(self):
+        logger_src = (_SERVICE.parent.parent / "integrations" / "mention_cost_logger.py").read_text(encoding="utf-8")
+        fn = logger_src[logger_src.index("def log_llm_probe_call"):]
+        fn = fn[:fn.index("def log_youtube_call")]
+        assert "AIPricingConfig.calculate_cost" in fn
+        # The old ladder ended in a hardcoded pair for "an unrecognised probe model".
+        # Comments are stripped first: the replacement's own comment NAMES that pair to
+        # explain what it removed, and a guard that reads prose would fail on the fix.
+        code = chr(10).join(
+            line for line in fn.splitlines() if not line.strip().startswith("#")
+        )
+        assert "(0.0005, 0.0015)" not in code
+
+
+# ────────────────────────────────────────────────────────────────────────────
 # Wiring — the probe has to be TOLD which domain is ours
 # ────────────────────────────────────────────────────────────────────────────
 

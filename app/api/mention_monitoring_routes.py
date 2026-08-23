@@ -175,6 +175,10 @@ class TrackRequest(BaseModel):
     refresh_interval_hours: int = 24
     recency_days: int = 30
     homepage_domain: Optional[str] = None
+    probe_tier: Optional[str] = Field(
+        None, pattern="^(cheap|frontier)$",
+        description="Which model tier the LLM probe uses. Defaults to cheap.",
+    )
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None
@@ -195,6 +199,7 @@ class UpdateRequest(BaseModel):
     refresh_interval_hours: Optional[int] = None
     recency_days: Optional[int] = None
     homepage_domain: Optional[str] = None
+    probe_tier: Optional[str] = Field(None, pattern="^(cheap|frontier)$")
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None
@@ -496,7 +501,12 @@ async def probe_product_llm(
     async with metered_door(
         user_id=current_user_id(user),
         workspace_id=existing.get("workspace_id"),
-        cost=MENTION_OP_CREDIT_COST["probe_llm"],
+        # The frontier tier runs the same templates against models costing ~25x per
+        # token. Charging the cheap price for it would make the expensive option the
+        # cheap one — a cost control that is really a cost incentive (#349 A7).
+        cost=MENTION_OP_CREDIT_COST[
+            "probe_llm_frontier" if (existing.get("probe_tier") == "frontier") else "probe_llm"
+        ],
         operation_type="mention_monitoring.probe_llm",
         debit=debit_credits, refund=refund_credits,
     ) as paid:
@@ -506,6 +516,7 @@ async def probe_product_llm(
             models=(body.models if body else None),
             attribution=probe_attribution,
             homepage_domain=existing.get("homepage_domain"),
+            tier=(existing.get("probe_tier") or "cheap"),
         )
         if not res:
             paid.refund("the probe matrix returned nothing")
@@ -569,6 +580,7 @@ async def create_tracked_mention(
         refresh_interval_hours=body.refresh_interval_hours,
         recency_days=body.recency_days,
         homepage_domain=body.homepage_domain,
+        probe_tier=(body.probe_tier or "cheap"),
         alert_channels=body.alert_channels,
         alert_on_spike=body.alert_on_spike,
         alert_on_negative_sentiment=body.alert_on_negative_sentiment,
@@ -744,7 +756,9 @@ async def probe_tracked_llm(
     async with metered_door(
         user_id=current_user_id(user),
         workspace_id=row.get("workspace_id"),
-        cost=MENTION_OP_CREDIT_COST["probe_llm"],
+        cost=MENTION_OP_CREDIT_COST[
+            "probe_llm_frontier" if (row.get("probe_tier") == "frontier") else "probe_llm"
+        ],
         operation_type="mention_monitoring.probe_llm",
         debit=debit_credits, refund=refund_credits,
     ) as paid:
@@ -754,6 +768,7 @@ async def probe_tracked_llm(
             models=(body.models if body else None),
             attribution=probe_attribution,
             homepage_domain=row.get("homepage_domain"),
+            tier=(row.get("probe_tier") or "cheap"),
         )
         if not res:
             paid.refund("the probe matrix returned nothing")
@@ -1078,10 +1093,11 @@ async def cron_probe_llm(
             full = svc.get(tm_id) or {}
             # Meter the owner BEFORE the paid LLM probe. Registered cron_key
             # 'llm-mention-probe' (3 cr); fails open, False only when out of credits.
+            _tier = full.get("probe_tier") or "cheap"
             if not charge_cron(
                 sb, "llm-mention-probe",
                 workspace_id=full.get("workspace_id"), user_id=full.get("user_id"),
-                description="LLM-visibility probe run",
+                description=f"LLM-visibility probe run ({_tier} tier)",
             ):
                 skipped_unpaid += 1
                 logger.info(f"cron-probe-llm: skipped {tm_id} (insufficient credits)")
@@ -1101,6 +1117,7 @@ async def cron_probe_llm(
             await probe.probe(
                 tracked_mention_id=tm_id, facets=facets, attribution=cron_attr,
                 homepage_domain=full.get("homepage_domain"),
+                tier=(full.get("probe_tier") or "cheap"),
             )
             succeeded += 1
         except Exception as e:

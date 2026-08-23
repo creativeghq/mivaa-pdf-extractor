@@ -188,10 +188,20 @@ def trend_from_rows(
         return {"present": False, "days": days, "truncated": truncated, "points": []}
 
     points: List[Dict[str, Any]] = []
+    previous_models: Optional[Tuple[str, ...]] = None
     for probe_run_id, run_rows in group_by_run(rows):
         _, avg_position = position_rollup(run_rows)
         mentioned = sum(1 for r in run_rows if r.get("mentioned"))
         citations = citation_rollup(run_rows)
+        # WHICH INSTRUMENT took this measurement.
+        #
+        # A subject can be moved between probe tiers (#349 A7), and a frontier run and a
+        # cheap run are not two readings of the same thing — different models, different
+        # answers, a different share of voice. Plotting them on one line and calling the
+        # step a trend is the wrong-number-that-is-a-valid-number shape. The model set is
+        # already recorded per row, so the break is derivable rather than asserted.
+        models = tuple(sorted({(r.get("model") or "") for r in run_rows if r.get("model")}))
+        comparable = previous_models is None or models == previous_models
         points.append({
             "probe_run_id": probe_run_id,
             "run_at": min((r.get("run_at") or "") for r in run_rows),
@@ -202,9 +212,17 @@ def trend_from_rows(
             "sentiment_score": sentiment_rollup(run_rows)["score"],
             "ghost_citations": citations["ghost_citations"],
             "brand_cited": citations["brand_cited"],
+            "models": list(models),
+            # False on the FIRST run measured with a different set — the point where a
+            # reader must stop reading the line as continuous.
+            "comparable_with_previous": comparable,
         })
+        previous_models = models
 
     first, last = points[0], points[-1]
+    # A window that changed instruments mid-way has no single answer to "better or worse",
+    # so it does not get given one.
+    model_changed = any(not p["comparable_with_previous"] for p in points)
     return {
         "present": True,
         "days": days,
@@ -212,14 +230,24 @@ def trend_from_rows(
         "points": points,
         # The one number a person actually asks for: better or worse than when the
         # window opened. `None` where there is nothing to compare against, never 0.
+        "model_set_changed": model_changed,
         "change": {
-            "share_of_voice": last["share_of_voice"] - first["share_of_voice"],
+            "share_of_voice": (
+                None if model_changed
+                else last["share_of_voice"] - first["share_of_voice"]
+            ),
             "avg_position": (
                 last["avg_position"] - first["avg_position"]
-                if last["avg_position"] is not None and first["avg_position"] is not None
+                if not model_changed
+                and last["avg_position"] is not None and first["avg_position"] is not None
                 else None
             ),
             "runs_compared": len(points),
+            # Named so a caller rendering a dash knows WHY it is a dash. "No data" and
+            # "the question is not answerable over this window" are different facts.
+            "not_comparable_reason": (
+                "the probe model set changed inside this window" if model_changed else None
+            ),
         },
     }
 

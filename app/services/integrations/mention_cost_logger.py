@@ -32,10 +32,6 @@ from app.services.core.supabase_client import get_supabase_client
 from app.modules._core.provider_pricing import (
     DATAFORSEO_LABS_PER_CALL,
     DATAFORSEO_SERP_PER_CALL,
-    GEMINI_FLASH_INPUT_PER_1K,
-    GEMINI_FLASH_OUTPUT_PER_1K,
-    GPT4O_MINI_INPUT_PER_1K,
-    GPT4O_MINI_OUTPUT_PER_1K,
     YOUTUBE_PER_CALL,
     haiku_token_cost,
     sonar_rates,
@@ -244,21 +240,27 @@ def log_llm_probe_call(
     success: bool = True,
     error_message: Optional[str] = None,
 ) -> None:
-    if model.startswith("claude-haiku"):
-        # Resolved through ai_model_pricing rather than a literal — this model has a row there.
-        raw = haiku_token_cost(input_tokens, output_tokens)
+    if model.startswith("sonar"):
+        # Tokens only — the per-request search fee belongs to log_perplexity_call, not here.
+        _, in_rate, out_rate = sonar_rates(model)
+        raw = (input_tokens / 1000.0) * in_rate + (output_tokens / 1000.0) * out_rate
     else:
-        if model == "gpt-4o-mini":
-            rates = (GPT4O_MINI_INPUT_PER_1K, GPT4O_MINI_OUTPUT_PER_1K)
-        elif model.startswith("gemini"):
-            rates = (GEMINI_FLASH_INPUT_PER_1K, GEMINI_FLASH_OUTPUT_PER_1K)
-        elif model.startswith("sonar"):
-            # Tokens only — the per-request search fee belongs to log_perplexity_call, not here.
-            _, in_rate, out_rate = sonar_rates(model)
-            rates = (in_rate, out_rate)
-        else:
-            rates = (0.0005, 0.0015)  # conservative default for an unrecognised probe model
-        raw = (input_tokens / 1000.0) * rates[0] + (output_tokens / 1000.0) * rates[1]
+        # Every other probe model is priced from `ai_model_pricing`, the platform's single
+        # USD source, by the SAME resolver `haiku_token_cost` was already delegating to.
+        #
+        # This used to be an if/elif over three hardcoded rate pairs ending in
+        # `(0.0005, 0.0015)` — "conservative default for an unrecognised probe model".
+        # It was conservative for a cheap model and wrong by more than an order of
+        # magnitude for a frontier one, which is exactly what #349 A7 makes reachable:
+        # opting a subject into Opus would have booked Opus tokens at Haiku-ish rates and
+        # under-reported the spend everywhere it is read. A wrong price is a valid number.
+        from app.config.ai_pricing import AIPricingConfig
+        raw = float(AIPricingConfig.calculate_cost(
+            model=model,
+            input_tokens=int(input_tokens or 0),
+            output_tokens=int(output_tokens or 0),
+            include_markup=False,   # the loggers apply markup themselves
+        )["raw_cost_usd"])
     log_external_call(
         operation_type="mention_monitoring.llm_probe",
         model_name=model,
@@ -302,6 +304,10 @@ MENTION_OP_CREDIT_COST: Dict[str, int] = {
     "track": 5,                  # enrol + synchronous first discovery sweep
     "refresh": 5,
     "probe_llm": 15,
+    # A frontier run is the same 4 templates against models that cost roughly 25x per
+    # token. Charging the cheap-tier price for it would make the expensive option the
+    # cheap one, which is how a cost control becomes a cost incentive (#349 A7).
+    "probe_llm_frontier": 60,
     "opportunities": 2,
     "opportunities_with_llm": 5,
     "market_check": 3,           # reserved for future stateless endpoint

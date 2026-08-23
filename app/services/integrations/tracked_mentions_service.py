@@ -73,6 +73,7 @@ class TrackedMentionsService:
         refresh_interval_hours: int = HEALTHY_CADENCE_HOURS,
         recency_days: int = 30,
         homepage_domain: Optional[str] = None,
+        probe_tier: str = "cheap",
         alert_channels: Optional[List[str]] = None,
         alert_on_spike: Optional[bool] = None,
         alert_on_negative_sentiment: Optional[bool] = None,
@@ -102,6 +103,10 @@ class TrackedMentionsService:
             "refresh_interval_hours": refresh_interval_hours,
             "recency_days": max(1, min(int(recency_days or 30), 730)),
             "homepage_domain": (homepage_domain or "").strip().lower() or None,
+            # Narrowed rather than passed through: the CHECK constraint rejects anything
+            # else, and a rejected insert fails the whole enrolment for a field nobody
+            # asked about.
+            "probe_tier": probe_tier if probe_tier in ("cheap", "frontier") else "cheap",
             "alert_channels": alert_channels or ["bell"],
             "alert_on_spike": bool(alert_on_spike),
             "alert_on_negative_sentiment": bool(alert_on_negative_sentiment),
@@ -208,7 +213,7 @@ class TrackedMentionsService:
         allowed = {
             "subject_label", "aliases", "sources_enabled", "source_config",
             "language_codes", "country_codes", "refresh_interval_hours",
-            "recency_days", "homepage_domain",
+            "recency_days", "homepage_domain", "probe_tier",
             "alert_channels", "alert_on_spike", "alert_on_negative_sentiment",
             "alert_on_new_outlet", "alert_on_llm_visibility_change",
             "alert_webhook_url", "is_active", "auto_expand_aliases",

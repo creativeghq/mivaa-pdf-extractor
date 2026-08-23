@@ -16,10 +16,13 @@ as a source while the brand is never named in the answer. That is invisible to a
 mention count, and it is the single measurement this pipeline was missing.
 
 Cost discipline:
-  - Default 4 templates × 4 cheap models = 16 calls/subject/cycle
-  - Only "cheap" tier of each provider (haiku, gpt-4o-mini, gemini-flash, sonar)
-  - Frontier models OPT-IN via probe_template_overrides on the tracked_mentions row
+  - Default 4 templates × the CHEAP tier = up to 16 calls/subject/cycle
+  - Frontier models are OPT-IN per subject via `tracked_mentions.probe_tier`
   - Weekly cadence by default
+
+The docstring used to promise the opt-in came through `probe_template_overrides`. That
+name existed in this comment and nowhere else — no column, no code path, no caller. It is
+`probe_tier` now, and it is real (#349 A7).
 """
 
 from __future__ import annotations
@@ -56,11 +59,36 @@ OPENAI_API = "https://api.openai.com/v1/chat/completions"
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models"
 PERPLEXITY_API = "https://api.perplexity.ai/chat/completions"
 
-# Cheap-tier IDs only — Haiku uses dated form because we hit Anthropic's HTTP API directly
+# Cheap tier — Haiku uses the dated form because we hit Anthropic's HTTP API directly
 HAIKU = "claude-haiku-4-5-20251001"
 GPT4O_MINI = "gpt-4o-mini"
 GEMINI_FLASH = "gemini-2.0-flash"
 SONAR = "sonar"
+
+# Frontier tier (#349 A7) — the models a person is actually answered by.
+#
+# Every one of these has a row in `ai_model_pricing`, which is deliberate: an unpriced
+# model falls through to that config's conservative default, and a frontier model costed
+# at a cheap-tier guess under-reports spend by more than an order of magnitude. If you add
+# a model here, add its price row first.
+#
+# OpenAI is ABSENT, and that is a statement rather than an oversight: no OpenAI chat model
+# has a price row, and `gpt-4o-mini` has produced 212 probe rows with 212 failures since
+# the feature shipped. Probing "what does ChatGPT say" is the most valuable answer this
+# feature could give and it is the one we cannot currently give — better to show that gap
+# than to quietly return a three-model matrix labelled as four.
+OPUS = "claude-opus-5"
+GEMINI_PRO = "gemini-3.1-pro"
+SONAR_PRO = "sonar-pro"
+
+CHEAP_TIER = "cheap"
+FRONTIER_TIER = "frontier"
+
+#: Which models each tier asks for. What actually runs is this ∩ the configured keys.
+TIER_MODELS: Dict[str, List[str]] = {
+    CHEAP_TIER: [HAIKU, GPT4O_MINI, GEMINI_FLASH, SONAR],
+    FRONTIER_TIER: [OPUS, GEMINI_PRO, SONAR_PRO],
+}
 
 # Token-cost in USD per 1K tokens (input, output) — for ai_usage_logs
 COST_TABLE: Dict[str, Dict[str, float]] = {
@@ -69,6 +97,13 @@ COST_TABLE: Dict[str, Dict[str, float]] = {
     GPT4O_MINI: {"input": 0.00015, "output": 0.0006},
     GEMINI_FLASH: {"input": 0.00010, "output": 0.0004},
     SONAR: {"input": 0.0010, "output": 0.0010},
+    # Frontier. These are a LOCAL ESTIMATE for the `total_cost_usd` the probe reports back
+    # to the caller; the number that reaches `ai_usage_logs` is resolved from
+    # `ai_model_pricing` by `log_llm_probe_call`, which is the platform's single USD
+    # source. Two numbers with two jobs — do not let this one become a second ledger.
+    OPUS: {"input": 0.005, "output": 0.025},
+    GEMINI_PRO: {"input": 0.00125, "output": 0.010},
+    SONAR_PRO: {"input": 0.003, "output": 0.015},
 }
 
 
@@ -141,17 +176,28 @@ class LlmMentionProbeService:
         self.gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_GENAI_API_KEY") or ""
         self.perplexity_key = os.getenv("PERPLEXITY_API_KEY") or ""
 
-    def enabled_models(self) -> List[str]:
-        out: List[str] = []
-        if self.anthropic_key:
-            out.append(HAIKU)
-        if self.openai_key:
-            out.append(GPT4O_MINI)
-        if self.gemini_key:
-            out.append(GEMINI_FLASH)
-        if self.perplexity_key:
-            out.append(SONAR)
-        return out
+    def _key_for(self, model: str) -> str:
+        """The credential a model needs. One place, so a new model cannot be added to a
+        tier and then silently skipped because nothing knew which key it wanted."""
+        if model in (HAIKU, OPUS):
+            return self.anthropic_key
+        if model == GPT4O_MINI:
+            return self.openai_key
+        if model in (GEMINI_FLASH, GEMINI_PRO):
+            return self.gemini_key
+        if model in (SONAR, SONAR_PRO):
+            return self.perplexity_key
+        return ""
+
+    def enabled_models(self, tier: str = CHEAP_TIER) -> List[str]:
+        """The tier's models, minus the ones this deployment has no key for.
+
+        An unknown tier falls back to CHEAP rather than to nothing: returning an empty
+        list would make a typo look like "no models are configured", which is the same
+        shape as a probe that ran and found nothing.
+        """
+        wanted = TIER_MODELS.get(tier) or TIER_MODELS[CHEAP_TIER]
+        return [m for m in wanted if self._key_for(m)]
 
     async def probe(
         self, *,
@@ -161,6 +207,7 @@ class LlmMentionProbeService:
         templates: Optional[List[Dict[str, str]]] = None,
         attribution: Optional[CostAttribution] = None,
         homepage_domain: Optional[str] = None,
+        tier: str = CHEAP_TIER,
     ) -> Dict[str, Any]:
         """Run the probe matrix and persist one row per (template × model).
 
@@ -170,9 +217,16 @@ class LlmMentionProbeService:
         undecidable, not false.
         """
         run_id = str(uuid.uuid4())
-        models_to_use = models or self.enabled_models()
+        models_to_use = models or self.enabled_models(tier)
         if not models_to_use:
-            return {"status": "no_models_enabled", "probes": [], "credits_used": 0}
+            return {"status": "no_models_enabled", "probes": [], "credits_used": 0,
+                    "tier": tier}
+
+        # What the tier ASKED for versus what it got. A frontier run that quietly drops to
+        # one model because two keys are missing is still a run, still billed, and reads
+        # exactly like a frontier run in the trend — so the gap is reported, not inferred.
+        requested = TIER_MODELS.get(tier) or TIER_MODELS[CHEAP_TIER]
+        unavailable = [m for m in requested if m not in models_to_use]
 
         probes = templates or build_probes(facets)
         rows: List[Dict[str, Any]] = []
@@ -239,11 +293,18 @@ class LlmMentionProbeService:
         # Layer C: roll up the new cost into total_billed_usd on the row
         recompute_lifetime_cost(tracked_mention_id=tracked_mention_id)
 
+        failed = sum(1 for r in rows if r.get("error"))
         return {
             "status": "completed",
             "probe_run_id": run_id,
             "probe_count": len(rows),
+            "tier": tier,
             "models": models_to_use,
+            # Not cosmetic: `gpt-4o-mini` has produced 212 probe rows and 212 failures
+            # since this feature shipped, and nothing ever said so. A run where every call
+            # to a provider errored is a run with a smaller matrix than it claims.
+            "models_unavailable": unavailable,
+            "failed_calls": failed,
             "total_cost_usd": total_cost,
         }
 
