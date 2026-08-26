@@ -165,7 +165,13 @@ def sync_all() -> bool:
                 "content": content,
                 "summary": summary,
                 "status": "published",
-                "visibility": "workspace",
+                # kb_docs.visibility is a two-value vocabulary: 'public' means
+                # "published to the anonymous knowledge-base website", 'private'
+                # means "workspace/agent only". "workspace" was a third spelling
+                # nothing recognises -- it behaved like private only because every
+                # reader tests `= 'public'`, so it was one renamed check away from
+                # publishing internal job-board configuration.
+                "visibility": "private",
                 "metadata": {"doc_kind": DOC_KIND, "auto_synced": True},
             }).execute()
         return True
