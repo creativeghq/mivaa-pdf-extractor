@@ -39,6 +39,9 @@ DFS_TASK_CREATED = 20100
 #: Codes that mean the call succeeded.
 DFS_SUCCESS_CODES = frozenset({DFS_OK, DFS_TASK_CREATED})
 
+#: "Not Found" at the ENVELOPE level — the endpoint URL itself does not exist. Ours, not theirs.
+DFS_PATH_NOT_FOUND = 40400
+
 
 def _task_failure(tasks: Any) -> Optional[str]:
     """The first task-level failure, as DataForSEO's own words. None when all tasks are fine."""
@@ -55,6 +58,21 @@ def check(data: Optional[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
         return False, "dataforseo returned a non-object body"
 
     envelope_code = data.get("status_code")
+    if envelope_code == DFS_PATH_NOT_FOUND:
+        # 40400 at the ENVELOPE is not "your query matched nothing" — it is DataForSEO saying the
+        # URL does not exist, i.e. OUR path is wrong. That is a code defect, and it hides
+        # perfectly: a 404 costs nothing, so the tool is both permanently empty and invisible in
+        # the spend, which reads exactly like a tool nobody uses.
+        #
+        # `domain_technologies` was posting to `/domain_analytics/technologies/technologies/live`
+        # — a doubled segment — and had therefore never returned a single result. Note the rule
+        # cannot be "reject doubled segments": `/backlinks/backlinks/live` is a real endpoint.
+        # Only calling it tells you, which is why this says so in the message.
+        return False, (
+            f"dataforseo envelope {envelope_code}: {data.get('status_message')} "
+            "— this endpoint PATH does not exist at DataForSEO. Fix the URL in "
+            "dataforseo_unified_client; it is not a query or a credentials problem."
+        )
     if envelope_code is not None and envelope_code not in DFS_SUCCESS_CODES:
         return False, f"dataforseo envelope {envelope_code}: {data.get('status_message')}"
 

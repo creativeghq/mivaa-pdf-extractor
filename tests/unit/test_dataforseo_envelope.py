@@ -118,3 +118,39 @@ def test_success_codes_are_the_single_source():
     assert env.DFS_OK in env.DFS_SUCCESS_CODES
     assert env.DFS_TASK_CREATED in env.DFS_SUCCESS_CODES
     assert 40501 not in env.DFS_SUCCESS_CODES
+
+
+def test_envelope_404_says_the_path_is_wrong():
+    """40400 at the envelope is OUR bug, and the message must say so.
+
+    `domain_technologies` posted to `/domain_analytics/technologies/technologies/live` — a
+    doubled segment — and got 40400 back. A 404 costs nothing, so the tool was permanently
+    empty AND invisible in the spend, which reads exactly like a tool nobody uses. The
+    message has to name the cause, because "Not Found" alone reads as "no results".
+    """
+    ok, reason = env.check({"status_code": 40400, "status_message": "Not Found.", "tasks": []})
+    assert ok is False
+    assert "PATH does not exist" in reason, reason
+    assert "dataforseo_unified_client" in reason, "the message must say where to fix it"
+
+
+def test_a_doubled_path_segment_is_not_itself_the_test():
+    """Guard against 'reject doubled segments' being reintroduced as a rule.
+
+    `/backlinks/backlinks/live` is a REAL DataForSEO endpoint (verified live, 20000 Ok), so a
+    static rule against repeated path segments would fail correct code. Only calling the
+    endpoint distinguishes them — which is what the agent tool sweep does.
+    """
+    src = open(
+        os.path.join(os.path.dirname(__file__), "..", "..", "app", "services", "integrations",
+                     "dataforseo_unified_client.py"),
+        encoding="utf-8",
+    ).read()
+    assert '"/backlinks/backlinks/live"' in src, (
+        "this real endpoint disappeared — if it was 'fixed' as a doubled-segment typo, revert: "
+        "it answers 20000"
+    )
+    assert '"/domain_analytics/technologies/technologies/live"' not in src, (
+        "the doubled segment here IS wrong — DataForSEO answers 40400. The path is "
+        "/domain_analytics/technologies/domain_technologies/live"
+    )

@@ -1313,7 +1313,13 @@ class DataForSEOUnifiedClient:
         self, *, target: str, attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
         body = [{"target": target}]
-        return await self._call("/domain_analytics/technologies/technologies/live", body,
+        # `.../technologies/domain_technologies/live`, NOT `.../technologies/technologies/live`.
+        # The doubled segment was a 404 at DataForSEO — envelope 40400 "Not Found", tasks_count 0 —
+        # so `seo_domain_technologies` had never once returned data. It cost nothing, which is why
+        # it never showed up in the spend either: a tool that is free AND empty looks exactly like
+        # a tool nobody uses. Verified against the live API and the docs: this path answers 20000
+        # and its result item carries the `technologies` object the caller reads.
+        return await self._call("/domain_analytics/technologies/domain_technologies/live", body,
                                 attribution=attribution, log_kind="labs",
                                 operation=f"domain.technologies:{target}")
 
