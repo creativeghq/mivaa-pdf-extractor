@@ -98,6 +98,36 @@ class Opportunity:
         }
 
 
+def _empty_serp_blocks() -> Dict[str, Any]:
+    """The SERP block shape, declared ONCE.
+
+    Every consumer indexes this dict by literal key (`blocks["videos"]`), so a missing key is a
+    KeyError rather than a falsy value. It was written out twice — the full ten keys in
+    `_parse_serp_blocks`, and a five-key copy as the "nothing found" default in `_serp_signals`
+    that was never updated when v0.4.6 added videos / news_stories / knowledge_graph / paid /
+    shopping.
+
+    The five-key copy is the one a FAILED run lands on, so the two never disagreed on a good day:
+    when DataForSEO answered, the parser's dict replaced the default and every key was there. Only
+    when every seed errored — or every round came back with no signal — did the default survive to
+    be read, and then the first v0.4.6 reader raised. The caller wraps the whole thing in
+    `except Exception`, so the entire SERP half of the opportunity report disappeared behind one
+    WARNING line: a failure inside the failure path, visible only as absence.
+
+    Adding a block type means adding it HERE, and both readers get it.
+    """
+    return {
+        "pao": [], "ai_overview": None, "featured_snippet": None,
+        "related_searches": [], "organic": [],
+        # v0.4.6 additions
+        "videos": [],          # union of video / short_videos / inline_videos
+        "news_stories": [],    # top_stories block
+        "knowledge_graph": None,
+        "paid": [],            # paid + commercial_units
+        "shopping": [],        # popular_products + shopping
+    }
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # Service
 # ────────────────────────────────────────────────────────────────────────────
@@ -931,10 +961,14 @@ class MentionOpportunityService:
         # Snippet, no related searches). Brand/product names with very low
         # search volume often have empty SERP feature blocks.
         used_seed = seeds[0]
-        blocks: Dict[str, Any] = {
-            "pao": [], "ai_overview": None, "featured_snippet": None,
-            "related_searches": [], "organic": [],
-        }
+        # ONE declaration of the block shape — see _empty_serp_blocks. This literal used to be
+        # written out here with only the five pre-v0.4.6 keys while `_parse_serp_blocks` returned
+        # ten, and this is the copy a FAILED run falls back to: every seed erroring, or every
+        # round returning no signal, leaves `blocks` at the default and the reader below then does
+        # `blocks["videos"]` → KeyError. Swallowed by the caller's `except Exception`, so the
+        # entire SERP half of the opportunity report vanished behind one WARNING line. Live on
+        # 2026-08-26 05:16.
+        blocks: Dict[str, Any] = _empty_serp_blocks()
 
         for seed in seeds[:3]:
             body = [{
@@ -1053,16 +1087,7 @@ class MentionOpportunityService:
     def _parse_serp_blocks(self, data: Dict[str, Any], *, limit: int) -> Dict[str, Any]:
         """Walk the DataForSEO SERP response and extract every block type we care
         about into normalized dicts. Single pass through the items array."""
-        result: Dict[str, Any] = {
-            "pao": [], "ai_overview": None, "featured_snippet": None,
-            "related_searches": [], "organic": [],
-            # v0.4.6 additions
-            "videos": [],          # union of video / short_videos / inline_videos
-            "news_stories": [],    # top_stories block
-            "knowledge_graph": None,
-            "paid": [],            # paid + commercial_units
-            "shopping": [],        # popular_products + shopping
-        }
+        result: Dict[str, Any] = _empty_serp_blocks()
         seen_q: set = set()
         seen_related: set = set()
         seen_video_url: set = set()
