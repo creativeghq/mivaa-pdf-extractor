@@ -160,3 +160,65 @@ def test_blank_request_values_are_not_treated_as_a_workspace(blank):
 def test_a_user_with_no_subject_cannot_pass_a_foreign_workspace():
     with pytest.raises(WorkspaceAccessDenied):
         resolve({"workspace_id": OPERATOR}, OTHER, is_member=member_of(OTHER))
+
+
+# ── billing_user_id: the subject is only an identity when it is a real user ─────────
+#
+# `ai_call_logs.user_id`, `ai_usage_logs.user_id` and the credit ledgers are all `uuid`.
+# The service key's subject is the literal string "material-kai-platform", so passing
+# `claims["sub"]` through raw made Postgres reject the insert with 22P02 — and because
+# the AI-call logger swallows its own failures by design, the visible effect was not an
+# error but a LEDGER MISSING every call the platform makes on its own behalf.
+
+billing_user_id = _wr.billing_user_id
+
+REAL_USER = "49f683ad-ebf2-4296-a410-0d8c011ce0be"
+
+
+def test_a_real_user_subject_is_returned_unchanged():
+    assert billing_user_id({"sub": REAL_USER}) == REAL_USER
+
+
+def test_the_service_subject_is_not_an_identity():
+    """The exact string that produced `22P02 invalid input syntax for type uuid`."""
+    assert billing_user_id({"sub": SERVICE_SUBJECT}) is None
+
+
+@pytest.mark.parametrize("subject", ["tile", "", None, "not-a-uuid", "12345", "None"])
+def test_anything_that_is_not_a_uuid_is_none_rather_than_passed_through(subject):
+    """The failure was not specific to the service subject: ANY non-uuid string reaching
+    a uuid column fails the same way. Rejecting only the one known value would let the
+    next one through silently."""
+    assert billing_user_id({"sub": subject}) is None
+
+
+def test_missing_or_empty_claims_do_not_raise():
+    """Called on paths where the middleware never ran, so `claims` can be None."""
+    assert billing_user_id(None) is None
+    assert billing_user_id({}) is None
+
+
+def test_none_is_returned_rather_than_a_placeholder_uuid():
+    """A placeholder would move the platform's spend onto a real account's ledger.
+    Absent attribution must read as absent."""
+    assert billing_user_id({"sub": SERVICE_SUBJECT}) is None
+    assert billing_user_id({"sub": SERVICE_SUBJECT}) != REAL_USER
+
+
+def test_no_route_passes_a_raw_token_subject_as_a_user_id():
+    """The regression guard that matters: the bug was at the CALL SITES, not in a helper.
+
+    Four routes each wrote `user_id=str((claims or {}).get("sub") or "") or None` and
+    every one of them fed a uuid column. A fifth copy would fail exactly the same way,
+    and — because the logger swallows the error — would again show up as nothing at all.
+    """
+    offenders = []
+    for path in (_ROOT / "app" / "api").rglob("*.py"):
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r'user_id\s*=\s*str\(\(\s*\w+\s*or\s*\{\}\)\.get\("sub"\)', line):
+                offenders.append(f"{path.relative_to(_ROOT)}:{lineno}")
+    assert not offenders, (
+        "these pass the raw token subject as a user_id — use billing_user_id(claims), "
+        "which returns None for the service subject instead of a string a uuid column "
+        f"rejects: {offenders}"
+    )

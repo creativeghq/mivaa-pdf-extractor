@@ -22,6 +22,7 @@ import sentry_sdk
 from pydantic import BaseModel, Field, model_validator
 
 from app.config import get_settings
+from app.auth.workspace_resolution import billing_user_id
 from app.services.search.rag_service import RAGService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.products.product_creation_service import ProductCreationService
@@ -162,6 +163,32 @@ def run_async_in_background(async_func):
             loop.close()
             logger.info(f"🔚 Background task wrapper finished for {async_func.__name__}")
     return wrapper
+
+def _require_uuid(value: Any, field: str) -> str:
+    """Return `value` as a string, or raise 400 when it is not a UUID.
+
+    A document id reaches these routes from an AGENT, and an agent that has not yet
+    looked one up will happily send the thing it was searching for — the live case was
+    `kb_doc_id="tile"`. Handed straight to the RPC, Postgres raised `22P02 invalid
+    input syntax for type uuid`, which the route's `except Exception` re-raised as a
+    500. A caller sending the wrong TYPE is a 400; reporting it as a 500 puts a
+    client-side mistake in the platform's error budget and buries the real ones.
+
+    Deliberately only a SYNTAX check. Whether the id exists, and whether this caller
+    may see it, is decided by the RPC and reported as 404 — proving a document exists
+    before checking access would turn the route into an enumeration oracle.
+    """
+    from uuid import UUID
+
+    try:
+        UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{field} must be a UUID",
+        )
+    return str(value)
+
 
 # Initialize router
 router = APIRouter(prefix="/api/rag", tags=["RAG"])
@@ -6192,7 +6219,7 @@ async def search_knowledge_base(
             value = await kb_query_vector(
                 request.query,
                 workspace_id=request.workspace_id,
-                user_id=str((claims or {}).get("sub") or "") or None,
+                user_id=billing_user_id(claims),
             )
             _query_embedding_memo["value"] = value
             return value
@@ -6725,7 +6752,7 @@ async def read_document_section(
                     detail="document_id is required when source='pdf'",
                 )
             pdf_resp = supabase.client.rpc("read_document_chunk_span", {
-                "p_document_id": request.document_id,
+                "p_document_id": _require_uuid(request.document_id, "document_id"),
                 "match_workspace_id": request.workspace_id,
                 "p_from_chunk_index": from_idx,
                 "p_to_chunk_index": to_idx,
@@ -6760,7 +6787,7 @@ async def read_document_section(
             scope = _resolve_kb_access_scope(supabase, request.workspace_id, caller, request.query)
 
             rpc_args: Dict[str, Any] = {
-                "p_kb_doc_id": request.kb_doc_id,
+                "p_kb_doc_id": _require_uuid(request.kb_doc_id, "kb_doc_id"),
                 "match_workspace_id": request.workspace_id,
                 "p_from_chunk_index": from_idx,
                 "p_to_chunk_index": to_idx,

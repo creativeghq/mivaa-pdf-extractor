@@ -86,6 +86,43 @@ def is_service_caller(claims: Dict[str, Any]) -> bool:
     return claims.get("service") == "mivaa" or claims.get("sub") == SERVICE_SUBJECT
 
 
+def billing_user_id(claims: Optional[Dict[str, Any]]) -> Optional[str]:
+    """The token subject when it is a REAL user, else None.
+
+    Every column that stores this downstream — `ai_call_logs.user_id`,
+    `ai_usage_logs.user_id`, credit ledgers — is `uuid`. The service key's subject is
+    the literal string ``material-kai-platform``, so passing `claims["sub"]` through
+    raw made Postgres reject the whole insert with ``22P02 invalid input syntax for
+    type uuid``. The AI-call logger swallows its own failures by design (a logging
+    fault must not replace the real exception), so the effect was not an error anybody
+    saw: it was that every call the PLATFORM makes on its own behalf recorded no cost
+    at all, while user-authenticated calls recorded fine. A partial ledger looks
+    exactly like a quiet one.
+
+    None is the honest answer, not a placeholder uuid: there is no user to attribute
+    this to, and inventing one would move the spend onto somebody's account. The
+    columns are nullable and `workspace_id` still carries the tenant.
+
+    Anything that is not a syntactically valid UUID is treated the same way — a future
+    non-uuid subject would otherwise reintroduce the identical failure silently.
+    """
+    subject = (claims or {}).get("sub")
+    if not subject:
+        return None
+    subject = str(subject)
+    if subject == SERVICE_SUBJECT:
+        return None
+    # stdlib only — this module must stay importable with nothing but the standard
+    # library installed (see the module docstring).
+    import uuid as _uuid
+
+    try:
+        _uuid.UUID(subject)
+    except (ValueError, AttributeError, TypeError):
+        return None
+    return subject
+
+
 async def resolve_workspace_id(
     claims: Dict[str, Any],
     requested_workspace_id: Optional[str],

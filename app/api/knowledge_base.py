@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 
 from app.services.core.supabase_client import SupabaseClient
+from app.auth.workspace_resolution import billing_user_id
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.schemas.api_responses import KBHealthResponse
 from app.dependencies import get_workspace_context, WorkspaceContext, get_current_user, resolve_workspace_id
@@ -195,7 +196,7 @@ async def create_kb_document(
     workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     return await _upsert_kb_document(
         request, supabase_client, workspace_id,
-        user_id=str((current_user or {}).get("sub") or "") or None,
+        user_id=billing_user_id(current_user),
     )
 
 
@@ -556,7 +557,7 @@ async def create_kb_document_from_pdf(
         # `workspace_id` here is already the resolved value from the top of this route.
         return await _upsert_kb_document(
             create_request, supabase_client, workspace_id,
-            user_id=str((current_user or {}).get("sub") or "") or None,
+            user_id=billing_user_id(current_user),
         )
 
     except HTTPException:
@@ -983,7 +984,7 @@ async def search_kb_documents(
             query_embedding = await kb_query_vector(
                 request.query,
                 workspace_id=str(workspace_id) if workspace_id else None,
-                user_id=str((current_user or {}).get("sub") or "") or None,
+                user_id=billing_user_id(current_user),
             )
             if not query_embedding:
                 raise HTTPException(
