@@ -28,6 +28,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
 from functools import lru_cache
 from typing import Any, Dict, List, Optional
 
@@ -203,7 +204,8 @@ class JobDigestDispatcher:
         body_text = self._build_body_text(sections)
         # Deep-link to the conversation when at least one tracked_job has one set
         first_convo = next((s["tracked_job"].get("source_conversation_id") for s in sections if s["tracked_job"].get("source_conversation_id")), None)
-        action_url = self._build_action_url(sections[0]["tracked_job"]["id"], conversation_id=first_convo)
+        action_path = self._build_action_path(sections[0]["tracked_job"]["id"], conversation_id=first_convo)
+        action_url = self._absolute(action_path)   # email CTA; the bell gets the path
 
         # Channels: union of all tracked_jobs' alert_channels
         all_channels: set = set()
@@ -222,7 +224,7 @@ class JobDigestDispatcher:
             )
             bell_payload = {"groups": [{"keyword": h, "count": len(ls)} for h, ls in _kw_groups if h],
                             "total": total_listings}
-            ok = await self._send_bell(user_id, title=title, body=body_text[:300], action_url=action_url, payload=bell_payload)
+            ok = await self._send_bell(user_id, title=title, body=body_text[:300], action_url=action_path, payload=bell_payload)
             (channels_attempted if ok else channels_skipped).append("bell")
 
         # 1b. Chat post into the original conversation (v0.2) — primary user-facing surface.
@@ -492,18 +494,34 @@ class JobDigestDispatcher:
         except Exception:
             return []
 
-    def _build_action_url(self, tracked_job_id: str, *, conversation_id: Optional[str] = None) -> str:
-        # v0.2: deep-link to the conversation where the user set up the search.
-        # Falls back to the agent-hub root if the tracked_job has no source_conversation_id
-        # (e.g. created via direct API call rather than KAI agent).
-        # PUBLIC_APP_URL is the platform-wide convention (also used by catalog-send-to-customers,
-        # catalog-tools.ts, etc.) — same env var, do not introduce a new one.
-        base = (os.getenv("PUBLIC_APP_URL") or "https://app.materialshub.gr").rstrip("/")
+    def _build_action_path(self, tracked_job_id: str, *, conversation_id: Optional[str] = None) -> str:
+        """The in-app destination, as a PATH.
+
+        v0.2: deep-link to the conversation where the user set up the search. Falls back to a
+        seeded agent-hub prompt if the tracked_job has no source_conversation_id (e.g. created
+        via direct API call rather than the KAI agent).
+
+        This is what goes on the bell notification, and it must NOT be absolute. The bell hands
+        `user_notifications.action_url` to react-router's `navigate()`, which reads ANY string as
+        a path — so an absolute URL became the path `/https://app.materialshub.gr/agent-hub` and
+        every digest ever sent 404'd when clicked. `_absolute()` is for the email, where a path
+        would be equally wrong.
+        """
         if conversation_id:
-            return f"{base}/agent-hub?agent=kai&conversation={conversation_id}"
-        return f"{base}/agent-hub?agent=kai&q=" + (
-            f"Show me today%27s findings for tracked_job_id {tracked_job_id}"
-        )
+            return "/agent-hub?" + urlencode({"agent": "kai", "conversation": conversation_id})
+        return "/agent-hub?" + urlencode({
+            "agent": "kai",
+            "q": f"Show me today's findings for tracked_job_id {tracked_job_id}",
+        })
+
+    def _absolute(self, path: str) -> str:
+        """Same destination for a recipient who is not in the app — an email CTA.
+
+        PUBLIC_APP_URL is the platform-wide convention (also used by catalog-send-to-customers,
+        catalog-tools.ts, etc.) — same env var, do not introduce a new one.
+        """
+        base = (os.getenv("PUBLIC_APP_URL") or "https://app.materialshub.gr").rstrip("/")
+        return f"{base}{path}"
 
     # ────────────────────────────────────────────────────────────────────
     # Channel senders
@@ -590,14 +608,16 @@ class JobDigestDispatcher:
         body_text = "Hot batch just landed:\n" + "\n".join(
             f"• {l.get('title') or '(untitled)'} — {l.get('company') or ''}" for l in listings[:5]
         )
-        action_url = self._build_action_url(tracked_job_id, conversation_id=tj.get("source_conversation_id"))
+        # Path, not URL: the burst reaches the user through the bell and the chat thread, and
+        # both are in-app. `_absolute()` is only for an email CTA, and this path sends no email.
+        action_path = self._build_action_path(tracked_job_id, conversation_id=tj.get("source_conversation_id"))
         channels = set(tj.get("alert_channels") or ["bell", "email"])
         channels_attempted: List[str] = []
         channels_skipped: List[str] = []
 
         # Bell (always free)
         if "bell" in channels:
-            ok = await self._send_bell(user_id, title=title, body=body_text[:300], action_url=action_url,
+            ok = await self._send_bell(user_id, title=title, body=body_text[:300], action_url=action_path,
                                        payload={"new_match_count": new_match_count, "label": label})
             (channels_attempted if ok else channels_skipped).append("bell")
 
