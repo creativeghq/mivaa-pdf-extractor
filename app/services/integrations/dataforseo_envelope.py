@@ -25,6 +25,29 @@ from typing import Any, Dict, Optional, Tuple
 #: DataForSEO's "everything worked" code, at both the envelope and task level.
 DFS_OK = 20000
 
+#: "Task Created" — the success code for the ASYNC endpoints (task_post). The task was
+#: accepted and is queued; the results arrive from task_get or a webhook.
+#:
+#: This module accepted only 20000, so every async submission was reported as a failure.
+#: `seo_trustpilot_search` came back "dataforseo task 20100: Task Created." — a success
+#: message delivered as an error, on a call that had worked and been paid for.
+#: `job_search_service` has always tolerated 20100 at its own call site; when the three
+#: copies of this check were consolidated here, that case was the one left behind. Same
+#: shape as the consolidation it was fixing.
+DFS_TASK_CREATED = 20100
+
+#: Codes that mean the call succeeded.
+DFS_SUCCESS_CODES = frozenset({DFS_OK, DFS_TASK_CREATED})
+
+
+def _task_failure(tasks: Any) -> Optional[str]:
+    """The first task-level failure, as DataForSEO's own words. None when all tasks are fine."""
+    for task in tasks or []:
+        code = (task or {}).get("status_code")
+        if code is not None and code not in DFS_SUCCESS_CODES:
+            return f"dataforseo task {code}: {(task or {}).get('status_message')}"
+    return None
+
 
 def check(data: Optional[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
     """(ok, reason). `reason` is None when the response really did succeed."""
@@ -32,12 +55,8 @@ def check(data: Optional[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
         return False, "dataforseo returned a non-object body"
 
     envelope_code = data.get("status_code")
-    if envelope_code is not None and envelope_code != DFS_OK:
+    if envelope_code is not None and envelope_code not in DFS_SUCCESS_CODES:
         return False, f"dataforseo envelope {envelope_code}: {data.get('status_message')}"
-
-    tasks_error = data.get("tasks_error")
-    if isinstance(tasks_error, int) and tasks_error > 0:
-        return False, f"dataforseo reported {tasks_error} failed task(s)"
 
     tasks = data.get("tasks") or []
     if not tasks:
@@ -45,10 +64,23 @@ def check(data: Optional[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
         # echoes at least the task it ran.
         return False, "dataforseo returned no tasks"
 
-    for task in tasks:
-        code = (task or {}).get("status_code")
-        if code is not None and code != DFS_OK:
-            return False, f"dataforseo task {code}: {(task or {}).get('status_message')}"
+    # The PER-TASK message first, because it is the only diagnostic in the response.
+    #
+    # `tasks_error` used to be checked ahead of this loop and returned a bare count —
+    # "dataforseo reported 1 failed task(s)". That is the count of a thing whose
+    # description was sitting one field away, and it made every DataForSEO failure read
+    # identically: eleven tools in the 2026-08-26 sweep returned that exact sentence, and
+    # not one of them said what had actually gone wrong. The count survives below, but only
+    # when no task carries a reason of its own.
+    task_reason = _task_failure(tasks)
+    if task_reason:
+        return False, task_reason
+
+    tasks_error = data.get("tasks_error")
+    if isinstance(tasks_error, int) and tasks_error > 0:
+        return False, (
+            f"dataforseo reported {tasks_error} failed task(s) and gave no per-task reason"
+        )
 
     return True, None
 
