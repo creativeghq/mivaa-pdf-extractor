@@ -101,6 +101,71 @@ def test_every_bell_send_is_given_a_path_not_a_url():
         )
 
 
+def test_the_seeded_prompt_never_contains_an_internal_identifier():
+    """A `?q=` seed is rendered by AgentHub as the USER'S OWN message.
+
+    The fallback used to seed `Show me today's findings for tracked_job_id <uuid>`, so clicking
+    the digest showed the owner a raw uuid attributed to themselves — and spent a whole agent turn
+    re-fetching findings the digest already had in hand. Name the search the way its owner named
+    it, or (better, and what the code now does) link to the conversation the findings were posted
+    into.
+    """
+    src = _SERVICE.read_text(encoding="utf-8")
+    fn = _func(_tree(), "_build_action_path")
+    # CODE only. The docstring names the old prompt on purpose — recording the defect is not
+    # committing it, and a guard that cannot tell those apart makes the record unwritable.
+    stmts = fn.body[1:] if (fn.body and isinstance(fn.body[0], ast.Expr)
+                            and isinstance(fn.body[0].value, ast.Constant)
+                            and isinstance(fn.body[0].value.value, str)) else fn.body
+    body = "\n".join(ast.get_source_segment(src, s) or "" for s in stmts)
+    assert "tracked_job_id" not in body, (
+        "_build_action_path() puts `tracked_job_id` into text the user reads. Use the search's "
+        "label."
+    )
+    assert "label" in body, "_build_action_path()'s fallback should name the search by its label"
+    # And no id is interpolated into the seed by any other route.
+    for node in ast.walk(fn):
+        if isinstance(node, ast.JoinedStr):
+            rendered = ast.get_source_segment(src, node) or ""
+            assert "_id" not in rendered, f"an identifier is being formatted into a seed: {rendered}"
+
+
+def test_the_digest_opens_a_conversation_rather_than_skipping_the_chat_post():
+    """`source_conversation_id` NULL meant the findings were posted NOWHERE a person looks.
+
+    It is set only when the search was created from a chat turn that already had a conversation.
+    Everything else left it NULL, and NULL made `_dispatch_for_user` `continue` past
+    `_post_findings_to_chat` — so the product of the whole feature never reached a chat, and the
+    bell fell back to a seeded prompt. Measured 2026-08-26: 1 of 1 tracked_jobs had it NULL.
+    """
+    tree = _tree()
+    ensure = _func(tree, "_ensure_digest_conversation")
+    src = _SERVICE.read_text(encoding="utf-8")
+    ensure_src = ast.get_source_segment(src, ensure) or ""
+    assert "agent_chat_conversations" in ensure_src, "it must actually create the conversation"
+    assert "source_conversation_id" in ensure_src, "and stamp it back, so every digest lands in the same thread"
+
+    # Both dispatch paths resolve it before building the link.
+    #
+    # The CALL, via the AST — not the NAME in the text. The first version of this checked
+    # `"_ensure_digest_conversation" in <function source>` and passed with the call deleted,
+    # because a comment two lines further down mentions the helper by name. Same failure as the
+    # OrderLinkPicker guard in docs/prevention-coverage.md: something else in the file answered
+    # on the call site's behalf.
+    for fname in ("_dispatch_for_user", "dispatch_burst_if_warranted"):
+        fn_node = _func(tree, fname)
+        calls = [
+            n for n in ast.walk(fn_node)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "_ensure_digest_conversation"
+        ]
+        assert calls, (
+            f"{fname}() builds the notification link without CALLING _ensure_digest_conversation "
+            "— the link will point at a seeded prompt instead of at the findings"
+        )
+
+
 def test_the_email_still_gets_the_absolute_url():
     """The other half: an email CTA must NOT become a bare path, which resolves nowhere in a mail client."""
     tree = _tree()

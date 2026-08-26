@@ -202,9 +202,13 @@ class JobDigestDispatcher:
         title = self._build_title(sections, total_listings)
         body_html = self._build_body_html(sections, user_profile)
         body_text = self._build_body_text(sections)
-        # Deep-link to the conversation when at least one tracked_job has one set
+        # Every section reports into a conversation — opened here on the first digest if the
+        # search never had one. Done BEFORE the bell so the link points at the thread the
+        # findings are about to be posted into, not at a prompt asking for them.
+        for s in sections:
+            await self._ensure_digest_conversation(s["tracked_job"])
         first_convo = next((s["tracked_job"].get("source_conversation_id") for s in sections if s["tracked_job"].get("source_conversation_id")), None)
-        action_path = self._build_action_path(sections[0]["tracked_job"]["id"], conversation_id=first_convo)
+        action_path = self._build_action_path(sections[0]["tracked_job"], conversation_id=first_convo)
         action_url = self._absolute(action_path)   # email CTA; the bell gets the path
 
         # Channels: union of all tracked_jobs' alert_channels
@@ -227,10 +231,11 @@ class JobDigestDispatcher:
             ok = await self._send_bell(user_id, title=title, body=body_text[:300], action_url=action_path, payload=bell_payload)
             (channels_attempted if ok else channels_skipped).append("bell")
 
-        # 1b. Chat post into the original conversation (v0.2) — primary user-facing surface.
-        # Each tracked_job that has a source_conversation_id gets its own assistant
-        # message inserted into that thread. The chunk metadata is rendered as a
-        # rich card by AgentHub on conversation reload.
+        # 1b. Chat post into the search's conversation (v0.2) — primary user-facing surface.
+        # Each tracked_job gets its own assistant message inserted into that thread. The chunk
+        # metadata is rendered as a rich card by AgentHub on conversation reload. `continue` here
+        # used to be the normal path rather than the exceptional one — see
+        # `_ensure_digest_conversation`, which is why the conversation is resolved above.
         chat_posted_count = 0
         for s in sections:
             tj = s["tracked_job"]
@@ -494,12 +499,19 @@ class JobDigestDispatcher:
         except Exception:
             return []
 
-    def _build_action_path(self, tracked_job_id: str, *, conversation_id: Optional[str] = None) -> str:
+    def _build_action_path(self, tracked_job: Dict[str, Any], *, conversation_id: Optional[str] = None) -> str:
         """The in-app destination, as a PATH.
 
-        v0.2: deep-link to the conversation where the user set up the search. Falls back to a
-        seeded agent-hub prompt if the tracked_job has no source_conversation_id (e.g. created
-        via direct API call rather than the KAI agent).
+        Deep-link to the conversation this search reports into — the findings card is already
+        sitting there, posted by `_post_findings_to_chat`, so the click opens the answer rather
+        than asking for it.
+
+        The fallback runs only when a conversation could not be opened at all, and it names the
+        search the way the OWNER named it. It used to seed
+        `Show me today's findings for tracked_job_id ff62d59f-b8b9-4d70-9c4a-0a13359b7788`, which
+        AgentHub renders as the user's own message: a raw uuid in the chat, addressed to an agent
+        that then has to spend a whole turn re-fetching findings the digest had already computed.
+        An internal identifier is never a thing to show someone.
 
         This is what goes on the bell notification, and it must NOT be absolute. The bell hands
         `user_notifications.action_url` to react-router's `navigate()`, which reads ANY string as
@@ -509,10 +521,55 @@ class JobDigestDispatcher:
         """
         if conversation_id:
             return "/agent-hub?" + urlencode({"agent": "kai", "conversation": conversation_id})
+        label = (tracked_job.get("label") or "").strip() or "my job search"
         return "/agent-hub?" + urlencode({
             "agent": "kai",
-            "q": f"Show me today's findings for tracked_job_id {tracked_job_id}",
+            "q": f"Show me today's job findings for “{label}”",
         })
+
+    async def _ensure_digest_conversation(self, tracked_job: Dict[str, Any]) -> Optional[str]:
+        """The conversation this tracked search reports into, opening one the first time.
+
+        `source_conversation_id` is set by `track_job_search` only when the search was created
+        from a KAI chat turn that already had a conversation. Everything else — the direct API
+        route, a search created before that wiring existed — left it NULL, and NULL meant the
+        daily digest skipped `_post_findings_to_chat` entirely. So the findings, which are the
+        product, were never posted anywhere a person looks; the bell fell back to a seeded prompt;
+        and the email was the only real delivery. Measured 2026-08-26: 1 of 1 tracked_jobs had it
+        NULL, so that was 100% of them.
+
+        Opening one here is the same repair as `ensureResultConversation` on the background-task
+        dispatcher: a feature that promises to report into a chat must HAVE a chat. Stamped back
+        onto the row so every later digest lands in the same thread and it reads as one running
+        conversation about that search, not a new one each morning.
+
+        Returns None if it cannot be created — the digest still sends by bell and email.
+        """
+        existing = tracked_job.get("source_conversation_id")
+        if existing:
+            return existing
+        user_id = tracked_job.get("user_id")
+        if not user_id:
+            return None
+        label = (tracked_job.get("label") or "").strip() or "Job search"
+        try:
+            res = (
+                self.sb.table("agent_chat_conversations")
+                .insert({"user_id": user_id, "agent_id": "kai", "title": f"Job search — {label}"})
+                .execute()
+            )
+            convo_id = ((res.data or [{}])[0] or {}).get("id")
+            if not convo_id:
+                return None
+            self.sb.table("tracked_jobs").update(
+                {"source_conversation_id": convo_id}
+            ).eq("id", tracked_job["id"]).execute()
+            # Keep the in-memory copy in step so the same dispatch does not open a second one.
+            tracked_job["source_conversation_id"] = convo_id
+            return convo_id
+        except Exception as e:
+            logger.warning(f"job-digest: could not open a conversation for tracked_job {tracked_job.get('id')}: {e}")
+            return None
 
     def _absolute(self, path: str) -> str:
         """Same destination for a recipient who is not in the app — an email CTA.
@@ -608,9 +665,12 @@ class JobDigestDispatcher:
         body_text = "Hot batch just landed:\n" + "\n".join(
             f"• {l.get('title') or '(untitled)'} — {l.get('company') or ''}" for l in listings[:5]
         )
+        # Same as the digest: resolve the conversation FIRST, so the bell opens the thread the
+        # findings are posted into instead of a prompt asking for them.
+        burst_convo = await self._ensure_digest_conversation(tj)
         # Path, not URL: the burst reaches the user through the bell and the chat thread, and
         # both are in-app. `_absolute()` is only for an email CTA, and this path sends no email.
-        action_path = self._build_action_path(tracked_job_id, conversation_id=tj.get("source_conversation_id"))
+        action_path = self._build_action_path(tj, conversation_id=burst_convo)
         channels = set(tj.get("alert_channels") or ["bell", "email"])
         channels_attempted: List[str] = []
         channels_skipped: List[str] = []
