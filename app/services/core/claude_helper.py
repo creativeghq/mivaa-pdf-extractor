@@ -298,9 +298,18 @@ async def _log_failed_claude_call_async(
             # Unknown, not zero-cost. The row exists to record that the call
             # happened and failed; cost attribution for a raised call is not
             # recoverable client-side.
+            #
+            # The comment above was already right and the DATA did not say it (#19
+            # M6-5). A timeout or 5xx AFTER Anthropic accepted and billed the request
+            # was written as cost=0.0 with nothing marking it, so the spend was
+            # permanently indistinguishable from a free no-op — the silent-zero shape
+            # applied to the failure ledger instead of the success one.
+            # `unbilled_reason` is the column that already exists for exactly this:
+            # NULL means billed, anything else names why it was not.
             input_tokens=0,
             output_tokens=0,
             cost=0.0,
+            unbilled_reason="billable_attempt_failed",
             latency_ms=latency_ms,
             confidence_score=0.0,
             confidence_breakdown=_FAILED_CONFIDENCE_BREAKDOWN,
@@ -328,9 +337,12 @@ def _log_failed_claude_call_sync(
         coro = AICallLogger().log_ai_call(
             task=task,
             model=model,
+            # See the async twin: cost is UNKNOWN here, not zero, and the marker is
+            # what makes that recoverable (#19 M6-5).
             input_tokens=0,
             output_tokens=0,
             cost=0.0,
+            unbilled_reason="billable_attempt_failed",
             latency_ms=latency_ms,
             confidence_score=0.0,
             confidence_breakdown=_FAILED_CONFIDENCE_BREAKDOWN,

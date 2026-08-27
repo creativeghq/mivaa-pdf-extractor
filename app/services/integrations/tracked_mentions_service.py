@@ -522,6 +522,7 @@ class TrackedMentionsService:
             hits_count=len(rows_to_insert), sentiment_avg=sentiment_avg,
             top_outlets=[{"domain": d, "count": c} for d, c in top_outlets],
             errors=result.errors,
+            history_persisted=history_persisted or not rows_to_insert,
         )
         try:
             self.supabase.client.rpc("update_tracked_mention_cadence", {
@@ -733,21 +734,50 @@ class TrackedMentionsService:
         sentiment_avg: Optional[float],
         top_outlets: List[Dict[str, Any]],
         errors: Dict[str, str],
+        history_persisted: bool = True,
     ) -> None:
+        """Update the gold `current_*` cache for one tracked mention.
+
+        `history_persisted` is the whole point (#19 M6-3/M6-4). `sentiment_avg` and
+        `top_outlets` are computed from the IN-MEMORY rows, so a chunked insert that
+        failed part-way through would otherwise stamp a confident gold summary of silver
+        rows nobody can read back — and the counts beside them come from `_count_window`,
+        which reads the database, so the row would disagree with itself.
+
+        On a failed persist the derived values are left ALONE rather than overwritten:
+        the previous snapshot is still the best answer anyone has, and the failure is
+        recorded where an operator can find it instead of being papered over.
+        """
         try:
             cur = self.get(tracked_mention_id) or {}
             total = (cur.get("total_credits_used") or 0) + (credits or 0)
-            self.supabase.client.table("tracked_mentions").update({
+            payload: Dict[str, Any] = {
                 "last_refreshed_at": datetime.now(timezone.utc).isoformat(),
                 "last_refresh_credits_used": credits,
                 "total_credits_used": total,
+                # These two are derived by the DB, not by us, so they are always safe.
                 "current_mention_count_7d": self._count_window(tracked_mention_id, days=7),
                 "current_mention_count_30d": self._count_window(tracked_mention_id, days=30),
-                "current_sentiment_avg": sentiment_avg,
-                "current_top_outlets": top_outlets,
-                "current_metadata": {"errors": errors, "last_run_id": run_id},
-                "current_snapshot_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", tracked_mention_id).execute()
+                "current_metadata": {
+                    "errors": errors,
+                    "last_run_id": run_id,
+                    **({} if history_persisted else {"history_persist_failed": True}),
+                },
+            }
+            if history_persisted:
+                payload["current_sentiment_avg"] = sentiment_avg
+                payload["current_top_outlets"] = top_outlets
+                payload["current_snapshot_at"] = datetime.now(timezone.utc).isoformat()
+            else:
+                logger.error(
+                    "stamp_refresh: mention_history did not persist for %s — leaving the "
+                    "current_* summary at its last good value rather than stamping one "
+                    "derived from rows that were never written",
+                    tracked_mention_id,
+                )
+            self.supabase.client.table("tracked_mentions").update(payload).eq(
+                "id", tracked_mention_id
+            ).execute()
         except Exception as e:
             logger.warning(f"stamp_refresh failed: {e}")
 

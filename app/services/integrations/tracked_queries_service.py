@@ -876,6 +876,10 @@ class TrackedQueriesService:
         # can show it under a yellow banner without it polluting medians.
         refresh_run_id = str(uuid4())
         rows: List[Dict[str, Any]] = []
+        # Bound HERE, not inside the `if hits:` branch below: a run that found nothing
+        # never enters that branch, and reading an unbound local downstream is the same
+        # AttributeError-shaped failure this audit keeps finding, one keyword over.
+        persist_error: Optional[str] = None
         if hits:
             dispatcher = get_price_alert_dispatcher()
             for h in hits:
@@ -918,9 +922,22 @@ class TrackedQueriesService:
                     "rolling_median_at_check": rolling_med,
                 })
             try:
-                self.supabase.client.table("tracked_query_price_history").insert(rows).execute()
+                # Use what the DB actually COMMITTED, not what we meant to send
+                # (#19 M6-3): the gold `current_*` cache below is a summary of the
+                # silver rows, so summarising the in-memory list would let a partial
+                # write produce a confident cache of rows nobody can read back.
+                insert_resp = (
+                    self.supabase.client.table("tracked_query_price_history")
+                    .insert(rows)
+                    .execute()
+                )
+                committed = insert_resp.data or []
+                if committed:
+                    rows = committed
+                persist_error = None
             except Exception as e:
-                logger.warning(f"Failed to insert tracked_query_price_history rows: {e}")
+                logger.error(f"Failed to insert tracked_query_price_history rows: {e}")
+                persist_error = f"history insert failed: {e}"
                 rows = []  # don't run alert detection on failed insert
 
         # Alert detection runs against the just-persisted rows. Module-gated +
@@ -951,23 +968,39 @@ class TrackedQueriesService:
             "last_refreshed_at": now_iso,
             "last_refresh_credits_used": credits_used,
             "total_credits_used": prev_total + credits_used,
-            "last_error": None,
             "updated_at": now_iso,
-            "first_refresh_verified": True,
-            "current_price": cheapest.get("price") if cheapest else None,
-            "current_currency": cheapest.get("currency") if cheapest else None,
-            "current_availability": cheapest.get("availability") if cheapest else None,
-            "current_original_price": cheapest.get("original_price") if cheapest else None,
-            "current_price_verified": bool(cheapest.get("verified")) if cheapest else False,
-            "current_metadata": {
-                "retailer_name": cheapest.get("retailer_name"),
-                "product_url": cheapest.get("product_url"),
-                "product_title": cheapest.get("product_title"),
-                "source": cheapest.get("source"),
-                "rolling_median": cheapest.get("rolling_median_at_check"),
-            } if cheapest else None,
-            "current_price_updated_at": now_iso if cheapest else None,
+            # A persist failure records itself and leaves the previous error alone
+            # (#19 M6-4). The old form wrote `last_error: None` and
+            # `first_refresh_verified: True` unconditionally, so a DB outage CLEARED
+            # the previous error, marked the row verified, and reported success —
+            # after which cron would not retry and the dashboard showed a confident
+            # empty. Advancing state on a failure is worse than the failure.
+            "last_error": persist_error,
         }
+        if persist_error is None:
+            update_payload["first_refresh_verified"] = True
+
+        # The gold cache is only rewritten when this run actually produced something.
+        # `_select_cheapest([])` is None, and the old form turned that into a full set
+        # of NULLs — so one empty (or failed) refresh wiped a price that was still the
+        # best answer anyone had. Leaving the columns out keeps the last good value,
+        # which is what `_refresh_url_only`'s own comment already promised.
+        if cheapest:
+            update_payload.update({
+                "current_price": cheapest.get("price"),
+                "current_currency": cheapest.get("currency"),
+                "current_availability": cheapest.get("availability"),
+                "current_original_price": cheapest.get("original_price"),
+                "current_price_verified": bool(cheapest.get("verified")),
+                "current_metadata": {
+                    "retailer_name": cheapest.get("retailer_name"),
+                    "product_url": cheapest.get("product_url"),
+                    "product_title": cheapest.get("product_title"),
+                    "source": cheapest.get("source"),
+                    "rolling_median": cheapest.get("rolling_median_at_check"),
+                },
+                "current_price_updated_at": now_iso,
+            })
         self.supabase.client.table("tracked_queries").update(update_payload).eq("id", tracking_id).execute()
 
         # Volatility-based cadence (PR-C #3). Compute the max % move across
@@ -999,7 +1032,11 @@ class TrackedQueriesService:
             logger.debug(f"brand_retailer_index upsert failed (non-fatal): {e}")
 
         return {
-            "status": "refreshed",
+            # `refreshed` is a claim that the run is durably readable. When the history
+            # insert failed it is not, so the caller — and the cron that decides whether
+            # to retry — must be told (#19 M6-4).
+            "status": "refreshed" if persist_error is None else "error",
+            "error": persist_error,
             "refresh_run_id": refresh_run_id,
             "credits_used": credits_used,
             "latency_ms": latency_ms,
