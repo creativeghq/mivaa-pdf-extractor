@@ -7,9 +7,7 @@ frontend can crop and send each crop to the existing RAG image search
 endpoint.
 """
 
-import json
 import logging
-import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -91,53 +89,92 @@ class SegmentationService:
             pass
         return "image/jpeg"  # safe fallback
 
-    async def _segment_with_anthropic(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
-        """Call Anthropic claude-opus-4-8 for segmentation."""
-        import httpx
-        media_type = self._detect_media_type(image_base64)
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": self.anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-opus-4-8",
-                    "max_tokens": 16384,
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": image_base64,
-                                    },
+    #: Forced-tool schema (#32 + #33 item 2). This call was BOTH a raw Anthropic POST
+    #: (so an OPUS segmentation logged no cost anywhere) and a markdown-fence stripper
+    #: with a truncation-recovery parser underneath it. The recovery code is the tell:
+    #: it exists because the model ran out of max_tokens mid-array and someone had to
+    #: rebuild the JSON by walking brace depth. A forced tool removes the need to guess.
+    #:
+    #: Only `bbox` is required per zone — `_validate_zones` fills every other default,
+    #: and requiring them would push the model into inventing labels for a zone it is
+    #: unsure about.
+    SEGMENTATION_TOOL = {
+        "name": "emit_material_zones",
+        "description": "Return the material zones detected in this image.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "zones": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "bbox": {
+                                "type": "object",
+                                "properties": {
+                                    "x": {"type": "number"}, "y": {"type": "number"},
+                                    "w": {"type": "number"}, "h": {"type": "number"},
                                 },
-                                {"type": "text", "text": prompt},
-                            ],
-                        }
-                    ],
+                                "required": ["x", "y", "w", "h"],
+                            },
+                            "label": {"type": "string"},
+                            "material_type": {"type": "string"},
+                            "finish": {"type": "string"},
+                            "dominant_color": {"type": "string"},
+                            "zone_intent": {
+                                "type": "string",
+                                "enum": ["surface", "full_object", "upholstery", "sub_element"],
+                            },
+                            "search_query": {"type": "string"},
+                            "confidence": {"type": "number"},
+                        },
+                        "required": ["bbox"],
+                    },
                 },
+            },
+            "required": ["zones"],
+        },
+    }
+
+    async def _segment_with_anthropic(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
+        """Call Anthropic claude-opus-4-8 for segmentation, schema-locked via tool_use."""
+        from app.services.core.claude_tool_call import call_with_tool, ToolCallNotReturned
+
+        media_type = self._detect_media_type(image_base64)
+        try:
+            result = await call_with_tool(
+                task="image_segmentation",
+                model="claude-opus-4-8",
+                max_tokens=16384,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": image_base64,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }],
+                tool=self.SEGMENTATION_TOOL,
             )
-            resp.raise_for_status()
-            content = resp.json()["content"][0]["text"].strip()
-            return self._parse_zones(content)
-
-    def _parse_zones(self, content: str) -> List[Dict[str, Any]]:
-        """Extract and validate zone list from model response."""
-        # Strip markdown code fences if present
-        content = re.sub(r"```(?:json)?\s*", "", content).strip().rstrip("```").strip()
-
-        zones = self._extract_json_array(content)
-        if zones is None:
-            logger.warning(f"No JSON array recovered from response (len={len(content)}): {content[:300]}…{content[-200:] if len(content) > 500 else ''}")
+        except ToolCallNotReturned as e:
+            logger.warning(f"segmentation returned no usable tool block: {e}")
             return []
+        return self._validate_zones(result.data.get("zones") or [])
 
+    def _validate_zones(self, zones: List[Any]) -> List[Dict[str, Any]]:
+        """Clamp and default the zones a forced tool call returned.
+
+        This is what survives of `_parse_zones`. The fence-stripping and the
+        brace-walking truncation recovery are gone with the free-form contract that
+        needed them — but the clamping stays: a schema can say `number`, it cannot say
+        "between 0 and 1", and a bbox outside the image is still a bug.
+        """
         validated = []
         for i, zone in enumerate(zones):
             if not isinstance(zone, dict):
@@ -167,70 +204,6 @@ class SegmentationService:
             validated.append(zone)
 
         return validated
-
-    @staticmethod
-    def _extract_json_array(content: str) -> Optional[List[Any]]:
-        """Parse a JSON array from model output, recovering from common truncations.
-
-        Recovery is deliberately limited to the most common failure mode: the model
-        ran out of max_tokens mid-object, so the response opens with ``[`` but never
-        closes. We rebuild the array by walking the string and tracking brace depth
-        outside of strings, taking everything up to the last complete top-level
-        ``}`` and re-wrapping with ``]``. Returns None only if no usable prefix exists.
-        """
-        if not content:
-            return None
-        start = content.find("[")
-        if start < 0:
-            return None
-
-        # Fast path: well-formed array.
-        match = re.search(r"\[.*\]", content[start:], re.DOTALL)
-        if match:
-            try:
-                parsed = json.loads(match.group())
-                if isinstance(parsed, list):
-                    return parsed
-            except json.JSONDecodeError:
-                pass  # fall through to recovery
-
-        # Recovery path: scan for the last complete top-level object in the array.
-        depth = 0
-        in_string = False
-        escape = False
-        last_complete = -1
-        for i in range(start + 1, len(content)):
-            ch = content[i]
-            if escape:
-                escape = False
-                continue
-            if ch == "\\" and in_string:
-                escape = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    last_complete = i
-
-        if last_complete < 0:
-            return None
-
-        recovered = content[start:last_complete + 1] + "]"
-        try:
-            parsed = json.loads(recovered)
-            if isinstance(parsed, list):
-                logger.info(f"Recovered truncated JSON array: kept {len(parsed)} complete objects (response len={len(content)})")
-                return parsed
-        except json.JSONDecodeError as e:
-            logger.warning(f"JSON recovery failed: {e}")
-        return None
 
 
 _instance: Optional[SegmentationService] = None
