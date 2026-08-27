@@ -85,14 +85,21 @@ async def authenticate_api_key(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Empty API key")
 
     sb = get_supabase_client().client  # sync client — this runs in request hot path
-    row = (
-        sb.table("api_keys")
-        .select("id, user_id, is_active, expires_at, allowed_endpoints, rate_limit_override")
-        .eq("api_key", token)
-        .maybe_single()
-        .execute()
-    )
-    key = (row.data if row else None) or {}
+
+    # One verifier, in SQL (#390 on the platform repo). `api_keys.api_key` used to hold
+    # the credential in directly usable form and this compared against it in plaintext.
+    # It is hashed now, and the comparison lives in `verify_api_key` rather than being
+    # reimplemented here, in four edge functions and in the browser — five
+    # implementations of "hash it the same way" is five chances to disagree about
+    # encoding, and disagreeing here is a total auth failure, or worse a silent mismatch
+    # on one runtime only.
+    #
+    # The RPC returns metadata only. Everything below — is_active, expires_at,
+    # allowed_endpoints — is still enforced here: it answers "which key is this", not
+    # "may it do that".
+    res = sb.rpc("verify_api_key", {"p_key": token}).execute()
+    rows = res.data if res else None
+    key = (rows[0] if isinstance(rows, list) and rows else rows) or {}
 
     if not key or not key.get("is_active"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key")
