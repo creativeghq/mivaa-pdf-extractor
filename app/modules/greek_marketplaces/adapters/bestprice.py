@@ -41,39 +41,17 @@ from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
 from app.services.integrations.product_identity_service import QueryFacets
 from app.utils.price_parsing import parse_price
+from app.services.utilities.prompt_registry import load_prompt
 
+# Prompts come from the DATABASE (#33 item 3). A marketplace changes its markup
+# without notice, which is exactly the case the no-deploy rule exists for — and
+# `load_prompt` has no fallback by design, so a missing row stops the work cold
+# rather than silently extracting with a stale constant.
 logger = logging.getLogger(__name__)
 
 SEARCH_URL_TEMPLATE = "https://www.bestprice.gr/search?q={query}&o=2"
 MODULE_SLUG = "greek-marketplaces"
 SOURCE_TAG = "bestprice"
-
-EXTRACTION_PROMPT = (
-    "You are reading a Bestprice.gr search results page sorted by price "
-    "ascending (the o=2 query parameter). Extract the FIRST organic product "
-    "listing — since results are sorted by price asc, this is the cheapest "
-    "matching offer. **Return `found`=false unless the visible product name "
-    "is clearly the same product as the query.** If the page shows 'no "
-    "results' / 'δεν βρέθηκαν αποτελέσματα' followed by suggested "
-    "products, return `found`=false. Ignore banner ads, sponsored slots, "
-    "and 'ίσως σας ενδιαφέρει' (you might like) blocks — those are not "
-    "matches. Return the absolute product detail URL on bestprice.gr "
-    "(not a redirect or search URL). Include the visible 'was/now' prices "
-    "as strings — do not parse numerics."
-)
-
-PRODUCT_PAGE_PROMPT = (
-    "You are reading a Bestprice.gr product detail page (URL like "
-    "/to/<id>/<slug>.html or /item/<id>/<slug>.html). Bestprice lists every "
-    "shop selling this exact SKU in a 'Καταστήματα' / 'Shops' section. "
-    "Extract EVERY visible shop row. For each row return: shop name, the "
-    "shop's product URL on its OWN domain (Bestprice's 'Επίσκεψη "
-    "καταστήματος' / 'Visit' button — that target URL, NOT a bestprice.gr "
-    "URL), the visible price including VAT and currency symbol, and the "
-    "availability label as shown. Return found=true and the shops list in "
-    "the page's natural order (Bestprice sorts by price ascending). If no "
-    "shop rows are visible, return found=false."
-)
 
 
 class BestpriceShopOffer(BaseModel):
@@ -123,7 +101,9 @@ class BestpriceAdapter:
         result = await self.firecrawl.scrape(
             url=url, extraction_model=MarketplaceProduct,
             user_id=user_id, workspace_id=workspace_id,
-            extraction_prompt=EXTRACTION_PROMPT,
+            extraction_prompt=await load_prompt(
+                "extraction", "marketplace_bestprice_search", stage="price_monitoring"
+            ),
             use_javascript_render=False, only_main_content=True,
             module_slug=MODULE_SLUG, source_tag=SOURCE_TAG,
         )
@@ -202,7 +182,9 @@ class BestpriceAdapter:
                 url=product_url,
                 extraction_model=BestpriceProductPageResult,
                 user_id=user_id, workspace_id=workspace_id,
-                extraction_prompt=PRODUCT_PAGE_PROMPT,
+                extraction_prompt=await load_prompt(
+                "extraction", "marketplace_bestprice_product_page", stage="price_monitoring"
+            ),
                 use_javascript_render=False, only_main_content=True,
                 module_slug=MODULE_SLUG, source_tag="bestprice_product_page",
             )

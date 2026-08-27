@@ -27,7 +27,12 @@ from pydantic import BaseModel, Field
 
 from app.services.integrations.firecrawl_client import get_firecrawl_client
 from app.services.integrations.perplexity_price_search_service import PriceHit
+from app.services.utilities.prompt_registry import load_prompt
 
+# Prompts come from the DATABASE (#33 item 3). A marketplace changes its markup
+# without notice, which is exactly the case the no-deploy rule exists for — and
+# `load_prompt` has no fallback by design, so a missing row stops the work cold
+# rather than silently extracting with a stale constant.
 logger = logging.getLogger(__name__)
 
 
@@ -45,19 +50,6 @@ class IdealoSearchResult(BaseModel):
         ),
     )
 
-
-_EXTRACTION_PROMPT = (
-    "From the rendered Idealo search results page, return up to 5 product "
-    "listings sorted by price ascending. For each listing extract:\n"
-    "1. product_name — exactly as shown on the listing card.\n"
-    "2. retailer_name — the merchant offering this price, NOT 'Idealo'. "
-    "   Idealo is the aggregator; the merchant is what we actually want.\n"
-    "3. price — current numeric price (no currency symbol).\n"
-    "4. currency — ISO 4217 (EUR / GBP).\n"
-    "5. product_url — direct merchant URL if visible on the card, otherwise "
-    "   the Idealo product detail URL.\n"
-    "Skip ad slots, sponsored placements, and listings without a visible price."
-)
 
 
 async def scrape_idealo_search(
@@ -80,7 +72,9 @@ async def scrape_idealo_search(
             extraction_model=IdealoSearchResult,
             user_id=user_id,
             workspace_id=workspace_id,
-            extraction_prompt=_EXTRACTION_PROMPT,
+            extraction_prompt=await load_prompt(
+                "extraction", "marketplace_idealo_search", stage="price_monitoring"
+            ),
             use_javascript_render=True,  # Idealo result rendering is JS-driven
         )
     except Exception as e:

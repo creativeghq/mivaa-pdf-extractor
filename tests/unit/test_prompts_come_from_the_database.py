@@ -39,10 +39,22 @@ _LLM_MARKERS = (
     # everyone else this platform actually calls
     "api.perplexity.ai", "api.openai.com", "api.voyageai.com",
     "api.replicate.com", "generativelanguage.googleapis.com",
+    # Firecrawl's JSON format runs an LLM extraction on the page, so a
+    # `.scrape(..., extraction_prompt=...)` IS a model call — the prompt is just
+    # executed on someone else's infrastructure. Five marketplace adapters and the
+    # price verifier reach a model ONLY this way and carried no provider string at
+    # all, so the sweep skipped their files entirely (#33 item 3).
+    "firecrawl", "FirecrawlClient", "get_firecrawl_client",
 )
 
 #: Argument names and payload keys that hand text to a model.
-_MODEL_ARGS = frozenset({"messages", "system", "prompt", "input", "contents"})
+_MODEL_ARGS = frozenset({
+    "messages", "system", "prompt", "input", "contents",
+    # Firecrawl's extraction prompt. Same contract as `prompt`: free text handed to a
+    # model, and a site that changes its markup is exactly when it needs editing
+    # without a deploy.
+    "extraction_prompt",
+})
 
 _MIN_PROMPT_CHARS = 220
 

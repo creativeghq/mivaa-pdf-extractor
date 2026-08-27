@@ -28,7 +28,12 @@ from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
 from app.services.integrations.product_identity_service import QueryFacets
 from app.utils.price_parsing import parse_price
+from app.services.utilities.prompt_registry import load_prompt
 
+# Prompts come from the DATABASE (#33 item 3). A marketplace changes its markup
+# without notice, which is exactly the case the no-deploy rule exists for — and
+# `load_prompt` has no fallback by design, so a missing row stops the work cold
+# rather than silently extracting with a stale constant.
 logger = logging.getLogger(__name__)
 
 SHOPFLIX_BASE_URL = "https://shopflix.gr/search"
@@ -49,19 +54,6 @@ def _build_search_url(query: str) -> str:
         f"&k={encoded}"
     )
     return f"{SHOPFLIX_BASE_URL}?{params}"
-
-EXTRACTION_PROMPT = (
-    "You are reading a Shopflix.gr search results page sorted by price "
-    "ascending (sortBy=price_asc). Extract the FIRST organic product "
-    "listing — since results are sorted by price asc, this is the "
-    "cheapest matching offer. Return `found`=false unless the visible "
-    "product name plausibly matches the query (same brand/model). If "
-    "the page shows 'no results' or only suggested/promotional products, "
-    "return `found`=false. Return the absolute product detail URL on "
-    "shopflix.gr. Use `retailer_name` for the marketplace seller label "
-    "when shown; fall back to 'Shopflix.gr' otherwise. Keep prices as "
-    "strings with currency symbols intact."
-)
 
 
 class ShopflixAdapter:
@@ -95,7 +87,9 @@ class ShopflixAdapter:
             extraction_model=MarketplaceProduct,
             user_id=user_id,
             workspace_id=workspace_id,
-            extraction_prompt=EXTRACTION_PROMPT,
+            extraction_prompt=await load_prompt(
+                "extraction", "marketplace_shopflix_search", stage="price_monitoring"
+            ),
             use_javascript_render=True,
             only_main_content=True,
             module_slug=MODULE_SLUG,
@@ -108,7 +102,9 @@ class ShopflixAdapter:
                 extraction_model=MarketplaceProduct,
                 user_id=user_id,
                 workspace_id=workspace_id,
-                extraction_prompt=EXTRACTION_PROMPT,
+                extraction_prompt=await load_prompt(
+                "extraction", "marketplace_shopflix_search", stage="price_monitoring"
+            ),
                 use_javascript_render=True,
                 only_main_content=True,
                 module_slug=MODULE_SLUG,

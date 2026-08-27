@@ -44,7 +44,12 @@ from app.services.integrations.firecrawl_client import FirecrawlClient
 from app.services.integrations.perplexity_price_search_service import PriceHit
 from app.services.integrations.product_identity_service import QueryFacets
 from app.utils.price_parsing import parse_price
+from app.services.utilities.prompt_registry import load_prompt
 
+# Prompts come from the DATABASE (#33 item 3). A marketplace changes its markup
+# without notice, which is exactly the case the no-deploy rule exists for — and
+# `load_prompt` has no fallback by design, so a missing row stops the work cold
+# rather than silently extracting with a stale constant.
 logger = logging.getLogger(__name__)
 
 SEARCH_URL_TEMPLATE = (
@@ -52,32 +57,6 @@ SEARCH_URL_TEMPLATE = (
     "&order_by=pricevat&order_dir=asc"
 )
 MODULE_SLUG = "greek-marketplaces"
-
-EXTRACTION_PROMPT = (
-    "You are reading a Skroutz.gr search results page sorted by lowest "
-    "price (order_by=pricevat). Extract the FIRST matching product listing "
-    "— since results are sorted asc by price-with-VAT, this is the cheapest "
-    "available offer for the query. Return `found`=false if no products are "
-    "shown. For `product_url`, return the ABSOLUTE URL of the product detail "
-    "page on skroutz.gr (e.g. https://www.skroutz.gr/s/123/some-product.html). "
-    "If the page shows a direct merchant link on the first row (some product "
-    "cards expose the cheapest merchant inline), use it for "
-    "`cheapest_merchant_name` and `cheapest_merchant_url`; otherwise leave "
-    "those null. Keep prices as strings with currency symbols intact."
-)
-
-PRODUCT_PAGE_PROMPT = (
-    "You are reading a Skroutz.gr product detail page. Extract EVERY visible "
-    "merchant offer (the 'Καταστήματα' / shop list section). For each row "
-    "return: shop name, the DIRECT merchant URL on the shop's own domain "
-    "(NOT a skroutz.gr URL — Skroutz shows a 'Επίσκεψη καταστήματος' / "
-    "'Visit shop' button that links externally; that is the URL we want), "
-    "the visible price including VAT and currency symbol, and the "
-    "availability label as shown. Return found=true and the merchants list "
-    "in their natural order (Skroutz sorts by price asc by default). If no "
-    "merchant rows are visible (rare — happens on out-of-stock products), "
-    "return found=false with an empty merchants array."
-)
 
 
 class SkroutzSearchResult(BaseModel):
@@ -254,7 +233,9 @@ class SkroutzAdapter:
         result = await self.firecrawl.scrape(
             url=url, extraction_model=SkroutzSearchResult,
             user_id=user_id, workspace_id=workspace_id,
-            extraction_prompt=EXTRACTION_PROMPT,
+            extraction_prompt=await load_prompt(
+                "extraction", "marketplace_skroutz_search", stage="price_monitoring"
+            ),
             use_javascript_render=True, only_main_content=True,
             module_slug=MODULE_SLUG, source_tag="skroutz",
         )
@@ -263,7 +244,9 @@ class SkroutzAdapter:
             result = await self.firecrawl.scrape(
                 url=url, extraction_model=SkroutzSearchResult,
                 user_id=user_id, workspace_id=workspace_id,
-                extraction_prompt=EXTRACTION_PROMPT,
+                extraction_prompt=await load_prompt(
+                "extraction", "marketplace_skroutz_search", stage="price_monitoring"
+            ),
                 use_javascript_render=True, only_main_content=True,
                 module_slug=MODULE_SLUG, source_tag="skroutz",
             )
@@ -288,7 +271,9 @@ class SkroutzAdapter:
                 url=product_page_url,
                 extraction_model=SkroutzProductPageResult,
                 user_id=user_id, workspace_id=workspace_id,
-                extraction_prompt=PRODUCT_PAGE_PROMPT,
+                extraction_prompt=await load_prompt(
+                "extraction", "marketplace_skroutz_product_page", stage="price_monitoring"
+            ),
                 use_javascript_render=True, only_main_content=True,
                 module_slug=MODULE_SLUG, source_tag="skroutz_product_page",
             )

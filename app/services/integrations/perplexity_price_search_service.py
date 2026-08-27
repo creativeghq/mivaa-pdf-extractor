@@ -47,7 +47,10 @@ from app.services.integrations.dataforseo_merchant_service import (
 from app.services.integrations.firecrawl_client import get_firecrawl_client
 from app.models.extraction import PriceExtraction
 from app.utils.price_parsing import parse_price
-from app.services.utilities.prompt_registry import get_cached, prefetch, render
+# `load_prompt` alongside get_cached/prefetch: `verify_one` is async and is reached
+# from paths that do not run the prefetch above, where `get_cached` would raise for
+# a prompt nobody had loaded. Fetching on demand cannot hit that trap.
+from app.services.utilities.prompt_registry import get_cached, load_prompt, prefetch, render
 from app.services.integrations.product_identity_service import (
     get_product_identity_service,
     QueryFacets,
@@ -1223,14 +1226,12 @@ class PerplexityPriceSearchService:
                     extraction_model=PriceExtraction,
                     user_id=user_id,
                     workspace_id=workspace_id,
-                    extraction_prompt=(
-                        f"Extract the following from this {hit.retailer_name} product page:\n"
-                        "1. The current main product price (the NOW price if there's a promo, "
-                        "   not the related/bundle/strike-through).\n"
-                        "2. The on-page 'was' price if a promo is displayed.\n"
-                        "3. The product name exactly as shown in the main H1 or og:title.\n"
-                        "4. The breadcrumb trail (e.g. 'Home > Bath > Faucets > Basin Faucets').\n"
-                        "5. Any visible color/finish/size/material attributes — small dict, lowercase values."
+                    extraction_prompt=render(
+                        await load_prompt(
+                            "extraction", "price_verification_page",
+                            stage="price_monitoring",
+                        ),
+                        retailer_name=hit.retailer_name,
                     ),
                     use_javascript_render=False,
                     # Class #5: tag the Firecrawl call's ai_usage_logs row
