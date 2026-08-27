@@ -184,7 +184,11 @@ async def _call_anthropic_async(
     messages: List[Dict[str, Any]],
     max_tokens: int = 4096,
     temperature: Optional[float] = 0.0,
-    system: Optional[str] = None,
+    # Forwarded verbatim into the request payload, so this is str OR the block list
+    # form (`[{'type':'text','text':..., 'cache_control':...}]`). Two price-monitor
+    # call sites depend on the block form for prompt caching; narrowing this to str
+    # would be a type that lies about what the function accepts.
+    system: Optional[Any] = None,
     **extra: Any,
 ) -> ClaudeResponse:
     """Raw async httpx call to Anthropic Messages API.
@@ -220,7 +224,11 @@ def _call_anthropic_sync(
     messages: List[Dict[str, Any]],
     max_tokens: int = 4096,
     temperature: Optional[float] = 0.0,
-    system: Optional[str] = None,
+    # Forwarded verbatim into the request payload, so this is str OR the block list
+    # form (`[{'type':'text','text':..., 'cache_control':...}]`). Two price-monitor
+    # call sites depend on the block form for prompt caching; narrowing this to str
+    # would be a type that lies about what the function accepts.
+    system: Optional[Any] = None,
     **extra: Any,
 ) -> ClaudeResponse:
     """Sync httpx variant. Used from non-async code paths."""
@@ -370,7 +378,11 @@ async def tracked_claude_call_async(
     messages: List[Dict[str, Any]],
     max_tokens: int = 4096,
     temperature: float = 0.0,
-    system: Optional[str] = None,
+    # Forwarded verbatim into the request payload, so this is str OR the block list
+    # form (`[{'type':'text','text':..., 'cache_control':...}]`). Two price-monitor
+    # call sites depend on the block form for prompt caching; narrowing this to str
+    # would be a type that lies about what the function accepts.
+    system: Optional[Any] = None,
     job_id: Optional[str] = None,
     user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
@@ -450,7 +462,11 @@ def tracked_claude_call(
     messages: List[Dict[str, Any]],
     max_tokens: int = 4096,
     temperature: float = 0.0,
-    system: Optional[str] = None,
+    # Forwarded verbatim into the request payload, so this is str OR the block list
+    # form (`[{'type':'text','text':..., 'cache_control':...}]`). Two price-monitor
+    # call sites depend on the block form for prompt caching; narrowing this to str
+    # would be a type that lies about what the function accepts.
+    system: Optional[Any] = None,
     job_id: Optional[str] = None,
     user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,

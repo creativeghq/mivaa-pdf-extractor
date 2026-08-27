@@ -349,18 +349,21 @@ def facets_from_catalog(product_row: Optional[Dict[str, Any]]) -> Optional[Query
 # Anthropic Haiku client — query decomposition + batched classifier
 # ────────────────────────────────────────────────────────────────────────────
 
-_ANTHROPIC_BASE = "https://api.anthropic.com/v1/messages"
+def _response_to_body(response) -> dict:
+    """Shape a ClaudeResponse like the raw /v1/messages JSON this file already parses.
+
+    `_extract_json_content` reads `body["content"][i]["text"]`. Rewriting it to walk the
+    SDK-shaped object would touch the parser AND the two call sites in one change; this
+    keeps the parser untouched so the migration is only about WHERE the call goes.
+    """
+    return {
+        "content": [
+            {"type": getattr(b, "type", "text"), "text": getattr(b, "text", "")}
+            for b in (getattr(response, "content", None) or [])
+        ]
+    }
 _MODEL = "claude-haiku-4-5-20251001"
 _ANTHROPIC_VERSION = "2023-06-01"
-
-
-def _anthropic_headers() -> Dict[str, str]:
-    key = os.getenv("ANTHROPIC_API_KEY") or ""
-    return {
-        "x-api-key": key,
-        "anthropic-version": _ANTHROPIC_VERSION,
-        "content-type": "application/json",
-    }
 
 
 # Prompt: tool / price_monitor_facets (#347 phase 3P — was hardcoded here).
@@ -409,26 +412,24 @@ class ProductIdentityService:
             user_prompt_parts.append(f"Explicit manufacturer hint: {manufacturer_hint}")
         user_prompt = "\n".join(user_prompt_parts)
 
+        # Through the tracked helper, not a raw POST (#33 item 2). The `system` blocks
+        # with `cache_control` pass through verbatim, so prompt caching is preserved —
+        # dropping it would have made this migration cost money rather than save it.
         try:
-            async with httpx.AsyncClient(timeout=self._http_timeout) as client:
-                resp = await client.post(
-                    _ANTHROPIC_BASE,
-                    headers=_anthropic_headers(),
-                    json={
-                        "model": _MODEL,
-                        "max_tokens": 500,
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": await load_prompt("tool", "price_monitor_facets"),
-                                "cache_control": {"type": "ephemeral"},
-                            },
-                        ],
-                        "messages": [{"role": "user", "content": user_prompt}],
+            from app.services.core.claude_helper import tracked_claude_call_async
+            body = _response_to_body(await tracked_claude_call_async(
+                task="price_monitor_facets",
+                model=_MODEL,
+                max_tokens=500,
+                system=[
+                    {
+                        "type": "text",
+                        "text": await load_prompt("tool", "price_monitor_facets"),
+                        "cache_control": {"type": "ephemeral"},
                     },
-                )
-                resp.raise_for_status()
-                body = resp.json()
+                ],
+                messages=[{"role": "user", "content": user_prompt}],
+            ))
         except Exception as e:
             logger.warning(f"Haiku facet extraction failed for '{query}': {e}")
             return None
@@ -595,33 +596,28 @@ class ProductIdentityService:
             "pages": candidates,
         }
         try:
-            async with httpx.AsyncClient(timeout=self._http_timeout) as client:
-                resp = await client.post(
-                    _ANTHROPIC_BASE,
-                    headers=_anthropic_headers(),
-                    json={
-                        "model": _MODEL,
-                        # 3000 leaves comfortable headroom for ~12 verdicts of
-                        # ~80 tokens each. Even the chunked path keeps this
-                        # cap so a single chunk never truncates.
-                        "max_tokens": 3000,
-                        "system": [
-                            {
-                                "type": "text",
-                                "text": await load_prompt("tool", "price_monitor_match") + few_shot_block,
-                                "cache_control": {"type": "ephemeral"},
-                            },
-                        ],
-                        "messages": [
-                            {
-                                "role": "user",
-                                "content": json.dumps(user_payload, ensure_ascii=False),
-                            }
-                        ],
+            from app.services.core.claude_helper import tracked_claude_call_async
+            body = _response_to_body(await tracked_claude_call_async(
+                task="price_monitor_match",
+                model=_MODEL,
+                # 3000 leaves comfortable headroom for ~12 verdicts of ~80 tokens
+                # each. Even the chunked path keeps this cap so a single chunk never
+                # truncates.
+                max_tokens=3000,
+                system=[
+                    {
+                        "type": "text",
+                        "text": await load_prompt("tool", "price_monitor_match") + few_shot_block,
+                        "cache_control": {"type": "ephemeral"},
                     },
-                )
-                resp.raise_for_status()
-                body = resp.json()
+                ],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": json.dumps(user_payload, ensure_ascii=False),
+                    }
+                ],
+            ))
         except Exception as e:
             logger.warning(f"Haiku classifier chunk failed: {e}. Falling back to rule-based.")
             return [self._rule_based_verdict(facets, c) for c in candidates]
