@@ -572,10 +572,22 @@ class PDFProcessor:
                     extracted_images, ocr_languages, progress_callback
                 )
                 
-                # Enhance extracted images with OCR data
-                for i, image_data in enumerate(extracted_images):
-                    if i < len(ocr_results):
-                        image_data['ocr_result'] = ocr_results[i]
+                # A wholesale OCR failure is recorded on the document, not silently
+                # dropped (#22 M9-7). The marker list is length-1 and positional
+                # enhancement below would otherwise attach it to image 0 as though it
+                # were that image's own result.
+                if len(ocr_results) == 1 and ocr_results[0].get("method") == "ocr_failed":
+                    self.logger.error(
+                        "OCR failed for the whole document — recording the marker rather "
+                        "than reporting zero text"
+                    )
+                    content_metrics["ocr_status"] = "failed"
+                    content_metrics["ocr_error"] = ocr_results[0].get("error")
+                else:
+                    # Enhance extracted images with OCR data
+                    for i, image_data in enumerate(extracted_images):
+                        if i < len(ocr_results):
+                            image_data['ocr_result'] = ocr_results[i]
             
             # Update content metrics to include OCR text
             if ocr_text:
@@ -724,6 +736,19 @@ class PDFProcessor:
             doc = fitz.open(pdf_path)
             total_pages = len(doc)
             doc.close()
+
+            # Bound it before anything per-page runs (#22 M9-6). Every stage below is
+            # per-page — extraction, OCR, classification, embeddings — so an
+            # implausible page count is an unbounded amount of paid work, and the
+            # compressed byte count cannot predict it.
+            #
+            # The rule lives in `app.utils.pdf_bounds` and not here. This is the THIRD
+            # place the same missing bound was found (#22 M9-6, #24 M11-6, #35 M20-2);
+            # a local copy is how one of the three drifts, which is exactly what the
+            # seven copies of the credit-debit rule in #30 demonstrated.
+            from app.utils.pdf_bounds import assert_page_count
+
+            assert_page_count(total_pages)
 
             self.logger.info(f"📐 PDF has {total_pages} pages")
 
@@ -2352,7 +2377,28 @@ class PDFProcessor:
             return combined_ocr_text.strip(), ocr_results
 
         except Exception as e:
-            self.logger.error("Error in OCR processing: %s", str(e))
-            return "", []
+            # An explicit failure marker, not an empty result (#22 M9-7).
+            #
+            # `return "", []` made a whole-document OCR failure identical to a document
+            # that genuinely contains no text in its images — and the caller does
+            # `if ocr_text:` before folding the word count in, so both paths simply skip
+            # it. Nothing anywhere could tell "OCR ran and found nothing" from "OCR
+            # never completed", which is the ambiguity pipeline convention 1 exists to
+            # remove. Same shape as #25 M12-3 one layer down, where `extract_icon_metadata`
+            # filtered the `paddleocr_failed` marker out and returned [].
+            #
+            # The list is the channel rather than an exception: images have already been
+            # extracted and the rest of the result is usable, so failing the whole
+            # document over OCR would discard work that succeeded.
+            self.logger.error("Error in OCR processing: %s", str(e), exc_info=True)
+            return "", [{
+                "image_path": None,
+                "text": "",
+                "confidence": 0.0,
+                "language": "unknown",
+                "regions_detected": 0,
+                "method": "ocr_failed",
+                "error": str(e)[:500],
+            }]
 
 

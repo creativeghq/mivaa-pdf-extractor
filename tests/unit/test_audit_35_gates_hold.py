@@ -272,3 +272,63 @@ def test_zero_products_from_real_candidates_is_reported():
         "a run that found candidates and created nothing no longer reports itself"
     )
     assert "capture_message" in body or "logger.error" in body
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# #22 M9-6 / M9-7 — the third copy of the bound, and the empty OCR result
+#
+# Kept in this file rather than a new one because M20-2 is the same finding: the
+# PDF page bound was missing in THREE places, found by three separate audits, and
+# consolidating it was the fix. A guard per audit issue would be three guards over
+# one rule.
+#
+# Watched to fail: 3 of these 4 fired against the pre-fix tree.
+# `test_the_pdf_processor_uses_the_shared_bound_not_its_own` passes both ways by
+# design — it is an INVERSE assertion. There was no local copy of the limit before
+# and there must not be one after; it exists to catch the tempting wrong fix
+# (paste the constant in) rather than a regression of the old state.
+# ───────────────────────────────────────────────────────────────────────────
+
+PDF_PROCESSOR = APP / "services" / "pdf" / "pdf_processor.py"
+
+
+def test_the_pdf_processor_bounds_the_page_count_too():
+    """The third site (#22 M9-6). Every stage below it is per-page, and the compressed
+    byte count cannot predict the page count."""
+    src = _read(PDF_PROCESSOR)
+    assert "assert_page_count(" in _strip_comments(src), (
+        "pdf_processor no longer bounds the page count before per-page work (#22 M9-6)"
+    )
+
+
+def test_the_pdf_processor_uses_the_shared_bound_not_its_own():
+    body = _strip_comments(_read(PDF_PROCESSOR))
+    assert "MAX_PDF_PAGES =" not in body, (
+        "a local copy of the page limit is back — three copies of this rule is how one "
+        "of them drifts, which is what #22, #24 and #35 each found separately"
+    )
+
+
+def test_a_whole_document_ocr_failure_is_marked_rather_than_empty():
+    """`return "", []` made a wholesale OCR failure identical to a document whose images
+    genuinely hold no text — and the caller's `if ocr_text:` skips both."""
+    src = _strip_comments(_read(PDF_PROCESSOR))
+    assert '"method": "ocr_failed"' in src, (
+        "the OCR failure marker is gone (#22 M9-7); an empty return is ambiguous and "
+        "pipeline convention 1 exists to remove exactly that ambiguity"
+    )
+    assert 'return "", []' not in src
+
+
+def test_the_failure_marker_is_not_attached_to_image_zero():
+    """The marker list is length-1, and the positional enhancement loop below would
+    otherwise hand it to the first image as though it were that image's own result."""
+    src = _strip_comments(_read(PDF_PROCESSOR))
+    at = src.index('ocr_results[0].get("method") == "ocr_failed"')
+    window = src[at:at + 500]
+    assert 'content_metrics["ocr_status"] = "failed"' in window, (
+        "a wholesale OCR failure is no longer recorded on the document"
+    )
+    assert "for i, image_data in enumerate(extracted_images)" not in window.split("else:")[0], (
+        "the per-image enhancement runs on the marker list again"
+    )
