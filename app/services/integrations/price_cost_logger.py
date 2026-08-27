@@ -37,9 +37,25 @@ PRICE_OP_CREDIT_COST: Dict[str, int] = {
 def debit_credits(*, user_id: str, amount: int, operation_type: str, workspace_id: Optional[str] = None) -> bool:
     """Atomic credit debit via the shared credit router. Returns True on success,
     False on insufficient balance / failure. Partner (api_key) callers pass no
-    workspace_id → personal wallet."""
-    if amount <= 0 or not user_id:
-        return amount <= 0
+    workspace_id → personal wallet.
+
+    A NON-POSITIVE amount is refused, loudly (audit #30 M16-1). It used to return
+    True — success, nothing debited — which is the exact shape audit #217 H3 found
+    ten lines below and fixed: a billing helper that reports success without
+    charging. No caller passes one today (every site guards with `if amount and ...`
+    or passes a positive constant, and `metered_door` skips the debit entirely when
+    `cost <= 0`), so this is closing the door rather than repairing a leak. A route
+    whose work is genuinely free must not call the debit path at all.
+    """
+    if amount <= 0:
+        logger.error(
+            "price-cost: refusing a non-positive debit of %s for %s — a free "
+            "operation must not go through the debit path (#30 M16-1)",
+            amount, operation_type,
+        )
+        return False
+    if not user_id:
+        return False
     try:
         sb = get_supabase_client().client
         result = sb.rpc("debit_credits", {

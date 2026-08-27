@@ -321,9 +321,22 @@ def debit_credits(
     Routes to the workspace pool when funded (workspace_id set + pool exists), else the
     personal wallet. Partner (api_key) callers pass no workspace_id → personal (unchanged).
     Returns True on success, False on insufficient balance / failure.
+
+    A NON-POSITIVE amount is refused, loudly (audit #30 M16-1). It used to return
+    True — success, nothing debited — which is the exact shape audit #217 H3 found
+    ten lines below and fixed: a billing helper that reports success without
+    charging. No caller passes one today (every site guards with `if amount and ...`
+    or passes a positive constant, and `metered_door` skips the debit entirely when
+    `cost <= 0`), so this is closing the door rather than repairing a leak. A route
+    whose work is genuinely free must not call the debit path at all.
     """
     if amount <= 0:
-        return True
+        logger.error(
+            "mention-cost: refusing a non-positive debit of %s for %s — a free "
+            "operation must not go through the debit path (#30 M16-1)",
+            amount, operation_type,
+        )
+        return False
     if not user_id:
         return False
     try:
