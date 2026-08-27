@@ -19,6 +19,10 @@ import logging
 from typing import Dict, Optional
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.credit_router import (
+    debit_credits as _router_debit_credits,
+    refund_credits as _router_refund_credits,
+)
 from app.modules._core.provider_pricing import (
     DATAFORSEO_SERP_PER_CALL,
     FIRECRAWL_PER_CREDIT,
@@ -166,62 +170,38 @@ JOB_OP_CREDIT_COST: Dict[str, int] = {
 }
 
 
-def debit_credits(*, user_id: str, amount: int, operation_type: str, workspace_id: Optional[str] = None) -> bool:
-    """Atomic credit debit via the shared credit router.
+def debit_credits(
+    *, user_id: str, amount: int, operation_type: str,
+    workspace_id: Optional[str] = None,
+) -> bool:
+    """Thin delegate to the shared credit router.
 
-    A NON-POSITIVE amount is refused, loudly (audit #30 M16-1). It used to return
-    True — success, nothing debited — which is the exact shape audit #217 H3 found
-    ten lines below and fixed: a billing helper that reports success without
-    charging. No caller passes one today (every site guards with `if amount and ...`
-    or passes a positive constant, and `metered_door` skips the debit entirely when
-    `cost <= 0`), so this is closing the door rather than repairing a leak. A route
-    whose work is genuinely free must not call the debit path at all.
+    The implementation used to live here, byte-identical to the copies in the two
+    sibling cost loggers apart from a log prefix. Audit #30 M16-1 had to be fixed in
+    all three at once, which is what a copy costs. The NAME stays so callers do not
+    change; the rule lives in `credit_router`.
     """
-    if amount <= 0:
-        logger.error(
-            "job-cost: refusing a non-positive debit of %s for %s — a free "
-            "operation must not go through the debit path (#30 M16-1)",
-            amount, operation_type,
-        )
-        return False
-    if not user_id:
-        return False
-    try:
-        sb = get_supabase_client().client
-        # Route through the shared credit router: workspace pool when funded, else personal.
-        # Partner (api_key) callers pass no workspace_id → personal wallet (unchanged).
-        result = sb.rpc("debit_credits", {
-            "p_user_id": user_id,
-            "p_amount": amount,
-            "p_operation_type": operation_type,
-            "p_workspace_id": workspace_id,
-        }).execute()
-        # The RPC returns a row [{success: bool, ...}] — on insufficient balance it
-        # returns success=false (NOT an empty result). Reading bool(data) treats that
-        # truthy row as a successful debit → paid op served free (audit #217 H3).
-        data = getattr(result, "data", None)
-        if not data:
-            return False
-        row = data[0] if isinstance(data, list) else data
-        return bool(row.get("success")) if isinstance(row, dict) else bool(row)
-    except Exception as e:
-        logger.info(f"job-cost: credit debit skipped: {e}")
-        return False
+    return _router_debit_credits(
+        user_id=user_id, amount=amount, operation_type=operation_type,
+        workspace_id=workspace_id, module="job-cost",
+    )
 
 
-def refund_credits(*, user_id: str, amount: int, operation_type: str, workspace_id: Optional[str] = None) -> None:
-    if amount <= 0 or not user_id:
-        return
-    try:
-        sb = get_supabase_client().client
-        sb.rpc("refund_credits", {
-            "p_user_id": user_id,
-            "p_amount": amount,
-            "p_operation_type": f"{operation_type}.refund",
-            "p_workspace_id": workspace_id,
-        }).execute()
-    except Exception as e:
-        logger.info(f"job-cost: refund failed (non-fatal): {e}")
+def refund_credits(
+    *, user_id: str, amount: int, operation_type: str,
+    workspace_id: Optional[str] = None,
+) -> None:
+    """Thin delegate to the shared credit router.
+
+    The implementation used to live here, byte-identical to the copies in the two
+    sibling cost loggers apart from a log prefix. Audit #30 M16-1 had to be fixed in
+    all three at once, which is what a copy costs. The NAME stays so callers do not
+    change; the rule lives in `credit_router`.
+    """
+    _router_refund_credits(
+        user_id=user_id, amount=amount, operation_type=operation_type,
+        workspace_id=workspace_id, module="job-cost",
+    )
 
 
 # ─── Layer C: per-row rollup helpers ───────────────────────────────────────

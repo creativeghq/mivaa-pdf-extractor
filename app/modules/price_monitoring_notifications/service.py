@@ -34,6 +34,10 @@ import httpx
 
 from app.modules._core.registry import is_module_enabled
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.credit_router import (
+    debit_credits as _router_debit_credits,
+    refund_credits as _router_refund_credits,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -582,40 +586,42 @@ class PriceAlertDispatcher:
     # ───── Credit metering ─────
 
     def _charge_credits(self, *, user_id: str, amount: int, operation_type: str) -> bool:
+        """Atomic debit via the shared credit router. True only if credits actually moved.
+
+        This copy still carried the audit #217 H3 bug that was fixed in the three cost
+        loggers and never here: `bool(result.data) if hasattr(result, "data") else True`.
+        The RPC returns `[{success: bool, ...}]` and an insufficient balance is a
+        NON-EMPTY, truthy row — so `bool(data)` read a REFUSED debit as a successful one,
+        and the `else True` branch called a missing response a success too. Either way the
+        alert went out and nothing was charged.
+
+        Found by the one-implementation sweep, not by reading: the fix had been applied to
+        three files and this was the fourth.
         """
-        Atomic debit via existing RPC. Returns True if charged successfully.
-        On insufficient balance / failure returns False — caller skips the
-        channel without raising.
-        """
-        try:
-            result = self.supabase.client.rpc("debit_credits", {
-                "p_user_id": user_id,
-                "p_amount": amount,
-                "p_operation_type": operation_type,
-                "p_workspace_id": None,  # alert recipient's own wallet (email channel charge)
-            }).execute()
-            ok = bool(result.data) if hasattr(result, "data") else True
-            return ok
-        except Exception as e:
-            logger.info(f"price-alerts: credit charge skipped (likely insufficient): {e}")
-            return False
+        return _router_debit_credits(
+            user_id=user_id,
+            amount=amount,
+            operation_type=operation_type,
+            workspace_id=None,  # alert recipient's own wallet (email channel charge)
+            module="price-alerts",
+        )
 
     def _refund_credits(self, *, user_id: str, amount: int, operation_type: str) -> None:
-        """Best-effort refund via the shared refund_credits router. Never raises.
-        Used when a channel was charged but its send failed — the user paid
-        for an alert that never reached them.
+        """Best-effort refund via the shared credit router. Never raises.
+
+        Used when a channel was charged but its send failed, so users are not billed for
+        an alert that never reached them. `suffix=""` keeps the operation_type exactly as
+        it was written before the move: those strings are already in `credit_transactions`
+        and renaming them now would split this operation's history in two.
         """
-        if amount <= 0 or not user_id:
-            return
-        try:
-            self.supabase.client.rpc("refund_credits", {
-                "p_user_id": user_id,
-                "p_amount": amount,
-                "p_operation_type": operation_type,
-                "p_workspace_id": None,
-            }).execute()
-        except Exception as e:
-            logger.info(f"price-alerts: refund failed (non-fatal): {e}")
+        _router_refund_credits(
+            user_id=user_id,
+            amount=amount,
+            operation_type=operation_type,
+            workspace_id=None,
+            suffix="",
+            module="price-alerts",
+        )
 
     # ───── Subject lookups ─────
 

@@ -32,10 +32,13 @@ APP = ROOT / "app"
 
 FIRECRAWL = APP / "services" / "integrations" / "firecrawl_client.py"
 
-#: The three sibling debit helpers. They are separate files with identical contracts,
-#: which is exactly how one of them drifts — so every case here is parametrized over
-#: all three rather than pinned to the one the audit happened to read.
-DEBIT_HELPERS = [
+#: The debit rule now lives in ONE file. It was three, byte-identical apart from a log
+#: prefix, and M16-1 had to be fixed in all three at once — which is what a copy costs.
+CREDIT_ROUTER = APP / "services" / "integrations" / "credit_router.py"
+
+#: The three modules that used to carry their own copy. They keep their names — callers
+#: are unchanged — and must now DELEGATE rather than reimplement.
+DELEGATING_LOGGERS = [
     APP / "services" / "integrations" / "mention_cost_logger.py",
     APP / "services" / "integrations" / "price_cost_logger.py",
     APP / "services" / "integrations" / "job_cost_logger.py",
@@ -68,40 +71,79 @@ def _source_of(src: str, name: str) -> str:
 # M16-1 — a debit helper that reported success without charging
 # ───────────────────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("path", DEBIT_HELPERS, ids=lambda p: p.name)
-def test_a_non_positive_debit_is_refused_not_reported_as_success(path: Path):
-    """`if amount <= 0: return True` — and its sibling spelling `return amount <= 0`
-    — is the shape audit #217 H3 found ten lines below in the same file and fixed:
+def test_a_non_positive_debit_is_refused_not_reported_as_success():
+    """`if amount <= 0: return True` — and its sibling spelling `return amount <= 0` —
+    is the shape audit #217 H3 found ten lines below in the same file and fixed:
     a billing helper reporting success without charging.
 
     No caller passes a non-positive amount today, so this closes the door rather than
-    repairing a leak. A route whose work is genuinely free must not call the debit
-    path at all."""
-    body = _strip_comments(_source_of(_read(path), "debit_credits"))
+    repairing a leak. A route whose work is genuinely free must not call the debit path
+    at all."""
+    body = _strip_comments(_source_of(_read(CREDIT_ROUTER), "debit_row"))
 
     assert "return amount <= 0" not in body, (
-        f"{path.name}: `return amount <= 0` is back — a zero amount reports a "
-        "successful debit having charged nothing"
+        "`return amount <= 0` is back — a zero amount reports a successful debit having "
+        "charged nothing"
     )
-    assert not re.search(r"if\s+amount\s*<=\s*0\s*:\s*\n\s*return True", body), (
-        f"{path.name}: a non-positive amount returns True again (#30 M16-1)"
+    assert not re.search(r"if\s+amount\s*<=\s*0\s*:\s+return True", body), (
+        "a non-positive amount returns True again (#30 M16-1)"
     )
-    # The refusal has to be visible, or it becomes the silent-zero shape wearing the
-    # opposite hat: nothing charged, nothing said.
     assert "logger.error" in body, (
-        f"{path.name}: the non-positive-amount refusal is silent — a debit that does "
-        "not happen must leave a trace someone can find"
+        "the refusal is silent — a debit that does not happen must leave a trace someone "
+        "can find"
     )
 
 
-@pytest.mark.parametrize("path", DEBIT_HELPERS, ids=lambda p: p.name)
-def test_the_rpc_verdict_is_still_read_correctly(path: Path):
-    """Recorded so the #217 H3 fix cannot be undone by a later tidy-up: the RPC
-    returns `[{success: bool}]`, and an insufficient balance is a NON-EMPTY truthy
-    row. `bool(data)` would read that as a successful debit."""
-    body = _strip_comments(_source_of(_read(path), "debit_credits"))
+def test_no_payer_is_a_refusal_not_a_free_pass():
+    """`if user_id and debit(...)` reads as metering and behaves as a free pass whenever
+    the identity is missing. The helper itself refuses, so a caller cannot spell it that
+    way by accident."""
+    body = _strip_comments(_source_of(_read(CREDIT_ROUTER), "debit_row"))
+    assert re.search(r"if not user_id", body), "the no-payer refusal is gone"
+    assert body.index("if not user_id") < body.index("rpc("), (
+        "the payer check now runs after the RPC call"
+    )
+
+
+def test_the_rpc_verdict_is_still_read_correctly():
+    """Recorded so the #217 H3 fix cannot be undone by a later tidy-up: the RPC returns
+    `[{success: bool}]`, and an insufficient balance is a NON-EMPTY truthy row.
+    `bool(data)` would read that as a successful debit."""
+    body = _strip_comments(_source_of(_read(CREDIT_ROUTER), "debit_credits"))
     assert 'row.get("success")' in body or "row.get('success')" in body, (
-        f"{path.name}: the debit no longer reads the RPC's success flag"
+        "the debit no longer reads the RPC's success flag"
+    )
+
+
+@pytest.mark.parametrize("path", DELEGATING_LOGGERS, ids=lambda p: p.name)
+def test_the_old_copies_delegate_instead_of_reimplementing(path: Path):
+    """The whole point of moving it. A module that grows its own `rpc("debit_credits")`
+    again is a second implementation, and the next fix reaches only one of them."""
+    for fn in ("debit_credits", "refund_credits"):
+        body = _strip_comments(_source_of(_read(path), fn))
+        assert f"_router_{fn}(" in body, (
+            f"{path.name}.{fn} no longer delegates to credit_router"
+        )
+        assert "rpc(" not in body, (
+            f"{path.name}.{fn} calls the RPC directly again — that is a second copy of "
+            "the rule, which is the drift M16-1 was found in"
+        )
+
+
+def test_there_is_exactly_one_debit_implementation():
+    """Derived from the tree, not a list: any NEW module that calls the debit RPC itself
+    fails this, on the day it is written."""
+    offenders = []
+    for path in sorted(APP.rglob("*.py")):
+        if path.name == "credit_router.py" or "__pycache__" in path.parts:
+            continue
+        src = _strip_comments(path.read_text(encoding="utf-8"))
+        if re.search(r"""rpc\(\s*['"]debit_credits['"]""", src):
+            offenders.append(str(path.relative_to(ROOT)).replace("\\", "/"))
+    assert not offenders, (
+        "the debit RPC is called outside credit_router in:\n  " + "\n  ".join(offenders)
+        + "\n\nUse credit_router.debit_credits. Three copies of this rule is how "
+          "#30 M16-1 came to need fixing in three places at once."
     )
 
 

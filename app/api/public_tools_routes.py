@@ -43,6 +43,7 @@ from app.services.integrations.public_lookup_service import (
     write_cache,
 )
 from app.services.integrations.turnstile_verifier import verify_token
+from app.services.integrations.credit_router import debit_row
 
 logger = logging.getLogger(__name__)
 
@@ -247,25 +248,24 @@ def _read_credit_balance(user_id: str) -> Optional[int]:
 
 
 def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: str, cost: int = SCAN_CREDIT_COST) -> tuple[bool, Optional[int], Optional[str]]:
-    """Call the shared debit_credits router (public scan → personal). Returns (success, new_balance, error)."""
-    sb = get_supabase_client().client
-    try:
-        resp = sb.rpc("debit_credits", {
-            "p_user_id": user_id,
-            "p_amount": cost,
-            "p_operation_type": operation_type,
-            "p_description": f"Public {scan_type} scan",
-            "p_metadata": {"query_hash": qhash, "scan_type": scan_type},
-            "p_workspace_id": None,  # public lead-gen scan → the scanning user's personal wallet
-        }).execute()
-        row = (resp.data or [None])[0]
-        if not row:
-            return False, None, "no_response"
-        success = bool(row.get("success"))
-        return success, (int(row["new_balance"]) if row.get("new_balance") is not None else None), row.get("error_message")
-    except Exception as e:
-        logger.warning(f"public-tools: debit_credits failed: {e}")
-        return False, None, str(e)[:200]
+    """Debit for one public scan. Returns (success, new_balance, error).
+
+    Goes through `credit_router.debit_row` (#30 M16-1). The balance is why this one
+    reads the row rather than the boolean: the public tools surface shows the caller
+    what they have left.
+    """
+    row = debit_row(
+        user_id=user_id,
+        amount=cost,
+        operation_type=operation_type,
+        description=f"Public {scan_type} scan",
+        metadata={"query_hash": qhash, "scan_type": scan_type},
+        workspace_id=None,  # public lead-gen scan → the scanning user's personal wallet
+        module="public-tools",
+    )
+    success = bool(row.get("success"))
+    balance = int(row["new_balance"]) if row.get("new_balance") is not None else None
+    return success, balance, row.get("error_message")
 
 
 def _refund_credits(user_id: str, *, qhash: str, scan_type: str, cost: int = SCAN_CREDIT_COST) -> None:

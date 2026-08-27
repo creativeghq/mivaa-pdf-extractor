@@ -38,6 +38,7 @@ from pydantic import BaseModel, Field
 from app.api.price_lookup_routes import ApiKeyContext, authenticate_api_key
 from app.services.core.supabase_client import get_supabase_client
 from app.utils.postgrest_filters import escape_like
+from app.services.integrations.credit_router import debit_row
 
 logger = logging.getLogger(__name__)
 
@@ -172,19 +173,24 @@ def _owned_project(sb, project_id: str, user_id: str) -> Dict[str, Any]:
 
 
 def _debit(user_id: str, op: str) -> int:
+    """Debit for one Projects API operation, raising 402 on refusal.
+
+    Goes through `credit_router.debit_row` — one implementation of the rule, seven
+    call sites (#30 M16-1). The 402 stays HERE: what a caller does with a refusal is
+    its own business, and this one wants the RPC's `error_message` in the response.
+    """
     cost = CREDIT_COST.get(op, 0)
     if cost <= 0:
         return 0
-    sb = get_supabase_client().client
-    res = sb.rpc("debit_credits", {
-        "p_user_id": user_id,
-        "p_amount": cost,
-        "p_operation_type": f"projects.{op}",
-        "p_description": f"Projects API: {op}",
-        "p_metadata": {"feature": "projects_api"},
-        "p_workspace_id": None,  # partner (api_key) billing → personal wallet
-    }).execute()
-    row = (res.data[0] if isinstance(res.data, list) else res.data) or {}
+    row = debit_row(
+        user_id=user_id,
+        amount=cost,
+        operation_type=f"projects.{op}",
+        description=f"Projects API: {op}",
+        metadata={"feature": "projects_api"},
+        workspace_id=None,  # partner (api_key) billing → personal wallet
+        module="projects",
+    )
     if not row.get("success"):
         raise HTTPException(status_code=402, detail=row.get("error_message") or "insufficient credits")
     return cost
