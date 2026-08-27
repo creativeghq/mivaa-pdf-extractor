@@ -78,6 +78,32 @@ class RasterizeResponse(BaseModel):
     error: Optional[str] = None
 
 
+# A small compressed PDF can declare enormous page dimensions, so validating
+# `page_no` and `dpi` bounds nothing: the render size is page_rect x dpi/72, and it
+# is the render that allocates. Same decompression-bomb shape as #22 M9-6.
+MAX_RASTER_PIXELS = 40_000_000   # ~40MP, comfortably past an A0 page at 400 DPI
+MAX_RASTER_EDGE = 20_000         # px, per side
+
+
+def _assert_renderable(page, zoom: float) -> None:
+    """Reject before `get_pixmap` allocates. The ORDER is the whole fix."""
+    rect = page.rect
+    width = int(rect.width * zoom)
+    height = int(rect.height * zoom)
+    if width <= 0 or height <= 0:
+        raise HTTPException(status_code=422, detail="page has no renderable area")
+    if width > MAX_RASTER_EDGE or height > MAX_RASTER_EDGE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"render would be {width}x{height}px; max edge is {MAX_RASTER_EDGE}px",
+        )
+    if width * height > MAX_RASTER_PIXELS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"render would be {width * height} pixels; max is {MAX_RASTER_PIXELS}",
+        )
+
+
 def _bbox_hash(bbox: Optional[BBox]) -> str:
     if not bbox:
         return "full"
@@ -124,6 +150,7 @@ async def rasterize_pdf_page(payload: RasterizeRequest, request: Request) -> Ras
 
         page = doc[payload.page_no - 1]
         zoom = payload.dpi / 72.0
+        _assert_renderable(page, zoom)
         matrix = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=matrix, alpha=False)
         png_bytes = pix.tobytes("png")
