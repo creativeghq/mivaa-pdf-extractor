@@ -2884,7 +2884,25 @@ async def create_products_background(
         )
 
         products_created = product_result.get('products_created', 0)
+        candidates = product_result.get('candidates_detected', 0)
         logger.info(f"✅ Background product creation completed: {products_created} products created")
+
+        # Candidates found and nothing created is the silent zero at the level that
+        # matters most to a user: products ARE the point of the pipeline, and an
+        # ingestion that finishes green with none looks identical to a catalogue that
+        # genuinely had none (#35 M20-4). Zero candidates is a different, legitimate
+        # answer and is left alone.
+        if candidates and not products_created:
+            logger.error(
+                "product creation produced 0 products from %s candidates for document %s "
+                "(job %s) — the run completed, so nothing else will report this",
+                candidates, document_id, job_id,
+            )
+            sentry_sdk.capture_message(
+                f"Ingestion completed with 0 products from {candidates} candidates "
+                f"(document {document_id})",
+                level="warning",
+            )
 
         # Update sub-job status to completed
         try:
@@ -2954,6 +2972,45 @@ async def create_products_background(
 
     except Exception as e:
         logger.error(f"❌ Background product creation failed: {e}", exc_info=True)
+
+        # Record the failure on the PARENT job (#35 M20-4). Before this, only the
+        # sub-job was marked failed, and the parent had already been persisted
+        # `completed` — so an ingestion whose product creation blew up reported a clean
+        # success with zero products, and products are the point of the pipeline.
+        #
+        # Recorded in METADATA, not as a new status. `background_jobs_status_check`
+        # admits seven values and `completed_with_failures` is not one of them; adding
+        # it would need every reader — the edge runner, the admin UI, auto-recovery — to
+        # learn it, and audit #217 M7 is the record of what happens when they do not
+        # (writing 'running' made job-research runs invisible and mis-bucketed).
+        #
+        # Nor is the parent marked `failed`: the document WAS processed — chunks, images
+        # and embeddings all landed — and failing it would send auto-recovery to restart
+        # a job that mostly succeeded.
+        try:
+            parent = supabase_client.client.table('background_jobs')                 .select('metadata')                 .eq('id', job_id)                 .limit(1)                 .execute()
+            parent_meta = ((parent.data or [{}])[0] or {}).get('metadata') or {}
+            parent_meta.update({
+                'product_creation_failed': True,
+                'product_creation_error': str(e)[:500],
+                'products_created': 0,
+                'product_creation_failed_at': datetime.utcnow().isoformat(),
+            })
+            supabase_client.client.table('background_jobs').update({
+                'metadata': parent_meta,
+                'updated_at': datetime.utcnow().isoformat(),
+            }).eq('id', job_id).execute()
+            logger.error(
+                "marked parent job %s as product_creation_failed — the ingestion "
+                "otherwise reports success with zero products", job_id,
+            )
+        except Exception as parent_error:
+            logger.error(
+                "could not record product-creation failure on parent job %s: %s — the "
+                "ingestion will now report a clean success it did not earn",
+                job_id, parent_error, exc_info=True,
+            )
+            sentry_sdk.capture_exception(parent_error)
 
         # Mark sub-job as failed
         try:

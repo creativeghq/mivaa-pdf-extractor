@@ -25,8 +25,10 @@ pre-fix state for them to fail against. `test_the_bound_still_precedes_the_alloc
 also passes both ways on purpose — the ORDER was already right in catalog_routes and the
 consolidation had to keep it that way.
 
-NOT covered: M20-3 (the three-id tuple) and M20-4 (product creation failing while the
-parent reports success) are untouched by this batch.
+NOT covered: M20-3 (the orchestrator trusting job_id / document_id / workspace_id as a
+coherent tuple) is untouched. It needs the tuple validated once at entry and the
+validated workspace threaded through ~1,760 lines, which is a refactor rather than an
+edit, and doing it badly is worse than the finding.
 """
 
 import ast
@@ -217,3 +219,56 @@ def test_every_pre_stage_abort_marks_the_job_failed(reason: str):
         f"the {reason!r} path raises without marking the job failed, stranding it in "
         "`processing` with no terminal event (#35 M20-1)"
     )
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# M20-4 — an ingestion must not report success it did not earn
+# ───────────────────────────────────────────────────────────────────────────
+
+def test_a_product_creation_failure_reaches_the_parent_job():
+    """Only the SUB-job was marked failed, and the parent had already been persisted
+    `completed` — so an ingestion whose product creation blew up reported a clean
+    success with zero products. Products are the point of the pipeline."""
+    body = _body(_read(RAG_ROUTES), "create_products_background")
+    assert "product_creation_failed" in body, (
+        "the parent job is no longer told that product creation failed (#35 M20-4)"
+    )
+
+
+def test_the_failure_is_recorded_in_metadata_not_as_a_new_status():
+    """`background_jobs_status_check` admits seven values and
+    `completed_with_failures` is not one of them. Adding it would need every reader —
+    the edge runner, the admin UI, auto-recovery — to learn it, and audit #217 M7 is the
+    record of what happens when they do not: writing 'running' made job-research runs
+    invisible and mis-bucketed."""
+    body = _body(_read(RAG_ROUTES), "create_products_background")
+    assert "completed_with_failures" not in body, (
+        "a status outside the CHECK vocabulary is being written — it will either raise "
+        "or be unrecognised by every reader"
+    )
+    assert "'metadata': parent_meta" in body, (
+        "the failure marker is no longer written to the parent's metadata"
+    )
+
+
+def test_the_parent_is_not_marked_failed_outright():
+    """The document WAS processed — chunks, images and embeddings all landed. Failing
+    the parent would send auto-recovery to restart a job that mostly succeeded."""
+    body = _body(_read(RAG_ROUTES), "create_products_background")
+    parent_writes = re.findall(r"\.eq\('id', job_id\)", body)
+    assert parent_writes, "nothing updates the parent job any more"
+    assert "'status': 'failed'" not in body.split("parent_meta")[0], (
+        "the parent job is being marked failed, which restarts an ingestion that "
+        "largely worked"
+    )
+
+
+def test_zero_products_from_real_candidates_is_reported():
+    """Candidates found and nothing created is the silent zero at the level that matters
+    most to a user, and it looks identical to a catalogue that genuinely had none. Zero
+    CANDIDATES is a different, legitimate answer and is deliberately not flagged."""
+    body = _body(_read(RAG_ROUTES), "create_products_background")
+    assert "if candidates and not products_created:" in body, (
+        "a run that found candidates and created nothing no longer reports itself"
+    )
+    assert "capture_message" in body or "logger.error" in body
