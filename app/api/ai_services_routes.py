@@ -21,8 +21,10 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import logging
 
-from app.dependencies import get_workspace_context
+from app.dependencies import current_user_id, get_current_user, get_workspace_context
 from app.schemas.auth import WorkspaceContext
+from app.services.integrations.credit_router import debit_credits, refund_credits
+from app.utils.paid_door import metered_door
 
 from app.schemas.api_responses import (
     DataResponse, ClassificationResponse, BatchClassificationResponse,
@@ -56,6 +58,31 @@ MAX_BATCH_CONTENTS = 50        # → 50 parallel Claude calls, the hard ceiling 
 MAX_CONTENT_CHARS = 100_000    # ≈ 25k tokens, well past any real page or section
 MAX_CHUNKS = 200               # → one embedding call per chunk, sequential
 MAX_IMAGES = 100
+
+
+# ============================================================================
+# PRICE  (audit #23 M10-4)
+# ============================================================================
+# Capping the arrays bounded the amplification; it did not make anyone pay. None of
+# these doors debited or rate-limited before its provider call, so the cost landed in
+# `ai_usage_logs` looking perfectly healthy while nobody was ever charged — the same
+# shape audit #18 M5-3 found on thirteen monitoring doors.
+#
+# The price scales with the work because the work scales with the request: one Claude
+# call per item on the batch door, one embedding per chunk on the others. A flat price
+# would make the 50-item call the cheap way to buy 50 Claude calls.
+CREDIT_PER_CLASSIFY = 1        # one Haiku call
+CREDIT_PER_CHUNK_BATCH = 20    # chunks per credit — embeddings are ~an order cheaper
+CREDIT_CONSENSUS = 3           # two voters, one of them Opus (M10-3)
+
+
+def _chunk_cost(n_chunks: int) -> int:
+    """At least one credit, then one per CREDIT_PER_CHUNK_BATCH chunks.
+
+    Never zero: a debit of zero is refused by the credit router, and a door that asks
+    for nothing is a door that charges nothing.
+    """
+    return max(1, -(-n_chunks // CREDIT_PER_CHUNK_BATCH))
 
 # Initialize services
 document_classifier = DocumentClassifier()
@@ -216,6 +243,7 @@ class ConsensusValidateRequest(BaseModel):
 )
 async def classify_document(
     request: ClassifyRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     """
@@ -228,15 +256,25 @@ async def classify_document(
     - transitional: TOC, headers, footers, navigation
     """
     try:
-        result = await document_classifier.classify_content(
-            content=request.content,
-            context=request.context,
-            job_id=request.job_id
-        )
-        
+        async with metered_door(
+            user_id=current_user_id(user),
+            workspace_id=workspace.workspace_id,
+            cost=CREDIT_PER_CLASSIFY,
+            operation_type="ai_services.classify_document",
+            debit=debit_credits, refund=refund_credits,
+        ) as paid:
+            result = await document_classifier.classify_content(
+                content=request.content,
+                context=request.context,
+                job_id=request.job_id
+            )
+            if not result:
+                paid.refund("the classifier returned nothing")
+
         return {
             "success": True,
-            "classification": result
+            "classification": result,
+            "credits_debited": paid.charged,
         }
         
     except Exception as e:
@@ -247,6 +285,7 @@ async def classify_document(
 @router.post("/classify-batch", response_model=BatchClassificationResponse)
 async def classify_batch(
     request: ClassifyBatchRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     """
@@ -255,17 +294,28 @@ async def classify_batch(
     Efficient for processing multiple sections at once.
     """
     try:
-        results = await document_classifier.classify_batch(
-            contents=request.contents,
-            contexts=request.contexts,
-            job_id=request.job_id
-        )
-        
+        # Priced per item, because it IS per item: one Claude call each, in parallel.
+        async with metered_door(
+            user_id=current_user_id(user),
+            workspace_id=workspace.workspace_id,
+            cost=CREDIT_PER_CLASSIFY * len(request.contents),
+            operation_type="ai_services.classify_batch",
+            debit=debit_credits, refund=refund_credits,
+        ) as paid:
+            results = await document_classifier.classify_batch(
+                contents=request.contents,
+                contexts=request.contexts,
+                job_id=request.job_id
+            )
+            if not results:
+                paid.refund("the batch classifier returned nothing")
+
         return {
             "success": True,
             "classifications": results,
             "total": len(results),
             "product_count": sum(1 for r in results if r.get("is_product")),
+            "credits_debited": paid.charged,
         }
         
     except Exception as e:
@@ -280,6 +330,7 @@ async def classify_batch(
 @router.post("/detect-boundaries", response_model=BoundaryDetectionResponse)
 async def detect_boundaries(
     request: DetectBoundariesRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     """
@@ -289,15 +340,23 @@ async def detect_boundaries(
     to identify where one product ends and another begins.
     """
     try:
-        boundaries = await boundary_detector.detect_boundaries(
-            chunks=request.chunks,
-            job_id=request.job_id
-        )
-        
+        async with metered_door(
+            user_id=current_user_id(user),
+            workspace_id=workspace.workspace_id,
+            cost=_chunk_cost(len(request.chunks)),
+            operation_type="ai_services.detect_boundaries",
+            debit=debit_credits, refund=refund_credits,
+        ) as paid:
+            boundaries = await boundary_detector.detect_boundaries(
+                chunks=request.chunks,
+                job_id=request.job_id
+            )
+
         return {
             "success": True,
             "boundaries": boundaries,
             "boundary_count": len(boundaries),
+            "credits_debited": paid.charged,
         }
         
     except Exception as e:
@@ -308,6 +367,7 @@ async def detect_boundaries(
 @router.post("/group-by-product", response_model=ProductGroupingResponse)
 async def group_by_product(
     request: DetectBoundariesRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     """
@@ -316,23 +376,33 @@ async def group_by_product(
     Returns product groups ready for extraction.
     """
     try:
-        # Detect boundaries
-        boundaries = await boundary_detector.detect_boundaries(
-            chunks=request.chunks,
-            job_id=request.job_id
-        )
-        
-        # Group chunks
-        product_groups = await boundary_detector.group_chunks_by_product(
-            chunks=request.chunks,
-            boundaries=boundaries
-        )
-        
+        async with metered_door(
+            user_id=current_user_id(user),
+            workspace_id=workspace.workspace_id,
+            cost=_chunk_cost(len(request.chunks)),
+            operation_type="ai_services.group_by_product",
+            debit=debit_credits, refund=refund_credits,
+        ) as paid:
+            # Detect boundaries
+            boundaries = await boundary_detector.detect_boundaries(
+                chunks=request.chunks,
+                job_id=request.job_id
+            )
+
+            # Group chunks
+            product_groups = await boundary_detector.group_chunks_by_product(
+                chunks=request.chunks,
+                boundaries=boundaries
+            )
+            if not product_groups:
+                paid.refund("grouping produced no products")
+
         return {
             "success": True,
             "boundaries": boundaries,
             "product_groups": product_groups,
             "group_count": len(product_groups),
+            "credits_debited": paid.charged,
         }
         
     except Exception as e:
@@ -347,6 +417,7 @@ async def group_by_product(
 @router.post("/validate-product", response_model=ValidationResponse)
 async def validate_product(
     request: ValidateProductRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     """
@@ -360,15 +431,25 @@ async def validate_product(
     - Semantic coherence
     """
     try:
-        validation = await product_validator.validate_product(
-            product_data=request.product_data,
-            chunks=request.chunks,
-            images=request.images
-        )
-        
+        async with metered_door(
+            user_id=current_user_id(user),
+            workspace_id=workspace.workspace_id,
+            cost=_chunk_cost(len(request.chunks)),
+            operation_type="ai_services.validate_product",
+            debit=debit_credits, refund=refund_credits,
+        ) as paid:
+            validation = await product_validator.validate_product(
+                product_data=request.product_data,
+                chunks=request.chunks,
+                images=request.images
+            )
+            if not validation:
+                paid.refund("validation returned nothing")
+
         return {
             "success": True,
-            "validation": validation
+            "validation": validation,
+            "credits_debited": paid.charged,
         }
         
     except Exception as e:
@@ -383,6 +464,7 @@ async def validate_product(
 @router.post("/consensus-validate", response_model=ValidationResponse)
 async def consensus_validate(
     request: ConsensusValidateRequest,
+    user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
     """
@@ -400,15 +482,26 @@ async def consensus_validate(
     - Pricing data
     """
     try:
-        result = await consensus_validator.validate_critical_extraction(
-            content=request.content,
-            extraction_type=request.extraction_type,
-            job_id=request.job_id
-        )
-        
+        # Two voters per request, one of them Opus — priced accordingly (M10-3).
+        async with metered_door(
+            user_id=current_user_id(user),
+            workspace_id=workspace.workspace_id,
+            cost=CREDIT_CONSENSUS,
+            operation_type="ai_services.consensus_validate",
+            debit=debit_credits, refund=refund_credits,
+        ) as paid:
+            result = await consensus_validator.validate_critical_extraction(
+                content=request.content,
+                extraction_type=request.extraction_type,
+                job_id=request.job_id
+            )
+            if not result:
+                paid.refund("consensus produced no verdict")
+
         return {
             "success": True,
-            "consensus": result
+            "consensus": result,
+            "credits_debited": paid.charged,
         }
         
     except Exception as e:

@@ -128,6 +128,11 @@ def test_both_refresh_doors_agree_on_the_price():
 MONITORING_MODULES = [
     ROOT / "app" / "api" / "price_monitoring_routes.py",
     ROOT / "app" / "api" / "mention_monitoring_routes.py",
+    # Added by #23 M10-4. These eight doors reached Claude and Voyage with no debit at
+    # all — and were outside this file for the same reason the thirteen were: nobody
+    # thought of "AI services" as a monitoring module, and the test is named after the
+    # modules it happened to cover rather than the property it checks.
+    ROOT / "app" / "api" / "ai_services_routes.py",
 ]
 
 #: Calls that spend money at a provider. A route reaching one of these is a paid door.
@@ -139,6 +144,13 @@ PAID_CALLS = (
     ".search_prices(",
     ".find_or_create_for_product(",
     ".add_url_only(",
+    # #23 M10-4 — every provider call behind /api/v1/ai-services.
+    ".classify_content(",
+    ".classify_batch(",
+    ".detect_boundaries(",
+    ".group_chunks_by_product(",
+    ".validate_product(",
+    ".validate_critical_extraction(",
 )
 
 #: `find_or_create_for_product` is the one call above that is only SOMETIMES paid --
@@ -171,6 +183,19 @@ def _paid_doors():
             if any(call in stripped for call in PAID_CALLS):
                 yield pytest.param(path, decorator, stripped,
                                    id=f"{path.stem.split('_')[0]}:{decorator[8:60]}")
+
+
+def test_the_ai_service_doors_price_by_the_work_not_by_the_call():
+    """A flat price on `/classify-batch` makes the 50-item call the cheap way to buy 50
+    Claude calls. The cap from M10-2 bounds the amplification; only per-item pricing
+    removes the incentive to use it."""
+    src = _strip_comments(_read(ROOT / "app" / "api" / "ai_services_routes.py"))
+    assert "CREDIT_PER_CLASSIFY * len(request.contents)" in src, (
+        "classify_batch no longer prices per item"
+    )
+    assert src.count("_chunk_cost(len(request.chunks))") == 3, (
+        "a chunk-driven door stopped pricing by its chunk count"
+    )
 
 
 @pytest.mark.parametrize("path, decorator, body", list(_paid_doors()))
