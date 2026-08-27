@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from app.services.utilities.admin_prompt_service import AdminPromptService
-from app.dependencies import get_current_user, resolve_workspace_id
+from app.dependencies import get_current_user, require_admin, resolve_workspace_id
 
 logger = logging.getLogger(__name__)
 
@@ -183,7 +183,11 @@ async def get_prompt(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{stage}/{category}", response_model=PromptResponse)
+@router.put(
+    "/{stage}/{category}",
+    response_model=PromptResponse,
+    dependencies=[Depends(require_admin)],
+)
 async def update_prompt(
     stage: str,
     category: str,
@@ -233,12 +237,19 @@ async def update_prompt(
 @router.get("/history/{prompt_id}", response_model=List[PromptHistoryResponse])
 async def get_prompt_history(
     prompt_id: str,
+    workspace_id: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
-    """Get change history for a prompt"""
+    """Get change history for a prompt, scoped to the caller's workspace.
+
+    The history shows every revision, so it discloses more than the current text —
+    and it was readable by prompt id alone (#28 M14-3).
+    """
     try:
+        # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
+        workspace_id = await resolve_workspace_id(current_user, workspace_id)
         service = AdminPromptService()
-        history = await service.get_prompt_history(prompt_id)
+        history = await service.get_prompt_history(prompt_id, workspace_id=workspace_id)
         return history
     except Exception as e:
         logger.error(f"Error getting prompt history: {str(e)}")

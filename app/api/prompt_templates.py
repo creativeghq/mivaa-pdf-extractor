@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from app.services.utilities.prompt_template_service import PromptTemplateService
-from app.dependencies import get_current_user, resolve_workspace_id
+from app.dependencies import get_current_user, require_admin, resolve_workspace_id
 from app.schemas.api_responses import StatusResponse
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ async def list_prompt_templates(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("", response_model=dict)
+@router.post("", response_model=dict, dependencies=[Depends(require_admin)])
 async def create_prompt_template(
     request: CreatePromptTemplateRequest,
     current_user: dict = Depends(get_current_user)
@@ -168,7 +168,7 @@ async def create_prompt_template(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/{template_id}", response_model=dict)
+@router.put("/{template_id}", response_model=dict, dependencies=[Depends(require_admin)])
 async def update_prompt_template(
     template_id: str,
     workspace_id: str,
@@ -206,7 +206,7 @@ async def update_prompt_template(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.delete("/{template_id}", response_model=StatusResponse)
+@router.delete("/{template_id}", response_model=StatusResponse, dependencies=[Depends(require_admin)])
 async def delete_prompt_template(
     template_id: str,
     workspace_id: str,

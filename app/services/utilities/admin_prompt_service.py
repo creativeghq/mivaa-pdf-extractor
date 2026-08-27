@@ -11,6 +11,7 @@ from datetime import datetime
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.utilities.unified_prompt_service import UnifiedPromptService
+from app.services.utilities.prompt_registry import workspace_scope
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,17 @@ class AdminPromptService:
             List of prompts with used_in field
         """
         try:
-            # Query unified prompts table directly to get ALL prompts
+            # The route binds `workspace_id` to the authenticated identity (invariant 1)
+            # and hands it down; this method used to ACCEPT it and never apply it, so
+            # the endpoint returned every active prompt row on the platform (#28 M14-2).
+            # The security work was done at the route and discarded one layer below,
+            # which is why reading the route would tell you it was safe.
+            #
+            # `workspace_scope` rather than a bare equality: platform defaults live in
+            # the global workspace and an admin is meant to see them alongside their own.
             query = self.supabase.client.table('prompts')\
                 .select('*')\
+                .in_('workspace_id', workspace_scope(workspace_id))\
                 .eq('is_active', True)
 
             if stage and stage != 'all':
@@ -150,9 +159,16 @@ class AdminPromptService:
 
             if current:
                 # Create audit trail entry
+                # `prompt_template` is not a column on `prompts` — the text lives in
+                # `prompt_text`, which the update twelve lines below already uses. This
+                # is bracket access, so it RAISED rather than returning None, and it sat
+                # on the update-existing branch BEFORE both the audit entry and the
+                # update: editing a prompt through this path had never worked, and left
+                # no audit trail precisely because the audit call is what raised (#28
+                # M14-1).
                 await self._create_audit_entry(
                     prompt_id=current['id'],
-                    old_prompt=current['prompt_template'],
+                    old_prompt=current.get('prompt_text'),
                     new_prompt=prompt_template,
                     changed_by=changed_by,
                     change_reason=change_reason
@@ -198,10 +214,30 @@ class AdminPromptService:
     
     async def get_prompt_history(
         self,
-        prompt_id: str
+        prompt_id: str,
+        workspace_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Get change history for a prompt - now uses unified prompt_history table"""
+        """Get change history for a prompt, scoped to the caller's workspace.
+
+        The history is a STRONGER disclosure than the current text — it shows every
+        revision — and it was readable by id alone (#28 M14-3). `prompt_history` has no
+        workspace of its own, so the parent prompt is resolved inside the workspace
+        first and an id belonging to someone else reads as empty.
+        """
         try:
+            if workspace_id:
+                owner = self.supabase.client.table('prompts')\
+                    .select('id')\
+                    .eq('id', prompt_id)\
+                    .in_('workspace_id', workspace_scope(workspace_id))\
+                    .limit(1)\
+                    .execute()
+                if not (owner.data or []):
+                    logger.warning(
+                        "prompt history refused: %s is not in workspace %s",
+                        prompt_id, workspace_id,
+                    )
+                    return []
             result = self.supabase.client.table('prompt_history')\
                 .select('*')\
                 .eq('prompt_id', prompt_id)\

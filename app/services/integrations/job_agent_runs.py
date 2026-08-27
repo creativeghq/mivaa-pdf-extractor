@@ -74,24 +74,44 @@ def create_background_agent_for_tracked_job(
         return None
 
 
-def deactivate_background_agent(agent_id: Optional[str]) -> None:
+def _set_agent_enabled(agent_id: Optional[str], workspace_id: Optional[str], enabled: bool) -> None:
+    """Toggle one background agent, inside one workspace.
+
+    `workspace_id` is REQUIRED and this refuses without it (#31 M17-1). The update used
+    to filter on id alone under a service-role connection, so a valid id was enough to
+    disable another workspace's background agent — and disabling is the worst of the
+    mutations here because it is SILENT: an agent that stops running looks exactly like
+    an agent with nothing to do.
+
+    The column is already populated (`create_background_agent` writes it), so this needs
+    no migration — the tenant was known all along and simply was not used.
+    """
     if not agent_id:
+        return
+    if not workspace_id:
+        logger.error(
+            "job-agent-runs: refusing to set enabled=%s on agent %s with no workspace — "
+            "an unscoped toggle reaches every tenant's agents (#31 M17-1)",
+            enabled, agent_id,
+        )
         return
     try:
         sb = get_supabase_client().client
-        sb.table("background_agents").update({"enabled": False}).eq("id", agent_id).execute()
+        (sb.table("background_agents")
+           .update({"enabled": enabled})
+           .eq("id", agent_id)
+           .eq("workspace_id", workspace_id)
+           .execute())
     except Exception as e:
-        logger.warning(f"job-agent-runs: deactivate failed: {e}")
+        logger.warning(f"job-agent-runs: set enabled={enabled} failed: {e}")
 
 
-def reactivate_background_agent(agent_id: Optional[str]) -> None:
-    if not agent_id:
-        return
-    try:
-        sb = get_supabase_client().client
-        sb.table("background_agents").update({"enabled": True}).eq("id", agent_id).execute()
-    except Exception as e:
-        logger.warning(f"job-agent-runs: reactivate failed: {e}")
+def deactivate_background_agent(agent_id: Optional[str], workspace_id: Optional[str] = None) -> None:
+    _set_agent_enabled(agent_id, workspace_id, False)
+
+
+def reactivate_background_agent(agent_id: Optional[str], workspace_id: Optional[str] = None) -> None:
+    _set_agent_enabled(agent_id, workspace_id, True)
 
 
 def start_run(
@@ -176,14 +196,22 @@ def complete_run(
             "credits_debited": int(credits_debited or 0),
         }).eq("id", run_id).execute()
         # Update background_agents.last_run_*
-        bg_res = sb.table("agent_runs").select("agent_id").eq("id", run_id).maybe_single().execute()
+        # Read the run's OWN workspace and bind the agent update to it. Two ids that
+        # are never checked against each other is the shape this audit keeps finding:
+        # `agent_id` came off the run row, and the update then trusted it alone
+        # (#31 M17-1). `agent_runs.workspace_id` is populated by `start_run`.
+        bg_res = (sb.table("agent_runs")
+                  .select("agent_id, workspace_id")
+                  .eq("id", run_id)
+                  .maybe_single()
+                  .execute())
         bg_id = (bg_res.data if bg_res else None) or {}
-        if bg_id.get("agent_id"):
+        if bg_id.get("agent_id") and bg_id.get("workspace_id"):
             sb.table("background_agents").update({
                 "last_run_at": _utc_iso(),
                 "last_run_status": "completed",
                 "run_count": _bump_run_count(bg_id["agent_id"]),
-            }).eq("id", bg_id["agent_id"]).execute()
+            }).eq("id", bg_id["agent_id"]).eq("workspace_id", bg_id["workspace_id"]).execute()
     except Exception as e:
         logger.warning(f"job-agent-runs: complete_run failed: {e}")
 
@@ -204,13 +232,21 @@ def fail_run(
             "completed_at": _utc_iso(),
             "duration_ms": duration_ms,
         }).eq("id", run_id).execute()
-        bg_res = sb.table("agent_runs").select("agent_id").eq("id", run_id).maybe_single().execute()
+        # Read the run's OWN workspace and bind the agent update to it. Two ids that
+        # are never checked against each other is the shape this audit keeps finding:
+        # `agent_id` came off the run row, and the update then trusted it alone
+        # (#31 M17-1). `agent_runs.workspace_id` is populated by `start_run`.
+        bg_res = (sb.table("agent_runs")
+                  .select("agent_id, workspace_id")
+                  .eq("id", run_id)
+                  .maybe_single()
+                  .execute())
         bg_id = (bg_res.data if bg_res else None) or {}
-        if bg_id.get("agent_id"):
+        if bg_id.get("agent_id") and bg_id.get("workspace_id"):
             sb.table("background_agents").update({
                 "last_run_at": _utc_iso(),
                 "last_run_status": "failed",
-            }).eq("id", bg_id["agent_id"]).execute()
+            }).eq("id", bg_id["agent_id"]).eq("workspace_id", bg_id["workspace_id"]).execute()
     except Exception as e:
         logger.warning(f"job-agent-runs: fail_run failed: {e}")
 

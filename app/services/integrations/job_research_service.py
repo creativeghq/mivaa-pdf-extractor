@@ -477,7 +477,10 @@ class JobResearchService:
             q = q.eq("user_id", owner_user_id)
         ok = bool(q.execute().data)
         if ok:
-            bookkeeping.deactivate_background_agent(existing.get("background_agent_id"))
+            bookkeeping.deactivate_background_agent(
+                existing.get("background_agent_id"),
+                existing.get("workspace_id"),
+            )
         return ok
 
     # ────────────────────────────────────────────────────────────────────
