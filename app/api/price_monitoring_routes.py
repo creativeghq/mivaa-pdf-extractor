@@ -67,6 +67,7 @@ from app.services.integrations.price_cost_logger import (
     PRICE_OP_CREDIT_COST, debit_credits, refund_credits,
 )
 from app.utils.paid_door import metered_door
+from app.utils.ssrf_guard import SSRFError, assert_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +276,7 @@ class ProductVerifyRequest(BaseModel):
 
 
 class AddUrlOnlyRequest(BaseModel):
-    url: str = Field(..., min_length=1)
+    url: str = Field(..., min_length=1, max_length=2000)
     country_code: Optional[str] = None
 
 
@@ -684,6 +685,18 @@ async def add_url_only(
     sb = get_supabase_client().client
     ctx = _resolve_product_context(sb, product_id)
     service = get_tracked_queries_service()
+
+    # Before the debit, not after (invariant 10): a URL we will refuse to fetch is not
+    # work, so it must not be charged for. The service validates again on the way in —
+    # this is the clean 422 rather than a refunded 500 (audit #19 M6-2).
+    try:
+        assert_safe_url(body.url.strip())
+    except SSRFError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"That URL cannot be monitored: {e}",
+        )
+
     async with metered_door(
         user_id=current_user_id(user),
         workspace_id=workspace.workspace_id if workspace else None,
