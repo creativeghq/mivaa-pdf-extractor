@@ -22,7 +22,6 @@ are still null/empty. Never overwrites AI values that already exist.
 
 import base64
 import io
-import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -57,6 +56,9 @@ MAX_IMAGE_BYTES = 4_000_000
 # Prompt: extraction / image_analysis / product_spec_vision (#347 phase 3P).
 
 
+from app.services.core.claude_tool_call import ToolCallNotReturned, extract_tool_input
+
+
 def _build_spec_prompt(product_name: str) -> str:
     """Fill the stored spec template with the target product name.
 
@@ -71,6 +73,33 @@ def _build_spec_prompt(product_name: str) -> str:
 # Was `SPEC_PROMPT = _build_spec_prompt(...)`, evaluated at IMPORT time — which can neither
 # await nor reach the prompt store. A function instead, resolved when it is actually needed
 # (#347 phase 3P).
+#: The forced tool for spec extraction (#25 M12-2).
+#:
+#: The schema is deliberately PERMISSIVE — an object, no declared properties, nothing
+#: required. That is not laziness: the shape of a spec reply is described inside the
+#: prompt, which is stored in the database and edited by admins at /admin/ai-configs.
+#: Restating those keys here would create a second source that drifts the first time
+#: somebody edits the prompt, and a tool schema that disagrees with the prompt is worse
+#: than no schema at all — the model is forced to satisfy the schema, so the edit would
+#: silently stop taking effect.
+#:
+#: What forcing the tool buys, even with an open schema, is the entire failure mode:
+#: the model cannot return prose, so there is nothing to strip, and an absent tool block
+#: is a typed error instead of a None that reads exactly like "this page had no specs".
+SPEC_VISION_TOOL = {
+    "name": "emit_product_spec",
+    "description": (
+        "Emit the extracted product specification for this catalogue page as a JSON "
+        "object, using exactly the keys described in the instructions."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": True,
+    },
+}
+
+
 def default_spec_prompt() -> str:
     return _build_spec_prompt("the ceramic product on this page")
 
@@ -269,30 +298,33 @@ def _call_claude_vision(
             }],
             job_id=job_id,
             product_id=product_id,
+            # Forced, so the reply is a tool call and not prose that has to be repaired.
+            # This whole chain is synchronous up through product_spec_extractor_v2, so it
+            # uses the sync helper plus the shared extractor rather than
+            # `call_with_tool` — same contract, no event loop required, and no async
+            # refactor smuggled into a parsing fix.
+            extra_kwargs={
+                "tools": [SPEC_VISION_TOOL],
+                "tool_choice": {"type": "tool", "name": SPEC_VISION_TOOL["name"]},
+            },
         )
     except Exception as e:
         report_anthropic_failure(e, service="product_spec_vision_extractor")
         logger.warning(f"product_spec_vision_extractor: Claude call failed: {e}")
         return None
 
-    text = resp.content[0].text if resp.content else ""
-    stripped = text.strip()
-    # Strip markdown fences if Claude ignored the "no fences" instruction
-    if stripped.startswith("```"):
-        inner = stripped.split("```", 2)
-        if len(inner) >= 2:
-            stripped = inner[1]
-            if stripped.startswith("json"):
-                stripped = stripped[4:]
-            stripped = stripped.strip()
-
+    # The fence-stripping and the json.loads that used to be here are gone with the
+    # contract that needed them. The comment on the strip said it all: "if Claude
+    # ignored the 'no fences' instruction" — repair logic written by someone who had
+    # already watched the free-form contract break.
     try:
-        return json.loads(stripped)
-    except json.JSONDecodeError as e:
-        logger.warning(
-            f"product_spec_vision_extractor: JSON parse failed ({e}); "
-            f"raw[:200]={stripped[:200]!r}"
-        )
+        return extract_tool_input(resp, SPEC_VISION_TOOL["name"])
+    except ToolCallNotReturned as e:
+        # None is the caller's "nothing on this page" signal and is preserved on
+        # purpose — `extract_specs_from_pdf_pages` does `if not data: continue`, so
+        # raising here would abandon the remaining pages of the catalogue over one bad
+        # reply. Logged at warning so a systematic break is still visible.
+        logger.warning(f"product_spec_vision_extractor: {e}")
         return None
 
 

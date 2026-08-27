@@ -46,7 +46,9 @@ class ImageProductAssociation:
     product_id: str
     spatial_score: float
     caption_score: float
-    clip_score: float
+    # Optional: None means the visual signal did not participate, which is not the
+    # same claim as a score of 0.0. Persisted as SQL NULL.
+    clip_score: Optional[float]
     overall_score: float
     confidence: float
     reasoning: str
@@ -58,6 +60,10 @@ class MultiModalImageProductAssociationService:
     def __init__(self):
         self.supabase = get_supabase_client()
         self.logger = logger
+        # One warning per service instance, not one per image x product pair. A
+        # per-pair log on a 40-image catalogue is 40 x N lines of the same sentence,
+        # which is how a real signal gets tuned out.
+        self._logged_visual_skip = False
 
     async def create_document_associations(
         self,
@@ -94,6 +100,37 @@ class MultiModalImageProductAssociationService:
                     "average_confidence": 0,
                     "associations": []
                 }
+
+            # The tenant this run belongs to, derived ONCE and verified (#25 M12-4).
+            #
+            # Images were fetched by document_id and products by source_document_id,
+            # and the row written afterwards named only the two ids — no workspace
+            # anywhere in the path. `image_product_associations` now carries
+            # workspace_id with a composite FK to (products.id, workspace_id), so a
+            # cross-tenant association is refused by Postgres; this derivation is what
+            # supplies it, and the disagreement check below is what stops a corrupt
+            # document silently picking whichever workspace sorted first.
+            workspace_ids = {p.get('workspace_id') for p in products if p.get('workspace_id')}
+            if len(workspace_ids) != 1:
+                raise ValueError(
+                    f"document {document_id} resolves to {len(workspace_ids)} workspaces "
+                    f"({sorted(workspace_ids)}) — refusing to associate, because writing "
+                    "either one would bind these images to a tenant that may not own them"
+                )
+            workspace_id = workspace_ids.pop()
+
+            # document_images.workspace_id is nullable, so this is checked rather than
+            # assumed. An image belonging to another tenant is a bug that must not be
+            # resolved by trusting the product side.
+            foreign = [
+                i['id'] for i in images
+                if i.get('workspace_id') and i['workspace_id'] != workspace_id
+            ]
+            if foreign:
+                raise ValueError(
+                    f"document {document_id}: {len(foreign)} image(s) belong to a "
+                    f"different workspace than its products — first: {foreign[0]}"
+                )
 
             self.logger.info(f"📊 Evaluating {len(images)} images × {len(products)} products = {len(images) * len(products)} potential associations")
 
@@ -139,7 +176,9 @@ class MultiModalImageProductAssociationService:
             final_associations = self._apply_association_limits(all_associations, options)
 
             # Create database relationships
-            associations_created = await self._create_database_associations(final_associations)
+            associations_created = await self._create_database_associations(
+                final_associations, workspace_id
+            )
 
             average_confidence = (
                 sum(assoc.confidence for assoc in final_associations) / len(final_associations)
@@ -173,16 +212,25 @@ class MultiModalImageProductAssociationService:
         caption_score = await self._calculate_caption_score(image, product)
         clip_score = await self._calculate_clip_score(image, product)
 
-        # Calculate weighted overall score
+        # Weighted over the signals that PARTICIPATED. A signal that could not be
+        # computed is dropped and the remaining weights are renormalised, so an absent
+        # visual score neither contributes a phantom constant nor silently rescales the
+        # threshold everything else is compared against.
         weights = options.weights
-        overall_score = (
-            spatial_score * weights.spatial +
-            caption_score * weights.caption +
-            clip_score * weights.clip
-        )
+        components = [
+            (spatial_score, weights.spatial),
+            (caption_score, weights.caption),
+        ]
+        if clip_score is not None:
+            components.append((clip_score, weights.clip))
+        total_weight = sum(w for _, w in components) or 1.0
+        overall_score = sum(score * w for score, w in components) / total_weight
 
-        # Calculate confidence based on score distribution
-        confidence = self._calculate_confidence(spatial_score, caption_score, clip_score, overall_score)
+        # Confidence sees the same set. Passing a placeholder here is what let a
+        # constant masquerade as agreement between independent signals.
+        confidence = self._calculate_confidence(
+            [score for score, _ in components], overall_score
+        )
 
         # Generate reasoning
         reasoning = self._generate_reasoning(spatial_score, caption_score, clip_score, overall_score, weights)
@@ -220,10 +268,18 @@ class MultiModalImageProductAssociationService:
                     "product_name": product.get('name', ''),
                     "text_similarity": caption_score
                 },
+                # `has_image_embedding` read the same nonexistent columns as the
+                # scorer, so it was stored False on every association regardless of what
+                # VECS actually held. The `has_*_embedding` booleans are the canonical
+                # check; `participated` records whether the signal reached the score at
+                # all, which is what a reader of this row actually needs to know.
                 "clip_similarity": {
                     "visual_text_similarity": clip_score,
-                    "has_image_embedding": bool(image.get('clip_embedding') or image.get('visual_embedding')),
-                    "has_product_embedding": bool(product.get('clip_embedding') or product_metadata.get('clip_embedding'))
+                    "participated": clip_score is not None,
+                    "has_image_embedding": bool(
+                        image.get('has_slig_embedding') or image.get('has_understanding_embedding')
+                    ),
+                    "has_product_embedding": bool(product.get('text_embedding_1024'))
                 }
             }
         )
@@ -344,49 +400,66 @@ class MultiModalImageProductAssociationService:
         # This ensures even low text overlap doesn't completely tank the score
         return 0.3 + (jaccard_similarity * 0.7)
 
-    async def _calculate_clip_score(self, image: Dict[str, Any], product: Dict[str, Any]) -> float:
-        """Calculate SLIG (SigLIP2) visual similarity score (0-1).
+    async def _calculate_clip_score(
+        self, image: Dict[str, Any], product: Dict[str, Any]
+    ) -> Optional[float]:
+        """The visual similarity score, or None when there is no visual signal.
 
-        Uses actual cosine similarity between embeddings when available.
-        Falls back to neutral score when embeddings are missing.
+        None is the point of this function (#25 M12-1). What was here read three
+        columns that do not exist:
+
+            image.get('clip_embedding') or image.get('visual_embedding') or image.get('embedding')
+
+        `document_images` has none of them — image vectors live in VECS, and the
+        canonical O(1) presence check is the `has_*_embedding` boolean. The rows are
+        fetched with `select('*')`, so PostgREST returned the columns that DO exist and
+        `.get()` answered None for the rest: no KeyError, no warning, the `or` chain
+        collapsed, and the documented "neutral score" fallback fired on every call ever
+        made. The product side guessed too — `text_embedding`, where the column is
+        `text_embedding_1024`.
+
+        A constant 0.5 at 30% weight is not a neutral fallback. It is:
+
+          * a fixed +0.15 on every overall score, so the threshold means something
+            different from what it says
+          * a third data point in `_calculate_confidence`'s variance, which rewards
+            "agreement" with a number that agrees with nothing
+          * the string 'moderate visual relevance' in the stored reasoning of every
+            association, because 0.5 clears that branch's threshold exactly
+
+        So returning None and renormalising is not a smaller answer than 0.5 — it is
+        the difference between an absent signal and a fabricated one.
+
+        The comment that caused it was `# could be under different field names`. The
+        author was unsure of the schema and hedged across three guesses; the platform
+        rule against exactly that hedge is why `has_slig_embedding` exists.
         """
         try:
-            # Get image embedding (could be under different field names)
-            image_embedding = (
-                image.get('clip_embedding') or
-                image.get('visual_embedding') or
-                image.get('embedding')
+            # The canonical O(1) checks. Cheap, and true only when a vector really
+            # exists in the matching VECS collection.
+            has_visual = bool(
+                image.get('has_slig_embedding') or image.get('has_understanding_embedding')
             )
+            if not has_visual:
+                return None
 
-            # Get product text embedding (if available)
-            product_embedding = None
-            product_metadata = product.get('metadata', {})
-            product_embedding = (
-                product.get('clip_embedding') or
-                product.get('text_embedding') or
-                product_metadata.get('clip_embedding') or
-                product_metadata.get('text_embedding')
-            )
-
-            # If we have both embeddings, compute actual cosine similarity
-            if image_embedding and product_embedding:
-                similarity = self._cosine_similarity(image_embedding, product_embedding)
-                # CLIP similarities are typically in range [-1, 1], normalize to [0, 1]
-                normalized = (similarity + 1) / 2
-                return max(0.0, min(1.0, normalized))
-
-            # If we have image embedding but no product embedding, use neutral score
-            if image_embedding:
-                # Slight boost for having visual data even if no product embedding
-                return 0.5
-
-            # No embeddings available - return neutral score
-            # This doesn't penalize but doesn't boost either
-            return 0.5
+            # A vector exists but this service does not yet read VECS, so it still
+            # cannot participate. Said out loud rather than scored: the honest failure
+            # marker (pipeline convention 1) instead of the silent constant that hid
+            # this for the lifetime of the service.
+            if not self._logged_visual_skip:
+                self._logged_visual_skip = True
+                self.logger.warning(
+                    "⚠️ Visual similarity is not contributing: the image has an embedding "
+                    "in VECS but this service does not read it, so associations are "
+                    "scored on spatial + caption signal only. Weights are renormalised "
+                    "over the signals that actually participated."
+                )
+            return None
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Error calculating CLIP score: {e}")
-            return 0.5  # Neutral score on error
+            self.logger.warning(f"⚠️ Error calculating visual similarity: {e}")
+            return None
 
     def _cosine_similarity(self, vec_a: list, vec_b: list) -> float:
         """Compute cosine similarity between two vectors."""
@@ -408,13 +481,18 @@ class MultiModalImageProductAssociationService:
 
     def _calculate_confidence(
         self,
-        spatial_score: float,
-        caption_score: float,
-        clip_score: float,
+        scores: List[float],
         overall_score: float
     ) -> float:
-        """Calculate confidence based on score distribution."""
-        scores = [spatial_score, caption_score, clip_score]
+        """Confidence from the spread of the signals that actually participated.
+
+        Takes the list rather than three positional scores so an absent signal is
+        ABSENT here too. It previously received a constant 0.5 as its third data point,
+        which pulled the variance toward zero and handed out a consistency bonus for
+        agreeing with a number that measured nothing.
+        """
+        if not scores:
+            return 0.0
         
         # Calculate variance
         mean_score = sum(scores) / len(scores)
@@ -432,7 +510,7 @@ class MultiModalImageProductAssociationService:
         self,
         spatial_score: float,
         caption_score: float,
-        clip_score: float,
+        clip_score: Optional[float],
         overall_score: float,
         weights: AssociationWeights
     ) -> str:
@@ -455,11 +533,15 @@ class MultiModalImageProductAssociationService:
         elif caption_score >= 0.3:
             reasons.append('some text overlap')
 
-        # CLIP reasoning
-        if clip_score >= 0.7:
-            reasons.append('high visual-text similarity')
-        elif clip_score >= 0.5:
-            reasons.append('moderate visual relevance')
+        # Visual reasoning — only when there WAS a visual signal. The constant 0.5
+        # cleared the second branch exactly, so 'moderate visual relevance' was written
+        # into the stored reasoning of every association this service ever made,
+        # describing a comparison that never happened.
+        if clip_score is not None:
+            if clip_score >= 0.7:
+                reasons.append('high visual-text similarity')
+            elif clip_score >= 0.5:
+                reasons.append('moderate visual relevance')
 
         # Overall assessment
         if overall_score >= 0.8:
@@ -500,66 +582,61 @@ class MultiModalImageProductAssociationService:
 
     async def _create_database_associations(
         self,
-        associations: List[ImageProductAssociation]
+        associations: List[ImageProductAssociation],
+        workspace_id: str
     ) -> int:
-        """Create database relationships from associations."""
-        created = 0
+        """Write the associations. ONE upsert, tenant-bound (#25 M12-4, M12-5).
+
+        This used to upsert the same rows to the same table TWICE: first with
+        `reasoning: "depicts"` and `metadata: {}`, then again with the real reasoning
+        and the score breakdown. Both were wrapped in one try that logged and swallowed,
+        and `created` — taken from the FIRST write — was returned either way.
+
+        So a failure of the second write left a complete-looking association whose
+        stated reason was the placeholder and whose metadata was empty, reported as a
+        success. That is indistinguishable from a genuine low-information association,
+        which is the ambiguity pipeline convention 3 exists to remove: one atomic write,
+        not two that can disagree.
+
+        The first write was also pure waste — same table, same conflict target, same
+        rows, immediately overwritten.
+        """
+        if not associations:
+            return 0
+
+        rows = [
+            {
+                "workspace_id": workspace_id,
+                "image_id": assoc.image_id,
+                "product_id": assoc.product_id,
+                "spatial_score": assoc.spatial_score,
+                "caption_score": assoc.caption_score,
+                # NULL when the visual signal did not participate. The column was made
+                # nullable for this: a score of 0.0 would read as "looked and found no
+                # resemblance", which is a different claim.
+                "clip_score": assoc.clip_score,
+                "overall_score": assoc.overall_score,
+                "confidence": assoc.confidence,
+                "reasoning": assoc.reasoning,
+                "metadata": assoc.metadata,
+            }
+            for assoc in associations
+        ]
 
         try:
-            if not associations:
-                return 0
-
-            # Create product-image relationships.
-            product_image_data = [
-                {
-                    "product_id": assoc.product_id,
-                    "image_id": assoc.image_id,
-                    "spatial_score": assoc.spatial_score,
-                    "caption_score": assoc.caption_score,
-                    "clip_score": assoc.clip_score,
-                    "overall_score": assoc.overall_score,
-                    "confidence": assoc.confidence,
-                    "reasoning": "depicts",  # replaces relationship_type
-                    "metadata": {}
-                }
-                for assoc in associations
-            ]
-
-            if product_image_data:
-                result = self.supabase.client.table('image_product_associations').upsert(
-                    product_image_data,
-                    on_conflict='product_id,image_id'
-                ).execute()
-
-                if result.data:
-                    created = len(result.data)
-
-            # Store detailed association metadata
-            association_metadata = [
-                {
-                    "image_id": assoc.image_id,
-                    "product_id": assoc.product_id,
-                    "spatial_score": assoc.spatial_score,
-                    "caption_score": assoc.caption_score,
-                    "clip_score": assoc.clip_score,
-                    "overall_score": assoc.overall_score,
-                    "confidence": assoc.confidence,
-                    "reasoning": assoc.reasoning,
-                    "metadata": assoc.metadata
-                }
-                for assoc in associations
-            ]
-
-            if association_metadata:
-                self.supabase.client.table('image_product_associations').upsert(
-                    association_metadata,
-                    on_conflict='image_id,product_id'
-                ).execute()
-
+            result = self.supabase.client.table('image_product_associations').upsert(
+                rows,
+                on_conflict='image_id,product_id'
+            ).execute()
         except Exception as e:
+            # Raised, not swallowed. The caller reports `associations_created` to the
+            # orchestrator, and returning 0 after a failed write is the silent-zero
+            # shape: a run that wrote nothing looks exactly like a catalogue that
+            # earned no associations.
             self.logger.error(f"❌ Error creating database associations: {e}")
+            raise
 
-        return created
+        return len(result.data or [])
 
     async def _get_document_images(self, document_id: str) -> List[Dict[str, Any]]:
         """Get all images for a document."""

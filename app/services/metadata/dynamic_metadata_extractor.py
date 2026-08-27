@@ -522,15 +522,19 @@ class DynamicMetadataExtractor:
             self.logger.info("💰 Metadata extraction cache hit — skipping Claude call")
             return cached
 
-        start_time = datetime.now()
         model = _os.environ.get("METADATA_EXTRACTOR_MODEL", "claude-haiku-4-5")
 
         try:
-            # Use centralized AI client service
-            ai_service = get_ai_client_service()
-            client = ai_service.anthropic
+            # Through the tracked helper (#33 item 2). This was the SYNC
+            # `messages.create` called from an `async def`, so every extraction blocked
+            # the event loop for a whole round-trip, and the cost row was written by
+            # hand afterwards — meaning a call that RAISED recorded nothing, though
+            # Anthropic bills a request it accepted. The helper logs both outcomes and
+            # resolves the billable user from `job_id`.
+            from app.services.core.claude_helper import tracked_claude_call_async
 
-            response = client.messages.create(
+            response = await tracked_claude_call_async(
+                task="dynamic_metadata_extraction",
                 model=model,
                 max_tokens=16000,
                 messages=[
@@ -538,7 +542,10 @@ class DynamicMetadataExtractor:
                         "role": "user",
                         "content": prompt
                     }
-                ]
+                ],
+                confidence_breakdown={},
+                action="use_ai_result",  # must be 'use_ai_result' or 'fallback_to_rules'
+                job_id=self.job_id,
             )
 
             content = response.content[0].text
@@ -548,19 +555,6 @@ class DynamicMetadataExtractor:
             if len(cache) >= DynamicMetadataExtractor._CALL_CACHE_MAX:
                 cache.pop(next(iter(cache)))
             cache[cache_key] = content
-
-            # Log AI call
-            latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            await self.ai_logger.log_claude_call(
-                task="dynamic_metadata_extraction",
-                model=model,
-                response=response,
-                latency_ms=latency_ms,
-                confidence_score=0.9,
-                confidence_breakdown={},
-                action="use_ai_result",  # must be 'use_ai_result' or 'fallback_to_rules'
-                job_id=self.job_id
-            )
 
             return content
 

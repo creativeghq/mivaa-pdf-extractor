@@ -335,80 +335,19 @@ class OCRService:
             job_id=job_id, document_id=document_id,
         )
     
-    def extract_text_simple(
-        self, 
-        image_input: Union[str, Path, np.ndarray, Image.Image]
-    ) -> str:
-        """
-        Extract text from image and return as simple concatenated string.
-        
-        Args:
-            image_input: Image file path, numpy array, or PIL Image
-            
-        Returns:
-            Extracted text as a single string
-        """
-        results = self.extract_text_from_image(image_input)
-        
-        # Concatenate all text results
-        text_parts = [result.text for result in results if result.text.strip()]
-        return ' '.join(text_parts)
-    
-    def get_text_with_confidence(
-        self, 
-        image_input: Union[str, Path, np.ndarray, Image.Image],
-        min_confidence: float = 0.5
-    ) -> Dict[str, Any]:
-        """
-        Extract text with confidence metrics and metadata.
-        
-        Args:
-            image_input: Image file path, numpy array, or PIL Image
-            min_confidence: Minimum confidence threshold for results
-            
-        Returns:
-            Dictionary with extracted text, confidence metrics, and metadata
-        """
-        results = self.extract_text_from_image(image_input)
-        
-        # Filter by confidence
-        filtered_results = [r for r in results if r.confidence >= min_confidence]
-        
-        if not filtered_results:
-            return {
-                'text': '',
-                'confidence': 0.0,
-                'word_count': 0,
-                'regions': 0,
-                'methods_used': [],
-                'metadata': {}
-            }
-        
-        # Calculate metrics
-        all_text = ' '.join([r.text for r in filtered_results])
-        avg_confidence = sum(r.confidence for r in filtered_results) / len(filtered_results)
-        methods_used = list(set(r.method for r in filtered_results if r.method))
-        
-        return {
-            'text': all_text,
-            'confidence': avg_confidence,
-            'word_count': len(all_text.split()),
-            'regions': len(filtered_results),
-            'methods_used': methods_used,
-            'metadata': {
-                'languages': self.config.languages,
-                'preprocessing_used': self.config.preprocessing_enabled,
-                'results': [
-                    {
-                        'text': r.text,
-                        'confidence': r.confidence,
-                        'bbox': r.bbox,
-                        'method': r.method
-                    } for r in filtered_results
-                ]
-            }
-        }
-    
+    # `extract_text_simple` and `get_text_with_confidence` were removed (#25 M12-3).
+    #
+    # `_call_paddleocr` implements pipeline convention 1 correctly: it returns
+    # `OCRResult(method='paddleocr_failed')` on error and on retry exhaustion, so a real
+    # failure is distinguishable from a crop that genuinely held no text. Both of these
+    # methods then threw that distinction away — one returned joined text only, the
+    # other filtered the failed marker out by confidence and returned empty metadata.
+    #
+    # Neither had a single caller anywhere in the tree. Propagating a marker through
+    # code nobody runs would have been ceremony; the ambiguity is gone because the
+    # convenience wrappers that reintroduced it are gone. Callers use
+    # `extract_text_from_image`, which returns the OCRResult list with `method` intact.
+
     def _load_image(self, image_input: Union[str, Path, np.ndarray, Image.Image]) -> np.ndarray:
         """
         Load and convert image to numpy array.
@@ -519,13 +458,27 @@ class OCRService:
                 False,  # use_preprocessing=False — we already preprocessed above
             )
 
-            # Filter out paddleocr_failed markers — they have no usable text.
-            ocr_results = [
-                r for r in (ocr_results or [])
-                if r.method != 'paddleocr_failed' and (r.text.strip() or r.blocks)
-            ]
+            # A FAILED OCR is not an empty one (#25 M12-3).
+            #
+            # This used to filter the `paddleocr_failed` marker out alongside empty
+            # results and return [] for both. The caller logs [] as "no spec items
+            # extracted" and reports the image processed successfully — so a PaddleOCR
+            # crash and a crop with genuinely no text produced the identical outcome,
+            # which is precisely the ambiguity the marker was introduced to remove.
+            #
+            # Raising is right rather than returning a sentinel: the caller already
+            # wraps this in `except Exception` and returns a real failure tuple from it.
+            # The distinction just had nothing to travel through.
+            ocr_results = list(ocr_results or [])
+            if any(r.method == 'paddleocr_failed' for r in ocr_results):
+                raise RuntimeError(
+                    "PaddleOCR failed on this image — not an empty crop. Retrying is "
+                    "meaningful; treating it as 'no text' is not."
+                )
+
+            ocr_results = [r for r in ocr_results if r.text.strip() or r.blocks]
             if not ocr_results:
-                logger.warning("No text extracted from image (PaddleOCR failed or crop empty)")
+                logger.info("No text on this crop (OCR ran clean and found nothing)")
                 return []
 
             # Build per-fragment OCR data from PaddleOCR's per-block bboxes so the
