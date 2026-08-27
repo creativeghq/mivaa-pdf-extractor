@@ -66,11 +66,12 @@ async def process_stage_5_quality(
     logger.info("⚡ [STAGE 5] Quality Enhancement - Starting (Async)...")
 
     # Process Claude validation queue (for low-scoring images) with circuit breaker
-    claude_service = ClaudeValidationService()
+    claude_service = ClaudeValidationService(workspace_id=workspace_id)
     try:
         validation_results = await claude_breaker.call(
             claude_service.process_validation_queue,
-            document_id=document_id
+            document_id=document_id,
+            workspace_id=workspace_id,
         )
         logger.info(f"   Claude validation: {validation_results.get('validated', 0)} images validated")
         logger.info(f"   Average quality improvement: {validation_results.get('avg_improvement', 0):.2f}")
