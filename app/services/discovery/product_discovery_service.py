@@ -49,7 +49,6 @@ from app.services.core.ai_call_logger import AICallLogger
 from app.services.metadata.dynamic_metadata_extractor import DynamicMetadataExtractor
 from app.services.metadata.metadata_shape import flatten_extracted_metadata
 from app.services.metadata.field_registry import field_registry
-from app.services.core.ai_client_service import get_ai_client_service
 from app.services.utilities.prompt_templates import get_prompt_template_from_db
 # PageConverter removed - using simple PDF page numbers instead
 from app.config import get_settings
@@ -963,46 +962,33 @@ class ProductDiscoveryService:
         # and we cap cost. Opus would be 12× the price for a path that may
         # never succeed (truly non-product PDFs).
         model_to_use = "claude-haiku-4-5"
-        start_time = datetime.now()
         try:
-            ai_service = get_ai_client_service()
-            client = ai_service.anthropic
-            response = client.messages.create(
+            # Through the tracked helper (#33 item 2). This was the SYNC
+            # `messages.create` called from an `async def`, so every vision retry blocked
+            # the event loop for a whole round-trip, and the cost row was written by hand
+            # afterwards — which also meant a call that RAISED recorded nothing, though
+            # Anthropic bills a request it accepted.
+            #
+            # `confidence_score=0.0` is carried over deliberately, not defaulted. The
+            # note it replaces explains why: the real confidence is not knowable before
+            # the payload is parsed, and 0.9 would assert high confidence for a
+            # best-effort fallback path.
+            from app.services.core.claude_helper import tracked_claude_call_async
+
+            response = await tracked_claude_call_async(
+                task="product_discovery_vision_retry",
                 model=model_to_use,
                 max_tokens=8000,
                 messages=[{"role": "user", "content": content_blocks}],
-                tools=[PRODUCT_DISCOVERY_TOOL],
-                tool_choice={"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]},
+                confidence_score=0.0,
+                confidence_breakdown={},
+                action="vision_fallback",
+                job_id=job_id,
+                extra_kwargs={
+                    "tools": [PRODUCT_DISCOVERY_TOOL],
+                    "tool_choice": {"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]},
+                },
             )
-            # Log the cost HERE — the call has completed and Anthropic has billed for
-            # it. This used to sit after the JSON parse + regex repair, so every response
-            # that failed to parse (and every empty/no-text-block response above)
-            # returned without writing an ai_usage_logs row. That lost attribution
-            # precisely on the failures, on the path that only runs when a catalog is
-            # already hard — image-baked product names. Cost accounting must not
-            # depend on whether the payload turned out to be usable.
-            _latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-            try:
-                await self.ai_logger.log_claude_call(
-                    task="product_discovery_vision_retry",
-                    model=model_to_use,
-                    response=response,
-                    latency_ms=_latency_ms,
-                    # 0.0, not None: log_claude_call does round(confidence_score, 2)
-                    # and f"{confidence_score:.2f}", both of which raise TypeError on
-                    # None — inside a try/except that only warns, so the cost row would
-                    # be lost again, which is the exact bug this move exists to fix.
-                    # The real confidence is not knowable before the payload is parsed.
-                    confidence_score=0.0,
-                    confidence_breakdown={},
-                    action="vision_fallback",
-                    job_id=job_id,
-                )
-            except Exception as _log_err:
-                self.logger.warning(
-                    f"   vision retry: cost logging failed (call still billed): {_log_err}"
-                )
-
             if not getattr(response, "content", None):
                 self.logger.error("   vision retry: Claude returned empty content (no blocks)")
                 return None
@@ -1259,19 +1245,39 @@ class ProductDiscoveryService:
         last_error: Optional[Exception] = None
 
         for attempt_idx, model_to_use in enumerate(attempts, start=1):
-            start_time = datetime.now()
             try:
-                ai_service = get_ai_client_service()
-                client = ai_service.anthropic
+                # Through the tracked helper (#33 item 2). Sync `messages.create` from an
+                # `async def` again, plus a hand-written cost row afterwards — so an
+                # attempt that RAISED was billed by Anthropic and recorded by nobody,
+                # which on a two-attempt retry path is the half most likely to fail.
+                #
+                # `confidence_score` is a CALLABLE here: the value logged was
+                # `result["confidence_score"]`, which the model reports inside its own
+                # reply and which therefore does not exist at call time. Passing the
+                # 0.9 default instead would have replaced a measured signal with an
+                # assumed one — an invisible cost traded for a quietly wrong number.
+                from app.services.core.claude_helper import tracked_claude_call_async
+                from app.services.core.claude_tool_call import extract_tool_input
 
-                response = client.messages.create(
+                response = await tracked_claude_call_async(
+                    task="product_discovery",
                     model=model_to_use,
                     max_tokens=16000,
                     messages=[
                         {"role": "user", "content": prompt}
                     ],
-                    tools=[PRODUCT_DISCOVERY_TOOL],
-                    tool_choice={"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]},
+                    confidence_score=lambda r: float(
+                        extract_tool_input(r, PRODUCT_DISCOVERY_TOOL["name"]).get(
+                            "confidence_score", 0.9
+                        )
+                    ),
+                    confidence_breakdown={},
+                    action="use_ai_result" if attempt_idx == 1 else "fallback_to_rules",
+                    job_id=job_id,
+                    extra_kwargs={
+                        "tools": [PRODUCT_DISCOVERY_TOOL],
+                        "tool_choice": {"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]},
+                    },
                 )
                 if not getattr(response, "content", None):
                     raise ValueError("Claude returned empty content (no blocks)")
@@ -1285,17 +1291,6 @@ class ProductDiscoveryService:
                     product_names = [p.get("name", "Unknown") for p in result.get("products", [])]
                     self.logger.info(f"   Product names: {product_names}")
 
-                latency_ms = int((datetime.now() - start_time).total_seconds() * 1000)
-                await self.ai_logger.log_claude_call(
-                    task="product_discovery",
-                    model=model_to_use,
-                    response=response,
-                    latency_ms=latency_ms,
-                    confidence_score=result.get("confidence_score", 0.9),
-                    confidence_breakdown={},
-                    action="use_ai_result" if attempt_idx == 1 else "fallback_to_rules",
-                    job_id=job_id
-                )
                 return result
 
             except Exception as e:

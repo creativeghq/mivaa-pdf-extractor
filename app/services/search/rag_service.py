@@ -2162,27 +2162,32 @@ class RAGService:
                 context=context,
             )
 
-            # Step 4: Call Claude Opus 4.7
-            client = self.ai_client_service.anthropic
-            response = client.messages.create(
+            # Step 4: Call Claude through the tracked helper (#33 item 2). This was the
+            # SYNC `messages.create` from an `async def` — blocking the loop for a whole
+            # Opus round-trip on a user-facing search — with the cost row written by
+            # hand afterwards, so a call that raised was billed and recorded nowhere.
+            #
+            # No forced tool here, deliberately: the reply is a prose ANSWER, not a
+            # structured verdict. There is nothing to parse and therefore nothing to
+            # repair, so this is not part of the #32 class.
+            from app.services.core.claude_helper import tracked_claude_call_async
+
+            response = await tracked_claude_call_async(
+                task="rag_query_document",
                 model="claude-opus-4-8",
                 max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
+                confidence_score=0.85,
+                confidence_breakdown={},
+                action="use_ai_result",
             )
 
             answer = response.content[0].text.strip()
-
-            # Step 5: Log AI call
+            # Still measured: the helper logs its own latency, but this one is
+            # RETURNED to the caller as `processing_time_ms` and covers the whole
+            # retrieval + generation path, not just the model round-trip.
             latency_ms = int((time.time() - start_time) * 1000)
-            await self.ai_logger.log_claude_call(
-                task="rag_query_document",
-                model="claude-opus-4-8",
-                response=response,
-                latency_ms=latency_ms,
-                confidence_score=0.85,
-                confidence_breakdown={},
-                action="use_ai_result"
-            )
+
 
             # Step 6: Format sources
             sources = []
@@ -2312,35 +2317,37 @@ class RAGService:
                 instruction=instruction,
             )
 
-            # Step 6: Call Claude Opus 4.7
-            client = self.ai_client_service.anthropic
-            response = client.messages.create(
-                model="claude-opus-4-8",
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            # Step 6: Call Claude through the tracked helper (#33 item 2), same as the
+            # simpler query path above.
+            #
+            # The confidence moves BEFORE the call rather than after, because it was
+            # never post-hoc: it is derived from the RETRIEVAL scores, known the moment
+            # `filtered_chunks` exists. Nothing about the model's reply entered it.
+            from app.services.core.claude_helper import tracked_claude_call_async
 
-            answer = response.content[0].text.strip()
-
-            # Step 7: Calculate confidence score
             avg_score = sum(c.get('score', 0.0) for c in filtered_chunks) / len(filtered_chunks)
             confidence = min(avg_score * 1.2, 1.0)  # Boost slightly, cap at 1.0
 
-            # Step 8: Log AI call
-            latency_ms = int((time.time() - start_time) * 1000)
-            await self.ai_logger.log_claude_call(
+            response = await tracked_claude_call_async(
                 task=f"rag_advanced_query_{query_type}",
                 model="claude-opus-4-8",
-                response=response,
-                latency_ms=latency_ms,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
                 confidence_score=confidence,
                 confidence_breakdown={
                     "retrieval_quality": avg_score,
                     "chunk_count": len(filtered_chunks),
                     "threshold_met": all(c.get('score', 0) >= similarity_threshold for c in filtered_chunks)
                 },
-                action="use_ai_result"
+                action="use_ai_result",
             )
+
+            answer = response.content[0].text.strip()
+            # Still measured: the helper logs its own latency, but this one is
+            # RETURNED to the caller as `processing_time_ms` and covers the whole
+            # retrieval + generation path, not just the model round-trip.
+            latency_ms = int((time.time() - start_time) * 1000)
+
 
             # Step 9: Format sources
             sources = []
@@ -2420,7 +2427,6 @@ class RAGService:
             Dict with quality_score, confidence_score, material_properties.
         """
         try:
-            import httpx
             from app.models.vision_analysis import VISION_ANALYSIS_TOOL
 
             anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
@@ -2435,90 +2441,84 @@ class RAGService:
 
             analysis_text = await load_prompt("extraction", "rag_vision_analysis", stage="image_analysis")
 
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        'x-api-key': anthropic_api_key,
-                        'anthropic-version': '2023-06-01',
-                        'content-type': 'application/json',
-                    },
-                    json={
-                        'model': 'claude-opus-4-8',
-                        'max_tokens': 4096,
-                        'tools': [VISION_ANALYSIS_TOOL],
-                        'tool_choice': {'type': 'tool', 'name': 'emit_vision_analysis'},
-                        'messages': [{
-                            'role': 'user',
-                            'content': [
-                                {
-                                    'type': 'image',
-                                    'source': {
-                                        'type': 'base64',
-                                        'media_type': 'image/jpeg',
-                                        'data': image_base64,
-                                    },
+            # Through the shared forced-tool helper (#33 item 2). The tool_choice and
+            # the missing-block handling were already correct here; what a raw httpx POST
+            # cannot do is record what it cost — and this is an Opus VISION call that had
+            # no row in `ai_usage_logs` at all.
+            from app.services.core.claude_tool_call import (
+                ToolCallNotReturned,
+                call_with_tool,
+            )
+
+            try:
+                call = await call_with_tool(
+                    task="rag_vision_analysis",
+                    model="claude-opus-4-8",
+                    max_tokens=4096,
+                    tool=VISION_ANALYSIS_TOOL,
+                    messages=[{
+                        'role': 'user',
+                        'content': [
+                            {
+                                'type': 'image',
+                                'source': {
+                                    'type': 'base64',
+                                    'media_type': 'image/jpeg',
+                                    'data': image_base64,
                                 },
-                                {'type': 'text', 'text': analysis_text},
-                            ],
-                        }],
-                    },
+                            },
+                            {'type': 'text', 'text': analysis_text},
+                        ],
+                    }],
                 )
-
-                if response.status_code != 200:
-                    self.logger.warning(f"Anthropic API error: {response.status_code} - {response.text[:200]}")
-                    return {
-                        'quality_score': 0.5,
-                        'confidence_score': 0.0,
-                        'material_properties': {},
-                        'error': f'API error {response.status_code}'
-                    }
-
-                # Anthropic returns content as a list; the tool_use block has
-                # `input` already validated against the schema by the API.
-                payload = response.json()
-                tool_block = next(
-                    (b for b in payload.get('content', []) if b.get('type') == 'tool_use'),
-                    None,
-                )
-                if not tool_block or 'input' not in tool_block:
-                    self.logger.warning(f"No tool_use in Anthropic response: {payload}")
-                    return {
-                        'quality_score': 0.5,
-                        'confidence_score': 0.0,
-                        'material_properties': {},
-                        'error': 'No tool_use block returned'
-                    }
-
-                result = tool_block['input']
-
-                material_properties = {
-                    'material_type': result.get('material_type', 'unknown'),
-                    'category': result.get('category'),
-                    'subcategory': result.get('subcategory'),
-                    'colors': result.get('colors') or [],
-                    'textures': result.get('textures') or [],
-                    'finish': result.get('finish'),
-                    'surface_pattern': result.get('surface_pattern'),
-                    'description': result.get('description'),
-                    'applications': result.get('applications') or [],
-                    'style': result.get('style'),
-                    'detected_text': result.get('detected_text') or [],
-                }
-
-                # Quality score: high when confidence is high. We don't have
-                # a separate "image quality" field in the locked schema, so
-                # we use confidence as a proxy — same value, same call site.
-                confidence_score = float(result.get('confidence', 0.85))
-                quality_score = confidence_score
-
+            except ToolCallNotReturned as e:
+                # Preserved contract: this method returns a soft dict its callers read as
+                # "analysis unavailable" rather than raising into the search path.
+                self.logger.warning(f"No tool_use in Anthropic response: {e}")
                 return {
-                    'quality_score': quality_score,
-                    'confidence_score': confidence_score,
-                    'material_properties': material_properties,
-                    'vision_analysis': result,  # full schema-locked dict for embedding
-                    'model': 'claude-opus-4-8'
+                    'quality_score': 0.5,
+                    'confidence_score': 0.0,
+                    'material_properties': {},
+                    'error': 'No tool_use block returned'
                 }
+            except Exception as e:
+                self.logger.warning(f"Anthropic vision analysis failed: {e}")
+                return {
+                    'quality_score': 0.5,
+                    'confidence_score': 0.0,
+                    'material_properties': {},
+                    'error': f'API error: {str(e)[:120]}'
+                }
+
+            result = call.data
+
+            material_properties = {
+                'material_type': result.get('material_type', 'unknown'),
+                'category': result.get('category'),
+                'subcategory': result.get('subcategory'),
+                'colors': result.get('colors') or [],
+                'textures': result.get('textures') or [],
+                'finish': result.get('finish'),
+                'surface_pattern': result.get('surface_pattern'),
+                'description': result.get('description'),
+                'applications': result.get('applications') or [],
+                'style': result.get('style'),
+                'detected_text': result.get('detected_text') or [],
+            }
+
+            # Quality score: high when confidence is high. We don't have
+            # a separate "image quality" field in the locked schema, so
+            # we use confidence as a proxy — same value, same call site.
+            confidence_score = float(result.get('confidence', 0.85))
+            quality_score = confidence_score
+
+            return {
+                'quality_score': quality_score,
+                'confidence_score': confidence_score,
+                'material_properties': material_properties,
+                'vision_analysis': result,  # full schema-locked dict for embedding
+                'model': 'claude-opus-4-8'
+            }
 
         except Exception as e:
             self.logger.warning(f"Image analysis failed: {e}")
@@ -2546,7 +2546,6 @@ class RAGService:
             Dict with is_material, confidence, reason, classification.
         """
         try:
-            import httpx
 
             anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
             if not anthropic_api_key:
@@ -2562,102 +2561,76 @@ class RAGService:
             # output shape — classification + confidence + reasoning, plus
             # product_indicators array. Force-calling the tool guarantees
             # the API returns this exact structure.
-            classify_tool = {
-                "name": "emit_classification",
-                "description": "Emit the image classification verdict for the building-materials catalog filter.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "classification": {
-                            "type": "string",
-                            "enum": ["PRODUCT_IMAGE", "TECHNICAL_DIAGRAM", "DECORATIVE", "MIXED"],
-                            "description": "The dominant content category for this image.",
-                        },
-                        "confidence": {
-                            "type": "number",
-                            "minimum": 0.0,
-                            "maximum": 1.0,
-                            "description": "0-1 confidence in the classification.",
-                        },
-                        "reasoning": {
-                            "type": "string",
-                            "description": "One-sentence justification.",
-                        },
-                        "product_indicators": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Catalog-grade product/material elements observed.",
-                        },
-                    },
-                    "required": ["classification", "confidence", "reasoning"],
-                },
-            }
+            # The classification tool schema is NOT restated here (#20 M7-4 / #32).
+            #
+            # This was a THIRD copy of `emit_classification` — after the one in
+            # `image_processing_service`'s primary classifier and the one in its
+            # low-confidence re-check, both of which were consolidated into
+            # `CLASSIFICATION_TOOL` earlier. Three copies of an enum that three call
+            # sites must agree on is how one of them ends up offering a fifth value that
+            # `is_material_classification` silently maps to False.
+            #
+            # Imported lazily because `image_processing_service` is a heavy module and
+            # this is a search path.
+            from app.services.images.image_processing_service import CLASSIFICATION_TOOL
+            from app.services.core.claude_tool_call import (
+                ToolCallNotReturned,
+                call_with_tool,
+            )
 
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={
-                        'x-api-key': anthropic_api_key,
-                        'anthropic-version': '2023-06-01',
-                        'content-type': 'application/json',
-                    },
-                    json={
-                        'model': 'claude-opus-4-8',
-                        'max_tokens': 1024,
-                        'tools': [classify_tool],
-                        'tool_choice': {'type': 'tool', 'name': 'emit_classification'},
-                        'messages': [{
-                            'role': 'user',
-                            'content': [
-                                {
-                                    'type': 'image',
-                                    'source': {
-                                        'type': 'base64',
-                                        'media_type': 'image/jpeg',
-                                        'data': image_base64,
-                                    },
+            try:
+                call = await call_with_tool(
+                    task="rag_image_classification",
+                    model="claude-opus-4-8",
+                    max_tokens=1024,
+                    tool=CLASSIFICATION_TOOL,
+                    messages=[{
+                        'role': 'user',
+                        'content': [
+                            {
+                                'type': 'image',
+                                'source': {
+                                    'type': 'base64',
+                                    'media_type': 'image/jpeg',
+                                    'data': image_base64,
                                 },
-                                {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
-                            ],
-                        }],
-                    },
+                            },
+                            # cache_control preserved: the prompt is identical for every
+                            # image in a batch.
+                            {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
+                        ],
+                    }],
+                    required=["classification"],
+                    confidence_key="confidence",
                 )
+            except ToolCallNotReturned as e:
+                self.logger.warning(f"No tool_use in classification response: {e}")
+                return {'is_material': False, 'confidence': 0.0, 'reason': 'No tool_use block returned'}
+            except Exception as e:
+                self.logger.error(f"Anthropic classification failed: {e}")
+                return {'is_material': False, 'confidence': 0.0, 'reason': f'API error: {str(e)[:120]}'}
 
-                if response.status_code != 200:
-                    error_body = response.text[:500] if hasattr(response, 'text') else 'No response body'
-                    self.logger.error(f"❌ Anthropic API error {response.status_code}: {error_body}")
-                    return {'is_material': False, 'confidence': 0.0, 'reason': f'API error {response.status_code}'}
+            result = call.data
+            classification = result.get('classification', 'DECORATIVE')
+            confidence = float(result.get('confidence', 0.5))
+            reason = result.get('reasoning', 'Unknown')
 
-                payload = response.json()
-                tool_block = next(
-                    (b for b in payload.get('content', []) if b.get('type') == 'tool_use'),
-                    None,
-                )
-                if not tool_block or 'input' not in tool_block:
-                    self.logger.warning(f"No tool_use in classification response: {payload}")
-                    return {'is_material': False, 'confidence': 0.0, 'reason': 'No tool_use block returned'}
+            # Map structured classification → is_material binary that
+            # legacy callers expect. PRODUCT_IMAGE and MIXED are kept;
+            # TECHNICAL_DIAGRAM and DECORATIVE are dropped.
+            is_material = (
+                classification in ("PRODUCT_IMAGE", "MIXED")
+                and confidence >= confidence_threshold
+            )
 
-                result = tool_block['input']
-                classification = result.get('classification', 'DECORATIVE')
-                confidence = float(result.get('confidence', 0.5))
-                reason = result.get('reasoning', 'Unknown')
-
-                # Map structured classification → is_material binary that
-                # legacy callers expect. PRODUCT_IMAGE and MIXED are kept;
-                # TECHNICAL_DIAGRAM and DECORATIVE are dropped.
-                is_material = (
-                    classification in ("PRODUCT_IMAGE", "MIXED")
-                    and confidence >= confidence_threshold
-                )
-
-                return {
-                    'is_material': is_material,
-                    'confidence': confidence,
-                    'reason': reason,
-                    'classification': classification,
-                    'product_indicators': result.get('product_indicators') or [],
-                    'model': 'claude-opus-4-8'
-                }
+            return {
+                'is_material': is_material,
+                'confidence': confidence,
+                'reason': reason,
+                'classification': classification,
+                'product_indicators': result.get('product_indicators') or [],
+                'model': 'claude-opus-4-8'
+            }
 
         except Exception as e:
             self.logger.warning(f"Image classification failed: {e}")

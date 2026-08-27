@@ -1496,42 +1496,37 @@ class ProductCreationService:
             from app.config import get_settings
             settings = get_settings()
 
-            response = client.messages.create(
-                model=settings.anthropic_model_classification,  # claude-4-5-haiku-20250514
-                max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
-                tools=[STAGE1_CLASSIFICATION_TOOL],
-                tool_choice={"type": "tool", "name": STAGE1_CLASSIFICATION_TOOL["name"]},
-            )
+            # Through the tracked helper (#33 item 2). Sync `messages.create` from an
+            # `async def`, with the cost row written by hand afterwards — so a call that
+            # raised was billed and recorded nowhere. The confidence blend below is four
+            # CONSTANTS, so nothing here is post-hoc and it passes straight through.
+            from app.services.core.claude_helper import tracked_claude_call_async
 
-            # Calculate latency
-            latency_ms = int((time.time() - start_time) * 1000)
-
-            # Calculate confidence score (4-factor weighted)
             confidence_breakdown = {
                 "model_confidence": 0.85,  # Haiku is fast but reliable
                 "completeness": 0.80,  # Stage 1 is preliminary
                 "consistency": 0.90,  # Haiku is consistent
                 "validation": 0.75   # Stage 1 needs Stage 2 validation
             }
-            confidence_score = (
-                0.30 * confidence_breakdown["model_confidence"] +
-                0.30 * confidence_breakdown["completeness"] +
-                0.25 * confidence_breakdown["consistency"] +
-                0.15 * confidence_breakdown["validation"]
-            )
-
-            # Log AI call
-            await self.ai_logger.log_claude_call(
+            response = await tracked_claude_call_async(
                 task="product_classification_stage1",
-                model="claude-haiku-4-5",
-                response=response,
-                latency_ms=latency_ms,
-                confidence_score=confidence_score,
+                model=settings.anthropic_model_classification,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": prompt}],
+                confidence_score=(
+                    0.30 * confidence_breakdown["model_confidence"] +
+                    0.30 * confidence_breakdown["completeness"] +
+                    0.25 * confidence_breakdown["consistency"] +
+                    0.15 * confidence_breakdown["validation"]
+                ),
                 confidence_breakdown=confidence_breakdown,
                 action="use_ai_result",
                 job_id=job_id,
-                request_data={"prompt_length": len(prompt)}
+                request_data={"prompt_length": len(prompt)},
+                extra_kwargs={
+                    "tools": [STAGE1_CLASSIFICATION_TOOL],
+                    "tool_choice": {"type": "tool", "name": STAGE1_CLASSIFICATION_TOOL["name"]},
+                },
             )
 
             return self._tool_input(response, STAGE1_CLASSIFICATION_TOOL["name"])
@@ -1567,42 +1562,40 @@ class ProductCreationService:
             from app.config import get_settings
             settings = get_settings()
 
-            response = client.messages.create(
-                model=settings.anthropic_model_enrichment,  # claude-opus-4-8
-                tools=[STAGE2_ENRICHMENT_TOOL],
-                tool_choice={"type": "tool", "name": STAGE2_ENRICHMENT_TOOL["name"]},
-                max_tokens=4096,
-                messages=[{"role": "user", "content": prompt}]
-            )
+            # Through the tracked helper (#33 item 2), for the same reasons as the Haiku
+            # twin above. This one matters more per call: it is Opus.
+            #
+            # The model also comes from settings rather than being restated as
+            # "claude-opus-4-8" in the log — the two had to agree by hand, and the
+            # hardcoded price tables fixed elsewhere in this session are what a
+            # restated model name eventually costs.
+            from app.services.core.claude_helper import tracked_claude_call_async
 
-            # Calculate latency
-            latency_ms = int((time.time() - start_time) * 1000)
-
-            # Calculate confidence score (4-factor weighted)
             confidence_breakdown = {
                 "model_confidence": 0.95,  # Opus is highly accurate
                 "completeness": 0.90,  # Stage 2 is comprehensive
                 "consistency": 0.95,  # Opus is very consistent
                 "validation": 0.85   # Stage 2 provides validation
             }
-            confidence_score = (
-                0.30 * confidence_breakdown["model_confidence"] +
-                0.30 * confidence_breakdown["completeness"] +
-                0.25 * confidence_breakdown["consistency"] +
-                0.15 * confidence_breakdown["validation"]
-            )
-
-            # Log AI call
-            await self.ai_logger.log_claude_call(
+            response = await tracked_claude_call_async(
                 task="product_enrichment_stage2",
-                model="claude-opus-4-8",
-                response=response,
-                latency_ms=latency_ms,
-                confidence_score=confidence_score,
+                model=settings.anthropic_model_enrichment,
+                max_tokens=4096,
+                messages=[{"role": "user", "content": prompt}],
+                confidence_score=(
+                    0.30 * confidence_breakdown["model_confidence"] +
+                    0.30 * confidence_breakdown["completeness"] +
+                    0.25 * confidence_breakdown["consistency"] +
+                    0.15 * confidence_breakdown["validation"]
+                ),
                 confidence_breakdown=confidence_breakdown,
                 action="use_ai_result",
                 job_id=job_id,
-                request_data={"prompt_length": len(prompt)}
+                request_data={"prompt_length": len(prompt)},
+                extra_kwargs={
+                    "tools": [STAGE2_ENRICHMENT_TOOL],
+                    "tool_choice": {"type": "tool", "name": STAGE2_ENRICHMENT_TOOL["name"]},
+                },
             )
 
             return self._tool_input(response, STAGE2_ENRICHMENT_TOOL["name"])

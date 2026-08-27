@@ -422,6 +422,11 @@ async def tracked_claude_call_async(
     # reply and is therefore not knowable at call time.
     confidence_score: Union[float, Callable[[Any], float]] = _DEFAULT_CONFIDENCE,
     confidence_breakdown: Optional[Dict[str, float]] = None,
+    # Diagnostic metadata forwarded verbatim to `log_claude_call` (e.g.
+    # `{"prompt_length": ...}`). Added so migrating sites do not have to drop the field
+    # to move off a hand-written logger — losing information is not a neutral cost of
+    # consolidating, it is a reason people keep the copy.
+    request_data: Optional[Dict[str, Any]] = None,
     action: str = "use_ai_result",
     extra_kwargs: Optional[Dict[str, Any]] = None,
     product_id: Optional[str] = None,
@@ -478,6 +483,7 @@ async def tracked_claude_call_async(
         latency_ms=latency_ms,
         confidence_score=_resolve_confidence(confidence_score, response),
         confidence_breakdown=confidence_breakdown or _DEFAULT_CONFIDENCE_BREAKDOWN,
+        request_data=request_data,
         action=action,
         job_id=job_id,
         user_id=user_id,
@@ -509,6 +515,11 @@ def tracked_claude_call(
     # reply and is therefore not knowable at call time.
     confidence_score: Union[float, Callable[[Any], float]] = _DEFAULT_CONFIDENCE,
     confidence_breakdown: Optional[Dict[str, float]] = None,
+    # Diagnostic metadata forwarded verbatim to `log_claude_call` (e.g.
+    # `{"prompt_length": ...}`). Added so migrating sites do not have to drop the field
+    # to move off a hand-written logger — losing information is not a neutral cost of
+    # consolidating, it is a reason people keep the copy.
+    request_data: Optional[Dict[str, Any]] = None,
     action: str = "use_ai_result",
     extra_kwargs: Optional[Dict[str, Any]] = None,
     product_id: Optional[str] = None,
@@ -566,6 +577,7 @@ def tracked_claude_call(
         latency_ms=latency_ms,
         confidence_score=_resolve_confidence(confidence_score, response),
         confidence_breakdown=confidence_breakdown or _DEFAULT_CONFIDENCE_BREAKDOWN,
+        request_data=request_data,
         action=action,
         job_id=job_id,
         user_id=user_id,

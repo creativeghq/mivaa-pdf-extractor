@@ -337,12 +337,18 @@ def test_the_dataforseo_serp_call_checks_the_envelope():
 
 
 def test_both_product_verdicts_use_forced_tool_choice():
+    # Both sites moved onto `tracked_claude_call_async`, which takes provider kwargs
+    # through `extra_kwargs` (#33 item 2), so the literal `tools=[...]` these assertions
+    # matched now lives one dict deeper. The property is unchanged: offered AND forced.
     src = _read(PRODUCTS)
     for tool in ("STAGE1_CLASSIFICATION_TOOL", "STAGE2_ENRICHMENT_TOOL"):
-        assert f'tools=[{tool}]' in src, f"{tool} is not passed to the model"
-        assert f'tool_choice={{"type": "tool", "name": {tool}["name"]}}' in src, (
+        assert f'"tools": [{tool}]' in src, f"{tool} is not passed to the model"
+        assert f'"tool_choice": {{"type": "tool", "name": {tool}["name"]}}' in src, (
             f"{tool} is offered but not FORCED - the model can still answer in prose"
         )
+    assert src.count("tracked_claude_call_async(") >= 2, (
+        "a product verdict is bypassing the tracked helper again"
+    )
 
 
 def test_the_regex_json_salvage_is_gone_from_the_product_path():

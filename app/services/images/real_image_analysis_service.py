@@ -13,7 +13,6 @@ same tool-use guarantees. No HF vision endpoint involved.
 import logging
 import asyncio
 import base64
-import re  # used by the JSON-repair path below; was missing, so every repair NameError'd
 import time
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
@@ -63,7 +62,10 @@ class RealImageAnalysisService:
         from app.config import get_settings
         settings = get_settings()
         self.workspace_id = workspace_id or settings.default_workspace_id
-        self.anthropic_url = "https://api.anthropic.com/v1"
+        # `self.anthropic_url` was removed with the raw call it served (#33 item 2).
+        # A provider base URL sitting on a service that no longer calls the provider
+        # directly is an invitation to use it, and the sweep that tracks direct calls
+        # cannot tell a live one from a leftover.
         self.clip_model = "clip-vit-base-patch32"
         self.workspace_id = workspace_id
         self.supabase = get_supabase_client()
@@ -384,10 +386,6 @@ class RealImageAnalysisService:
         """Analyze image with Claude Opus 4.7 Vision"""
         start_time = time.time()
         try:
-            # Use centralized AI client service
-            ai_service = get_ai_client_service()
-            client = ai_service.anthropic
-
             # Use database prompt - NO FALLBACK
             if self.claude_prompt:
                 prompt = self.claude_prompt
@@ -397,8 +395,59 @@ class RealImageAnalysisService:
                 logger.error(f"❌ {error_msg}")
                 raise ValueError(error_msg)
 
-            # Call Claude Vision API
-            response = client.messages.create(
+            # A FORCED tool call through the tracked helper (#32 + #33 item 2).
+            #
+            # What was here did three things wrong at once. It was the SYNC
+            # `messages.create` from an `async def`, blocking the loop for a whole Opus
+            # vision round-trip. It wrote its cost row by hand afterwards, so a call
+            # that raised was billed by Anthropic and recorded by nobody. And it parsed
+            # free-form text through a three-strategy repair chain — first-brace to
+            # last-brace, then trailing-comma and single-quote fixes, then a regex for a
+            # balanced object — under a comment calling it "Strategy 1".
+            #
+            # A repair chain that deep is not robustness; it is a record of how often
+            # the free-form contract failed. With the tool forced there is nothing to
+            # repair, and an absent block is a typed error instead of a JSONDecodeError
+            # three strategies down.
+            #
+            # The schema is deliberately OPEN: the validation shape is described inside
+            # `self.claude_prompt`, which is loaded from the database. Restating those
+            # keys here would create a second source, and because the model is forced to
+            # satisfy the schema, an admin's edit would silently stop taking effect.
+            from app.services.core.claude_helper import tracked_claude_call_async
+            from app.services.core.claude_tool_call import (
+                ToolCallNotReturned,
+                extract_tool_input,
+            )
+
+            _VALIDATION_TOOL = {
+                "name": "emit_image_validation",
+                "description": (
+                    "Emit the image validation verdict as the JSON object described in "
+                    "the instructions."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True,
+                },
+            }
+
+            # `completeness` is the confidence the MODEL reports inside its own reply, so
+            # it cannot be passed at call time. The callable keeps the exact weighted
+            # blend that was logged before; passing the 0.9 default instead would have
+            # replaced a measured signal with an assumed one.
+            def _blended_confidence(_resp) -> float:
+                inner = extract_tool_input(_resp, _VALIDATION_TOOL["name"])
+                return (
+                    0.30 * 0.95
+                    + 0.30 * float(inner.get("confidence", 0.90))
+                    + 0.25 * 0.93
+                    + 0.15 * 0.88
+                )
+
+            response = await tracked_claude_call_async(
+                task="image_vision_validation",
                 model="claude-opus-4-8",
                 max_tokens=1024,
                 messages=[
@@ -407,110 +456,39 @@ class RealImageAnalysisService:
                         "content": [
                             {
                                 "type": "image",
-                                "source": {
-                                    "type": "url",
-                                    "url": image_url
-                                }
+                                "source": {"type": "url", "url": image_url},
                             },
-                            {
-                                "type": "text",
-                                "text": prompt
-                            }
-                        ]
+                            {"type": "text", "text": prompt},
+                        ],
                     }
-                ]
+                ],
+                confidence_score=_blended_confidence,
+                confidence_breakdown={
+                    "model_confidence": 0.95,
+                    "consistency": 0.93,
+                    "validation": 0.88,
+                },
+                action="use_ai_result",
+                job_id=job_id,
+                extra_kwargs={
+                    "tools": [_VALIDATION_TOOL],
+                    "tool_choice": {"type": "tool", "name": _VALIDATION_TOOL["name"]},
+                },
             )
 
-            content = response.content[0].text.strip()
-
             try:
-                # Strategy 1: Find JSON between the first { and last }
-                first_brace = content.find('{')
-                last_brace = content.rfind('}')
+                validation = extract_tool_input(response, _VALIDATION_TOOL["name"])
+            except ToolCallNotReturned as e:
+                # Raised, as the JSON failure path did — this method's contract is that
+                # a failed validation is an error, not an empty verdict.
+                self.logger.error(f"Claude returned no validation tool call: {e}")
+                raise RuntimeError(f"Claude returned no tool call: {e}")
 
-                if first_brace != -1 and last_brace != -1:
-                    json_text = content[first_brace:last_brace + 1]
-
-                    try:
-                        validation = json.loads(json_text)
-                    except json.JSONDecodeError as e:
-                        # Strategy 2: Try to fix common JSON issues
-                        self.logger.warning(f"Initial JSON parse failed, attempting repair: {e}")
-
-                        # Fix trailing commas
-                        fixed_json = re.sub(r',\s*}', '}', json_text)
-                        fixed_json = re.sub(r',\s*]', ']', fixed_json)
-                        # Fix single quotes to double quotes (but not in strings)
-                        fixed_json = re.sub(r"(?<!\\)'", '"', fixed_json)
-                        # Remove comments
-                        fixed_json = re.sub(r'//.*?\n', '\n', fixed_json)
-                        fixed_json = re.sub(r'/\*.*?\*/', '', fixed_json, flags=re.DOTALL)
-
-                        try:
-                            validation = json.loads(fixed_json)
-                            self.logger.info("✅ Claude JSON repaired successfully")
-                        except json.JSONDecodeError as e2:
-                            # Strategy 3: Extract JSON using regex
-                            self.logger.warning(f"JSON repair failed, trying regex extraction: {e2}")
-                            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
-                            if json_match:
-                                validation = json.loads(json_match.group(0))
-                                self.logger.info("✅ Claude JSON extracted via regex")
-                            else:
-                                raise e2
-                else:
-                    # No JSON found, raise error
-                    raise json.JSONDecodeError("No JSON object found", content, 0)
-
-                # Log AI call
-                latency_ms = int((time.time() - start_time) * 1000)
-                confidence_breakdown = {
-                    "model_confidence": 0.95,
-                    "completeness": validation.get("confidence", 0.90),
-                    "consistency": 0.93,
-                    "validation": 0.88
-                }
-                confidence_score = (
-                    0.30 * confidence_breakdown["model_confidence"] +
-                    0.30 * confidence_breakdown["completeness"] +
-                    0.25 * confidence_breakdown["consistency"] +
-                    0.15 * confidence_breakdown["validation"]
-                )
-
-                await self.ai_logger.log_claude_call(
-                    task="image_vision_validation",
-                    model="claude-opus-4-8",
-                    response=response,
-                    latency_ms=latency_ms,
-                    confidence_score=confidence_score,
-                    confidence_breakdown=confidence_breakdown,
-                    action="use_ai_result",
-                    job_id=job_id
-                )
-
-                return {
-                    "model": "claude-opus-4-8",
-                    "validation": validation,
-                    "success": True
-                }
-            except json.JSONDecodeError as e:
-                self.logger.error(f"Failed to parse Claude response as JSON: {e}")
-                self.logger.debug(f"Raw response (first 500 chars): {content[:500]}")
-
-                # Send to Sentry with full context
-                import sentry_sdk
-                with sentry_sdk.push_scope() as scope:
-                    scope.set_context("claude_json_parsing_error", {
-                        "raw_content": content[:500],
-                        "parse_error": str(e),
-                        "error_position": f"line {e.lineno} column {e.colno}" if hasattr(e, 'lineno') else "unknown"
-                    })
-                    sentry_sdk.capture_message(
-                        f"Claude JSON parsing failed: {e}",
-                        level="error"
-                    )
-
-                raise RuntimeError(f"Claude returned invalid JSON: {e}")
+            return {
+                "model": "claude-opus-4-8",
+                "validation": validation,
+                "success": True
+            }
 
         except Exception as e:
             self.logger.error(f"Claude analysis failed: {e}")

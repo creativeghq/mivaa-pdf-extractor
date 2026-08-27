@@ -206,11 +206,20 @@ def test_discovery_uses_forced_tool_use_on_both_paths():
     """
     src = _src(_DISCOVERY)
     assert "PRODUCT_DISCOVERY_TOOL" in src, "the discovery tool schema is gone"
-    assert src.count("tools=[PRODUCT_DISCOVERY_TOOL]") >= 2, (
-        "both the text path and the vision retry must force the tool"
+
+    # Both sites moved onto `tracked_claude_call_async`, which takes provider kwargs
+    # through `extra_kwargs` (#33 item 2) — so the literal `tools=[...]` these
+    # assertions used to match now lives one dict deeper. The PROPERTY is unchanged and
+    # is what is checked: the tool is offered AND forced, on both paths.
+    assert src.count('"tools": [PRODUCT_DISCOVERY_TOOL]') >= 2, (
+        "both the text path and the vision retry must offer the tool"
     )
-    assert src.count('"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]') >= 2, (
+    assert src.count('"tool_choice": {"type": "tool", "name": PRODUCT_DISCOVERY_TOOL["name"]}') >= 2, (
         "tool_choice must be forced, or the model may still answer in prose"
+    )
+    assert src.count("tracked_claude_call_async(") >= 2, (
+        "a discovery call is bypassing the tracked helper again, so its spend is "
+        "invisible and a call that raises records nothing"
     )
 
 

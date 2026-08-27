@@ -1,6 +1,6 @@
 {
   "_comment": "Ratchet - may only DECREASE. See tests/unit/test_model_replies_come_from_tool_calls.py. Fix findings by routing through app.services.core.claude_tool_call.call_with_tool; do not edit this upward.",
-  "free_form_parsers": 30,
+  "free_form_parsers": 29,
   "fence_strippers": 9,
   "known": [
     "app/api/anthropic_routes.py::enrich_product_with_claude",
@@ -10,7 +10,6 @@
     "app/api/sam_routes.py::generate_inpainting_prompt",
     "app/services/embeddings/embedding_to_text_service.py::convert_embeddings_to_metadata",
     "app/services/images/image_processing_service.py::validate_with_claude",
-    "app/services/images/real_image_analysis_service.py::_analyze_with_claude",
     "app/services/images/real_image_analysis_service.py::_analyze_with_claude_base64",
     "app/services/integrations/product_identity_service.py::_extract_json_content",
     "app/services/integrations/sentiment_analysis_service.py::_analyze_with_claude",
