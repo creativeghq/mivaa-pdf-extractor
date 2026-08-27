@@ -536,6 +536,7 @@ async def probe_product_llm(
             attribution=probe_attribution,
             homepage_domain=existing.get("homepage_domain"),
             tier=(existing.get("probe_tier") or "cheap"),
+            **_probe_overrides(existing),
         )
         if not res:
             paid.refund("the probe matrix returned nothing")
@@ -788,6 +789,7 @@ async def probe_tracked_llm(
             attribution=probe_attribution,
             homepage_domain=row.get("homepage_domain"),
             tier=(row.get("probe_tier") or "cheap"),
+            **_probe_overrides(row),
         )
         if not res:
             paid.refund("the probe matrix returned nothing")
@@ -1084,6 +1086,24 @@ async def cron_refresh(
             "results": results}
 
 
+def _probe_overrides(row: dict) -> dict:
+    """The workspace's own probe questions, off `source_config`.
+
+    One reader for all three call sites (product, subject, cron). Three separate
+    `.get('source_config', {}).get(...)` chains is exactly how one path keeps
+    asking the stock questions while the UI says the custom ones are saved.
+    """
+    cfg = (row or {}).get("source_config") or {}
+    if not isinstance(cfg, dict):
+        return {"custom_probes": None, "include_default_probes": True}
+    return {
+        "custom_probes": cfg.get("custom_probes"),
+        # Explicit opt-out only. Absent means keep the stock questions, so an
+        # existing subject cannot silently lose its baseline measurement.
+        "include_default_probes": cfg.get("include_default_probes", True) is not False,
+    }
+
+
 @router.post("/cron-probe-llm")
 async def cron_probe_llm(
     request: Request,
@@ -1143,6 +1163,7 @@ async def cron_probe_llm(
                 tracked_mention_id=tm_id, facets=facets, attribution=cron_attr,
                 homepage_domain=full.get("homepage_domain"),
                 tier=(full.get("probe_tier") or "cheap"),
+                **_probe_overrides(full),
             )
             succeeded += 1
         except Exception as e:

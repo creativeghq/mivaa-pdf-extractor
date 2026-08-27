@@ -37,6 +37,7 @@ from typing import Any, Dict, List, NamedTuple, Optional
 import httpx
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.llm_probe_templates import build_probes
 from app.services.integrations.llm_visibility_math import (
     citation_rollup, dedupe_urls, domain_is_ours,
     sentiment_rollup, share_of_voice_from_rows, trend_from_rows,
@@ -121,48 +122,6 @@ class ModelReply(NamedTuple):
     latency_ms: int
     error: Optional[str]
     citations: List[str]
-
-
-# ────────────────────────────────────────────────────────────────────────────
-# Probe templates
-# ────────────────────────────────────────────────────────────────────────────
-
-def build_probes(facets: SubjectFacets) -> List[Dict[str, str]]:
-    """4 probe templates per subject. Caller may add more via source_config."""
-    label = facets.label
-    ptype = facets.product_type or "products"
-    brand = facets.brand or label
-    competitor_str = ", ".join(facets.competitor_brands[:3]) if facets.competitor_brands else "leading alternatives"
-
-    return [
-        {
-            "key": "generic_recommendation",
-            "prompt": (
-                f"What are the best {ptype} brands? "
-                "Give a ranked list with one short reason per entry."
-            ),
-        },
-        {
-            "key": "use_case",
-            "prompt": (
-                f"Recommend 5 {ptype} for use in a high-traffic commercial space. "
-                "Name them and briefly explain each."
-            ),
-        },
-        {
-            "key": "comparison",
-            "prompt": (
-                f"Compare {brand} with {competitor_str}. "
-                "Cover product range, quality, and typical price tier."
-            ),
-        },
-        {
-            "key": "direct_lookup",
-            "prompt": (
-                f"Tell me about {label}. What do they make and what are they known for?"
-            ),
-        },
-    ]
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -259,6 +218,8 @@ class LlmMentionProbeService:
         attribution: Optional[CostAttribution] = None,
         homepage_domain: Optional[str] = None,
         tier: str = CHEAP_TIER,
+        custom_probes: Any = None,
+        include_default_probes: bool = True,
     ) -> Dict[str, Any]:
         """Run the probe matrix and persist one row per (template × model).
 
@@ -279,7 +240,15 @@ class LlmMentionProbeService:
         requested = TIER_MODELS.get(tier) or TIER_MODELS[CHEAP_TIER]
         unavailable = [m for m in requested if m not in models_to_use]
 
-        probes = templates or build_probes(facets)
+        # `custom_probes` comes from `tracked_mentions.source_config.custom_probes`.
+        # Until now that key was documented and never read, so a merchant could save
+        # their own questions and be probed with the stock four regardless.
+        probes = templates or build_probes(
+            facets,
+            custom_probes=custom_probes,
+            include_defaults=include_default_probes,
+            site=homepage_domain,
+        )
         rows: List[Dict[str, Any]] = []
         total_cost = 0.0
 
