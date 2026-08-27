@@ -11,6 +11,20 @@ Features:
 - Merge suggestions and execution
 - Search execution tracking
 - Similar search discovery
+
+AUTH (audit #22 M9-4). Every route here took `user_id` from the request — a body field
+or a query parameter — and no route had a gate of any kind. So the caller named whose
+saved searches to read, edit, merge or delete, and `verify_user_access` faithfully
+verified the id against itself.
+
+It was invisible because the module was ALSO dead: `search_deduplication_service` had a
+double `.client` unwrap, so /check-duplicates and /merge raised on every call. Repairing
+that typo without binding the identity in the same change is what would have made the
+BOLA live — the trap #27 named for this module by name. Both land together.
+
+`user_id` now comes from `current_user_id(get_current_user(...))` on all eight routes and
+appears in no request model. The response still carries it: that is a fact about the row,
+not a claim by the caller.
 """
 
 import logging
@@ -23,6 +37,7 @@ from ..services.search.search_deduplication_service import (
     get_deduplication_service,
     SearchDeduplicationService
 )
+from ..dependencies import current_user_id, get_current_user
 from ..services.core.supabase_client import get_supabase_client
 from ..utils.timestamp_utils import normalize_timestamp
 
@@ -48,8 +63,10 @@ class MaterialFilters(BaseModel):
 
 
 class CreateSavedSearchRequest(BaseModel):
-    """Request to create a new saved search."""
-    user_id: str = Field(..., description="User ID")
+    """Request to create a new saved search.
+
+    No `user_id`: it comes from the token (#22 M9-4).
+    """
     query: str = Field(..., description="Search query text")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="General filters")
     material_filters: Optional[MaterialFilters] = Field(default=None, description="Material-specific filters")
@@ -70,24 +87,17 @@ class UpdateSavedSearchRequest(BaseModel):
 
 
 class CheckDuplicatesRequest(BaseModel):
-    """Request to check for duplicate searches."""
-    user_id: str = Field(..., description="User ID")
+    """Request to check for duplicate searches. No `user_id` — see the module docstring."""
     query: str = Field(..., description="Search query")
     filters: Optional[Dict[str, Any]] = Field(default=None, description="General filters")
     material_filters: Optional[MaterialFilters] = Field(default=None, description="Material filters")
 
 
 class MergeSearchRequest(BaseModel):
-    """Request to merge a search into existing one."""
-    user_id: str = Field(..., description="User ID")
+    """Request to merge a search into existing one. No `user_id` — see the module docstring."""
     new_query: str = Field(..., description="New query to merge")
     new_filters: Optional[Dict[str, Any]] = Field(default=None, description="New filters")
     new_material_filters: Optional[MaterialFilters] = Field(default=None, description="New material filters")
-
-
-class ExecuteSearchRequest(BaseModel):
-    """Request to execute a saved search."""
-    user_id: str = Field(..., description="User ID")
 
 
 class SavedSearchResponse(BaseModel):
@@ -140,7 +150,7 @@ async def verify_user_access(user_id: str, search_id: str) -> Dict:
     """Verify user has access to the search."""
     supabase = get_supabase_client().client
 
-    response = supabase.client.table("saved_searches").select("*").eq(
+    response = supabase.table("saved_searches").select("*").eq(
         "id", search_id
     ).eq(
         "user_id", user_id
@@ -162,7 +172,8 @@ async def verify_user_access(user_id: str, search_id: str) -> Dict:
 @router.post("/check-duplicates", response_model=CheckDuplicatesResponse)
 async def check_for_duplicates(
     request: CheckDuplicatesRequest,
-    dedup_service: SearchDeduplicationService = Depends(get_dedup_service)
+    user: Dict[str, Any] = Depends(get_current_user),
+    dedup_service: SearchDeduplicationService = Depends(get_dedup_service),
 ):
     """
     Check if a search query has duplicates and get merge suggestions.
@@ -176,14 +187,14 @@ async def check_for_duplicates(
     - merge_suggestion: Details about the suggested merge (if applicable)
     """
     try:
-        logger.info(f"Checking duplicates for user {request.user_id}: {request.query}")
+        logger.info(f"Checking duplicates for user {current_user_id(user)}: {request.query}")
         
         # Convert material_filters to dict
         material_filters_dict = request.material_filters.dict() if request.material_filters else {}
         
         # Find or merge search
         existing_id, should_merge, merge_suggestion = await dedup_service.find_or_merge_search(
-            user_id=request.user_id,
+            user_id=current_user_id(user),
             query=request.query,
             filters=request.filters or {},
             material_filters=material_filters_dict
@@ -197,7 +208,7 @@ async def check_for_duplicates(
             )
         
         # Get existing search details
-        existing_search = await verify_user_access(request.user_id, existing_id)
+        existing_search = await verify_user_access(current_user_id(user), existing_id)
         
         if should_merge:
             # Auto-merge case (95%+ similarity)
@@ -240,7 +251,8 @@ async def check_for_duplicates(
 async def merge_into_existing(
     search_id: str,
     request: MergeSearchRequest,
-    dedup_service: SearchDeduplicationService = Depends(get_dedup_service)
+    user: Dict[str, Any] = Depends(get_current_user),
+    dedup_service: SearchDeduplicationService = Depends(get_dedup_service),
 ):
     """
     Merge a new search into an existing saved search.
@@ -253,10 +265,10 @@ async def merge_into_existing(
     - Updates last_merged_at timestamp
     """
     try:
-        logger.info(f"Merging search into {search_id} for user {request.user_id}")
+        logger.info(f"Merging search into {search_id} for user {current_user_id(user)}")
         
         # Verify user has access
-        await verify_user_access(request.user_id, search_id)
+        await verify_user_access(current_user_id(user), search_id)
         
         # Analyze new query
         analysis = await dedup_service.analyze_search_query(request.new_query)
@@ -274,7 +286,7 @@ async def merge_into_existing(
         )
         
         # Get updated search
-        updated_search = await verify_user_access(request.user_id, merged_id)
+        updated_search = await verify_user_access(current_user_id(user), merged_id)
         
         return SavedSearchResponse(**updated_search)
         
@@ -288,7 +300,8 @@ async def merge_into_existing(
 @router.post("", response_model=SavedSearchResponse, status_code=201)
 async def create_saved_search(
     request: CreateSavedSearchRequest,
-    dedup_service: SearchDeduplicationService = Depends(get_dedup_service)
+    user: Dict[str, Any] = Depends(get_current_user),
+    dedup_service: SearchDeduplicationService = Depends(get_dedup_service),
 ):
     """
     Create a new saved search with optional deduplication.
@@ -297,7 +310,7 @@ async def create_saved_search(
     and return existing one if found. Otherwise creates new search.
     """
     try:
-        logger.info(f"Creating saved search for user {request.user_id}: {request.query}")
+        logger.info(f"Creating saved search for user {current_user_id(user)}: {request.query}")
 
         supabase = get_supabase_client().client
 
@@ -307,7 +320,7 @@ async def create_saved_search(
         # Check for duplicates if enabled
         if request.check_for_duplicates:
             existing_id, should_merge, merge_suggestion = await dedup_service.find_or_merge_search(
-                user_id=request.user_id,
+                user_id=current_user_id(user),
                 query=request.query,
                 filters=request.filters or {},
                 material_filters=material_filters_dict
@@ -330,7 +343,7 @@ async def create_saved_search(
                 )
 
                 # Return merged search
-                existing_search = await verify_user_access(request.user_id, existing_id)
+                existing_search = await verify_user_access(current_user_id(user), existing_id)
                 return SavedSearchResponse(**existing_search)
 
         # Analyze query with AI
@@ -338,7 +351,7 @@ async def create_saved_search(
 
         # Create new search
         search_data = {
-            "user_id": request.user_id,
+            "user_id": current_user_id(user),
             "query": request.query,
             "name": request.name,
             "description": request.description,
@@ -357,7 +370,7 @@ async def create_saved_search(
             "relevance_score": 1.0
         }
 
-        response = supabase.client.table("saved_searches").insert(search_data).execute()
+        response = supabase.table("saved_searches").insert(search_data).execute()
 
         if not response.data:
             raise HTTPException(status_code=500, detail="Failed to create saved search")
@@ -373,10 +386,10 @@ async def create_saved_search(
 
 @router.get("", response_model=List[SavedSearchResponse])
 async def get_user_saved_searches(
-    user_id: str = Query(..., description="User ID"),
+    user: Dict[str, Any] = Depends(get_current_user),
     integration_context: Optional[str] = Query(None, description="Filter by integration context"),
     limit: int = Query(50, ge=1, le=100, description="Maximum number of results"),
-    offset: int = Query(0, ge=0, description="Offset for pagination")
+    offset: int = Query(0, ge=0, description="Offset for pagination"),
 ):
     """
     Get all saved searches for a user with optional filtering.
@@ -387,12 +400,12 @@ async def get_user_saved_searches(
     - Sorted by last_executed_at (most recent first)
     """
     try:
-        logger.info(f"Getting saved searches for user {user_id}")
+        logger.info(f"Getting saved searches for user {current_user_id(user)}")
 
         supabase = get_supabase_client().client
 
         # Build query
-        query = supabase.client.table("saved_searches").select("*").eq("user_id", user_id)
+        query = supabase.table("saved_searches").select("*").eq("user_id", current_user_id(user))
 
         if integration_context:
             query = query.eq("integration_context", integration_context)
@@ -416,11 +429,11 @@ async def get_user_saved_searches(
 @router.get("/{search_id}", response_model=SavedSearchResponse)
 async def get_saved_search(
     search_id: str,
-    user_id: str = Query(..., description="User ID")
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Get a specific saved search by ID."""
     try:
-        search = await verify_user_access(user_id, search_id)
+        search = await verify_user_access(current_user_id(user), search_id)
         return SavedSearchResponse(**search)
 
     except HTTPException:
@@ -434,14 +447,14 @@ async def get_saved_search(
 async def update_saved_search(
     search_id: str,
     request: UpdateSavedSearchRequest,
-    user_id: str = Query(..., description="User ID")
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Update a saved search."""
     try:
-        logger.info(f"Updating saved search {search_id} for user {user_id}")
+        logger.info(f"Updating saved search {search_id} for user {current_user_id(user)}")
 
         # Verify access
-        await verify_user_access(user_id, search_id)
+        await verify_user_access(current_user_id(user), search_id)
 
         # Build update data (only include provided fields)
         update_data = {}
@@ -462,9 +475,9 @@ async def update_saved_search(
         update_data["updated_at"] = datetime.utcnow().isoformat()
 
         supabase = get_supabase_client().client
-        response = supabase.client.table("saved_searches").update(update_data).eq(
+        response = supabase.table("saved_searches").update(update_data).eq(
             "id", search_id
-        ).eq("user_id", user_id).execute()
+        ).eq("user_id", current_user_id(user)).execute()
 
         if not response.data:
             raise HTTPException(status_code=404, detail="Saved search not found")
@@ -481,18 +494,18 @@ async def update_saved_search(
 @router.delete("/{search_id}", status_code=204)
 async def delete_saved_search(
     search_id: str,
-    user_id: str = Query(..., description="User ID")
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """Delete a saved search."""
     try:
-        logger.info(f"Deleting saved search {search_id} for user {user_id}")
+        logger.info(f"Deleting saved search {search_id} for user {current_user_id(user)}")
 
         # Verify access
-        await verify_user_access(user_id, search_id)
+        await verify_user_access(current_user_id(user), search_id)
 
         supabase = get_supabase_client().client
-        supabase.client.table("saved_searches").delete().eq("id", search_id).eq(
-            "user_id", user_id
+        supabase.table("saved_searches").delete().eq("id", search_id).eq(
+            "user_id", current_user_id(user)
         ).execute()
 
         return None
@@ -507,7 +520,7 @@ async def delete_saved_search(
 @router.post("/{search_id}/execute", response_model=SavedSearchResponse)
 async def execute_saved_search(
     search_id: str,
-    request: ExecuteSearchRequest
+    user: Dict[str, Any] = Depends(get_current_user),
 ):
     """
     Execute a saved search and track usage.
@@ -518,10 +531,10 @@ async def execute_saved_search(
     - relevance_score (based on usage patterns)
     """
     try:
-        logger.info(f"Executing saved search {search_id} for user {request.user_id}")
+        logger.info(f"Executing saved search {search_id} for user {current_user_id(user)}")
 
         # Verify access
-        search = await verify_user_access(request.user_id, search_id)
+        search = await verify_user_access(current_user_id(user), search_id)
 
         # Update usage tracking
         supabase = get_supabase_client().client
@@ -537,9 +550,9 @@ async def execute_saved_search(
         usage_frequency = (search["use_count"] + 1) / max(days_since_created, 1)
         update_data["relevance_score"] = min(usage_frequency * 10, 10.0)  # Cap at 10.0
 
-        response = supabase.client.table("saved_searches").update(update_data).eq(
+        response = supabase.table("saved_searches").update(update_data).eq(
             "id", search_id
-        ).eq("user_id", request.user_id).execute()
+        ).eq("user_id", current_user_id(user)).execute()
 
         if not response.data:
             raise HTTPException(status_code=404, detail="Saved search not found")
