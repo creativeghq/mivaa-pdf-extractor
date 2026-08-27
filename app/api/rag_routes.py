@@ -40,6 +40,7 @@ from app.schemas.api_responses import (
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
 from app.dependencies import current_user_id, get_current_user, get_optional_workspace_context, resolve_workspace_id, verify_internal_access
+from app.utils.untrusted_content import as_untrusted_data
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
 # Importing it at the top triggers `app.api.documents.__init__` →
 # `management_routes` → `app.orchestration` → back into this (still partially
@@ -6202,6 +6203,17 @@ async def search_knowledge_base(
             "images": []
         }
 
+        # Per-branch outcome, so a caller can tell "this corpus found nothing" from
+        # "this corpus broke" (#29 M15-4). Each branch overwrites its own entry on
+        # failure; anything still "ok" ran to completion. Bound HERE rather than in
+        # the branches, because a branch that never ran must still report something.
+        branch_status: Dict[str, str] = {
+            "products": "ok",
+            "entities": "ok",
+            "chunks": "ok",
+            "kb_docs": "ok",
+        }
+
         # One query embedding, shared by every branch that needs it. `chunks`
         # (document_chunks.text_embedding) and `kb_docs` (kb_doc_chunks.embedding)
         # are both halfvec(1024) Voyage columns, so generating it per-branch would
@@ -6274,7 +6286,12 @@ async def search_knowledge_base(
                 logger.info(f"   ✅ Found {len(results['products'])} products")
 
             except Exception as e:
-                logger.warning(f"Product search failed: {e}")
+                # A failed branch is not an empty one (#29 M15-4). The response used to
+                # carry counts and no per-branch status, so an RPC error, an embedding
+                # outage or schema drift was indistinguishable from "found nothing" —
+                # and "nothing" is the answer nobody investigates.
+                logger.error(f"Product search failed: {e}")
+                branch_status["products"] = f"failed: {str(e)[:200]}"
 
         # Search entities (certificates / logos / specifications) by vector similarity.
         #
@@ -6337,7 +6354,12 @@ async def search_knowledge_base(
                     logger.info(f"   ✅ Found {len(entity_rows)} entities")
 
             except Exception as e:
-                logger.warning(f"Entity search failed: {e}")
+                # A failed branch is not an empty one (#29 M15-4). The response used to
+                # carry counts and no per-branch status, so an RPC error, an embedding
+                # outage or schema drift was indistinguishable from "found nothing" —
+                # and "nothing" is the answer nobody investigates.
+                logger.error(f"Entity search failed: {e}")
+                branch_status["entities"] = f"failed: {str(e)[:200]}"
 
         # Search PDF-derived chunks (document_chunks) by vector similarity, then
         # expand each hit with its reading-order neighbours (issue #318).
@@ -6477,7 +6499,12 @@ async def search_knowledge_base(
                     )
 
             except Exception as e:
-                logger.warning(f"Chunk search failed: {e}")
+                # A failed branch is not an empty one (#29 M15-4). The response used to
+                # carry counts and no per-branch status, so an RPC error, an embedding
+                # outage or schema drift was indistinguishable from "found nothing" —
+                # and "nothing" is the answer nobody investigates.
+                logger.error(f"Chunk search failed: {e}")
+                branch_status["chunks"] = f"failed: {str(e)[:200]}"
 
         # Search KB docs (kb_docs table, filtered by category access_level + trigger_keyword)
         if "kb_docs" in request.search_types:
@@ -6573,8 +6600,17 @@ async def search_knowledge_base(
                                 "chunk_id": ch.get("chunk_id"),
                                 "chunk_index": ch.get("chunk_index"),
                                 "heading": heading,
-                                # Full section content — no truncation (chunks are section-sized).
-                                "content": ch.get("content") or "",
+                                # Full section content — no truncation (chunks are
+                                # section-sized) — wrapped as DATA (invariant 9, #29
+                                # M15-1). Every consumer of this endpoint hands the text
+                                # to a model, and a KB document is a PERSISTENT injection
+                                # primitive: written once, replayed into every future turn
+                                # that retrieves it. The delimiter goes on here so no
+                                # caller has to remember.
+                                "content": as_untrusted_data(
+                                    ch.get("content"),
+                                    source=f"knowledge base: {ch.get('document_title') or 'untitled'}",
+                                ),
                                 "document_title": ch.get("document_title"),
                                 "category": cat_id,
                                 "category_slug": ch.get("category_slug"),
@@ -6595,7 +6631,12 @@ async def search_knowledge_base(
                         logger.info(f"   ✅ Found {kb_count} KB doc sections after keyword filtering")
 
             except Exception as e:
-                logger.warning(f"KB docs search failed: {e}")
+                # A failed branch is not an empty one (#29 M15-4). The response used to
+                # carry counts and no per-branch status, so an RPC error, an embedding
+                # outage or schema drift was indistinguishable from "found nothing" —
+                # and "nothing" is the answer nobody investigates.
+                logger.error(f"KB docs search failed: {e}")
+                branch_status["kb_docs"] = f"failed: {str(e)[:200]}"
 
         processing_time = (datetime.utcnow() - start_time).total_seconds()
         total_results = len(results["products"]) + len(results["entities"]) + len(results["chunks"]) + len(results["images"])
@@ -6626,6 +6667,11 @@ async def search_knowledge_base(
                     "chunks": chunk_floor_stats,
                     "entities": entity_floor_stats,
                 },
+                # "ok" per corpus, or the reason it failed. Without this, a total of 0
+                # is the same response whether every branch ran clean or every branch
+                # raised — which is the silent-zero shape at the top of the read path.
+                "branch_status": branch_status,
+                "degraded": any(v != "ok" for v in branch_status.values()),
             }
         )
 
@@ -6848,7 +6894,11 @@ async def read_document_section(
                 "chunk_id": row.get("chunk_id"),
                 "chunk_index": row.get("chunk_index"),
                 "heading": row.get("heading"),
-                "content": row.get("content") or "",
+                # Same corpus, larger spans — same treatment (#29 M15-1).
+                "content": as_untrusted_data(
+                    row.get("content"),
+                    source=f"{source} section",
+                ),
                 "token_count": tokens,
                 # PDF only; None on kb rows.
                 "page_number": row.get("page_number"),
