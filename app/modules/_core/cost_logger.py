@@ -77,6 +77,30 @@ class CostAttribution:
         return meta
 
 
+#: Marker written into `ai_usage_logs.error_message` when a call reports success and
+#: no usage at all (#30 M16-6). Named rather than inlined so a cost view can select on
+#: it, and so the two loggers cannot drift to two spellings of the same fact.
+ZERO_USAGE_MARKER = "usage_missing: provider reported 0 input and 0 output tokens"
+
+
+def usage_anomaly(input_tokens: int, output_tokens: int, success: bool) -> Optional[str]:
+    """A marker when a SUCCESSFUL call reports no tokens, else None.
+
+    A model call that succeeded consumed tokens. Zero of both is not a cheap call — it
+    is an accounting failure, and it does not fail: `int(x or 0)` turns a missing usage
+    block into 0, 0 tokens produce 0 raw cost, and the row is still written
+    `success=True`. That feeds #30 M16-1 directly — a zero cost becomes a zero amount
+    becomes a free operation reporting success, all the way down.
+
+    `success` stays whatever the caller reported. What is being marked is the USAGE, not
+    the call: the provider may genuinely have answered. Flipping success to False would
+    trade a wrong cost for a wrong outcome.
+    """
+    if success and not int(input_tokens or 0) and not int(output_tokens or 0):
+        return ZERO_USAGE_MARKER
+    return None
+
+
 def log_external_call(
     *,
     module_slug: str,

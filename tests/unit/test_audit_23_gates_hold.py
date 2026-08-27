@@ -16,10 +16,16 @@ exclusion too. A guard that checks half of a claim reads exactly like one that c
 all of it.
 
 NOT covered here, deliberately:
-  * M10-4 (no pre-debit on these services) is not fixed by this batch. Capping the
-    arrays bounds the amplification; metering the eight doors is the separate piece
-    of work `test_paid_route_metering.py` owns, and pretending otherwise with a
-    green test here would be worse than the gap.
+  * M10-4 (no pre-debit on these services) was fixed AFTER this batch, in d683113,
+    and its guard lives in `test_paid_route_metering.py` — which enumerates the paid
+    doors from source rather than listing them by hand, so a new door here fails on
+    the day it is written. Capping the arrays bounded the amplification; it did not
+    make anyone pay, and that was deliberately left as separate work rather than
+    covered by a green test here.
+
+    (This paragraph used to read "is not fixed by this batch", which was true when
+    written and had become a coverage gap that no longer existed. A stale NOT-COVERED
+    note is worse than none: it is the one place a reader trusts.)
 """
 
 import ast

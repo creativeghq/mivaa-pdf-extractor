@@ -28,7 +28,6 @@ import logging
 from typing import Dict, Optional
 
 
-from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.credit_router import (
     debit_credits as _router_debit_credits,
     refund_credits as _router_refund_credits,
@@ -40,6 +39,8 @@ from app.modules._core.provider_pricing import (
     haiku_token_cost,
     sonar_rates,
 )
+from app.services.integrations.cost_rollup import stamp_rollup
+from app.modules._core.cost_logger import usage_anomaly
 from app.modules._core.cost_logger import (
     CostAttribution as _CoreCostAttribution,
     log_external_call as _core_log_external_call,
@@ -221,6 +222,14 @@ def log_haiku_call(
     error_message: Optional[str] = None,
 ) -> None:
     raw = haiku_token_cost(input_tokens, output_tokens)
+    # A successful call reporting no tokens is an accounting failure, not a cheap call
+    # (#30 M16-6). It is marked rather than silently written as a free success, which is
+    # what fed the zero-cost -> zero-amount -> free-operation chain in M16-1.
+    anomaly = usage_anomaly(input_tokens, output_tokens, success)
+    if anomaly:
+        logger.error(
+            f"mention-cost: {operation} reported success with zero usage — cost recorded as 0"
+        )
     log_external_call(
         operation_type=f"mention_monitoring.{operation}",
         model_name="claude-haiku-4-5-20251001",
@@ -230,7 +239,7 @@ def log_haiku_call(
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         success=success,
-        error_message=error_message,
+        error_message=error_message or anomaly,
     )
 
 
@@ -356,31 +365,35 @@ def refund_credits(
 # Layer C: per-row rollup helpers
 # ────────────────────────────────────────────────────────────────────────────
 
-def stamp_refresh_cost(*, tracked_mention_id: str, refresh_run_id: str) -> None:
-    """After a refresh persists rows, call this to update last_refresh_*
-    counters on tracked_mentions and recompute the lifetime totals."""
-    if not tracked_mention_id or not refresh_run_id:
-        return
-    try:
-        sb = get_supabase_client().client
-        sb.rpc("stamp_mention_refresh_cost", {
+def stamp_refresh_cost(*, tracked_mention_id: str, refresh_run_id: str) -> bool:
+    """Update last_refresh_* on tracked_mentions and recompute lifetime totals.
+
+    Returns True if the rollup ran (#30 M16-5). It used to return None whether it
+    succeeded, failed or was skipped, so an `ai_usage_logs` row could exist while
+    `tracked_mentions.last_refresh_*` and the lifetime totals stayed stale — and an
+    operator reading spend rollups saw figures that had silently stopped updating.
+    """
+    return stamp_rollup(
+        rpc="stamp_mention_refresh_cost",
+        params={
             "p_tracked_mention_id": tracked_mention_id,
             "p_refresh_run_id": refresh_run_id,
-        }).execute()
-    except Exception as e:
-        logger.warning(f"mention-cost: stamp_mention_refresh_cost failed: {e}")
+        },
+        module="mention-cost",
+        required={
+            "tracked_mention_id": tracked_mention_id,
+            "refresh_run_id": refresh_run_id,
+        },
+    )
 
 
-def recompute_lifetime_cost(*, tracked_mention_id: str) -> None:
+def recompute_lifetime_cost(*, tracked_mention_id: str) -> bool:
     """Sum all ai_usage_logs entries for this tracked_mention_id and write the
     total back to tracked_mentions.total_billed_usd. Useful after probe-llm
     or opportunities calls (which don't have a refresh_run_id)."""
-    if not tracked_mention_id:
-        return
-    try:
-        sb = get_supabase_client().client
-        sb.rpc("recompute_mention_cost", {
-            "p_tracked_mention_id": tracked_mention_id,
-        }).execute()
-    except Exception as e:
-        logger.warning(f"mention-cost: recompute_mention_cost failed: {e}")
+    return stamp_rollup(
+        rpc="recompute_mention_cost",
+        params={"p_tracked_mention_id": tracked_mention_id},
+        module="mention-cost",
+        required={"tracked_mention_id": tracked_mention_id},
+    )

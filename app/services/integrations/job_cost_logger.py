@@ -18,7 +18,6 @@ from __future__ import annotations
 import logging
 from typing import Dict, Optional
 
-from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.credit_router import (
     debit_credits as _router_debit_credits,
     refund_credits as _router_refund_credits,
@@ -29,6 +28,8 @@ from app.modules._core.provider_pricing import (
     haiku_token_cost,
     sonar_rates,
 )
+from app.services.integrations.cost_rollup import stamp_rollup
+from app.modules._core.cost_logger import usage_anomaly
 from app.modules._core.cost_logger import (
     CostAttribution as _CoreCostAttribution,
     log_external_call as _core_log_external_call,
@@ -150,6 +151,14 @@ def log_haiku_call(
     # Resolved through ai_model_pricing, not restated. `claude-haiku-4-5` has a row there, and a
     # literal beside it is a second USD source that keeps the old number after any admin edit.
     raw = haiku_token_cost(input_tokens, output_tokens)
+    # A successful call reporting no tokens is an accounting failure, not a cheap call
+    # (#30 M16-6). It is marked rather than silently written as a free success, which is
+    # what fed the zero-cost -> zero-amount -> free-operation chain in M16-1.
+    anomaly = usage_anomaly(input_tokens, output_tokens, success)
+    if anomaly:
+        logger.error(
+            f"job-cost: {operation} reported success with zero usage — cost recorded as 0"
+        )
     log_external_call(
         operation_type=f"job_research.{operation}",
         model_name="claude-haiku-4-5-20251001",
@@ -159,7 +168,7 @@ def log_haiku_call(
         output_tokens=output_tokens,
         latency_ms=latency_ms,
         success=success,
-        error_message=error_message,
+        error_message=error_message or anomaly,
     )
 
 
@@ -207,24 +216,30 @@ def refund_credits(
 
 
 # ─── Layer C: per-row rollup helpers ───────────────────────────────────────
-def stamp_refresh_cost(*, tracked_job_id: str, refresh_run_id: str) -> None:
-    if not tracked_job_id or not refresh_run_id:
-        return
-    try:
-        sb = get_supabase_client().client
-        sb.rpc("stamp_job_refresh_cost", {
+def stamp_refresh_cost(*, tracked_job_id: str, refresh_run_id: str) -> bool:
+    """True if the rollup ran. See `cost_rollup` for why this is not None any more.
+
+    `stamp_job_refresh_cost` is the platform's canonical silent zero: it referenced a
+    column that did not exist, the exception was swallowed at WARNING, and per-subject
+    billing read 0 for months with every health signal green. The column was fixed; the
+    shape that hid it — bare return, swallowed exception, no return value — is what
+    `cost_rollup` removes (#30 M16-5).
+    """
+    return stamp_rollup(
+        rpc="stamp_job_refresh_cost",
+        params={
             "p_tracked_job_id": tracked_job_id,
             "p_refresh_run_id": refresh_run_id,
-        }).execute()
-    except Exception as e:
-        logger.warning(f"job-cost: stamp_job_refresh_cost failed: {e}")
+        },
+        module="job-cost",
+        required={"tracked_job_id": tracked_job_id, "refresh_run_id": refresh_run_id},
+    )
 
 
-def recompute_lifetime_cost(*, tracked_job_id: str) -> None:
-    if not tracked_job_id:
-        return
-    try:
-        sb = get_supabase_client().client
-        sb.rpc("recompute_job_cost", {"p_tracked_job_id": tracked_job_id}).execute()
-    except Exception as e:
-        logger.warning(f"job-cost: recompute_job_cost failed: {e}")
+def recompute_lifetime_cost(*, tracked_job_id: str) -> bool:
+    return stamp_rollup(
+        rpc="recompute_job_cost",
+        params={"p_tracked_job_id": tracked_job_id},
+        module="job-cost",
+        required={"tracked_job_id": tracked_job_id},
+    )
