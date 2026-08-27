@@ -14,6 +14,7 @@ import os
 import tempfile
 import time
 import uuid
+import functools
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -181,6 +182,7 @@ from app.services.chunking.unified_chunking_service import UnifiedChunkingServic
 
 # Import worker for process isolation
 from app.services.pdf.pdf_worker import execute_pdf_extraction_job
+from app.utils.killable import KillableCrashed, KillableTimeout, run_killable
 
 # PageConverter removed - using simple PDF page numbers instead
 
@@ -500,18 +502,42 @@ class PDFProcessor:
                         k: v for k, v in processing_options.items()
                         if k not in ('checkpoint_recovery_service', 'progress_tracker', 'job_id')
                     }
-                    markdown_content, metadata, page_chunks, _ = await asyncio.wait_for(
-                        loop.run_in_executor(
-                            self.executor,
+                    # A KILLABLE subprocess, not a thread (#22 M9-5).
+                    #
+                    # This was `asyncio.wait_for(loop.run_in_executor(...))`. `wait_for`
+                    # cancels the coroutine waiting on the future; it cannot touch the
+                    # thread, because Python has no way to interrupt one. So a malformed
+                    # PDF declared timed out kept consuming CPU and memory indefinitely,
+                    # enough of them exhausted the pool, and the job was marked timed out
+                    # while the work that caused it was still running — which is also why
+                    # the recovery machinery could not reason about it.
+                    #
+                    # `run_killable` runs the same module-level worker with the same
+                    # already-filtered options and terminates the process on the
+                    # deadline. The executor thread is still used, but it is now blocking
+                    # on something that CAN be stopped rather than being the thing that
+                    # cannot.
+                    markdown_content, metadata, page_chunks, _ = await loop.run_in_executor(
+                        self.executor,
+                        functools.partial(
+                            run_killable,
                             execute_pdf_extraction_job,
                             pdf_path,
-                            filtered_options
+                            filtered_options,
+                            timeout=markdown_timeout,
+                            label="markdown extraction",
                         ),
-                        timeout=markdown_timeout
                     )
-                except asyncio.TimeoutError:
+                except KillableTimeout:
                     self.logger.error(f"Markdown extraction timed out after {markdown_timeout} seconds")
                     raise PDFTimeoutError(f"Markdown extraction timed out after {markdown_timeout} seconds. The PDF may be corrupted or too complex.")
+                except KillableCrashed as e:
+                    # A thread cannot be OOM-killed on its own, so this outcome did not
+                    # previously exist as a distinguishable one — an out-of-memory PDF
+                    # took the whole worker with it. Now it is a reportable, retryable
+                    # failure of ONE document.
+                    self.logger.error(f"Markdown extraction worker died: {e}")
+                    raise PDFExtractionError(f"Markdown extraction worker died: {e}")
             else:
                 # Image-only processing - get minimal metadata without text extraction
                 self.logger.info("📄 Skipping text extraction (extract_text=False) - extracting images only")
