@@ -8,7 +8,6 @@ Follows the platform's prompt-based architecture.
 import logging
 import os
 import json
-import re
 from typing import Dict, List, Any
 
 from app.services.core.supabase_client import get_supabase_client
@@ -132,11 +131,37 @@ class EmbeddingToTextService:
             #     it. Anthropic bills a request it accepted regardless.
             from app.services.core.claude_helper import tracked_claude_call_async
 
+            # Forced tool (#32). The parse below was `re.search(r'\{.*\}', ...)` — a
+            # greedy match for anything between the first { and the last }, which
+            # silently swallows prose on either side and produces a dict from whatever
+            # happened to be in between.
+            #
+            # The schema is OPEN: the metadata shape is described inside `self.prompt`,
+            # loaded from the database. Restating those keys here would create a second
+            # source, and because the model is forced to satisfy the schema, an admin's
+            # edit would silently stop taking effect.
+            _METADATA_TOOL = {
+                "name": "emit_visual_metadata",
+                "description": (
+                    "Emit the textual metadata derived from these embeddings, as the "
+                    "JSON object described in the instructions."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True,
+                },
+            }
+
             response = await tracked_claude_call_async(
                 task="embedding_to_text_conversion",
                 model="claude-opus-4-8",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": full_prompt}],
+                extra_kwargs={
+                    "tools": [_METADATA_TOOL],
+                    "tool_choice": {"type": "tool", "name": _METADATA_TOOL["name"]},
+                },
                 confidence_score=0.85,
                 confidence_breakdown={
                     "model_confidence": 0.90,
@@ -149,17 +174,22 @@ class EmbeddingToTextService:
                 workspace_id=self.workspace_id,
             )
 
-            # Parse response
-            response_text = response.content[0].text.strip()
-            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            from app.services.core.claude_tool_call import (
+                ToolCallNotReturned,
+                extract_tool_input,
+            )
 
-            if json_match:
-                result = json.loads(json_match.group(0))
-                logger.info(f"✅ Converted embeddings to text for image {image_id}")
-                return result
-            else:
-                logger.error("Failed to parse AI response as JSON")
+            try:
+                result = extract_tool_input(response, _METADATA_TOOL["name"])
+            except ToolCallNotReturned as e:
+                # `{}` is preserved as the caller's "no metadata" signal, but it is now
+                # only reachable from a genuinely broken reply rather than from prose
+                # the regex could not find braces in.
+                logger.error(f"No tool call in embedding-to-text response: {e}")
                 return {}
+
+            logger.info(f"✅ Converted embeddings to text for image {image_id}")
+            return result
 
         except Exception as e:
             report_anthropic_failure(

@@ -1088,7 +1088,6 @@ class UnifiedSearchService:
             self.logger.debug(f"Query cache lookup failed (continuing): {cache_err}")
 
         try:
-            import json
 
             system_prompt = await load_prompt("search", "query_parser_system")
 
@@ -1116,31 +1115,53 @@ class UnifiedSearchService:
             # outside it.
             if parsed_data is None:
                 model_used = "claude-haiku-4-5"
-                from app.services.core.claude_helper import tracked_claude_call_async
-
-                response = await tracked_claude_call_async(
-                    task="search_query_understanding_fallback",
-                    model="claude-haiku-4-5",
-                    max_tokens=1024,
-                    temperature=0.1,
-                    system=system_prompt + "\n\nIMPORTANT: Respond with ONLY a JSON object, no markdown fences, no explanation.",
-                    messages=[
-                        {"role": "user", "content": f"Parse this query: {query}"},
-                    ],
-                    workspace_id=workspace_id,
-                    confidence_score=0.90,
-                    confidence_breakdown={
-                        "model_confidence": 0.92,
-                        "completeness": 0.95,
-                        "consistency": 0.88,
-                        "validation": 0.85,
-                    },
+                # Forced tool (#32). This site is the clearest statement of the problem
+                # in the codebase: the system prompt ENDED with "Respond with ONLY a
+                # JSON object, no markdown fences, no explanation" — and the code below
+                # it stripped markdown fences anyway. The instruction and the repair are
+                # the same admission, written twice.
+                #
+                # Both are gone. The model cannot return prose, so there is nothing to
+                # instruct against and nothing to strip. The schema stays OPEN because
+                # the filter shape is described in `system_prompt`, which is loaded from
+                # the database — same reasoning as the sibling `_parse_query_with_haiku`.
+                from app.services.core.claude_tool_call import (
+                    ToolCallNotReturned,
+                    call_with_tool,
                 )
-                content = (response.content[0].text or "").strip()
-                # Strip markdown fences if present
-                if content.startswith("```"):
-                    content = content.split("```", 2)[1].lstrip("json\n").rstrip("`").strip()
-                parsed_data = json.loads(content)
+
+                _QUERY_TOOL = {
+                    "name": "emit_parsed_query",
+                    "description": (
+                        "Emit the parsed search query as the JSON object described in "
+                        "the instructions."
+                    ),
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": True,
+                    },
+                }
+
+                try:
+                    call = await call_with_tool(
+                        task="search_query_understanding_fallback",
+                        model="claude-haiku-4-5",
+                        max_tokens=1024,
+                        system=system_prompt,
+                        tool=_QUERY_TOOL,
+                        messages=[
+                            {"role": "user", "content": f"Parse this query: {query}"},
+                        ],
+                        workspace_id=workspace_id,
+                    )
+                except ToolCallNotReturned as e:
+                    # This IS the fallback path — the other model already failed — so
+                    # there is nothing further to fall back to. Raising lets the outer
+                    # handler return the unparsed query, which is the honest answer.
+                    logger.warning(f"query-understanding fallback returned no tool call: {e}")
+                    raise
+                parsed_data = call.data
 
             # Select dynamic weight profile based on parsed query intent
             profile_name, dynamic_weights = self._select_weight_profile(parsed_data)
