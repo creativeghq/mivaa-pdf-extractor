@@ -10,6 +10,21 @@ cascades out every tracked_queries row and its price history.
 Kept separate from the platform's internal price monitoring flow
 (price_monitoring_products + competitor_sources) so the external data
 model can evolve independently without touching catalog products.
+
+SSRF (audit #19 M6-2, invariant 7). The URLs here are STORED and RE-FETCHED ON A
+SCHEDULE, indefinitely — which makes a single accepted write a recurring internal-fetch
+primitive that outlives the session that created it. That is what separates this from
+every other fetch site in the tree, and it is why the guard runs in BOTH places:
+
+  * at WRITE, so a URL naming an internal host is refused at the door rather than
+    living in the table until someone notices
+  * immediately before EVERY re-fetch, because DNS can be re-pointed at an internal
+    address between the write and any of the fetches that follow it
+
+A refusal at re-fetch is recorded as `last_error` and stops that refresh. It must NOT
+disable the row: `assert_safe_url` also raises when resolution fails, so a transient
+DNS outage is indistinguishable from a blocked host, and disabling on it would silently
+retire live monitoring.
 """
 
 import logging
@@ -17,6 +32,8 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+from app.utils.ssrf_guard import SSRFError, assert_safe_url
 
 
 def _select_cheapest(rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -494,6 +511,14 @@ class TrackedQueriesService:
         takes the Firecrawl-only path in `_refresh_url_only()`; it never runs
         discovery.
         """
+        # Validate at the door. The row that is written here is re-fetched on a
+        # schedule forever, so an unchecked write is not one bad fetch — it is a
+        # standing one (audit #19 M6-2).
+        try:
+            safe_url = assert_safe_url(url.strip())
+        except SSRFError as e:
+            raise ValueError(f"refusing to monitor {url!r}: {e}") from e
+
         row: Dict[str, Any] = {
             "api_key_id": None,
             "product_id": product_id,
@@ -504,7 +529,7 @@ class TrackedQueriesService:
             "refresh_interval_hours": 24,
             "verify_prices": True,
             "mode": "url-only",
-            "pinned_url": url.strip(),
+            "pinned_url": safe_url,
         }
         res = self.supabase.client.table("tracked_queries").insert(row).execute()
         created = (res.data or [{}])[0]
@@ -733,6 +758,22 @@ class TrackedQueriesService:
             return {
                 "status": "error",
                 "error": "url-only tracked_query has no pinned_url",
+                "credits_used": 0,
+            }
+
+        # Re-validate the STORED url. It passed at write time; DNS can be re-pointed
+        # since, and this row is fetched again every refresh interval.
+        try:
+            pinned = assert_safe_url(pinned)
+        except SSRFError as e:
+            logger.warning("url-only refresh refusing stored url for %s: %s", tracking_id, e)
+            self.supabase.client.table("tracked_queries").update({
+                "last_error": f"pinned URL refused by the SSRF guard: {e}",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", tracking_id).execute()
+            return {
+                "status": "error",
+                "error": f"pinned URL refused by the SSRF guard: {e}",
                 "credits_used": 0,
             }
 
@@ -1156,9 +1197,18 @@ class TrackedQueriesService:
         # through the existing _verify_hits_with_firecrawl pipeline.
         hits: List[PriceHit] = []
         row_by_url: Dict[str, Dict[str, Any]] = {}
+        refused: List[str] = []
         for r in run_rows:
             url = r.get("product_url")
             if not url:
+                continue
+            # Same reason as the pinned path: these are stored URLs being fetched
+            # again, not a URL supplied by this request.
+            try:
+                assert_safe_url(url)
+            except SSRFError as e:
+                logger.warning("reverify refusing stored url %s: %s", url, e)
+                refused.append(url)
                 continue
             row_by_url[url] = r
             hits.append(PriceHit(
@@ -1238,6 +1288,9 @@ class TrackedQueriesService:
             "verified_count": sum(1 for h in hits if h.verified),
             "unverified_count": sum(1 for h in hits if not h.verified),
             "rows_processed": len(hits),
+            # Reported, not swallowed: a silently shorter result set reads as
+            # "those retailers had nothing" rather than "we refused to fetch them".
+            "refused_urls": refused,
         }
 
     def _apply_exclusion_filter(
