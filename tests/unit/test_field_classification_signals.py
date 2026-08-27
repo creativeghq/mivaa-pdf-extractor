@@ -121,10 +121,27 @@ def test_llm_tier_uses_forced_tool_use_and_no_salvage():
     field unclassified rather than produce a guess.
     """
     src = _SRC.read_text(encoding="utf-8")
-    assert '"tool_choice": {"type": "tool", "name": "emit_field_roles"}' in src
-    assert '"tools": [classify_tool]' in src
+    body = _llm_body(src)
+
+    # The literal `"tool_choice": {...}` used to be asserted here, when this classifier
+    # built its own httpx POST. It now goes through `call_with_tool`, which FORCES the
+    # tool from `tool["name"]` — so the string moved into the shared helper and this
+    # test was pinning the implementation rather than the property.
+    #
+    # The property is unchanged and is what is checked now: the model cannot answer with
+    # prose, and a missing tool block leaves the field unclassified instead of producing
+    # a guess. `claude_tool_call` is held to the forcing half by
+    # `test_model_replies_come_from_tool_calls.py`.
+    assert "call_with_tool(" in body, (
+        "the field-role classifier no longer forces its tool call (invariant 9)"
+    )
+    assert 'tool=classify_tool' in body
+    assert "ToolCallNotReturned" in body, (
+        "a missing tool block is no longer handled explicitly — it must leave the field "
+        "unclassified, not fall through to a guess"
+    )
     # No JSON-repair path anywhere in the classifier.
-    assert "json.loads(" not in _llm_body(src)
+    assert "json.loads(" not in body
 
 
 def test_llm_tier_takes_its_prompt_from_the_database():

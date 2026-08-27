@@ -370,8 +370,17 @@ async def test_claude_integration(
   "confidence": <0-1>
 }"""
 
-        # Call Claude Vision API
-        response = anthropic_client.messages.create(
+        # Through the tracked helper (#33 item 2). `system_initiated=True`: this is the
+        # platform testing itself with a 1x1 pixel, so there is genuinely nobody to
+        # bill — and the helper records that as a deliberate gap rather than letting it
+        # look like a call that simply lost its user_id on the way down.
+        #
+        # The confidence blend below is four CONSTANTS, so unlike the other sites in
+        # this migration nothing here is post-hoc; it passes straight through.
+        from app.services.core.claude_helper import tracked_claude_call_async
+
+        response = await tracked_claude_call_async(
+            task="test_vision_integration",
             model="claude-opus-4-8",
             max_tokens=1024,
             messages=[{
@@ -390,38 +399,23 @@ async def test_claude_integration(
                         "text": prompt
                     }
                 ]
-            }]
+            }],
+            confidence_score=(
+                0.30 * 0.95 + 0.30 * 0.90 + 0.25 * 0.93 + 0.15 * 0.88
+            ),
+            confidence_breakdown={
+                "model_confidence": 0.95,
+                "completeness": 0.90,
+                "consistency": 0.93,
+                "validation": 0.88,
+            },
+            action="use_ai_result",
+            system_initiated=True,
         )
 
         # Parse response
         response_text = response.content[0].text
         processing_time = (time.time() - start_time) * 1000
-
-        # Log AI call
-        latency_ms = int(processing_time)
-        confidence_breakdown = {
-            "model_confidence": 0.95,
-            "completeness": 0.90,
-            "consistency": 0.93,
-            "validation": 0.88
-        }
-        confidence_score = (
-            0.30 * confidence_breakdown["model_confidence"] +
-            0.30 * confidence_breakdown["completeness"] +
-            0.25 * confidence_breakdown["consistency"] +
-            0.15 * confidence_breakdown["validation"]
-        )
-
-        await ai_logger.log_claude_call(
-            task="test_vision_integration",
-            model="claude-opus-4-8",
-            response=response,
-            latency_ms=latency_ms,
-            confidence_score=confidence_score,
-            confidence_breakdown=confidence_breakdown,
-            action="use_ai_result",
-            job_id=None
-        )
 
         return {
             "success": True,
