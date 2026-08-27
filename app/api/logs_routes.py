@@ -2,18 +2,43 @@
 Logs API Routes
 
 Endpoints for fetching and managing system logs from the database.
+
+`POST /frontend` is deliberately the one route here that does NOT require auth: the
+browser logger (`src/services/logger.service.ts`) sends errors with `keepalive` and
+no Authorization header, and it swallows every failure — so requiring a token would
+switch frontend error reporting off silently, which is worse than the endpoint being
+open.
+
+What it may not do is TRUST the caller (audit #24 M11-4). It accepted a body-supplied
+`user_id`, an unconstrained `level` and unbounded fields, so any caller could write a
+forged CRITICAL entry attributed to somebody else, at any size, into a table whose
+only defence is a TTL. Attribution now comes from a bearer token when one is present
+and is absent otherwise; it is never taken from the body.
 """
 
-from fastapi import APIRouter, HTTPException, Query, Request, Depends
-from typing import Optional, List
-from datetime import datetime, timedelta
-from pydantic import BaseModel
+import logging
 import uuid
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Literal, Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, field_validator
 
 from app.services.core.supabase_client import get_supabase_client
 from app.schemas.api_responses import StatusResponse, LogStatsResponse
 from app.dependencies import require_admin
 from app.utils.postgrest_filters import escape_like
+
+logger = logging.getLogger(__name__)
+
+#: Bounds on the one unauthenticated write in this repository. Sizes are generous
+#: enough for a real stack trace and small enough that the route is not a write
+#: amplifier into a TTL'd table.
+MAX_MESSAGE_CHARS = 4_000
+MAX_LOGGER_NAME_CHARS = 200
+MAX_URL_CHARS = 2_000
+MAX_USER_AGENT_CHARS = 500
+MAX_CONTEXT_BYTES = 16_000
 
 
 router = APIRouter(prefix="/api/admin/logs", tags=["Admin", "Logs"])
@@ -34,14 +59,62 @@ class LogEntry(BaseModel):
 
 
 class FrontendLogRequest(BaseModel):
-    """Request model for frontend log submission."""
-    level: str  # DEBUG, INFO, WARNING, ERROR, CRITICAL
-    message: str
-    logger_name: str = "frontend"
+    """Request model for frontend log submission.
+
+    There is deliberately no `user_id` field. Attribution is derived from the bearer
+    token when the caller presents one — a body-supplied id is a claim, not a fact,
+    and this route is open.
+    """
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+    message: str = Field(..., max_length=MAX_MESSAGE_CHARS)
+    logger_name: str = Field("frontend", max_length=MAX_LOGGER_NAME_CHARS)
     context: Optional[dict] = None
-    user_id: Optional[str] = None
-    url: Optional[str] = None
-    user_agent: Optional[str] = None
+    url: Optional[str] = Field(None, max_length=MAX_URL_CHARS)
+    user_agent: Optional[str] = Field(None, max_length=MAX_USER_AGENT_CHARS)
+
+    @field_validator("level", mode="before")
+    @classmethod
+    def _upper(cls, v: Any) -> Any:
+        """Accept the frontend's casing without widening what is accepted."""
+        return v.upper() if isinstance(v, str) else v
+
+    @field_validator("context")
+    @classmethod
+    def _bound_context(cls, v: Optional[dict]) -> Optional[dict]:
+        """`context` is a free-form dict, so its SIZE is the only thing that can be
+        bounded — and it has to be, or the field is the amplifier the other caps
+        removed."""
+        if v is None:
+            return v
+        import json
+        try:
+            encoded = json.dumps(v, default=str)
+        except (TypeError, ValueError):
+            raise ValueError("context is not JSON-serialisable")
+        if len(encoded.encode("utf-8")) > MAX_CONTEXT_BYTES:
+            raise ValueError(f"context exceeds {MAX_CONTEXT_BYTES} bytes")
+        return v
+
+
+async def _attributed_user_id(request: Request) -> Optional[str]:
+    """The caller's user id IF they presented a valid token, else None.
+
+    Best-effort by design: this route stays open (see the module docstring), so an
+    anonymous frontend error is a legitimate outcome and must record no user rather
+    than an asserted one.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        return None
+    try:
+        from app.dependencies import _get_jwt_middleware
+        claims = await _get_jwt_middleware()._validate_token(auth.split(" ", 1)[1])
+    except Exception:
+        return None
+    if not claims:
+        return None
+    uid = claims.get("sub") or claims.get("user_id")
+    return str(uid) if uid else None
 
 
 class LogsResponse(BaseModel):
@@ -65,9 +138,10 @@ async def log_frontend_error(log_request: FrontendLogRequest, request: Request):
     """
     try:
         supabase = get_supabase_client()
+        user_id = await _attributed_user_id(request)
 
         # Prepare log entry
-        log_entry = {
+        log_entry: Dict[str, Any] = {
             "id": str(uuid.uuid4()),
             "timestamp": datetime.utcnow().isoformat(),
             "level": log_request.level.upper(),
@@ -80,7 +154,8 @@ async def log_frontend_error(log_request: FrontendLogRequest, request: Request):
                 "user_agent": log_request.user_agent or request.headers.get("user-agent"),
                 "ip_address": request.client.host if request.client else None,
             },
-            "user_id": log_request.user_id,
+            # From the token or nothing. Never from the body (M11-4).
+            "user_id": user_id,
             "created_at": datetime.utcnow().isoformat()
         }
 
@@ -94,8 +169,9 @@ async def log_frontend_error(log_request: FrontendLogRequest, request: Request):
         }
 
     except Exception as e:
-        # Don't fail the frontend if logging fails
-        print(f"Failed to log frontend error: {str(e)}")
+        # Don't fail the frontend if logging fails. `logger`, not `print`: a print
+        # reaches no sink anyone can query, so the failure would be invisible.
+        logger.warning("Failed to record frontend log: %s", e)
         return {
             "success": False,
             "error": str(e)

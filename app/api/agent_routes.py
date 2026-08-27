@@ -8,16 +8,39 @@ Endpoints:
   POST /api/agents/run       - Receive delegated agent task, run in background
   GET  /api/agents/runs/{id} - Get status of a specific run
   GET  /api/agents/catalog   - List all available agent types
+
+AUTH (audit #24 M11-1). `_require_internal_key` fails CLOSED. The previous form was
+`if expected_key and authorization != ...`, so an unset `MIVAA_API_KEY` short-circuited
+the `and` and ran no check at all — on the route that spends AI credits and writes to
+`products`. A missing env var is not hypothetical here: #16 M3-4 found the Supabase
+client falling back to the anon key when the service-role key is absent, and this
+repository has no startup assertion that either variable is present. The correct
+fail-closed form was already in `catalog_routes._check_secret` and `seo_agent_routes`.
+
+TENANCY (audit #24 M11-2 / M11-3, schema drift #26 M13-1). Both handlers selected the
+first `batch_size` products PLATFORM-WIDE and updated them by product id alone, so one
+tenant's agent run could rewrite another tenant's gold layer. The workspace now comes
+from the `agent_runs` row (falling back to the agent's own workspace), never from the
+request body, and every read and write carries it.
+
+Those handlers were also unreachable: they referenced `material_type`, `tags`,
+`image_url` and `search_keywords`, none of which exist on `products` — they live in the
+`attributes` jsonb, resolved through the facet registry. PostgREST rejected the request
+before any update ran, which is why the unscoped write was latent rather than live. The
+column fix and the workspace predicate land in the SAME change deliberately: correcting
+the columns alone would activate the cross-tenant write in one commit.
 """
 
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Header
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Header
 from pydantic import BaseModel, Field
 
+from app.dependencies import get_workspace_context
+from app.schemas.auth import WorkspaceContext
 from app.services.core.supabase_client import get_supabase_client
 from app.schemas.api_responses import AgentCatalogResponse, DataResponse
 
@@ -75,12 +98,29 @@ async def get_catalog():
 
 
 @router.get("/runs/{run_id}", responses={200: {"model": DataResponse}})
-async def get_run_status(run_id: str):
+async def get_run_status(
+    run_id: str,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+):
+    """Status of one agent run, scoped to the caller's workspace (M11-3).
+
+    404 rather than 403 on a run belonging to someone else: a 403 confirms the id
+    exists, which is the enumeration oracle invariant 1 exists to remove. A run with
+    no `workspace_id` is unattributed and therefore nobody's — it reads as not found.
+    """
     supabase = get_supabase_client()
-    result = supabase.table("agent_runs").select("*").eq("id", run_id).single().execute()
-    if not result.data:
+    result = (supabase.table("agent_runs")
+              .select("id, agent_id, status, input_data, output_data, error_message, "
+                      "model_used, input_tokens, output_tokens, credits_debited, "
+                      "started_at, completed_at, duration_ms, workspace_id")
+              .eq("id", run_id)
+              .eq("workspace_id", workspace.workspace_id)
+              .limit(1)
+              .execute())
+    row = (result.data or [None])[0]
+    if not row:
         raise HTTPException(status_code=404, detail="Run not found")
-    return result.data
+    return row
 
 
 @router.post("/run", response_model=AgentRunResponse)
@@ -93,10 +133,7 @@ async def run_agent(
     Receive a delegated agent task from the edge function and execute it
     in the background (no 30-second timeout limit).
     """
-    # Basic auth check — expect the MIVAA API key
-    expected_key = os.environ.get("MIVAA_API_KEY", "")
-    if expected_key and authorization != f"Bearer {expected_key}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    _require_internal_key(authorization)
 
     if req.agent_type not in AGENT_HANDLERS:
         raise HTTPException(
@@ -113,7 +150,57 @@ async def run_agent(
     )
 
 
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+def _require_internal_key(authorization: Optional[str]) -> None:
+    """Reject unless the caller presents the internal key. Fails CLOSED.
+
+    An unset key is 503, not 401: "this deployment is misconfigured" and "your token
+    is wrong" are different facts and an operator needs to tell them apart. What is
+    NOT allowed is the third answer the old code gave — letting the request through.
+    """
+    expected_key = os.environ.get("MIVAA_API_KEY", "")
+    if not expected_key:
+        logger.error("MIVAA_API_KEY is unset — refusing delegated agent runs (M11-1)")
+        raise HTTPException(
+            status_code=503,
+            detail="Agent delegation is not configured on this deployment",
+        )
+    if authorization != f"Bearer {expected_key}":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 # ── Background execution ─────────────────────────────────────────────────────
+
+def _resolve_run_workspace(supabase, req: "AgentRunRequest") -> str:
+    """The workspace this run belongs to, derived from stored rows only.
+
+    Never from the request body (invariant 1) — `AgentRunRequest` deliberately has no
+    `workspace_id` field, so there is nothing to trust. `agent_runs.workspace_id` is
+    the answer; `background_agents.workspace_id` is the fallback for runs created
+    before the column was populated. Neither present means the run cannot be attributed,
+    and an unattributed run must NOT fall back to "every workspace".
+    """
+    run = (supabase.table("agent_runs")
+           .select("workspace_id")
+           .eq("id", req.run_id)
+           .limit(1)
+           .execute())
+    ws = ((run.data or [{}])[0] or {}).get("workspace_id")
+    if not ws:
+        agent = (supabase.table("background_agents")
+                 .select("workspace_id")
+                 .eq("id", req.agent_id)
+                 .limit(1)
+                 .execute())
+        ws = ((agent.data or [{}])[0] or {}).get("workspace_id")
+    if not ws:
+        raise ValueError(
+            f"agent run {req.run_id} has no workspace (agent {req.agent_id} has none "
+            "either) — refusing to run platform-wide"
+        )
+    return str(ws)
+
 
 async def _execute_agent(req: AgentRunRequest) -> None:
     supabase = get_supabase_client()
@@ -132,7 +219,8 @@ async def _execute_agent(req: AgentRunRequest) -> None:
         if not handler:
             raise ValueError(f"Handler function '{handler_name}' not found")
 
-        result = await handler(req, supabase)
+        workspace_id = _resolve_run_workspace(supabase, req)
+        result = await handler(req, supabase, workspace_id)
 
         duration_ms = int((datetime.now(timezone.utc) - start_time).total_seconds() * 1000)
 
@@ -213,7 +301,100 @@ def _log(supabase, run_id: str, level: str, message: str, data: Optional[Dict] =
 
 # ── Agent handlers ───────────────────────────────────────────────────────────
 
-async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str, Any]:
+#: What each agent is allowed to propose. A model reply is untrusted input and
+#: `products.attributes` is the GOLD layer that search, faceting and the product page
+#: read — so the reply is narrowed to an allowlist before anything reaches the
+#: canonicalizer (invariant 8). `description` is the one real column either agent
+#: writes; every other value belongs in `attributes`, per the field registry.
+ENRICHMENT_FACETS = ("material_category", "keywords")
+TAGGER_FACETS = ("material_type", "color", "finish", "application", "tags")
+
+#: How many rows to look at to find `batch_size` that still need work. The
+#: "not yet tagged" question is asked of `attributes` jsonb, which is why it is
+#: answered here rather than in the query.
+SCAN_MULTIPLIER = 5
+MAX_SCAN = 500
+
+
+def _allowlisted(data: Dict[str, Any], keys: tuple) -> Dict[str, Any]:
+    """The subset of a model reply we are willing to store, dropping empties."""
+    out: Dict[str, Any] = {}
+    for key in keys:
+        value = data.get(key)
+        if value in (None, "", [], {}):
+            continue
+        out[key] = value
+    return out
+
+
+async def _canonicalize_into_attributes(
+    supabase,
+    product: Dict[str, Any],
+    proposed: Dict[str, Any],
+    *,
+    source: str,
+    workspace_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Merge `proposed` into the product's attributes through the facet registry.
+
+    Returns the `{attributes, attributes_raw}` update, or None when the
+    canonicalizer degraded. Degraded means "the canonical map is not trustworthy",
+    not "there are no facets" — writing it would be indistinguishable from a product
+    that genuinely has none, which is the silent-zero shape the status flag exists to
+    prevent.
+
+    The merge is done HERE because `CanonicalizedAttributes.attributes` is built from
+    this run's resolutions alone. Writing it wholesale would erase every facet the
+    product already had. `attributes_raw` is already cumulative and is written as-is.
+    """
+    from app.services.facets import canonicalize_product_attributes
+
+    result = await canonicalize_product_attributes(
+        supabase,
+        proposed,
+        source=source,
+        product_id=product["id"],
+        workspace_id=workspace_id,
+    )
+    if result.status == "degraded":
+        return None
+
+    merged = dict(product.get("attributes") or {})
+    for key, raw_value in proposed.items():
+        # A key the registry does not canonicalize keeps the value as proposed.
+        merged[key] = result.attributes.get(key, raw_value)
+
+    return {"attributes": merged, "attributes_raw": result.attributes_raw}
+
+
+def _fetch_workspace_products(
+    supabase,
+    workspace_id: str,
+    batch_size: int,
+    *,
+    category_filter: Optional[str] = None,
+    undescribed_only: bool = False,
+) -> List[Dict[str, Any]]:
+    """Candidate products, bound to one workspace.
+
+    The predicate is the whole point of M11-2: without it these agents select the
+    first N products on the PLATFORM and then update them by id alone.
+    """
+    query = (supabase.table("products")
+             .select("id, name, description, category, attributes")
+             .eq("workspace_id", workspace_id)
+             .order("created_at")
+             .limit(min(batch_size * SCAN_MULTIPLIER, MAX_SCAN)))
+    if undescribed_only:
+        query = query.is_("description", "null")
+    if category_filter:
+        query = query.eq("category", category_filter)
+    return query.execute().data or []
+
+
+async def handle_product_enrichment(
+    req: AgentRunRequest, supabase, workspace_id: str,
+) -> Dict[str, Any]:
     """Enrich products with AI descriptions, keywords, and category tags."""
     cfg         = {**req.config, **req.input_data}
     batch_size  = min(int(cfg.get("batch_size", 20)), 200)
@@ -222,20 +403,14 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
 
     _log(supabase, req.run_id, "info",
          "Product enrichment started (Python backend)",
-         {"batch_size": batch_size, "category_filter": cat_filter})
+         {"batch_size": batch_size, "category_filter": cat_filter,
+          "workspace_id": workspace_id})
 
-    # Fetch products
-    query = (supabase.table("products")
-             .select("id, name, description, category, tags, material_type")
-             .order("created_at")
-             .limit(batch_size))
-    if not force_rewrite:
-        query = query.is_("description", "null")
-    if cat_filter:
-        query = query.eq("category", cat_filter)
-
-    result = query.execute()
-    products = result.data or []
+    products = _fetch_workspace_products(
+        supabase, workspace_id, batch_size,
+        category_filter=cat_filter,
+        undescribed_only=not force_rewrite,
+    )[:batch_size]
 
     if not products:
         return {"output": {"enriched": 0, "message": "No products to enrich"},
@@ -250,6 +425,7 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
     )
 
     enriched = 0
+    degraded = 0
     total_in = total_out = 0
 
     for i, product in enumerate(products):
@@ -258,6 +434,7 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
 
         try:
             from app.services.core.claude_helper import tracked_claude_call
+            attributes = product.get("attributes") or {}
             msg = tracked_claude_call(
                 task="agent_product_enrichment",
                 model=req.model or "claude-haiku-4-5",
@@ -267,7 +444,7 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
                     f"Name: {product['name']}\n"
                     f"Category: {product.get('category','unknown')}\n"
                     f"Description: {product.get('description','(none)')}\n"
-                    f"Material: {product.get('material_type','unknown')}"}],
+                    f"Material: {attributes.get('material_type','unknown')}"}],
                 job_id=req.run_id,
             )
             total_in  += msg.usage.input_tokens
@@ -278,12 +455,29 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
             data = json.loads(text)
 
             update: Dict[str, Any] = {}
-            if data.get("description"):       update["description"]      = data["description"]
-            if data.get("keywords"):          update["search_keywords"]  = data["keywords"]
-            if data.get("material_category"): update["material_type"]    = data["material_category"]
+            if data.get("description"):
+                update["description"] = data["description"]
+
+            proposed = _allowlisted(data, ENRICHMENT_FACETS)
+            if proposed:
+                attr_update = await _canonicalize_into_attributes(
+                    supabase, product, proposed,
+                    source="agent_product_enrichment", workspace_id=workspace_id,
+                )
+                if attr_update is None:
+                    degraded += 1
+                    _log(supabase, req.run_id, "warn",
+                         f"Facet canonicalization degraded for product {product['id']}; "
+                         "attributes left unchanged rather than blanked")
+                else:
+                    update.update(attr_update)
 
             if update:
-                supabase.table("products").update(update).eq("id", product["id"]).execute()
+                (supabase.table("products")
+                 .update(update)
+                 .eq("id", product["id"])
+                 .eq("workspace_id", workspace_id)
+                 .execute())
                 enriched += 1
 
         except Exception as e:
@@ -292,31 +486,41 @@ async def handle_product_enrichment(req: AgentRunRequest, supabase) -> Dict[str,
 
     _log(supabase, req.run_id, "info",
          f"Enrichment complete: {enriched}/{len(products)}",
-         {"enriched": enriched, "total": len(products)})
+         {"enriched": enriched, "total": len(products), "degraded": degraded})
 
     return {
-        "output": {"enriched": enriched, "total": len(products)},
+        "output": {"enriched": enriched, "total": len(products), "degraded": degraded},
         "input_tokens": total_in,
         "output_tokens": total_out,
     }
 
 
-async def handle_material_tagger(req: AgentRunRequest, supabase) -> Dict[str, Any]:
+async def handle_material_tagger(
+    req: AgentRunRequest, supabase, workspace_id: str,
+) -> Dict[str, Any]:
     """Auto-tag materials with type, color, finish, and application."""
     cfg        = {**req.config, **req.input_data}
     batch_size = min(int(cfg.get("batch_size", 20)), 200)
+    force_rewrite = bool(cfg.get("force_rewrite", False))
 
     _log(supabase, req.run_id, "info",
-         "Material tagging started (Python backend)", {"batch_size": batch_size})
+         "Material tagging started (Python backend)",
+         {"batch_size": batch_size, "workspace_id": workspace_id})
 
-    result = (supabase.table("products")
-              .select("id, name, description, material_type, tags, image_url, category")
-              .not_.is_("image_url", "null")
-              .or_("material_type.is.null,tags.eq.{}")
-              .order("created_at")
-              .limit(batch_size)
-              .execute())
-    products = result.data or []
+    candidates = _fetch_workspace_products(supabase, workspace_id, batch_size)
+
+    # "Already tagged?" is a question about `attributes` jsonb, so it is answered
+    # here rather than as a PostgREST predicate. The previous form asked it of
+    # `material_type` and `tags` columns, which do not exist (#26 M13-1) — and
+    # filtered on `image_url`, also absent, for an image the handler never sends.
+    if force_rewrite:
+        products = candidates[:batch_size]
+    else:
+        products = [
+            p for p in candidates
+            if not (p.get("attributes") or {}).get("material_type")
+            or not (p.get("attributes") or {}).get("tags")
+        ][:batch_size]
 
     if not products:
         return {"output": {"tagged": 0, "message": "No products to tag"},
@@ -329,6 +533,7 @@ async def handle_material_tagger(req: AgentRunRequest, supabase) -> Dict[str, An
     )
 
     tagged = 0
+    degraded = 0
     total_in = total_out = 0
 
     for i, product in enumerate(products):
@@ -355,26 +560,38 @@ async def handle_material_tagger(req: AgentRunRequest, supabase) -> Dict[str, An
             text = msg.content[0].text.strip().lstrip("```json").rstrip("```").strip()
             data = json.loads(text)
 
-            update: Dict[str, Any] = {}
-            for field in ("material_type", "color", "finish", "application"):
-                if data.get(field):
-                    update[field] = data[field]
-            if data.get("tags"):
-                update["tags"] = data["tags"]
+            proposed = _allowlisted(data, TAGGER_FACETS)
+            if not proposed:
+                continue
 
-            if update:
-                supabase.table("products").update(update).eq("id", product["id"]).execute()
-                tagged += 1
+            attr_update = await _canonicalize_into_attributes(
+                supabase, product, proposed,
+                source="agent_material_tagger", workspace_id=workspace_id,
+            )
+            if attr_update is None:
+                degraded += 1
+                _log(supabase, req.run_id, "warn",
+                     f"Facet canonicalization degraded for product {product['id']}; "
+                     "attributes left unchanged rather than blanked")
+                continue
+
+            (supabase.table("products")
+             .update(attr_update)
+             .eq("id", product["id"])
+             .eq("workspace_id", workspace_id)
+             .execute())
+            tagged += 1
 
         except Exception as e:
             _log(supabase, req.run_id, "warn",
                  f"Failed to tag product {product['id']}: {e}")
 
     _log(supabase, req.run_id, "info",
-         f"Tagging complete: {tagged}/{len(products)}")
+         f"Tagging complete: {tagged}/{len(products)}",
+         {"tagged": tagged, "total": len(products), "degraded": degraded})
 
     return {
-        "output": {"tagged": tagged, "total": len(products)},
+        "output": {"tagged": tagged, "total": len(products), "degraded": degraded},
         "input_tokens": total_in,
         "output_tokens": total_out,
     }
