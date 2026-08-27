@@ -43,6 +43,9 @@ RETIRED = {
     "get_extraction_hints_for_prompt": "field_registry.extraction_tips_prompt()",
     "get_skip_fields": "field_registry.skip_fields()",
     "get_category_config": "field_registry.category()",
+    # #30 M16-7. These two were the last facts this module stated rather than read.
+    "FALLBACK_CATEGORY": "material_categories.is_fallback (exactly one row)",
+    "SECTION_ORDER": "material_field_sections.display_order",
 }
 
 
@@ -259,4 +262,63 @@ def test_load_refuses_an_empty_result():
     assert body.index("raise") < body.index("self._cache = _Cache"), (
         "the empty-result check must come BEFORE the cache assignment, or a bad read replaces a "
         "good cache."
+    )
+
+
+# ── 6. The last two hardcoded facts (#30 M16-7) ──────────────────────────────────────────────
+
+def test_the_fallback_category_is_read_not_stated():
+    """`FALLBACK_CATEGORY = "general_materials"` decided where every unrecognised upload
+    category went, from a file an admin editing the registry cannot see. It is now
+    `material_categories.is_fallback`, with a partial unique index so there is exactly
+    one — a second fallback is not a merge, it is a coin toss."""
+    src = _REGISTRY.read_text(encoding="utf-8")
+    body = src[src.index("def _resolve_category"):src.index("def category(")]
+    assert "cache.fallback_category" in body, (
+        "the fallback category is a literal again (#30 M16-7)"
+    )
+    assert '"general_materials"' not in body
+
+
+def test_a_registry_with_no_fallback_row_raises():
+    """There is deliberately no constant left to fall back TO. A fallback is invisible
+    when it fires, which is the whole reason this module exists."""
+    src = _REGISTRY.read_text(encoding="utf-8")
+    body = src[src.index("def _load_blocking"):src.index("def _require")]
+    assert re.search(r"if not fallback:\s+raise", body), (
+        "_load_blocking accepts a registry with no is_fallback row — an unknown "
+        "category would then route to whatever `.get()` returned"
+    )
+
+
+def test_section_order_comes_from_its_own_table():
+    src = _REGISTRY.read_text(encoding="utf-8")
+    assert "material_field_sections" in src, (
+        "prompt section ordering is back in Python (#30 M16-7)"
+    )
+    body = src[src.index("def _section_rank"):src.index("def priority_fields_prompt")]
+    assert "self._require().section_order" in body
+    assert "material_properties" not in body, "the section list is hardcoded again"
+
+
+def test_an_unplaced_section_still_sorts_last_rather_than_first():
+    """The old constant put an unlisted section after every listed one, and `design` is
+    live in exactly that state. `.get(section, 0)` would silently promote it to the top
+    of every extraction prompt — a plausible reordering that nothing would raise on."""
+    src = _REGISTRY.read_text(encoding="utf-8")
+    body = src[src.index("def _section_rank"):src.index("def priority_fields_prompt")]
+    assert "max(order.values(), default=0) + 1" in body, (
+        "an unplaced section no longer sorts last"
+    )
+
+
+def test_the_section_table_is_required_like_the_other_two():
+    src = _REGISTRY.read_text(encoding="utf-8")
+    body = src[src.index("def _load_blocking"):src.index("def _require")]
+    assert re.search(r"if not section_rows:\s+raise", body), (
+        "an empty material_field_sections is accepted, which silently reorders every "
+        "extraction prompt"
+    )
+    assert body.index("if not section_rows") < body.index("self._cache = _Cache"), (
+        "the check must precede the cache assignment, or a bad read replaces a good cache"
     )

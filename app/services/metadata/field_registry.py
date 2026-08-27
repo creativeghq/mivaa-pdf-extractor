@@ -39,17 +39,24 @@ logger = logging.getLogger(__name__)
 #: minutes bounds the staleness without putting a query in front of every extraction.
 CACHE_TTL_SECONDS = 300
 
-#: Category used when the upload category is unrecognised. Mirrors the behaviour of the retired
-#: `get_category_config()`, which fell back to this rather than returning nothing.
-FALLBACK_CATEGORY = "general_materials"
-
-#: Stable ordering for prompt sections — most identifying first, commercial trivia last. Sections
-#: not listed here sort after these, alphabetically, so a new one appears without a code change.
-SECTION_ORDER = [
-    "material_properties", "dimensions", "appearance", "performance", "features",
-    "electrical_specs", "thermal_performance", "water_performance", "application",
-    "installation", "care", "compliance", "packaging", "commercial", "other",
-]
+# `FALLBACK_CATEGORY` and `SECTION_ORDER` used to be module constants here (#30 M16-7).
+#
+# This module is otherwise the best-behaved registry consumer in the codebase — it reads
+# `material_metadata_fields` and `material_categories` rather than restating them, and it
+# writes no registry rows. These two were the exception: the category an unknown upload
+# routes to, and the order prompt sections appear in, were facts an admin editing the
+# registry could neither see nor change.
+#
+# They now come from `material_categories.is_fallback` (exactly one row, enforced by a
+# partial unique index) and `material_field_sections.display_order`, both loaded with the
+# rest of the cache. There is deliberately NO constant left to fall back to: a fallback
+# is invisible when it fires, and the whole point of this module is that the registry is
+# the source.
+#
+# Not derived from `material_metadata_fields.sort_order`, which was the obvious move and
+# is wrong: that column is 0 on almost every row, so MIN(sort_order) per section ties
+# fourteen sections at zero and produces an arbitrary order. Replacing a correct
+# hardcoded order with an incorrect derived one is not a fix.
 
 
 class FieldRegistryNotLoaded(RuntimeError):
@@ -114,6 +121,10 @@ class CategorySpec:
 class _Cache:
     fields: Dict[str, FieldSpec] = dc_field(default_factory=dict)
     categories: Dict[str, CategorySpec] = dc_field(default_factory=dict)
+    #: section_key -> display_order, from `material_field_sections`.
+    section_order: Dict[str, int] = dc_field(default_factory=dict)
+    #: The category an unrecognised upload category routes to. Never a literal.
+    fallback_category: str = ""
     loaded_at: float = 0.0
 
 
@@ -159,7 +170,14 @@ class FieldRegistry:
 
         category_rows = (
             client.table("material_categories")
-            .select("category_key, display_name, extraction_tips, skip_fields, controlled_vocab")
+            .select("category_key, display_name, extraction_tips, skip_fields, "
+                    "controlled_vocab, is_fallback")
+            .execute()
+        ).data or []
+
+        section_rows = (
+            client.table("material_field_sections")
+            .select("section_key, display_order")
             .execute()
         ).data or []
 
@@ -175,6 +193,26 @@ class FieldRegistry:
             )
         if not category_rows:
             raise RuntimeError("material_categories returned zero rows — cannot build prompts.")
+
+        # Same rule as the two above, for the same reason (#30 M16-7). An empty section
+        # table would silently reorder every extraction prompt; no fallback row would
+        # silently route every unknown category to whatever `.get()` returned.
+        if not section_rows:
+            raise RuntimeError(
+                "material_field_sections returned zero rows. Prompt section ordering "
+                "lives there now; serving an arbitrary order would change every "
+                "extraction prompt with nothing to show for it."
+            )
+
+        fallback = next(
+            (r["category_key"] for r in category_rows if r.get("is_fallback")), None
+        )
+        if not fallback:
+            raise RuntimeError(
+                "No material_categories row is marked is_fallback. An unrecognised "
+                "upload category must not silently become a specific one — that is how "
+                "a door ends up filed under General Materials."
+            )
 
         fields = {
             r["field_name"]: FieldSpec(
@@ -206,7 +244,15 @@ class FieldRegistry:
             for r in category_rows
         }
 
-        self._cache = _Cache(fields=fields, categories=categories, loaded_at=time.monotonic())
+        self._cache = _Cache(
+            fields=fields,
+            categories=categories,
+            section_order={
+                r["section_key"]: int(r["display_order"]) for r in section_rows
+            },
+            fallback_category=fallback,
+            loaded_at=time.monotonic(),
+        )
         logger.info(
             "📋 Field registry loaded: %d fields (%d identity, %d canonicalizable, "
             "%d enum-constrained, %d with validation rules), %d categories",
@@ -280,8 +326,8 @@ class FieldRegistry:
         if key in cache.categories:
             return key
         logger.warning("Unknown upload category '%s' — falling back to '%s'",
-                       category_key, FALLBACK_CATEGORY)
-        return FALLBACK_CATEGORY
+                       category_key, cache.fallback_category)
+        return cache.fallback_category
 
     def category(self, category_key: str) -> CategorySpec:
         return self._require().categories[self._resolve_category(category_key)]
@@ -342,12 +388,16 @@ class FieldRegistry:
 
     # ── Prompt fragments ─────────────────────────────────────────────────────
 
-    @staticmethod
-    def _section_rank(section: str) -> int:
-        try:
-            return SECTION_ORDER.index(section)
-        except ValueError:
-            return len(SECTION_ORDER)
+    def _section_rank(self, section: str) -> int:
+        """Rank from `material_field_sections`, or last for a section nobody has placed.
+
+        An unlisted section sorting after every listed one — alphabetically, via the
+        secondary sort key — is deliberate and is the behaviour the old constant had:
+        a field in a brand-new section still works, it just lands at the end until
+        somebody orders it. `design` is live in that state today.
+        """
+        order = self._require().section_order
+        return order.get(section, max(order.values(), default=0) + 1)
 
     def priority_fields_prompt(self, category_key: str) -> str:
         """The PRIORITY FIELDS block. Format matches the retired Python builder."""
