@@ -3101,6 +3101,34 @@ async def process_document_with_discovery(
     workspace_id = workspace_id or get_settings().default_workspace_id
     start_time = datetime.utcnow()
 
+    # ── Tenancy preflight ────────────────────────────────────────────────────────────
+    # The three ids arrive independently and every stage below reads and writes by bare
+    # id under service role (#35 M20-3). A mismatched tuple here does not corrupt one
+    # row — it misroutes an ENTIRE ingestion: products written under the wrong
+    # workspace, another tenant's document marked completed.
+    #
+    # Validated ONCE, first, before the credit preflight and before any file is touched.
+    # The finding also asks for the validated workspace to be threaded through every
+    # stage instead of the parameter being re-trusted; that half is a refactor of this
+    # 1,800-line function and is not attempted here. It is also the less important half:
+    # rethreading changes nothing about a tuple that has already been proven coherent,
+    # and this is what makes the parameter trustworthy in the first place.
+    #
+    # A failure marks the job failed rather than raising bare — a job that stops with
+    # `status='processing'` and no terminal event is the state the rest of the system
+    # handles worst, which is #35 M20-1 in this same file.
+    try:
+        from app.utils.tenancy import assert_job_tuple
+
+        assert_job_tuple(get_supabase_client(), job_id, document_id, workspace_id)
+    except Exception as _tenancy_err:
+        _fail_job_terminally(
+            job_id,
+            f"Tenancy preflight failed: {_tenancy_err}",
+            source="tenancy_preflight",
+        )
+        raise
+
     # ── Credit preflight ─────────────────────────────────────────────────────────────
     # Invariant 10 says debit BEFORE the upstream call. This pipeline cannot: every
     # debit_credits_* call fires after its Claude-vision / Replicate / Voyage request, so a

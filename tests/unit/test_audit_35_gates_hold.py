@@ -25,10 +25,16 @@ pre-fix state for them to fail against. `test_the_bound_still_precedes_the_alloc
 also passes both ways on purpose — the ORDER was already right in catalog_routes and the
 consolidation had to keep it that way.
 
-NOT covered: M20-3 (the orchestrator trusting job_id / document_id / workspace_id as a
-coherent tuple) is untouched. It needs the tuple validated once at entry and the
-validated workspace threaded through ~1,760 lines, which is a refactor rather than an
-edit, and doing it badly is worse than the finding.
+M20-3 is now covered in HALF, deliberately and explicitly. The finding asks for two
+things: validate the tuple once at entry, and thread the validated workspace through
+every stage instead of re-trusting the parameter. The first is done —
+`app.utils.tenancy.assert_job_tuple`, called before the credit preflight and before any
+file is touched. The second is a refactor of an 1,800-line function and is not attempted.
+
+That split is a judgement, not an oversight: rethreading changes nothing about a tuple
+that has already been proven coherent, and the entry check is what makes the parameter
+trustworthy in the first place. The residual gap is that a later stage could still be
+handed a different workspace_id by a future edit, and nothing would catch it.
 """
 
 import ast
@@ -331,4 +337,71 @@ def test_the_failure_marker_is_not_attached_to_image_zero():
     )
     assert "for i, image_data in enumerate(extracted_images)" not in window.split("else:")[0], (
         "the per-image enhancement runs on the marker list again"
+    )
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# M20-3 — the tuple is proven coherent before anything runs
+# ───────────────────────────────────────────────────────────────────────────
+
+TENANCY = APP / "utils" / "tenancy.py"
+
+
+def test_the_orchestrator_validates_its_tuple_at_entry():
+    body = _body(_read(RAG_ROUTES), "process_document_with_discovery")
+    assert "assert_job_tuple(" in body, (
+        "the orchestrator trusts job_id / document_id / workspace_id as a coherent "
+        "tuple again (#35 M20-3) — a mismatch here misroutes an entire ingestion, not "
+        "one row"
+    )
+
+
+def test_the_tuple_check_runs_before_the_credit_preflight_and_the_file():
+    """First, so a run that must not happen costs nothing — not a credit lookup, not a
+    stat, and certainly not a page render."""
+    body = _body(_read(RAG_ROUTES), "process_document_with_discovery")
+    assert body.index("assert_job_tuple(") < body.index("CREDIT PREFLIGHT"), (
+        "the tenancy check now runs after the credit preflight"
+    )
+    assert body.index("assert_job_tuple(") < body.index("File not found at"), (
+        "the tenancy check now runs after the file validations"
+    )
+
+
+def test_a_tenancy_failure_marks_the_job_failed():
+    """Raising bare here would strand the job in `processing` with no terminal event —
+    which is M20-1, in this same function."""
+    body = _body(_read(RAG_ROUTES), "process_document_with_discovery")
+    at = body.index("assert_job_tuple(")
+    window = body[at:at + 700]
+    assert "_fail_job_terminally(" in window, (
+        "a failed tenancy preflight no longer marks the job failed (#35 M20-1 + M20-3)"
+    )
+
+
+def test_the_tuple_check_refuses_a_job_that_does_not_exist():
+    src = _read(TENANCY)
+    body = _strip_comments(
+        ast.get_source_segment(src, _node(src, "assert_job_tuple")) or ""
+    )
+    assert "does not exist" in body, (
+        "a job id that resolves to nothing is accepted again — every stage below stamps "
+        "progress onto that id"
+    )
+    assert "assert_document_in_workspace(" in body, (
+        "the document/workspace pair is no longer verified, which is the half that "
+        "actually binds the tenant"
+    )
+
+
+def test_a_null_on_the_job_row_is_logged_rather_than_read_as_agreement():
+    """`background_jobs.document_id` and `.workspace_id` are nullable. Treating an absent
+    value as a match would make the check weakest exactly where the data is thinnest,
+    and say nothing about it."""
+    src = _read(TENANCY)
+    body = _strip_comments(
+        ast.get_source_segment(src, _node(src, "assert_job_tuple")) or ""
+    )
+    assert "logger.error" in body, (
+        "an absent document_id/workspace_id on the job row is now silent"
     )

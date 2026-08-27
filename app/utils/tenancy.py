@@ -133,3 +133,68 @@ def assert_products_in_document(
             f"{document_id} in workspace {workspace_id} — first: {missing[0]}"
         )
     return [p for p in ids if p in verified]
+
+
+def assert_job_tuple(
+    supabase: Any,
+    job_id: str,
+    document_id: str,
+    workspace_id: str,
+) -> None:
+    """Raise unless `job_id`, `document_id` and `workspace_id` describe one ingestion.
+
+    The seventeenth instance of the two-ids class (#35 M20-3), and it matters more in
+    the orchestrator than in a leaf service: a mismatched tuple there does not corrupt
+    one row, it misroutes an ENTIRE ingestion — products written under the wrong
+    workspace, another tenant's document marked completed.
+
+    The finding's fix note asks for the tuple to be validated once at entry and the
+    validated workspace threaded through every stage. This does the first half. The
+    second half is a refactor of a 1,800-line function and is deliberately not attempted
+    here — but the check at entry is what makes the parameter trustworthy, and rethreading
+    it changes nothing about a tuple that has already been proven coherent.
+
+    `background_jobs.document_id` and `.workspace_id` are nullable, so they are compared
+    WHERE PRESENT and their absence is logged rather than treated as agreement. The
+    document/workspace pair is always verified, which is the half that binds the tenant.
+    """
+    if not job_id:
+        raise TenancyViolation("job_id is required")
+
+    try:
+        row = (
+            _client(supabase)
+            .table("background_jobs")
+            .select("document_id, workspace_id")
+            .eq("id", job_id)
+            .maybe_single()
+            .execute()
+        )
+    except Exception as e:
+        raise TenancyViolation(f"could not load job {job_id} to verify its tuple: {e}") from e
+
+    job = (row.data if row else None) or None
+    if job is None:
+        # An orchestrator running for a job that does not exist cannot write a coherent
+        # result, and every stage below stamps progress onto that id.
+        raise TenancyViolation(f"job {job_id} does not exist")
+
+    job_doc, job_ws = job.get("document_id"), job.get("workspace_id")
+
+    if job_doc and str(job_doc) != str(document_id):
+        raise TenancyViolation(
+            f"job {job_id} is for document {job_doc}, not {document_id}"
+        )
+    if job_ws and str(job_ws) != str(workspace_id):
+        raise TenancyViolation(
+            f"job {job_id} belongs to workspace {job_ws}, not {workspace_id}"
+        )
+    if not job_doc or not job_ws:
+        logger.error(
+            "job %s has no %s recorded — the tuple check is weaker than it should be "
+            "for this run; the document/workspace pair is still verified",
+            job_id,
+            "document_id" if not job_doc else "workspace_id",
+        )
+
+    assert_document_in_workspace(supabase, document_id, workspace_id)
