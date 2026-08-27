@@ -287,4 +287,16 @@ def test_the_render_is_bounded_before_get_pixmap_allocates():
         "the size check now runs AFTER get_pixmap — the allocation it is supposed to "
         "prevent has already happened"
     )
-    assert "MAX_RASTER_PIXELS" in src and "MAX_RASTER_EDGE" in src
+    # The limits themselves moved to `app/utils/pdf_bounds` in 51ae1b2 (#35 M20-2):
+    # the same gap had by then been found in THREE files, each fixed with its own local
+    # constants, and three copies of a rule is how one of them drifts. What this case
+    # cares about is unchanged — the bound exists and runs before the allocation — so it
+    # now checks the shared module rather than a local copy.
+    bounds = _read(APP / "utils" / "pdf_bounds.py")
+    assert "MAX_RASTER_PIXELS" in bounds and "MAX_RASTER_EDGE" in bounds, (
+        "the shared raster limits are gone"
+    )
+    assert "MAX_RASTER_PIXELS" not in src, (
+        "catalog_routes grew a local copy of the limits again — that is the drift the "
+        "consolidation exists to prevent"
+    )

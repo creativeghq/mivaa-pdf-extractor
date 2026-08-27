@@ -28,6 +28,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.pdf_bounds import PdfBoundsError, assert_renderable
 
 logger = logging.getLogger(__name__)
 
@@ -78,30 +79,21 @@ class RasterizeResponse(BaseModel):
     error: Optional[str] = None
 
 
-# A small compressed PDF can declare enormous page dimensions, so validating
-# `page_no` and `dpi` bounds nothing: the render size is page_rect x dpi/72, and it
-# is the render that allocates. Same decompression-bomb shape as #22 M9-6.
-MAX_RASTER_PIXELS = 40_000_000   # ~40MP, comfortably past an A0 page at 400 DPI
-MAX_RASTER_EDGE = 20_000         # px, per side
+# Bounds live in `app.utils.pdf_bounds` — one rule for all three places this service
+# renders or buffers a PDF (#35 M20-2). This file had its own copy from #24 M11-6;
+# `pdf_processor` and the ingestion orchestrator had the same gap found separately.
+# Three copies of a rule is how one of them drifts.
+#
+# The helper raises ValueError (its three callers are a route, a service and a
+# background task, and only one can return a status code), so the 422 is made here.
 
 
 def _assert_renderable(page, zoom: float) -> None:
     """Reject before `get_pixmap` allocates. The ORDER is the whole fix."""
-    rect = page.rect
-    width = int(rect.width * zoom)
-    height = int(rect.height * zoom)
-    if width <= 0 or height <= 0:
-        raise HTTPException(status_code=422, detail="page has no renderable area")
-    if width > MAX_RASTER_EDGE or height > MAX_RASTER_EDGE:
-        raise HTTPException(
-            status_code=422,
-            detail=f"render would be {width}x{height}px; max edge is {MAX_RASTER_EDGE}px",
-        )
-    if width * height > MAX_RASTER_PIXELS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"render would be {width * height} pixels; max is {MAX_RASTER_PIXELS}",
-        )
+    try:
+        assert_renderable(page, zoom)
+    except PdfBoundsError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
 
 def _bbox_hash(bbox: Optional[BBox]) -> str:

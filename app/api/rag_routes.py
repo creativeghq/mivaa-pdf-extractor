@@ -41,6 +41,7 @@ from app.schemas.api_responses import (
 )
 from app.dependencies import current_user_id, get_current_user, get_optional_workspace_context, resolve_workspace_id, verify_internal_access
 from app.utils.untrusted_content import as_untrusted_data
+from app.utils.pdf_bounds import PdfBoundsError, assert_page_count
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
 # Importing it at the top triggers `app.api.documents.__init__` →
 # `management_routes` → `app.orchestration` → back into this (still partially
@@ -50,6 +51,51 @@ from app.utils.untrusted_content import as_untrusted_data
 # `process_document_with_discovery` are defined — breaks the cycle.
 
 logger = logging.getLogger(__name__)
+
+
+def _fail_job_terminally(job_id: str, reason: str, *, source: str) -> None:
+    """Mark a job failed AND write the terminal stage_history event (#35 M20-1).
+
+    Pipeline convention 9: the audit log must show why a job ended. Before this, the
+    pre-stage validations raised BARE — a missing file, an unstattable file, a zero-byte
+    PDF — outside any orchestrator handler, so the function exited with
+    `background_jobs.status` still `processing` and no terminal event at all.
+
+    That is the state the rest of the system handles worst, and the interaction is
+    three-way:
+      * auto-recovery hunts jobs stuck in `processing` and judges staleness on
+        `updated_at` (#18 M5-5, mivaa#12)
+      * `reprocess` refuses to act on a document whose job is pending/processing
+        (#34 M19-3) — so a stranded job also BLOCKS the obvious way to retry it
+      * and none of it is visible, because the job simply stops
+
+    A file that does not exist is the most ordinary failure this pipeline has, and it
+    produced the worst state. Best-effort and never raises: the caller is already
+    failing, and a bookkeeping error must not replace the real one.
+    """
+    try:
+        sb = get_supabase_client()
+        sb.client.table("background_jobs").update({
+            "status": "failed",
+            "error_message": reason[:1000],
+            "completed_at": datetime.utcnow().isoformat(),
+        }).eq("id", job_id).execute()
+    except Exception as e:  # noqa: BLE001
+        logger.error("Could not mark job %s failed (%s): %s", job_id, source, e)
+    try:
+        sb = get_supabase_client()
+        sb.client.rpc("append_stage_history", {
+            "p_job_id": job_id,
+            "p_event": {
+                "stage": source,
+                "status": "failed",
+                "completed_at": datetime.utcnow().isoformat(),
+                "data": {"error": reason[:500]},
+                "source": source,
+            },
+        }).execute()
+    except Exception as e:  # noqa: BLE001
+        logger.error("Could not append terminal stage_history for %s: %s", job_id, e)
 
 
 async def require_rag_resource_access(
@@ -3118,6 +3164,7 @@ async def process_document_with_discovery(
     logger.info(f"📖 [BACKGROUND TASK] Reading file from disk: {file_path}")
     if not os.path.exists(file_path):
          logger.error(f"❌ [BACKGROUND TASK] File not found at {file_path}")
+         _fail_job_terminally(job_id, f"File not found at {file_path}", source="pre_stage_validation")
          raise FileNotFoundError(f"File not found at {file_path}")
     # Defensive: a previous worker may have left a 0-byte file behind
     # (e.g. mid-write SIGKILL from kernel OOM). pymupdf raises a confusing
@@ -3127,6 +3174,7 @@ async def process_document_with_discovery(
         _file_size_check = os.path.getsize(file_path)
     except OSError as e:
         logger.error(f"❌ [BACKGROUND TASK] Cannot stat {file_path}: {e}")
+        _fail_job_terminally(job_id, f"Cannot stat PDF at {file_path}: {e}", source="pre_stage_validation")
         raise FileNotFoundError(f"Cannot stat PDF at {file_path}: {e}")
     if _file_size_check == 0:
         logger.error(f"❌ [BACKGROUND TASK] PDF at {file_path} is 0 bytes — likely truncated by prior crash")
@@ -3134,6 +3182,11 @@ async def process_document_with_discovery(
             os.unlink(file_path)
         except OSError:
             pass
+        _fail_job_terminally(
+            job_id,
+            f"PDF at {file_path} is 0 bytes (likely truncated by prior crash). Re-upload required.",
+            source="pre_stage_validation",
+        )
         raise FileNotFoundError(
             f"PDF at {file_path} is 0 bytes (likely truncated by prior crash). "
             f"Re-upload required."
@@ -3146,6 +3199,23 @@ async def process_document_with_discovery(
     file_size = len(file_content)
     logger.info(f"✅ [BACKGROUND TASK] File read successfully: {file_size} bytes ({file_size / (1024*1024):.1f} MB)")
     logger.info("=" * 80)
+
+    # Bound the document before anything iterates it (#35 M20-2). The upload size cap
+    # does NOT cover this: a small compressed PDF can declare thousands of pages, and
+    # every stage below is per-page. Third location for this gap after #22 M9-6 and
+    # #24 M11-6, which is why the rule now lives in one place.
+    try:
+        import fitz as _fitz_bounds
+        with _fitz_bounds.open(stream=file_content, filetype="pdf") as _probe:
+            assert_page_count(len(_probe))
+    except PdfBoundsError as _bounds_err:
+        logger.error("❌ [BACKGROUND TASK] %s", _bounds_err)
+        _fail_job_terminally(job_id, str(_bounds_err), source="pre_stage_validation")
+        raise
+    except Exception as _probe_err:  # noqa: BLE001
+        # A PDF that will not open is a real failure, but it is the NEXT stage's to
+        # report with its own diagnostics — this probe exists only to bound the size.
+        logger.warning("[BACKGROUND TASK] page-count probe skipped: %s", _probe_err)
 
     # Stable catalog-cache key — hash the ORIGINAL uploaded PDF bytes, BEFORE
     # page numbering. The numbered PDF's bytes are not deterministic across runs,
