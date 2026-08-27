@@ -13,6 +13,8 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.utilities.unified_prompt_service import UnifiedPromptService
 from app.services.utilities.prompt_registry import workspace_scope
 
+from app.services.utilities.prompt_registry import PromptStoreUnavailable
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,7 +90,12 @@ class AdminPromptService:
             return prompts
         except Exception as e:
             logger.error(f"Error fetching prompts: {str(e)}")
-            return []
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
 
     async def get_prompt(
         self,
@@ -105,7 +112,12 @@ class AdminPromptService:
             )
         except Exception as e:
             logger.error(f"Error fetching prompt: {str(e)}")
-            return None
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
 
     async def update_prompt(
         self,
@@ -249,7 +261,12 @@ class AdminPromptService:
 
         except Exception as e:
             logger.error(f"Error fetching prompt history: {str(e)}")
-            return []
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
     
     async def test_prompt(
         self,
@@ -334,7 +351,12 @@ class AdminPromptService:
             
         except Exception as e:
             logger.error(f"Error fetching extraction config: {str(e)}")
-            return {}
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
     
     async def update_extraction_config(
         self,

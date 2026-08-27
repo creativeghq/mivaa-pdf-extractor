@@ -22,6 +22,8 @@ from app.services.utilities.prompt_registry import (
     workspace_scope,
 )
 
+from app.services.utilities.prompt_registry import PromptStoreUnavailable
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,7 +94,12 @@ class UnifiedPromptService:
 
         except Exception as e:
             logger.error(f"Error fetching agent prompts: {str(e)}")
-            return []
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
 
     async def get_extraction_prompt(
         self,
@@ -120,7 +127,12 @@ class UnifiedPromptService:
 
         except Exception as e:
             logger.error(f"Error fetching extraction prompt: {str(e)}")
-            return None
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
 
     async def get_template_prompts(
         self,
@@ -172,7 +184,12 @@ class UnifiedPromptService:
 
         except Exception as e:
             logger.error(f"Error fetching template prompts: {str(e)}")
-            return []
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
 
     async def get_template_prompt(
         self,
@@ -251,7 +268,12 @@ class UnifiedPromptService:
 
         except Exception as e:
             logger.error(f"Error fetching template prompt: {str(e)}")
-            return None
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
 
     async def get_search_prompts(
         self,
@@ -297,7 +319,12 @@ class UnifiedPromptService:
 
         except Exception as e:
             logger.error(f"Error fetching search prompts: {str(e)}")
-            return []
+            # Raised, not collapsed (#28 M14-5). Returning an empty result here made a
+            # database outage indistinguishable from "this workspace has no prompts" —
+            # the exact ambiguity `PromptNotConfigured` vs `PromptStoreUnavailable`
+            # exists to remove, and the reason the six loaders this registry replaced
+            # could not be reacted to correctly by any caller.
+            raise PromptStoreUnavailable(str(e)) from e
 
     def clear_cache(self):
         """Clear all cached prompts"""

@@ -6172,23 +6172,35 @@ def summarize_similarity_floor(scores: List[float], floor: float, source: str) -
 
 
 class KnowledgeBaseSearchRequest(BaseModel):
-    """Request model for knowledge base search"""
-    query: str = Field(..., description="Search query")
+    """Request model for knowledge base search.
+
+    Every field is bounded (#29 M15-5). This route creates a Voyage vector per call and
+    fans out across several search types, so an unbounded `top_k` or a 10,000-element
+    filter list is paid work sized by the caller. Third instance of unbounded batch
+    input on a paid path, after #23 M10-2 and the rechunk loop below.
+
+    The bounds are generous on purpose — a cap that fires on real usage gets raised by
+    the next person who hits it, and then it is not a cap.
+    """
+    query: str = Field(..., max_length=2_000, description="Search query")
     workspace_id: str = Field(..., description="Workspace ID to search within")
     search_types: List[str] = Field(
         default=["products", "entities", "chunks"],
+        max_length=10,
         description="Types to search: products, entities, chunks, images, kb_docs"
     )
     categories: Optional[List[str]] = Field(
         default=None,
+        max_length=50,
         description="Filter by categories: product, certificate, logo, specification, general"
     )
     entity_types: Optional[List[str]] = Field(
         default=None,
+        max_length=50,
         description="Filter by entity types: certificate, logo, specification"
     )
-    top_k: int = Field(default=10, description="Number of results to return per type")
-    similarity_threshold: float = Field(default=0.7, description="Minimum similarity score")
+    top_k: int = Field(default=10, ge=1, le=100, description="Number of results to return per type")
+    similarity_threshold: float = Field(default=0.7, ge=0.0, le=1.0, description="Minimum similarity score")
     caller: str = Field(
         default="agent",
         description="Caller context: 'admin' (all levels), 'agent' (agent+public), 'public' (public only)"
@@ -6239,12 +6251,18 @@ class KnowledgeBaseSearchResponse(BaseModel):
 
 
 class KBRechunkRequest(BaseModel):
+    """Bounded (#29 M15-5). Rechunking embeds every chunk of every named doc, so
+    `doc_ids` and `limit` size a Voyage bill directly and the route loops over the whole
+    list. `all=True` is the intended way to process more than a page at a time — it
+    exists precisely so a caller does not need an unbounded `doc_ids`."""
     doc_id: Optional[str] = Field(default=None, description="Rechunk a single kb_doc")
-    doc_ids: Optional[List[str]] = Field(default=None, description="Rechunk an explicit set")
+    doc_ids: Optional[List[str]] = Field(
+        default=None, max_length=500, description="Rechunk an explicit set"
+    )
     all: bool = Field(default=False, description="Backfill mode: page through all kb_docs")
     workspace_id: Optional[str] = Field(default=None, description="Restrict backfill to a workspace")
-    limit: int = Field(default=25, description="Max docs per call (backfill paging)")
-    offset: int = Field(default=0, description="Backfill paging offset")
+    limit: int = Field(default=25, ge=1, le=500, description="Max docs per call (backfill paging)")
+    offset: int = Field(default=0, ge=0, description="Backfill paging offset")
 
 
 @router.post("/kb-docs/rechunk")
