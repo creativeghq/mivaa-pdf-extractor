@@ -29,6 +29,8 @@ __all__ = [
     "group_by_run",
     "trend_from_rows",
     "share_of_voice_from_rows",
+    "answered_rows",
+    "visibility_rollup",
 ]
 
 
@@ -153,6 +155,42 @@ def position_rollup(rows: List[Dict[str, Any]]) -> Tuple[List[int], Optional[flo
     """Ranks the subject actually held, and their mean. Empty → None, never 0."""
     positions = [int(r["position"]) for r in rows if r.get("mentioned") and r.get("position")]
     return positions, (sum(positions) / len(positions)) if positions else None
+
+
+def answered_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Probes that actually came back. A row with an `error` asked nothing."""
+    return [r for r in rows if not r.get("error")]
+
+
+def visibility_rollup(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Mention counts and share of voice over a set of probe rows.
+
+    **The denominator is probes that ANSWERED, never probes that were sent.**
+
+    Measured on production 2026-08-27: of 636 stored probes, 213 are errors — every
+    single `gpt-4o-mini` call, all `HTTP 429`. Dividing mentions by rows-sent renders
+    that model at `0.0` share of voice, which reads as "AI assistants never mention
+    us" and gets acted on as a content problem. It is a broken API key.
+
+    So a set with nothing to divide by returns `share_of_voice: None`, NOT 0.0. None
+    means "no verdict" and forces the caller to say so; 0.0 is a claim about the
+    world. Same reason `position_rollup` returns None rather than 0 for "never
+    ranked", and the same rule the SEO dashboard applies to a failed collector.
+    """
+    answered = answered_rows(rows)
+    mentioned = sum(1 for r in answered if r.get("mentioned"))
+    _, avg_position = position_rollup(answered)
+    return {
+        "probes": len(rows),
+        "answered": len(answered),
+        "failed": len(rows) - len(answered),
+        "mentioned": mentioned,
+        "share_of_voice": (mentioned / len(answered)) if answered else None,
+        "avg_position": avg_position,
+        # A first error is worth surfacing verbatim — "HTTP 429" tells the reader
+        # what to fix, where "no verdict" alone does not.
+        "sample_error": next((str(r.get("error")) for r in rows if r.get("error")), None),
+    }
 
 
 # ────────────────────────────────────────────────────────────────────────────

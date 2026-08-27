@@ -38,8 +38,9 @@ import httpx
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.llm_visibility_math import (
-    citation_rollup, dedupe_urls, domain_is_ours, position_rollup,
+    citation_rollup, dedupe_urls, domain_is_ours,
     sentiment_rollup, share_of_voice_from_rows, trend_from_rows,
+    visibility_rollup,
 )
 from app.services.integrations.mention_identity_service import (
     SubjectFacets, normalize_text,
@@ -439,17 +440,32 @@ class LlmMentionProbeService:
             model_rows = [r for r in rows if r.get("model") == m]
             d["sentiment"] = sentiment_rollup(model_rows)
             d["citations"] = citation_rollup(model_rows)
+            # Per model matters more than overall here: one dead API key does not
+            # mean the brand is invisible, it means that engine was never asked.
+            roll = visibility_rollup(model_rows)
+            d["answered"] = roll["answered"]
+            d["failed"] = roll["failed"]
+            d["share_of_voice"] = roll["share_of_voice"]
+            d["status"] = "collector_failed" if roll["answered"] == 0 and roll["failed"] else "ok"
+            d["error"] = roll["sample_error"] if d["status"] == "collector_failed" else None
 
-        total_probes = len(rows)
-        total_mentioned = sum(1 for r in rows if r.get("mentioned"))
-        _, avg_position = position_rollup(rows)
+        # Derived in `llm_visibility_math`, not inline: the denominator is probes
+        # that ANSWERED. This was `total_mentioned / len(rows)`, which counts a
+        # failed call as a probe that found nothing — so the 212 rate-limited
+        # gpt-4o-mini rows in production reported that model at 0% share of voice
+        # rather than as having no verdict at all.
+        overall = visibility_rollup(rows)
         return {
             "present": True,
             "probe_run_id": run_id,
             "run_at": (rows[0] or {}).get("run_at") if rows else None,
-            "total_probes": total_probes,
-            "share_of_voice": (total_mentioned / total_probes) if total_probes else 0.0,
-            "avg_position": avg_position,
+            "total_probes": overall["probes"],
+            "answered_probes": overall["answered"],
+            "failed_probes": overall["failed"],
+            "probe_error_sample": overall["sample_error"],
+            # None means NO VERDICT. Never coerce it to 0 — that is a claim.
+            "share_of_voice": overall["share_of_voice"],
+            "avg_position": overall["avg_position"],
             "sentiment": sentiment_rollup(rows),
             "citations": citation_rollup(rows),
             "per_model": per_model,

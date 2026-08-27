@@ -479,3 +479,74 @@ class TestHomepageDomainReachesEveryProbe:
         assert not offenders, (
             "probe() call sites not passing homepage_domain: " + ", ".join(offenders)
         )
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# A failed probe is not a probe that found nothing
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestShareOfVoiceDividesByAnsweredProbes:
+    """Measured on production 2026-08-27: 213 of 636 stored probes are errors —
+    every `gpt-4o-mini` call, all `HTTP 429`. `visibility_snapshot` computed
+    `mentioned / len(rows)`, so those rows counted as probes that found nothing.
+
+    That reports a dead API key as `0.0` share of voice, which reads as "AI
+    assistants never mention us" and gets acted on as a content problem. It also
+    HALVES the true rate for every other model, because the failures sit in the
+    denominator of the blended figure.
+    """
+
+    def _rows(self, n, *, model, mentioned_every_other=False, error=None):
+        return [
+            {
+                "model": model,
+                "mentioned": (i % 2 == 0) if mentioned_every_other else False,
+                "position": 1 if mentioned_every_other and i % 2 == 0 else None,
+                **({"error": error} if error else {}),
+            }
+            for i in range(n)
+        ]
+
+    def test_errored_rows_are_excluded_from_the_denominator(self):
+        ok = self._rows(212, model="claude", mentioned_every_other=True)
+        dead = self._rows(212, model="gpt-4o-mini", error="HTTP 429")
+
+        blended = vm.visibility_rollup(ok + dead)
+        assert blended["answered"] == 212
+        assert blended["failed"] == 212
+        # The old arithmetic gave 106/424 = 0.25 here, halving the real rate.
+        assert blended["share_of_voice"] == pytest.approx(0.5)
+
+    def test_a_fully_failed_model_has_no_verdict_rather_than_zero(self):
+        dead = vm.visibility_rollup(self._rows(212, model="gpt-4o-mini", error="HTTP 429"))
+        assert dead["share_of_voice"] is None, (
+            "a model whose every call failed must report None (no verdict). "
+            "0.0 is a claim about the world, and the wrong one."
+        )
+        assert dead["sample_error"] == "HTTP 429", "the reason has to reach the reader"
+
+    def test_no_rows_at_all_is_also_no_verdict(self):
+        assert vm.visibility_rollup([])["share_of_voice"] is None
+
+    def test_position_is_averaged_over_answered_probes_only(self):
+        rows = [
+            {"model": "m", "mentioned": True, "position": 2},
+            {"model": "m", "mentioned": True, "position": 4},
+            {"model": "m", "mentioned": True, "position": 99, "error": "HTTP 500"},
+        ]
+        assert vm.visibility_rollup(rows)["avg_position"] == pytest.approx(3.0)
+
+    def test_the_service_does_not_recompute_share_of_voice_inline(self):
+        """One derivation. The service fetches rows and calls the math module;
+        a second inline formula is how the two drift apart again."""
+        src = _SERVICE.read_text(encoding="utf-8")
+        assert "visibility_rollup(" in src, "the service must use the shared derivation"
+        offenders = [
+            line.strip()
+            for line in src.splitlines()
+            if "share_of_voice" in line and "/" in line and "def " not in line
+            and "visibility_rollup" not in line and "share_of_voice_from_rows" not in line
+        ]
+        assert not offenders, (
+            "share of voice is being divided out inline again: " + " | ".join(offenders)
+        )
