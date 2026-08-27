@@ -309,6 +309,42 @@ def _log(supabase, run_id: str, level: str, message: str, data: Optional[Dict] =
 ENRICHMENT_FACETS = ("material_category", "keywords")
 TAGGER_FACETS = ("material_type", "color", "finish", "application", "tags")
 
+#: Forced-tool schemas (#32). These two handlers asked for JSON in the prompt and then
+#: REPAIRED the reply — `.lstrip("```json").rstrip("```")` — before writing the result
+#: into `products`. That is the archetype invariant 9 names: a classifier whose verdict
+#: drives a database write, parsed from free-form text. With the tool forced the model
+#: cannot return prose, so there is nothing to repair, and an absent tool block is a
+#: typed retryable error instead of a swallowed exception that skipped the product.
+ENRICHMENT_TOOL = {
+    "name": "emit_product_enrichment",
+    "description": "Return the enriched description, keywords and material category.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "Product description."},
+            "keywords": {"type": "array", "items": {"type": "string"}},
+            "material_category": {"type": "string"},
+        },
+        "required": ["description"],
+    },
+}
+
+TAGGER_TOOL = {
+    "name": "emit_material_tags",
+    "description": "Classify the material and return its facets.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "material_type": {"type": "string"},
+            "color": {"type": "string"},
+            "finish": {"type": "string"},
+            "application": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["material_type"],
+    },
+}
+
 #: How many rows to look at to find `batch_size` that still need work. The
 #: "not yet tagged" question is asked of `attributes` jsonb, which is why it is
 #: answered here rather than in the query.
@@ -433,9 +469,9 @@ async def handle_product_enrichment(
             _heartbeat(supabase, req.run_id)
 
         try:
-            from app.services.core.claude_helper import tracked_claude_call
+            from app.services.core.claude_tool_call import call_with_tool
             attributes = product.get("attributes") or {}
-            msg = tracked_claude_call(
+            result = await call_with_tool(
                 task="agent_product_enrichment",
                 model=req.model or "claude-haiku-4-5",
                 max_tokens=512,
@@ -445,14 +481,16 @@ async def handle_product_enrichment(
                     f"Category: {product.get('category','unknown')}\n"
                     f"Description: {product.get('description','(none)')}\n"
                     f"Material: {attributes.get('material_type','unknown')}"}],
+                tool=ENRICHMENT_TOOL,
                 job_id=req.run_id,
+                workspace_id=workspace_id,
+                product_id=product["id"],
             )
-            total_in  += msg.usage.input_tokens
-            total_out += msg.usage.output_tokens
-
-            import json
-            text = msg.content[0].text.strip().lstrip("```json").rstrip("```").strip()
-            data = json.loads(text)
+            # Usage still accumulates. `call_with_tool` returns it precisely so a
+            # migration cannot silently zero these counters.
+            total_in  += result.input_tokens
+            total_out += result.output_tokens
+            data = result.data
 
             update: Dict[str, Any] = {}
             if data.get("description"):
@@ -541,8 +579,8 @@ async def handle_material_tagger(
             _heartbeat(supabase, req.run_id)
 
         try:
-            from app.services.core.claude_helper import tracked_claude_call
-            msg = tracked_claude_call(
+            from app.services.core.claude_tool_call import call_with_tool
+            result = await call_with_tool(
                 task="agent_material_tagger",
                 model=req.model or "claude-haiku-4-5",
                 max_tokens=256,
@@ -551,14 +589,14 @@ async def handle_material_tagger(
                     f"Name: {product['name']}\n"
                     f"Category: {product.get('category','unknown')}\n"
                     f"Description: {product.get('description','(none)')}"}],
+                tool=TAGGER_TOOL,
                 job_id=req.run_id,
+                workspace_id=workspace_id,
+                product_id=product["id"],
             )
-            total_in  += msg.usage.input_tokens
-            total_out += msg.usage.output_tokens
-
-            import json
-            text = msg.content[0].text.strip().lstrip("```json").rstrip("```").strip()
-            data = json.loads(text)
+            total_in  += result.input_tokens
+            total_out += result.output_tokens
+            data = result.data
 
             proposed = _allowlisted(data, TAGGER_FACETS)
             if not proposed:
