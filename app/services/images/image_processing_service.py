@@ -26,7 +26,40 @@ from app.services.pdf.pdf_processor import PDFProcessor
 from app.config import get_settings
 
 
+from app.utils.exceptions import TenancyViolation
+
 logger = logging.getLogger(__name__)
+
+
+#: The forced tool for image classification. ONE definition, used by both the primary
+#: classifier and the low-confidence re-check (#20 M7-4).
+#:
+#: It was a dict built inline inside the primary classifier, and the re-check — the path
+#: taken by the images the primary classifier was LEAST sure about — asked for JSON in
+#: the prompt and ran `json.loads` on the text reply. Invariant 9 requires forced
+#: tool-calling for a classifier whose verdict drives a DB write, and this verdict
+#: decides whether an image is a product image at all.
+#:
+#: Two copies would be worse than one inline dict: the two paths must agree on the
+#: vocabulary, and a classifier and its own second opinion disagreeing about what
+#: `MIXED` means is not a failure anything would report.
+CLASSIFICATION_TOOL = {
+    "name": "emit_classification",
+    "description": "Emit the image classification verdict for the building-materials catalog filter.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "classification": {
+                "type": "string",
+                "enum": ["PRODUCT_IMAGE", "TECHNICAL_DIAGRAM", "DECORATIVE", "MIXED"],
+            },
+            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "reasoning": {"type": "string"},
+            "product_indicators": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["classification", "confidence", "reasoning"],
+    },
+}
 
 
 def _detect_image_media_type(image_bytes: bytes, file_path: str = "") -> str:
@@ -203,7 +236,6 @@ class ImageProcessingService:
 
         # Import AI services
         from app.services.core.ai_client_service import get_ai_client_service
-        import json
 
         get_ai_client_service()
 
@@ -247,23 +279,7 @@ class ImageProcessingService:
                     logger.error(f"❌ {error_msg}")
                     raise ValueError(error_msg)
 
-                classify_tool = {
-                    "name": "emit_classification",
-                    "description": "Emit the image classification verdict for the building-materials catalog filter.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {
-                            "classification": {
-                                "type": "string",
-                                "enum": ["PRODUCT_IMAGE", "TECHNICAL_DIAGRAM", "DECORATIVE", "MIXED"],
-                            },
-                            "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-                            "reasoning": {"type": "string"},
-                            "product_indicators": {"type": "array", "items": {"type": "string"}},
-                        },
-                        "required": ["classification", "confidence", "reasoning"],
-                    },
-                }
+                classify_tool = CLASSIFICATION_TOOL
 
                 # Through the shared forced-tool helper (#33 item 2). This was a raw
                 # httpx POST that hand-built the same tool_choice this helper forces,
@@ -386,59 +402,59 @@ class ImageProcessingService:
                     logger.error(f"❌ {error_msg}")
                     raise ValueError(error_msg)
 
-                from app.services.core.claude_helper import tracked_claude_call_async
-                from app.config import get_settings as _get_settings_cls
-                response = await tracked_claude_call_async(
-                    task="image_classification_vision",
-                    model=_get_settings_cls().anthropic_model_validation,
-                    max_tokens=1024,
-                    messages=[{
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "source": {"type": "base64", "media_type": detected_media_type, "data": image_base64}},
-                            {"type": "text", "text": classification_prompt}
-                        ]
-                    }],
-                    job_id=job_id,
-                    product_id=product_id,
+                # Forced tool call (#20 M7-4). This path is taken by the images the
+                # primary classifier was LEAST sure about — exactly the ones where an
+                # unvalidated verdict does the most damage — and it asked for JSON in
+                # the prompt and ran `json.loads` on the text reply. Invariant 9
+                # requires forced tool-calling for a classifier whose verdict drives a
+                # DB write, and this verdict decides whether an image is a product
+                # image at all.
+                #
+                # Three of the error branches below went with it. `claude_empty_response`,
+                # `claude_not_json` and the JSONDecodeError handler existed to diagnose
+                # "Expecting value: line 1 column 1 (char 0)" — an error that can no
+                # longer occur, because the model cannot return prose. A missing tool
+                # block raises ToolCallNotReturned instead, which is one typed cause
+                # rather than three guesses at it.
+                from app.services.core.claude_tool_call import (
+                    ToolCallNotReturned,
+                    call_with_tool,
                 )
-
-                # Diagnose the "Expecting value: line 1 column 1 (char 0)" bug — that
-                # error means Claude returned an empty string, a safety refusal, or a
-                # non-text content block. Log what actually arrived so we can tell the
-                # three cases apart instead of guessing.
-                result_text = response.content[0].text if response.content else ""
-                stop_reason = getattr(response, "stop_reason", "unknown")
-
-                if not result_text or not result_text.strip():
-                    logger.warning(
-                        "⚠️ Claude returned empty content for %s | stop_reason=%s | "
-                        "usage=%s | content_blocks=%d",
-                        image_path, stop_reason,
-                        getattr(response, "usage", None),
-                        len(response.content or []),
-                    )
-                    return {
-                        'is_material': False,
-                        'confidence': 0.0,
-                        'reason': f'Claude returned empty response (stop_reason={stop_reason})',
-                        'model': 'claude_empty_response',
-                    }
+                from app.config import get_settings as _get_settings_cls
 
                 try:
-                    result = json.loads(result_text)
-                except json.JSONDecodeError as parse_err:
+                    call = await call_with_tool(
+                        task="image_classification_vision",
+                        model=_get_settings_cls().anthropic_model_validation,
+                        max_tokens=1024,
+                        tool=CLASSIFICATION_TOOL,
+                        messages=[{
+                            "role": "user",
+                            "content": [
+                                {"type": "image", "source": {"type": "base64", "media_type": detected_media_type, "data": image_base64}},
+                                {"type": "text", "text": classification_prompt}
+                            ]
+                        }],
+                        required=["classification"],
+                        confidence_key="confidence",
+                        job_id=job_id,
+                        product_id=product_id,
+                    )
+                except ToolCallNotReturned as exc:
+                    # Preserved contract: this classifier's callers treat a soft dict as
+                    # "not a material" and carry on to the next image.
                     logger.warning(
-                        "⚠️ Claude returned non-JSON for %s | stop_reason=%s | "
-                        "raw[:300]=%r | error=%s",
-                        image_path, stop_reason, result_text[:300], parse_err,
+                        "⚠️ Claude returned no classification tool call for %s: %s",
+                        image_path, exc,
                     )
                     return {
                         'is_material': False,
                         'confidence': 0.0,
-                        'reason': f'Claude returned non-JSON: {parse_err}',
-                        'model': 'claude_not_json',
+                        'reason': f'No tool_use block returned: {exc}',
+                        'model': 'claude_no_tool_use',
                     }
+
+                result = call.data
 
                 # Use the category mapping function for consistent classification
                 is_material = is_material_classification(result.get('classification', ''))
@@ -446,7 +462,10 @@ class ImageProcessingService:
                 return {
                     'is_material': is_material,
                     'confidence': result.get('confidence', 0.9),
-                    'reason': result.get('reason', 'Claude validation'),
+                    # The tool calls it `reasoning`; this dict has always called it
+                    # `reason`. Both are read so the rename cannot silently blank the
+                    # field for any caller still passing the old shape.
+                    'reason': result.get('reasoning') or result.get('reason') or 'Claude validation',
                     'classification': result['classification'],
                     'model': 'claude'
                 }
@@ -1031,49 +1050,15 @@ class ImageProcessingService:
     )
     _MIN_REQUIRED_VISION_FIELDS = 4  # at least this many non-null keys
 
-    @staticmethod
-    def _parse_vision_analysis_json(raw: str, image_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Parse a vision-analysis raw response into a dict.
+    # `_parse_vision_analysis_json` was deleted here (#20 M7-3).
+    #
+    # It tolerated plain JSON, ```json fences and prose around a first-{...} match.
+    # With the tool-use path no longer falling back to it, nothing called it — and a
+    # dead JSON-repair helper sitting next to a vision call is an invitation. The
+    # rule for this path is real tool_use with a forced tool_choice; a reply that is
+    # not one is a failed analysis, because a repaired payload validates on SHAPE
+    # just as well as a real one and then becomes an indexed embedding.
 
-        Tolerates:
-          - Plain JSON
-          - ```json ... ``` markdown fences
-          - Extra prose around a single JSON object (extracts first {...})
-
-        Returns None if no parseable JSON object can be recovered.
-        """
-        import json as _json
-        import re as _re
-
-        if not raw:
-            return None
-
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = _re.sub(r'^```(?:json)?\s*', '', cleaned)
-            cleaned = _re.sub(r'\s*```$', '', cleaned)
-
-        try:
-            return _json.loads(cleaned)
-        except _json.JSONDecodeError:
-            pass
-
-        # Fallback: extract the first {...} block, tolerating leading prose.
-        match = _re.search(r'\{[\s\S]*\}', cleaned)
-        if not match:
-            logger.warning(
-                f"   ⚠️ Vision analysis response for {image_id} not parseable as JSON; "
-                f"first 200 chars: {raw[:200]!r}"
-            )
-            return None
-        try:
-            return _json.loads(match.group(0))
-        except _json.JSONDecodeError as parse_err:
-            logger.warning(
-                f"   ⚠️ Vision analysis JSON parse failed for {image_id}: {parse_err}"
-            )
-            return None
 
     @classmethod
     def _validate_vision_analysis(
@@ -1237,21 +1222,32 @@ class ImageProcessingService:
                         break
 
             if tool_input is None:
-                # Backward-compat: Claude returned text instead of a tool_use
-                # (very rare with tool_choice, but observed when token budget
-                # is too tight for the schema). Fall back to text-block parse.
-                text_parts: List[str] = []
-                for block in response.content:
-                    if getattr(block, 'type', None) == 'text':
-                        text_parts.append(getattr(block, 'text', '') or '')
-                raw = ''.join(text_parts).strip()
-                if not raw:
-                    logger.warning(
-                        f"   ⚠️ Claude returned neither tool_use nor text for {image_id}"
-                    )
-                    self._stamp_vision_analysis_outcome(image_id, failed=True)
-                    return None
-                tool_input = self._parse_vision_analysis_json(raw, image_id) or {}
+                # No tool_use block is a FAILURE, not a parsing problem (#20 M7-3).
+                #
+                # What was here read the text blocks instead and ran them through
+                # `_parse_vision_analysis_json` — fenced-block extraction and a
+                # first-`{...}` match — under a comment describing it as
+                # backward-compat for a tight token budget. The platform rule for this
+                # path is explicit and the comment forty lines above says it too: real
+                # tool_use with a forced tool_choice, "no regex repair, no JSON-parse
+                # fallback".
+                #
+                # It is not a style rule here. A repaired reply was persisted as
+                # `vision_analysis` and then fed the Voyage understanding embedding, so
+                # an unvalidated response became a vector that is indexed and ranked
+                # exactly like a real one. Nothing downstream can tell them apart —
+                # `_validate_vision_analysis` checks the SHAPE, and a repaired payload
+                # can be perfectly well-shaped.
+                #
+                # A tight token budget produces a truncated answer. Recovering JSON from
+                # it does not recover the analysis; it recovers a fragment and gives it
+                # the same standing as a complete one.
+                logger.error(
+                    f"   ❌ Claude returned no tool_use block for {image_id} — marking "
+                    "vision analysis failed rather than parsing the text reply"
+                )
+                self._stamp_vision_analysis_outcome(image_id, failed=True)
+                return None
 
             validated = self._validate_vision_analysis(
                 tool_input, image_id, source=VisionProvider.CLAUDE_FALLBACK.value
@@ -1945,6 +1941,46 @@ class ImageProcessingService:
             )
             return (False, False, str(e), per_image_stats)
 
+    def _assert_document_in_workspace(self, document_id: str, workspace_id: str) -> None:
+        """Raise unless `document_id` belongs to `workspace_id` (#20 M7-5).
+
+        Fails CLOSED on a missing id and on a lookup error. A tenancy check that treats
+        "I could not find out" as "go ahead" is a check that switches itself off exactly
+        when the database is unhappy, which is when it is most needed.
+        """
+        if not document_id or not workspace_id:
+            raise TenancyViolation(
+                "save_images_and_generate_clips requires both document_id and "
+                f"workspace_id (got document_id={document_id!r}, "
+                f"workspace_id={workspace_id!r})"
+            )
+        try:
+            row = (
+                # `documents`, not `pdf_documents` — the latter is the STORAGE BUCKET
+                # name and is not a table. `document_images.document_id` has a real FK
+                # to `documents(id)`, which is what makes this check meaningful rather
+                # than a lookup that always misses.
+                self.supabase_client.client.table("documents")
+                .select("workspace_id")
+                .eq("id", document_id)
+                .maybe_single()
+                .execute()
+            )
+        except Exception as e:
+            raise TenancyViolation(
+                f"could not verify document {document_id} belongs to workspace "
+                f"{workspace_id}: {e}"
+            ) from e
+
+        owner = ((row.data if row else None) or {}).get("workspace_id")
+        if str(owner) != str(workspace_id):
+            # The caller gets a tenancy error; the ids stay in the log, not the response.
+            raise TenancyViolation(
+                f"document {document_id} belongs to workspace {owner!r}, not "
+                f"{workspace_id!r} — refusing to write images, embeddings and cost "
+                "attribution against a document this workspace does not own"
+            )
+
     async def save_images_and_generate_clips(
         self,
         material_images: List[Dict[str, Any]],
@@ -2005,6 +2041,20 @@ class ImageProcessingService:
                 }
             }
         """
+        # The document and the workspace must actually be related (#20 M7-5).
+        #
+        # `document_id`, `workspace_id`, `product_id` and `image_id` arrive here
+        # independently and are then combined into `document_images` rows, VECS metadata,
+        # embeddings and cost attribution. Nothing in this file checked that the first
+        # two describe the same thing, and MIVAA has no RLS backstop — every call runs
+        # as service role.
+        #
+        # One check at the entry point rather than four at the write sites: the two
+        # per-image helpers below both run underneath this, so this is the narrowest
+        # place that covers all of them, and a check that has to be repeated is a check
+        # that will be forgotten once.
+        self._assert_document_in_workspace(document_id, workspace_id)
+
         icon_candidates = icon_candidates or []
 
         logger.info(f"💾 Saving {len(material_images)} material images to database and generating SLIG embeddings...")
