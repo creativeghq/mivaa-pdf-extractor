@@ -1952,16 +1952,21 @@ async def reprocess_document(
         doc_metadata = doc.get("metadata") or {}
 
         # Find the latest job to preserve user-specified discovery options
+        # `discovery_model` and `extract_categories` are upload-FORM parameters, not
+        # columns on background_jobs (#26 M13-2) — naming them made PostgREST reject the
+        # read, so this whole reprocess route 500'd before reaching the PDF. They are
+        # carried in the job's `metadata` jsonb.
         jobs_resp = supabase.client.table("background_jobs") \
-            .select("id, discovery_model, extract_categories, metadata") \
+            .select("id, metadata") \
             .eq("document_id", document_id) \
             .order("created_at", desc=True) \
             .limit(1) \
             .execute()
         prev_job = (jobs_resp.data or [{}])[0] if jobs_resp.data else {}
+        prev_job_meta = prev_job.get("metadata") or {}
 
-        discovery_model = prev_job.get("discovery_model") or "claude-opus-4-8"
-        extract_categories = prev_job.get("extract_categories") or []
+        discovery_model = prev_job_meta.get("discovery_model") or "claude-opus-4-8"
+        extract_categories = prev_job_meta.get("extract_categories") or []
 
         # ── 2. Resolve PDF on disk ─────────────────────────────────────
         from app.services.products.product_spec_vision_extractor import _get_source_pdf_path

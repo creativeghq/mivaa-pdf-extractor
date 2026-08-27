@@ -114,6 +114,33 @@ jobs:
           python -m pip install --quiet ruff==0.15.20
           python scripts/check_ruff_gate.py
 
+      # The third gate, and the one neither of the other two can be: a column that
+      # EXISTED when the code was written and does not any more. Tests do not reach the
+      # path, ruff sees a perfectly valid string, and PostgREST rejects the request at
+      # runtime — so the call site is a hard error from the moment the migration lands
+      # and stays invisible until something runs it.
+      #
+      # Audit mivaa#26 found ten such references across five call sites by hand. The
+      # platform repository already had this lint (`npm run schema:writers`) and MIVAA
+      # was not covered by it: the products columns were dropped, the platform's writers
+      # were fixed, and MIVAA's five readers were not, because nothing checked them.
+      #
+      # It needs the live schema — migrations are applied straight to the project and
+      # neither repository contains a statement of what the schema is, so a repo-only
+      # guard would compare a checkout against nothing. The key is already a job-level
+      # secret. Dependency-free (stdlib urllib + ast), ~2s.
+      #
+      # The env block is on THIS step deliberately. The identical-looking one further
+      # up is attached to `actions/checkout`, which reads none of those variables — so
+      # it propagates to nothing, and a step that assumed it did would fail with
+      # "SUPABASE_SERVICE_ROLE_KEY is required" and read as a broken gate rather than a
+      # misplaced env block.
+      - name: 🧬 Schema-drift gate (stale column references)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: python scripts/check_schema_drift.py
+
       # 2. Setup SSH
       - name: Setup SSH
         uses: webfactory/ssh-agent@v0.9.0

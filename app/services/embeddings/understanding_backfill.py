@@ -246,19 +246,38 @@ async def _trigger_product_rollup_recompute(image_ids: List[str]) -> int:
         client = get_supabase_client().client
         # Find every product associated with any of these images via
         # image_product_associations.
+        # `image_product_associations` has no `document_id` (#26 M13-2), so this read
+        # errored and the whole rollup recompute raised on every backfill run — leaving
+        # `products.metadata` stale behind correct embeddings, which is precisely the
+        # state this function exists to prevent.
+        #
+        # The document a rollup belongs to is the PRODUCT's source document, so it is
+        # resolved from `products.source_document_id` in a second read rather than
+        # guessed at from the image.
         assoc_resp = await asyncio.to_thread(
             lambda: client.table("image_product_associations")
-            .select("product_id, document_id")
+            .select("product_id")
             .in_("image_id", image_ids)
             .execute()
         )
-        rows = assoc_resp.data or []
-        # Group products by their document_id so we can call the per-document
-        # enrich function once per (document, product) pair.
+        product_ids = sorted({
+            r.get("product_id") for r in (assoc_resp.data or []) if r.get("product_id")
+        })
+        if not product_ids:
+            return 0
+
+        docs_resp = await asyncio.to_thread(
+            lambda: client.table("products")
+            .select("id, source_document_id")
+            .in_("id", product_ids)
+            .execute()
+        )
+        # Group products by their document so we can call the per-document enrich
+        # function once per (document, product) pair.
         per_doc_products: Dict[str, set] = {}
-        for r in rows:
-            doc_id = r.get("document_id")
-            pid = r.get("product_id")
+        for r in docs_resp.data or []:
+            doc_id = r.get("source_document_id")
+            pid = r.get("id")
             if not doc_id or not pid:
                 continue
             per_doc_products.setdefault(doc_id, set()).add(pid)
