@@ -34,7 +34,6 @@ metadata. This one creates catalog-wide docs from actual PDF content.
 
 import base64
 import io
-import json
 import logging
 import os
 from datetime import datetime
@@ -117,7 +116,27 @@ def _pages_to_scan(pdf_path: str) -> List[int]:
     return list(range(start, total))
 
 
-def _call_claude_vision_knowledge(
+#: Forced-tool schema (#31 M17-3 / #32). Every field optional except `page_type`: a
+#: page that carries nothing is a legitimate answer ("none"), and making the others
+#: required would push the model into inventing content to satisfy the schema.
+CATALOG_KNOWLEDGE_TOOL = {
+    "name": "emit_catalog_page_knowledge",
+    "description": "Report what this catalogue page contains.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "page_type": {"type": "string", "description": "Kind of page, or 'none'."},
+            "title": {"type": "string"},
+            "content_markdown": {"type": "string"},
+            "key_points": {"type": "array", "items": {"type": "string"}},
+            "certifications": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["page_type"],
+    },
+}
+
+
+async def _call_claude_vision_knowledge(
     png_bytes: bytes,
     prompt: str,
     *,
@@ -136,9 +155,17 @@ def _call_claude_vision_knowledge(
     png_bytes = _shrink_png_if_needed(png_bytes)
     b64 = base64.b64encode(png_bytes).decode("utf-8")
 
+    # Forced tool call (#31 M17-3). This used to ask for JSON in the prompt and then
+    # repair the reply by stripping markdown fences — the fence-strip being an admission
+    # that the free-form contract does not hold. The verdict here decides what becomes a
+    # published KB document, which is exactly what invariant 9 names.
+    #
+    # Also now AWAITED. `tracked_claude_call` is the SYNC helper and both callers of this
+    # function are `async def`, so every page blocked the event loop for the whole
+    # vision round-trip.
     try:
-        from app.services.core.claude_helper import tracked_claude_call
-        resp = tracked_claude_call(
+        from app.services.core.claude_tool_call import call_with_tool
+        result = await call_with_tool(
             task="catalog_knowledge_extraction",
             model=KNOWLEDGE_VISION_MODEL,
             max_tokens=4096,
@@ -149,29 +176,14 @@ def _call_claude_vision_knowledge(
                     {"type": "text", "text": prompt},
                 ],
             }],
+            tool=CATALOG_KNOWLEDGE_TOOL,
             job_id=job_id,
             workspace_id=workspace_id,
         )
+        return result.data
     except Exception as e:
         report_anthropic_failure(e, service="catalog_knowledge_extractor")
         logger.warning(f"catalog_knowledge_extractor: Claude call failed: {e}")
-        return None
-
-    text = (resp.content[0].text if resp.content else "").strip()
-    if text.startswith("```"):
-        inner = text.split("```", 2)
-        if len(inner) >= 2:
-            text = inner[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
-
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.warning(
-            f"catalog_knowledge_extractor: JSON parse failed ({e}); raw[:200]={text[:200]!r}"
-        )
         return None
 
 
@@ -285,7 +297,7 @@ async def extract_catalog_knowledge_from_pdf(
             stats["errors"].append(f"render_{idx}: {e}")
             continue
 
-        data = _call_claude_vision_knowledge(
+        data = await _call_claude_vision_knowledge(
             png, knowledge_prompt, job_id=job_id, workspace_id=workspace_id,
         )
         if not data:
@@ -332,10 +344,27 @@ async def extract_catalog_knowledge_from_pdf(
                     "p_summary": (
                         " ".join(key_points[:3])[:500] if key_points else content_md[:300]
                     ),
-                    "p_status": "published",
-                    "p_visibility": "workspace",
+                    # #31 M17-2: catalog-derived model output must NOT be born
+                    # `published`. Paired with #29 M15-1 it is a complete persistent
+                    # injection path — a supplier PDF plants instructions once, they
+                    # become a published KB doc, and they are replayed into every future
+                    # agent turn that retrieves them. `draft` keeps it out of retrieval
+                    # until somebody looks at it.
+                    #
+                    # `private`, not `workspace`: that third spelling is rejected by
+                    # `kb_docs_visibility_check`, so this call was failing outright.
+                    # 90e5a52 fixed the same value in `job_sites_kb_sync` and missed
+                    # these two files.
+                    #
+                    # `source_trust` is the write-side marker the finding asks for:
+                    # retrieval can tell operator-authored text from catalogue-derived
+                    # text without re-deriving it from the other metadata keys.
+                    "p_status": "draft",
+                    "p_visibility": "private",
                     "p_metadata": {
                         "auto_generated": True,
+                        "source_trust": "catalog_derived",
+                        "review_required": True,
                         "catalog_knowledge": True,
                         "page_type": page_type,
                         "relationship_type": relationship_type,

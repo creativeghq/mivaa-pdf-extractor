@@ -503,10 +503,27 @@ async def extract_catalog_legends(
                         "p_content": content_md,
                         "p_content_markdown": content_md,
                         "p_summary": content_md[:300],
-                        "p_status": "published",
-                        "p_visibility": "workspace",
+                        # #31 M17-2: catalog-derived model output must NOT be born
+                        # `published`. Paired with #29 M15-1 it is a complete persistent
+                        # injection path — a supplier PDF plants instructions once, they
+                        # become a published KB doc, and they are replayed into every future
+                        # agent turn that retrieves them. `draft` keeps it out of retrieval
+                        # until somebody looks at it.
+                        #
+                        # `private`, not `workspace`: that third spelling is rejected by
+                        # `kb_docs_visibility_check`, so this call was failing outright.
+                        # 90e5a52 fixed the same value in `job_sites_kb_sync` and missed
+                        # these two files.
+                        #
+                        # `source_trust` is the write-side marker the finding asks for:
+                        # retrieval can tell operator-authored text from catalogue-derived
+                        # text without re-deriving it from the other metadata keys.
+                        "p_status": "draft",
+                        "p_visibility": "private",
                         "p_metadata": {
                             "auto_generated": True,
+                            "source_trust": "catalog_derived",
+                            "review_required": True,
                             "catalog_knowledge": True,
                             "legend_type": resolved_type,
                             "source_document_id": document_id,
