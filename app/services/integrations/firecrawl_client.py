@@ -13,6 +13,27 @@ Design:
   wait action for JS-heavy pages (costs slightly more Firecrawl credits).
 - Retry + exponential backoff + credit logging centralized here so every
   caller gets the same behavior.
+
+SSRF (audit #30 M16-2 / M16-3, invariant 7). `url` reaches this client from stored
+monitoring rows and from partner request bodies, and it used to go straight into the
+request body with no scheme check, no private/loopback/link-local rejection and no DNS
+resolution. Fetching THROUGH a third party relocates the primitive, it does not remove
+it: Firecrawl performs the server-side fetch on MIVAA's behalf, so a URL naming an
+internal host is an internal fetch with an extra hop.
+
+`assert_safe_url` therefore runs immediately before EVERY scrape, not only when the URL
+is written. Two reasons it has to be here rather than at write time:
+
+  * monitoring re-fetches stored URLs on a SCHEDULE, so one write buys a recurring
+    fetch and DNS can be re-pointed at an internal address between the two
+  * Firecrawl follows redirects on the target page and gives us no way to disable it,
+    so a URL that passed validation can still land somewhere else. Validating per
+    fetch is the mitigation we actually control; the redirect hop is not, and saying so
+    is more useful than a comment implying it is covered.
+
+Response sizes are capped on our side for the same reason: the request body has no
+maximum content, markdown or extraction size, and an unbounded `markdown` string flows
+into logs, prompts and the caller's memory.
 """
 
 import asyncio
@@ -25,8 +46,36 @@ from pydantic import BaseModel, ValidationError
 
 from app.config import get_settings
 from app.services.core.ai_call_logger import AICallLogger
+from app.utils.ssrf_guard import SSRFError, assert_safe_url
 
 logger = logging.getLogger(__name__)
+
+#: Caps on what a scrape may hand back. Firecrawl's request body declares no maximum
+#: content, markdown or extraction size (M16-3), and the markdown flows on into logs,
+#: prompts and caller memory.
+MAX_MARKDOWN_CHARS = 500_000
+MAX_EXTRACT_BYTES = 256_000
+
+
+def _cap_markdown(markdown: Optional[str]) -> Optional[str]:
+    """Truncate rather than drop: a partial page is still useful, and a silent None
+    would be indistinguishable from a page with no content."""
+    if markdown is None or len(markdown) <= MAX_MARKDOWN_CHARS:
+        return markdown
+    logger.warning(
+        "Firecrawl markdown truncated from %s to %s chars", len(markdown), MAX_MARKDOWN_CHARS,
+    )
+    return markdown[:MAX_MARKDOWN_CHARS]
+
+
+def _extract_within_bounds(raw_extract: Dict[str, Any]) -> bool:
+    """False when the structured extract is too large to accept. Unlike markdown this
+    is NOT truncated — half a JSON object is not a smaller JSON object."""
+    try:
+        import json
+        return len(json.dumps(raw_extract, default=str).encode("utf-8")) <= MAX_EXTRACT_BYTES
+    except (TypeError, ValueError):
+        return False
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -116,6 +165,24 @@ class FirecrawlClient:
             return FirecrawlResult(success=False, error="FIRECRAWL_API_KEY not configured")
 
         start = datetime.utcnow()
+
+        # Validate immediately before the fetch, every time — see the module docstring.
+        try:
+            assert_safe_url(url)
+        except SSRFError as e:
+            logger.warning("Firecrawl refused an unsafe target: %s (%s)", url, e)
+            await self._log_call(
+                user_id=user_id,
+                workspace_id=workspace_id,
+                url=url,
+                credits_used=0,
+                latency_ms=0,
+                success=False,
+                error=f"blocked target: {e}",
+                module_slug=module_slug,
+                source_tag=source_tag,
+            )
+            return FirecrawlResult(success=False, error=f"blocked target: {e}")
         request_body = self._build_request(
             url=url,
             extraction_model=extraction_model,
@@ -144,8 +211,14 @@ class FirecrawlClient:
         latency_ms = int((datetime.utcnow() - start).total_seconds() * 1000)
         credits_used = int(response.get("creditsUsed") or response.get("credits_used") or 1)
         data_envelope = response.get("data") or {}
-        markdown = data_envelope.get("markdown")
+        markdown = _cap_markdown(data_envelope.get("markdown"))
         raw_extract = data_envelope.get("extract") or data_envelope.get("json") or {}
+        if raw_extract and not _extract_within_bounds(raw_extract):
+            logger.warning(
+                "Firecrawl extract for %s exceeds %s bytes — discarding the structured "
+                "half and keeping the markdown", url, MAX_EXTRACT_BYTES,
+            )
+            raw_extract = {}
 
         parsed: Optional[T] = None
         if raw_extract:
@@ -302,7 +375,15 @@ class FirecrawlClient:
                 module_slug=module_slug,
             )
         except Exception as e:
-            logger.warning(f"Failed to log Firecrawl call: {e}")
+            # ERROR, not WARNING, and it names the call it failed to record (M16-4).
+            # This handler is the last thing standing between a failed provider call
+            # and no durable trace of it at all: without a row in `ai_usage_logs`, a
+            # Firecrawl outage is indistinguishable from a run that never happened.
+            logger.error(
+                "Failed to record Firecrawl call in ai_usage_logs "
+                "(url=%s success=%s credits=%s): %s",
+                url, success, credits_used, e,
+            )
 
 
 _client: Optional[FirecrawlClient] = None
