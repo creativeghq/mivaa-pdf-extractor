@@ -39,7 +39,7 @@ from app.schemas.api_responses import (
     CheckpointListResponse, RelevancyListResponse, StatsResponse,
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
-from app.dependencies import get_current_user, get_optional_workspace_context, resolve_workspace_id, verify_internal_access
+from app.dependencies import current_user_id, get_current_user, get_optional_workspace_context, resolve_workspace_id, verify_internal_access
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
 # Importing it at the top triggers `app.api.documents.__init__` →
 # `management_routes` → `app.orchestration` → back into this (still partially
@@ -5114,7 +5114,13 @@ async def search_documents(
 
         # Initialize services
         supabase_client = get_supabase_client()
-        search_prompt_service = SearchPromptService(supabase_client=supabase_client.client)
+        # The ids are passed HERE because the service cannot invent them, and every
+        # Claude call it makes was previously logged with neither (audit #19 M6-6).
+        search_prompt_service = SearchPromptService(
+            supabase_client=supabase_client.client,
+            workspace_id=request.workspace_id,
+            user_id=current_user_id(claims),
+        )
         ProductRelationshipService(supabase_client=supabase_client.client)
 
         # Apply enhancement prompt to query if enabled

@@ -4,6 +4,25 @@ Search Prompt Service
 Manages admin-configurable prompts for search result enhancement, formatting, filtering, and enrichment.
 Allows admins to customize search behavior without code changes.
 UPDATED: Now uses UnifiedPromptService for all prompt operations.
+
+This feature had never executed once (audit #19 M6-1). TWO independent breakages, and
+the order matters, because repairing only the second would have left it dead and made
+it LOOK fixed:
+
+  1. `get_search_prompts` filters `.eq('subcategory', <subtype>)`, and all nine
+     `prompt_type='search'` rows carried `subcategory = NULL`. NULL never equals a
+     value, so the lookup matched zero of nine on every call and every method returned
+     early. Fixed in data: the four rows that map to the four subtypes were backfilled
+     by name. The other five belong to different consumers that read them by category.
+  2. `self.llm_client` was assigned nowhere, so the four branches that tested it
+     raised AttributeError on the CONDITION — which put the `_simple_*` fallback out of
+     reach as well, and dropped the whole call into a broad handler that returned the
+     unenhanced input.
+
+A zero-match lookup is now logged at WARNING naming the subtype. An admin editing a
+prompt that nothing consumes is the platform's signature failure — "saved and changed
+nothing forever while every health signal stayed green" — and it needs a signal that
+does not require reading a stack trace that fires on 100% of calls.
 """
 
 import logging
@@ -30,11 +49,37 @@ class SearchPromptService:
     # Haiku — cheap and fast for search augmentation tasks
     _MODEL = "claude-haiku-4-5"
 
-    def __init__(self, supabase_client):
+    def __init__(
+        self,
+        supabase_client,
+        workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ):
         self.supabase = supabase_client
         self.prompt_service = UnifiedPromptService()
         self._prompt_cache = {}
         self._ai = get_ai_client_service()
+        # M6-6: the public methods receive a workspace and the private `_apply_llm_*`
+        # ones did not, so every `tracked_claude_call_async` here omitted BOTH ids and
+        # the spend landed unattributed. Held on the instance because the four private
+        # methods are called from four different places.
+        self._workspace_id = workspace_id
+        self._user_id = user_id
+
+    def _no_prompt_configured(self, subtype: str, workspace_id: str) -> None:
+        """Say so when a subtype matches nothing.
+
+        Returning early on an empty lookup is correct behaviour; doing it silently is
+        how nine actively-maintained prompt rows went nine months without ever being
+        read. `ops.silent_zero` cannot see this — search enhancement produces no metric
+        at all — so the log line is the only signal there is.
+        """
+        logger.warning(
+            "search-prompts: no active '%s' prompt for workspace %s. Rows of "
+            "prompt_type='search' need subcategory='%s' to be found by this lookup; "
+            "an admin editing one without it changes nothing (audit #19 M6-1).",
+            subtype, workspace_id, subtype,
+        )
     
     async def get_active_prompts(
         self,
@@ -82,6 +127,7 @@ class SearchPromptService:
             prompts = await self.get_active_prompts(workspace_id, self.ENHANCEMENT)
             
             if not prompts and not custom_prompt:
+                self._no_prompt_configured(self.ENHANCEMENT, workspace_id)
                 return {
                     'enhanced_query': query,
                     'original_query': query,
@@ -92,12 +138,10 @@ class SearchPromptService:
             # Use custom prompt or first active prompt
             prompt_text = custom_prompt or prompts[0]['prompt_text']
             
-            # Apply enhancement using LLM
-            if self.llm_client:
-                enhanced = await self._apply_llm_enhancement(query, prompt_text)
-            else:
-                # Fallback: simple keyword expansion
-                enhanced = self._simple_enhancement(query, prompt_text)
+            # `_apply_llm_enhancement` falls back to `_simple_enhancement` in its own
+            # handler, so there is one path, not a choice gated on an attribute that
+            # never existed.
+            enhanced = await self._apply_llm_enhancement(query, prompt_text)
             
             return {
                 'enhanced_query': enhanced,
@@ -136,19 +180,15 @@ class SearchPromptService:
         try:
             # Get formatting prompts
             prompts = await self.get_active_prompts(workspace_id, self.FORMATTING)
-            
+
             if not prompts and not custom_prompt:
+                self._no_prompt_configured(self.FORMATTING, workspace_id)
                 return results
             
             # Use custom prompt or first active prompt
             prompt_text = custom_prompt or prompts[0]['prompt_text']
             
-            # Apply formatting using LLM
-            if self.llm_client:
-                formatted = await self._apply_llm_formatting(results, prompt_text)
-            else:
-                # Fallback: simple re-ranking
-                formatted = self._simple_formatting(results, prompt_text)
+            formatted = await self._apply_llm_formatting(results, prompt_text)
             
             return formatted
             
@@ -176,19 +216,15 @@ class SearchPromptService:
         try:
             # Get filtering prompts
             prompts = await self.get_active_prompts(workspace_id, self.FILTERING)
-            
+
             if not prompts and not custom_prompt:
+                self._no_prompt_configured(self.FILTERING, workspace_id)
                 return results
             
             # Use custom prompt or first active prompt
             prompt_text = custom_prompt or prompts[0]['prompt_text']
             
-            # Apply filtering using LLM
-            if self.llm_client:
-                filtered = await self._apply_llm_filtering(results, prompt_text)
-            else:
-                # Fallback: simple filtering
-                filtered = self._simple_filtering(results, prompt_text)
+            filtered = await self._apply_llm_filtering(results, prompt_text)
             
             return filtered
             
@@ -216,19 +252,15 @@ class SearchPromptService:
         try:
             # Get enrichment prompts
             prompts = await self.get_active_prompts(workspace_id, self.ENRICHMENT)
-            
+
             if not prompts and not custom_prompt:
+                self._no_prompt_configured(self.ENRICHMENT, workspace_id)
                 return results
             
             # Use custom prompt or first active prompt
             prompt_text = custom_prompt or prompts[0]['prompt_text']
             
-            # Apply enrichment using LLM
-            if self.llm_client:
-                enriched = await self._apply_llm_enrichment(results, prompt_text)
-            else:
-                # Fallback: no enrichment
-                enriched = results
+            enriched = await self._apply_llm_enrichment(results, prompt_text)
             
             return enriched
             
@@ -314,12 +346,15 @@ class SearchPromptService:
                 max_tokens=256,
                 messages=[{
                     "role": "user",
-                    "content": (
-                        f"{prompt_text}\n\n"
-                        f"Search query: {query}\n\n"
-                        "Return ONLY the enhanced query text, nothing else."
-                    )
+                    "content": render(
+                        await load_prompt("extraction", "search_query_enhancement",
+                                          stage="search"),
+                        prompt_text=prompt_text,
+                        query=query,
+                    ),
                 }],
+                user_id=self._user_id,
+                workspace_id=self._workspace_id,
             )
             enhanced = response.content[0].text.strip()
             logger.info(f"LLM enhanced query: '{query}' -> '{enhanced}'")
@@ -349,13 +384,15 @@ class SearchPromptService:
                 max_tokens=512,
                 messages=[{
                     "role": "user",
-                    "content": (
-                        f"{prompt_text}\n\n"
-                        f"Results to reorder (JSON):\n{json.dumps(items)}\n\n"
-                        "Return a JSON array of the original index values in the preferred order. "
-                        "Example: [2, 0, 1]. Return ONLY the JSON array."
-                    )
+                    "content": render(
+                        await load_prompt("extraction", "search_result_formatting",
+                                          stage="search"),
+                        prompt_text=prompt_text,
+                        items=json.dumps(items),
+                    ),
                 }],
+                user_id=self._user_id,
+                workspace_id=self._workspace_id,
             )
             raw = response.content[0].text.strip()
             order = json.loads(raw)
@@ -390,13 +427,15 @@ class SearchPromptService:
                 max_tokens=512,
                 messages=[{
                     "role": "user",
-                    "content": (
-                        f"{prompt_text}\n\n"
-                        f"Results to filter (JSON):\n{json.dumps(items)}\n\n"
-                        "Return a JSON array of the index values that PASS the filter. "
-                        "Example: [0, 2]. Return ONLY the JSON array."
-                    )
+                    "content": render(
+                        await load_prompt("extraction", "search_result_filtering",
+                                          stage="search"),
+                        prompt_text=prompt_text,
+                        items=json.dumps(items),
+                    ),
                 }],
+                user_id=self._user_id,
+                workspace_id=self._workspace_id,
             )
             raw = response.content[0].text.strip()
             keep = json.loads(raw)
@@ -441,6 +480,8 @@ class SearchPromptService:
                             items=json.dumps(items),
                         ),
                     }],
+                    user_id=self._user_id,
+                    workspace_id=self._workspace_id,
                 )
                 raw = response.content[0].text.strip()
                 enrichments = json.loads(raw)
