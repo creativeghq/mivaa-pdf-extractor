@@ -1054,11 +1054,18 @@ class DataImportService:
                     for idx, image_data in enumerate(saved_response.data):
                         score = 1.0 - (idx * 0.05)  # First image gets highest score
                         relationship_records.append({
+                            # The function has taken workspace_id as a parameter all
+                            # along; the row simply never carried it (#25 M12-4). It is
+                            # NOT NULL now, with a composite FK re-checking it against
+                            # the product.
+                            "workspace_id": workspace_id,
                             "product_id": product_id,
                             "image_id": image_data['id'],
                             "spatial_score": 0.0,
                             "caption_score": 0.0,
-                            "clip_score": 0.0,
+                            # NULL, not 0.0: an XML import performs no visual comparison
+                            # at all, and 0.0 would claim it looked and found nothing.
+                            "clip_score": None,
                             "overall_score": score,
                             "confidence": score,
                             "reasoning": "xml_import_extracted",

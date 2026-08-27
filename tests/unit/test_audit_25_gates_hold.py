@@ -284,3 +284,33 @@ def test_the_marker_the_whole_finding_rests_on_still_exists():
         "_call_paddleocr no longer emits the failure marker, so pipeline convention 1 "
         "is broken at the source and every consumer guard here is vacuous"
     )
+
+
+def test_every_writer_to_the_association_table_carries_a_workspace():
+    """The migration added workspace_id NOT NULL, so a writer that omits it is a hard
+    runtime error from the second it was applied — the same shape CLAUDE.md's
+    `schema:writers` rule exists for on the platform side.
+
+    Two other writers existed and neither carried a tenant: `product_merge_service`
+    (which copies an association onto a merged product) and `data_import_service`
+    (which had taken workspace_id as a parameter all along and simply never wrote it).
+    Both would have raised on the first XML import and the first product merge after
+    the migration.
+
+    The sweep is deliberately blunt — any `.insert(` / `.upsert(` whose payload literal
+    mentions the table within a short window must also mention workspace_id.
+    """
+    offenders = []
+    for path in sorted(APP.rglob("*.py")):
+        src = _strip_comments(_read(path))
+        for m in re.finditer(r"table\('image_product_associations'\)\.(insert|upsert)\(", src):
+            # The payload is either inline or a name bound just above; look both ways.
+            window = src[max(0, m.start() - 1500):m.end() + 400]
+            if "workspace_id" not in window:
+                offenders.append(f"{path.relative_to(ROOT)}::{m.group(1)}")
+    assert not offenders, (
+        "these writes to image_product_associations do not carry workspace_id:\n  "
+        + "\n  ".join(offenders)
+        + "\n\nThe column is NOT NULL with a composite FK to (products.id, "
+          "products.workspace_id). An omission is not a lint -- it is a failed insert."
+    )

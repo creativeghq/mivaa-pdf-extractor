@@ -234,11 +234,20 @@ class ProductMergeService:
 
                         if not existing.data:
                             new_rel = {
+                                # Carried from the source row (#25 M12-4). The column is
+                                # NOT NULL now, and the composite FK re-checks it against
+                                # the TARGET product — so merging two products that sit
+                                # in different workspaces is refused by Postgres rather
+                                # than quietly moving images across a tenant boundary.
+                                'workspace_id': rel['workspace_id'],
                                 'product_id': target_product_id,
                                 'image_id': rel['image_id'],
                                 'spatial_score': rel.get('spatial_score', 0.0),
                                 'caption_score': rel.get('caption_score', 0.0),
-                                'clip_score': rel.get('clip_score', 0.0),
+                                # No 0.0 default: NULL means the visual signal did not
+                                # participate, and defaulting it here would invent a
+                                # measurement the merge never made.
+                                'clip_score': rel.get('clip_score'),
                                 'overall_score': rel.get('overall_score', 0.5),
                                 'confidence': rel.get('confidence', 0.5),
                                 'reasoning': rel.get('reasoning', 'merged'),
