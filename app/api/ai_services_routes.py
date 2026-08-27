@@ -7,12 +7,22 @@ Endpoints for Phase 1-4 AI services:
 - Product validation
 - Consensus validation
 - Escalation metrics
+
+Auth (audit #23 M10-2, and #22 M9-1): every model-calling route below declares its
+own ``Depends(get_workspace_context)``. The prefix is not in
+``JWTAuthMiddleware.exclude_paths``, so a token was already required — but invariant 5
+requires the route to gate itself rather than rely on the middleware alone, and these
+routes had no dependency of any kind. ``/health`` stays open: the ``health-check`` edge
+function polls it and it reads nothing.
 """
 
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import logging
+
+from app.dependencies import get_workspace_context
+from app.schemas.auth import WorkspaceContext
 
 from app.schemas.api_responses import (
     DataResponse, ClassificationResponse, BatchClassificationResponse,
@@ -29,6 +39,24 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/ai-services", tags=["AI Services"])
 
+# ============================================================================
+# INPUT BOUNDS  (audit #23 M10-2 / M10-3)
+# ============================================================================
+# Every request model below reaches a provider once per array element, so the
+# array length IS the bill. `classify_batch` is the sharpest: it `asyncio.gather`s
+# one Claude call per item with no semaphore, so an N-element array is N
+# concurrent calls. These caps are the amplification bound, not a taste
+# preference — without them one authenticated POST buys arbitrary spend on the
+# platform's Anthropic account.
+#
+# The per-item character caps matter for the same reason: length drives input
+# tokens, so an array that is short but whose items are megabytes is the same
+# attack with a different shape.
+MAX_BATCH_CONTENTS = 50        # → 50 parallel Claude calls, the hard ceiling per request
+MAX_CONTENT_CHARS = 100_000    # ≈ 25k tokens, well past any real page or section
+MAX_CHUNKS = 200               # → one embedding call per chunk, sequential
+MAX_IMAGES = 100
+
 # Initialize services
 document_classifier = DocumentClassifier()
 boundary_detector = BoundaryDetector()
@@ -42,35 +70,48 @@ consensus_validator = ConsensusValidator()
 
 class ClassifyRequest(BaseModel):
     """Request for document classification."""
-    content: str = Field(..., description="Text content to classify")
+    content: str = Field(..., max_length=MAX_CONTENT_CHARS, description="Text content to classify")
     context: Optional[Dict[str, Any]] = Field(None, description="Optional context (page number, images, etc.)")
     job_id: Optional[str] = Field(None, description="Optional job ID for tracking")
 
 
 class ClassifyBatchRequest(BaseModel):
     """Request for batch document classification."""
-    contents: List[str] = Field(..., description="List of text contents to classify")
-    contexts: Optional[List[Dict[str, Any]]] = Field(None, description="Optional contexts for each content")
+    contents: List[str] = Field(
+        ..., min_length=1, max_length=MAX_BATCH_CONTENTS,
+        description=f"List of text contents to classify (max {MAX_BATCH_CONTENTS}; one Claude call each, issued in parallel)",
+    )
+    contexts: Optional[List[Dict[str, Any]]] = Field(
+        None, max_length=MAX_BATCH_CONTENTS, description="Optional contexts for each content",
+    )
     job_id: Optional[str] = Field(None, description="Optional job ID for tracking")
 
 
 class DetectBoundariesRequest(BaseModel):
     """Request for boundary detection."""
-    chunks: List[Dict[str, Any]] = Field(..., description="List of document chunks")
+    chunks: List[Dict[str, Any]] = Field(
+        ..., min_length=1, max_length=MAX_CHUNKS,
+        description=f"List of document chunks (max {MAX_CHUNKS}; one embedding call each)",
+    )
     job_id: Optional[str] = Field(None, description="Optional job ID for tracking")
 
 
 class ValidateProductRequest(BaseModel):
     """Request for product validation."""
     product_data: Dict[str, Any] = Field(..., description="Product metadata")
-    chunks: List[Dict[str, Any]] = Field(..., description="Associated chunks")
-    images: Optional[List[Dict[str, Any]]] = Field(None, description="Associated images")
+    chunks: List[Dict[str, Any]] = Field(
+        ..., min_length=1, max_length=MAX_CHUNKS,
+        description=f"Associated chunks (max {MAX_CHUNKS}; one embedding call each)",
+    )
+    images: Optional[List[Dict[str, Any]]] = Field(
+        None, max_length=MAX_IMAGES, description="Associated images",
+    )
 
 
 class ConsensusValidateRequest(BaseModel):
     """Request for consensus validation."""
-    content: str = Field(..., description="Content to validate")
-    extraction_type: str = Field(..., description="Type of extraction (e.g., 'product_name', 'material_type')")
+    content: str = Field(..., max_length=MAX_CONTENT_CHARS, description="Content to validate")
+    extraction_type: str = Field(..., max_length=200, description="Type of extraction (e.g., 'product_name', 'material_type')")
     job_id: Optional[str] = Field(None, description="Optional job ID for tracking")
 
 
@@ -173,7 +214,10 @@ class ConsensusValidateRequest(BaseModel):
         500: {"description": "Classification failed"}
     }
 )
-async def classify_document(request: ClassifyRequest):
+async def classify_document(
+    request: ClassifyRequest,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+):
     """
     Classify document content into categories.
 
@@ -201,7 +245,10 @@ async def classify_document(request: ClassifyRequest):
 
 
 @router.post("/classify-batch", response_model=BatchClassificationResponse)
-async def classify_batch(request: ClassifyBatchRequest):
+async def classify_batch(
+    request: ClassifyBatchRequest,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+):
     """
     Classify multiple document contents in parallel.
     
@@ -231,7 +278,10 @@ async def classify_batch(request: ClassifyBatchRequest):
 # ============================================================================
 
 @router.post("/detect-boundaries", response_model=BoundaryDetectionResponse)
-async def detect_boundaries(request: DetectBoundariesRequest):
+async def detect_boundaries(
+    request: DetectBoundariesRequest,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+):
     """
     Detect product boundaries in document chunks.
     
@@ -256,7 +306,10 @@ async def detect_boundaries(request: DetectBoundariesRequest):
 
 
 @router.post("/group-by-product", response_model=ProductGroupingResponse)
-async def group_by_product(request: DetectBoundariesRequest):
+async def group_by_product(
+    request: DetectBoundariesRequest,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+):
     """
     Detect boundaries and group chunks into products.
     
@@ -292,7 +345,10 @@ async def group_by_product(request: DetectBoundariesRequest):
 # ============================================================================
 
 @router.post("/validate-product", response_model=ValidationResponse)
-async def validate_product(request: ValidateProductRequest):
+async def validate_product(
+    request: ValidateProductRequest,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+):
     """
     Validate product extraction quality.
     
@@ -325,7 +381,10 @@ async def validate_product(request: ValidateProductRequest):
 # ============================================================================
 
 @router.post("/consensus-validate", response_model=ValidationResponse)
-async def consensus_validate(request: ConsensusValidateRequest):
+async def consensus_validate(
+    request: ConsensusValidateRequest,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+):
     """
     Validate extraction using multi-model consensus.
     
@@ -358,7 +417,10 @@ async def consensus_validate(request: ConsensusValidateRequest):
 
 
 @router.get("/consensus/is-critical/{task_type}", response_model=DataResponse)
-async def check_if_critical(task_type: str):
+async def check_if_critical(
+    task_type: str,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
+):
     """
     Check if a task type requires consensus validation.
     
@@ -394,6 +456,7 @@ async def check_if_critical(task_type: str):
 @router.post("/process-pdf-enhanced", response_model=DataResponse)
 async def process_pdf_enhanced(
     document_id: str,
+    workspace: WorkspaceContext = Depends(get_workspace_context),
     job_id: Optional[str] = None,
     background_tasks: BackgroundTasks = None
 ):

@@ -311,12 +311,15 @@ class RealImageAnalysisService:
                 if document_id:
                     try:
                         from app.services.ai_validation.claude_validation_service import ClaudeValidationService
-                        validation_service = ClaudeValidationService()
+                        validation_service = ClaudeValidationService(
+                            workspace_id=self.workspace_id
+                        )
                         await validation_service.queue_image_for_validation(
                             image_id=image_id,
                             document_id=document_id,
                             quality_score=quality_score,
-                            priority=5
+                            priority=5,
+                            workspace_id=self.workspace_id,
                         )
                     except Exception as e:
                         self.logger.error(f"❌ Failed to queue image for Claude validation: {e}")
