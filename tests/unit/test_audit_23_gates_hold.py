@@ -8,7 +8,12 @@ can be checked — a guard here proves the SHAPE is gone, not that the replaceme
 behaves.
 
 Every case below was watched to FAIL against the pre-fix source before being
-committed. A guard nobody has seen fire is a guard that might be asserting nothing.
+committed, with one exception that earned its own lesson:
+`test_health_check_is_reachable_without_a_token` originally asserted only that no
+route-level dependency existed, passed both ways, and was cited as evidence for a
+claim that turned out to be false in production. It now asserts the middleware
+exclusion too. A guard that checks half of a claim reads exactly like one that checks
+all of it.
 
 NOT covered here, deliberately:
   * M10-4 (no pre-debit on these services) is not fixed by this batch. Capping the
@@ -158,13 +163,33 @@ def test_every_model_calling_route_gates_itself(func: str):
     )
 
 
-def test_health_check_stays_open():
-    """Recorded so re-gating it is a decision. The `health-check` edge function polls
-    this and it reads nothing."""
+def test_health_check_is_reachable_without_a_token():
+    """Two halves, and the first shipped believing the second was already true.
+
+    When this batch landed I wrote that /health "stays open". Only half of that was
+    ever the case: no route-level dependency was added, but `/api/v1/ai-services` is
+    not in `JWTAuthMiddleware.exclude_paths`, so the middleware 401'd the probe anyway
+    — measured against production after the deploy. `health-check`'s
+    `checkPythonEndpoint` sends no Authorization header and tests `res.ok`, so that
+    dashboard row had never been green.
+
+    So the guard now asserts BOTH halves. The route has no dependency AND the exact
+    path is excluded. Asserting only the first is what let a false claim look verified.
+    """
     body = _source_of(_read(AI_ROUTES), "health_check")
     assert "Depends(" not in body, (
-        "health_check grew a dependency — the health-check edge function polls it "
-        "unauthenticated. If that is deliberate, update the edge function first."
+        "health_check grew a route-level dependency — the health-check edge function "
+        "polls it unauthenticated. If that is deliberate, update the edge function first."
+    )
+
+    middleware = _read(APP / "middleware" / "jwt_auth.py")
+    assert '"/api/v1/ai-services/health"' in middleware, (
+        "the exact-path exclusion for the ai-services liveness probe is gone, so the "
+        "middleware 401s it again and the dashboard row goes back to permanently red"
+    )
+    assert '"/api/v1/ai-services"' not in middleware, (
+        "the PREFIX /api/v1/ai-services is excluded — that hands anonymous access to "
+        "all eight model-calling routes, which is the opposite of this batch's point"
     )
 
 

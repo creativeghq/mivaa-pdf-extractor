@@ -96,6 +96,21 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/health",
             "/api/v1/health",
             "/api/system/health",
+            # A liveness probe, and it had never once answered one. `/api/v1/ai-services`
+            # is not excluded (correctly — those routes reach a model), so the middleware
+            # 401'd its /health too, and `health-check`'s `checkPythonEndpoint` sends no
+            # Authorization header and tests `res.ok`. The AI Services row on the health
+            # dashboard has therefore read "unhealthy: HTTP 401" for as long as it has
+            # existed — a false RED, which is the silent-zero shape with the sign flipped:
+            # nobody chases a light that has never been green.
+            #
+            # Safe to exclude and NOT a bare prefix: matching is segment-boundary, so this
+            # entry covers exactly one path. The handler returns a hardcoded dict of
+            # service names — no DB read, no user data, no spend — which is why it needs
+            # no route-level gate, same as /api/v1/health and /api/system/health above.
+            # The eight sibling routes that DO reach a model keep their
+            # Depends(get_workspace_context) and stay behind the middleware.
+            "/api/v1/ai-services/health",
             "/api/system/metrics",
             "/api/packages/status",
             "/api/models",
