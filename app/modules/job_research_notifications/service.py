@@ -258,7 +258,7 @@ class JobDigestDispatcher:
             if email_addr:
                 ok = await self._send_email(
                     to_email=email_addr,
-                    to_name=(user_profile or {}).get("display_name") or "there",
+                    to_name=(user_profile or {}).get("full_name") or "there",
                     title=title, body_html=body_html, action_url=action_url,
                     section_count=len(sections), total_listings=total_listings,
                     workspace_id=digest_workspace_id,
@@ -877,7 +877,11 @@ class JobDigestDispatcher:
         try:
             res = (
                 self.sb.table("user_profiles")
-                .select("user_id, email, display_name, full_name")
+                # `display_name` is not a column on user_profiles — naming it made
+                # PostgREST reject the read, so `_load_user_profile` returned {} and
+                # every digest greeted the recipient as "there" (found by the
+                # schema-drift gate).
+                .select("user_id, email, full_name")
                 .eq("user_id", user_id)
                 .maybe_single()
                 .execute()

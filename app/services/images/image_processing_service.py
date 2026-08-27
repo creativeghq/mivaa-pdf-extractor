@@ -1792,7 +1792,7 @@ class ImageProcessingService:
         failed_image_id = img_data.get('id')
         if failed_image_id:
             try:
-                self.supabase.client.table('document_images').update({
+                self.supabase_client.client.table('document_images').update({
                     'embedding_metadata': {
                         'status': 'failed',
                         'error': (last_error or 'unknown')[:1000],
@@ -1801,7 +1801,15 @@ class ImageProcessingService:
                     }
                 }).eq('id', failed_image_id).execute()
             except Exception as diag_err:
-                logger.debug(f"   Could not persist embedding_metadata for {failed_image_id}: {diag_err}")
+                # WARNING, not debug (#20 M7-1). This write is the ONLY persisted signal
+                # that an image's embeddings all failed, so its own failure must not be
+                # the one log level the DB sink drops for denied prefixes. The attribute
+                # was `self.supabase` — assigned nowhere — so it raised every time and
+                # said so at debug: the marker its own comment promises was never written,
+                # and nothing could tell "never run" from "ran and failed".
+                logger.warning(
+                    "Could not persist embedding_metadata for %s: %s", failed_image_id, diag_err
+                )
 
         return (False, False, last_error, {
             'image_id': failed_image_id,

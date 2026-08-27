@@ -49,6 +49,12 @@ class SearchDeduplicationService:
         from app.services.core.ai_client_service import get_ai_client_service
         ai_service = get_ai_client_service()
         self.anthropic = ai_service.anthropic_async
+        # `.client` here already unwraps to the PostgREST client, so calls below are
+        # `self.supabase.table(...)`. Three sites said `self.supabase.client.table(...)`
+        # — a double unwrap raising AttributeError on every call (#22 M9-4), caught by a
+        # handler that printed and returned []. So saved-search deduplication had never
+        # found a duplicate: it raised, and 'no matches' is exactly what a genuinely
+        # unique search looks like. The `print()` reached no queryable sink either.
         self.supabase = get_supabase_client().client
         
         # Configuration
@@ -257,7 +263,7 @@ class SearchDeduplicationService:
         
         try:
             # Get searches with same core material
-            response = self.supabase.client.table("saved_searches").select("*").eq(
+            response = self.supabase.table("saved_searches").select("*").eq(
                 "user_id", user_id
             ).eq(
                 "core_material", analysis.core_material
@@ -455,7 +461,7 @@ class SearchDeduplicationService:
 
         try:
             # Get existing search
-            response = self.supabase.client.table("saved_searches").select("*").eq(
+            response = self.supabase.table("saved_searches").select("*").eq(
                 "id", existing_id
             ).single().execute()
 
@@ -489,7 +495,7 @@ class SearchDeduplicationService:
                 "updated_at": "now()"
             }
 
-            self.supabase.client.table("saved_searches").update(update_data).eq(
+            self.supabase.table("saved_searches").update(update_data).eq(
                 "id", existing_id
             ).execute()
 

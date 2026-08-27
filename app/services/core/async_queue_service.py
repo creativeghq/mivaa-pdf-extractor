@@ -14,11 +14,32 @@ from app.services.core.supabase_client import get_supabase_client
 logger = logging.getLogger(__name__)
 
 
+def _tally_by_status(rows) -> list:
+    """`[{'status': 'pending'}, ...]` -> `[{'status': 'pending', 'count': 2}, ...]`.
+
+    Shaped like what the caller always believed `select('status, count')` returned, so
+    the dashboard reading it needs no change.
+    """
+    counts: dict = {}
+    for row in rows or []:
+        status = (row or {}).get('status')
+        if status is None:
+            continue
+        counts[status] = counts.get(status, 0) + 1
+    return [{'status': k, 'count': v} for k, v in sorted(counts.items())]
+
+
 class AsyncQueueService:
     """Service for managing async job queues"""
 
     def __init__(self):
         supabase_wrapper = get_supabase_client()
+        # NOTE: this IS the PostgREST client, not the wrapper — so every call below
+        # is `self.supabase.table(...)`. It used to be `self.supabase.client.table(...)`
+        # at 7 sites, which is a double unwrap: AttributeError on every call, re-raised
+        # (#22 M9-4). The image_processing_queue insert was among them, so nothing was
+        # ever queued. The undefined-attribute sweep cannot see this shape — the name
+        # IS assigned; it is the second `.client` that is wrong.
         self.supabase = supabase_wrapper.client
 
     async def queue_image_processing_jobs(
@@ -55,7 +76,7 @@ class AsyncQueueService:
                 jobs.append(job)
 
             if jobs:
-                self.supabase.client.table('image_processing_queue').insert(jobs).execute()
+                self.supabase.table('image_processing_queue').insert(jobs).execute()
                 logger.info(f"✅ Queued {len(jobs)} image processing jobs for document {document_id}")
 
             return len(jobs)
@@ -100,7 +121,7 @@ class AsyncQueueService:
                 jobs.append(job)
 
             if jobs:
-                self.supabase.client.table('ai_analysis_queue').insert(jobs).execute()
+                self.supabase.table('ai_analysis_queue').insert(jobs).execute()
                 logger.info(f"✅ Queued {len(jobs)} AI analysis jobs for document {document_id}")
 
             return len(jobs)
@@ -117,25 +138,28 @@ class AsyncQueueService:
             Dictionary with queue statistics
         """
         try:
-            # Get image queue metrics
-            image_queue = self.supabase.client.table('image_processing_queue').select(
-                'status, count'
+            # `count` is not a column — `select('status, count')` was reaching for
+            # PostgREST's aggregate and naming a column instead, so both reads were
+            # rejected (found by the schema-drift gate). Tally the statuses here: these
+            # queues are bounded by definition, and a per-status HEAD request each would
+            # be two round trips to answer what one already returns.
+            image_queue = self.supabase.table('image_processing_queue').select(
+                'status'
             ).execute()
 
-            # Get AI queue metrics
-            ai_queue = self.supabase.client.table('ai_analysis_queue').select(
-                'status, count'
+            ai_queue = self.supabase.table('ai_analysis_queue').select(
+                'status'
             ).execute()
 
             # Active documents = jobs still in 'processing' status. Replaces
             # the old job_progress lookup which is no longer maintained.
-            active = self.supabase.client.table('background_jobs').select(
+            active = self.supabase.table('background_jobs').select(
                 'document_id'
             ).eq('status', 'processing').execute()
 
             return {
-                'image_queue': image_queue.data if image_queue.data else [],
-                'ai_queue': ai_queue.data if ai_queue.data else [],
+                'image_queue': _tally_by_status(image_queue.data),
+                'ai_queue': _tally_by_status(ai_queue.data),
                 'active_documents': len({p['document_id'] for p in (active.data or []) if p.get('document_id')}),
             }
 
@@ -168,7 +192,7 @@ class AsyncQueueService:
 
             if retry_count < 3:
                 # Re-queue for retry
-                self.supabase.client.table(table_name).update({
+                self.supabase.table(table_name).update({
                     'status': 'pending',
                     'retry_count': retry_count + 1,
                     'error_message': error_message,
@@ -178,7 +202,7 @@ class AsyncQueueService:
                 logger.info(f"🔄 Re-queued job {job_id} for retry (attempt {retry_count + 1}/3)")
             else:
                 # Mark as permanently failed
-                self.supabase.client.table(table_name).update({
+                self.supabase.table(table_name).update({
                     'status': 'failed',
                     'error_message': f"Max retries exceeded: {error_message}",
                     'updated_at': datetime.utcnow().isoformat()

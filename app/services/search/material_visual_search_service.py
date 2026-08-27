@@ -408,11 +408,39 @@ class MaterialVisualSearchService:
         """Get real search results from database when external services are unavailable."""
         logger.info("Using database search for material search")
 
-        try:
-            # Query real materials from database
-            query = self.supabase.client.table('products').select(
-                'id, name, category, description, metadata, created_at'
+        # `self.supabase` is assigned NOWHERE on this class (#20 M7-1/M7-2 sweep), so this
+        # whole path raised AttributeError on every call: the fallback that exists to keep
+        # search working during an outage failed instantly, and the outage presented as a
+        # search that returned nothing.
+        #
+        # Repairing the attribute ALONE would have been worse than leaving it dead. The
+        # query below filters on material_types and limit only — no tenant predicate — over
+        # a service-role connection, so a working fallback is a cross-tenant read of every
+        # workspace's products. Same file and same defect as #16 M3-1. The predicate lands
+        # in the same change, and fails closed exactly as the VECS path above does.
+        if not request.workspace_id:
+            logger.warning(
+                "material visual search fallback called without workspace_id - "
+                "returning empty (fail-closed)"
             )
+            return MaterialSearchResponse(
+                success=True,
+                results=[],
+                total_results=0,
+                search_metadata={
+                    "search_type": request.search_type,
+                    "source": "database_no_workspace",
+                    "message": "No workspace_id supplied; fallback search is workspace-scoped",
+                },
+            )
+
+        try:
+            from app.dependencies import get_supabase_client
+
+            # Query real materials from database
+            query = get_supabase_client().client.table('products').select(
+                'id, name, category, description, metadata, created_at'
+            ).eq('workspace_id', request.workspace_id)
 
             # Apply filters based on request
             if request.material_types:

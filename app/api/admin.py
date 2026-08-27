@@ -1729,9 +1729,11 @@ async def process_image_embedding_regeneration_job(
     supabase = get_supabase_client()
     notification_service = get_notification_service()
 
-    # Get user ID from job
-    job_data = supabase.client.table('background_jobs').select('created_by').eq('id', job_id).single().execute()
-    user_id = job_data.data.get('created_by') if job_data.data else None
+    # Get user ID from job. The column is `user_id`; `created_by` does not exist on
+    # background_jobs, so this read raised and every regeneration job ran with
+    # user_id=None — no notification, no attribution (found by the schema-drift gate).
+    job_data = supabase.client.table('background_jobs').select('user_id').eq('id', job_id).single().execute()
+    user_id = job_data.data.get('user_id') if job_data.data else None
 
     try:
         logger.info(f"🎨 Starting image embedding regeneration job {job_id}")
