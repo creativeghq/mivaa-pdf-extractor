@@ -106,46 +106,33 @@ async def analyze_query_image(query_image: str) -> Tuple[Optional[Any], Optional
     if err:
         return None, err
 
+    # Through the tracked helper, not a raw POST (#33 item 2). The forced tool_choice
+    # was already right; what a hand-rolled POST costs is the cost record — this call is
+    # OPUS vision, the most expensive model in the roster, and none of it reached
+    # `ai_usage_logs`. `call_with_tool` also raises `ToolCallNotReturned` where this
+    # returned a string, so a missing tool block is typed rather than stringly-compared.
     try:
-        import httpx
+        from app.services.core.claude_tool_call import call_with_tool
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": anthropic_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-opus-4-8",
-                    "max_tokens": 4096,
-                    "tools": [VISION_ANALYSIS_TOOL],
-                    "tool_choice": {"type": "tool", "name": "emit_vision_analysis"},
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {"type": "image", "source": {
-                                "type": "base64", "media_type": "image/jpeg", "data": image_b64,
-                            }},
-                            {"type": "text", "text": (
-                                "Use the emit_vision_analysis tool to return a "
-                                "structured catalog-grade material analysis for this image."
-                            )},
-                        ],
-                    }],
-                },
-            )
-            if resp.status_code != 200:
-                return None, f"Anthropic vision_analysis returned HTTP {resp.status_code}"
-            payload = resp.json()
-            tool_block = next(
-                (b for b in payload.get("content", []) if b.get("type") == "tool_use"),
-                None,
-            )
-            if not tool_block:
-                return None, "Anthropic response missing tool_use block"
-            return VisionAnalysis(**tool_block["input"]), None
+        result = await call_with_tool(
+            task="aspect_query_vision_analysis",
+            model="claude-opus-4-8",
+            max_tokens=4096,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {
+                        "type": "base64", "media_type": "image/jpeg", "data": image_b64,
+                    }},
+                    {"type": "text", "text": (
+                        "Use the emit_vision_analysis tool to return a "
+                        "structured catalog-grade material analysis for this image."
+                    )},
+                ],
+            }],
+            tool=VISION_ANALYSIS_TOOL,
+        )
+        return VisionAnalysis(**result.data), None
     except Exception as e:
         return None, f"Anthropic vision_analysis call failed: {e}"
 

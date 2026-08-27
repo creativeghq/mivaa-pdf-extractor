@@ -30,12 +30,9 @@ import re
 import time
 from typing import Dict, List, Tuple
 
-import httpx
 
 logger = logging.getLogger(__name__)
 
-_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-_ANTHROPIC_VERSION = "2023-06-01"
 _MODEL = "claude-haiku-4-5-20251001"
 
 # Strings purely in basic ASCII printable range are presumed English already.
@@ -153,30 +150,25 @@ async def translate_facet_values(
         logger.info("facet-translator: ANTHROPIC_API_KEY missing — non-English values will be rejected by RPC guard")
         return out
 
-    payload = {
-        "model": _MODEL,
-        "max_tokens": min(4096, 60 + 40 * len(needs_translation)),
-        "tools": [_TRANSLATE_TOOL],
-        "tool_choice": {"type": "tool", "name": "submit_translations"},
-        "messages": [{"role": "user", "content": _build_user_prompt(needs_translation)}],
-    }
-    headers = {
-        "x-api-key": api_key,
-        "anthropic-version": _ANTHROPIC_VERSION,
-        "content-type": "application/json",
-    }
-
+    # Through the tracked helper, not a raw POST (#33 item 2). This call already forced
+    # `tool_choice` — the shape was right — but a hand-rolled httpx POST is invisible to
+    # `ai_usage_logs`, so its spend appeared in no cost view and a failure after
+    # Anthropic had accepted and billed the request left no record at all.
+    #
+    # `call_with_tool` does the tool-block extraction too, so the hand-written
+    # find-the-block loop goes with it.
     started = time.time()
     raw_translations: List[dict] = []
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds, connect=10.0)) as client:
-            resp = await client.post(_ANTHROPIC_URL, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-        for block in (data.get("content") or []):
-            if block.get("type") == "tool_use" and block.get("name") == "submit_translations":
-                raw_translations = (block.get("input") or {}).get("translations") or []
-                break
+        from app.services.core.claude_tool_call import call_with_tool
+        result = await call_with_tool(
+            task="facet_translation",
+            model=_MODEL,
+            max_tokens=min(4096, 60 + 40 * len(needs_translation)),
+            messages=[{"role": "user", "content": _build_user_prompt(needs_translation)}],
+            tool=_TRANSLATE_TOOL,
+        )
+        raw_translations = result.data.get("translations") or []
     except Exception as e:
         logger.warning(
             f"facet-translator Haiku call failed after {int((time.time()-started)*1000)}ms: {e}. "

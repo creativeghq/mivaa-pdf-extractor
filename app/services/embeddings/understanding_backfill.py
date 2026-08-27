@@ -133,74 +133,64 @@ async def _analyze_one(
     """
     from pydantic import ValidationError
     image_b64 = base64.b64encode(image_bytes).decode()
+    # Through the tracked helper, not a raw POST (#33 item 2). This is an OPUS vision
+    # call per image and it logged NOTHING — the backfill's entire spend was invisible
+    # to every cost view. It self-logs no usage, so routing it here adds a cost record
+    # rather than duplicating one (see .github/anthropic-bypass-baseline.json for the
+    # files where the opposite is true).
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": anthropic_api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-opus-4-8",
-                    "max_tokens": 4096,
-                    "tools": [VISION_ANALYSIS_TOOL],
-                    "tool_choice": {"type": "tool", "name": "emit_vision_analysis"},
-                    "messages": [{
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/jpeg",
-                                    "data": image_b64,
-                                },
+        from app.services.core.claude_tool_call import call_with_tool, ToolCallNotReturned
+
+        try:
+            result = await call_with_tool(
+                task="understanding_backfill_vision",
+                model="claude-opus-4-8",
+                max_tokens=4096,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": image_b64,
                             },
-                            {
-                                "type": "text",
-                                "text": (
-                                    "Use the emit_vision_analysis tool to "
-                                    "return a structured catalog-grade material "
-                                    "analysis for this image."
-                                ),
-                            },
-                        ],
-                    }],
-                },
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "Use the emit_vision_analysis tool to "
+                                "return a structured catalog-grade material "
+                                "analysis for this image."
+                            ),
+                        },
+                    ],
+                }],
+                tool=VISION_ANALYSIS_TOOL,
+                image_id=image_id,
             )
-            if resp.status_code != 200:
-                logger.warning(
-                    f"Anthropic non-200 in backfill (image_id={image_id or '<none>'}): "
-                    f"status={resp.status_code} body={resp.text[:300]}"
-                )
-                return None
-            payload = resp.json()
-            tool_block = next(
-                (b for b in payload.get("content", []) if b.get("type") == "tool_use"),
-                None,
+        except ToolCallNotReturned as e:
+            logger.warning(
+                f"Anthropic backfill returned no usable tool_use block "
+                f"(image_id={image_id or '<none>'}): {e}"
             )
-            if not tool_block:
-                logger.warning(
-                    f"Anthropic backfill returned no tool_use block "
-                    f"(image_id={image_id or '<none>'}, stop_reason={payload.get('stop_reason')})"
-                )
-                return None
-            try:
-                return VisionAnalysis(**tool_block["input"])
-            except ValidationError as ve:
-                # Schema drift from the model — show exactly which field broke
-                # so a prompt or schema bump can be planned.
-                error_summary = "; ".join(
-                    f"{'.'.join(str(x) for x in err.get('loc', ()))}={err.get('type')}"
-                    for err in ve.errors()[:3]
-                )
-                logger.warning(
-                    f"⚠️ Anthropic VisionAnalysis validation failed "
-                    f"(image_id={image_id or '<none>'}): {error_summary}"
-                )
-                return None
+            return None
+
+        try:
+            return VisionAnalysis(**result.data)
+        except ValidationError as ve:
+            # Schema drift from the model — show exactly which field broke
+            # so a prompt or schema bump can be planned.
+            error_summary = "; ".join(
+                f"{'.'.join(str(x) for x in err.get('loc', ()))}={err.get('type')}"
+                for err in ve.errors()[:3]
+            )
+            logger.warning(
+                f"⚠️ Anthropic VisionAnalysis validation failed "
+                f"(image_id={image_id or '<none>'}): {error_summary}"
+            )
+            return None
     except Exception as e:
         logger.warning(
             f"Anthropic call failed in backfill (image_id={image_id or '<none>'}): {e}"
