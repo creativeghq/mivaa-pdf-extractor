@@ -1,4 +1,4 @@
-"""Behaviour probe for `app/utils/killable.py` — run as a script, not collected.
+"""Behaviour probe for `app/killable.py` — run as a script, not collected.
 
 WHY THIS IS A SEPARATE ENTRYPOINT INSTEAD OF PLAIN TEST FUNCTIONS
 ----------------------------------------------------------------
@@ -39,10 +39,12 @@ def _load():
     the first version of this probe did, while faithfully reporting it as a crashed
     worker.
 
-    `app.utils` is stdlib-only at import time, so this works in MIVAA's CI too.
+    `app.killable` sits at the top of the package because `app/__init__.py` is the
+    only `__init__` here with no third-party imports — which is what lets the child
+    import it in CI, where nothing but pytest is installed.
     """
     sys.path.insert(0, str(ROOT))
-    import app.utils.killable as module
+    import app.killable as module
 
     return module
 

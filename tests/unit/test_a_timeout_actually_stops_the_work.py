@@ -156,7 +156,7 @@ def test_the_timeout_and_the_crash_are_handled_separately():
 def test_the_runner_escalates_to_kill():
     """SIGTERM alone is a request. A C extension spinning inside PyMuPDF may not honour
     it, which is precisely the case this exists for."""
-    src = _strip_comments((APP / "utils" / "killable.py").read_text(encoding="utf-8"))
+    src = _strip_comments((APP / "killable.py").read_text(encoding="utf-8"))
     assert ".terminate()" in src and ".kill()" in src, (
         "the escalation from terminate to kill is gone — a worker that ignores SIGTERM "
         "survives the timeout again"
@@ -167,13 +167,118 @@ def test_the_runner_uses_spawn():
     """`fork` inherits the parent's threads and locks — including a half-held logging
     lock — into a child that never runs their owners, producing hangs indistinguishable
     from the timeouts this module exists to stop."""
-    src = _strip_comments((APP / "utils" / "killable.py").read_text(encoding="utf-8"))
+    src = _strip_comments((APP / "killable.py").read_text(encoding="utf-8"))
     assert 'get_context("spawn")' in src
 
 
 def test_there_is_no_thread_fallback():
-    src = _strip_comments((APP / "utils" / "killable.py").read_text(encoding="utf-8"))
+    src = _strip_comments((APP / "killable.py").read_text(encoding="utf-8"))
     assert "ThreadPoolExecutor" not in src, (
         "a thread fallback has appeared in the killable runner — it would restore the "
         "unenforceable timeout silently, which is worse than not having the module"
     )
+
+
+# -------------------------------------------------------------------------
+# The child must be able to import the module — with NOTHING installed
+# -------------------------------------------------------------------------
+
+def _third_party_in_chain(start: Path) -> dict:
+    """Third-party packages reachable from `start` via MODULE-LEVEL imports.
+
+    Module level only, deliberately: `spawn` imports the module, which executes exactly
+    the top-level statements. A deferred import inside a function is not part of what
+    the child pays for.
+
+    Importing `app.x.y` also executes every `__init__.py` above it, so those are walked
+    too — which is the whole point, because that is where the dependency hid.
+    """
+    seen: set = set()
+    third_party: dict = {}
+
+    # Seed with the start module's OWN package chain. `import app.utils.killable`
+    # executes `app/__init__.py` and `app/utils/__init__.py` before a single line of
+    # `killable.py` runs — and that is precisely where the dependency was hiding.
+    #
+    # The first version of this walker started from the file alone and reported the
+    # broken placement CLEAN, which is worse than having no check: it would have
+    # certified the exact regression it exists to catch. Verified by pointing it at the
+    # old location and watching it pass.
+    queue = [start]
+    parent = start.parent
+    while parent != ROOT and ROOT in parent.parents or parent == ROOT / "app":
+        queue.append(parent / "__init__.py")
+        if parent == ROOT:
+            break
+        parent = parent.parent
+
+    while queue:
+        path = queue.pop()
+        if not path.exists():
+            continue
+        rel = str(path.relative_to(ROOT)).replace("\\", "/")
+        if rel in seen:
+            continue
+        seen.add(rel)
+        for node in ast.parse(path.read_text(encoding="utf-8")).body:
+            names = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    pkg = path.parent
+                    for _ in range(node.level - 1):
+                        pkg = pkg.parent
+                    rel_pkg = str(pkg.relative_to(ROOT)).replace("\\", "/").replace("/", ".")
+                    names = [f"{rel_pkg}.{node.module}" if node.module else rel_pkg]
+                elif node.module:
+                    names = [node.module]
+            for name in names:
+                root_pkg = name.split(".")[0]
+                if root_pkg != "app":
+                    if root_pkg not in sys.stdlib_module_names:
+                        third_party.setdefault(rel, set()).add(root_pkg)
+                    continue
+                parts = name.split(".")
+                queue.append(ROOT / (name.replace(".", "/") + ".py"))
+                queue.append(ROOT / name.replace(".", "/") / "__init__.py")
+                for i in range(1, len(parts)):
+                    queue.append(ROOT / "/".join(parts[:i]) / "__init__.py")
+    return third_party
+
+
+def test_the_child_can_import_the_module_with_nothing_installed():
+    """MIVAA's CI installs pytest and NOTHING ELSE, and `spawn` makes the child import
+    the module defining its target. Any third-party dependency anywhere in this module's
+    import chain therefore kills every spawned child in CI.
+
+    Not hypothetical. This module first lived in `app/utils`, which I checked LOCALLY —
+    where every dependency is present — and it imported fine. In CI,
+    `app/utils/__init__.py` imports `.logging`, which does `from app.config import
+    get_settings`, which needs `pydantic_settings`. Every child died with
+    ModuleNotFoundError, and the probe faithfully reported six crashed workers.
+
+    Checking the chain beats remembering the rule, and beats checking it somewhere the
+    dependencies happen to exist.
+    """
+    offenders = _third_party_in_chain(APP / "killable.py")
+    assert not offenders, (
+        "the killable runner's import chain reaches third-party packages:\n  "
+        + "\n  ".join(f"{mod} -> {sorted(pkgs)}" for mod, pkgs in sorted(offenders.items()))
+        + "\n\nEvery spawned child imports this module, and CI has only pytest — so this "
+          "means every child dies with ModuleNotFoundError, surfacing as 'the worker "
+          "crashed' rather than as an import problem."
+    )
+
+
+def test_the_chain_walker_can_see_a_real_dependency():
+    """A checker that reports clean because it looks at nothing is worse than none.
+    This module's former home is the honest control: `app/utils/logging.py` genuinely
+    does reach `pydantic_settings` through `app.config`."""
+    offenders = _third_party_in_chain(APP / "utils" / "logging.py")
+    assert offenders, (
+        "the walker found nothing third-party from app/utils/logging.py, which imports "
+        "app.config — it is not following the chain"
+    )
+
+

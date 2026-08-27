@@ -36,11 +36,23 @@ WHY IT LIVES IN app/utils AND NOT NEXT TO ITS CALLER
 synthetic module name — the child raises `ModuleNotFoundError` for a name that exists
 only in the parent's `sys.modules`.
 
-It also rules out `app/services/pdf/`: `app/services/__init__.py` imports the Supabase
-client at package level, and MIVAA's own CI installs pytest and nothing else, so
-`import app.services.pdf.killable` fails there. `app/__init__.py` and
-`app/utils/__init__.py` are stdlib-only, so `app.utils.killable` imports anywhere —
-including inside the spawned child, and including in CI.
+That also rules out every package in this app whose `__init__` pulls a third-party
+dependency, because MIVAA's own CI installs pytest and NOTHING ELSE:
+
+  * `app/services/__init__.py` imports the Supabase client.
+  * `app/utils/__init__.py` imports `.logging`, which does `from app.config import
+    get_settings` — and `app.config` needs `pydantic_settings`.
+
+`app/__init__.py` contains a docstring and two strings. No imports at all. So this
+module sits at the top of the package, which is odd placement for a utility and is the
+price of the child being able to import it with nothing installed.
+
+This was got wrong once, in the way that matters: `app.utils` was checked LOCALLY, where
+every dependency is present, and it imported fine. CI has no dependencies, every spawned
+child died with `ModuleNotFoundError: pydantic_settings`, and the probe reported it
+faithfully as a crashed worker. `test_a_timeout_actually_stops_the_work` now walks this
+module's whole import chain and fails if anything third-party enters it, so the next
+person does not need to remember.
 
 WHY THE PAYLOAD IS PICKLE-CHECKED UP FRONT
 ------------------------------------------

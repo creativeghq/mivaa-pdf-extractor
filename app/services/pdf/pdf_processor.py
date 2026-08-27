@@ -182,7 +182,7 @@ from app.services.chunking.unified_chunking_service import UnifiedChunkingServic
 
 # Import worker for process isolation
 from app.services.pdf.pdf_worker import execute_pdf_extraction_job
-from app.utils.killable import KillableCrashed, KillableTimeout, run_killable
+from app.killable import KillableCrashed, KillableTimeout, run_killable
 
 # PageConverter removed - using simple PDF page numbers instead
 
