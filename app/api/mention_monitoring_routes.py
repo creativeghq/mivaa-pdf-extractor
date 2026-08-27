@@ -109,10 +109,29 @@ def _require_admin(user: User) -> None:
         raise HTTPException(status_code=403, detail="admin role required")
 
 
+def _brand_of(product: Dict[str, Any]) -> Optional[str]:
+    """The brand to monitor for a product, from one place.
+
+    `products.manufacturer` is NOT a column — it moved into `attributes` (#26 M13-2),
+    which made every `_resolve_product` read fail outright. Two call sites derived the
+    brand slightly differently around it; this is the single derivation both now use,
+    so a future move needs one edit rather than two that can disagree.
+    """
+    attributes = product.get("attributes") or {}
+    metadata = product.get("metadata") or {}
+    for candidate in (
+        attributes.get("manufacturer"), attributes.get("brand"),
+        metadata.get("brand"), metadata.get("manufacturer"),
+    ):
+        if candidate:
+            return candidate
+    return None
+
+
 def _resolve_product(sb, product_id: str) -> Dict[str, Any]:
     prod = (
         sb.table("products")
-        .select("id, name, manufacturer, metadata")
+        .select("id, name, attributes, metadata")
         .eq("id", product_id)
         .maybe_single()
         .execute()
@@ -259,7 +278,7 @@ async def track_product(
     svc = get_tracked_mentions_service()
     # Pull manufacturer from product metadata for brand_hint
     metadata = product.get("metadata") or {}
-    brand = product.get("manufacturer") or metadata.get("brand") or metadata.get("manufacturer")
+    brand = _brand_of(product)
     aliases = (body.aliases if body else None) or []
     if not aliases and (metadata.get("sku") or metadata.get("model")):
         aliases = [str(metadata.get("sku") or metadata.get("model"))]
@@ -560,7 +579,7 @@ async def create_tracked_mention(
     if product_id and not label:
         product = _resolve_product(sb, product_id)
         label = product.get("name") or product_id
-        brand = brand or product.get("manufacturer")
+        brand = brand or _brand_of(product)
 
     svc = get_tracked_mentions_service()
     row = await svc.create(

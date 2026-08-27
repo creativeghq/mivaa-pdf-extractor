@@ -98,6 +98,25 @@ async def _edge_extraction_system() -> str:
     return await load_prompt("extraction", "product_cross_reference", stage="entity_creation")
 
 
+def _facets(product: dict, keys) -> dict:
+    """Read product facets from wherever they actually live.
+
+    They were columns; they are now keys in the `attributes` jsonb (#26 M13-2). A row
+    fetched by an older reader may still carry them at the top level, so both are
+    accepted — but `attributes` wins, because that is what the field registry and every
+    current writer use. Missing reads as "" rather than None so the JSON handed to the
+    model keeps one shape.
+    """
+    attributes = product.get("attributes") or {}
+    out = {}
+    for key in keys:
+        value = attributes.get(key)
+        if value in (None, ""):
+            value = product.get(key)
+        out[key] = "" if value in (None, "") else value
+    return out
+
+
 class ProductRelationshipService:
     """Service for finding related products from persisted gold-layer edges."""
 
@@ -431,8 +450,13 @@ class ProductRelationshipService:
         """Find products using a custom LLM-evaluated prompt against the product catalog."""
         try:
             # Fetch candidate products from workspace
+            # `material_type`, `color`, `finish` and `collection` are NOT columns —
+            # they moved into the `attributes` jsonb (#26 M13-2). Naming them here made
+            # PostgREST reject the request, so custom-prompt matching never returned a
+            # single product. The tenant scoping below was always correct; only the
+            # column list was stale.
             response = self.supabase.table("products").select(
-                "id, name, description, material_type, color, finish, collection"
+                "id, name, description, attributes"
             ).eq("workspace_id", workspace_id).neq("id", exclude_id).limit(50).execute()
 
             if not response.data:
@@ -445,15 +469,11 @@ class ProductRelationshipService:
             source_summary = {
                 "name": source_product.get("name", ""),
                 "description": source_product.get("description", ""),
-                "material_type": source_product.get("material_type", ""),
-                "color": source_product.get("color", ""),
-                "finish": source_product.get("finish", ""),
-                "collection": source_product.get("collection", ""),
+                **_facets(source_product, ("material_type", "color", "finish", "collection")),
             }
             candidate_list = [
                 {"index": i, "id": c["id"], "name": c.get("name", ""),
-                 "material_type": c.get("material_type", ""), "color": c.get("color", ""),
-                 "finish": c.get("finish", "")}
+                 **_facets(c, ("material_type", "color", "finish"))}
                 for i, c in enumerate(candidates)
             ]
 
