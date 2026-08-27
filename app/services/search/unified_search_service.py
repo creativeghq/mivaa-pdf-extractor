@@ -1000,39 +1000,45 @@ class UnifiedSearchService:
         It now goes through `tracked_claude_call_async` (pipeline convention
         10), which logs and debits automatically.
         """
-        import json
+        from app.services.core.claude_tool_call import call_with_tool
 
-        from app.services.core.claude_helper import tracked_claude_call_async
-
-        response = await tracked_claude_call_async(
+        # Forced (#32). The fence-stripping this replaces handled ```json, bare ``` and a
+        # trailing fence — three separate repairs, which is a good measure of how often
+        # the free-form contract was not holding.
+        #
+        # The schema is deliberately open: the filter shape is described inside
+        # `system_prompt`, which is loaded from the database and edited by admins.
+        # Restating those keys here would create a second source, and because the model
+        # is FORCED to satisfy the schema, an admin's edit would silently stop taking
+        # effect. What forcing buys even with an open schema is the whole failure mode —
+        # no prose to repair, and an absent tool block raises `ToolCallNotReturned`
+        # instead of a JSONDecodeError three lines down.
+        #
+        # It still RAISES on failure, which is the contract this method already had: the
+        # caller falls back to the other model.
+        call = await call_with_tool(
             task="search_query_understanding",
             model="claude-haiku-4-5",
             max_tokens=1024,
             system=system_prompt,
+            tool={
+                "name": "emit_parsed_query",
+                "description": (
+                    "Emit the parsed search query as the JSON object described in the "
+                    "instructions."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True,
+                },
+            },
             messages=[
                 {"role": "user", "content": f"Parse this query: {query}"},
             ],
             workspace_id=workspace_id,
         )
-
-        blocks = getattr(response, "content", None) or []
-        content = ""
-        for block in blocks:
-            text = getattr(block, "text", None)
-            if text:
-                content = text.strip()
-                break
-        if not content:
-            raise ValueError("Anthropic returned no text content for query parsing")
-
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-
-        return json.loads(content.strip())
+        return call.data
 
     async def _parse_query_with_ai(self, query: str, workspace_id: Optional[str] = None) -> tuple[str, Dict[str, Any], str, Dict[str, float]]:
         """

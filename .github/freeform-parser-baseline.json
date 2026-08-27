@@ -1,12 +1,11 @@
 {
   "_comment": "Ratchet - may only DECREASE. See tests/unit/test_model_replies_come_from_tool_calls.py. Fix findings by routing through app.services.core.claude_tool_call.call_with_tool; do not edit this upward.",
-  "free_form_parsers": 32,
-  "fence_strippers": 11,
+  "free_form_parsers": 30,
+  "fence_strippers": 9,
   "known": [
     "app/api/anthropic_routes.py::enrich_product_with_claude",
     "app/api/anthropic_routes.py::test_claude_integration",
     "app/api/anthropic_routes.py::validate_image_with_claude",
-    "app/api/pdf_processing/stage_4_products.py::_classify_product",
     "app/api/pdf_processing/stage_4_products.py::enrich_products_from_chunks_and_vision",
     "app/api/sam_routes.py::generate_inpainting_prompt",
     "app/services/embeddings/embedding_to_text_service.py::convert_embeddings_to_metadata",
@@ -33,7 +32,6 @@
     "app/services/search/search_prompt_service.py::_apply_llm_formatting",
     "app/services/search/search_suggestions_service.py::expand_query",
     "app/services/search/unified_search_service.py::_parse_query_with_ai",
-    "app/services/search/unified_search_service.py::_parse_query_with_haiku",
     "app/services/utilities/admin_prompt_service.py::test_prompt"
   ]
 }

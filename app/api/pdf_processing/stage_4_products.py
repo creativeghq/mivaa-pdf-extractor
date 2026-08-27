@@ -251,7 +251,6 @@ async def _classify_product(
     if not api_key:
         return {}
 
-    import json as _json
 
     # Offer EXACTLY the values the validator below accepts — same source, no second copy.
     await field_registry.ensure_loaded()
@@ -264,35 +263,69 @@ async def _classify_product(
         product_name=name, product_description=description or 'N/A',
         existing_category=existing_category or 'N/A', vocab_lines=_vocab_lines)
 
+    # A FORCED tool call, with the vocabulary as the schema (#32).
+    #
+    # This asked for JSON in the prompt and then stripped a ```json fence before
+    # parsing. Invariant 9 names exactly this: a classifier whose verdict drives a
+    # database write, parsed from free-form text. The verdict here sets
+    # `material_category`, which decides the product's default unit and its facets.
+    #
+    # The enum is built from the SAME source the validator below checks against, so the
+    # model is now offered only values that will be accepted. Before, a value outside
+    # the vocabulary came back, passed the parse, and was silently dropped by the
+    # membership test — leaving the product uncategorised with nothing to say why.
+    # The validator stays anyway: a schema is a request, and this is the check.
+    classify_tool = {
+        "name": "emit_product_classification",
+        "description": "Assign the material category and zone intent from the controlled vocabulary.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "material_category": {
+                    "type": "string",
+                    "enum": sorted(field_registry.all_controlled_vocab()),
+                },
+                "zone_intent": {"type": "string", "enum": sorted(ZONE_INTENT_VOCAB)},
+            },
+            "required": ["material_category"],
+        },
+    }
+
     try:
-        from app.services.core.claude_helper import tracked_claude_call_async
-        resp = await tracked_claude_call_async(
+        from app.services.core.claude_tool_call import ToolCallNotReturned, call_with_tool
+
+        call = await call_with_tool(
             task="product_classification",
             model="claude-haiku-4-5",
-            max_tokens=64,
+            # 64 was enough for a bare JSON object; a tool call needs headroom for the
+            # block itself, and truncating it produces the missing-tool_use error rather
+            # than a short answer.
+            max_tokens=256,
+            tool=classify_tool,
             messages=[{"role": "user", "content": prompt}],
             job_id=job_id,
             workspace_id=workspace_id,
             product_id=product_id,
         )
-        raw = (resp.content[0].text if resp.content else "").strip()
-        # The model sometimes wraps the JSON in a ```json … ``` fence — strip it
-        # before parsing so a cosmetic wrapper doesn't fail the whole classify.
-        if raw.startswith("```"):
-            raw = raw.strip("`").strip()
-            if raw[:4].lower() == "json":
-                raw = raw[4:].strip()
-        data = _json.loads(raw)
+        data = call.data
         result = {}
         if data.get("material_category") in field_registry.all_controlled_vocab():
             result["material_category"] = data["material_category"]
         if data.get("zone_intent") in ZONE_INTENT_VOCAB:
             result["zone_intent"] = data["zone_intent"]
         return result
+    except ToolCallNotReturned as e:
+        # Distinct from the general failure below: a forced tool_choice that produced no
+        # block is a broken API contract and is retryable, which "the model could not
+        # classify this" is not.
+        logging.getLogger(__name__).error(
+            f"Product classification returned no tool call for product {product_id}: {e}"
+        )
+        return {}
     except Exception as e:
         # A classification failure leaves the product uncategorized (wrong
         # default unit + broken facets), so surface it loudly rather than at
-        # warning — this is a wholesale failure (parse / API), not "the model
+        # warning — this is a wholesale failure (API / schema), not "the model
         # legitimately couldn't classify" (which returns a valid-but-empty dict).
         logging.getLogger(__name__).error(
             f"Product classification failed for product {product_id}: {e}"
