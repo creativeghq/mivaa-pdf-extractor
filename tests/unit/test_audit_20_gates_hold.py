@@ -185,24 +185,40 @@ def test_the_check_runs_before_any_work():
     )
 
 
-def test_the_check_fails_closed():
-    """A tenancy check that treats "I could not find out" as "go ahead" switches itself
-    off exactly when the database is unhappy, which is when it is most needed."""
+def test_the_check_delegates_to_the_one_implementation():
+    """This check was written inline here first. #31 M17-4 then needed the same rule in
+    two more files, so it moved to `app.utils.tenancy` — three copies of a rule whose
+    entire purpose is uniformity is how one of them drifts, which is what the seven
+    copies of the credit-debit rule in #30 cost."""
     body = _body("_assert_document_in_workspace")
+    assert "assert_document_in_workspace(self.supabase_client" in body, (
+        "the tenancy check is hand-rolled here again instead of delegating"
+    )
+    assert "table(" not in body, "a local copy of the query is back"
+
+
+def _shared_tenancy_body(name: str) -> str:
+    src = (APP / "utils" / "tenancy.py").read_text(encoding="utf-8")
+    return _strip_comments(ast.get_source_segment(src, _node(src, name)) or "")
+
+
+def test_the_shared_check_fails_closed():
+    """A tenancy check that treats "I could not find out" as "go ahead" switches itself
+    off exactly when the database is unhappy, which is when it is least able to protect
+    anything."""
+    body = _shared_tenancy_body("assert_document_in_workspace")
     assert body.count("raise TenancyViolation") >= 3, (
         "one of the three refusal paths (missing id, lookup error, mismatch) no longer "
         "raises"
     )
-    assert "except Exception" in body and "return" not in body.replace("returns", ""), (
-        "the helper has grown a path that returns instead of raising"
-    )
+    assert "except Exception" in body
 
 
-def test_the_check_reads_the_table_that_actually_exists():
-    """`pdf_documents` is the STORAGE BUCKET name, not a table. Checking against it would
-    have been a lookup that always missed — a tenancy check that passes because it can
-    never find anything is worse than none, because it looks like one."""
-    body = _body("_assert_document_in_workspace")
+def test_the_shared_check_reads_the_table_that_actually_exists():
+    """`pdf_documents` is the STORAGE BUCKET name, not a table. A check written against
+    it would pass on every call because it could never find anything to disagree with —
+    worse than no check, because it reads as one."""
+    body = _shared_tenancy_body("assert_document_in_workspace")
     assert 'table("documents")' in body, (
         "the relationship check is querying something other than `documents`, which is "
         "what document_images.document_id actually references"

@@ -26,7 +26,6 @@ from app.services.pdf.pdf_processor import PDFProcessor
 from app.config import get_settings
 
 
-from app.utils.exceptions import TenancyViolation
 
 logger = logging.getLogger(__name__)
 
@@ -1944,42 +1943,15 @@ class ImageProcessingService:
     def _assert_document_in_workspace(self, document_id: str, workspace_id: str) -> None:
         """Raise unless `document_id` belongs to `workspace_id` (#20 M7-5).
 
-        Fails CLOSED on a missing id and on a lookup error. A tenancy check that treats
-        "I could not find out" as "go ahead" is a check that switches itself off exactly
-        when the database is unhappy, which is when it is most needed.
+        Delegates to `app.utils.tenancy`, which is the one implementation of this rule.
+        It was written inline here first; #31 M17-4 needed the same check in two more
+        files, and three copies of a rule whose entire purpose is uniformity is how one
+        of them drifts.
         """
-        if not document_id or not workspace_id:
-            raise TenancyViolation(
-                "save_images_and_generate_clips requires both document_id and "
-                f"workspace_id (got document_id={document_id!r}, "
-                f"workspace_id={workspace_id!r})"
-            )
-        try:
-            row = (
-                # `documents`, not `pdf_documents` — the latter is the STORAGE BUCKET
-                # name and is not a table. `document_images.document_id` has a real FK
-                # to `documents(id)`, which is what makes this check meaningful rather
-                # than a lookup that always misses.
-                self.supabase_client.client.table("documents")
-                .select("workspace_id")
-                .eq("id", document_id)
-                .maybe_single()
-                .execute()
-            )
-        except Exception as e:
-            raise TenancyViolation(
-                f"could not verify document {document_id} belongs to workspace "
-                f"{workspace_id}: {e}"
-            ) from e
+        from app.utils.tenancy import assert_document_in_workspace
 
-        owner = ((row.data if row else None) or {}).get("workspace_id")
-        if str(owner) != str(workspace_id):
-            # The caller gets a tenancy error; the ids stay in the log, not the response.
-            raise TenancyViolation(
-                f"document {document_id} belongs to workspace {owner!r}, not "
-                f"{workspace_id!r} — refusing to write images, embeddings and cost "
-                "attribution against a document this workspace does not own"
-            )
+        assert_document_in_workspace(self.supabase_client, document_id, workspace_id)
+
 
     async def save_images_and_generate_clips(
         self,

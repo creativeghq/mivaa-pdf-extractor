@@ -45,6 +45,8 @@ from PIL import Image
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
 from app.services.utilities.prompt_registry import load_prompt
 
+from app.utils.tenancy import assert_products_in_document
+
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -236,6 +238,19 @@ async def extract_catalog_knowledge_from_pdf(
         Stats dict: pages_scanned, pages_with_content, docs_created,
                     attachments_created, errors.
     """
+    # The ids must describe the same thing before anything is written (#31 M17-4).
+    #
+    # `documents` was read and updated by `.eq("id", document_id)`, and `product_ids`
+    # arrived from the caller and had attachments written for them with no check that
+    # they belong to this document or this workspace. MIVAA has no RLS backstop — every
+    # call here is service role — so the check exists in Python or it does not exist.
+    #
+    # First, before the prompt load and before the PDF is opened: a run that must not
+    # happen should cost nothing.
+    product_ids = assert_products_in_document(
+        supabase, product_ids, document_id, workspace_id
+    )
+
     # Loaded once per document, not per page — and it RAISES if unconfigured,
     # so a missing prompt stops the run instead of quietly extracting nothing.
     knowledge_prompt = await load_prompt("extraction", "catalog_knowledge", stage="discovery")

@@ -151,3 +151,88 @@ def test_the_legend_extractor_is_still_on_the_ratchet_and_not_pretended_fixed():
         "#32 baseline in the same change, and check what the type-detection score does "
         "when only declared keys can be present"
     )
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# M17-4 — the ids must describe the same thing
+#
+# Sixteenth instance of the two-unchecked-ids class. `documents` read and UPDATED
+# by bare id; `product_ids` taken from the caller and given attachments with no
+# check that they belong to this document or this workspace. MIVAA has no RLS
+# backstop — every call is service role — so the check exists in Python or it does
+# not exist at all (invariant 1).
+#
+# The rule lives in `app.utils.tenancy`, not in these files. It was written inline
+# for #20 M7-5 first; needing it here would have made three copies of a rule whose
+# entire purpose is uniformity, which is how the credit-debit rule reached seven
+# copies with one of them still carrying a bug the others had fixed (#30 M16-1).
+# ───────────────────────────────────────────────────────────────────────────
+
+TENANCY = ROOT / "app" / "utils" / "tenancy.py"
+
+
+def test_the_knowledge_extractor_verifies_its_product_ids():
+    body = _body(_read(KNOWLEDGE), "extract_catalog_knowledge_from_pdf")
+    assert "assert_products_in_document(" in body, (
+        "the knowledge extractor trusts caller-supplied product_ids again (#31 M17-4)"
+    )
+
+
+def test_the_verification_precedes_the_expensive_work():
+    """A run that must not happen should cost nothing — not a prompt load, not a PDF
+    open, and certainly not a vision call."""
+    body = _body(_read(KNOWLEDGE), "extract_catalog_knowledge_from_pdf")
+    assert body.index("assert_products_in_document(") < body.index("load_prompt("), (
+        "the tenancy check now runs after the prompt load; move it back to the top"
+    )
+
+
+def test_the_extractor_uses_the_verified_ids_not_the_ones_it_was_handed():
+    """`assert_products_in_document` RETURNS the verified list. A check whose result is
+    discarded is a check that can be deleted without anything failing."""
+    body = _body(_read(KNOWLEDGE), "extract_catalog_knowledge_from_pdf")
+    assert "product_ids = assert_products_in_document(" in body, (
+        "the return value is being thrown away"
+    )
+
+
+def test_the_legend_extractor_verifies_its_document():
+    body = _body(_read(LEGEND), "extract_catalog_legends")
+    assert "assert_document_in_workspace(supabase, document_id, workspace_id)" in body, (
+        "the legend extractor reads and UPDATES `documents` by bare id again, then "
+        "propagates catalogue-wide fields to every product in it (#31 M17-4)"
+    )
+
+
+def test_neither_extractor_hand_rolls_the_check():
+    """Both files legitimately READ `documents` for their own data — the legend
+    extractor needs `metadata.catalog_layout.legend_pages`. So the property checked here
+    is that the tenancy RULE comes from the shared module, not that the table is never
+    touched. An earlier version of this test asserted the latter and would have forbidden
+    a read the feature depends on: a guard that bans the wrong thing gets deleted rather
+    than satisfied, and it takes the real rule with it when it goes.
+    """
+    for path in (KNOWLEDGE, LEGEND):
+        src = _strip_comments(_read(path))
+        assert "from app.utils.tenancy import" in src, (
+            f"{path.name} no longer imports the shared tenancy rule"
+        )
+        assert '.select("workspace_id")' not in src, (
+            f"{path.name} reads a workspace_id to compare itself — that is the check "
+            "hand-rolled again, and the copy that drifts is always the third one"
+        )
+
+
+def test_the_shared_rule_raises_rather_than_filtering():
+    """Silently dropping foreign ids would attach catalogue knowledge to some products
+    and not others, and report success. These ids come from a pipeline that created the
+    products from this same document, so a mismatch is a bug or an attempt — not a
+    routine condition worth degrading gracefully for."""
+    src = TENANCY.read_text(encoding="utf-8")
+    body = _strip_comments(
+        ast.get_source_segment(src, _node(src, "assert_products_in_document")) or ""
+    )
+    assert "raise TenancyViolation" in body
+    assert "return [p for p in ids if p in verified]" in body, (
+        "the helper no longer returns the verified ids, so callers cannot use them"
+    )

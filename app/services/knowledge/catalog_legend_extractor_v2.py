@@ -55,6 +55,8 @@ import sentry_sdk
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
 from app.services.utilities.prompt_registry import load_prompt
 
+from app.utils.tenancy import assert_document_in_workspace
+
 logger = logging.getLogger(__name__)
 
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
@@ -232,6 +234,12 @@ async def extract_catalog_legends(
     Returns a stats dict with `legends_extracted`, `products_updated`,
     `kb_docs_created`, `errors`.
     """
+    # The document must belong to the workspace before anything is read or written
+    # (#31 M17-4). This function reads and UPDATES `documents` by bare id and then
+    # propagates catalogue-wide fields to every product in it; service role means
+    # nothing below would object to a document from another tenant.
+    assert_document_in_workspace(supabase, document_id, workspace_id)
+
     # Lazy imports for the optional progress tracker.
     tracker = None
     try:
