@@ -1282,7 +1282,13 @@ async def upload_document(
         )
 
 
-@router.get("/documents/job/{job_id}", responses={200: {"model": JobInfoResponse}}, dependencies=[Depends(verify_internal_access)])
+# M19-1: `verify_internal_access` authenticates and stops there — its own docstring
+# says it admits "ANY valid platform token, including an end user's". This route then
+# read the job by id alone, so any token plus a job id returned that job's metadata,
+# stage and recovery history. `require_rag_resource_access` already resolves
+# job_id -> background_jobs and requires the caller's workspace to own it — it is
+# what the seven sibling routes in this file use, and needs no new code.
+@router.get("/documents/job/{job_id}", responses={200: {"model": JobInfoResponse}}, dependencies=[Depends(require_rag_resource_access)])
 async def get_job_status(job_id: str):
     """
     Get the status of an async document processing job with checkpoint information.
@@ -1417,7 +1423,9 @@ async def get_job_status(job_id: str):
     )
 
 
-@router.get("/documents/job/{job_id}/full-status", dependencies=[Depends(verify_internal_access)])
+# M19-1 — see get_job_status above. This one returns checkpoint payloads and memory
+# state, so it discloses more than the status route it sits beside.
+@router.get("/documents/job/{job_id}/full-status", dependencies=[Depends(require_rag_resource_access)])
 async def get_job_full_status(job_id: str):
     """Single round-trip endpoint for the full state of a job.
 
@@ -1456,7 +1464,8 @@ async def get_job_full_status(job_id: str):
     })
 
 
-@router.get("/jobs/{job_id}/checkpoints", responses={200: {"model": CheckpointListResponse}}, dependencies=[Depends(verify_internal_access)])
+# M19-1 — see get_job_status above.
+@router.get("/jobs/{job_id}/checkpoints", responses={200: {"model": CheckpointListResponse}}, dependencies=[Depends(require_rag_resource_access)])
 async def get_job_checkpoints(job_id: str):
     """Returns the stage history for a job (alias maintained for older
     clients — `/documents/job/{id}/full-status` is the consolidated read).
@@ -1958,12 +1967,32 @@ async def reprocess_document(
         # read, so this whole reprocess route 500'd before reaching the PDF. They are
         # carried in the job's `metadata` jsonb.
         jobs_resp = supabase.client.table("background_jobs") \
-            .select("id, metadata") \
+            .select("id, status, metadata") \
             .eq("document_id", document_id) \
             .order("created_at", desc=True) \
             .limit(1) \
             .execute()
         prev_job = (jobs_resp.data or [{}])[0] if jobs_resp.data else {}
+
+        # Refuse while a job for this document is still in flight (#34 M19-3).
+        # Everything below this point DELETES: products, chunks, images, VECS
+        # embeddings, tile storage and document metadata. Issuing a reprocess against a
+        # document mid-ingestion pulls the running job's outputs out from under it, and
+        # the running job then carries on writing into the wreckage.
+        #
+        # `restart` — 400 lines up in this same file — already does exactly this, as a
+        # status-scoped compare-and-swap: `.in_('status', ['pending', 'interrupted'])`.
+        # This is that guard stated as a precondition, because the delete is not a single
+        # UPDATE that could carry one.
+        if (prev_job.get("status") or "") in ("pending", "processing"):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"A job for document {document_id} is {prev_job.get('status')}. "
+                    "Reprocess deletes this document's derived data, so it refuses while "
+                    "one is in flight — wait for it to finish, or cancel it first."
+                ),
+            )
         prev_job_meta = prev_job.get("metadata") or {}
 
         discovery_model = prev_job_meta.get("discovery_model") or "claude-opus-4-8"
@@ -2116,12 +2145,23 @@ async def reprocess_document(
         )
 
 
+# M19-1, with a correction to the fix the audit proposed. It says to swap all FOUR
+# weakly-gated routes to `require_rag_resource_access`. That works for the three that
+# carry a job_id and NOT for this one: the gate resolves an id from the path or query
+# and raises 400 when there is none ("A list endpoint with no resource id would
+# otherwise return rows across all tenants"). Swapping it here would 400 every call.
+#
+# A list route needs a PREDICATE, not a resource lookup. The workspace comes from the
+# caller's context; the cron path has none and keeps its platform-wide view, which is
+# what auto-recovery needs.
 @router.get("/documents/jobs", responses={200: {"model": ListDataResponse}}, dependencies=[Depends(verify_internal_access)])
 async def list_jobs(
+    request: Request,
     limit: int = 10,
     offset: int = 0,
     status_filter: Optional[str] = None,
-    sort: str = "created_at:desc"
+    sort: str = "created_at:desc",
+    workspace_context = Depends(get_optional_workspace_context),
 ):
     """
     List all background jobs with optional filtering and sorting.
@@ -2140,6 +2180,19 @@ async def list_jobs(
 
         # Build query
         query = supabase_client.client.table('background_jobs').select('*')
+
+        # Bind the list to the caller's workspace (M19-1). Without this, any valid
+        # platform token listed every tenant's jobs. A cron caller (x-cron-secret, no
+        # workspace context) is deliberately unfiltered: auto-recovery has to see the
+        # whole estate, and it is not a user.
+        caller_workspace = getattr(workspace_context, "workspace_id", None)
+        if caller_workspace:
+            query = query.eq('workspace_id', caller_workspace)
+        elif not (request.headers.get("x-cron-secret") or "").strip():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="A workspace context is required to list jobs.",
+            )
 
         # Apply status filter
         if status_filter:
@@ -2339,15 +2392,23 @@ async def get_chunks(
 
         chunks = result.data if result.data else []
 
-        # Add embeddings to each chunk if requested
-        # Note: embeddings are stored directly in document_chunks.text_embedding
-        if include_embeddings and chunks:
-            for chunk in chunks:
-                # Embeddings are stored directly in the chunk record
-                text_embedding = chunk.get('text_embedding')
+        # `include_embeddings` has to REMOVE, not just add (#34 M19-2). The base query
+        # is `select('*')`, so `text_embedding` was in every row regardless and this
+        # block only layered derived fields on top — a caller explicitly asking not to
+        # receive embeddings received them anyway. That is payload bloat rather than a
+        # leak (the gate above binds the document to its owner), but a control that does
+        # nothing is worse than no control: it reads as if the choice were being honoured.
+        #
+        # `has_embedding` is computed either way, because "does this chunk have one" is
+        # the question `include_embeddings=false` callers are usually asking.
+        for chunk in chunks:
+            text_embedding = chunk.pop('text_embedding', None)
+            chunk['has_embedding'] = text_embedding is not None
+            if include_embeddings:
                 chunk['embedding'] = text_embedding
-                chunk['embeddings'] = [{'embedding': text_embedding, 'type': 'text'}] if text_embedding else []
-                chunk['has_embedding'] = text_embedding is not None
+                chunk['embeddings'] = (
+                    [{'embedding': text_embedding, 'type': 'text'}] if text_embedding else []
+                )
 
         return JSONResponse(content={
             "document_id": document_id,
