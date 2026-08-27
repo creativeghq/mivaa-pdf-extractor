@@ -203,7 +203,6 @@ class ImageProcessingService:
 
         # Import AI services
         from app.services.core.ai_client_service import get_ai_client_service
-        import httpx
         import json
 
         get_ai_client_service()
@@ -233,10 +232,6 @@ class ImageProcessingService:
             The `model` argument is now a tag used purely for logging; the
             actual model is always `claude-opus-4-8`.
             """
-            import time
-            from app.services.core.ai_call_logger import AICallLogger
-
-            start_time = time.time()
             image_base64 = base64_data
             detected_media_type = "image/jpeg"
             try:
@@ -270,55 +265,58 @@ class ImageProcessingService:
                     },
                 }
 
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    response = await client.post(
-                        "https://api.anthropic.com/v1/messages",
-                        headers={
-                            'x-api-key': anthropic_api_key,
-                            'anthropic-version': '2023-06-01',
-                            'content-type': 'application/json',
-                        },
-                        json={
-                            'model': 'claude-opus-4-8',
-                            'max_tokens': 1024,
-                            'tools': [classify_tool],
-                            'tool_choice': {'type': 'tool', 'name': 'emit_classification'},
-                            'messages': [{
-                                'role': 'user',
-                                'content': [
-                                    {
-                                        'type': 'image',
-                                        'source': {
-                                            'type': 'base64',
-                                            'media_type': detected_media_type,
-                                            'data': image_base64,
-                                        },
-                                    },
-                                    # Cache the prompt — same string for every image in the batch.
-                                    {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
-                                ],
-                            }],
-                        },
-                    )
-
-                if response.status_code != 200:
-                    error_body = response.text[:500] if hasattr(response, 'text') else 'No response body'
-                    logger.error(f"❌ Anthropic API error {response.status_code} for {image_path}: {error_body}")
-                    return {
-                        'is_material': False,
-                        'confidence': 0.0,
-                        'reason': f'Anthropic API error {response.status_code}',
-                        'model': 'claude-opus-4-8_api_error',
-                        'error': error_body,
-                    }
-
-                payload = response.json()
-                tool_block = next(
-                    (b for b in payload.get('content', []) if b.get('type') == 'tool_use'),
-                    None,
+                # Through the shared forced-tool helper (#33 item 2). This was a raw
+                # httpx POST that hand-built the same tool_choice this helper forces,
+                # hand-parsed the tool_use block, and — the part that actually mattered —
+                # priced its own spend from a constant:
+                #
+                #     # Claude Opus 4.7 pricing as of 2026-05-01: $15/M input, $75/M output
+                #     cost = (input_tokens / 1e6) * 15.0 + (output_tokens / 1e6) * 75.0
+                #
+                # commented for Opus 4.7 while calling `claude-opus-4-8`, so every image
+                # in every catalogue was booked at another model's rate. `ai_model_pricing`
+                # is the one USD source and the helper resolves against it. A hardcoded
+                # price does not fail — it produces a plausible number, which is why this
+                # survived in a per-image hot path.
+                from app.services.core.claude_tool_call import (
+                    ToolCallNotReturned,
+                    call_with_tool,
                 )
-                if not tool_block or 'input' not in tool_block:
-                    logger.warning(f"⚠️ No tool_use in classification response for {image_path}: {payload}")
+
+                try:
+                    call = await call_with_tool(
+                        task="image_classification",
+                        model='claude-opus-4-8',
+                        max_tokens=1024,
+                        tool=classify_tool,
+                        # `cache_control` rides on the prompt block inside `messages`, so
+                        # the batch-wide prompt cache is preserved verbatim.
+                        messages=[{
+                            'role': 'user',
+                            'content': [
+                                {
+                                    'type': 'image',
+                                    'source': {
+                                        'type': 'base64',
+                                        'media_type': detected_media_type,
+                                        'data': image_base64,
+                                    },
+                                },
+                                {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
+                            ],
+                        }],
+                        required=["classification"],
+                        # The model's own reported confidence, which the hand-written
+                        # logger recorded and a call-time default would have thrown away.
+                        confidence_key="confidence",
+                        job_id=job_id,
+                        product_id=product_id,
+                    )
+                except ToolCallNotReturned as exc:
+                    # Preserved contract: callers of this classifier treat a soft dict as
+                    # "not a material" and keep going. Raising here would abort a whole
+                    # batch over one image.
+                    logger.warning(f"⚠️ No tool_use in classification response for {image_path}: {exc}")
                     return {
                         'is_material': False,
                         'confidence': 0.0,
@@ -326,37 +324,10 @@ class ImageProcessingService:
                         'model': 'claude-opus-4-8_invalid_response',
                     }
 
-                result = tool_block['input']
+                result = call.data
                 classification_category = result.get('classification', 'DECORATIVE')
                 confidence = float(result.get('confidence', 0.5))
                 reason = result.get('reasoning', 'Unknown')
-
-                ai_logger = AICallLogger()
-                latency_ms = int((time.time() - start_time) * 1000)
-                usage = payload.get('usage', {}) or {}
-                input_tokens = usage.get('input_tokens', 0)
-                output_tokens = usage.get('output_tokens', 0)
-                # Claude Opus 4.7 pricing as of 2026-05-01: $15/M input, $75/M output.
-                cost = (input_tokens / 1_000_000) * 15.0 + (output_tokens / 1_000_000) * 75.0
-
-                await ai_logger.log_ai_call(
-                    task="image_classification",
-                    model="claude-opus-4-8",
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cost=cost,
-                    latency_ms=latency_ms,
-                    confidence_score=confidence,
-                    confidence_breakdown={
-                        "model_confidence": confidence,
-                        "completeness": 1.0,
-                        "consistency": 0.98,
-                        "validation": 0.95,
-                    },
-                    action="use_ai_result",
-                    job_id=job_id,
-                    product_id=product_id,
-                )
 
                 # Use the existing category-mapping helper so PRODUCT_IMAGE /
                 # MIXED → True and DECORATIVE / TECHNICAL_DIAGRAM → False

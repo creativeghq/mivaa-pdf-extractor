@@ -44,6 +44,11 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+#: Mirrors `claude_helper._DEFAULT_CONFIDENCE`. Imported lazily at call time would be
+#: cleaner, but this module is deliberately import-light at module scope so it can be
+#: loaded by a source-based guard test with no app dependencies installed.
+_DEFAULT_CONFIDENCE = 0.9
+
 
 @dataclass(frozen=True)
 class ToolCallResult:
@@ -111,12 +116,21 @@ async def call_with_tool(
     product_id: Optional[str] = None,
     image_id: Optional[str] = None,
     required: Optional[List[str]] = None,
+    confidence_key: Optional[str] = None,
 ) -> ToolCallResult:
     """Call Claude with `tool` forced, and return its validated input plus usage.
 
     Goes through `tracked_claude_call_async` so the cost lands in `ai_usage_logs`
     automatically (pipeline convention 10) — a hand-rolled httpx POST here would be
     invisible to every cost view, which is the shape #30 measured.
+
+    `confidence_key` names a key in the tool input holding the model's OWN reported
+    confidence — the value hand-written `log_claude_call` sites record. It cannot be
+    passed at call time because it does not exist until the reply arrives, so the
+    helper reads it back out of the extracted input and hands it to the logger. Without
+    this, migrating those sites would silently replace a measured confidence with the
+    0.9 default, which is a worse bug than the one being fixed: an invisible cost is at
+    least absent, while a defaulted confidence is a plausible number nothing raises on.
 
     `required` names keys the caller cannot proceed without. The tool schema should
     already declare them, but a schema is a request and this is a check: a model that
@@ -128,6 +142,11 @@ async def call_with_tool(
     response = await tracked_claude_call_async(
         task=task,
         model=model,
+        confidence_score=(
+            (lambda r: float(extract_tool_input(r, tool["name"]).get(confidence_key)))
+            if confidence_key
+            else _DEFAULT_CONFIDENCE
+        ),
         max_tokens=max_tokens,
         system=system,
         messages=messages,

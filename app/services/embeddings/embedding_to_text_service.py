@@ -12,8 +12,6 @@ import re
 from typing import Dict, List, Any
 
 from app.services.core.supabase_client import get_supabase_client
-from app.services.core.ai_call_logger import AICallLogger
-from app.services.core.ai_client_service import get_ai_client_service
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
 from app.services.utilities.prompt_registry import workspace_scope, prefer_workspace
 
@@ -32,7 +30,6 @@ class EmbeddingToTextService:
         from app.config import get_settings
         self.supabase = get_supabase_client()
         self.workspace_id = workspace_id or get_settings().default_workspace_id
-        self.ai_logger = AICallLogger()
         self.prompt = None
         self._load_prompt()
 
@@ -117,25 +114,29 @@ class EmbeddingToTextService:
             # Build full prompt
             full_prompt = f"{self.prompt}\n\n**Embedding Data:**\n\n```json\n{json.dumps(embedding_context, indent=2)}\n```\n\nAnalyze these embeddings and extract textual metadata. Return ONLY valid JSON."
 
-            # Call AI with timing
-            import time
-            start_time = time.time()
-            client = get_ai_client_service().anthropic
-            response = client.messages.create(
-                model="claude-opus-4-8",
-                max_tokens=2048,
-                messages=[{"role": "user", "content": full_prompt}]
-            )
-            latency_ms = int((time.time() - start_time) * 1000)
+            # Through the tracked helper (#33 item 2). What was here did four things
+            # wrong at once, none of which failed:
+            #
+            #   * priced itself from a constant — `_calculate_cost` charged $3/$15 per
+            #     million while calling `claude-opus-4-8`. Those are Sonnet rates, so
+            #     every conversion was booked at roughly a fifth of what it cost.
+            #     `ai_model_pricing` is the one USD source and the helper resolves
+            #     against it.
+            #   * called the SYNC `messages.create` from an `async def`, blocking the
+            #     event loop for a whole Opus round-trip per image.
+            #   * logged `job_id=image_id` — an image id in the job column, so the spend
+            #     joined to no job and the helper's job -> billable-user resolution had
+            #     nothing to work with. `image_id` and `workspace_id` are the columns
+            #     that actually describe this call.
+            #   * recorded nothing at all when the call raised, since the log came after
+            #     it. Anthropic bills a request it accepted regardless.
+            from app.services.core.claude_helper import tracked_claude_call_async
 
-            # Log AI call with correct signature
-            await self.ai_logger.log_ai_call(
+            response = await tracked_claude_call_async(
                 task="embedding_to_text_conversion",
                 model="claude-opus-4-8",
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cost=self._calculate_cost(response.usage),
-                latency_ms=latency_ms,
+                max_tokens=2048,
+                messages=[{"role": "user", "content": full_prompt}],
                 confidence_score=0.85,
                 confidence_breakdown={
                     "model_confidence": 0.90,
@@ -144,7 +145,8 @@ class EmbeddingToTextService:
                     "validation": 0.85
                 },
                 action="use_ai_result",
-                job_id=image_id
+                image_id=image_id,
+                workspace_id=self.workspace_id,
             )
 
             # Parse response
@@ -167,11 +169,4 @@ class EmbeddingToTextService:
             )
             logger.error(f"Error converting embeddings to text: {e}")
             return {}
-
-    def _calculate_cost(self, usage) -> float:
-        """Calculate cost for Claude API call."""
-        input_cost = (usage.input_tokens / 1_000_000) * 3.00  # $3 per 1M input tokens
-        output_cost = (usage.output_tokens / 1_000_000) * 15.00  # $15 per 1M output tokens
-        return input_cost + output_cost
-
 

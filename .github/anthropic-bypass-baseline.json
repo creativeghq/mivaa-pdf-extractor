@@ -1,30 +1,10 @@
 {
   "_comment": "Ratchet - may only DECREASE. See tests/unit/test_anthropic_calls_go_through_the_helper.py. Do not edit upward.",
-  "bypassing_files": 14,
+  "bypassing_files": 12,
   "_note_on_the_two_groups": "The audit calls this 'migrate the 15 files'. It is not one task. `needs_attribution_first` ALREADY log their own spend to ai_usage_logs with a SUBJECT attribution (tracked_job_id / tracked_mention_id / product_id) that tracked_claude_call_async cannot carry. Routing them through the helper without removing their own logging DOUBLE-COUNTS the spend; removing it loses the subject rollups. They need the helper to accept a subject attribution first \u2014 a helper change, not 11 file migrations. `safe_to_migrate` log nothing, so routing them through the helper is a pure win and adds the cost record they never had.",
-  "needs_attribution_first": [
-    "app/api/anthropic_routes.py",
-    "app/services/embeddings/embedding_to_text_service.py",
-    "app/services/images/image_processing_service.py",
-    "app/services/images/real_image_analysis_service.py",
-    "app/services/integrations/job_classifier_service.py",
-    "app/services/integrations/job_keyword_expansion_service.py",
-    "app/services/integrations/job_search_service.py",
-    "app/services/integrations/llm_mention_probe_service.py",
-    "app/services/integrations/mention_identity_service.py",
-    "app/services/integrations/mention_opportunity_service.py",
-    "app/services/products/product_creation_service.py"
-  ],
-  "safe_to_migrate": [
-    "app/services/discovery/product_discovery_service.py",
-    "app/services/metadata/dynamic_metadata_extractor.py",
-    "app/services/search/rag_service.py"
-  ],
   "known": [
     "app/api/anthropic_routes.py",
     "app/services/discovery/product_discovery_service.py",
-    "app/services/embeddings/embedding_to_text_service.py",
-    "app/services/images/image_processing_service.py",
     "app/services/images/real_image_analysis_service.py",
     "app/services/integrations/job_classifier_service.py",
     "app/services/integrations/job_keyword_expansion_service.py",
@@ -35,5 +15,25 @@
     "app/services/metadata/dynamic_metadata_extractor.py",
     "app/services/products/product_creation_service.py",
     "app/services/search/rag_service.py"
-  ]
+  ],
+  "note": "Ratchet: may only DECREASE. A new direct Anthropic call fails tests/unit/test_anthropic_calls_go_through_the_helper.py on the day it is written.",
+  "measured_grouping": {
+    "_comment": "An earlier version of this file split the list into 'already logs by hand, needs helper support first' and 'safe to migrate'. That split was wrong and is recorded here corrected, because it was steering the work in the wrong direction. Measured against the tree, the blocker is not subject attribution (the helper already takes product_id / image_id / workspace_id) \u2014 it is that six sites log a confidence the MODEL reports inside its own reply, which does not exist at call time. claude_helper now accepts a callable for confidence_score and call_with_tool takes confidence_key, so that blocker is gone and these are ordinary migrations.",
+    "logs_a_post_hoc_confidence": [
+      "app/api/anthropic_routes.py",
+      "app/services/discovery/product_discovery_service.py",
+      "app/services/images/real_image_analysis_service.py",
+      "app/services/metadata/dynamic_metadata_extractor.py",
+      "app/services/products/product_creation_service.py",
+      "app/services/search/rag_service.py"
+    ],
+    "returns_usage_to_a_caller_that_logs": [
+      "app/services/integrations/job_classifier_service.py",
+      "app/services/integrations/job_keyword_expansion_service.py",
+      "app/services/integrations/job_search_service.py",
+      "app/services/integrations/llm_mention_probe_service.py",
+      "app/services/integrations/mention_identity_service.py",
+      "app/services/integrations/mention_opportunity_service.py"
+    ]
+  }
 }

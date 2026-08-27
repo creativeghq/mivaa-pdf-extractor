@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 import httpx
 
@@ -50,6 +50,37 @@ logger = logging.getLogger(__name__)
 
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
+
+#: What we record when the caller did not measure a confidence. Named rather than
+#: inlined because it is now used in three places and a fallback that disagrees with
+#: the documented default is the kind of drift this module exists to prevent.
+_DEFAULT_CONFIDENCE = 0.9
+
+
+def _resolve_confidence(confidence: Union[float, Callable[[Any], float]], response: Any) -> float:
+    """A float, or a callable applied to the response once it has arrived.
+
+    Six call sites log the confidence the MODEL reported inside its own reply
+    (`result['confidence']`, `result['confidence_score']`). That value does not exist
+    at call time, so before this the only way to migrate them off a hand-written
+    `log_claude_call` was to downgrade a measured confidence to the default — trading
+    an invisible-cost bug for a quietly-wrong quality signal.
+
+    It runs inside a try on purpose: the call has COMPLETED and Anthropic has already
+    billed for it. A bookkeeping helper must never be the reason a paid-for result is
+    lost, so a callable that raises costs us the confidence, not the response.
+    """
+    if not callable(confidence):
+        return float(confidence)
+    try:
+        return float(confidence(response))
+    except Exception:
+        logger.warning(
+            "confidence callable raised; recording the default instead",
+            exc_info=True,
+        )
+        return _DEFAULT_CONFIDENCE
+
 
 _DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
     "model_confidence": 0.9,
@@ -386,7 +417,10 @@ async def tracked_claude_call_async(
     job_id: Optional[str] = None,
     user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
-    confidence_score: float = 0.9,
+    # A float, OR a callable applied to the response once it arrives — see
+    # `_resolve_confidence`. The model's own reported confidence lives INSIDE the
+    # reply and is therefore not knowable at call time.
+    confidence_score: Union[float, Callable[[Any], float]] = _DEFAULT_CONFIDENCE,
     confidence_breakdown: Optional[Dict[str, float]] = None,
     action: str = "use_ai_result",
     extra_kwargs: Optional[Dict[str, Any]] = None,
@@ -442,7 +476,7 @@ async def tracked_claude_call_async(
         model=model,
         response=response,
         latency_ms=latency_ms,
-        confidence_score=confidence_score,
+        confidence_score=_resolve_confidence(confidence_score, response),
         confidence_breakdown=confidence_breakdown or _DEFAULT_CONFIDENCE_BREAKDOWN,
         action=action,
         job_id=job_id,
@@ -470,7 +504,10 @@ def tracked_claude_call(
     job_id: Optional[str] = None,
     user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
-    confidence_score: float = 0.9,
+    # A float, OR a callable applied to the response once it arrives — see
+    # `_resolve_confidence`. The model's own reported confidence lives INSIDE the
+    # reply and is therefore not knowable at call time.
+    confidence_score: Union[float, Callable[[Any], float]] = _DEFAULT_CONFIDENCE,
     confidence_breakdown: Optional[Dict[str, float]] = None,
     action: str = "use_ai_result",
     extra_kwargs: Optional[Dict[str, Any]] = None,
@@ -527,7 +564,7 @@ def tracked_claude_call(
         model=model,
         response=response,
         latency_ms=latency_ms,
-        confidence_score=confidence_score,
+        confidence_score=_resolve_confidence(confidence_score, response),
         confidence_breakdown=confidence_breakdown or _DEFAULT_CONFIDENCE_BREAKDOWN,
         action=action,
         job_id=job_id,
