@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.api.price_lookup_routes import ApiKeyContext, authenticate_api_key
 from app.services.integrations.tracked_queries_service import get_tracked_queries_service
+from app.utils.paid_door import metered_door
 from app.services.integrations.price_cost_logger import (
     PRICE_OP_CREDIT_COST, debit_credits, refund_credits,
 )
@@ -260,7 +261,16 @@ async def create_tracked_query(
     # refresh keeps the credit even if 0 retailers land — the upstream calls ran.
     user_id = getattr(ctx, "user_id", None)
     cost = PRICE_OP_CREDIT_COST["track"]
-    if user_id and not debit_credits(
+    # A paid door with no resolvable payer REFUSES (#21 M8-3). `if user_id and not
+    # debit(...)` reads as metering and behaves as a free pass: a key whose user_id is
+    # null skipped the debit entirely and did the paid work anyway. `api_keys.user_id`
+    # is nullable, so that is a schema-permitted state, not a hypothetical.
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="No payer could be resolved for a paid operation",
+        )
+    if not debit_credits(
         user_id=user_id, amount=cost, operation_type="price_monitoring.track"
     ):
         raise HTTPException(status_code=402, detail="Insufficient credits")
@@ -396,7 +406,16 @@ async def refresh_tracked_query(
     # work happened. A successful refresh keeps the credit even with 0 hits.
     user_id = getattr(ctx, "user_id", None)
     cost = PRICE_OP_CREDIT_COST["refresh"]
-    if user_id and not debit_credits(
+    # A paid door with no resolvable payer REFUSES (#21 M8-3). `if user_id and not
+    # debit(...)` reads as metering and behaves as a free pass: a key whose user_id is
+    # null skipped the debit entirely and did the paid work anyway. `api_keys.user_id`
+    # is nullable, so that is a schema-permitted state, not a hypothetical.
+    if not user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="No payer could be resolved for a paid operation",
+        )
+    if not debit_credits(
         user_id=user_id, amount=cost, operation_type="price_monitoring.refresh"
     ):
         raise HTTPException(status_code=402, detail="Insufficient credits")
@@ -609,7 +628,19 @@ async def verify_tracked_query(
 ) -> VerifyResponse:
     service = get_tracked_queries_service()
     _ensure_owner(await service.get(tracking_id), ctx)
-    outcome = await service.reverify(tracking_id, urls=body.urls)
+    # Metered (#21 M8-3). This door's own description says "Cost: 1 Firecrawl credit per
+    # URL re-verified" and it debited nothing. `PRICE_OP_CREDIT_COST["verify"]` already
+    # existed — the door simply never read it.
+    async with metered_door(
+        user_id=getattr(ctx, "user_id", None),
+        workspace_id=getattr(ctx, "workspace_id", None),
+        cost=PRICE_OP_CREDIT_COST["verify"],
+        operation_type="price_monitoring.verify",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        outcome = await service.reverify(tracking_id, urls=body.urls)
+        if (outcome.get("status") or "unknown") in ("error", "not_found", "inactive"):
+            paid.refund(f"reverify returned {outcome.get('status')}")
     return VerifyResponse(
         tracking_id=tracking_id,
         status=outcome.get("status", "unknown"),

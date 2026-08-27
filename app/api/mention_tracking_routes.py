@@ -35,6 +35,7 @@ from app.services.integrations.mention_identity_service import SubjectFacets
 from app.services.integrations.mention_opportunity_service import (
     get_mention_opportunity_service,
 )
+from app.utils.paid_door import metered_door
 from app.services.integrations.mention_cost_logger import (
     MENTION_OP_CREDIT_COST, debit_credits, refund_credits,
 )
@@ -244,34 +245,50 @@ async def create_tracking(
     ctx: ApiKeyContext = Depends(authenticate_api_key),
 ):
     """Create a new tracked mention subject. First refresh runs synchronously
-    so the response includes initial results."""
+    so the response includes initial results.
+
+    Metered (#21 M8-3). `run_first_refresh=True` is hardcoded below, so this door always
+    runs a paid discovery sweep — and charged nothing for it. Its sibling
+    `POST /prices/track` has debited `PRICE_OP_CREDIT_COST["track"]` all along.
+    """
     svc = get_tracked_mentions_service()
-    row = await svc.create(
-        api_key_id=ctx.api_key_id,
+    async with metered_door(
         user_id=ctx.user_id,
         workspace_id=ctx.workspace_id,
-        subject_type=body.subject_type,
-        subject_label=body.subject_label,
-        product_id=None,
-        brand_name=body.brand_name or (body.subject_label if body.subject_type == "brand" else None),
-        aliases=body.aliases,
-        auto_expand_aliases=body.auto_expand_aliases,
-        sources_enabled=body.sources_enabled,
-        source_config=body.source_config,
-        language_codes=body.language_codes,
-        country_codes=body.country_codes,
-        refresh_interval_hours=body.refresh_interval_hours,
-        recency_days=body.recency_days,
-        homepage_domain=body.homepage_domain,
-        alert_channels=body.alert_channels,
-        alert_on_spike=body.alert_on_spike,
-        alert_on_negative_sentiment=body.alert_on_negative_sentiment,
-        alert_on_new_outlet=body.alert_on_new_outlet,
-        alert_on_llm_visibility_change=body.alert_on_llm_visibility_change,
-        alert_webhook_url=body.alert_webhook_url,
-        run_first_refresh=True,
-    )
-    return {"success": True, "data": row}
+        cost=MENTION_OP_CREDIT_COST["track"],
+        operation_type="mention_monitoring.track",
+        debit=debit_credits, refund=refund_credits,
+    ) as paid:
+        row = await svc.create(
+            api_key_id=ctx.api_key_id,
+            user_id=ctx.user_id,
+            workspace_id=ctx.workspace_id,
+            subject_type=body.subject_type,
+            subject_label=body.subject_label,
+            product_id=None,
+            brand_name=body.brand_name or (body.subject_label if body.subject_type == "brand" else None),
+            aliases=body.aliases,
+            auto_expand_aliases=body.auto_expand_aliases,
+            sources_enabled=body.sources_enabled,
+            source_config=body.source_config,
+            language_codes=body.language_codes,
+            country_codes=body.country_codes,
+            refresh_interval_hours=body.refresh_interval_hours,
+            recency_days=body.recency_days,
+            homepage_domain=body.homepage_domain,
+            alert_channels=body.alert_channels,
+            alert_on_spike=body.alert_on_spike,
+            alert_on_negative_sentiment=body.alert_on_negative_sentiment,
+            alert_on_new_outlet=body.alert_on_new_outlet,
+            alert_on_llm_visibility_change=body.alert_on_llm_visibility_change,
+            alert_webhook_url=body.alert_webhook_url,
+            run_first_refresh=True,
+        )
+        # Refund a first sweep that produced nothing usable — same rule the job-research
+        # door applies (audit #217 H15).
+        if (row.get("first_refresh") or {}).get("error"):
+            paid.refund("first refresh errored")
+    return {"success": True, "data": row, "credits_debited": paid.charged}
 
 
 @router.get("")
@@ -542,6 +559,9 @@ async def get_opportunities(
             days=body.days,
             limit_per_type=body.limit_per_type,
             use_llm_summary=body.use_llm_summary,
+            # `_check_owner` above already bound this to the partner key; passing the
+            # resolved user makes the service able to check it too (#21 M8-4).
+            caller_user_id=ctx.user_id,
         )
     except Exception:
         refund_credits(user_id=ctx.user_id or "", amount=cost,

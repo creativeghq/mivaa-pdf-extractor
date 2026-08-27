@@ -48,6 +48,17 @@ from app.services.integrations.mention_cost_logger import (
 )
 from app.services.utilities.prompt_registry import load_prompt, render
 
+from app.utils.exceptions import TenancyViolation
+
+
+class SubjectLoadFailed(RuntimeError):
+    """A read that backs an opportunity run failed.
+
+    A distinct type so `generate` can tell "this subject has no mentions" from "we could
+    not find out". Both used to produce an empty, confident-looking result on a paid
+    run — the silent-zero shape, and the run is not retried.
+    """
+
 logger = logging.getLogger(__name__)
 
 
@@ -148,6 +159,20 @@ class MentionOpportunityService:
         limit_per_type: int = 5,
         use_llm_summary: bool = False,
         attribution: Optional[CostAttribution] = None,
+        # Who is asking (#21 M8-4). Required in persisted mode. Before this the service
+        # took no caller identity AT ALL, so the tenancy check could not be made here
+        # even in principle: `tracked_mentions`, `mention_history` and the AI-overview
+        # history were loaded by `tracked_mention_id` alone, and the
+        # `mention_ai_overview_checks` row was then written using the workspace_id and
+        # user_id copied OUT of that unscoped subject row — so a caller supplying
+        # another tenant's id would read their data and bill the paid external calls to
+        # the victim's workspace.
+        #
+        # All four callers authorize today; this is the invariant-1 backstop, at the
+        # layer that actually spends the money. `caller_is_admin` is explicit rather
+        # than re-derived here, because the routes have already paid for that lookup.
+        caller_user_id: Optional[str] = None,
+        caller_is_admin: bool = False,
     ) -> Dict[str, Any]:
         """
         Generate opportunities for a tracked subject.
@@ -215,14 +240,46 @@ class MentionOpportunityService:
                     "errors": {"subject": "tracked_mention_id required when subject_override not provided"},
                 }
             # Load subject + recent mentions
-            subject = self._load_subject(tracked_mention_id)
+            if not caller_user_id and not caller_is_admin:
+                # Refuse rather than default to trusting the id. A service that accepts
+                # "no caller" silently is one careless call site away from being the
+                # cross-tenant read again.
+                raise TenancyViolation(
+                    "caller_user_id is required when generating for a persisted "
+                    "tracked_mention_id"
+                )
+            try:
+                subject = self._load_subject(tracked_mention_id)
+            except SubjectLoadFailed as e:
+                # Distinct from "not found" so a caller — and the refund logic in
+                # `metered_door` — can tell a real answer from a failed lookup.
+                return {
+                    "tracked_mention_id": tracked_mention_id,
+                    "opportunities": [],
+                    "errors": {"subject": "subject_lookup_failed", "detail": str(e)},
+                }
+            if subject and not caller_is_admin:
+                if str(subject.get("user_id")) != str(caller_user_id):
+                    # Reported as not-found, never as forbidden: a distinguishable
+                    # "exists but not yours" turns the id into an enumeration oracle.
+                    raise TenancyViolation(
+                        f"caller {caller_user_id} is not the owner of tracked_mention "
+                        f"{tracked_mention_id}"
+                    )
             if not subject:
                 return {
                     "tracked_mention_id": tracked_mention_id,
                     "opportunities": [],
                     "errors": {"subject": "not found"},
                 }
-            mentions = self._load_mentions(tracked_mention_id, days=days)
+            try:
+                mentions = self._load_mentions(tracked_mention_id, days=days)
+            except SubjectLoadFailed as e:
+                return {
+                    "tracked_mention_id": tracked_mention_id,
+                    "opportunities": [],
+                    "errors": {"mentions": "mention_lookup_failed", "detail": str(e)},
+                }
 
         # If caller didn't pre-build attribution, derive it from the subject row
         # so cost logging still works.
@@ -310,6 +367,7 @@ class MentionOpportunityService:
                     types_wanted=serp_types,
                     limit=limit_per_type,
                     attribution=attribution,
+                    errors=errors,
                 )
                 for t, ops in serp_ops.items():
                     opportunities.extend(ops)
@@ -362,8 +420,12 @@ class MentionOpportunityService:
             )
             return r.data if r else None
         except Exception as e:
+            # Raised, not flattened to None (#21 M8-5). None here meant "no such
+            # subject", and a transient DB error was reported to the caller as
+            # `{"subject": "not found"}` — on a PAID run that will not be retried.
+            # `generate` turns this into an explicit `subject_lookup_failed` marker.
             logger.warning(f"opportunity: subject load failed: {e}")
-            return None
+            raise SubjectLoadFailed(str(e)[:200]) from e
 
     def _load_mentions(self, tracked_mention_id: str, *, days: int) -> List[Dict[str, Any]]:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -382,7 +444,10 @@ class MentionOpportunityService:
             )
             return r.data or []
         except Exception as e:
+            # Same reason as `_load_subject`: [] meant "this brand has no coverage",
+            # which is a finding, and a failed read is not one (#21 M8-5).
             logger.warning(f"opportunity: mentions load failed: {e}")
+            raise SubjectLoadFailed(str(e)[:200]) from e
             return []
 
     # ───── 1. Trending topics (n-gram analysis on titles + excerpts) ─────
@@ -940,6 +1005,11 @@ class MentionOpportunityService:
         types_wanted: set,  # subset of {pao_question, ai_overview, featured_snippet, related_search, competitor_ranking}
         limit: int,
         attribution: Optional[CostAttribution] = None,
+        # The caller's error dict, so a lost AI-Overview observation can be reported in
+        # the response rather than only in the log (#21 M8-5). Passed rather than
+        # returned because the return value is typed as opportunities and adding an
+        # error key to it would make every consumer handle a value that is not one.
+        errors: Optional[Dict[str, str]] = None,
     ) -> Dict[str, List[Opportunity]]:
         """One DataForSEO SERP call → up to 5 different opportunity types extracted
         from the response. Same fallback-seed chain as keyword opportunities.
@@ -1043,9 +1113,13 @@ class MentionOpportunityService:
             # RECORD first, then build. The opportunity is advice and may be filtered out
             # by the caller; the observation is a fact about a moment in time and is the
             # only thing that can ever answer "were we in the AI Overview last month".
-            self._record_ai_overview_check(
+            ai_overview_persist_error = self._record_ai_overview_check(
                 blocks["ai_overview"], subject, used_seed, seed_was_fallback,
             )
+            if ai_overview_persist_error and errors is not None:
+                errors["ai_overview_history"] = (
+                    f"observation not recorded: {ai_overview_persist_error}"
+                )
             out["ai_overview"] = self._build_ai_overview_opps(
                 blocks["ai_overview"], subject, used_seed, seed_was_fallback,
             )
@@ -1323,16 +1397,23 @@ class MentionOpportunityService:
     def _record_ai_overview_check(
         self, ai_overview: Optional[Dict[str, Any]],
         subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
-    ) -> None:
-        """Persist one AI Overview observation (issue #349 A6).
+    ) -> Optional[str]:
+        """Persist one AI Overview observation (#349 A6). Returns an error, or None.
 
-        Best-effort: a failed write must not cost the caller their SERP call, which has
-        already been made and billed. Logged rather than swallowed, so a broken insert is
-        visible as something other than "the AI Overview never appears".
+        Best-effort about RAISING: a failed write must not cost the caller their SERP
+        call, which has already been made and billed.
+
+        Not best-effort about REPORTING (#21 M8-5). This docstring already claimed a
+        broken insert was "visible as something other than 'the AI Overview never
+        appears'" — it was not. It logged at WARNING and returned None, so every caller
+        saw success, and `ai_overview_history` later showed the check as simply absent.
+        An observation is the only thing that can ever answer "were we in the AI Overview
+        last month"; a missing one is indistinguishable from a month we were not there.
+        The error now travels back so `generate` can put it in `errors`.
         """
         tracked_mention_id = subject.get("id")
         if not tracked_mention_id:
-            return  # stateless/override subject — there is no row to hang history on
+            return None  # stateless/override subject — no row to hang history on
 
         row: Dict[str, Any] = {
             "tracked_mention_id": tracked_mention_id,
@@ -1375,7 +1456,11 @@ class MentionOpportunityService:
         try:
             self.supabase.client.table("mention_ai_overview_checks").insert(row).execute()
         except Exception as e:
-            logger.warning(f"ai_overview check persist failed for {tracked_mention_id}: {e}")
+            # ERROR, not WARNING: this is a lost observation on a run that has already
+            # been billed, and it cannot be reconstructed later.
+            logger.error(f"ai_overview check persist failed for {tracked_mention_id}: {e}")
+            return str(e)[:200]
+        return None
 
     def ai_overview_history(
         self, tracked_mention_id: str, *, days: int = 90, limit: int = 500,

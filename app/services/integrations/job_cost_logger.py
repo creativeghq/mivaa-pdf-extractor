@@ -167,6 +167,8 @@ def log_haiku_call(
 JOB_OP_CREDIT_COST: Dict[str, int] = {
     "refresh": 5,
     "digest_preview": 1,
+    # One Haiku expansion call (#21 M8-3). The route ran it for free until then.
+    "regenerate_keywords": 1,
 }
 
 

@@ -921,6 +921,10 @@ async def get_product_opportunities(
             days=body.days,
             limit_per_type=body.limit_per_type,
             use_llm_summary=body.use_llm_summary,
+            # Re-stated to the service so the tenancy check exists at the layer that
+            # spends the money too (#21 M8-4), not only at the route.
+            caller_user_id=current_user_id(user),
+            caller_is_admin=_is_admin(sb, current_user_id(user)),
         )
         if not (out or {}).get("opportunities"):
             paid.refund("generated no opportunities")
@@ -959,6 +963,8 @@ async def get_tracked_opportunities(
             days=body.days,
             limit_per_type=body.limit_per_type,
             use_llm_summary=body.use_llm_summary,
+            caller_user_id=current_user_id(user),
+            caller_is_admin=_is_admin(sb, current_user_id(user)),
         )
         if not (out or {}).get("opportunities"):
             paid.refund("generated no opportunities")

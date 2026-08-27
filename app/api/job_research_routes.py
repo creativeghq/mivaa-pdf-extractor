@@ -32,12 +32,13 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.dependencies import get_current_user, get_workspace_context
+from app.dependencies import get_current_user, get_workspace_context, require_admin
 from app.middleware.jwt_auth import User, WorkspaceContext
 from app.modules.job_research_notifications.service import get_job_digest_dispatcher
 from app.services.integrations.job_research_service import get_job_research_service
 from app.services.integrations import job_cost_logger as costs
 from app.services.integrations.cron_billing import charge_cron
+from app.utils.paid_door import metered_door
 from app.services.integrations.job_sites_kb_sync import sync_one_site_type as _sync_kb
 
 logger = logging.getLogger(__name__)
@@ -157,16 +158,40 @@ async def create_tracked_job(
     user: User = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
-    svc = get_job_research_service()
-    try:
-        row = await svc.create(
-            owner_user_id=str(user.get("sub")),
-            workspace_id=str(workspace.id) if workspace else None,
-            **body.model_dump(exclude_none=True),
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"tracked_job": row}
+    """Create a tracked job search. Debits the first refresh BEFORE running it.
+
+    `run_first_refresh` defaults to True, so this door triggers paid discovery on the
+    usual path and was charging nothing for it (#21 M8-3). Its partner-key twin in
+    `job_tracking_routes` has metered this correctly all along — the internal route is
+    the copy that never got it.
+    """
+    debit_amount = costs.JOB_OP_CREDIT_COST.get("refresh", 5) if body.run_first_refresh else 0
+    async with metered_door(
+        user_id=str(user.get("sub")),
+        workspace_id=str(workspace.id) if workspace else None,
+        cost=debit_amount,
+        operation_type="job_research.refresh",
+        debit=costs.debit_credits, refund=costs.refund_credits,
+    ) as paid:
+        svc = get_job_research_service()
+        try:
+            row = await svc.create(
+                owner_user_id=str(user.get("sub")),
+                workspace_id=str(workspace.id) if workspace else None,
+                **body.model_dump(exclude_none=True),
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        # Refund a true no-op, matching the partner route (audit #217 H15): an explicit
+        # error, or candidates were found and the classifier persisted none of them.
+        fr = (row.get("first_refresh") or {})
+        if debit_amount and (
+            fr.get("error")
+            or (fr.get("candidates_after_exclusions", 0) > 0 and fr.get("persisted", 0) == 0)
+        ):
+            paid.refund("first refresh produced nothing")
+    return {"tracked_job": row, "credits_debited": paid.charged}
 
 
 @router.post("/track/{tracked_job_id}/regenerate-keywords")
@@ -174,13 +199,29 @@ async def regenerate_keywords(
     tracked_job_id: str,
     user: User = Depends(get_current_user),
 ):
-    """Re-run Haiku keyword expansion. Returns the new expanded list + the rejected suggestions."""
+    """Re-run Haiku keyword expansion. Returns the new expanded list + the rejected suggestions.
+
+    Metered (#21 M8-3): this makes a model call, and made it for free.
+    """
     svc = get_job_research_service()
-    try:
-        result = await svc.regenerate_keywords(tracked_job_id, owner_user_id=str(user.get("sub")))
-    except RuntimeError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return result
+    owner = svc.get(tracked_job_id, owner_user_id=str(user.get("sub")))
+    if not owner:
+        # Checked before the debit so a caller is never charged for someone else's id.
+        raise HTTPException(status_code=404, detail="Not found")
+    async with metered_door(
+        user_id=str(user.get("sub")),
+        workspace_id=owner.get("workspace_id"),
+        cost=costs.JOB_OP_CREDIT_COST.get("regenerate_keywords", 1),
+        operation_type="job_research.regenerate_keywords",
+        debit=costs.debit_credits, refund=costs.refund_credits,
+    ) as paid:
+        try:
+            result = await svc.regenerate_keywords(tracked_job_id, owner_user_id=str(user.get("sub")))
+        except RuntimeError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        if not (result or {}).get("expanded"):
+            paid.refund("keyword expansion returned nothing")
+    return {**result, "credits_debited": paid.charged}
 
 
 @router.get("/track")
@@ -363,9 +404,11 @@ async def remove_exclusion(
     exclusion_id: str,
     user: User = Depends(get_current_user),
 ):
-    # RLS enforces ownership
+    # Ownership is checked in the service, via the parent tracked_job (#21 M8-1). The
+    # comment that was here said "RLS enforces ownership"; there is no connection in
+    # this process for a row-level policy to apply to.
     svc = get_job_research_service()
-    ok = svc.remove_exclusion(exclusion_id)
+    ok = svc.remove_exclusion(exclusion_id, owner_user_id=str(user.get("sub")))
     if not ok:
         raise HTTPException(status_code=404, detail="Not found")
     return {"ok": True}
@@ -384,6 +427,10 @@ async def mark_listing(
         row = svc.mark_listing(listing_id, action=body.action, user_id=str(user.get("sub")), notes=body.notes)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except PermissionError:
+        # 404, not 403: a listing that belongs to someone else must be indistinguishable
+        # from one that does not exist, or the id becomes an enumeration oracle.
+        raise HTTPException(status_code=404, detail="Not found")
     return {"listing": row}
 
 
@@ -400,7 +447,10 @@ async def correct_match(
         raise HTTPException(status_code=400, detail="corrected_relevance must be one of match|tangential|mismatch")
     svc = get_job_research_service()
     try:
-        # Verify ownership via parent tracked_job; svc already RLS-bounded
+        # Verify ownership via the parent tracked_job. (The tail of this comment used
+        # to read "svc already RLS-bounded" — it is not: this process connects as
+        # service role. The `get_readable` check below is the real gate, and unlike its
+        # three siblings this route always had one.)
         listing = (
             svc.sb.table("job_listings")
             .select("id, tracked_job_id, relevance, title, company")
@@ -415,7 +465,8 @@ async def correct_match(
         # Confirm tracked_job is readable by the user (own job OR via owned api_key)
         owner_check = svc.get_readable(listing_row["tracked_job_id"], str(user.get("sub")))
         if not owner_check:
-            raise HTTPException(status_code=403, detail="not your listing")
+            # 404, not 403 (invariant 1): "not your listing" confirms the id exists.
+            raise HTTPException(status_code=404, detail="listing not found")
 
         svc.sb.table("job_match_corrections").insert({
             "tracked_job_id": listing_row["tracked_job_id"],
@@ -464,8 +515,20 @@ def _verify_cron_secret(x_cron_secret: Optional[str] = Header(default=None)) -> 
 
 # ─── Sites configuration (operator-curated list of job-board sites) ──────
 # These endpoints back the hidden admin page at /admin/knowledge-base/job-sources.
-# RLS on `job_research_sites` enforces admin-only writes; reads are open to any
-# authenticated user.
+#
+# The write routes take `require_admin` (#21 M8-1). They used to take only
+# `get_current_user` under a comment claiming "RLS on `job_research_sites` enforces
+# admin-only writes". The policy is real and well-formed — and void here, because MIVAA
+# connects as service role, which bypasses row-level security entirely. So any
+# authenticated user could add, alter or delete rows in a PLATFORM-WIDE operator-curated
+# list that feeds scheduled discovery defaults for everyone.
+#
+# The tell was in the error messages: both 404s said "no permission (admin-only writes)"
+# — written by someone who believed a check was happening one layer down. "RLS enforces
+# X" is never a valid justification in this codebase; there is no connection here for it
+# to apply to.
+#
+# Reads stay open to any authenticated user: the list is operator-curated, not secret.
 
 @router.get("/sites")
 async def list_job_sites(
@@ -482,7 +545,7 @@ async def list_job_sites(
 @router.post("/sites")
 async def create_job_site(
     body: JobSiteCreateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     if body.site_type not in ("perplexity_domain", "rss_feed_default", "careers_page_default"):
         raise HTTPException(status_code=400, detail="invalid site_type")
@@ -517,11 +580,17 @@ class JobSitesBulkCreateRequest(BaseModel):
 
 @router.post("/sites/_resync")
 async def resync_job_sites_kb_doc(
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """v0.5.1: trigger the KB doc resync. Called by the frontend after it does
     a direct-Supabase CRUD on `job_research_sites`. Cheap (~50ms — one DB
-    SELECT + one kb_docs UPDATE). Returns the sections that were touched."""
+    SELECT + one kb_docs UPDATE). Returns the sections that were touched.
+
+    Admin-only for the same reason as its siblings (#21 M8-1): it rewrites a
+    PLATFORM-WIDE KB document. The direct-Supabase CRUD it follows runs in the browser
+    under the user's own key, where the admin-write policy genuinely applies — so the
+    only legitimate caller of this is already an admin.
+    """
     try:
         from app.services.integrations.job_sites_kb_sync import sync_all
         result = sync_all()
@@ -534,7 +603,7 @@ async def resync_job_sites_kb_doc(
 @router.post("/sites/bulk")
 async def create_job_sites_bulk(
     body: JobSitesBulkCreateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     """v0.5: bulk-insert multiple sites at once into the platform-wide default list.
     Skips entries that already exist (idempotent). Syncs the KB doc ONCE at the
@@ -599,7 +668,7 @@ async def create_job_sites_bulk(
 async def update_job_site(
     site_id: str,
     body: JobSiteUpdateRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     patch = body.model_dump(exclude_none=True)
     if not patch:
@@ -610,7 +679,7 @@ async def update_job_site(
     res = svc.sb.table("job_research_sites").update(patch).eq("id", site_id).execute()
     row = (res.data or [None])[0]
     if not row:
-        raise HTTPException(status_code=404, detail="site not found or no permission (admin-only writes)")
+        raise HTTPException(status_code=404, detail="site not found")
     if row.get("site_type"):
         _sync_kb(row["site_type"])
     return {"site": row}
@@ -619,7 +688,7 @@ async def update_job_site(
 @router.delete("/sites/{site_id}")
 async def delete_job_site(
     site_id: str,
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_admin),
 ):
     svc = get_job_research_service()
     # Read first so we know which site_type to re-sync after deletion
@@ -627,7 +696,7 @@ async def delete_job_site(
     pre_row = (pre.data if pre else None) or {}
     res = svc.sb.table("job_research_sites").delete().eq("id", site_id).execute()
     if not (res.data or []):
-        raise HTTPException(status_code=404, detail="site not found or no permission (admin-only writes)")
+        raise HTTPException(status_code=404, detail="site not found")
     if pre_row.get("site_type"):
         _sync_kb(pre_row["site_type"])
     return {"ok": True}
@@ -658,14 +727,36 @@ async def cron_refresh(
             ores = svc.sb.table("tracked_jobs").select("id, workspace_id, user_id").in_("id", ids).execute()
             owner_by_id = {o["id"]: o for o in (ores.data or [])}
         except Exception as e:
-            logger.warning(f"job-cron: owner lookup failed (metering fails open): {e}")
+            # Fail CLOSED on the cron path (#21 M8-2). This used to log
+            # "metering fails open" and carry on: every owner would then be {}, every
+            # charge would take the no-payer branch, and the whole due batch would run
+            # as free provider spend. Failing open is a defensible default for a USER
+            # request, where blocking a paying customer is the greater harm; cron is the
+            # highest-volume caller here, unattended, and nobody is waiting on it — so a
+            # billing-infrastructure outage must stop the spend, not silently absorb it.
+            logger.error(f"job-cron: owner lookup failed — refusing to refresh unmetered: {e}")
+            return {
+                "error": "owner_lookup_failed",
+                "due": len(rows),
+                "refreshed": 0,
+                "detail": str(e)[:200],
+            }
 
     outcomes: List[Dict[str, Any]] = []
     skipped_unpaid = 0
+    skipped_no_payer = 0
     for r in rows:
         owner = owner_by_id.get(r["id"], {})
+        if not owner.get("workspace_id") and not owner.get("user_id"):
+            # The lookup SUCCEEDED and this subject still resolves to nobody. On a user
+            # request charge_cron proceeds and records `no_payer`; on the unattended
+            # loop that is a standing invitation to spend forever on a row nobody owns.
+            skipped_no_payer += 1
+            outcomes.append({"tracked_job_id": r["id"], "status": "skipped_no_payer"})
+            continue
         # Meter the owner BEFORE the paid refresh. Registered cron_key
-        # 'job-research-refresh' (3 cr); fails open, False only when out of credits.
+        # 'job-research-refresh' (3 cr). charge_cron fails CLOSED when the charge itself
+        # fails; the no-payer case it would otherwise wave through is handled above.
         if not charge_cron(
             svc.sb, "job-research-refresh",
             workspace_id=owner.get("workspace_id"), user_id=owner.get("user_id"),
@@ -686,7 +777,12 @@ async def cron_refresh(
             logger.warning(f"job-cron: refresh {r.get('id')} failed: {e}")
             outcomes.append({"tracked_job_id": r["id"], "error": str(e)[:200]})
 
-    return {"due": len(rows), "skipped_insufficient_credits": skipped_unpaid, "outcomes": outcomes}
+    return {
+        "due": len(rows),
+        "skipped_insufficient_credits": skipped_unpaid,
+        "skipped_no_payer": skipped_no_payer,
+        "outcomes": outcomes,
+    }
 
 
 @router.post("/cron-digest")

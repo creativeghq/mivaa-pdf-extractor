@@ -521,7 +521,20 @@ class JobResearchService:
     ) -> Dict[str, Any]:
         if action not in ("saved", "applied", "dismissed", "interested"):
             raise ValueError("Invalid action")
-        # RLS enforces ownership via the parent tracked_job
+
+        # Ownership is checked HERE, via the parent tracked_job (#21 M8-1). The comment
+        # this replaces said "RLS enforces ownership via the parent tracked_job". The
+        # policy exists and is correct; it is void on this connection, which is service
+        # role. Until now any authenticated user could mark, dismiss or annotate another
+        # user's listing by id.
+        parent = (
+            self.sb.table("job_listings")
+            .select("tracked_job_id").eq("id", listing_id).maybe_single().execute()
+        )
+        tracked_job_id = ((parent.data if parent else None) or {}).get("tracked_job_id")
+        if not tracked_job_id or not self.get(tracked_job_id, owner_user_id=user_id):
+            raise PermissionError("listing not found")
+
         res = (
             self.sb.table("job_listings")
             .update({
@@ -1489,7 +1502,28 @@ class JobResearchService:
             .execute().data or []
         )
 
-    def remove_exclusion(self, exclusion_id: str) -> bool:
+    def remove_exclusion(self, exclusion_id: str, *, owner_user_id: str) -> bool:
+        """Delete an exclusion the caller owns, via its parent tracked_job (#21 M8-1).
+
+        `owner_user_id` is keyword-only and has NO default on purpose. This took an id
+        alone under a route comment reading "RLS enforces ownership" — and MIVAA
+        connects as service role, which bypasses row-level security entirely, so any
+        authenticated user who knew an id could delete another user's exclusion. A
+        default of None would let the next caller reintroduce exactly that by omission;
+        this way the check cannot be skipped without editing the signature.
+        """
+        row = (
+            self.sb.table("job_excluded_urls")
+            .select("tracked_job_id").eq("id", exclusion_id).maybe_single().execute()
+        )
+        parent = (row.data if row else None) or {}
+        tracked_job_id = parent.get("tracked_job_id")
+        if not tracked_job_id:
+            return False
+        # 404 on a mismatch rather than 403 — a distinguishable "exists but not yours"
+        # is an id oracle (invariant 1).
+        if not self.get(tracked_job_id, owner_user_id=owner_user_id):
+            return False
         return bool(
             self.sb.table("job_excluded_urls").delete().eq("id", exclusion_id).execute().data
         )
