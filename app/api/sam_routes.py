@@ -558,10 +558,11 @@ async def generate_inpainting_prompt(request: GeneratePromptRequest, user: Dict[
     )
 
     from app.services.core.claude_helper import tracked_claude_call
+    from app.config import get_settings
     try:
         message = tracked_claude_call(
             task="sam_inpainting_prompt_generation",
-            model="claude-haiku-4-5",
+            model=get_settings().anthropic_model_classification,
             max_tokens=200,
             messages=[{"role": "user", "content": user_message}],
         )

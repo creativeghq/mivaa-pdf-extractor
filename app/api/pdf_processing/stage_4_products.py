@@ -293,10 +293,11 @@ async def _classify_product(
 
     try:
         from app.services.core.claude_tool_call import ToolCallNotReturned, call_with_tool
+        from app.config import get_settings
 
         call = await call_with_tool(
             task="product_classification",
-            model="claude-haiku-4-5",
+            model=get_settings().anthropic_model_classification,
             # 64 was enough for a bare JSON object; a tool call needs headroom for the
             # block itself, and truncating it produces the missing-tool_use error rather
             # than a short answer.

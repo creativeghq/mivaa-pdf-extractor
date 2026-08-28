@@ -236,11 +236,20 @@ class ImageProcessingService:
         from app.config import get_settings as _get_settings
 
         _cfg = _get_settings()
-        # Both "primary" and "validation" now point at the same Anthropic
-        # model — Stage 3 is single-tier
-        # (2026-05-01). The primary/validation parameters are kept for
+        # Both "primary" and "validation" point at the same Anthropic model — Stage 3
+        # is single-tier (2026-05-01). The primary/validation parameters are kept for
         # call-site compatibility but the values flow into telemetry only.
-        primary_model = primary_model or 'claude-opus-4-8'
+        #
+        # `primary_model` was the literal 'claude-opus-4-8' while `validation_model`
+        # read the setting, so the comment above was false the moment the setting moved:
+        # they were NOT the same model, and the one that classifies every image was
+        # pinned a generation back with no way to change it short of a deploy.
+        #
+        # This is the gate on the whole vision pipeline — an image classified
+        # DECORATIVE never reaches vision_analysis, never gets an understanding
+        # embedding, and nothing reports it as missing. A weaker model here is not a
+        # slightly worse answer, it is a silently absent product.
+        primary_model = primary_model or _cfg.anthropic_model_validation
         validation_model = validation_model or _cfg.anthropic_model_validation
 
         classification_start_time = time.time()
