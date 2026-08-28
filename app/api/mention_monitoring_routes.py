@@ -573,6 +573,24 @@ async def create_tracked_mention(
             status_code=400,
             detail="one of subject_label, product_id, brand_name is required",
         )
+    # `chk_tracked_mentions_subject` requires brand_name on a brand/keyword subject
+    # that carries no product_id. Without this the insert reaches Postgres, fails with
+    # a raw 23514, and the caller gets a 500 naming a constraint they cannot see —
+    # which is exactly what the website AI-visibility panel hit. The route validated a
+    # payload the table then rejected: an offered vocabulary wider than the enforced one.
+    if (
+        body.subject_type in ("brand", "keyword")
+        and not body.product_id
+        and not body.brand_name
+        and not body.subject_label
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"a {body.subject_type} subject needs brand_name (or a subject_label to "
+                "derive it from) — the database requires it for any subject without a product"
+            ),
+        )
     sb = get_supabase_client().client
     label = body.subject_label
     product_id = body.product_id
@@ -581,6 +599,11 @@ async def create_tracked_mention(
         product = _resolve_product(sb, product_id)
         label = product.get("name") or product_id
         brand = brand or _brand_of(product)
+    # A brand/keyword subject with no product must carry brand_name. Deriving it from
+    # the label is what the caller meant in every case: for these subject types the
+    # label IS the brand or the phrase being tracked.
+    if not product_id and body.subject_type in ("brand", "keyword") and not brand:
+        brand = label
 
     svc = get_tracked_mentions_service()
     row = await svc.create(
