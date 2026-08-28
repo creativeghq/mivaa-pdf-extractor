@@ -404,8 +404,13 @@ class Settings(BaseSettings):
         default="claude-haiku-4-5",
         env="ANTHROPIC_MODEL_CLASSIFICATION"
     )
+    # Vision analysis, product discovery, stage-4 validation and the document
+    # classifier all read this. Moved off `claude-opus-4-8` for issue #393 — same
+    # $5/$25 pricing, current generation. Safe only because
+    # `claude_helper._MODELS_WITH_TEMPERATURE` is now an allowlist: Opus 5 rejects
+    # sampling params with a 400, and the old denylist would have sent one.
     anthropic_model_validation: str = Field(
-        default="claude-opus-4-8",
+        default="claude-opus-5",
         env="ANTHROPIC_MODEL_VALIDATION"
     )
     anthropic_model_enrichment: str = Field(

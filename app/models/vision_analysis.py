@@ -156,6 +156,18 @@ VISION_ANALYSIS_TOOL: Dict[str, Any] = {
         "for an attribute the image doesn't actually show."
     ),
     "input_schema": VisionAnalysis.anthropic_tool_input_schema(),
+    # Grammar-constrain the emitted JSON against `input_schema`.
+    #
+    # `tool_choice={'type':'tool','name':...}` already forces the model to CALL this
+    # tool; `strict` is what makes the arguments it calls with provably conform. The
+    # two are not the same guarantee, and the gap between them is where a
+    # well-shaped-but-wrong payload used to slip through — `_validate_vision_analysis`
+    # checks shape, and shape is exactly what a plausible hallucination gets right.
+    #
+    # Free to turn on here: `VisionAnalysis` sets `extra="forbid"`, so
+    # `anthropic_tool_input_schema()` already emits `additionalProperties: false`
+    # plus `required`, which is precisely what strict mode demands.
+    "strict": True,
 }
 
 

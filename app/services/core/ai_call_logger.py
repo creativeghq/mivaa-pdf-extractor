@@ -421,17 +421,32 @@ class AICallLogger:
             else:
                 unbilled_reason = self._record_missing_principal(task, model, cost)
 
-            # Extract response text. content[0] may be a tool_use block whose
-            # .text is None (forced tool_choice paths) — fall back to the tool
-            # input / a str repr so the response_text[:500] slice below never
-            # hits None[:500] ('NoneType' object is not subscriptable).
+            # Extract response text. Blocks are searched in order of how much they
+            # tell an operator reading the log, NOT by position:
+            #
+            #   - content[0] may be a `tool_use` block whose .text is None (forced
+            #     tool_choice paths) — fall back to the tool input so the
+            #     response_text[:500] slice below never hits None[:500]
+            #     ('NoneType' object is not subscriptable).
+            #   - With adaptive thinking enabled, content[0] is a `thinking` block,
+            #     whose .text AND .input are both None — and whose thinking text is
+            #     empty anyway under the default display:"omitted". Reading position 0
+            #     would log "" for every such call and quietly empty this column out
+            #     across the vision path (#393 Step 2).
             content = getattr(response, 'content', None)
             if content:
-                first = content[0]
-                response_text = getattr(first, 'text', None)
-                if response_text is None:
-                    tool_input = getattr(first, 'input', None)
-                    response_text = json.dumps(tool_input) if tool_input is not None else ""
+                response_text = ""
+                for block in content:
+                    if getattr(block, 'type', None) == 'thinking':
+                        continue
+                    text = getattr(block, 'text', None)
+                    if text:
+                        response_text = text
+                        break
+                    tool_input = getattr(block, 'input', None)
+                    if tool_input is not None:
+                        response_text = json.dumps(tool_input)
+                        break
             else:
                 response_text = str(response)
 

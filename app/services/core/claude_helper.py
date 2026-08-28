@@ -92,14 +92,34 @@ _DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
 # Models where the Anthropic API now rejects the `temperature` parameter
 # (status: deprecated → invalid_request_error 400). Callers can keep passing
 # temperature; we silently drop it for these models so the call still succeeds.
-_MODELS_WITHOUT_TEMPERATURE = (
-    "claude-opus-4-8",
-    "claude-opus-4-6",
+#: Models that ACCEPT sampling parameters (`temperature` / `top_p` / `top_k`).
+#:
+#: This is an ALLOWLIST on purpose. It used to be a denylist
+#: (`_MODELS_WITHOUT_TEMPERATURE`) naming only `claude-opus-4-8` and
+#: `claude-opus-4-6`, so every model absent from it was sent `temperature` —
+#: including `claude-opus-5`, `claude-opus-4-7`, `claude-sonnet-5` and
+#: `claude-fable-5`, which REMOVED sampling params and reject them with a hard
+#: 400.
+#:
+#: A denylist fails OPEN here, and `_build_payload` defaults temperature to 0.0
+#: so nobody has to opt in: pointing `anthropic_model_validation` at
+#: `claude-opus-5` would have 400'd every call through this helper at once —
+#: vision, product discovery, stage 4, the document classifier, chunk-type
+#: classification, ~20 sites — and none of them would have looked wrong until
+#: they ran.
+#:
+#: Inverted, an unknown model runs at the provider's default sampling. That is a
+#: difference nobody will notice, which is the correct way for this to fail.
+_MODELS_WITH_TEMPERATURE = (
+    "claude-haiku-4-5",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4-6",
+    "claude-3",
 )
 
 
 def _model_supports_temperature(model: str) -> bool:
-    return not any(model.startswith(m) for m in _MODELS_WITHOUT_TEMPERATURE)
+    return any(model.startswith(m) for m in _MODELS_WITH_TEMPERATURE)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
