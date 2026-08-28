@@ -1238,9 +1238,18 @@ class DataForSEOUnifiedClient:
         self, *, url: str, for_mobile: bool = False, categories: Optional[List[str]] = None,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
+        # `best_practices` with an UNDERSCORE. DataForSEO rejects the hyphenated form
+        # outright — `40501: Invalid Field: 'categories:best-practices'` — and because the
+        # whole task fails, every OTHER category is lost with it. That is why perf_score,
+        # a11y_score and bp_score were NULL on every stored audit while seo_score fell back
+        # to the on-page score: one character silently disabled Lighthouse entirely.
+        #
+        # The ASYMMETRY is the trap: the request wants `best_practices`, the response keys
+        # the same category `best-practices`. Readers of the result are therefore correct to
+        # use the hyphen, and "fixing" them to match this line would break them.
         body = [{
             "url": url, "for_mobile": for_mobile,
-            "categories": categories or ["performance", "accessibility", "best-practices", "seo"],
+            "categories": categories or ["performance", "accessibility", "best_practices", "seo"],
         }]
         return await self._call("/on_page/lighthouse/live/json", body,
                                 attribution=attribution, log_kind="labs",
