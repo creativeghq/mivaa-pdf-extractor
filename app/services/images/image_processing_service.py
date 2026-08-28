@@ -20,6 +20,7 @@ import logging
 from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.vecs_service import VecsService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+from app.models.ocr_context import build_ocr_context_block
 from app.services.images.vision_provider import VisionProvider
 from app.services.pdf.pdf_processor import PDFProcessor
 # PageConverter removed - using simple PDF page numbers instead
@@ -1140,10 +1141,47 @@ class ImageProcessingService:
         except Exception as e:
             logger.debug(f"   _stamp_vision_analysis_outcome({image_id}) failed (non-fatal): {e}")
 
+    def _ocr_context_for_vision(
+        self,
+        *,
+        vision_input_path: Optional[str],
+        image_id: str,
+        job_id: Optional[str] = None,
+    ) -> str:
+        """Fetch this crop's OCR text and render it as a fenced DATA block.
+
+        Never raises: OCR is supplementary to the vision read, so a broken OCR path
+        must degrade the analysis, not abort it. Every exit still tells the model
+        WHICH outcome occurred — see `build_ocr_context_block`.
+        """
+        if not vision_input_path or not os.path.exists(vision_input_path):
+            return build_ocr_context_block(
+                None, ocr_failed=False, skipped_reason="local_path_unavailable"
+            )
+        try:
+            from app.services.pdf.ocr_service import get_ocr_service
+            results = get_ocr_service().extract_text_from_image(
+                vision_input_path,
+                caller="vision_analysis_grounding",
+                image_id=image_id,
+                job_id=job_id,
+            )
+            result = results[0] if results else None
+            if result is None or result.method == "paddleocr_failed":
+                return build_ocr_context_block(None, ocr_failed=True)
+            return build_ocr_context_block(result.text, ocr_failed=False)
+        except Exception as e:
+            logger.warning(
+                f"   ⚠️ OCR grounding unavailable for {image_id} "
+                f"(vision proceeds without it): {e}"
+            )
+            return build_ocr_context_block(None, ocr_failed=True)
+
     async def _try_claude_material_analysis(
         self,
         image_base64: str,
         image_id: str,
+        vision_input_path: Optional[str] = None,
         product_id: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -1190,6 +1228,16 @@ class ImageProcessingService:
             except Exception:
                 pass
 
+            # Ground the read in PaddleOCR's transcription of this same crop
+            # (issue #393 Step 1). Memoised in the OCR service, so the Phase 3 pass
+            # that writes `document_images.ocr_*` later in Stage 3 reuses this result
+            # rather than OCR'ing the file a second time.
+            ocr_block = self._ocr_context_for_vision(
+                vision_input_path=vision_input_path,
+                image_id=image_id,
+                job_id=job_id,
+            )
+
             content = [
                 {
                     "type": "image",
@@ -1199,6 +1247,7 @@ class ImageProcessingService:
                         "data": image_base64,
                     },
                 },
+                {"type": "text", "text": ocr_block},
                 {"type": "text", "text": self.material_analyzer_prompt},
             ]
 
@@ -1303,6 +1352,7 @@ class ImageProcessingService:
         self,
         image_base64: str,
         image_id: str,
+        vision_input_path: Optional[str] = None,  # local crop, for OCR grounding (#393)
         product_id: Optional[str] = None,  # FK for ai_usage_logs cost attribution
         job_id: Optional[str] = None,
     ) -> Tuple[Optional[Dict[str, Any]], str]:
@@ -1340,6 +1390,7 @@ class ImageProcessingService:
         claude_result = await self._try_claude_material_analysis(
             image_base64=image_base64,
             image_id=image_id,
+            vision_input_path=vision_input_path,
             product_id=product_id,
             job_id=job_id,
         )
@@ -1523,9 +1574,20 @@ class ImageProcessingService:
                 # understanding branch is skipped and we lose the 7th vector.
                 # The (vision_analysis, source) tuple lets us track which
                 # provider produced the result for job-level stats.
+                # The path is passed alongside the bytes so the vision call can ground
+                # itself in this same crop's OCR text (#393 Step 1). Whichever file
+                # fed `vision_base64_raw` is the one OCR'd — the padded sidecar when
+                # there is one, the tight crop otherwise — so the transcription always
+                # describes the pixels the model is looking at.
+                ocr_source_path = (
+                    vision_input_path
+                    if vision_input_path and os.path.exists(vision_input_path)
+                    else image_path
+                )
                 vision_analysis, vision_analysis_source = await self._analyze_material_image(
                     image_base64=vision_base64_raw,
                     image_id=image_id,
+                    vision_input_path=ocr_source_path,
                     product_id=product_id,
                     job_id=job_id,
                 )

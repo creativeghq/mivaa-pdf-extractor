@@ -181,6 +181,22 @@ class OCRService:
         self.preprocessor = ImagePreprocessor()
         self._initialized = False
 
+        # Per-file memo of OCR results, so one image is OCR'd ONCE per job even
+        # though two stages now want its text (issue #393 Step 1).
+        #
+        # `vision_analysis` reads it before the Claude call to ground `detected_text`;
+        # `_run_phase_3_ocr_for_product` reads it afterwards to write
+        # `document_images.ocr_*`. Without the memo that is two PaddleOCR passes per
+        # image — which is exactly the regression Stage 3 already fought once: an
+        # extraction-phase OCR pass duplicating the Phase 3 one cost ~7-15 min per
+        # product and pushed job 72031fb0 past its 1200s budget
+        # (`enable_multimodal=False` in stage_3_images.py is the scar).
+        #
+        # Keyed on identity AND content (mtime, size) so a regenerated crop at the
+        # same path is never served a stale read. Only path inputs are memoised;
+        # ndarray/PIL callers are ad-hoc and not worth hashing.
+        self._result_cache: Dict[str, List[OCRResult]] = {}
+
         # Use the warmed-up PaddleOCR manager from the registry. The orchestrator
         # warms + registers it before any product processing; lazy-create as a
         # fallback for ad-hoc callers outside a job (get_paddleocr_manager builds
@@ -324,16 +340,57 @@ class OCRService:
             Callers MUST check `result.method == 'paddleocr_failed'` to distinguish
             real failure from "no text on crop" — both have empty text.
         """
+        cache_key = self._cache_key(image_input, use_preprocessing)
+        if cache_key is not None:
+            cached = self._result_cache.get(cache_key)
+            if cached is not None:
+                logger.debug(f"OCR cache hit for {cache_key} (caller={caller})")
+                return cached
+
         image = self._load_image(image_input)
 
         if use_preprocessing or (use_preprocessing is None and self.config.preprocessing_enabled):
             image = self.preprocessor.enhance_image(image)
             image = self.preprocessor.preprocess_for_ocr(image)
 
-        return self._call_paddleocr(
+        results = self._call_paddleocr(
             image, caller=caller, image_id=image_id,
             job_id=job_id, document_id=document_id,
         )
+
+        # `paddleocr_failed` is cached too, deliberately. It is a real verdict on this
+        # file (retries already exhausted inside `_call_paddleocr`), and re-running it
+        # for the second consumer would double the cost of exactly the images that are
+        # most expensive to process. Consumers distinguish it by `method`.
+        if cache_key is not None:
+            self._result_cache[cache_key] = results
+        return results
+
+    def _cache_key(
+        self,
+        image_input: Union[str, Path, np.ndarray, Image.Image],
+        use_preprocessing: Optional[bool],
+    ) -> Optional[str]:
+        """Identity+content key for a path input, or None if it isn't memoisable."""
+        if not isinstance(image_input, (str, Path)):
+            return None
+        try:
+            p = Path(image_input)
+            st = p.stat()
+            return f"{p.resolve()}|{st.st_mtime_ns}|{st.st_size}|{use_preprocessing}"
+        except OSError:
+            # Missing/unreadable file — let the real call raise the real error rather
+            # than inventing a cache miss reason here.
+            return None
+
+    def clear_cache(self) -> None:
+        """Drop memoised OCR results.
+
+        Call at a product boundary. The cache is bounded by how many crops one
+        product yields, not by the length of the job — without this a large catalogue
+        would hold every crop's blocks in memory until the process exits.
+        """
+        self._result_cache.clear()
     
     # `extract_text_simple` and `get_text_with_confidence` were removed (#25 M12-3).
     #

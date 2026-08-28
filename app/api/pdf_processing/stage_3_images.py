@@ -829,7 +829,23 @@ async def _run_phase_3_ocr_for_product(
         # Locate the local image bytes/path. The pdf_processor stores under
         # 'path'; we also check 'local_path' / 'image_path' for forward-compat.
         src = by_image_id.get(image_id) or {}
-        local_path = src.get('path') or src.get('local_path') or src.get('image_path')
+        # Prefer the padded sidecar, falling back to the tight crop.
+        #
+        # This is the SAME file the vision call OCR'd for its grounding block
+        # (#393 Step 1), so the OCR service's per-file memo turns this into a cache
+        # hit rather than a second PaddleOCR pass — which is what keeps this change
+        # off the 7-15 min/product regression Stage 3 already fought once.
+        #
+        # It is also the better transcription in its own right: the padded crop is a
+        # superset of the tight one, and the SKU or dimension label is routinely
+        # printed just OUTSIDE the tile it belongs to. Storing the superset in
+        # `document_images.ocr_text` improves image search for the same reason.
+        local_path = (
+            src.get('vision_input_path')
+            or src.get('path')
+            or src.get('local_path')
+            or src.get('image_path')
+        )
         if not local_path:
             # Audit fix 2026-05-02: write an explicit marker rather than
             # silent skip. Every persisted-result row must carry an OCR
