@@ -180,7 +180,7 @@ class Settings(BaseSettings):
     # Multi-Query Expansion
     multi_query_variations: int = Field(default=3, env="MULTI_QUERY_VARIATIONS")
 
-    # Understanding Embeddings (Claude Opus 4.7 vision_analysis → Voyage AI text embedding)
+    # Understanding Embeddings (Claude Opus vision_analysis → Voyage AI text embedding)
     enable_understanding_embeddings: bool = Field(default=True, env="ENABLE_UNDERSTANDING_EMBEDDINGS")
     understanding_embedding_dimension: int = Field(default=1024, env="UNDERSTANDING_EMBEDDING_DIMENSION")
 

@@ -12,7 +12,7 @@ Search Strategy:
   4. vecs.image_texture_embeddings (768D SLIG, 12.5%) - Texture pattern matching
   5. vecs.image_style_embeddings (768D SLIG, 12.5%) - Design style matching
   6. vecs.image_material_embeddings (768D SLIG, 12.5%) - Material type matching
-  7. vecs.image_understanding_embeddings (1024D Voyage from Claude Opus 4.7 vision, 10%) - Vision-understanding
+  7. vecs.image_understanding_embeddings (1024D Voyage from Claude Opus vision, 10%) - Vision-understanding
 """
 
 import logging
@@ -63,7 +63,7 @@ class RAGService:
         self._available = True  # Service is available after initialization
 
         # Vision-analysis and image classification both run on Anthropic
-        # Claude Opus 4.7. No HF endpoint plumbing
+        # Claude Opus. No HF endpoint plumbing
         # needed here — the Anthropic API key is read on demand inside
         # _analyze_image_material / _classify_image_material via os.getenv.
 
@@ -633,7 +633,7 @@ class RAGService:
            - vecs.image_texture_embeddings (texture pattern matching)
            - vecs.image_style_embeddings (design style matching)
            - vecs.image_material_embeddings (material type matching)
-           - vecs.image_understanding_embeddings (Claude Opus 4.7 vision → Voyage 1024D)
+           - vecs.image_understanding_embeddings (Claude Opus vision → Voyage 1024D)
 
         2. **Text Embeddings** (document_chunks) - Semantic text search
            - Searches document_chunks.text_embedding (halfvec(1024) Voyage AI 3.5)
@@ -2406,7 +2406,7 @@ class RAGService:
         embedding_service: Any = None
     ) -> Dict[str, Any]:
         """
-        Analyze material image with Claude Opus 4.7 vision via Anthropic tool use
+        Analyze material image with Claude Opus vision via Anthropic tool use
         to extract material properties, quality, and confidence.
 
         Tool use forces a schema-conformant JSON response (no parsing/regex
@@ -2535,7 +2535,7 @@ class RAGService:
         confidence_threshold: float = 0.6
     ) -> Dict[str, Any]:
         """
-        Classify if an image shows material content using Claude Opus 4.7 vision
+        Classify if an image shows material content using Claude Opus vision
         + Anthropic tool use for guaranteed schema adherence.
 
         Args:

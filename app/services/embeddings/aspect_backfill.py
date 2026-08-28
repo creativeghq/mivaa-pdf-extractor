@@ -11,7 +11,7 @@ Voyage-embedded (1024D) and upserted to VECS.
 Stale = (any aspect collection missing) OR (any aspect_schema_version <
 current SCHEMA_VERSION) OR (aspect_embedding_model not 'voyage-3'). When
 VisionAnalysis JSON itself is missing or unparseable on a target row, the
-backfill optionally re-runs Claude Opus 4.7 (same path as the
+backfill optionally re-runs Claude Opus (same path as the
 understanding-embedding backfill) to repopulate it before computing aspects.
 
 This module is the cron- and bulk-mode workhorse. The per-image manual
@@ -240,7 +240,7 @@ async def backfill_aspect_embeddings(
 
     Cheap path: reads vision_analysis JSON straight from document_images,
     Voyage-embeds 4 short strings per image, upserts to VECS. ~$0.0001 per
-    image. Does NOT re-run Claude Opus 4.7 — that's the understanding-
+    image. Does NOT re-run Claude Opus — that's the understanding-
     embedding backfill's job. If a row has no usable vision_analysis JSON,
     it's reported as `failed` and the operator can chain
     /admin/understanding-embeddings/backfill (which DOES re-run Opus)

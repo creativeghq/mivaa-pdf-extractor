@@ -4,7 +4,7 @@ Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 Generates embedding types using AI models:
 1. Text (1024D) - Voyage AI voyage-4
 2. Visual Embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
-3. Understanding (1024D) - Claude Opus 4.7 vision_analysis JSON -> Voyage AI text embedding
+3. Understanding (1024D) - Claude Opus vision_analysis JSON -> Voyage AI text embedding
 4. Page (1024D) - voyage-multimodal, whole rendered catalog page (#239)
 
 Text Embedding Strategy:
@@ -42,7 +42,7 @@ Visual Embedding Strategy:
 - Cloud-only architecture - no local model loading
 
 Understanding Embedding Strategy:
-- Embeds Claude Opus 4.7's structured vision_analysis JSON (via Anthropic tool
+- Embeds Claude Opus's structured vision_analysis JSON (via Anthropic tool
   use, schema-locked) as descriptive text → Voyage AI (1024D).
 - Enables spec-based search (e.g., "porcelain tile 60x120cm", "R10 slip rating").
 - Claude is the sole vision producer.
@@ -197,7 +197,7 @@ class RealEmbeddingsService:
         image_url: Optional[str] = None,
         material_properties: Optional[Dict[str, Any]] = None,
         image_data: Optional[str] = None,  # base64 encoded
-        vision_analysis: Optional[Dict[str, Any]] = None,  # Claude Opus 4.7 vision_analysis JSON (schema-locked via Anthropic tool use)
+        vision_analysis: Optional[Dict[str, Any]] = None,  # Claude Opus vision_analysis JSON (schema-locked via Anthropic tool use)
         job_id: Optional[str] = None,
         # Mirrors job_id exactly. The workspace was never threaded, so 2134 ai_usage_logs rows
         # landed with no tenant: invisible to per-workspace cost views AND to that table's own
@@ -219,7 +219,7 @@ class RealEmbeddingsService:
             image_url: URL of image (optional)
             material_properties: Material properties dict (optional)
             image_data: Base64 encoded image data (optional)
-            vision_analysis: Claude Opus 4.7 vision_analysis JSON for understanding embedding (optional)
+            vision_analysis: Claude Opus vision_analysis JSON for understanding embedding (optional)
             job_id: Optional job ID for cost attribution (rolls up into total_ai_cost_usd)
             product_id: Optional product ID for per-product cost attribution
             image_id: Optional image ID for per-image cost attribution
@@ -311,7 +311,7 @@ class RealEmbeddingsService:
             # and Voyage-embedded to 1024D — same model and embedding space
             # as image_understanding_embeddings. The aspect vector encodes
             # what THIS image's color/texture/style/material looks like
-            # according to Claude Opus 4.7. Skipped when vision_analysis
+            # according to Claude Opus. Skipped when vision_analysis
             # is missing (caller provides it for image entities; not for
             # text-only entities).
             if vision_analysis:
@@ -339,7 +339,7 @@ class RealEmbeddingsService:
                     )
 
             # 3. Understanding Embedding (1024D) — vision_analysis JSON → Voyage AI.
-            # Source vision_analysis comes from Claude Opus 4.7 via Anthropic
+            # Source vision_analysis comes from Claude Opus via Anthropic
             # tool use. Returns a dict with embedding +
             # provenance so vecs_service can persist embedding_model and
             # schema_version for fallback-drift detection.
@@ -562,7 +562,7 @@ class RealEmbeddingsService:
         """
         Generate understanding embedding from a structured vision_analysis dict.
 
-        Converts the structured vision analysis (produced by Claude Opus 4.7 via
+        Converts the structured vision analysis (produced by Claude Opus via
         Anthropic tool use) into deterministic descriptive text, then embeds
         via Voyage AI (1024D) to enable spec-based search queries like
         "porcelain tile 60x120cm" or "R10 slip rating".

@@ -1206,7 +1206,7 @@ async def material_search_health_check(
 #
 # Rewritten 2026-05-05 to use the v2 aspect architecture:
 #   - Voyage `voyage-3` 1024D queries (matches the aspect collection space)
-#   - Optional query_image path runs Claude Opus 4.7 vision_analysis on the
+#   - Optional query_image path runs Claude Opus vision_analysis on the
 #     image, then the per-aspect serializer to build a query string Voyage-
 #     embeds — exactly mirrors the ingestion pipeline so the query embedding
 #     is a sibling of the row embeddings it'll be compared against.
@@ -1228,7 +1228,7 @@ class AspectSearchRequest(BaseModel):
         None,
         description=(
             "Base64-encoded image OR HTTPS URL. When provided, the server runs "
-            "Claude Opus 4.7 vision_analysis on the image and Voyage-embeds the "
+            "Claude Opus vision_analysis on the image and Voyage-embeds the "
             "per-aspect text derived from the result — same pipeline as ingestion."
         ),
     )

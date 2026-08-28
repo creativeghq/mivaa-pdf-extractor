@@ -1,7 +1,7 @@
 """
 Understanding-embedding backfill.
 
-Re-runs vision_analysis (Claude Opus 4.7 + tool use) on document_images that
+Re-runs vision_analysis (Claude Opus + tool use) on document_images that
 either (a) lack an understanding embedding, (b) were embedded under a stale
 VisionAnalysis schema_version, or (c) were embedded by the OpenAI fallback
 rather than Voyage (audit gap A — embedding-space drift).
@@ -123,7 +123,7 @@ async def _analyze_one(
     anthropic_api_key: str,
     image_id: Optional[str] = None,
 ) -> Optional[VisionAnalysis]:
-    """Run Claude Opus 4.7 + tool use to produce a schema-conformant VisionAnalysis.
+    """Run Claude Opus + tool use to produce a schema-conformant VisionAnalysis.
 
     Validation failures are logged with the specific field/type the model
     emitted that broke the schema — so when Claude drifts (e.g. starts

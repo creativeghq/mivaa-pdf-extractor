@@ -1,7 +1,7 @@
 """
 Real Image Analysis Service - Stage 4 Implementation
 
-1. Vision model (Claude Opus 4.7 via Anthropic tool use) for detailed image analysis
+1. Vision model (Claude Opus via Anthropic tool use) for detailed image analysis
 2. SigLIP2 (SLIG 768D) embeddings for visual similarity
 3. Material property extraction
 4. Quality scoring
@@ -38,7 +38,7 @@ class ImageAnalysisResult:
     """Result of real image analysis"""
     image_id: str
     vision_analysis: Dict[str, Any]  # Vision model analysis (configurable)
-    claude_validation: Optional[Dict[str, Any]]  # Claude Opus 4.7 validation (optional, async)
+    claude_validation: Optional[Dict[str, Any]]  # Claude Opus validation (optional, async)
     slig_embedding: List[float]  # 768D SigLIP2 (SLIG) visual embedding
     material_properties: Dict[str, Any]  # Extracted properties
     quality_score: float  # Real quality score (0.0-1.0)
@@ -52,7 +52,7 @@ class RealImageAnalysisService:
     """
     Provides real image analysis using vision models and SLIG embeddings.
 
-    This service uses Anthropic Claude Opus 4.7 for both vision analysis and
+    This service uses Anthropic Claude Opus for both vision analysis and
     validation. CLIP/SLIG handles visual embeddings separately.
     """
 
@@ -374,7 +374,7 @@ class RealImageAnalysisService:
         context: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Analyze image with Anthropic Claude Opus 4.7 vision."""
+        """Analyze image with Anthropic Claude Opus vision."""
         return await self._analyze_with_claude_base64(image_base64, context)
 
     async def _analyze_with_claude(
@@ -383,7 +383,7 @@ class RealImageAnalysisService:
         context: Optional[Dict[str, Any]] = None,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Analyze image with Claude Opus 4.7 Vision"""
+        """Analyze image with Claude Opus Vision"""
         start_time = time.time()
         try:
             # Use database prompt - NO FALLBACK
@@ -515,14 +515,14 @@ class RealImageAnalysisService:
                 error_message=str(e)
             )
 
-            raise RuntimeError(f"Claude Opus 4.7 Vision analysis failed: {str(e)}") from e
+            raise RuntimeError(f"Claude Opus Vision analysis failed: {str(e)}") from e
 
     async def _analyze_with_claude_base64(
         self,
         image_base64: str,
         context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Analyze image with Claude Opus 4.7 Vision from base64 data"""
+        """Analyze image with Claude Opus Vision from base64 data"""
         try:
             # Use centralized AI client service
             get_ai_client_service()
@@ -588,7 +588,7 @@ class RealImageAnalysisService:
 
         except Exception as e:
             self.logger.error(f"Claude analysis failed: {e}")
-            raise RuntimeError(f"Claude Opus 4.7 Vision analysis failed: {str(e)}") from e
+            raise RuntimeError(f"Claude Opus Vision analysis failed: {str(e)}") from e
 
     async def _generate_slig_embedding(self, image_base64: str) -> List[float]:
         """Generate SigLIP embedding for image using RealEmbeddingsService"""

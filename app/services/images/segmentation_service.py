@@ -2,7 +2,7 @@
 Material Segmentation Service
 
 Detects distinct material zones in 3D rendered images using Anthropic
-Claude Opus 4.7 vision. Returns bounding boxes + metadata per zone so the
+Claude Opus vision. Returns bounding boxes + metadata per zone so the
 frontend can crop and send each crop to the existing RAG image search
 endpoint.
 """
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class SegmentationService:
     """Detects material zones in 3D renders via Anthropic Claude Opus.
 
-    Claude Opus 4.7 is the only path, and quality on this task is excellent
+    Claude Opus is the only path, and quality on this task is excellent
     (22 well-described zones on a bathroom render in ~40s with catalog-grade
     material names). Do NOT add a second vision provider here without a
     measured quality/cost case AND a health probe that fails loudly - the
@@ -48,7 +48,7 @@ class SegmentationService:
 
     async def segment_image(self, image_base64: str) -> List[Dict[str, Any]]:
         """
-        Detect material zones in a 3D render via Claude Opus 4.7.
+        Detect material zones in a 3D render via Claude Opus.
 
         Prompt is loaded from the `prompts` table (category='segmentation'). There is no
         fallback: without the prompt this cannot segment, and pretending otherwise is how the

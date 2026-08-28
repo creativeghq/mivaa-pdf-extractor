@@ -113,7 +113,7 @@ async def analyze_image(
     """
     **🔍 Image Analysis - AI-Powered Visual Understanding**
 
-    Analyze images using Claude Opus 4.7 Vision (via Anthropic tool use) for
+    Analyze images using Claude Opus Vision (via Anthropic tool use) for
     comprehensive visual understanding. All
     vision tasks run on Claude — same schema, same tool-use guarantees.
 
@@ -1007,7 +1007,7 @@ async def reclassify_image(
         # Run primary classification
         # #250 H1: debit the Opus-vision classification BEFORE it runs; refund on failure.
         _billed = await meter_operation(current_user, "image-analyze", "image_reclassify")
-        logger.info("🤖 Running primary classification (Claude Opus 4.7 vision)")
+        logger.info("🤖 Running primary classification (Claude Opus vision)")
         try:
             primary_classification = await rag_service._classify_image_material(
                 image_base64=image_base64,
@@ -1090,7 +1090,7 @@ async def segment_image(
     """
     **🔍 Material Zone Segmentation**
 
-    Detect distinct material surfaces in a 3D rendered image using Claude Opus 4.7 vision.
+    Detect distinct material surfaces in a 3D rendered image using Claude Opus vision.
     Returns bounding boxes (relative 0–1) + metadata per zone.
 
     Accepts either `image_url` (fetched server-side, no CORS issues) or

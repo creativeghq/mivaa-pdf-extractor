@@ -6,7 +6,7 @@ Used by three call paths that MUST stay aligned or the
 `vecs.image_understanding_embeddings` collection drifts:
 
 1. Stage 3 ingestion (image_processing_service) — vision_analysis JSON
-   produced by Claude Opus 4.7 via Anthropic tool use → serialised to text
+   produced by Claude Opus via Anthropic tool use → serialised to text
    via `serialize_vision_analysis_to_text` → embedded by Voyage → stored.
 2. RAG service `analyze_material_image` — same shape, same call pattern.
 3. Backfill cron — re-runs the above on existing images when schema_version

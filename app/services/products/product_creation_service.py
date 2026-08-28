@@ -1418,7 +1418,7 @@ class ProductCreationService:
         Stage 2 - Deep enrichment using Claude Opus.
 
         Performs detailed analysis and enrichment of confirmed product candidates.
-        Uses Claude Opus 4.7 for high-quality results.
+        Uses Claude Opus for high-quality results.
 
         Args:
             candidate: Product candidate from Stage 1
@@ -1556,7 +1556,7 @@ class ProductCreationService:
             return None
 
     async def _call_claude_opus(self, client, prompt: str, job_id: Optional[str] = None) -> str:
-        """Call Claude Opus 4.7 for deep enrichment."""
+        """Call Claude Opus for deep enrichment."""
         start_time = time.time()
         try:
             from app.config import get_settings

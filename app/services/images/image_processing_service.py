@@ -216,7 +216,7 @@ class ImageProcessingService:
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Classify images as material or non-material.
 
-        Models default to Anthropic Claude Opus 4.7 (vision). The
+        Models default to Anthropic Claude Opus (vision). The
         primary/validation parameters are kept for call-site compatibility
         but both flow into the same Anthropic call site.
 
@@ -255,7 +255,7 @@ class ImageProcessingService:
 
         get_ai_client_service()
 
-        # Stage 3 image classification runs on Anthropic Claude Opus 4.7 via
+        # Stage 3 image classification runs on Anthropic Claude Opus via
         # tool use. The deployed
         # endpoint was a text-only MoE model that 404'd on every vision call,
         # so the system was already silently 100% Claude — this just makes
@@ -271,7 +271,7 @@ class ImageProcessingService:
             raise ValueError("ANTHROPIC_API_KEY not configured")
 
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
-            """Image classification via Anthropic Claude Opus 4.7 + tool use.
+            """Image classification via Anthropic Claude Opus + tool use.
 
             Despite the legacy name, this no longer routes through any HF
             endpoint — Stage 3 has been Anthropic-only since 2026-05-01.
@@ -553,7 +553,7 @@ class ImageProcessingService:
                     logger.error(f"   Filename: {filename}")
                     return None
 
-            # STAGE 1: classification via Anthropic Claude Opus 4.7 (no HF gate
+            # STAGE 1: classification via Anthropic Claude Opus (no HF gate
             # needed — Anthropic's per-key concurrency is published and stable,
             # and prompt caching gives us free fan-out within a batch).
             # Single retry for transient API errors.
@@ -1032,7 +1032,7 @@ class ImageProcessingService:
     # ------------------------------------------------------------------ #
     #
     # The flow is:
-    #   1. Run Claude Opus 4.7 via Anthropic tool use (schema-locked
+    #   1. Run Claude Opus via Anthropic tool use (schema-locked
     #      VisionAnalysis Pydantic model) — the sole vision producer post
     #      the sole vision producer.
     #   2. Tool use eliminates JSON regex recovery and provides a hard
@@ -1299,7 +1299,7 @@ class ImageProcessingService:
         job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
-        Material analysis via Claude Opus 4.7 + Anthropic tool_use.
+        Material analysis via Claude Opus + Anthropic tool_use.
 
         Schema is locked at the API layer via `tools=[VISION_ANALYSIS_TOOL]` +
         `tool_choice={'type':'tool','name':...}`. The model is forced to emit a
@@ -1491,7 +1491,7 @@ class ImageProcessingService:
         `vecs.image_understanding_embeddings`.
 
         Strategy:
-          1. Run Claude Opus 4.7 via Anthropic tool use (schema-locked
+          1. Run Claude Opus via Anthropic tool use (schema-locked
              VisionAnalysis) — the sole vision producer since the
              sole vision producer.
           2. On failure, return (None, FAILED) so the caller can record the
@@ -1702,7 +1702,7 @@ class ImageProcessingService:
                 else:
                     vision_base64_raw = base64.b64encode(image_bytes).decode('utf-8')
 
-                # Run rich material analysis (Claude Opus 4.7 via Anthropic
+                # Run rich material analysis (Claude Opus via Anthropic
                 # tool use) to produce the structured
                 # `vision_analysis` JSON. This is the input the Voyage
                 # understanding embedding consumes — without it, the 1024D

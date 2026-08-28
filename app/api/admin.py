@@ -2105,7 +2105,7 @@ async def backfill_aspect_embeddings_endpoint(
     """Re-embed the four aspect collections from cached VisionAnalysis JSON.
 
     Cheap path — Voyage-embeds 4 short strings per image (~$0.0001 each).
-    Does NOT re-run Claude Opus 4.7. If a row has no usable
+    Does NOT re-run Claude Opus. If a row has no usable
     vision_analysis, run `/admin/understanding-embeddings/backfill` first
     (that one DOES re-run Opus + repopulates the JSON cache).
 

@@ -5,7 +5,7 @@ Two-stage classification system for PDF content:
 1. Fast text classification (product/supporting/administrative/transitional)
 2. Deep enrichment with metadata extraction
 
-Uses Claude Haiku 4.5 for fast classification and Claude Opus 4.7 for deep analysis.
+Uses Claude Haiku 4.5 for fast classification and Claude Opus for deep analysis.
 """
 
 import asyncio
@@ -69,7 +69,7 @@ class DocumentClassifier:
     }
     
     def __init__(self, ai_logger: Optional[AICallLogger] = None):
-        """Initialize document classifier (Anthropic Claude Opus 4.7)."""
+        """Initialize document classifier (Anthropic Claude Opus)."""
         import os
         self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
         self.ai_logger = ai_logger or AICallLogger()

@@ -284,7 +284,7 @@ async def lifespan(app: FastAPI):
                 logger.warning(f"⚠️ Error cleaning up RAG service: {e}")
 
         component_manager.register("rag_service", load_rag_service, cleanup_rag_service)
-        logger.info("✅ RAG service registered for lazy loading (Claude Opus 4.7 vision)")
+        logger.info("✅ RAG service registered for lazy loading (Claude Opus vision)")
 
         # Set placeholder
         app.state.rag_service = None
@@ -820,12 +820,12 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - 🎯 **Enhanced Multi-Vector Search**: 7 specialized embeddings (text 15%, visual 15%, understanding 20%, color 12.5%, texture 12.5%, style 12.5%, material 12.5%) + JSONB metadata filtering + query understanding
 - **Query Understanding**: GPT-4o-mini parses natural language queries to auto-extract filters (enabled by default)
 - **Knowledge Base**: Semantic chunking, quality scoring, deduplication
-- **Image Analysis**: SLIG (SigLIP2 768D) + Claude Opus 4.7 vision (cost-effective, high accuracy)
+- **Image Analysis**: SLIG (SigLIP2 768D) + Claude Opus vision (cost-effective, high accuracy)
 - **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
 
 ### AI Models
 1. **Voyage AI**: voyage-4 (1024D text embeddings), GPT-4o-mini (query understanding)
-2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus 4.7 (deep enrichment)
+2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus (deep enrichment)
 3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), PaddleOCR-VL (structural pass: layout + OCR + figure boxes) — vision is on Anthropic Claude.
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
 5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
@@ -984,12 +984,12 @@ Get your token from the frontend application or Supabase authentication.
             {"name": "Search Suggestions", "description": "Search UX helpers - Auto-complete, trending searches, typo correction, query expansion, popular searches, and personalized suggestions."},
             {"name": "Embeddings", "description": "Multi-vector embedding generation - 7 types: text (1024D Voyage AI), visual (768D SLIG), understanding (1024D), color/texture/style/material (768D each)."},
             {"name": "Chat", "description": "AI chat interface - Contextual completions, conversation history, and intelligent material assistance."},
-            {"name": "Products", "description": "Product management - Two-stage AI classification (Claude Haiku 4.5 + Opus 4.7), enrichment, metadata extraction, and product creation from chunks."},
+            {"name": "Products", "description": "Product management - Two-stage AI classification (Claude Haiku 4.5 + Opus), enrichment, metadata extraction, and product creation from chunks."},
             {"name": "Image Analysis", "description": "Image processing - Extraction, analysis, embedding generation, OCR, reclassification, and segmentation for material images."},
             {"name": "Knowledge Base", "description": "Documentation system - CRUD documents with AI embeddings (1024D Voyage AI), semantic search, category hierarchy, product attachments, version history, and comments."},
             {"name": "Saved Searches", "description": "Saved search management - Create, list, execute, and delete saved searches with AI-powered deduplication."},
             {"name": "Duplicate Detection", "description": "Product duplicate detection - Single and batch detection, merge/undo operations, status tracking, and merge history (same-factory scope)."},
-            {"name": "Anthropic Claude", "description": "Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast) and Opus 4.7 (deep)."},
+            {"name": "Anthropic Claude", "description": "Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast) and Opus (deep)."},
             {"name": "Interior Design", "description": "Interior design generation - AI-powered room renders with streaming progress feedback."},
             {"name": "Price Monitoring", "description": "Competitor price tracking - On-demand and scheduled monitoring via Firecrawl. Price history, alerts (drop/increase/change), statistics, source management. 1 credit/scrape."},
             {"name": "Data Import", "description": "Batch data import - XML and web-scraping sources with job tracking, processing history, and health checks."},
@@ -1250,7 +1250,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
     - **PaddleOCR-VL** - Structural pass: layout + OCR + figure boxes (auto-pause/resume)
 
     ### Application Services
-    - **RAG Service** - Lazy-loaded; vision via Anthropic Claude Opus 4.7 (memory optimized)
+    - **RAG Service** - Lazy-loaded; vision via Anthropic Claude Opus (memory optimized)
     - **Database** - Supabase PostgreSQL with pgvector
     - **Storage** - Supabase Storage for images and PDFs
 
@@ -1274,7 +1274,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         },
         "anthropic": {
           "status": "healthy",
-          "message": "Claude Opus 4.7 available"
+          "message": "Claude Opus available"
         },
         "rag": {
           "status": "healthy",
@@ -1702,7 +1702,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
         if hasattr(app.state, 'component_manager'):
             services_status["rag"] = {
                 "status": "healthy",
-                "message": "RAG service registered for lazy loading; vision via Anthropic Claude Opus 4.7 (memory optimized)"
+                "message": "RAG service registered for lazy loading; vision via Anthropic Claude Opus (memory optimized)"
             }
         else:
             services_status["rag"] = {
@@ -1908,7 +1908,7 @@ async def root() -> Dict[str, Any]:
             "Semantic search and retrieval",
             "Conversational Q&A",
             "Supabase vector storage",
-            "Claude Opus 4.7 vision (segmentation, classification, vision_analysis)",
+            "Claude Opus vision (segmentation, classification, vision_analysis)",
         ]
     }
 
@@ -2132,8 +2132,8 @@ def custom_openapi():
         "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
         "vector_search": "7 specialized embedding types (text, visual, understanding, color, texture, style, material)",
         "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
-        "ai_models": "Claude Opus 4.7, Sonnet 4.6, Haiku 4.5, GPT-4o-mini, SLIG, Voyage AI",
-        "material_recognition": "Claude Opus 4.7 (Anthropic vision)",
+        "ai_models": "Claude Opus, Sonnet 4.6, Haiku 4.5, GPT-4o-mini, SLIG, Voyage AI",
+        "material_recognition": "Claude Opus (Anthropic vision)",
         "embedding_models": "Voyage AI voyage-4 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
         "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",
         "scalability": "5,000+ users, 99.5%+ uptime",

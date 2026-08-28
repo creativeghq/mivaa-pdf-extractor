@@ -38,11 +38,11 @@ class AIModelConfig(BaseModel):
         description="Input type for Voyage AI: 'document' for indexing, 'query' for search"
     )
     
-    # Image Classification Models — Anthropic Claude Opus 4.7 (the
+    # Image Classification Models — Anthropic Claude Opus (the
     # removed 2026-05-01). Tool use guarantees schema-conformant output.
     classification_primary_model: str = Field(
         default="claude-opus-4-8",
-        description="Primary image classification model (Anthropic Claude Opus 4.7)"
+        description="Primary image classification model (Anthropic Claude Opus)"
     )
     classification_validation_model: str = Field(
         default="claude-opus-4-8",

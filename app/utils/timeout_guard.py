@@ -162,7 +162,7 @@ class TimeoutConstants:
     
     # AI Model Calls
     CLAUDE_API_CALL = 120  # 2min for Claude API (chat / tool use)
-    VISION_API_CALL = 90  # 90s for Claude Opus 4.7 vision_analysis (handles complex images and large batches)
+    VISION_API_CALL = 90  # 90s for Claude Opus vision_analysis (handles complex images and large batches)
     SLIG_EMBEDDING = 90  # 90s for SLIG (SigLIP2 768D) embedding (includes 4 specialized embeddings: 4×15s + overhead)
     GPT_API_CALL = 60  # 1min for GPT API (Voyage fallback only)
     

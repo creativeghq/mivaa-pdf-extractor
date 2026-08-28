@@ -637,8 +637,8 @@ class MultiModalAnalysisRequest(BaseModel):
     material_analysis_types: List[str] = Field(default_factory=list, description="Types of material analysis (spectral, chemical, mechanical, thermal)")
     # Field name retained for API stability — actual model is SLIG (SigLIP2 768D), not CLIP.
     enable_clip_embeddings: bool = Field(False, description="Generate SLIG (SigLIP2 768D) embeddings for visual similarity")
-    # Vision runs on Claude Opus 4.7 via Anthropic tool use.
-    enable_vision_analysis: bool = Field(False, description="Use Claude Opus 4.7 vision for material understanding")
+    # Vision runs on Claude Opus via Anthropic tool use.
+    enable_vision_analysis: bool = Field(False, description="Use Claude Opus vision for material understanding")
     
     # Advanced material analysis
     spectral_analysis: bool = Field(False, description="Perform spectral analysis on materials")
@@ -688,7 +688,7 @@ class MultiModalAnalysisResponse(BaseResponse):
     # Visual embeddings and analysis
     # Field name kept for API stability — vectors are from SLIG (SigLIP2 768D), not CLIP.
     clip_embeddings: Optional[List[List[float]]] = Field(None, description="Generated SLIG (SigLIP2 768D) embeddings for visual similarity")
-    vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Claude Opus 4.7 vision material understanding results")
+    vision_analysis: Optional[Dict[str, Any]] = Field(None, description="Claude Opus vision material understanding results")
     
     # Combined insights
     multimodal_insights: Optional[Dict[str, Any]] = Field(None, description="Combined multi-modal insights")

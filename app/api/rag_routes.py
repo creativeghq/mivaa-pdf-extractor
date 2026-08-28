@@ -662,7 +662,7 @@ async def upload_document(
     # Discovery settings
     discovery_model: str = Form(
         "claude-vision",
-        description="AI model for discovery: 'claude-vision' (Claude Opus 4.7 Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'claude' (text-only, legacy), 'haiku' (text-only, legacy). 'gpt'/'gpt-vision' are REJECTED - there is no OpenAI path in MIVAA (audit #12 finding 4)."
+        description="AI model for discovery: 'claude-vision' (Claude Opus Vision - RECOMMENDED, 10x faster), 'claude-haiku-vision' (faster/cheaper), 'claude' (text-only, legacy), 'haiku' (text-only, legacy). 'gpt'/'gpt-vision' are REJECTED - there is no OpenAI path in MIVAA (audit #12 finding 4)."
     ),
 
     # Processing settings
@@ -763,7 +763,7 @@ async def upload_document(
     actually runs" for the full breakdown.
 
     Choose:
-    - `discovery_model="claude-vision"` - Claude Opus 4.7 (default)
+    - `discovery_model="claude-vision"` - Claude Opus (default)
     - `discovery_model="claude-haiku-vision"` - Claude Haiku 4.5 (cheaper, fast)
 
     Real vision DOES run at Stage 3 per-image material analysis (Claude Opus
@@ -5187,7 +5187,7 @@ async def search_documents(
     - **Embeddings Combined:**
       - Text (15%) - Voyage AI 1024D semantic understanding
       - Visual (15%) - SLIG 768D visual similarity
-      - Understanding (20%) - Voyage AI 1024D from Claude Opus 4.7 vision analysis
+      - Understanding (20%) - Voyage AI 1024D from Claude Opus vision analysis
       - Color (12.5%) - SLIG 768D color palette matching
       - Texture (12.5%) - SLIG 768D texture pattern matching
       - Style (12.5%) - SLIG 768D design style matching
@@ -5816,7 +5816,7 @@ async def get_rag_statistics(
             ],
             "ai_models": {
                 "embeddings": "SLIG SigLIP2 768D / Voyage AI 1024D",
-                "rag_synthesis": "Claude Opus 4.7",
+                "rag_synthesis": "Claude Opus",
                 "vision": "claude-opus-4-8"
             }
         }
@@ -6398,7 +6398,7 @@ async def search_knowledge_base(
     Uses the same **7-vector fusion search** as the main search endpoint, combining:
     - Text (15%) - Voyage AI 1024D semantic understanding
     - Visual (15%) - SLIG 768D visual similarity
-    - Understanding (20%) - Voyage AI 1024D from Claude Opus 4.7 analysis
+    - Understanding (20%) - Voyage AI 1024D from Claude Opus analysis
     - Color (12.5%) - SLIG 768D color palette matching
     - Texture (12.5%) - SLIG 768D texture pattern matching
     - Style (12.5%) - SLIG 768D design style matching

@@ -2,8 +2,8 @@
 Anthropic Claude Integration API endpoints.
 
 This module provides image validation and product enrichment using Anthropic Claude:
-- Image validation with Claude Opus 4.7 Vision
-- Product enrichment with Claude Opus 4.7
+- Image validation with Claude Opus Vision
+- Product enrichment with Claude Opus
 - Batch processing for both operations
 """
 
@@ -88,7 +88,7 @@ async def validate_image_with_claude(
     claims: dict = Depends(get_current_user),
 ) -> ImageValidationResponse:
     """
-    **🔍 Image Validation - Claude Opus 4.7 Vision**
+    **🔍 Image Validation - Claude Opus Vision**
 
     Validate image quality and match to product groups using Claude Vision.
 
@@ -258,7 +258,7 @@ async def enrich_product_with_claude(
     claims: dict = Depends(get_current_user),
 ) -> ProductEnrichmentResponse:
     """
-    Enrich product data using Claude Opus 4.7.
+    Enrich product data using Claude Opus.
     
     Generates descriptions, extracts specifications, and identifies related products.
     """

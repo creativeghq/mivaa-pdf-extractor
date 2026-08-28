@@ -415,7 +415,7 @@ def _tool_input_or_raise(response, where: str) -> Dict[str, Any]:
 class ProductDiscoveryService:
     """
     Analyzes PDF to discover products BEFORE processing.
-    Uses Claude Opus 4.7 or GPT-5 for intelligent product identification.
+    Uses Claude Opus or GPT-5 for intelligent product identification.
 
     NEW: Supports vision-guided extraction for precise image cropping.
     """
@@ -1239,7 +1239,7 @@ class ProductDiscoveryService:
         """
         from app.config import get_settings as _get_settings_disc
         primary_model = _get_settings_disc().anthropic_model_validation
-        # Haiku 4.5 is roughly 1/12th the price of Opus 4.7 per token —
+        # Haiku 4.5 is roughly 1/12th the price of Opus per token —
         # acceptable degradation for the retry path.
         attempts = [primary_model, "claude-haiku-4-5"]
         last_error: Optional[Exception] = None
