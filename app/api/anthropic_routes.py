@@ -150,7 +150,7 @@ async def validate_image_with_claude(
     - **Max image size**: 10MB
     - **Timeout**: 30 seconds
     - **Rate limit**: 60 requests/minute
-    - **Model**: claude-opus-4-8
+    - **Model**: claude-opus-5
     """
     try:
         # Pentest #250 D35: bind the caller to the target workspace — this endpoint wrote
@@ -221,7 +221,7 @@ async def validate_image_with_claude(
             "metadata": {
                 "content_description": analysis_result.get("content_description"),
                 "materials_identified": analysis_result.get("materials_identified"),
-                "model_used": "claude-opus-4-8",
+                "model_used": "claude-opus-5",
             },
         }
 
@@ -316,7 +316,7 @@ async def enrich_product_with_claude(
             "metadata": {
                 "key_features": enrichment_data.get("key_features"),
                 "use_cases": enrichment_data.get("use_cases"),
-                "model_used": "claude-opus-4-8",
+                "model_used": "claude-opus-5",
             },
         }
 
@@ -422,7 +422,7 @@ async def test_claude_integration(
             "claude_response": response_text,
             "processing_time_ms": processing_time,
             "api_key_available": bool(settings.anthropic_api_key),
-            "model_used": "claude-opus-4-8"
+            "model_used": "claude-opus-5"
         }
 
     except Exception as e:

@@ -41,11 +41,11 @@ class AIModelConfig(BaseModel):
     # Image Classification Models — Anthropic Claude Opus (the
     # removed 2026-05-01). Tool use guarantees schema-conformant output.
     classification_primary_model: str = Field(
-        default="claude-opus-4-8",
+        default="claude-opus-5",
         description="Primary image classification model (Anthropic Claude Opus)"
     )
     classification_validation_model: str = Field(
-        default="claude-opus-4-8",
+        default="claude-opus-5",
         description="Validation model — same as the primary vision model."
     )
     classification_confidence_threshold: float = Field(
@@ -56,8 +56,8 @@ class AIModelConfig(BaseModel):
     )
 
     # Product Discovery Model
-    discovery_model: Literal["claude-opus-4-8", "claude-haiku-4-5"] = Field(
-        default="claude-opus-4-8",
+    discovery_model: Literal["claude-opus-5", "claude-haiku-4-5"] = Field(
+        default="claude-opus-5",
         description="Model for product discovery"
     )
 
@@ -121,10 +121,10 @@ class AIModelConfig(BaseModel):
                 "text_embedding_model": "voyage-4",
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",
-                "classification_primary_model": "claude-opus-4-8",
-                "classification_validation_model": "claude-opus-4-8",
+                "classification_primary_model": "claude-opus-5",
+                "classification_validation_model": "claude-opus-5",
                 "classification_confidence_threshold": 0.7,
-                "discovery_model": "claude-opus-4-8",
+                "discovery_model": "claude-opus-5",
                 "metadata_extraction_model": "claude",
                 "chunking_model": "claude-haiku-4-5",
                 "discovery_temperature": 0.1,
@@ -151,8 +151,8 @@ FAST_CONFIG = AIModelConfig(
 )
 
 HIGH_ACCURACY_CONFIG = AIModelConfig(
-    discovery_model="claude-opus-4-8",  # Most accurate
-    classification_validation_model="claude-opus-4-8",  # Best validation
+    discovery_model="claude-opus-5",  # Most accurate
+    classification_validation_model="claude-opus-5",  # Best validation
     metadata_extraction_model="claude",
     classification_confidence_threshold=0.8,  # Higher threshold
     discovery_max_tokens=8192,  # More context

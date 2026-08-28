@@ -17,6 +17,7 @@ from datetime import datetime
 import logging
 from collections import Counter
 
+from app.config import get_settings
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.utilities.prompt_registry import load_prompt, render
 
@@ -74,7 +75,6 @@ class ConsensusValidator:
         "claude-haiku-4-5": 0.85,
         "claude-sonnet-4-6": 0.92,
         "claude-sonnet-5": 0.95,
-        "claude-opus-4-8": 1.0,
         "claude-opus-5": 1.0,
     }
     
@@ -390,7 +390,7 @@ class ConsensusValidator:
             return await _extract("claude-haiku-4-5")
 
         async def claude_opus_extract(data):
-            return await _extract("claude-opus-4-8")
+            return await _extract(get_settings().anthropic_model_validation)
 
         # Run consensus validation
         task_data = {"content": content}
@@ -399,7 +399,7 @@ class ConsensusValidator:
             task_type=f"{extraction_type}_extraction",
             task_functions=[haiku_extract, claude_opus_extract],
             task_data=task_data,
-            model_names=["claude-haiku-4-5", "claude-opus-4-8"],
+            model_names=["claude-haiku-4-5", get_settings().anthropic_model_validation],
             job_id=job_id,
         )
         

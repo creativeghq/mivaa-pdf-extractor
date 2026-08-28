@@ -152,7 +152,7 @@ class AIPricingConfig:
         # call that fell through to this dict was billed at 3x. See
         # _warn_on_pricing_drift below: divergence is now reported rather than
         # discovered by hand a year later.
-        "claude-opus-4-8": {
+        "claude-opus-5": {
             "input": Decimal("5.00"),
             "output": Decimal("25.00"),
             "last_verified": "2026-04-18",
@@ -558,7 +558,7 @@ class AIPricingConfig:
         Get pricing for a specific model.
 
         Args:
-            model: Model name (e.g., 'claude-haiku-4-5', 'claude-opus-4-8', 'voyage-4')
+            model: Model name (e.g., 'claude-haiku-4-5', 'claude-opus-5', 'voyage-4')
             provider: Optional provider hint ('anthropic', 'openai', 'huggingface', 'firecrawl')
 
         Returns:

@@ -5817,7 +5817,7 @@ async def get_rag_statistics(
             "ai_models": {
                 "embeddings": "SLIG SigLIP2 768D / Voyage AI 1024D",
                 "rag_synthesis": "Claude Opus",
-                "vision": "claude-opus-4-8"
+                "vision": "claude-opus-5"
             }
         }
 
