@@ -413,20 +413,27 @@ class Settings(BaseSettings):
         default="claude-opus-5",
         env="ANTHROPIC_MODEL_VALIDATION"
     )
-    # Optional SECOND reader for vision_analysis (issue #393 Step 4). Empty = off,
-    # which is the default: a second read doubles the per-image vision bill, so it is
-    # opted into deliberately once #393 Step 5 has a baseline to justify it.
+    # SECOND reader for vision_analysis (issue #393 Step 4). Empty string = off.
     #
-    # Must differ from `anthropic_model_validation` — the same model twice measures
-    # sampling noise, not agreement. A DIFFERENT LINEAGE is the point: two Anthropic
-    # models correlate their mistakes, so the second reader is only worth its cost if
-    # it fails differently from the first.
+    # ACTIVATED 2026-08-28 with `claude-sonnet-5`, deliberately as the CHEAPEST probe
+    # rather than the best one. The open question is not "which second model is best"
+    # but "does a second reader find anything at all" — and that is answered by the
+    # cheapest reader that is not the writer. Sonnet 5 is ~40% of Opus 5 per token, so
+    # this is well short of doubling the bill.
+    #
+    # Must differ from `anthropic_model_validation`; the same model twice measures
+    # sampling noise, not agreement, and `_run_vision_checker` refuses that pairing.
+    #
+    # If the first real corpus shows the two agreeing on essentially everything, a
+    # checker adds nothing and this goes back to "". If it shows real disagreement,
+    # that is when a DIFFERENT LINEAGE earns its cost — two Anthropic models correlate
+    # their mistakes, so agreement between them is weaker evidence than it looks.
     anthropic_model_vision_checker: str = Field(
-        default="",
+        default="claude-sonnet-5",
         env="ANTHROPIC_MODEL_VISION_CHECKER"
     )
     anthropic_model_enrichment: str = Field(
-        default="claude-opus-4-8",
+        default="claude-opus-5",
         env="ANTHROPIC_MODEL_ENRICHMENT"
     )
     anthropic_max_tokens: int = Field(

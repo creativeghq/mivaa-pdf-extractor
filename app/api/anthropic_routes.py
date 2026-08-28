@@ -174,7 +174,7 @@ async def validate_image_with_claude(
         from app.services.core.claude_helper import tracked_claude_call
         response = tracked_claude_call(
             task="image_validation_vision",
-            model="claude-opus-4-8",
+            model=get_settings().anthropic_model_validation,
             max_tokens=2048,
             messages=[
                 {
@@ -277,7 +277,7 @@ async def enrich_product_with_claude(
         from app.services.core.claude_helper import tracked_claude_call
         response = tracked_claude_call(
             task="product_enrichment_chunk",
-            model="claude-opus-4-8",
+            model=get_settings().anthropic_model_validation,
             max_tokens=2048,
             messages=[
                 {
@@ -381,7 +381,7 @@ async def test_claude_integration(
 
         response = await tracked_claude_call_async(
             task="test_vision_integration",
-            model="claude-opus-4-8",
+            model=get_settings().anthropic_model_validation,
             max_tokens=1024,
             messages=[{
                 "role": "user",
@@ -432,7 +432,7 @@ async def test_claude_integration(
         latency_ms = int((time.time() - start_time) * 1000)
         await ai_logger.log_ai_call(
             task="test_vision_integration",
-            model="claude-opus-4-8",
+            model=get_settings().anthropic_model_validation,
             input_tokens=0,
             output_tokens=0,
             cost=0.0,

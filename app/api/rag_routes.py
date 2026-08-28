@@ -1785,7 +1785,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 
             # Extract parameters from job metadata (works for both legacy and discovery jobs)
             job_metadata = job_data.get('metadata', {})
-            discovery_model = job_metadata.get('discovery_model', 'claude-opus-4-8')
+            discovery_model = job_metadata.get('discovery_model') or get_settings().anthropic_model_validation
             categories = job_metadata.get('categories', ['products'])
             enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
             agent_prompt = job_metadata.get('agent_prompt')
@@ -2041,7 +2041,7 @@ async def reprocess_document(
             )
         prev_job_meta = prev_job.get("metadata") or {}
 
-        discovery_model = prev_job_meta.get("discovery_model") or "claude-opus-4-8"
+        discovery_model = prev_job_meta.get("discovery_model") or get_settings().anthropic_model_validation
         extract_categories = prev_job_meta.get("extract_categories") or []
 
         # ── 2. Resolve PDF on disk ─────────────────────────────────────

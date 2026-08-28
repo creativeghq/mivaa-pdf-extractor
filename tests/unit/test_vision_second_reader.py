@@ -167,17 +167,32 @@ def test_the_checker_result_is_never_written_back_into_vision_analysis() -> None
         )
 
 
-def test_the_second_read_is_off_by_default_and_must_differ_from_the_writer() -> None:
+def test_the_checker_is_never_the_same_model_as_the_writer() -> None:
+    """Whatever the checker is set to, it must not be the writer.
+
+    The default was "" (off) until 2026-08-28 and is now `claude-sonnet-5` — activated
+    deliberately, and deliberately as the CHEAPEST probe rather than the best one: the
+    open question is whether a second reader finds anything at all, and the cheapest
+    non-writer model answers that.
+
+    What still has to hold is the pairing. The same model twice measures sampling
+    noise, not agreement, and bills for the privilege.
+    """
     cfg = (_ROOT / "app" / "config.py").read_text(encoding="utf-8")
-    assert "anthropic_model_vision_checker" in cfg
-    assert re.search(
-        r"anthropic_model_vision_checker:\s*str\s*=\s*Field\(\s*\n?\s*default=\"\"", cfg
-    ), "the second reader must default to OFF — it doubles the per-image vision bill"
+    pat = r'{}:\s*str\s*=\s*Field\(\s*\n?\s*default="([^"]*)"'
+    checker = re.search(pat.format("anthropic_model_vision_checker"), cfg)
+    writer = re.search(pat.format("anthropic_model_validation"), cfg)
+    assert checker and writer, "could not read the writer/checker defaults"
+    if checker.group(1):
+        assert checker.group(1) != writer.group(1), (
+            f"checker and writer are both {writer.group(1)!r} — that is a noise "
+            f"measurement, not a second opinion"
+        )
 
     src = _SERVICE.read_text(encoding="utf-8")
     assert "checker_model == writer_model" in src, (
-        "Nothing stops the checker being the same model as the writer. That measures "
-        "sampling noise, not agreement, and bills for it."
+        "Nothing stops the checker being the same model as the writer at RUNTIME "
+        "either. That measures sampling noise, not agreement, and bills for it."
     )
 
 

@@ -73,7 +73,9 @@ class ConsensusValidator:
     MODEL_WEIGHTS = {
         "claude-haiku-4-5": 0.85,
         "claude-sonnet-4-6": 0.92,
+        "claude-sonnet-5": 0.95,
         "claude-opus-4-8": 1.0,
+        "claude-opus-5": 1.0,
     }
     
     # Critical tasks requiring consensus validation
