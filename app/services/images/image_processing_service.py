@@ -21,6 +21,8 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.vecs_service import VecsService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.models.ocr_context import build_ocr_context_block
+from app.models.vision_category_context import build_category_context_block
+from app.models.vision_consensus import build_consensus_record, compare_vision_analyses
 from app.services.images.vision_provider import VisionProvider
 from app.services.pdf.pdf_processor import PDFProcessor
 # PageConverter removed - using simple PDF page numbers instead
@@ -1141,6 +1143,115 @@ class ImageProcessingService:
         except Exception as e:
             logger.debug(f"   _stamp_vision_analysis_outcome({image_id}) failed (non-fatal): {e}")
 
+    async def _run_vision_checker(
+        self,
+        *,
+        writer_analysis: Dict[str, Any],
+        image_base64: str,
+        image_id: str,
+        vision_input_path: Optional[str],
+        material_category: Optional[str],
+        product_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Second reader for the same image (#393 Step 4). Returns a record, or None.
+
+        Returns None — leaving `vision_consensus` NULL — only when no second read was
+        ATTEMPTED, i.e. no checker model is configured. A checker that ran and failed
+        is recorded as `checker_failed`, because "we never looked" and "we looked and
+        agreed" must never render the same way.
+
+        The checker's analysis is never persisted and never embedded. `writer_analysis`
+        is the record; this only says whether a second reader saw the same thing.
+        """
+        checker_model = (
+            getattr(get_settings(), "anthropic_model_vision_checker", "") or ""
+        ).strip()
+        if not checker_model:
+            return None
+
+        writer_model = get_settings().anthropic_model_validation
+        if checker_model == writer_model:
+            # Same model twice measures sampling noise, not agreement, and bills for
+            # the privilege. Refuse rather than record a meaningless 1.0.
+            logger.warning(
+                f"   ⚠️ Vision checker model equals the writer model "
+                f"({writer_model}) — skipping the second read for {image_id}"
+            )
+            return None
+
+        try:
+            checker_analysis = await self._try_claude_material_analysis(
+                image_base64=image_base64,
+                image_id=image_id,
+                vision_input_path=vision_input_path,
+                material_category=material_category,
+                model_override=checker_model,
+                product_id=product_id,
+                job_id=job_id,
+            )
+        except Exception as e:
+            logger.warning(f"   ⚠️ Vision checker raised for {image_id}: {e}")
+            return build_consensus_record(
+                writer_model=writer_model,
+                checker_model=checker_model,
+                checker_failed=True,
+                checker_error=str(e),
+            )
+
+        if checker_analysis is None:
+            return build_consensus_record(
+                writer_model=writer_model,
+                checker_model=checker_model,
+                checker_failed=True,
+                checker_error="checker returned no tool_use block",
+            )
+
+        comparison = compare_vision_analyses(writer_analysis, checker_analysis)
+        if comparison.get("flagged"):
+            logger.warning(
+                f"   ⚠️ Vision readers disagree on {image_id} "
+                f"(agreement={comparison.get('agreement')}): "
+                f"{[d.get('field') for d in comparison.get('disagreements', [])]}"
+            )
+        return build_consensus_record(
+            writer_model=writer_model,
+            checker_model=checker_model,
+            comparison=comparison,
+        )
+
+    async def _category_context_for_vision(
+        self,
+        material_category: Optional[str],
+    ) -> str:
+        """Render this image's category guidance from the field registry.
+
+        Never raises. The registry is the source for what a category means (#393
+        Step 3), but an unreachable registry must degrade the analysis to the
+        generic one, not abort ingestion — and the unknown-category branch says so
+        explicitly rather than rendering an empty block that reads as "this category
+        has no guidance".
+        """
+        if not material_category:
+            return build_category_context_block(category_key=None)
+        try:
+            from app.services.metadata.field_registry import field_registry
+            await field_registry.ensure_loaded()
+            spec = field_registry.category(material_category)
+            return build_category_context_block(
+                category_key=spec.key,
+                display_name=spec.display_name,
+                extraction_tips=spec.extraction_tips,
+                controlled_vocab=spec.controlled_vocab,
+                skip_fields=spec.skip_fields,
+            )
+        except Exception as e:
+            logger.warning(
+                f"   ⚠️ Category context unavailable for '{material_category}' "
+                f"(vision proceeds generically): {e}"
+            )
+            return build_category_context_block(category_key=None)
+
     def _ocr_context_for_vision(
         self,
         *,
@@ -1182,6 +1293,8 @@ class ImageProcessingService:
         image_base64: str,
         image_id: str,
         vision_input_path: Optional[str] = None,
+        material_category: Optional[str] = None,
+        model_override: Optional[str] = None,
         product_id: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
@@ -1237,6 +1350,10 @@ class ImageProcessingService:
                 image_id=image_id,
                 job_id=job_id,
             )
+            # What this category means, from the field registry (#393 Step 3) — the
+            # one source for extraction tips, preferred vocabulary and what this kind
+            # of product genuinely does not have.
+            category_block = await self._category_context_for_vision(material_category)
 
             content = [
                 {
@@ -1248,11 +1365,18 @@ class ImageProcessingService:
                     },
                 },
                 {"type": "text", "text": ocr_block},
+                {"type": "text", "text": category_block},
                 {"type": "text", "text": self.material_analyzer_prompt},
             ]
 
             from app.config import get_settings as _get_settings_validation
-            model_to_use = _get_settings_validation().anthropic_model_validation
+            # `model_override` is how the #393 Step 4 checker runs the SAME prompt,
+            # the SAME OCR block and the SAME tool through a different model. Any
+            # difference in the payload would make the comparison a measure of the
+            # payload rather than of the reader.
+            model_to_use = (
+                model_override or _get_settings_validation().anthropic_model_validation
+            )
 
             # Force schema-locked output. tool_choice with `name` makes the model
             # MUST emit a tool_use block matching VISION_ANALYSIS_TOOL.input_schema.
@@ -1353,12 +1477,13 @@ class ImageProcessingService:
         image_base64: str,
         image_id: str,
         vision_input_path: Optional[str] = None,  # local crop, for OCR grounding (#393)
+        material_category: Optional[str] = None,  # registry key, for category context (#393)
         product_id: Optional[str] = None,  # FK for ai_usage_logs cost attribution
         job_id: Optional[str] = None,
-    ) -> Tuple[Optional[Dict[str, Any]], str]:
+    ) -> Tuple[Optional[Dict[str, Any]], str, Optional[Dict[str, Any]]]:
         """
         Run rich material analysis on a confirmed-material image and return
-        a structured `vision_analysis` JSON.
+        a structured `vision_analysis` JSON, plus the second reader's verdict.
 
         This is the input the Voyage understanding embedding consumes — it
         captures material type, color, texture, finish, applications, etc.
@@ -1385,23 +1510,33 @@ class ImageProcessingService:
                 f"   ⏭️ Skipping material analysis for {image_id}: "
                 f"Material Image Analyzer prompt not loaded"
             )
-            return None, VisionProvider.SKIPPED.value
+            return None, VisionProvider.SKIPPED.value, None
 
         claude_result = await self._try_claude_material_analysis(
             image_base64=image_base64,
             image_id=image_id,
             vision_input_path=vision_input_path,
+            material_category=material_category,
             product_id=product_id,
             job_id=job_id,
         )
         if claude_result is not None:
-            return claude_result, VisionProvider.CLAUDE.value
+            consensus = await self._run_vision_checker(
+                writer_analysis=claude_result,
+                image_base64=image_base64,
+                image_id=image_id,
+                vision_input_path=vision_input_path,
+                material_category=material_category,
+                product_id=product_id,
+                job_id=job_id,
+            )
+            return claude_result, VisionProvider.CLAUDE.value, consensus
 
         logger.error(
-            f"   ❌ Material analysis failed for {image_id} via Claude Opus 4.7 — "
+            f"   ❌ Material analysis failed for {image_id} — "
             f"image will be missing the understanding embedding"
         )
-        return None, VisionProvider.FAILED.value
+        return None, VisionProvider.FAILED.value, None
 
     async def _process_single_image_with_retry(
         self,
@@ -1584,10 +1719,11 @@ class ImageProcessingService:
                     if vision_input_path and os.path.exists(vision_input_path)
                     else image_path
                 )
-                vision_analysis, vision_analysis_source = await self._analyze_material_image(
+                vision_analysis, vision_analysis_source, vision_consensus = await self._analyze_material_image(
                     image_base64=vision_base64_raw,
                     image_id=image_id,
                     vision_input_path=ocr_source_path,
+                    material_category=material_category,
                     product_id=product_id,
                     job_id=job_id,
                 )
@@ -1607,10 +1743,21 @@ class ImageProcessingService:
                     persistable_source = False
                 if vision_analysis and persistable_source:
                     try:
-                        self.supabase_client.client.table('document_images').update({
+                        _va_payload: Dict[str, Any] = {
                             'vision_analysis': vision_analysis,
                             'vision_provider': vision_analysis_source,
-                        }).eq('id', image_id).execute()
+                        }
+                        # NULL stays NULL when no second read was attempted. That is
+                        # deliberate: "never checked" and "checked and agreed" must
+                        # not look alike (#393 Step 4).
+                        if vision_consensus is not None:
+                            _va_payload['vision_consensus'] = vision_consensus
+                            _va_payload['vision_consensus_flagged'] = bool(
+                                vision_consensus.get('flagged')
+                            )
+                        self.supabase_client.client.table('document_images').update(
+                            _va_payload
+                        ).eq('id', image_id).execute()
                     except Exception as va_persist_err:
                         logger.warning(
                             f"   ⚠️ Failed to persist vision_analysis on document_images "

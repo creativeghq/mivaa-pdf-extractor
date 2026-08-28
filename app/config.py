@@ -413,6 +413,18 @@ class Settings(BaseSettings):
         default="claude-opus-5",
         env="ANTHROPIC_MODEL_VALIDATION"
     )
+    # Optional SECOND reader for vision_analysis (issue #393 Step 4). Empty = off,
+    # which is the default: a second read doubles the per-image vision bill, so it is
+    # opted into deliberately once #393 Step 5 has a baseline to justify it.
+    #
+    # Must differ from `anthropic_model_validation` — the same model twice measures
+    # sampling noise, not agreement. A DIFFERENT LINEAGE is the point: two Anthropic
+    # models correlate their mistakes, so the second reader is only worth its cost if
+    # it fails differently from the first.
+    anthropic_model_vision_checker: str = Field(
+        default="",
+        env="ANTHROPIC_MODEL_VISION_CHECKER"
+    )
     anthropic_model_enrichment: str = Field(
         default="claude-opus-4-8",
         env="ANTHROPIC_MODEL_ENRICHMENT"
