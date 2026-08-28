@@ -30,6 +30,45 @@ from pydantic import BaseModel, Field, ConfigDict
 SCHEMA_VERSION: int = 2
 
 
+#: Token budget for ONE vision_analysis call, shared by every path that makes one.
+#:
+#: Must cover adaptive thinking AND the emitted tool arguments. It was 1024 on the
+#: ingestion path and 4096 on the other three — 1024 is under the floor for a schema
+#: carrying three lists, and a truncated tool_use block is reported as a FAILED
+#: analysis rather than a short one, so an under-budgeted call was indistinguishable
+#: from a refusal.
+VISION_MAX_TOKENS: int = 8192
+
+#: Reasoning effort. `high` is the API default; named here so the tuning knob is
+#: findable and applies to every path at once (#393 Step 5).
+VISION_EFFORT: str = "high"
+
+
+def vision_call_extra_kwargs() -> Dict[str, Any]:
+    """The `extra_kwargs` every vision_analysis call passes, identically.
+
+    WHY THIS EXISTS. The module docstring above says the call paths MUST stay
+    aligned or `vecs.image_understanding_embeddings` drifts, and they had already
+    drifted: ingestion ran Opus 5 at 8192 tokens with adaptive thinking, while the
+    backfill, the aspect-query path and the RAG path all ran `claude-opus-4-8` at
+    4096 with thinking OFF.
+
+    That is not a cosmetic difference. `serialize_vision_analysis_to_text` turns the
+    result into the string Voyage embeds, so a backfilled image and a freshly
+    ingested one landed in the same collection describing the same material in two
+    different regimes — and the query path analysed the SEARCH image in a third.
+    Nothing raises: every vector is well-formed.
+
+    Callers still pass their own `tools`/`tool_choice` because `call_with_tool`
+    builds those from the tool it is given; this carries the parameters that have
+    nothing to do with the schema and everything to do with staying comparable.
+    """
+    return {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": VISION_EFFORT},
+    }
+
+
 class VisionAnalysis(BaseModel):
     """Structured material analysis emitted by the vision model.
 

@@ -2427,7 +2427,10 @@ class RAGService:
             Dict with quality_score, confidence_score, material_properties.
         """
         try:
-            from app.models.vision_analysis import VISION_ANALYSIS_TOOL
+            from app.models.vision_analysis import (
+                VISION_ANALYSIS_TOOL, VISION_MAX_TOKENS, vision_call_extra_kwargs,
+            )
+            from app.config import get_settings
 
             anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
             if not anthropic_api_key:
@@ -2453,8 +2456,9 @@ class RAGService:
             try:
                 call = await call_with_tool(
                     task="rag_vision_analysis",
-                    model="claude-opus-4-8",
-                    max_tokens=4096,
+                    model=get_settings().anthropic_model_validation,
+                    max_tokens=VISION_MAX_TOKENS,
+                    extra_kwargs=vision_call_extra_kwargs(),
                     tool=VISION_ANALYSIS_TOOL,
                     messages=[{
                         'role': 'user',

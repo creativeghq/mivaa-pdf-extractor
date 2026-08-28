@@ -25,7 +25,11 @@ from app.models.vision_analysis import (
     SCHEMA_VERSION,
     VisionAnalysis,
     VISION_ANALYSIS_TOOL,
+    VISION_MAX_TOKENS,
+    vision_call_extra_kwargs,
 )
+from app.config import get_settings
+from app.services.images.vision_prompt import load_material_analyzer_prompt
 from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.embeddings.vecs_service import get_vecs_service
@@ -144,8 +148,9 @@ async def _analyze_one(
         try:
             result = await call_with_tool(
                 task="understanding_backfill_vision",
-                model="claude-opus-4-8",
-                max_tokens=4096,
+                model=get_settings().anthropic_model_validation,
+                max_tokens=VISION_MAX_TOKENS,
+                extra_kwargs=vision_call_extra_kwargs(),
                 messages=[{
                     "role": "user",
                     "content": [
@@ -159,11 +164,14 @@ async def _analyze_one(
                         },
                         {
                             "type": "text",
-                            "text": (
-                                "Use the emit_vision_analysis tool to "
-                                "return a structured catalog-grade material "
-                                "analysis for this image."
-                            ),
+                            # The SAME prompt row ingestion uses, not a hardcoded twin.
+                            # This said "Use the emit_vision_analysis tool to return a
+                            # structured catalog-grade material analysis for this image"
+                            # — a different instruction from the one every ingested image
+                            # received, writing into the same embedding collection. The
+                            # backfill exists to make stale rows match current ones; a
+                            # private prompt made it produce a third regime instead.
+                            "text": load_material_analyzer_prompt()[0],
                         },
                     ],
                 }],

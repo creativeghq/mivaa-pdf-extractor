@@ -117,6 +117,12 @@ async def call_with_tool(
     image_id: Optional[str] = None,
     required: Optional[List[str]] = None,
     confidence_key: Optional[str] = None,
+    #: Merged into the request alongside the forced tool. For call-shape parameters
+    #: that are not about the schema — `thinking`, `output_config.effort`. Without a
+    #: passthrough, every caller that wants adaptive thinking has to bypass this
+    #: helper and hand-build the tool_choice, which is exactly the drift it exists to
+    #: prevent. `tools`/`tool_choice` are owned here and cannot be overridden.
+    extra_kwargs: Optional[Dict[str, Any]] = None,
 ) -> ToolCallResult:
     """Call Claude with `tool` forced, and return its validated input plus usage.
 
@@ -156,6 +162,9 @@ async def call_with_tool(
         product_id=product_id,
         image_id=image_id,
         extra_kwargs={
+            **(extra_kwargs or {}),
+            # Last, deliberately: the forced tool is this helper's whole contract and a
+            # caller must not be able to unset it by passing its own `tool_choice`.
             "tools": [tool],
             "tool_choice": {"type": "tool", "name": tool["name"]},
         },

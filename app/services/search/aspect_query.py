@@ -96,7 +96,11 @@ async def analyze_query_image(query_image: str) -> Tuple[Optional[Any], Optional
     Forced `tool_choice` with no JSON-parse fallback, matching the ingestion path: a repaired
     or salvaged analysis would produce aspect text that never existed in the image.
     """
-    from app.models.vision_analysis import VisionAnalysis, VISION_ANALYSIS_TOOL
+    from app.models.vision_analysis import (
+        VisionAnalysis, VISION_ANALYSIS_TOOL, VISION_MAX_TOKENS,
+        vision_call_extra_kwargs,
+    )
+    from app.config import get_settings
 
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
     if not anthropic_key:
@@ -116,8 +120,9 @@ async def analyze_query_image(query_image: str) -> Tuple[Optional[Any], Optional
 
         result = await call_with_tool(
             task="aspect_query_vision_analysis",
-            model="claude-opus-4-8",
-            max_tokens=4096,
+            model=get_settings().anthropic_model_validation,
+            max_tokens=VISION_MAX_TOKENS,
+            extra_kwargs=vision_call_extra_kwargs(),
             messages=[{
                 "role": "user",
                 "content": [

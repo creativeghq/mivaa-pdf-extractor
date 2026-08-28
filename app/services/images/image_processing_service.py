@@ -23,6 +23,7 @@ from app.services.embeddings.real_embeddings_service import RealEmbeddingsServic
 from app.models.ocr_context import build_ocr_context_block
 from app.models.vision_category_context import build_category_context_block
 from app.models.vision_consensus import build_consensus_record, compare_vision_analyses
+from app.models.vision_analysis import VISION_MAX_TOKENS, vision_call_extra_kwargs
 from app.services.images.vision_provider import VisionProvider
 from app.services.pdf.pdf_processor import PDFProcessor
 # PageConverter removed - using simple PDF page numbers instead
@@ -91,20 +92,6 @@ def _detect_image_media_type(image_bytes: bytes, file_path: str = "") -> str:
 #
 # We map these to is_material=True/False for downstream processing
 # ============================================================================
-
-#: Token budget for one `vision_analysis` call (issue #393 Step 2).
-#:
-#: Must cover adaptive thinking AND the emitted tool arguments. The old value was
-#: 1024, which is under the floor for a schema carrying three lists plus a
-#: description sentence — and a truncated tool_use block is reported by this service
-#: as a FAILED analysis, not as a short one, so the symptom never named the cause.
-_VISION_MAX_TOKENS = 8192
-
-#: Reasoning effort for the vision call. `high` is the API default; naming it here
-#: makes it the single place to tune once #393 Step 5 has measured a baseline.
-#: `xhigh`/`max` are available and untried — do not raise on instinct, raise on a
-#: measured gap.
-_VISION_EFFORT = "high"
 
 MATERIAL_CATEGORIES = {'PRODUCT_IMAGE', 'MIXED'}  # These ARE material images
 NON_MATERIAL_CATEGORIES = {'DECORATIVE', 'TECHNICAL_DIAGRAM'}  # These are NOT
@@ -1404,7 +1391,7 @@ class ImageProcessingService:
                 #
                 # Adaptive thinking (below) also draws on this budget, so it has to cover
                 # reasoning AND the emitted arguments, not just the arguments.
-                max_tokens=_VISION_MAX_TOKENS,
+                max_tokens=VISION_MAX_TOKENS,
                 messages=[{"role": "user", "content": content}],
                 system=self.material_analyzer_system_prompt or None,
                 job_id=job_id,
@@ -1413,16 +1400,10 @@ class ImageProcessingService:
                 extra_kwargs={
                     "tools": [VISION_ANALYSIS_TOOL],
                     "tool_choice": {"type": "tool", "name": VISION_ANALYSIS_TOOL["name"]},
-                    # Reading a catalogue page is a perception task with real ambiguity
-                    # (is that a finish or a colour, is `IP44` this product's rating or
-                    # the one next to it). Thinking was never enabled here at all — and
-                    # on Opus 4.8, omitting the parameter means it is fully OFF, so every
-                    # analysis this pipeline has ever produced was a first-pass answer.
-                    "thinking": {"type": "adaptive"},
-                    # Explicit rather than implicit even though `high` is the default:
-                    # this is the tuning knob for #393 Step 5, and a knob nobody can find
-                    # does not get turned.
-                    "output_config": {"effort": _VISION_EFFORT},
+                    # Shared with the backfill, aspect-query and RAG paths, which is the
+                    # point: they all write into one embedding collection, so a parameter
+                    # that differs between them is a descriptive dialect that differs.
+                    **vision_call_extra_kwargs(),
                 },
             )
 
