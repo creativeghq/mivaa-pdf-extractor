@@ -909,7 +909,7 @@ class DynamicMetadataExtractor:
         try:
             call = await call_with_tool(
                 task="field_role_classification",
-                model="claude-sonnet-4-6",
+                model="claude-sonnet-5",
                 max_tokens=1500,
                 system=system_prompt,
                 tool=classify_tool,

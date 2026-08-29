@@ -73,7 +73,6 @@ class ConsensusValidator:
     # additions (Sonnet, Haiku 4.6, etc.) can slot in easily.
     MODEL_WEIGHTS = {
         "claude-haiku-4-5": 0.85,
-        "claude-sonnet-4-6": 0.92,
         "claude-sonnet-5": 0.95,
         "claude-opus-5": 1.0,
     }

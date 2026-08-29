@@ -265,7 +265,7 @@ class ProductEnrichmentService:
             from app.services.core.claude_helper import tracked_claude_call
             response = tracked_claude_call(
                 task="product_enrichment_description",
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 max_tokens=500,
                 messages=[{"role": "user", "content": prompt}],
             )

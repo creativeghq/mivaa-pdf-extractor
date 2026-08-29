@@ -599,7 +599,7 @@ class OCRService:
                 from app.services.core.claude_helper import tracked_claude_call
                 response = tracked_claude_call(
                     task="ocr_icon_metadata_extraction",
-                    model="claude-opus-4-8",
+                    model="claude-opus-5",
                     max_tokens=2048,
                     messages=[{
                         "role": "user",

@@ -2174,7 +2174,7 @@ class RAGService:
 
             response = await tracked_claude_call_async(
                 task="rag_query_document",
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
                 confidence_score=0.85,
@@ -2208,7 +2208,7 @@ class RAGService:
                 "metadata": {
                     "chunks_retrieved": len(chunks),
                     "processing_time_ms": latency_ms,
-                    "model": "claude-opus-4-8"
+                    "model": "claude-opus-5"
                 }
             }
 
@@ -2330,7 +2330,7 @@ class RAGService:
 
             response = await tracked_claude_call_async(
                 task=f"rag_advanced_query_{query_type}",
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
                 confidence_score=confidence,
@@ -2384,7 +2384,7 @@ class RAGService:
                     "query_type": query_type,
                     "has_conversation_context": conversation_context is not None,
                     "processing_time_ms": latency_ms,
-                    "model": "claude-opus-4-8"
+                    "model": "claude-opus-5"
                 }
             }
 
@@ -2521,7 +2521,7 @@ class RAGService:
                 'confidence_score': confidence_score,
                 'material_properties': material_properties,
                 'vision_analysis': result,  # full schema-locked dict for embedding
-                'model': 'claude-opus-4-8'
+                'model': 'claude-opus-5'
             }
 
         except Exception as e:
@@ -2585,7 +2585,7 @@ class RAGService:
             try:
                 call = await call_with_tool(
                     task="rag_image_classification",
-                    model="claude-opus-4-8",
+                    model="claude-opus-5",
                     max_tokens=1024,
                     tool=CLASSIFICATION_TOOL,
                     messages=[{
@@ -2633,7 +2633,7 @@ class RAGService:
                 'reason': reason,
                 'classification': classification,
                 'product_indicators': result.get('product_indicators') or [],
-                'model': 'claude-opus-4-8'
+                'model': 'claude-opus-5'
             }
 
         except Exception as e:

@@ -679,14 +679,15 @@ class Settings(BaseSettings):
         description="Max concurrent page render+embed operations (each holds a page bitmap)"
     )
 
-    # Document Chunking Models — Sonnet 4.6
-    # (2026-05-01). Chunking is a pure text task where Sonnet sits at the
-    # quality ceiling; Opus would be 5× more expensive on the most
-    # token-heavy step in the pipeline for a marginal accuracy gain.
+    # Document Chunking Models — Sonnet 5
+    # (2026-05-01, moved to the 5 family 2026-08-29). Chunking is a pure text
+    # task where Sonnet sits at the quality ceiling; Opus would be 5× more
+    # expensive on the most token-heavy step in the pipeline for a marginal
+    # accuracy gain.
     chunking_primary_model: str = Field(
-        default="claude-sonnet-4-6",
+        default="claude-sonnet-5",
         env="CHUNKING_PRIMARY_MODEL",
-        description="Primary model for chunking (text task — Sonnet 4.6 default)"
+        description="Primary model for chunking (text task — Sonnet 5 default)"
     )
     chunking_quality_threshold: float = Field(
         default=0.7,

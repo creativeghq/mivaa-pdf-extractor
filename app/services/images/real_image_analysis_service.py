@@ -448,7 +448,7 @@ class RealImageAnalysisService:
 
             response = await tracked_claude_call_async(
                 task="image_vision_validation",
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 max_tokens=1024,
                 messages=[
                     {
@@ -485,7 +485,7 @@ class RealImageAnalysisService:
                 raise RuntimeError(f"Claude returned no tool call: {e}")
 
             return {
-                "model": "claude-opus-4-8",
+                "model": "claude-opus-5",
                 "validation": validation,
                 "success": True
             }
@@ -497,7 +497,7 @@ class RealImageAnalysisService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="image_vision_validation",
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -540,7 +540,7 @@ class RealImageAnalysisService:
             from app.services.core.claude_helper import tracked_claude_call
             response = tracked_claude_call(
                 task="real_image_vision_validation",
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 max_tokens=1024,
                 messages=[
                     {
@@ -577,7 +577,7 @@ class RealImageAnalysisService:
                     raise json.JSONDecodeError("No JSON object found", content, 0)
 
                 return {
-                    "model": "claude-opus-4-8",
+                    "model": "claude-opus-5",
                     "validation": validation,
                     "success": True
                 }

@@ -117,7 +117,7 @@ class EmbeddingToTextService:
             # wrong at once, none of which failed:
             #
             #   * priced itself from a constant — `_calculate_cost` charged $3/$15 per
-            #     million while calling `claude-opus-4-8`. Those are Sonnet rates, so
+            #     million while calling `claude-opus-5`. Those are Sonnet rates, so
             #     every conversion was booked at roughly a fifth of what it cost.
             #     `ai_model_pricing` is the one USD source and the helper resolves
             #     against it.
@@ -155,7 +155,7 @@ class EmbeddingToTextService:
 
             response = await tracked_claude_call_async(
                 task="embedding_to_text_conversion",
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": full_prompt}],
                 extra_kwargs={

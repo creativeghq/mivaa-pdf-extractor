@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 OPUS_FALLBACK_MODEL = os.getenv(
     "PRODUCT_SPEC_SONNET_MODEL",
-    "claude-opus-4-8",
+    "claude-opus-5",
 )
 
 # Tier A coverage threshold — if PyMuPDF parser fills at least this many

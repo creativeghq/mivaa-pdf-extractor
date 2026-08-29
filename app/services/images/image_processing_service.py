@@ -227,7 +227,7 @@ class ImageProcessingService:
         # is single-tier (2026-05-01). The primary/validation parameters are kept for
         # call-site compatibility but the values flow into telemetry only.
         #
-        # `primary_model` was the literal 'claude-opus-4-8' while `validation_model`
+        # `primary_model` was the literal 'claude-opus-5' while `validation_model`
         # read the setting, so the comment above was false the moment the setting moved:
         # they were NOT the same model, and the one that classifies every image was
         # pinned a generation back with no way to change it short of a deploy.
@@ -274,7 +274,7 @@ class ImageProcessingService:
             Tool use guarantees schema-conformant JSON output (no regex
             recovery, no markdown stripping, no `_invalid_response` branch).
             The `model` argument is now a tag used purely for logging; the
-            actual model is always `claude-opus-4-8`.
+            actual model is always `claude-opus-5`.
             """
             image_base64 = base64_data
             detected_media_type = "image/jpeg"
@@ -301,7 +301,7 @@ class ImageProcessingService:
                 #     # Claude Opus 4.7 pricing as of 2026-05-01: $15/M input, $75/M output
                 #     cost = (input_tokens / 1e6) * 15.0 + (output_tokens / 1e6) * 75.0
                 #
-                # commented for Opus 4.7 while calling `claude-opus-4-8`, so every image
+                # commented for Opus 4.7 while calling `claude-opus-5`, so every image
                 # in every catalogue was booked at another model's rate. `ai_model_pricing`
                 # is the one USD source and the helper resolves against it. A hardcoded
                 # price does not fail — it produces a plausible number, which is why this
@@ -314,7 +314,7 @@ class ImageProcessingService:
                 try:
                     call = await call_with_tool(
                         task="image_classification",
-                        model='claude-opus-4-8',
+                        model='claude-opus-5',
                         max_tokens=1024,
                         tool=classify_tool,
                         # `cache_control` rides on the prompt block inside `messages`, so
@@ -349,7 +349,7 @@ class ImageProcessingService:
                         'is_material': False,
                         'confidence': 0.0,
                         'reason': 'No tool_use block returned',
-                        'model': 'claude-opus-4-8_invalid_response',
+                        'model': 'claude-opus-5_invalid_response',
                     }
 
                 result = call.data
@@ -368,19 +368,19 @@ class ImageProcessingService:
                     'reason': reason,
                     'classification': classification_category,
                     'product_indicators': result.get('product_indicators') or [],
-                    'model': 'claude-opus-4-8',
+                    'model': 'claude-opus-5',
                 }
 
             except Exception as e:
                 logger.error(
-                    f"❌ CLASSIFICATION FAILED for {image_path} | model=claude-opus-4-8 "
+                    f"❌ CLASSIFICATION FAILED for {image_path} | model=claude-opus-5 "
                     f"| {type(e).__name__}: {str(e)[:200]}"
                 )
                 return {
                     'is_material': False,
                     'confidence': 0.0,
-                    'reason': f'claude-opus-4-8 failed: {str(e)}',
-                    'model': 'claude-opus-4-8_failed',
+                    'reason': f'claude-opus-5 failed: {str(e)}',
+                    'model': 'claude-opus-5_failed',
                     'error': str(e),
                 }
             finally:

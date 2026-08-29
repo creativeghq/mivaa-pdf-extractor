@@ -112,9 +112,6 @@ _DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
 #: difference nobody will notice, which is the correct way for this to fail.
 _MODELS_WITH_TEMPERATURE = (
     "claude-haiku-4-5",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-6",
-    "claude-3",
 )
 
 

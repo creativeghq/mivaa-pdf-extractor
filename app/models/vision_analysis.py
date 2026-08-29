@@ -50,7 +50,7 @@ def vision_call_extra_kwargs() -> Dict[str, Any]:
     WHY THIS EXISTS. The module docstring above says the call paths MUST stay
     aligned or `vecs.image_understanding_embeddings` drifts, and they had already
     drifted: ingestion ran Opus 5 at 8192 tokens with adaptive thinking, while the
-    backfill, the aspect-query path and the RAG path all ran `claude-opus-4-8` at
+    backfill, the aspect-query path and the RAG path all ran `claude-opus-5` at
     4096 with thinking OFF.
 
     That is not a cosmetic difference. `serialize_vision_analysis_to_text` turns the

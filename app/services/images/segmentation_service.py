@@ -137,14 +137,14 @@ class SegmentationService:
     }
 
     async def _segment_with_anthropic(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
-        """Call Anthropic claude-opus-4-8 for segmentation, schema-locked via tool_use."""
+        """Call Anthropic claude-opus-5 for segmentation, schema-locked via tool_use."""
         from app.services.core.claude_tool_call import call_with_tool, ToolCallNotReturned
 
         media_type = self._detect_media_type(image_base64)
         try:
             result = await call_with_tool(
                 task="image_segmentation",
-                model="claude-opus-4-8",
+                model="claude-opus-5",
                 max_tokens=16384,
                 messages=[{
                     "role": "user",
