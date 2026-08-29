@@ -21,13 +21,34 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, ConfigDict
 
 
-# Bump this when the schema or the serialiser changes. The backfill cron
-# uses it to identify stale embeddings.
+# Bump this when the ANALYSIS THIS PRODUCES changes materially — not only when the
+# field set or the serialiser does.
+#
+# The wider rule is deliberate (2026-08-29). The old wording was "when the schema or
+# the serialiser changes", and #393 is exactly the case it failed to cover: the field
+# set did not move at all, while the analysis behind it changed enormously — OCR
+# grounding, category context, Opus 4.8 -> Opus 5, thinking off -> adaptive, strict
+# schema enforcement. Under the narrow reading nothing needed bumping, and every row
+# written before that work would have sat in `image_understanding_embeddings`
+# describing materials worse than the rows beside it, permanently.
+#
+# What this number actually protects is not the SHAPE of a row. It is whether two
+# rows in one collection are COMPARABLE — because
+# `serialize_vision_analysis_to_text` makes the vector encode the model's word
+# choices, so a better analysis is a different dialect, not just a better answer.
+# `understanding_backfill._fetch_stale_images` treats `schema_version < SCHEMA_VERSION`
+# as stale, and it is the ONLY switch that re-runs an existing corpus.
+#
+# v3 (2026-08-29, #393): the vision call gained an OCR grounding block, a
+# registry-derived category block, Opus 5, adaptive thinking and `strict: true`, and
+# all four call paths were aligned onto one regime. Bumped while `document_images`
+# held ZERO rows, so it cost nothing — the same bump against a real catalogue means
+# re-running vision on every image.
 #
 # v2 (2026-05-04): added 4 per-aspect serializers (color/texture/style/material)
 # that produce real per-image text from VisionAnalysis fields. The aspect
 # embedding collections (image_color_embeddings etc.) consume these.
-SCHEMA_VERSION: int = 2
+SCHEMA_VERSION: int = 3
 
 
 #: Token budget for ONE vision_analysis call, shared by every path that makes one.

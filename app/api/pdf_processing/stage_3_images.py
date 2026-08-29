@@ -836,10 +836,18 @@ async def _run_phase_3_ocr_for_product(
         # hit rather than a second PaddleOCR pass — which is what keeps this change
         # off the 7-15 min/product regression Stage 3 already fought once.
         #
-        # It is also the better transcription in its own right: the padded crop is a
-        # superset of the tight one, and the SKU or dimension label is routinely
-        # printed just OUTSIDE the tile it belongs to. Storing the superset in
-        # `document_images.ocr_text` improves image search for the same reason.
+        # It is also the richer transcription: the padded crop is a superset of the
+        # tight one, and the SKU or dimension label is routinely printed just OUTSIDE
+        # the tile it belongs to, so the tight crop loses exactly the text worth having.
+        #
+        # THE TRADE, stated because `document_images.ocr_text` is also what image search
+        # reads (`include_ocr_text`). Padding buys RECALL and costs PRECISION: on a dense
+        # catalogue page the margin can carry the NEIGHBOURING product's text, so a tile
+        # whose neighbour prints "R11" can now surface in a search for R11 that is not
+        # its rating. Accepted deliberately — for a materials catalogue the product's own
+        # SKU is the highest-value string on the page and losing it is the worse failure.
+        # If that inverts, revert to `src.get('path')` first and accept a second
+        # PaddleOCR pass on padded region crops.
         local_path = (
             src.get('vision_input_path')
             or src.get('path')
