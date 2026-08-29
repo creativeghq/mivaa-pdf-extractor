@@ -19,7 +19,7 @@ identical), then ``get_image_features``/``get_text_features`` → L2-normalize.
 
 This exposes a small custom contract the MIVAA SLIG client speaks — the SAME
 ``{inputs, parameters}`` request body and the SAME response shapes the HF endpoint
-used (see ``docs/api/slig-inference.md``), so the client's payload builders don't
+used (see ``docs/slig-inference.md``), so the client's payload builders don't
 change:
 
   GET  /health           → 200 once the model is loaded + warmed (unauth probe)

@@ -203,7 +203,7 @@ projection head** (older docstrings saying "SO400M / 1152→768 projection" are
 wrong; `config.json` is `model_type: "siglip"` with no `auto_map`).
 
 It exposes the **same `{inputs, parameters}` contract** the HF Inference Endpoint
-used (see [`docs/api/slig-inference.md`](../../docs/api/slig-inference.md)), so the
+used (see [`docs/slig-inference.md`](../../docs/slig-inference.md)), so the
 MIVAA SLIG client's payload builders don't change:
 
 ```

@@ -332,7 +332,7 @@ class DemoteFamilyRequest(BaseModel):
 
 class BroadcastApiAnnouncementRequest(BaseModel):
     template_slug: str = Field(default="api_broadcast.price_tracking_v6")
-    docs_url: str = Field(default="https://github.com/creativeghq/material-kai-vision-platform/blob/main/docs/api/price-monitoring-api.md")
+    docs_url: str = Field(default="https://github.com/creativeghq/material-kai-vision-platform/blob/main/docs/price-monitoring-api.md")
     api_base_url: str = Field(default="https://v1api.materialshub.gr")
     support_email: str = Field(default="support@materialshub.gr")
     dry_run: bool = Field(default=True)
