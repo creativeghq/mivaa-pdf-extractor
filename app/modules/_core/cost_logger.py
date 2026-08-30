@@ -18,6 +18,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
+from app.modules._core.cost_accounting import intended_cost_usd, settle_call_cost
 from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -120,9 +121,17 @@ def log_external_call(
     """Best-effort insert into ai_usage_logs. Never raises."""
     try:
         sb = get_supabase_client().client
-        billed = round(float(raw_cost_usd) * float(markup_multiplier), 6)
+        # A call that did not happen did not cost anything. This used to be
+        # `raw_cost_usd * markup` regardless of `success`, so every flat-rate provider booked
+        # its per-call price for refusals — $1.22 of billed spend in seven days that nobody
+        # ever spent. `success` lived only in metadata, so no cost view could tell.
+        raw_usd, billed, unbilled_reason = settle_call_cost(raw_cost_usd, markup_multiplier, success)
 
         meta: Dict[str, Any] = {"latency_ms": latency_ms, "success": success}
+        if unbilled_reason:
+            # Keep the price it WOULD have carried. Zeroing the cost must not destroy the
+            # difference between "this provider is free" and "this provider refused us".
+            meta["would_have_cost_usd"] = intended_cost_usd(raw_cost_usd)
         if error_message:
             meta["error"] = (error_message or "")[:240]
         if attribution:
@@ -137,9 +146,10 @@ def log_external_call(
             "model_name": model_name,
             "input_tokens": int(input_tokens or 0),
             "output_tokens": int(output_tokens or 0),
-            "raw_cost_usd": round(float(raw_cost_usd), 6),
+            "raw_cost_usd": raw_usd,
             "markup_multiplier": float(markup_multiplier),
             "billed_cost_usd": billed,
+            "unbilled_reason": unbilled_reason,
             "credits_debited": int(credits_debited or 0),
             "module_slug": module_slug,
             "product_id": attribution.product_id if attribution else None,
