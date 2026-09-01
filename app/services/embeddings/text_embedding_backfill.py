@@ -39,7 +39,15 @@ async def _fetch_products_missing_embedding(
     product_ids: Optional[List[str]],
 ) -> List[Dict[str, Any]]:
     """Products with no text embedding. Explicit product_ids override the
-    NULL filter so the admin UI can force a re-embed of specific rows."""
+    NULL filter so the admin UI can force a re-embed of specific rows.
+
+    The unfiltered scan skips services: they are written by servicesService with
+    no ingest-core call, so no embedding was ever owed on one, and nothing reads
+    a service by vector (search_products_by_embedding serves RAG and product
+    enrichment). Left in, a workspace's service list consumes the bounded scan
+    while products whose embedding genuinely failed wait behind it. An explicit
+    product_ids call still re-embeds whatever it names — that is an operator
+    pressing "re-embed" on a specific row, not a sweep."""
     client = get_supabase_client().client
     query = (
         client.table("products")
@@ -50,7 +58,7 @@ async def _fetch_products_missing_embedding(
     if product_ids:
         query = query.in_("id", product_ids)
     else:
-        query = query.is_("text_embedding_1024", "null")
+        query = query.is_("text_embedding_1024", "null").neq("item_type", "service")
     if workspace_id:
         query = query.eq("workspace_id", workspace_id)
     response = await asyncio.to_thread(query.execute)
