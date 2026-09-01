@@ -9,7 +9,7 @@ endpoint.
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from app.services.utilities.prompt_registry import load_prompt
 
@@ -136,30 +136,34 @@ class SegmentationService:
         },
     }
 
+    def _build_messages(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
+        """The one request body. Shared so the streaming path cannot ask a different
+        question than the blocking one and quietly return different zones."""
+        return [{
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": self._detect_media_type(image_base64),
+                        "data": image_base64,
+                    },
+                },
+                {"type": "text", "text": prompt},
+            ],
+        }]
+
     async def _segment_with_anthropic(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
         """Call Anthropic claude-opus-5 for segmentation, schema-locked via tool_use."""
         from app.services.core.claude_tool_call import call_with_tool, ToolCallNotReturned
 
-        media_type = self._detect_media_type(image_base64)
         try:
             result = await call_with_tool(
                 task="image_segmentation",
                 model="claude-opus-5",
                 max_tokens=16384,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": media_type,
-                                "data": image_base64,
-                            },
-                        },
-                        {"type": "text", "text": prompt},
-                    ],
-                }],
+                messages=self._build_messages(image_base64, prompt),
                 tool=self.SEGMENTATION_TOOL,
             )
         except ToolCallNotReturned as e:
@@ -167,22 +171,105 @@ class SegmentationService:
             return []
         return self._validate_zones(result.data.get("zones") or [])
 
+    async def stream_segment_image(
+        self, image_base64: str, workspace_id: Optional[str] = None,
+    ) -> AsyncIterator[Dict[str, Any]]:
+        """The same segmentation, one zone at a time as the model writes them.
+
+        Yields ``{"type": "zone", "index": int, "zone": {...}}`` per validated zone and
+        finally ``{"type": "done", "count": int, "processing_time_ms": int}``.
+
+        WHY
+        ---
+        `segment_image` cannot return anything until the tool input's last byte lands,
+        so a 22-zone bathroom render is ~40 seconds of a spinner followed by the entire
+        answer at once. The model has zone 1 within a few seconds; the wait is the
+        SERIALISATION, not the thinking. Streaming the array turns the same 40 seconds
+        into a list that fills in — and lets the caller start each zone's catalog
+        search while later zones are still being written, which is the larger half of
+        the wall clock.
+
+        Zones arrive in the model's own order, NOT sorted by confidence. Re-ranking
+        would mean holding them all back, which is the thing being fixed; a row that
+        jumps position after the user has started reading it is worse than an
+        imperfect order.
+
+        Validation is `_validate_zone` — the same function the blocking path uses, per
+        element rather than per list. Two segmentation paths that clamp differently
+        would be two different answers to "where is the floor".
+        """
+        from app.services.core.claude_tool_call import stream_with_tool
+        from app.services.core.streaming_json import ArrayItemStreamer
+
+        start = time.time()
+        prompt = await self._get_prompt()
+
+        if not self.anthropic_api_key:
+            raise RuntimeError("Segmentation backend not configured — set ANTHROPIC_API_KEY")
+
+        streamer = ArrayItemStreamer("zones")
+        emitted = 0
+
+        # `ToolCallNotReturned` is NOT caught here, unlike the blocking path where it
+        # degrades to an empty list. Streaming can tell the two apart and must: the
+        # zones already yielded are real and complete, and the failure means there were
+        # MORE that never arrived. Swallowing it would end the stream with a `done`
+        # that says the list is whole — the caller would cache a truncated answer as
+        # the permanent one for that image. The route turns it into an `error` event
+        # carrying the count that did make it.
+        async for event in stream_with_tool(
+            task="image_segmentation",
+            model="claude-opus-5",
+            max_tokens=16384,
+            messages=self._build_messages(image_base64, prompt),
+            tool=self.SEGMENTATION_TOOL,
+            workspace_id=workspace_id,
+        ):
+            if event["type"] != "partial":
+                continue
+            for raw_zone in streamer.feed(event["json"]):
+                zone = self._validate_zone(raw_zone, emitted)
+                if zone is None:
+                    continue
+                yield {"type": "zone", "index": emitted, "zone": zone}
+                emitted += 1
+
+        if streamer.dropped:
+            # A zone that closed but did not parse is a zone the model wrote and the
+            # user will never see. Rare enough to be a bug when it happens, and silent
+            # by nature — the list is simply one shorter.
+            logger.warning(
+                "streamed segmentation dropped %d unparseable zone(s)", streamer.dropped,
+            )
+
+        elapsed = round((time.time() - start) * 1000)
+        logger.info(f"✅ Segmentation (streamed): {emitted} zones in {elapsed}ms")
+        yield {"type": "done", "count": emitted, "processing_time_ms": elapsed}
+
     def _validate_zones(self, zones: List[Any]) -> List[Dict[str, Any]]:
-        """Clamp and default the zones a forced tool call returned.
+        """Clamp and default the zones a forced tool call returned."""
+        validated = []
+        for i, zone in enumerate(zones):
+            checked = self._validate_zone(zone, i)
+            if checked is not None:
+                validated.append(checked)
+        return validated
+
+    def _validate_zone(self, zone: Any, index: int) -> Optional[Dict[str, Any]]:
+        """Clamp and default ONE zone, or None if it is not usable.
 
         This is what survives of `_parse_zones`. The fence-stripping and the
         brace-walking truncation recovery are gone with the free-form contract that
         needed them — but the clamping stays: a schema can say `number`, it cannot say
         "between 0 and 1", and a bbox outside the image is still a bug.
         """
-        validated = []
-        for i, zone in enumerate(zones):
-            if not isinstance(zone, dict):
-                continue
-            bbox = zone.get("bbox", {})
-            if not all(k in bbox for k in ("x", "y", "w", "h")):
-                logger.debug(f"Zone {i} skipped — invalid bbox: {bbox}")
-                continue
+        if not isinstance(zone, dict):
+            return None
+        bbox = zone.get("bbox", {})
+        if not isinstance(bbox, dict) or not all(k in bbox for k in ("x", "y", "w", "h")):
+            logger.debug(f"Zone {index} skipped — invalid bbox: {bbox}")
+            return None
+        try:
             # Clamp bbox to [0, 1]
             zone["bbox"] = {
                 "x": max(0.0, min(1.0, float(bbox["x"]))),
@@ -191,19 +278,20 @@ class SegmentationService:
                 "h": max(0.01, min(1.0, float(bbox["h"]))),
             }
             zone["confidence"] = max(0.0, min(1.0, float(zone.get("confidence", 0.5))))
-            zone.setdefault("label", f"zone_{i}")
-            zone.setdefault("material_type", "unknown")
-            zone.setdefault("finish", "unknown")
-            zone.setdefault("dominant_color", "#888888")
-            zone.setdefault("zone_intent", "surface")
-            # Validate zone_intent value
-            if zone["zone_intent"] not in ("surface", "full_object", "upholstery", "sub_element"):
-                zone["zone_intent"] = "surface"
-            # search_query is optional — frontend falls back to material_type + finish if absent
-            zone.setdefault("search_query", "")
-            validated.append(zone)
-
-        return validated
+        except (TypeError, ValueError):
+            logger.debug(f"Zone {index} skipped — non-numeric bbox: {bbox}")
+            return None
+        zone.setdefault("label", f"zone_{index}")
+        zone.setdefault("material_type", "unknown")
+        zone.setdefault("finish", "unknown")
+        zone.setdefault("dominant_color", "#888888")
+        zone.setdefault("zone_intent", "surface")
+        # Validate zone_intent value
+        if zone["zone_intent"] not in ("surface", "full_object", "upholstery", "sub_element"):
+            zone["zone_intent"] = "surface"
+        # search_query is optional — frontend falls back to material_type + finish if absent
+        zone.setdefault("search_query", "")
+        return zone
 
 
 _instance: Optional[SegmentationService] = None

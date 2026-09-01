@@ -35,10 +35,11 @@ Rules:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
 
 import httpx
 
@@ -264,6 +265,60 @@ async def _call_anthropic_async(
             response=resp,
         )
     return _parse_anthropic_response(resp.json())
+
+
+async def _stream_anthropic_async(
+    *,
+    model: str,
+    messages: List[Dict[str, Any]],
+    max_tokens: int = 4096,
+    temperature: Optional[float] = 0.0,
+    system: Optional[Any] = None,
+    **extra: Any,
+) -> AsyncIterator[Dict[str, Any]]:
+    """Stream `POST /v1/messages`, yielding each decoded SSE event dict.
+
+    Same request as `_call_anthropic_async` with `stream: true` added, so `tools` /
+    `tool_choice` behave identically — a forced tool arrives as `content_block_start`
+    (an empty `input`) followed by `input_json_delta` fragments of the input's JSON
+    TEXT, which is what lets a caller act on the first array element without waiting
+    for the last.
+
+    Events are yielded raw. Assembling them into a `ClaudeResponse` is
+    `tracked_claude_stream_async`'s job, and it must happen there rather than here
+    because that is where the usage numbers have to reach the logger.
+    """
+    payload = _build_payload(
+        model=model, messages=messages, max_tokens=max_tokens,
+        temperature=temperature, system=system, extra=extra,
+    )
+    payload["stream"] = True
+    headers = _request_headers()
+    timeout = _request_timeout()
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+        async with client.stream(
+            "POST", _ANTHROPIC_API_URL, headers=headers, json=payload,
+        ) as resp:
+            if resp.status_code >= 400:
+                # The body has not been read yet on a streamed response, and the
+                # error detail is the only thing that makes a 400 actionable.
+                body = (await resp.aread()).decode("utf-8", "replace")[:500]
+                raise httpx.HTTPStatusError(
+                    f"Anthropic API {resp.status_code}: {body}",
+                    request=resp.request,
+                    response=resp,
+                )
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue  # `event:` lines restate `data`'s own `type`
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    yield json.loads(raw)
+                except ValueError:
+                    logger.warning("unparseable SSE frame from Anthropic: %.200s", raw)
 
 
 def _call_anthropic_sync(
@@ -510,6 +565,167 @@ async def tracked_claude_call_async(
         system_initiated=system_initiated,
     )
     return response
+
+
+async def tracked_claude_stream_async(
+    *,
+    task: str,
+    model: str,
+    messages: List[Dict[str, Any]],
+    max_tokens: int = 4096,
+    temperature: float = 0.0,
+    system: Optional[Any] = None,
+    job_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    confidence_score: Union[float, Callable[[Any], float]] = _DEFAULT_CONFIDENCE,
+    confidence_breakdown: Optional[Dict[str, float]] = None,
+    request_data: Optional[Dict[str, Any]] = None,
+    action: str = "use_ai_result",
+    extra_kwargs: Optional[Dict[str, Any]] = None,
+    product_id: Optional[str] = None,
+    image_id: Optional[str] = None,
+    system_initiated: bool = False,
+) -> AsyncIterator[Dict[str, Any]]:
+    """Streaming twin of `tracked_claude_call_async`, with the same logging contract.
+
+    Yields, in order:
+
+      ``{"type": "text", "text": str}``            — a text delta
+      ``{"type": "input_json", "partial": str}``   — a fragment of a tool input's JSON
+      ``{"type": "complete", "response": ClaudeResponse}`` — once, last
+
+    The assembled `ClaudeResponse` is shape-identical to the non-streaming one, so
+    `extract_tool_input`, `AICallLogger` and every existing reader work on it unchanged.
+
+    Cost is logged after the final event and failures go through
+    `_log_failed_claude_call_async`, exactly as the non-streaming path does. A streamed
+    call that skipped this would be spend Anthropic bills and no cost view can see —
+    the failure shape this module was written to close, reopened one API away.
+    """
+    start = time.time()
+    blocks: Dict[int, _ContentBlock] = {}
+    partials: Dict[int, List[str]] = {}
+    response = ClaudeResponse(model=model)
+
+    try:
+        async for event in _stream_anthropic_async(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system=system,
+            **(extra_kwargs or {}),
+        ):
+            etype = event.get("type")
+
+            if etype == "message_start":
+                message = event.get("message") or {}
+                response.id = message.get("id", "")
+                response.role = message.get("role", "assistant")
+                response.model = message.get("model", model)
+                usage = message.get("usage") or {}
+                response.usage.input_tokens = int(usage.get("input_tokens", 0) or 0)
+                response.usage.output_tokens = int(usage.get("output_tokens", 0) or 0)
+
+            elif etype == "content_block_start":
+                index = int(event.get("index", 0))
+                block = event.get("content_block") or {}
+                blocks[index] = _ContentBlock(
+                    type=block.get("type", "text"),
+                    text="" if block.get("type") == "text" else None,
+                    id=block.get("id"),
+                    name=block.get("name"),
+                    input={} if block.get("type") == "tool_use" else None,
+                )
+                partials[index] = []
+
+            elif etype == "content_block_delta":
+                index = int(event.get("index", 0))
+                delta = event.get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    chunk = delta.get("text") or ""
+                    block = blocks.get(index)
+                    if block is not None:
+                        block.text = (block.text or "") + chunk
+                    yield {"type": "text", "text": chunk}
+                elif delta.get("type") == "input_json_delta":
+                    chunk = delta.get("partial_json") or ""
+                    partials.setdefault(index, []).append(chunk)
+                    yield {"type": "input_json", "partial": chunk}
+
+            elif etype == "content_block_stop":
+                index = int(event.get("index", 0))
+                block = blocks.get(index)
+                if block is not None and block.type == "tool_use":
+                    text = "".join(partials.get(index) or [])
+                    try:
+                        block.input = json.loads(text) if text else {}
+                    except ValueError:
+                        # Left as None so `extract_tool_input` raises
+                        # ToolCallNotReturned rather than handing back a plausible
+                        # empty dict — a truncated reply is a broken contract, not
+                        # an empty answer.
+                        logger.warning(
+                            "tool input for %r did not parse after %d chars",
+                            block.name, len(text),
+                        )
+                        block.input = None
+
+            elif etype == "message_delta":
+                usage = event.get("usage") or {}
+                if "output_tokens" in usage:
+                    response.usage.output_tokens = int(usage.get("output_tokens") or 0)
+                delta = event.get("delta") or {}
+                if delta.get("stop_reason"):
+                    response.stop_reason = delta["stop_reason"]
+
+            elif etype == "error":
+                detail = (event.get("error") or {}).get("message", "unknown")
+                raise RuntimeError(f"Anthropic stream error: {detail}")
+
+        response.content = [blocks[i] for i in sorted(blocks)]
+
+    except BaseException as call_err:
+        _uid, _wsid = user_id, workspace_id
+        if not _uid and job_id:
+            try:
+                _uid, _ws = _resolve_user_from_job(job_id)
+                _wsid = _wsid or _ws
+            except Exception:
+                pass
+        await _log_failed_claude_call_async(
+            task=task, model=model,
+            latency_ms=int((time.time() - start) * 1000),
+            error=call_err, job_id=job_id, user_id=_uid, workspace_id=_wsid,
+            product_id=product_id, image_id=image_id,
+        )
+        raise
+
+    latency_ms = int((time.time() - start) * 1000)
+
+    if not user_id and job_id:
+        user_id, ws = _resolve_user_from_job(job_id)
+        workspace_id = workspace_id or ws
+
+    await AICallLogger().log_claude_call(
+        task=task,
+        model=model,
+        response=response,
+        latency_ms=latency_ms,
+        confidence_score=_resolve_confidence(confidence_score, response),
+        confidence_breakdown=confidence_breakdown or _DEFAULT_CONFIDENCE_BREAKDOWN,
+        request_data=request_data,
+        action=action,
+        job_id=job_id,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        product_id=product_id,
+        image_id=image_id,
+        system_initiated=system_initiated,
+    )
+
+    yield {"type": "complete", "response": response}
 
 
 def tracked_claude_call(

@@ -54,6 +54,26 @@ _PARSES = (
 #: Markdown-fence repair — the strongest single signal, counted separately.
 _FENCE = ("```json", '"```"', "```")
 
+#: The TRANSPORT, which is not a parser.
+#:
+#: `tracked_claude_stream_async` decodes Anthropic's own wire protocol: SSE frames, and
+#: the `input_json_delta` fragments that a FORCED tool call's input arrives in. Its
+#: `json.loads` reassembles a tool input, it does not repair prose — the model was never
+#: free to return prose, because `stream_with_tool` forces `tool_choice` one frame up,
+#: exactly as `call_with_tool` does for the blocking path.
+#:
+#: The sweep cannot see that: it reads one function at a time and looks for the literal
+#: `tool_choice`, which lives in the CALLER. So the exemption is by name, not by file —
+#: a real parser added to `claude_helper.py` tomorrow is still counted. This mirrors
+#: `test_anthropic_calls_go_through_the_helper.ALLOWED`, which already says the same
+#: thing about the same module for the same reason: the helper is where this is
+#: SUPPOSED to live.
+#:
+#: `test_the_transport_exemption_is_still_transport` below holds it honest.
+_TRANSPORT = {
+    "app/services/core/claude_helper.py::tracked_claude_stream_async",
+}
+
 
 def _files():
     return sorted(p for p in APP.rglob("*.py") if not any(d in p.parts for d in SKIP_DIRS))
@@ -85,6 +105,8 @@ def sweep():
             if not _PROVIDER.search(body):
                 continue
             key = f"{_rel(path)}::{node.name}"
+            if key in _TRANSPORT:
+                continue
             parsers.append(key)
             if any(f in body for f in _FENCE):
                 fences.append(key)
@@ -149,6 +171,47 @@ def test_the_shared_forced_tool_helper_exists_and_fails_loudly():
     assert "tracked_claude_call_async" in src, (
         "the helper no longer goes through the tracked call, so its spend would be "
         "invisible to every cost view (pipeline convention 10)"
+    )
+
+
+def test_the_transport_exemption_is_still_transport():
+    """The one exempted function must still BE the streaming transport for a forced
+    tool call. An exemption nobody re-checks is how a real parser ends up living behind
+    one — so this asserts the two facts the exemption rests on, and fails the moment
+    either stops being true.
+    """
+    helper = (APP / "services" / "core" / "claude_helper.py").read_text(encoding="utf-8")
+    body = ast.get_source_segment(
+        helper,
+        next(
+            (n for n in ast.walk(ast.parse(helper))
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and n.name == "tracked_claude_stream_async"),
+            None,
+        ),
+    )
+    assert body, (
+        "tracked_claude_stream_async is gone — drop it from _TRANSPORT rather than "
+        "leaving an exemption that covers nothing"
+    )
+    assert "input_json_delta" in body, (
+        "the exempted function no longer decodes tool-input deltas, so its json.loads "
+        "is parsing something else — take it off _TRANSPORT and count it"
+    )
+
+    caller = (APP / "services" / "core" / "claude_tool_call.py").read_text(encoding="utf-8")
+    stream = ast.get_source_segment(
+        caller,
+        next(
+            (n for n in ast.walk(ast.parse(caller))
+             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and n.name == "stream_with_tool"),
+            None,
+        ),
+    )
+    assert stream and '"tool_choice": {"type": "tool"' in stream, (
+        "stream_with_tool no longer FORCES the tool, so the streamed reply is free-form "
+        "after all and the transport exemption is unearned"
     )
 
 

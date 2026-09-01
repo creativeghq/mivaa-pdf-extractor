@@ -21,7 +21,7 @@ from pathlib import Path
 from collections import defaultdict, deque
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile, status, Request
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 
 from ..schemas.images import (
     ImageAnalysisRequest,
@@ -1082,31 +1082,15 @@ class SegmentRequest(_BaseModel):
     workspace_id: Optional[str] = None
 
 
-@router.post("/segment", response_model=SegmentResponse)
-async def segment_image(
-    request: SegmentRequest,
-    current_user: User = Depends(get_current_user),
-):
-    """
-    **🔍 Material Zone Segmentation**
+async def _resolve_segment_image_base64(request: "SegmentRequest") -> str:
+    """The image bytes for a segment request, as base64, or an HTTPException.
 
-    Detect distinct material surfaces in a 3D rendered image using Claude Opus vision.
-    Returns bounding boxes (relative 0–1) + metadata per zone.
-
-    Accepts either `image_url` (fetched server-side, no CORS issues) or
-    `image_base64` (raw base64 without data URI prefix).
+    Shared by the blocking and streaming routes so the SSRF guard (#250 E2) cannot
+    hold on one of them and not the other — the streaming route was the second caller
+    and a second copy of this is exactly how a guard goes missing.
     """
-    # Authorize the caller for the requested workspace (invariant 1); the route
-    # does not filter by it, so this is the check, not a value.
-    await resolve_workspace_id(current_user, request.workspace_id)
-    from app.services.images.segmentation_service import get_segmentation_service
-    import time
-    import httpx
     import base64
 
-    start = time.time()
-
-    # Resolve base64 — prefer image_url (server-side fetch avoids CORS)
     image_base64 = request.image_base64
     if not image_base64 and request.image_url:
         # #250 E2: caller-supplied URL fetched server-side → SSRF-guard + no redirect follow.
@@ -1126,6 +1110,34 @@ async def segment_image(
 
     if not image_base64:
         raise HTTPException(status_code=400, detail="Provide image_url or image_base64")
+    return image_base64
+
+
+@router.post("/segment", response_model=SegmentResponse)
+async def segment_image(
+    request: SegmentRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    **🔍 Material Zone Segmentation**
+
+    Detect distinct material surfaces in a 3D rendered image using Claude Opus vision.
+    Returns bounding boxes (relative 0–1) + metadata per zone.
+
+    Accepts either `image_url` (fetched server-side, no CORS issues) or
+    `image_base64` (raw base64 without data URI prefix).
+
+    See `/segment/stream` for the same work delivered one zone at a time.
+    """
+    # Authorize the caller for the requested workspace (invariant 1); the route
+    # does not filter by it, so this is the check, not a value.
+    await resolve_workspace_id(current_user, request.workspace_id)
+    from app.services.images.segmentation_service import get_segmentation_service
+    import time
+
+    start = time.time()
+
+    image_base64 = await _resolve_segment_image_base64(request)
 
     _billed = await meter_operation(current_user, "sam-segment", "image_segment")  # #250 H1
     try:
@@ -1145,3 +1157,76 @@ async def segment_image(
             detail=f"Segmentation failed: {str(e)}",
         )
 
+
+
+@router.post("/segment/stream")
+async def segment_image_stream(
+    request: SegmentRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    **🔍 Material Zone Segmentation — streamed**
+
+    The same detection as `POST /segment`, delivered as newline-delimited JSON so the
+    caller can render each zone the moment the model finishes writing it instead of
+    waiting ~40s for the whole array.
+
+    Response is `application/x-ndjson`; one JSON object per line:
+
+        {"type":"zone","index":0,"zone":{...}}
+        {"type":"zone","index":1,"zone":{...}}
+        {"type":"done","count":12,"processing_time_ms":41203}
+        {"type":"error","error":"..."}          ← instead of `done`, on failure
+
+    NDJSON rather than SSE because that is already the streaming shape in this platform
+    (agent-chat streams the same way and the frontend has a reader for it), and a
+    second framing convention would be a second parser to keep correct.
+
+    **An error arrives in the BODY, not the status.** Headers are sent with the first
+    zone, so a failure after that point cannot become a 500 — a caller that only checks
+    `response.ok` will read a truncated list as a complete one. Check for the `done`
+    line.
+    """
+    await resolve_workspace_id(current_user, request.workspace_id)
+    from app.services.images.segmentation_service import get_segmentation_service
+
+    # Everything that can legitimately be a 4xx happens BEFORE the response starts —
+    # once the first byte is out the status code is spent.
+    image_base64 = await _resolve_segment_image_base64(request)
+
+    _billed = await meter_operation(current_user, "sam-segment", "image_segment")  # #250 H1
+
+    async def emit():
+        emitted = 0
+        try:
+            service = get_segmentation_service()
+            async for event in service.stream_segment_image(
+                image_base64, workspace_id=request.workspace_id,
+            ):
+                if event.get("type") == "zone":
+                    emitted += 1
+                yield json.dumps(event) + "\n"
+        except Exception as e:
+            logger.error(f"Streamed segmentation failed: {e}", exc_info=True)
+            # Refund only when the run produced NOTHING. A stream that died after ten
+            # zones did the work and cost the tokens; refunding it would pay the user
+            # back for an answer they are looking at.
+            if emitted == 0:
+                refund_operation(current_user, _billed, "image_segment")  # #250 H1
+            yield json.dumps({
+                "type": "error",
+                "error": f"Segmentation failed: {e}",
+                "zones_before_failure": emitted,
+            }) + "\n"
+
+    return StreamingResponse(
+        emit(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            # nginx buffers proxied responses by default, which would hold every zone
+            # until the stream closed and make this endpoint behave exactly like the
+            # blocking one while looking correct in every test that reads the body.
+            "X-Accel-Buffering": "no",
+        },
+    )
