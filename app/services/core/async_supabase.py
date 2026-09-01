@@ -84,8 +84,15 @@ class AsyncSupabaseClient:
     def from_(self, name: str) -> AsyncQuery:
         return AsyncQuery(object.__getattribute__(self, '_client').from_(name))
 
-    def rpc(self, fn: str, params: dict) -> AsyncQuery:
-        return AsyncQuery(object.__getattribute__(self, '_client').rpc(fn, params))
+    def rpc(self, fn: str, params: dict, get: bool = False) -> AsyncQuery:
+        # `get` rides through because a read-only (STABLE/IMMUTABLE) RPC is called over
+        # GET so the central retry patch may repeat it — see `read_rpc` in
+        # supabase_client. A façade that quietly drops the keyword is not drop-in: the
+        # call raises TypeError inside an enclosing `except Exception` and the work
+        # simply never happens.
+        return AsyncQuery(
+            object.__getattribute__(self, '_client').rpc(fn, params, get=get)
+        )
 
     def schema(self, schema_name: str) -> 'AsyncSupabaseClient':
         """Return a new AsyncSupabaseClient scoped to a different Postgres schema."""

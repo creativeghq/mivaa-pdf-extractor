@@ -50,7 +50,7 @@ from pydantic import BaseModel, Field
 
 from app.dependencies import current_user_id, get_current_user, get_workspace_context
 from app.middleware.jwt_auth import User, WorkspaceContext
-from app.services.core.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client, read_rpc
 from app.services.integrations.tracked_mentions_service import (
     get_tracked_mentions_service,
 )
@@ -1059,7 +1059,7 @@ async def cron_refresh(
         return {"success": True, "skipped": "module_disabled", "due_count": 0,
                 "processed": 0, "succeeded": 0, "failed": 0, "results": []}
     try:
-        r = sb.rpc("get_internal_tracked_mentions_due", {"p_limit": limit}).execute()
+        r = read_rpc(sb, "get_internal_tracked_mentions_due", {"p_limit": limit}).execute()
         due = r.data or []
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1144,7 +1144,7 @@ async def cron_probe_llm(
         return {"success": True, "skipped": "module_disabled", "due_count": 0,
                 "processed": 0, "succeeded": 0, "failed": 0}
     try:
-        r = sb.rpc("get_tracked_mentions_due_for_llm_probe", {
+        r = read_rpc(sb, "get_tracked_mentions_due_for_llm_probe", {
             "p_limit": limit, "p_min_age_days": min_age_days,
         }).execute()
         due = r.data or []

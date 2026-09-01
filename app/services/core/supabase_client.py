@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 from supabase import create_client, Client, ClientOptions
 from app.config import Settings
 from app.utils.exceptions import SupabaseQueryError, TenancyViolation
+from app.utils.readonly_rpc import read_rpc_param_error
+from app.utils.retry_helper import describe_exception
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,28 @@ def log_sink_write():
         yield
     finally:
         _log_sink_guard.active = previous
+
+
+def read_rpc(sb, func: str, params: Optional[Dict[str, Any]] = None):
+    """Build a READ-ONLY RPC call, sent over GET so a transient blip can be retried.
+
+    PostgREST sends every `.rpc()` as POST, and the retry patch below refuses to repeat a
+    POST because it cannot tell a SELECT from a credit debit. A function declared STABLE
+    or IMMUTABLE may be called with GET instead — and PostgREST answers 405 if it is not,
+    so the database's own volatility stays the authority and no list here can go stale.
+
+    Use this for every read-only RPC on a path that runs after an idle gap (every cron:
+    Supabase closes the pooled connection between ticks, so the first call of the tick is
+    the one that dies). `app.utils.readonly_rpc` explains which argument shapes cannot make
+    the trip; they raise here rather than becoming a cast error inside Postgres.
+
+    Returns the builder, so call sites keep their `.execute()`.
+    """
+    payload: Dict[str, Any] = dict(params or {})
+    reason = read_rpc_param_error(func, payload)
+    if reason:
+        raise ValueError(f"read_rpc({func!r}) cannot be sent over GET: {reason}")
+    return sb.rpc(func, payload, get=True)
 
 
 def _install_postgrest_retry_once(
@@ -170,13 +194,13 @@ def _install_postgrest_retry_once(
                                 "error",
                                 f"❌ PostgREST transient failure on a NON-IDEMPOTENT "
                                 f"request — not retrying (a repeat could duplicate the "
-                                f"write): {e}",
+                                f"write): {describe_exception(e)}",
                             )
                             raise
                         _say(
                             "warning",
                             f"⚠️ PostgREST transient failure "
-                            f"(attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                            f"(attempt {attempt + 1}/{max_retries + 1}): {describe_exception(e)}. "
                             f"Retrying in {delay:.1f}s...",
                         )
                         time.sleep(delay)

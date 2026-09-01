@@ -26,7 +26,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from app.services.core.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client, read_rpc
 from app.services.integrations.perplexity_price_search_service import (
     get_perplexity_price_search_service,
     PriceHit as InternalPriceHit,
@@ -850,7 +850,7 @@ async def product_search(body: PublicProductSearchRequest, request: Request) -> 
     query_text = body.query.strip()
     sb = get_supabase_client().client
     try:
-        resp = sb.rpc("search_public_products", {"p_query": query_text, "p_limit": 24}).execute()
+        resp = read_rpc(sb, "search_public_products", {"p_query": query_text, "p_limit": 24}).execute()
         rows = resp.data or []
     except Exception as e:
         logger.warning(f"public product-search failed: {e}")

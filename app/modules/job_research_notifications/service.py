@@ -36,7 +36,7 @@ import httpx
 
 from app.config import settings
 from app.modules._core.registry import is_module_enabled
-from app.services.core.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client, read_rpc
 from app.services.integrations.cron_billing import charge_cron
 
 logger = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ class JobDigestDispatcher:
             return {"skipped": True, "reason": "module disabled"}
 
         try:
-            res = self.sb.rpc("get_tracked_jobs_due_for_digest", {
+            res = read_rpc(self.sb, "get_tracked_jobs_due_for_digest", {
                 "p_current_hour_utc": int(current_hour_utc),
                 "p_limit": 200,
             }).execute()

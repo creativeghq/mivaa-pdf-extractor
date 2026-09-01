@@ -36,6 +36,7 @@ from app.dependencies import get_current_user, get_workspace_context, require_ad
 from app.middleware.jwt_auth import User, WorkspaceContext
 from app.modules.job_research_notifications.service import get_job_digest_dispatcher
 from app.services.integrations.job_research_service import get_job_research_service
+from app.services.core.supabase_client import read_rpc
 from app.services.integrations import job_cost_logger as costs
 from app.services.integrations.cron_billing import charge_cron
 from app.utils.paid_door import metered_door
@@ -713,7 +714,7 @@ async def cron_refresh(
     if not _module_enabled(svc.sb, "job-research"):
         return {"skipped": "module_disabled", "due": 0, "outcomes": []}
     try:
-        res = svc.sb.rpc("get_internal_tracked_jobs_due", {"p_limit": limit}).execute()
+        res = read_rpc(svc.sb, "get_internal_tracked_jobs_due", {"p_limit": limit}).execute()
         rows = res.data or []
     except Exception as e:
         logger.warning(f"job-cron: get_internal_tracked_jobs_due failed: {e}")
