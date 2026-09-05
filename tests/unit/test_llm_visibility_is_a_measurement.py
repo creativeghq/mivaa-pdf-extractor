@@ -177,6 +177,21 @@ class TestCitationsAreCaptured:
             ann = ast.unparse(fn.returns) if fn.returns else ""
             assert ann == "ModelReply", f"{fn.name} returns {ann!r}, not ModelReply"
 
+    def test_http_errors_carry_the_provider_reason(self):
+        """A bare `HTTP 429` is a rate limit AND an unfunded account at once.
+
+        OpenAI answers both with 429; only the body's `code` / `message`
+        (`insufficient_quota`, `credit_balance_exhausted`) says which. Recording the
+        number alone is how 212 ChatGPT probes were read as "never mentions us" in
+        2026-08. The prefix stays (the rollup counts on it); the reason rides behind it.
+        """
+        src = _SERVICE.read_text(encoding="utf-8")
+        body = src[src.index("    async def _call_model("):src.index("    async def _call_anthropic(")]
+        assert "_describe_http_error(e)" in body
+        helper = src[src.index("def _describe_http_error("):src.index("class ModelReply(NamedTuple):")]
+        assert 'f"HTTP {e.response.status_code}"' in helper
+        assert '"code"' in helper and '"message"' in helper
+
     def test_probe_persists_both_citation_columns(self):
         src = _SERVICE.read_text(encoding="utf-8")
         body = src[src.index("    async def probe("):src.index("    # ───── Visibility analytics")]

@@ -120,6 +120,32 @@ COST_TABLE: Dict[str, Dict[str, float]] = {
 # Citations
 # ────────────────────────────────────────────────────────────────────────────
 
+def _describe_http_error(e: httpx.HTTPStatusError) -> str:
+    """`HTTP 429` on its own cannot tell a rate limit from an unfunded account.
+
+    OpenAI answers both with 429 — `insufficient_quota` / `credit_balance_exhausted` is
+    "add credits", a plain 429 is "slow down" — and 212 ChatGPT probes were once read as
+    "assistants never mention us" on the strength of the bare number. The recorded error
+    keeps the `HTTP <status>` prefix (what the rollup counts on) and carries the
+    provider's own code and message, bounded, so the panel can say WHY there is no verdict.
+    """
+    detail = ""
+    try:
+        body = e.response.json()
+        err = body.get("error") if isinstance(body, dict) else None
+        if isinstance(err, dict):
+            code = err.get("code") or err.get("type") or ""
+            detail = " ".join(str(x) for x in (code, err.get("message") or "") if x).strip()
+        elif isinstance(err, str):
+            detail = err
+        elif isinstance(body, dict) and body.get("message"):
+            detail = str(body["message"])
+    except Exception:
+        detail = (e.response.text or "").strip()
+    head = f"HTTP {e.response.status_code}"
+    return f"{head} {detail[:160]}".strip() if detail else head
+
+
 class ModelReply(NamedTuple):
     """One answering model's reply. Was a bare 5-tuple until citations arrived —
     a NamedTuple so the next field does not silently shift every unpack."""
@@ -561,7 +587,7 @@ class LlmMentionProbeService:
             return ModelReply("", 0, 0, 0, f"unsupported model {model}", [])
         except httpx.HTTPStatusError as e:
             return ModelReply("", 0, 0, int((time.time() - start) * 1000),
-                              f"HTTP {e.response.status_code}", [])
+                              _describe_http_error(e), [])
         except Exception as e:
             return ModelReply("", 0, 0, int((time.time() - start) * 1000), str(e)[:200], [])
 
