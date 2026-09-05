@@ -53,6 +53,11 @@ ALLOWED = {
     # caller. Adding Depends(get_current_user) here 401s the cron path, which sends
     # no bearer at all.
     ("app/api/rag_routes.py", "kb_docs_rechunk"),
+    # Same gate (`_require_internal_kb_caller`: x-cron-secret OR the service-role bearer,
+    # 401 otherwise) and the same reason: an internal runner that scores the KB retrieval
+    # golden set, not user-reachable. Its body workspace_id only narrows WHICH cases run;
+    # every case row carries its own workspace, and the scorer reads that, not the body.
+    ("app/api/rag_routes.py", "kb_retrieval_eval_run"),
     # Same shape: x-cron-secret gated (checked inline, 401 on mismatch), internal-only
     # (called by the seo-research edge function), not user-reachable. There is no
     # tracked-subject row to read an owner off, so the body workspace_id is the trusted

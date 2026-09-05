@@ -828,7 +828,12 @@ class SearchKBRequest(BaseModel):
     """Request model for searching knowledge base documents."""
     workspace_id: str = Field(..., description="UUID of the workspace")
     query: str = Field(..., description="Search query", min_length=1)
-    search_type: str = Field(default="semantic", description="Search type: semantic, full_text, or hybrid")
+    search_type: str = Field(
+        default="semantic",
+        description="semantic (kb_match_docs, vector) or full_text (kb_search_docs: ILIKE on title/content, newest first). "
+                    "'hybrid' is refused with 400 — this endpoint has no fusion; the admin SearchInterface runs "
+                    "kb_keyword_search alongside a semantic call and merges client-side.",
+    )
     limit: int = Field(default=20, description="Maximum number of results", ge=1, le=100)
     category_id: Optional[str] = Field(None, description="Restrict search to a single category UUID")
     category_slug: Optional[str] = Field(None, description="Restrict search to a category by slug (e.g. 'pricing')")
@@ -891,7 +896,7 @@ async def search_kb_documents(
     supabase_client: SupabaseClient = Depends(), current_user: dict = Depends(get_current_user)
 ) -> SearchKBResponse:
     """
-    Search knowledge base documents using semantic, full-text, or hybrid search.
+    Search knowledge base documents: semantic (vector) or full_text (ILIKE).
 
     **Architecture:**
     1. Frontend calls MIVAA API with search query
@@ -908,15 +913,18 @@ async def search_kb_documents(
 
     **Search Types:**
     - **semantic**: Vector similarity using pgvector cosine distance
-      - Generates query embedding via OpenAI
+      - Generates the query embedding via Voyage (kb_query_vector, input_type=query)
       - Compares against stored document embeddings
       - Returns results with similarity scores (0.0 - 1.0)
       - Minimum threshold: 0.5
     - **full_text**: ILIKE-based keyword matching
-      - Searches title and content fields
+      - Searches title and content fields, newest first (no relevance ranking)
       - Case-insensitive
-    - **hybrid**: Combination of semantic + full-text
-      - Weighted scoring for best results
+    - **hybrid**: REFUSED with 400. `kb_search_docs` takes `search_type` and never reads
+      it, so the "weighted scoring" this docstring used to promise never existed — the
+      mode was ILIKE-by-created_at under another name. The admin SearchInterface fuses
+      `kb_keyword_search` + semantic client-side; the agent path fuses inside the
+      `kb_hybrid_doc_chunks` RPC.
 
     **Example Request:**
     ```json
@@ -974,6 +982,17 @@ async def search_kb_documents(
         import time
         start_time = time.time()
 
+        if request.search_type not in ("semantic", "full_text"):
+            # 'hybrid' used to be accepted and silently ran the ILIKE branch: kb_search_docs
+            # takes search_type and never reads it. Refuse rather than misreport.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"search_type '{request.search_type}' is not supported here: use 'semantic' or 'full_text'. "
+                    "There is no fused mode on this endpoint; the agent path fuses inside kb_hybrid_doc_chunks."
+                ),
+            )
+
         if request.search_type == "semantic":
             # ONE derivation — `entity_type="search"` used to be passed here, which
             # falls through `input_type = "query" if entity_type == "query" else
@@ -1014,7 +1033,7 @@ async def search_kb_documents(
             raw_results = response.data if response.data else []
 
         else:
-            # Use the kb_search_docs RPC function for full-text and hybrid
+            # full_text: kb_search_docs (ILIKE on title/content, newest first)
             rpc_args = {
                 'search_query': request.query,
                 'search_workspace_id': workspace_id,

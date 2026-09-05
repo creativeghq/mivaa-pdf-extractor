@@ -84,12 +84,9 @@ class SearchSuggestionsService:
             if db_suggestions:
                 metadata["sources"].append("database")
             
-            # 2. Get trending searches if enabled
-            if include_trending and len(suggestions) < limit:
-                trending = await self._get_trending_matches(query, limit - len(suggestions))
-                suggestions.extend(trending)
-                if trending:
-                    metadata["sources"].append("trending")
+            # 2. (trending) removed 2026-09-05: `trending_searches` never had a producer, so
+            #    this read an empty table on every autocomplete call. `include_trending`
+            #    stays in the signature for API compatibility and does nothing.
             
             # 3. Get recent searches for user if enabled
             if include_recent and user_id and len(suggestions) < limit:
@@ -182,40 +179,6 @@ class SearchSuggestionsService:
             logger.error(f"Error getting database suggestions: {e}")
             return []
     
-    async def _get_trending_matches(self, query: str, limit: int) -> List[SearchSuggestion]:
-        """Get trending searches that match the query."""
-        try:
-            response = self.client.table("trending_searches") \
-                .select("*") \
-                .ilike("query_text", f"%{escape_like(query)}%") \
-                .eq("time_window", "daily") \
-                .order("trend_score", desc=True) \
-                .limit(limit) \
-                .execute()
-            
-            if response.data:
-                return [
-                    SearchSuggestion(
-                        id=row["id"],
-                        suggestion_text=row["query_text"],
-                        suggestion_type="trending",
-                        category=row.get("category"),
-                        popularity_score=min(float(row.get("trend_score", 0)) / 100, 1.0),
-                        click_count=row.get("search_count", 0),
-                        impression_count=row.get("search_count", 0),
-                        ctr=0.5,  # Estimate for trending
-                        metadata={
-                            "growth_rate": row.get("growth_rate", 0),
-                            "unique_users": row.get("unique_users_count", 0)
-                        }
-                    )
-                    for row in response.data
-                ]
-            return []
-        except Exception as e:
-            logger.error(f"Error getting trending matches: {e}")
-            return []
-    
     async def _get_recent_user_searches(
         self,
         user_id: str,
@@ -224,11 +187,13 @@ class SearchSuggestionsService:
     ) -> List[SearchSuggestion]:
         """Get user's recent searches that match the query."""
         try:
-            response = self.client.table("search_analytics") \
-                .select("query_text, created_at") \
+            # search_query_tracking is the one live search producer (MIVAA /api/rag/search).
+            # search_analytics, which this read before, never had a writer.
+            response = self.client.table("search_query_tracking") \
+                .select("query_text, timestamp") \
                 .eq("user_id", user_id) \
                 .ilike("query_text", f"%{escape_like(query)}%") \
-                .order("created_at", desc=True) \
+                .order("timestamp", desc=True) \
                 .limit(limit) \
                 .execute()
             
@@ -242,7 +207,7 @@ class SearchSuggestionsService:
                         click_count=1,
                         impression_count=1,
                         ctr=1.0,
-                        metadata={"last_searched": row["created_at"]}
+                        metadata={"last_searched": row["timestamp"]}
                     )
                     for i, row in enumerate(response.data)
                 ]
@@ -254,15 +219,14 @@ class SearchSuggestionsService:
     async def _get_popular_matches(self, query: str, limit: int) -> List[SearchSuggestion]:
         """Get popular searches that match the query."""
         try:
-            # Get popular searches from analytics
-            response = self.client.rpc(
-                "get_popular_searches",
-                {
-                    "p_query_filter": query,
-                    "p_limit": limit,
-                    "p_days": 30
-                }
-            ).execute()
+            # popular_searches is a view over search_query_tracking (30-day window), the
+            # one live search producer. The RPC this used to call read a table nothing wrote.
+            response = self.client.table("popular_searches") \
+                .select("query_text, search_count, unique_users, avg_results") \
+                .ilike("query_text", f"%{escape_like(query)}%") \
+                .order("search_count", desc=True) \
+                .limit(limit) \
+                .execute()
             
             if response.data:
                 return [
@@ -440,10 +404,10 @@ class SearchSuggestionsService:
     async def _get_fuzzy_matches(self, query: str) -> List[QueryCorrection]:
         """Get fuzzy matches from popular searches."""
         try:
-            # Get popular searches
-            response = self.client.table("search_analytics") \
+            # Recent real queries (search_query_tracking is the one live search producer).
+            response = self.client.table("search_query_tracking") \
                 .select("query_text") \
-                .order("created_at", desc=True) \
+                .order("timestamp", desc=True) \
                 .limit(1000) \
                 .execute()
 
@@ -504,9 +468,9 @@ class SearchSuggestionsService:
                     synonyms[word] = self.synonyms_map[word][:max_synonyms_per_term]
                     expanded_terms.extend(synonyms[word])
 
-            # 2. Get related concepts from search analytics
-            related = await self._get_related_concepts(query, max_related_concepts)
-            related_concepts.extend(related)
+            # 2. (related concepts from follow-up queries) removed 2026-09-05: no table ever
+            #    recorded a follow-up query, so this was an empty list on every call.
+            #    `max_related_concepts` stays in the signature for API compatibility.
 
             # 3. If AI is enabled, use Claude for semantic expansion
             if use_ai:
@@ -558,35 +522,6 @@ class SearchSuggestionsService:
                 related_concepts=[],
                 confidence_score=0.0
             )
-
-    async def _get_related_concepts(self, query: str, limit: int) -> List[str]:
-        """Get related concepts from search analytics."""
-        try:
-            # Get queries that users searched after this query
-            response = self.client.table("search_analytics") \
-                .select("follow_up_queries") \
-                .ilike("query_text", f"%{escape_like(query)}%") \
-                .not_.is_("follow_up_queries", "null") \
-                .limit(100) \
-                .execute()
-
-            if not response.data:
-                return []
-
-            # Collect all follow-up queries
-            related = []
-            for row in response.data:
-                if row.get("follow_up_queries"):
-                    related.extend(row["follow_up_queries"])
-
-            # Count frequency and return most common
-            from collections import Counter
-            counter = Counter(related)
-            return [query for query, _ in counter.most_common(limit)]
-
-        except Exception as e:
-            logger.error(f"Error getting related concepts: {e}")
-            return []
 
     async def track_suggestion_click(
         self,

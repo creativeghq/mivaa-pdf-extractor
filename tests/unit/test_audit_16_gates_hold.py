@@ -372,52 +372,34 @@ def test_a_failed_classifier_does_not_fall_back_to_keyword_heuristics():
     )
 
 
-# ════════════════════════════ M3-12 — degraded strategies reported success
+# ════════════════════════════ M3-12 — the dead multi-strategy search stays dead
 
 
-def test_every_degrading_strategy_records_that_it_degraded():
-    """Returning [] on failure is fine; doing it invisibly is not."""
-    src = _read(UNIFIED)
-    tree = ast.parse(src)
-    offenders = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if not node.name.startswith("_search_"):
-            continue
-        for handler in [n for n in ast.walk(node) if isinstance(n, ast.ExceptHandler)]:
-            returns_empty = any(
-                isinstance(n, ast.Return)
-                and isinstance(n.value, ast.List)
-                and not n.value.elts
-                for n in ast.walk(handler)
-            )
-            if not returns_empty:
-                continue
-            records = any(
-                isinstance(n, ast.Call)
-                and isinstance(n.func, ast.Name)
-                and n.func.id == "_record_degradation"
-                for n in ast.walk(handler)
-            )
-            if not records:
-                offenders.append(f"{node.name}:{handler.lineno}")
-    assert not offenders, (
-        f"strategies return [] on failure without recording it: {offenders}. "
-        'search() then reports success=True, so "all strategies threw" and '
-        '"nothing matched" become the same response.'
-    )
-
-
-def test_search_does_not_claim_success_when_everything_degraded():
-    src = _read(UNIFIED)
-    assert "success=not all_failed" in src, (
-        "search() hardcodes success=True again"
-    )
-    assert '"degraded_strategies": degraded' in src, (
-        "degraded_strategies is not surfaced, so a consumer cannot tell "
-        '"matched nothing" from "could not look"'
-    )
+def test_the_unreachable_search_strategies_do_not_come_back():
+    """`UnifiedSearchService.search()` and its eleven `_search_*` strategies were deleted
+    on 2026-09-05. No route reached them — rag_routes only ever called
+    `_parse_query_with_ai` — and what they did was wrong in ways no test could see:
+    `_search_semantic` read the FIRST 20 rows of document_chunks with no ORDER BY and
+    ranked those in numpy (an arbitrary sample, not a nearest-neighbour search), and
+    `_search_hybrid` summed a cosine similarity and a ts_rank as if they shared a scale.
+    Product search is `RAGService.multi_vector_search`; KB search is the
+    `kb_hybrid_doc_chunks` RPC. The M3-12 degradation guard that used to live here
+    covered code nothing executed. Checked on DEFINITIONS (ast), not on text: the
+    module docstring names the deleted functions on purpose, so a grep would fail."""
+    tree = ast.parse(_read(UNIFIED))
+    defined = {
+        n.name for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+    }
+    for name in ("search", "_search_semantic", "_search_hybrid", "_search_keyword",
+                 "_search_multi_vector", "_merge_strategy_results", "_record_degradation",
+                 "SearchStrategy", "SearchConfig", "SearchResponse"):
+        assert name not in defined, (
+            f"{name} is defined again in unified_search_service.py - the strategy machinery "
+            "was deleted because no route reached it and its semantic branch ranked an "
+            "arbitrary 20-row sample"
+        )
+    assert "_parse_query_with_ai" in defined, "query understanding must remain: rag_routes calls it"
 
 
 def test_the_visual_search_handler_does_not_report_an_empty_success():

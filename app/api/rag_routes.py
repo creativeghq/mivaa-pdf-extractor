@@ -6293,6 +6293,21 @@ class KBRechunkRequest(BaseModel):
     offset: int = Field(default=0, ge=0, description="Backfill paging offset")
 
 
+def _require_internal_kb_caller(http_request: Request, route: str) -> None:
+    """Trusted internal callers only: the x-cron-secret (backfill/cron) OR the
+    service-role bearer (the kb-generate-embedding edge fn already holds it). Not
+    user-reachable. The /api/rag prefix is excluded from the JWT middleware, so this
+    check IS the gate for every route that calls it."""
+    secret = (http_request.headers.get("x-cron-secret") or "").strip()
+    expected = (os.getenv("CRON_SECRET") or "").strip()
+    authz = (http_request.headers.get("authorization") or "").strip()
+    svc = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or "").strip()
+    ok = (expected and secret == expected) or (svc and authz == f"Bearer {svc}")
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail=f"x-cron-secret or service-role bearer required for {route}")
+
+
 @router.post("/kb-docs/rechunk")
 async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
     """Chunk + embed kb_docs into kb_doc_chunks (section-level retrieval). Idempotent
@@ -6305,16 +6320,7 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
     is a backfill filter from a trusted internal caller, not a tenancy claim. Adding
     `Depends(get_current_user)` here would 401 the cron path, which sends no bearer at
     all."""
-    secret = (http_request.headers.get("x-cron-secret") or "").strip()
-    expected = (os.getenv("CRON_SECRET") or "").strip()
-    authz = (http_request.headers.get("authorization") or "").strip()
-    svc = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_SERVICE_KEY") or "").strip()
-    # Trusted internal callers only: the x-cron-secret (backfill/cron) OR the service-role
-    # bearer (the kb-generate-embedding edge fn already holds it). Not user-reachable.
-    ok = (expected and secret == expected) or (svc and authz == f"Bearer {svc}")
-    if not ok:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
-                            detail="x-cron-secret or service-role bearer required for kb-docs/rechunk")
+    _require_internal_kb_caller(http_request, "kb-docs/rechunk")
 
     sb = get_supabase_client()
     from app.services.kb.kb_chunk_service import rechunk_doc
@@ -6348,6 +6354,92 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
         "failed_embeds": sum(r.get("failed", 0) for r in results),
         "errors": [r for r in results if r.get("error")],
         "next_offset": (request.offset + request.limit) if request.all else None,
+        "results": results,
+    }
+
+
+class KBRetrievalEvalRequest(BaseModel):
+    """Run the KB retrieval golden set (kb_retrieval_eval_cases)."""
+    workspace_id: Optional[str] = Field(None, description="Restrict to one workspace's cases")
+    case_keys: Optional[List[str]] = Field(None, description="Restrict to these case keys")
+    modes: List[str] = Field(
+        default_factory=lambda: ["vector", "hybrid"],
+        description="Retrieval modes to score: vector (kb_match_doc_chunks semantics) and/or hybrid",
+    )
+    batch_id: Optional[str] = Field(None, description="Reuse a batch id (default: mint one)")
+
+
+@router.post("/kb-eval/run")
+async def kb_retrieval_eval_run(request: KBRetrievalEvalRequest, http_request: Request):
+    """Score the KB retriever against its golden set: did the RIGHT document enter the
+    candidate set?
+
+    One Voyage call per question (`kb_query_vector`, the only way to build a KB query
+    vector), then `kb_retrieval_eval_score` in SQL for each mode. That function runs the
+    agent path's own RPC (`kb_hybrid_doc_chunks`, with the agent's access levels) and
+    records the rank of the first expected document among distinct documents. Both modes
+    land in one batch, so every run is an A/B of vector-only against hybrid;
+    `kb_retrieval_eval_summary` derives recall@5 and MRR, and the nightly
+    `kb.retrieval_recall` probe reads the same rows. No model judges a model.
+
+    Internal only — same gate as /kb-docs/rechunk: x-cron-secret or the service-role
+    bearer. Not user-reachable; `workspace_id` here is a filter from a trusted caller,
+    not a tenancy claim (deliberately NOT `resolve_workspace_id`, which would 401 the
+    cron path that sends no bearer)."""
+    _require_internal_kb_caller(http_request, "kb-eval/run")
+
+    modes = [m for m in (request.modes or []) if m in ("vector", "hybrid")] or ["vector", "hybrid"]
+    sb = get_supabase_client()
+
+    q = (
+        sb.client.table("kb_retrieval_eval_cases")
+        .select("id, key, workspace_id, question, expected_doc_ids, kind")
+        .eq("is_active", True)
+    )
+    if request.workspace_id:
+        q = q.eq("workspace_id", request.workspace_id)
+    if request.case_keys:
+        q = q.in_("key", request.case_keys)
+    cases = q.order("key").execute().data or []
+
+    batch_id = request.batch_id or str(uuid4())
+    from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
+    embedding_model = getattr(RealEmbeddingsService(), "voyage_model", None) or "voyage-4"
+
+    results: List[Dict[str, Any]] = []
+    embed_failures: List[str] = []
+    for case in cases:
+        vec = await kb_query_vector(case["question"], workspace_id=case["workspace_id"])
+        if not vec:
+            # None means NO VECTOR. A case that could not be embedded says nothing about
+            # retrieval, so it is reported as a runner failure, never recorded as a rank.
+            embed_failures.append(case["key"])
+            continue
+        for mode in modes:
+            scored = sb.client.rpc(
+                "kb_retrieval_eval_score",
+                {"p_case_id": case["id"], "p_query_embedding": vec, "p_mode": mode},
+            ).execute().data or []
+            row = scored[0] if scored else {}
+            sb.client.table("kb_retrieval_eval_runs").insert({
+                "case_id": case["id"],
+                "batch_id": batch_id,
+                "mode": mode,
+                "rank": row.get("rank"),
+                "top_doc_ids": row.get("top_doc_ids") or [],
+                "top_similarities": row.get("top_similarities") or [],
+                "candidate_chunks": row.get("candidate_chunks") or 0,
+                "embedding_model": embedding_model,
+            }).execute()
+            results.append({"key": case["key"], "kind": case["kind"], "mode": mode, "rank": row.get("rank")})
+
+    summary = sb.client.rpc("kb_retrieval_eval_summary", {"p_batch_id": batch_id}).execute().data or []
+    return {
+        "batch_id": batch_id,
+        "cases": len(cases),
+        "modes": modes,
+        "embed_failures": embed_failures,
+        "summary": summary,
         "results": results,
     }
 
@@ -6463,6 +6555,9 @@ async def search_knowledge_base(
         # floor can be judged from one real query instead of another investigation.
         chunk_floor_stats: Optional[Dict[str, Any]] = None
         entity_floor_stats: Optional[Dict[str, Any]] = None
+        # Filled by the kb_docs branch: how many candidates each retrieval channel
+        # produced (vector_only / lexical_only / both). None = the branch did not run.
+        kb_channel_stats: Optional[Dict[str, Any]] = None
 
         async def _query_embedding_1024() -> Optional[List[float]]:
             """Voyage 1024D embedding of the query. Memoized; returns None on failure
@@ -6770,6 +6865,13 @@ async def search_knowledge_base(
                 if query_embedding:
                     rpc_args: Dict[str, Any] = {
                         "query_embedding": query_embedding,
+                        # The lexical channel. kb_hybrid_doc_chunks runs an English/Greek
+                        # tsvector match over the SAME gated candidate set as the vector
+                        # channel and fuses the two by rank position (RRF). The raw
+                        # question goes here, not the query-understanding rewrite: a
+                        # framework name or a model code is exactly what a rewrite
+                        # paraphrases away.
+                        "query_text": request.query,
                         "match_workspace_id": request.workspace_id,
                         # 0.4, not 0.5. A long KB doc (e.g. a 7k-char company
                         # overview) has ONE averaged embedding, so even a bull's-eye
@@ -6814,11 +6916,22 @@ async def search_knowledge_base(
                     # via match_agent_id). So a big manual returns its most relevant
                     # SECTIONS in full instead of a truncated head, and matching is
                     # per-section rather than one weak whole-doc vector.
-                    kb_response = supabase.client.rpc("kb_match_doc_chunks", rpc_args).execute()
+                    kb_response = supabase.client.rpc("kb_hybrid_doc_chunks", rpc_args).execute()
+                    kb_rows = kb_response.data or []
 
-                    if kb_response.data:
+                    # Which channel found what. A lexical channel that never produces a
+                    # rank is indistinguishable from one that does not exist, so the
+                    # counts ship in search_metadata rather than living in a log line.
+                    kb_channel_stats = {
+                        "candidates": len(kb_rows),
+                        "vector_only": sum(1 for r in kb_rows if r.get("vector_rank") is not None and r.get("lexical_rank") is None),
+                        "lexical_only": sum(1 for r in kb_rows if r.get("lexical_rank") is not None and r.get("vector_rank") is None),
+                        "both": sum(1 for r in kb_rows if r.get("vector_rank") is not None and r.get("lexical_rank") is not None),
+                    }
+
+                    if kb_rows:
                         kb_count = 0
-                        for ch in kb_response.data:
+                        for ch in kb_rows:
                             cat_id = ch.get("category_id")
                             # Trigger-keyword gate: agent-level categories only unlock when
                             # their keyword is in the query (public categories always in set).
@@ -6850,8 +6963,20 @@ async def search_knowledge_base(
                                 "category_slug": ch.get("category_slug"),
                                 "category_name": ch.get("category_name"),
                                 "price_doc_type": ch.get("price_doc_type"),
-                                "metadata": {"source": "kb_doc_chunks", "visibility": ch.get("visibility"), "heading": heading},
-                                "relevance_score": ch.get("similarity", 0.0),
+                                "metadata": {
+                                    "source": "kb_doc_chunks",
+                                    "visibility": ch.get("visibility"),
+                                    "heading": heading,
+                                    # Per-hit provenance: which channel(s) surfaced it.
+                                    "vector_rank": ch.get("vector_rank"),
+                                    "lexical_rank": ch.get("lexical_rank"),
+                                    "rrf_score": ch.get("rrf_score"),
+                                },
+                                # Exact cosine for every hit, lexical-only ones included. The
+                                # RPC returns NULL only for a section with no vector at all;
+                                # the response model needs a float, so that case reads 0.0
+                                # with its lexical_rank in metadata saying why it is here.
+                                "relevance_score": ch.get("similarity") if ch.get("similarity") is not None else 0.0,
                                 # `source` tells the caller WHICH corpus this hit is
                                 # addressed in, and therefore which read-section mode
                                 # ('kb' vs 'pdf') can read outward from it. The two
@@ -6905,6 +7030,9 @@ async def search_knowledge_base(
                 # is the same response whether every branch ran clean or every branch
                 # raised — which is the silent-zero shape at the top of the read path.
                 "branch_status": branch_status,
+                # Vector / lexical / both counts for the kb_docs branch. A lexical channel
+                # that is silently dead shows as lexical_only=0 AND both=0 on every query.
+                "kb_channels": kb_channel_stats,
                 "degraded": any(v != "ok" for v in branch_status.values()),
             }
         )
