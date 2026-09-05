@@ -150,10 +150,24 @@ def start_run(
         return None
 
 
+#: `agent_run_logs_level_check` — the DB's vocabulary, which is the edge writer's too.
+#: Python's logging spells the third one "warning", and every caller here did as well, so each
+#: warning-level row was refused with 23514 and the refusal was logged at DEBUG (MIVAA-5JV).
+_RUN_LOG_LEVELS = frozenset({"debug", "info", "warn", "error"})
+_RUN_LOG_LEVEL_ALIASES = {"warning": "warn", "critical": "error", "fatal": "error"}
+
+
+def normalize_run_log_level(level: str) -> str:
+    """Map a logging-style level onto the CHECK's four values; unknown → `info`."""
+    lvl = (level or "").strip().lower()
+    lvl = _RUN_LOG_LEVEL_ALIASES.get(lvl, lvl)
+    return lvl if lvl in _RUN_LOG_LEVELS else "info"
+
+
 def append_log(
     *,
     run_id: Optional[str],
-    level: str,                 # debug | info | warning | error
+    level: str,                 # debug | info | warn | error (aliases normalised)
     message: str,
     data: Optional[Dict[str, Any]] = None,
 ) -> None:
@@ -163,14 +177,15 @@ def append_log(
         sb = get_supabase_client().client
         sb.table("agent_run_logs").insert({
             "run_id": run_id,
-            "level": level,
+            "level": normalize_run_log_level(level),
             "message": message[:480],
             "data": data or {},
         }).execute()
         # Lightweight heartbeat — every log update bumps it
         sb.table("agent_runs").update({"last_heartbeat": _utc_iso()}).eq("id", run_id).execute()
     except Exception as e:
-        logger.debug(f"job-agent-runs: append_log failed: {e}")
+        # A lost run log is a lost audit line; at DEBUG nobody ever saw the 23514 above.
+        logger.warning(f"job-agent-runs: append_log failed for run {run_id}: {e}")
 
 
 def complete_run(
