@@ -160,10 +160,14 @@ class LlmMentionProbeService:
 
     @property
     def gemini_key(self) -> str:
-        # Two names for one credential, kept because deployments use both.
+        # Three names for one credential, kept because deployments use all of them: the
+        # Supabase edge runtime holds it as GOOGLE_GENERATIVE_AI_API_KEY (the AI SDK's
+        # name), which is why Gemini ran for image generation on the edge while this
+        # service, reading only the first two, listed it as "no key" (2026-09-05).
         return (
             resolve_secret("GEMINI_API_KEY").value
             or resolve_secret("GOOGLE_GENAI_API_KEY").value
+            or resolve_secret("GOOGLE_GENERATIVE_AI_API_KEY").value
             or ""
         )
 
@@ -178,14 +182,46 @@ class LlmMentionProbeService:
         shell access to the host. A missing key is the commonest cause and the least
         visible: the provider simply does not appear.
         """
+        gemini_source = "missing"
+        for name in ("GEMINI_API_KEY", "GOOGLE_GENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"):
+            hit = resolve_secret(name)
+            if hit.value:
+                gemini_source = hit.source
+                break
         return {
             "anthropic": resolve_secret("ANTHROPIC_API_KEY").source,
-            "gemini": (
-                resolve_secret("GEMINI_API_KEY").source
-                if resolve_secret("GEMINI_API_KEY").value
-                else resolve_secret("GOOGLE_GENAI_API_KEY").source
-            ),
+            "gemini": gemini_source,
             "perplexity": resolve_secret("PERPLEXITY_API_KEY").source,
+        }
+
+    def roster(self) -> Dict[str, Any]:
+        """Every model each tier asks for, and whether this deployment can run it.
+
+        The probe matrix is `tier ∩ configured keys`, and a model dropped for a missing
+        key leaves no row anywhere — the report simply has one assistant fewer, which
+        reads as "we only measure Claude" rather than "Gemini's key is not set". This
+        is the answer to that question, without shell access to the host.
+        """
+        sources = self.key_sources()
+        provider_of = {
+            HAIKU: "anthropic", OPUS: "anthropic",
+            GEMINI_FLASH: "gemini", GEMINI_PRO: "gemini",
+            SONAR: "perplexity", SONAR_PRO: "perplexity",
+        }
+        return {
+            "tiers": {
+                tier: [
+                    {
+                        "model": m,
+                        "provider": provider_of.get(m, "unknown"),
+                        "key_source": sources.get(provider_of.get(m, ""), "missing"),
+                        "enabled": bool(self._key_for(m)),
+                    }
+                    for m in models
+                ]
+                for tier, models in TIER_MODELS.items()
+            },
+            "key_sources": sources,
         }
 
     def _key_for(self, model: str) -> str:

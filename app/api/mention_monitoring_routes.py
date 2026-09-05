@@ -776,6 +776,18 @@ async def get_tracked_llm_visibility_trend(
     return {"success": True, "data": trend}
 
 
+@router.get("/probe-providers")
+async def probe_providers(user: Dict[str, Any] = Depends(get_current_user)):
+    """Which assistants each probe tier asks, and which this deployment can actually run.
+
+    No secret values leave here — only where each provider's key comes from (env, db,
+    default, missing). A member reading "we only measure Claude" needs this to learn that
+    Gemini is one missing key away and Perplexity is unfunded, not that the platform
+    chose two assistants.
+    """
+    return {"success": True, "data": get_llm_mention_probe_service().roster()}
+
+
 @router.post("/track/{tracked_mention_id}/probe-llm")
 async def probe_tracked_llm(
     tracked_mention_id: str,
