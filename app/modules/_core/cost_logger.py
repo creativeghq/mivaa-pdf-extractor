@@ -37,6 +37,7 @@ class CostAttribution:
     __slots__ = (
         "user_id", "workspace_id", "subject_key", "subject_id",
         "product_id", "refresh_run_id", "api_key_id", "module_slug",
+        "metered_upstream",
     )
 
     def __init__(
@@ -50,6 +51,7 @@ class CostAttribution:
         refresh_run_id: Optional[str] = None,
         api_key_id: Optional[str] = None,
         module_slug: Optional[str] = None,
+        metered_upstream: bool = False,
     ):
         self.subject_key = subject_key
         self.subject_id = subject_id
@@ -66,6 +68,12 @@ class CostAttribution:
         # and `seo-toolkit` showed 0 rows while the operator dashboard read a hardcoded 0.
         # It travels with the ATTRIBUTION because the attribution is built by the call site.
         self.module_slug = module_slug
+        # True when the caller has ALREADY reserved credits for this call and will settle them
+        # against the cost we report — the edge spend gate (`_shared/tools/dataforseo-spend-gate.ts`
+        # in the main repo) does exactly that for every SEO-agent tool. A paid client that charges
+        # its own flat unit per call must stand down when this is set, or one call is billed twice:
+        # that was every SEO-agent DataForSEO call until 2026-09-05 (134 in the prior 30 days).
+        self.metered_upstream = bool(metered_upstream)
 
     def to_metadata(self) -> Dict[str, Any]:
         meta: Dict[str, Any] = {}

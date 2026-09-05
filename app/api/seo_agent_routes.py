@@ -64,6 +64,9 @@ def _attribution_from(body_attr: Optional[Dict[str, Any]]) -> Optional[CostAttri
         # with mention-monitoring, so without this every SEO call was billed to that module's
         # rollup and `seo-toolkit` reported zero cost forever. (#286)
         module_slug="seo-toolkit",
+        # The edge spend gate sets this when it has reserved the caller's credits itself; the
+        # unified client then skips its flat per-call debit instead of charging the call twice.
+        metered_upstream=bool(body_attr.get("metered_upstream")),
     )
 
 

@@ -310,6 +310,19 @@ class DataForSEOUnifiedClient:
             )
             return 0
 
+        if getattr(attribution, "metered_upstream", False):
+            # The edge spend gate (`_shared/tools/dataforseo-spend-gate.ts`, main repo) reserved
+            # this call's credits BEFORE asking us and settles them against the `cost` we report
+            # back. Charging the flat unit here as well billed every SEO-agent call twice — 134
+            # calls in the 30 days to 2026-09-05, one duplicate credit each. One call, one charge:
+            # the gate that measures the real cost keeps it, and this one stands down. `0` is the
+            # "proceed, nothing taken" answer, so `_refund_call` will not mint a refund for it.
+            logger.info(
+                "[dataforseo] %s: metered by the edge spend gate — not charging again",
+                operation or "call",
+            )
+            return 0
+
         try:
             from app.services.integrations.job_cost_logger import debit_credits
             ok = debit_credits(

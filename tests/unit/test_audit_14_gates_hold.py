@@ -153,6 +153,41 @@ def test_a_metering_fault_does_not_become_free_spend():
     )
 
 
+def test_an_edge_metered_call_is_charged_once():
+    """One DataForSEO call, one charge.
+
+    The main repo's edge spend gate reserves the caller's credits before the call and settles
+    them against the `cost` this client reports back. This client ALSO charged its flat unit,
+    so every SEO-agent call was billed twice — 134 calls in the 30 days to 2026-09-05, found by
+    reading one conversation's credit ledger (main repo conversation 9225f61f). The gate marks
+    its calls `attribution.metered_upstream`; this client must stand down for them, and must
+    still PROCEED (0 = nothing taken), because refusing (None) would turn a paid-for call into
+    a refused one."""
+    body = _strip_comments(_func(DFS, "_charge_for_call"))
+    assert "metered_upstream" in body, (
+        "the edge-metered stand-down is gone from _charge_for_call, so every SEO-agent "
+        "DataForSEO call is billed twice again"
+    )
+    assert body.index("metered_upstream") < body.index("debit_credits"), (
+        "the stand-down must come BEFORE the debit — after it, the money is already gone"
+    )
+    stand_down = body[body.index("metered_upstream"):body.index("debit_credits")]
+    assert "return 0" in stand_down, (
+        "an edge-metered call must proceed with nothing taken (return 0); returning None "
+        "refuses a call the caller has already paid for"
+    )
+    routes = _strip_comments(_func(APP / "api" / "seo_agent_routes.py", "_attribution_from"))
+    assert "metered_upstream" in routes, (
+        "seo_agent_routes no longer forwards the edge's metered flag into the attribution, "
+        "so the stand-down in the client can never fire"
+    )
+    core = _read(APP / "modules" / "_core" / "cost_logger.py")
+    assert '"metered_upstream"' in core, (
+        "CostAttribution uses __slots__ — without the slot the route's kwarg raises and the "
+        "call fails before it is ever charged"
+    )
+
+
 def test_perplexity_debits_before_it_searches():
     body = _strip_comments(_func(PPX, "_perplexity_call"))
     assert "_reserve_spend" in body, "the Perplexity search no longer reserves credits"
