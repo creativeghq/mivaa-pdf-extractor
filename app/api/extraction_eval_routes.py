@@ -23,11 +23,11 @@ import uuid
 from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.config import get_settings
-from app.dependencies import require_trusted_service
+from app.dependencies import require_trusted_service, resolve_workspace_id
 from app.evaluation.extraction_eval import (
     RUN_FAILURE_CLASSES,
     Metrics,
@@ -39,6 +39,7 @@ from app.evaluation.extraction_eval import (
     micro_aggregate,
 )
 from app.services.core.supabase_client import SupabaseClient, get_supabase_client
+from app.utils.postgrest_filters import escape_like
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,9 @@ def _find_product(supabase: SupabaseClient, case: Dict[str, Any]) -> Optional[Di
     elif match.get("external_sku"):
         q = q.eq("external_sku", match["external_sku"])
     elif match.get("name"):
-        q = q.ilike("name", match["name"])  # no wildcard: case-insensitive equality
+        # Escaped, so a `%` or `_` in a product name is a character, not a wildcard; with no
+        # wildcard added this is case-insensitive equality.
+        q = q.ilike("name", escape_like(str(match["name"])))
     else:
         return None
     rows = q.limit(2).execute().data or []
@@ -119,15 +122,24 @@ def _metrics_from_row(row: Dict[str, Any]) -> Metrics:
 @router.post("/run", response_model=RunResponse, dependencies=[Depends(require_trusted_service)])
 async def run_extraction_eval(
     body: RunRequest,
+    request: Request,
     supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Optional[Dict[str, Any]] = Depends(require_trusted_service),
 ):
+    # Bound the way every route binds a caller-supplied workspace (invariant 1). The
+    # x-cron-secret path carries no claims and is trusted by construction; any token goes
+    # through the shared rule, which admits the platform key and binds a user to membership.
+    workspace_id = body.workspace_id if claims is None else await resolve_workspace_id(claims, body.workspace_id, request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id is required")
+
     batch_id = body.batch_id or str(uuid.uuid4())
     version = body.pipeline_version or get_settings().app_version
 
     q = (
         supabase.client.table("extraction_eval_cases")
         .select("*")
-        .eq("workspace_id", body.workspace_id)
+        .eq("workspace_id", workspace_id)
         .eq("is_active", True)
     )
     if body.document_id:

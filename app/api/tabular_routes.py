@@ -17,10 +17,10 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.dependencies import require_trusted_service
+from app.dependencies import require_trusted_service, resolve_workspace_id
 from app.services.core.supabase_client import SupabaseClient, get_supabase_client
 from app.services.tabular.loader import SUPPORTED_EXTENSIONS
 from app.services.tabular.tabular_agent import DEFAULT_MODEL, TabularAgent
@@ -44,7 +44,19 @@ class AskRequest(BaseModel):
 
 
 @router.post("/ask", dependencies=[Depends(require_trusted_service)])
-async def ask_spreadsheet(body: AskRequest, supabase: SupabaseClient = Depends(get_supabase_client)) -> Dict[str, Any]:
+async def ask_spreadsheet(
+    body: AskRequest,
+    request: Request,
+    supabase: SupabaseClient = Depends(get_supabase_client),
+    claims: Optional[Dict[str, Any]] = Depends(require_trusted_service),
+) -> Dict[str, Any]:
+    # Bound the way every route binds a caller-supplied workspace (invariant 1): the
+    # x-cron-secret path carries no claims and is trusted by construction; a token goes
+    # through the shared rule. The thread check below then re-verifies the path against it.
+    workspace_id = body.workspace_id if claims is None else await resolve_workspace_id(claims, body.workspace_id, request)
+    if not workspace_id:
+        raise HTTPException(status_code=400, detail="workspace_id is required")
+
     ext = body.file_name.rsplit(".", 1)[-1].lower() if "." in body.file_name else ""
     if ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(status_code=415, detail=f"unsupported file type .{ext}; supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
@@ -60,7 +72,7 @@ async def ask_spreadsheet(body: AskRequest, supabase: SupabaseClient = Depends(g
     owner = (
         supabase.client.table("inbox_threads").select("id, workspace_id").eq("id", thread_id).limit(1).execute().data or []
     )
-    if not owner or str(owner[0].get("workspace_id")) != body.workspace_id:
+    if not owner or str(owner[0].get("workspace_id")) != str(workspace_id):
         raise HTTPException(status_code=404, detail="attachment not found")
 
     try:
@@ -72,7 +84,7 @@ async def ask_spreadsheet(body: AskRequest, supabase: SupabaseClient = Depends(g
     if len(data) > MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail=f"file is {len(data)} bytes; the limit is {MAX_FILE_BYTES}")
 
-    agent = TabularAgent(workspace_id=body.workspace_id, user_id=body.user_id, model=body.model or DEFAULT_MODEL)
+    agent = TabularAgent(workspace_id=str(workspace_id), user_id=body.user_id, model=body.model or DEFAULT_MODEL)
     try:
         return await agent.ask([(body.file_name, data)], body.question, extra_instructions=body.extra_instructions)
     except ValueError as e:
