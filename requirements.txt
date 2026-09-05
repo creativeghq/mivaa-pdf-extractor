@@ -21,6 +21,13 @@ PyMuPDF>=1.23.26
 # library nobody calls. If a PDF-writing need returns, add it back on >=6.14.2,<7.0.0.
 pandas==2.1.4
 
+# Spreadsheet questions (app/services/tabular, 2026-09-05): a CSV/XLSX from the Inbox is loaded
+# into an in-memory DuckDB, generated SQL is parsed and allow-listed with sqlglot, and the
+# engine is locked before the first generated query runs. No Python execution anywhere.
+duckdb>=1.1,<2
+sqlglot>=25,<31
+openpyxl>=3.1,<4
+
 # pdfplumber REMOVED 2026-08-02. It backed TableExtractor.extract_tables_from_page,
 # which no stage ever called (dead since #248) and which re-derived tables from the
 # raw PDF — a bronze-layer read for something silver already holds. Tables now come

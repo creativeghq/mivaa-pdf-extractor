@@ -79,6 +79,27 @@ async def process_stage_5_quality(
         logger.warning(f"⚠️ Claude validation skipped (circuit breaker open): {cb_error}")
         validation_results = {'validated': 0, 'avg_improvement': 0}
 
+    # A second reader for the products the extractor was least sure about: the rendered
+    # page beside the extracted fields, one verdict per field with a reason (the GAIK
+    # LLMJudge shape, adopted 2026-09-05). Writes product_field_judgements and stamps
+    # products.metadata.field_judgement. Never fails the job — a judge that cannot run is
+    # recorded as such on the result, which is a different fact from "nothing was wrong".
+    from app.services.ai_validation.product_field_judge import ProductFieldJudge
+    try:
+        judge = ProductFieldJudge(workspace_id=workspace_id, model=quality_validation_model, job_id=job_id)
+        field_judgements = await claude_breaker.call(judge.judge_document_products, document_id=document_id)
+        logger.info(
+            f"   Field judge: {field_judgements.get('judged', 0)} product(s) judged, "
+            f"{field_judgements.get('wrong', 0)} wrong / {field_judgements.get('suspect', 0)} suspect field(s), "
+            f"{field_judgements.get('skipped', 0)} skipped, {field_judgements.get('failed', 0)} failed"
+        )
+    except CircuitBreakerError as cb_error:
+        logger.warning(f"⚠️ Field judge skipped (circuit breaker open): {cb_error}")
+        field_judgements = {'status': 'skipped', 'reason': f'circuit breaker open: {cb_error}'}
+    except Exception as judge_error:
+        logger.warning(f"⚠️ Field judge failed: {judge_error}")
+        field_judgements = {'status': 'failed', 'error': str(judge_error)[:300]}
+
     # Stage 5 progress: 85% → 100% (fixed when complete)
     await tracker.update_stage(
         ProcessingStage.COMPLETED,
@@ -101,6 +122,7 @@ async def process_stage_5_quality(
         "chunks_created": tracker.chunks_created,
         "images_processed": images_processed,
         "claude_validations": validation_results.get('validated', 0),
+        "field_judgements": {k: v for k, v in field_judgements.items() if k != 'products'},
         "pages_processed": len(physical_pages),
         "pages_skipped": len([p for p in range(1, tracker.total_pages + 1) if p not in physical_pages]),
         "confidence_score": catalog.confidence_score
@@ -178,7 +200,8 @@ async def process_stage_5_quality(
 
     return {
         "result": result,
-        "validation_results": validation_results
+        "validation_results": validation_results,
+        "field_judgements": field_judgements,
     }
 
 
