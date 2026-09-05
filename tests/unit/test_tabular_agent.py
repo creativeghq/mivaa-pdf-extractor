@@ -47,6 +47,9 @@ def test_the_engine_is_locked_before_any_generated_query_runs():
     loader = _src(LOADER)
     assert "SET enable_external_access = false" in loader
     assert "SET lock_configuration = true" in loader
+    # One core: the host has two and shares them with the PDF pipeline.
+    assert 'con.execute(f"SET threads = {int(threads)}")' in loader
+    assert "threads: int = 1" in loader
 
 
 def test_every_generated_query_passes_the_guard_first():
@@ -192,3 +195,7 @@ def test_lockdown_holds_even_without_the_guard(stack):
         con.execute("SELECT * FROM read_csv('C:/Windows/win.ini')").fetchall()
     with pytest.raises(Exception):
         con.execute("SET enable_external_access = true")
+    # The thread cap is part of the locked configuration: it cannot be raised afterwards.
+    assert con.execute("SELECT current_setting('threads')").fetchone()[0] == 1
+    with pytest.raises(Exception):
+        con.execute("SET threads = 8")

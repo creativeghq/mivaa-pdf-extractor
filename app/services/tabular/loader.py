@@ -255,9 +255,15 @@ def profile(con, table: str) -> List[ColumnProfile]:
     return out
 
 
-def lock_down(con, *, memory_limit: str = "512MB") -> None:
-    """Close the engine to the outside world. Irreversible for the life of the connection."""
+def lock_down(con, *, memory_limit: str = "512MB", threads: int = 1) -> None:
+    """Close the engine to the outside world. Irreversible for the life of the connection.
+
+    One thread, deliberately: DuckDB takes every core by default and the v1api host has two,
+    shared with the PDF pipeline. A price-list query finishes in well under a second on one
+    core; what it must never do is stall a pipeline stage for that second.
+    """
     con.execute(f"SET memory_limit = '{memory_limit}'")
+    con.execute(f"SET threads = {int(threads)}")
     con.execute("SET enable_external_access = false")
     con.execute("SET lock_configuration = true")
 
