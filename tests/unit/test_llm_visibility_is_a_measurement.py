@@ -166,12 +166,13 @@ class TestCitationsAreCaptured:
             n for n in ast.walk(tree)
             if isinstance(n, ast.AsyncFunctionDef) and n.name.startswith("_call_")
         ]
-        # `_call_openai` is deliberately absent — OpenAI was removed from the platform
-        # on 2026-08-23, package and all.
+        # `_call_openai` was removed with the rest of OpenAI on 2026-08-23 and restored on
+        # 2026-09-05 (ChatGPT back in the roster, chat-only over httpx — see
+        # test_no_fallback_embedder for the allowlist). It is a model call like the other
+        # three, so it is held to the same contract: it MUST return the citation channel.
         assert {c.name for c in callers} >= {
-            "_call_model", "_call_anthropic", "_call_gemini", "_call_perplexity",
+            "_call_model", "_call_anthropic", "_call_openai", "_call_gemini", "_call_perplexity",
         }
-        assert "_call_openai" not in {c.name for c in callers}
         for fn in callers:
             ann = ast.unparse(fn.returns) if fn.returns else ""
             assert ann == "ModelReply", f"{fn.name} returns {ann!r}, not ModelReply"
