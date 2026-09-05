@@ -12,17 +12,19 @@ So beyond refusing writes and DDL, this refuses any table function, any table no
 loaded by us, and ANY FUNCTION IT DOES NOT KNOW — an allow-list, not a deny-list, which
 is what makes it hold for DuckDB extension functions that do not exist yet.
 
-Pure with respect to the app: needs only `sqlglot`. Loaded by path in the unit test when
-sqlglot is importable, and the shape is pinned statically when it is not (CI installs
-pytest alone).
+`sqlglot` is imported INSIDE `validate_sql`, deliberately. This module is imported at
+application start through the tabular router, and on 2026-09-05 a deploy that skipped its
+pip install restarted the service into `ModuleNotFoundError: sqlglot` — every route on the
+API answered 502 for the sake of one optional feature. An optional dependency is resolved
+at the call that needs it, and reported there, never at boot.
+
+Loaded by path in the unit test when sqlglot is importable, and the shape is pinned
+statically when it is not (CI installs pytest alone).
 """
 
 from __future__ import annotations
 
-from typing import Iterable, Set
-
-import sqlglot
-from sqlglot import exp
+from typing import Any, Iterable, Set
 
 
 class SqlRejected(ValueError):
@@ -68,19 +70,23 @@ ALLOWED_FUNCTIONS: Set[str] = {
     "anonymous",
 }
 
-#: Expression types that are never read-only.
-FORBIDDEN_NODES = (
-    exp.Insert, exp.Update, exp.Delete, exp.Create, exp.Drop, exp.Alter, exp.Merge,
-    exp.Command, exp.Transaction, exp.Commit, exp.Rollback, exp.Set, exp.Pragma,
-    exp.Copy, exp.AlterTable if hasattr(exp, "AlterTable") else exp.Alter,
-)
+
+def _forbidden_nodes(exp: Any) -> tuple:
+    """Expression types that are never read-only. Built per call so `exp` can be imported lazily."""
+    nodes = [
+        exp.Insert, exp.Update, exp.Delete, exp.Create, exp.Drop, exp.Alter, exp.Merge,
+        exp.Command, exp.Transaction, exp.Commit, exp.Rollback, exp.Set, exp.Pragma, exp.Copy,
+    ]
+    if hasattr(exp, "AlterTable"):
+        nodes.append(exp.AlterTable)
+    return tuple(nodes)
 
 
-def _cte_names(tree: exp.Expression) -> Set[str]:
+def _cte_names(exp: Any, tree: Any) -> Set[str]:
     return {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE) if cte.alias_or_name}
 
 
-def _function_name(node: exp.Func) -> str:
+def _function_name(exp: Any, node: Any) -> str:
     if isinstance(node, exp.Anonymous):
         return str(node.name or "").lower()
     # sqlglot names expressions by class; `sql_name()` is the SQL spelling.
@@ -99,6 +105,11 @@ def validate_sql(sql: str, allowed_tables: Iterable[str], *, max_rows: int = 100
     - every function is on the allow-list
     - LIMIT is present and at most `max_rows`
     """
+    import sqlglot
+    from sqlglot import exp
+
+    forbidden = _forbidden_nodes(exp)
+
     if not isinstance(sql, str) or not sql.strip():
         raise SqlRejected("empty SQL")
     try:
@@ -110,10 +121,10 @@ def validate_sql(sql: str, allowed_tables: Iterable[str], *, max_rows: int = 100
         raise SqlRejected(f"expected exactly one statement, got {len(statements)}")
     tree = statements[0]
 
-    if isinstance(tree, FORBIDDEN_NODES):
+    if isinstance(tree, forbidden):
         raise SqlRejected(f"only a SELECT is allowed, not {tree.key.upper()}")
     for node in tree.walk():
-        if isinstance(node, FORBIDDEN_NODES):
+        if isinstance(node, forbidden):
             raise SqlRejected(f"only a SELECT is allowed; found {node.key.upper()}")
 
     # The outermost statement must be a query.
@@ -124,7 +135,7 @@ def validate_sql(sql: str, allowed_tables: Iterable[str], *, max_rows: int = 100
         raise SqlRejected(f"only a SELECT is allowed, not {tree.key.upper()}")
 
     allowed = {t.lower() for t in allowed_tables}
-    ctes = _cte_names(tree)
+    ctes = _cte_names(exp, tree)
     for table in tree.find_all(exp.Table):
         name = (table.name or "").lower()
         if table.db or table.catalog:
@@ -138,7 +149,7 @@ def validate_sql(sql: str, allowed_tables: Iterable[str], *, max_rows: int = 100
             raise SqlRejected(f"table functions are not allowed: {table.sql()}")
 
     for func in tree.find_all(exp.Func):
-        fname = _function_name(func)
+        fname = _function_name(exp, func)
         if fname not in ALLOWED_FUNCTIONS:
             raise SqlRejected(f"function '{fname}' is not allowed")
 

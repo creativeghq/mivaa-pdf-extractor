@@ -22,14 +22,35 @@ from pydantic import BaseModel, Field
 
 from app.dependencies import require_trusted_service, resolve_workspace_id
 from app.services.core.supabase_client import SupabaseClient, get_supabase_client
-from app.services.tabular.loader import SUPPORTED_EXTENSIONS
-from app.services.tabular.tabular_agent import DEFAULT_MODEL, TabularAgent
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/internal/tabular", tags=["Spreadsheet questions"])
 
 MAX_FILE_BYTES = 15 * 1024 * 1024
+SUPPORTED_EXTENSIONS = {"xlsx", "xlsm", "xls", "csv", "tsv", "txt"}
+DEFAULT_MODEL = "claude-haiku-4-5"
+
+
+def _agent_module():
+    """The agent and its engine, resolved at the call that needs them.
+
+    duckdb / sqlglot / openpyxl are optional to the rest of the API. On 2026-09-05 a deploy
+    that skipped its pip install booted the service into `ModuleNotFoundError: sqlglot` from a
+    module-level import on this path, and every route on the API answered 502. A missing
+    optional dependency is a 503 from THIS route with the package named, never a boot failure.
+    """
+    try:
+        from app.services.tabular import tabular_agent  # noqa: PLC0415 — deliberately lazy
+
+        import duckdb  # noqa: F401
+        import sqlglot  # noqa: F401
+        return tabular_agent
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"spreadsheet questions are not available on this host: {e.name or e} is not installed",
+        ) from e
 
 
 class AskRequest(BaseModel):
@@ -84,7 +105,8 @@ async def ask_spreadsheet(
     if len(data) > MAX_FILE_BYTES:
         raise HTTPException(status_code=413, detail=f"file is {len(data)} bytes; the limit is {MAX_FILE_BYTES}")
 
-    agent = TabularAgent(workspace_id=str(workspace_id), user_id=body.user_id, model=body.model or DEFAULT_MODEL)
+    mod = _agent_module()
+    agent = mod.TabularAgent(workspace_id=str(workspace_id), user_id=body.user_id, model=body.model or DEFAULT_MODEL)
     try:
         return await agent.ask([(body.file_name, data)], body.question, extra_instructions=body.extra_instructions)
     except ValueError as e:
