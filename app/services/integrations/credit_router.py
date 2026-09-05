@@ -47,6 +47,7 @@ import logging
 from typing import Optional
 
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.retry_helper import describe_exception, should_retry_exception
 
 logger = logging.getLogger(__name__)
 
@@ -102,8 +103,30 @@ def debit_row(
             return {"success": bool(row)}
         return row
     except Exception as e:
-        logger.info("%s: credit debit skipped (likely insufficient): %s", module, e)
-        return {"success": False, "error_message": str(e)[:200]}
+        # A raised RPC is never "insufficient". `debit_credits` answers an empty balance
+        # with a ROW (`success=false`, handled above); what lands here is the transport —
+        # "Server disconnected" mid-POST on the first tick of the rank tracker (MIVAA-5KJ),
+        # a Cloudflare 52x, a timeout. The retry patch cannot repeat a debit (a second
+        # attempt could charge twice), so for a transient fault the outcome is UNKNOWN:
+        # the credits may or may not have been taken, and the paid call they were for did
+        # not happen. Logging that as "likely insufficient" at INFO named the one cause it
+        # could not be, at a level nobody reads. The caller still gets a refusal — the
+        # conservative answer — but the reason now says which of the two facts this was.
+        if should_retry_exception(e):
+            logger.warning(
+                "%s: credit debit outcome UNKNOWN for %s (%s credits) — transport failure "
+                "on a write that must not be repeated; treated as refused: %s",
+                module, operation_type, amount, describe_exception(e),
+            )
+            return {
+                "success": False,
+                "error_message": f"debit_unknown: {describe_exception(e)}"[:200],
+            }
+        logger.warning(
+            "%s: credit debit RAISED for %s (%s credits); treated as refused: %s",
+            module, operation_type, amount, describe_exception(e),
+        )
+        return {"success": False, "error_message": describe_exception(e)[:200]}
 
 
 def debit_credits(

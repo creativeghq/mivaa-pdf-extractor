@@ -906,6 +906,9 @@ jobs:
           Environment=MATERIAL_KAI_CLIENT_SECRET=${{ secrets.MATERIAL_KAI_CLIENT_SECRET }}
           Environment=MATERIAL_KAI_WEBHOOK_SECRET=${{ secrets.MATERIAL_KAI_WEBHOOK_SECRET }}
           Environment=SENTRY_DSN=${{ secrets.SENTRY_DSN }}
+          # Not a secret: the tag Sentry files every event under. Unset, Settings.sentry_environment
+          # defaulted to "development", so every production error was filed as one (2026-09-05).
+          Environment=SENTRY_ENVIRONMENT=production
           Environment=VISUAL_EMBEDDING_MODE=${{ secrets.VISUAL_EMBEDDING_MODE }}
           Environment=VISUAL_EMBEDDING_PRIMARY_MODEL=${{ secrets.VISUAL_EMBEDDING_PRIMARY_MODEL }}
           Environment=VISUAL_EMBEDDING_DIMENSIONS=${{ secrets.VISUAL_EMBEDDING_DIMENSIONS }}

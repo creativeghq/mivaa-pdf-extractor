@@ -114,6 +114,7 @@ def test_overlong_arguments_are_refused_before_cloudflare_says_414():
     ("40001", True),    # serialization failure
     ("57014", True),    # query canceled
     ("522", True),      # Cloudflare: origin timed out
+    ("530", True),      # Cloudflare: origin DNS error — the MIVAA-5JB shape
     ("503", True),
     ("404", False),
     ("", None),

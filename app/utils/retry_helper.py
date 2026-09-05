@@ -209,7 +209,16 @@ _TRANSIENT_SQLSTATES = frozenset({"40001", "40P01", "55P03"})
 #: Gateway / rate-limit statuses. Supabase sits behind Cloudflare, which answers 522 when
 #: the origin times out; PostgREST surfaces that as an APIError whose `code` is the HTTP
 #: status rather than a SQLSTATE.
-_TRANSIENT_HTTP_STATUS = frozenset({408, 425, 429, 502, 503, 504, 522, 524})
+#:
+#: The whole Cloudflare origin family (520–527, 530), not just the two that had been seen.
+#: 530 is "Origin DNS error" — Cloudflare could not resolve the Supabase host for a moment —
+#: and it arrived 26 times as MIVAA-5JB: an un-retried SELECT logged at ERROR every time,
+#: because 530 was not on this list and an unknown numeric code reads as permanent. Every
+#: code in the family says the same thing: the request never reached the origin.
+_TRANSIENT_HTTP_STATUS = frozenset({
+    408, 425, 429, 502, 503, 504,
+    520, 521, 522, 523, 524, 525, 526, 527, 530,
+})
 
 _SQLSTATE_CHARS = set("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
