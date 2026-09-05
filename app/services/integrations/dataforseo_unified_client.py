@@ -245,10 +245,23 @@ class DataForSEOUnifiedClient:
         # #14 was believed to have fixed this here; it had not (#18 M5-8).
         envelope_ok, envelope_reason = dataforseo_envelope.check(data)
         if not envelope_ok:
-            self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed,
+            # 40106 "partial results": DataForSEO could not fetch every page of a deep
+            # SERP but returns the pages it did fetch, and those items are real. A caller
+            # that finds what it is looking for in them has an answer; one that does not
+            # has an UNKNOWN, not a miss. They are passed through with ok=False so the
+            # caller can make exactly that distinction (seo-rank-tracker does). Three
+            # Greek depth-100 queries failed this way on every attempt on 2026-09-05.
+            partial_items: List[Dict[str, Any]] = []
+            tasks = [t for t in (data.get("tasks") or []) if isinstance(t, dict)]
+            if any(int(t.get("status_code") or 0) == 40106 for t in tasks):
+                for task in tasks:
+                    for r in (task.get("result") or []):
+                        if isinstance(r, dict) and "items" in r:
+                            partial_items.extend(r.get("items") or [])
+            self._log_cost(log_kind, attribution, operation, items=len(partial_items), latency_ms=elapsed,
                            success=False, error=envelope_reason)
             self._refund_call(attribution, operation, charged)
-            return DataForSEOResult(ok=False, error=envelope_reason, raw=data,
+            return DataForSEOResult(ok=False, error=envelope_reason, raw=data, items=partial_items,
                                     status_code=resp.status_code, latency_ms=elapsed)
 
         items: List[Dict[str, Any]] = []
