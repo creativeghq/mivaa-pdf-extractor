@@ -167,24 +167,25 @@ def test_no_dead_fallback_config_remains():
     )
 
 
-def test_openai_is_gone_entirely():
-    """OpenAI was removed from this platform on 2026-08-23. Not narrowed — removed.
+#: The ONE place OpenAI may be called, and the only thing it may be called for: the
+#: mention probe's chat completions ("what does ChatGPT say about this brand"). The
+#: 2026-08-23 removal recorded that answer as the single most valuable one the probe
+#: could give; it was restored on 2026-09-05 as a deliberate provider decision — a
+#: price row for gpt-5-mini / gpt-5, a key under OPENAI_API_KEY, and this allowlist.
+_OPENAI_CHAT_ALLOWED = ("app/services/integrations/llm_mention_probe_service.py",)
 
-    This assertion used to be the OPPOSITE. It asserted `gpt-4o-mini` still existed in the
-    mention probe, to stop an over-broad cleanup deleting a real feature — which was the
-    right call while the probe genuinely compared four providers.
 
-    It stopped being right once the evidence came in: 212 probe rows, 212 failures, not
-    one success since the feature shipped; no OpenAI chat model priced in
-    `ai_model_pricing`; and an embedding call that had quietly survived the
-    Voyage-or-nothing rule. The package, the clients, the settings, the health check and
-    the probe model are all gone.
+def test_openai_is_chat_only_and_lives_in_one_file():
+    """OpenAI is a chat provider for the mention probe and NOTHING else.
 
-    THE COST, recorded so it is a decision and not an accident: the mention probe can no
-    longer answer "what does ChatGPT say", which is the single most valuable answer it
-    could give. Three answer engines are covered — Claude, Gemini, Perplexity — and the
-    largest one is not. Restoring it means adding a provider back deliberately, with a
-    price row, not flipping a flag.
+    The 2026-08-23 removal was total: package, clients, settings, health check, and the
+    probe model, after 212 probe rows produced 212 failures and an embedding call had
+    quietly survived the Voyage-or-nothing rule. This test used to assert the removal.
+
+    Restoring ChatGPT to the probe is worth doing — it is the largest answer engine — but
+    only in the shape that cannot regrow the fallback: HTTP over httpx (no package),
+    chat completions only (never embeddings), and in exactly one file. Everything else
+    OpenAI stays banned, and the embedding tests above stay untouched.
     """
     offenders = []
     for path in _APP.rglob("*.py"):
@@ -196,18 +197,25 @@ def test_openai_is_gone_entirely():
         # Reference data, and the guards that REJECT a gpt model, are not usage.
         if rel.endswith(("app/config/ai_pricing.py", "app/utils/supabase_logging_handler.py")):
             continue
+        allowed_chat = rel in _OPENAI_CHAT_ALLOWED
         for pattern, what in (
             (r"^\s*import openai", "imports the openai package"),
             (r"from openai import", "imports from the openai package"),
-            (r"api\.openai\.com", "calls an OpenAI endpoint"),
-            (r"OPENAI_API_KEY", "reads an OpenAI key"),
+            (r"api\.openai\.com/v1/embeddings", "calls the OpenAI embeddings endpoint"),
         ):
             if re.search(pattern, src, re.M):
                 offenders.append(f"{rel}: {what}")
+        if not allowed_chat:
+            for pattern, what in (
+                (r"api\.openai\.com", "calls an OpenAI endpoint outside the mention probe"),
+                (r"OPENAI_API_KEY", "reads the OpenAI key outside the mention probe"),
+            ):
+                if re.search(pattern, src, re.M):
+                    offenders.append(f"{rel}: {what}")
     assert not offenders, (
-        "OpenAI is back: " + "; ".join(offenders) + ". It was removed outright, package "
-        "and all. Adding it again is a provider decision — it needs a working key, a row "
-        "in ai_model_pricing, and this test rewritten to say so."
+        "OpenAI outside its allowed shape: " + "; ".join(offenders) + ". It is a chat "
+        "provider for the mention probe only — httpx, chat completions, one file. Anything "
+        "else is the fallback-embedder trap coming back."
     )
 
 

@@ -59,11 +59,18 @@ logger = logging.getLogger(__name__)
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models"
 PERPLEXITY_API = "https://api.perplexity.ai/chat/completions"
+# Chat completions ONLY. The 2026-08-23 removal of OpenAI was total (package, clients,
+# embeddings fallback); ChatGPT came back on 2026-09-05 as a chat provider for this probe
+# and nothing else — httpx, this one endpoint, this one file. tests/unit/
+# test_no_fallback_embedder.py allowlists exactly that and still fails the build on the
+# package import or the embeddings endpoint anywhere.
+OPENAI_API = "https://api.openai.com/v1/chat/completions"
 
 # Cheap tier — Haiku uses the dated form because we hit Anthropic's HTTP API directly
 HAIKU = "claude-haiku-4-5-20251001"
 GEMINI_FLASH = "gemini-2.0-flash"
 SONAR = "sonar"
+GPT_MINI = "gpt-5-mini"
 
 # Frontier tier (#349 A7) — the models a person is actually answered by.
 #
@@ -72,25 +79,23 @@ SONAR = "sonar"
 # at a cheap-tier guess under-reports spend by more than an order of magnitude. If you add
 # a model here, add its price row first.
 #
-# OpenAI IS NOT A PROVIDER ON THIS PLATFORM. It was removed outright on 2026-08-23 — the
-# package, the clients, the settings and this probe's `gpt-4o-mini`, which had produced 212
-# probe rows and 212 failures without ever succeeding once.
-#
-# The cost of that decision, stated where it will be read: this probe can no longer answer
-# "what does ChatGPT say", which is the single most valuable answer it could give. Three
-# answer engines are covered — Claude, Gemini, Perplexity — and the largest one is not.
-# Restoring it means adding a provider back, not flipping a flag.
+# ChatGPT is the largest answer engine and was the one this probe could not ask between
+# 2026-08-23 and 2026-09-05 (its earlier `gpt-4o-mini` had produced 212 rows and 212
+# failures against an account that never worked). It is back as a deliberate provider
+# decision: a working key under OPENAI_API_KEY, price rows for both models, and the
+# roster route reporting "no key configured" rather than silently dropping it.
 OPUS = "claude-opus-5"
 GEMINI_PRO = "gemini-3.1-pro"
 SONAR_PRO = "sonar-pro"
+GPT = "gpt-5"
 
 CHEAP_TIER = "cheap"
 FRONTIER_TIER = "frontier"
 
 #: Which models each tier asks for. What actually runs is this ∩ the configured keys.
 TIER_MODELS: Dict[str, List[str]] = {
-    CHEAP_TIER: [HAIKU, GEMINI_FLASH, SONAR],
-    FRONTIER_TIER: [OPUS, GEMINI_PRO, SONAR_PRO],
+    CHEAP_TIER: [HAIKU, GPT_MINI, GEMINI_FLASH, SONAR],
+    FRONTIER_TIER: [OPUS, GPT, GEMINI_PRO, SONAR_PRO],
 }
 
 # Token-cost in USD per 1K tokens (input, output) — for ai_usage_logs
@@ -99,6 +104,7 @@ COST_TABLE: Dict[str, Dict[str, float]] = {
     "claude-haiku-4-5": {"input": 0.001, "output": 0.005},  # alias still tracked
     GEMINI_FLASH: {"input": 0.00010, "output": 0.0004},
     SONAR: {"input": 0.0010, "output": 0.0010},
+    GPT_MINI: {"input": 0.00025, "output": 0.002},
     # Frontier. These are a LOCAL ESTIMATE for the `total_cost_usd` the probe reports back
     # to the caller; the number that reaches `ai_usage_logs` is resolved from
     # `ai_model_pricing` by `log_llm_probe_call`, which is the platform's single USD
@@ -106,6 +112,7 @@ COST_TABLE: Dict[str, Dict[str, float]] = {
     OPUS: {"input": 0.005, "output": 0.025},
     GEMINI_PRO: {"input": 0.00125, "output": 0.010},
     SONAR_PRO: {"input": 0.003, "output": 0.015},
+    GPT: {"input": 0.00125, "output": 0.010},
 }
 
 
@@ -175,6 +182,10 @@ class LlmMentionProbeService:
     def perplexity_key(self) -> str:
         return resolve_secret("PERPLEXITY_API_KEY").value or ""
 
+    @property
+    def openai_key(self) -> str:
+        return resolve_secret("OPENAI_API_KEY").value or ""
+
     def key_sources(self) -> Dict[str, str]:
         """Where each provider's key came from — 'env', 'db', 'default' or 'missing'.
 
@@ -190,6 +201,7 @@ class LlmMentionProbeService:
                 break
         return {
             "anthropic": resolve_secret("ANTHROPIC_API_KEY").source,
+            "openai": resolve_secret("OPENAI_API_KEY").source,
             "gemini": gemini_source,
             "perplexity": resolve_secret("PERPLEXITY_API_KEY").source,
         }
@@ -205,6 +217,7 @@ class LlmMentionProbeService:
         sources = self.key_sources()
         provider_of = {
             HAIKU: "anthropic", OPUS: "anthropic",
+            GPT_MINI: "openai", GPT: "openai",
             GEMINI_FLASH: "gemini", GEMINI_PRO: "gemini",
             SONAR: "perplexity", SONAR_PRO: "perplexity",
         }
@@ -229,6 +242,8 @@ class LlmMentionProbeService:
         tier and then silently skipped because nothing knew which key it wanted."""
         if model in (HAIKU, OPUS):
             return self.anthropic_key
+        if model in (GPT_MINI, GPT):
+            return self.openai_key
         if model in (GEMINI_FLASH, GEMINI_PRO):
             return self.gemini_key
         if model in (SONAR, SONAR_PRO):
@@ -535,12 +550,14 @@ class LlmMentionProbeService:
     async def _call_model(self, *, model: str, prompt: str) -> ModelReply:
         start = time.time()
         try:
-            if model == HAIKU:
-                return await self._call_anthropic(prompt, model=HAIKU, start=start)
-            if model == GEMINI_FLASH:
-                return await self._call_gemini(prompt, model=GEMINI_FLASH, start=start)
-            if model == SONAR:
-                return await self._call_perplexity(prompt, model=SONAR, start=start)
+            if model in (HAIKU, OPUS):
+                return await self._call_anthropic(prompt, model=model, start=start)
+            if model in (GPT_MINI, GPT):
+                return await self._call_openai(prompt, model=model, start=start)
+            if model in (GEMINI_FLASH, GEMINI_PRO):
+                return await self._call_gemini(prompt, model=model, start=start)
+            if model in (SONAR, SONAR_PRO):
+                return await self._call_perplexity(prompt, model=model, start=start)
             return ModelReply("", 0, 0, 0, f"unsupported model {model}", [])
         except httpx.HTTPStatusError as e:
             return ModelReply("", 0, 0, int((time.time() - start) * 1000),
@@ -574,6 +591,35 @@ class LlmMentionProbeService:
                 text,
                 int(usage.get("input_tokens") or 0),
                 int(usage.get("output_tokens") or 0),
+                int((time.time() - start) * 1000),
+                None,
+                [],
+            )
+
+    async def _call_openai(self, prompt: str, *, model: str, start: float) -> ModelReply:
+        """ChatGPT, over plain HTTP. No package (the pin trap that removed the SDK), no
+        embeddings (the fallback that removed the provider) — one endpoint, chat only."""
+        async with httpx.AsyncClient(timeout=45.0) as client:
+            resp = await client.post(
+                OPENAI_API,
+                headers={"Authorization": f"Bearer {self.openai_key}",
+                         "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    # The gpt-5 family rejects `max_tokens`; this is the current name.
+                    "max_completion_tokens": 800,
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+            u = data.get("usage") or {}
+            # No native citation channel on plain chat completions — same as Anthropic.
+            return ModelReply(
+                text.strip(),
+                int(u.get("prompt_tokens") or 0),
+                int(u.get("completion_tokens") or 0),
                 int((time.time() - start) * 1000),
                 None,
                 [],
