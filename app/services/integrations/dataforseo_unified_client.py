@@ -257,9 +257,13 @@ class DataForSEOUnifiedClient:
             cost += float(task.get("cost") or 0.0)
             for r in (task.get("result") or []):
                 # Some endpoints return items[] inside result; others put data inline.
-                inner = r.get("items")
-                if inner:
-                    items.extend(inner)
+                # The test is whether the KEY exists, not whether the list is non-empty:
+                # an OnPage section with nothing to report answers `items: null` inside
+                # its envelope, and treating that as "inline data" handed the envelope
+                # back as one item. seo-site-audit stored it as a finding, so a clean
+                # crawl read "Cannot be indexed: 1" with no URL (2026-09-05).
+                if isinstance(r, dict) and "items" in r:
+                    items.extend(r.get("items") or [])
                 else:
                     items.append(r)
 
