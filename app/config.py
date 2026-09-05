@@ -554,7 +554,7 @@ class Settings(BaseSettings):
     # ============================================================================
     # PaddleOCR-VL — STRUCTURAL-PASS BACKBONE (layout + OCR + figure boxes)
     # ============================================================================
-    # Two-stage document parser (PP-DocLayoutV2 RT-DETR detector + 0.9B VLM) run
+    # Two-stage document parser (PP-DocLayoutV3 RT-DETR detector + 0.9B VLM) run
     # in-process on Modal. One /parse call per page returns layout regions
     # (label + bbox + reading order) + OCR'd content, with tight RT-DETR crop
     # boxes and a dedicated reading order. Modal-hosted only

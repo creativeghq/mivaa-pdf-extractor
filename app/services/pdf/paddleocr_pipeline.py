@@ -2,8 +2,9 @@
 PaddleOCR-VL structural-pass contract + parser.
 
 PaddleOCR-VL is a **two-stage** document parser run in one process by the
-``paddleocr`` package on Modal: PP-DocLayoutV2 (RT-DETR detector + pointer
-network) localizes regions, labels them, and predicts reading order; the
+``paddleocr`` package on Modal: PP-DocLayoutV3 (RT-DETR detector; multi-point
+boxes and reading order predicted in the decoder — V2 in the v1 pipeline only)
+localizes regions, labels them, and predicts reading order; the
 PaddleOCR-VL-0.9B VLM recognizes the content inside each region (text,
 tables→markdown, formulas→LaTeX, charts). The RT-DETR boxes are tight
 (→ clean product crops) and the reading order comes from a dedicated model.
@@ -36,7 +37,7 @@ from typing import Any, Dict, List, Tuple
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Label taxonomy — PP-DocLayoutV2 categories → the existing region_type vocab
+# Label taxonomy — PP-DocLayout (V3 in the v1.5/v1.6 pipelines) categories → the existing region_type vocab
 # (TEXT / TABLE / TITLE / CAPTION / IMAGE / FIGURE / BLANK) used across the
 # pipeline. Labels are lowercased before lookup; anything unmapped falls back to
 # TEXT (conservative: TEXT is OCR-eligible and never treated as a product crop,
@@ -113,7 +114,7 @@ class PaddleRegion:
 
     ``bbox`` is ``(x0, y0, x1, y1)`` in **0..1** normalized space. ``content`` is
     the recognized text (markdown for tables, LaTeX for formulas, empty for pure
-    visual blocks). ``order`` is the reading-order index from PP-DocLayoutV2.
+    visual blocks). ``order`` is the reading-order index from PP-DocLayoutV3.
     """
 
     label: str

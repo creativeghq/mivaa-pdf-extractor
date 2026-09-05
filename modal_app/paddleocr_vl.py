@@ -3,10 +3,16 @@ Modal deployment: PaddleOCR-VL as the catalog pipeline's structural-pass host.
 
 PaddleOCR-VL is a **two-stage** document parser run **in one process** by the
 ``paddleocr`` package:
-  1. PP-DocLayoutV2 (RT-DETR detector + pointer network) → per-region bounding
-     boxes, element labels, and reading order.
+  1. PP-DocLayoutV3 (RT-DETR detector; multi-point boxes + reading order predicted
+     in one decoder pass) → per-region bounding boxes, element labels, and
+     reading order.
   2. PaddleOCR-VL-0.9B (NaViT encoder + ERNIE-4.5-0.3B) → recognizes the content
      inside each region (text, tables→markdown, formulas→LaTeX, charts).
+
+The layout model FOLLOWS ``PIPELINE_VERSION`` and is never named separately:
+``v1`` selects PP-DocLayoutV2, ``v1.5``/``v1.6`` select PP-DocLayoutV3 (PaddleX
+``PaddleOCR-VL-1.6.yaml``). Setting ``layout_detection_model_name`` here would
+pin a layout model to a VL generation it was not trained alongside.
 
 It replaced Surya-2 (2026-06-13) because the dedicated RT-DETR detector gives
 tighter figure/image boxes (→ cleaner product crops) and a dedicated reading
@@ -111,7 +117,7 @@ image = (
     .env({"PADDLE_PDX_CACHE_HOME": "/root/.paddlex"})
 )
 
-# Persist the downloaded PP-DocLayoutV2 + PaddleOCR-VL weights across cold starts.
+# Persist the downloaded PP-DocLayoutV3 + PaddleOCR-VL weights across cold starts.
 weights = modal.Volume.from_name("paddleocr-weights", create_if_missing=True)
 
 app = modal.App("paddleocr-vl")

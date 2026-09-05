@@ -286,7 +286,7 @@ class AIPricingConfig:
         }
     }
 
-    # PaddleOCR-VL Structural Pass — two-stage (PP-DocLayoutV2 + 0.9B VLM) layout
+    # PaddleOCR-VL Structural Pass — two-stage (PP-DocLayoutV3 + 0.9B VLM) layout
     # + OCR + figure boxes per page (GPU, Modal).
     PADDLEOCR_PRICING = {
         "paddleocr-vl": {
