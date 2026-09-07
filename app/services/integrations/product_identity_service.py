@@ -536,22 +536,10 @@ class ProductIdentityService:
                     verdicts.extend(self._rule_based_verdict(facets, c) for c in chunks[i])
                 else:
                     verdicts.extend(sub)
-            self._log_classifier_call(
-                facets=facets, candidates=candidates, verdicts=verdicts,
-                user_id=user_id, workspace_id=workspace_id,
-            )
             return self._sanitize_verdicts(verdicts)
 
         verdicts = await self._classify_chunk(facets, candidates, few_shot_block)
 
-        # Audit-log the classifier decision for traceability.
-        self._log_classifier_call(
-            facets=facets,
-            candidates=candidates,
-            verdicts=verdicts,
-            user_id=user_id,
-            workspace_id=workspace_id,
-        )
 
         return self._sanitize_verdicts(verdicts)
 
@@ -852,39 +840,20 @@ class ProductIdentityService:
         }
 
     # ── Usage logging ──
-
-    def _log_classifier_call(
-        self,
-        *,
-        facets: QueryFacets,
-        candidates: List[Dict[str, Any]],
-        verdicts: List[Dict[str, Any]],
-        user_id: Optional[str] = None,
-        workspace_id: Optional[str] = None,
-    ) -> None:
-        """
-        Persist a single row to ai_usage_logs for auditability. Non-critical —
-        never raises; logs on failure only.
-        """
-        try:
-            self.supabase.client.table("ai_usage_logs").insert({
-                "user_id": user_id,
-                "workspace_id": workspace_id,
-                "provider": "anthropic",
-                "model": _MODEL,
-                "operation_type": "product_match_classifier",
-                "metadata": {
-                    "query_facets": facets.to_dict(),
-                    "candidates": candidates,
-                    "verdicts": verdicts,
-                    # This row is only written once the classifier has returned verdicts,
-                    # so reaching here IS the success. Declared rather than implied,
-                    # because `ops.silent_zero_provider` cannot infer it.
-                    "success": True,
-                },
-            }).execute()
-        except Exception as e:
-            logger.debug(f"classifier usage log skipped: {e}")
+    #
+    # There is deliberately no `_log_classifier_call` here. It inserted a SECOND
+    # `ai_usage_logs` row for a call `tracked_claude_call_async` had already logged
+    # with its real tokens and real cost — a duplicate in the cost ledger, carrying
+    # zero spend and `success: True`, once per classification. `ops.silent_zero_provider`
+    # judges a provider on exactly those rows, so the duplicates would have diluted the
+    # anthropic outcome rate with entries that never made a call.
+    #
+    # It never actually ran: it wrote `provider` / `model`, which are not columns
+    # (`api_provider` / `model_name` are), so PostgREST rejected every row and the
+    # failure was swallowed at DEBUG — zero rows written, ever, with nothing to notice.
+    # Correcting the column names would have turned a write that never worked into a
+    # double count, so the write is gone instead: the spend has one writer, and the
+    # request/response detail is already captured on `ai_call_logs` by the same helper.
 
 
 def _extract_json_content(anthropic_body: Dict[str, Any]) -> Optional[Dict[str, Any]]:

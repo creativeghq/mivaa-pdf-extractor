@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from app.modules._core.cost_accounting import intended_cost_usd, settle_call_cost
-from app.services.core.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client, repeatable_insert
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,10 @@ def log_external_call(
         if extra_metadata:
             meta.update(extra_metadata)
 
-        sb.table("ai_usage_logs").insert({
+        # `repeatable_insert`, not `.insert()`: a transient PostgREST disconnect on a bare
+        # POST is not retried (it could duplicate), so the cost row was simply dropped and
+        # the spend went unrecorded — MIVAA-5KP / 5KN / 5KE were all this write.
+        repeatable_insert(sb, "ai_usage_logs", {
             "user_id": attribution.user_id if attribution else None,
             "workspace_id": attribution.workspace_id if attribution else None,
             "operation_type": operation_type,

@@ -11,12 +11,13 @@ Created: 2025-10-27
 import hashlib
 import logging
 import threading
+import uuid
 from collections import OrderedDict, deque
 from typing import Dict, Any, Optional
 from datetime import datetime
 import json
 
-from app.services.core.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client, repeatable_insert
 from app.config.ai_pricing import ai_pricing
 from app.utils.retry_helper import async_retry_with_backoff
 from app.utils.json_encoder import json_dumps
@@ -214,7 +215,9 @@ class AICallLogger:
             }
 
             # Insert into database
-            result = self.supabase.client.table("ai_call_logs").insert(log_entry).execute()
+            result = repeatable_insert(
+                self.supabase.client, "ai_call_logs", log_entry
+            ).execute()
             
             if result.data:
                 # Record idempotency key only AFTER confirmed success, so a
@@ -247,6 +250,12 @@ class AICallLogger:
                     _billed / _markup if _markup else _billed
                 )
                 usage_entry = {
+                    # Minted HERE, not inside `repeatable_insert`, because this row can be
+                    # buffered and replayed by `_flush_dead_letter_rows`. The id has to be
+                    # the same on every attempt or the replay of a write that DID commit
+                    # books the spend twice — which is the failure the PostgREST retry patch
+                    # refuses to risk, and this buffer was taking it by hand.
+                    "id": str(uuid.uuid4()),
                     "user_id": user_id,
                     "workspace_id": workspace_id,
                     "operation_type": task,
@@ -286,7 +295,9 @@ class AICallLogger:
                 last_mirror_err = None
                 while mirror_attempt < 2:
                     try:
-                        self.supabase.client.table("ai_usage_logs").insert(usage_entry).execute()
+                        repeatable_insert(
+                            self.supabase.client, "ai_usage_logs", usage_entry
+                        ).execute()
                         last_mirror_err = None
                         break
                     except Exception as usage_err:
@@ -333,7 +344,9 @@ class AICallLogger:
             flushed = 0
             for row in pending:
                 try:
-                    self.supabase.client.table("ai_usage_logs").insert(row).execute()
+                    repeatable_insert(
+                        self.supabase.client, "ai_usage_logs", row
+                    ).execute()
                     flushed += 1
                 except Exception:
                     with _dead_letter_lock:
@@ -730,7 +743,9 @@ class AICallLogger:
                 'created_at': datetime.utcnow().isoformat()
             }
 
-            self.supabase.client.table('ai_usage_logs').insert(log_data).execute()
+            repeatable_insert(
+                self.supabase.client, 'ai_usage_logs', log_data
+            ).execute()
 
             self.logger.info(
                 f"✅ Logged Firecrawl {operation_type}: {credits_used} credits "
@@ -836,7 +851,9 @@ class AICallLogger:
             }
 
             # Insert into database
-            result = self.supabase.client.table("ai_call_logs").insert(log_entry).execute()
+            result = repeatable_insert(
+                self.supabase.client, "ai_call_logs", log_entry
+            ).execute()
 
             if result.data:
                 self.logger.info(

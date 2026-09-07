@@ -71,14 +71,14 @@ def _log_paddleocr_gpu_cost(
     try:
         from datetime import datetime, timezone
         from app.config.ai_pricing import ai_pricing
-        from app.services.core.supabase_client import get_supabase_client
+        from app.services.core.supabase_client import get_supabase_client, repeatable_insert
 
         secs = max(latency_ms / 1000.0, 0.001)
         cost_data = ai_pricing.calculate_time_based_cost(
             model="paddleocr-vl", inference_seconds=secs
         )
         billed = float(cost_data.get("billed_cost_usd", 0.0))
-        get_supabase_client().client.table("ai_usage_logs").insert({
+        repeatable_insert(get_supabase_client().client, "ai_usage_logs", {
             "operation_type": task,
             "model_name": "paddleocr-vl",
             "input_tokens": 0,
@@ -103,7 +103,9 @@ def _log_paddleocr_gpu_cost(
             "created_at": datetime.now(timezone.utc).isoformat(),
         }).execute()
     except Exception as log_err:  # noqa: BLE001
-        logger.debug("PaddleOCR GPU cost log failed (non-fatal): %s", log_err)
+        # WARNING, not DEBUG: a dropped row here under-reports GPU spend, and at DEBUG
+        # that loss leaves no trace anywhere it would ever be read.
+        logger.warning("PaddleOCR GPU cost log failed (non-fatal): %s", log_err)
 
 
 class PaddleOCRResponseError(RuntimeError):

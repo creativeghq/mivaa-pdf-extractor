@@ -39,7 +39,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.modules._core.provider_pricing import sonar_rates
-from app.services.core.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client, repeatable_insert
 from app.services.integrations.dataforseo_merchant_service import (
     get_dataforseo_merchant_service,
     MerchantHit,
@@ -1645,7 +1645,9 @@ class PerplexityPriceSearchService:
                 # from a successful one that found nothing (pipeline convention 1).
                 metadata["error"] = error_message[:300]
                 metadata["call_failed"] = True
-            self.supabase.client.table("ai_usage_logs").insert(
+            repeatable_insert(
+                self.supabase.client,
+                "ai_usage_logs",
                 {
                     "user_id": user_id,
                     "workspace_id": workspace_id,

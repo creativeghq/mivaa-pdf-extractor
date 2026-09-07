@@ -13,6 +13,7 @@ import functools
 import importlib
 import sys
 import threading
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Dict, Optional, TYPE_CHECKING
@@ -77,6 +78,32 @@ def read_rpc(sb, func: str, params: Optional[Dict[str, Any]] = None):
     if reason:
         raise ValueError(f"read_rpc({func!r}) cannot be sent over GET: {reason}")
     return sb.rpc(func, payload, get=True)
+
+
+def repeatable_insert(sb, table: str, row: Dict[str, Any], *, id_field: str = "id"):
+    """Build an INSERT the retry patch below is ALLOWED to repeat. The write-side twin
+    of `read_rpc`.
+
+    A plain `.insert()` is a bare POST, so `_is_safe_to_repeat` refuses it — a disconnect
+    after the server committed is indistinguishable from one before, and repeating would
+    write the row twice. That refusal is right, and its price is that a transient blip
+    DROPS the row instead.
+
+    Minting the primary key here removes the ambiguity: an upsert replaying the same `id`
+    collapses onto whatever the first attempt left behind. `.upsert()` sends
+    `Prefer: resolution=merge-duplicates`, which is exactly what the patch already
+    whitelists, so the retry covers the write without any change to the patch.
+
+    Both halves matter for a cost row. A dropped one under-reports spend and a doubled one
+    over-reports it; both are valid numbers, so neither raises and no cost view can tell.
+    `ai_call_logger` was buffering failed `ai_usage_logs` rows and re-INSERTing them with no
+    key, which is the doubling half taken by hand one layer above the patch that refuses it.
+
+    Returns the builder, so call sites keep their `.execute()`.
+    """
+    payload: Dict[str, Any] = dict(row)
+    payload.setdefault(id_field, str(uuid.uuid4()))
+    return sb.table(table).upsert(payload)
 
 
 def _install_postgrest_retry_once(
