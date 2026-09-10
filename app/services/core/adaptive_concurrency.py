@@ -1,16 +1,4 @@
-"""
-Adaptive concurrency controller — AIMD backpressure.
-
-When an upstream endpoint (SLIG, PaddleOCR, Anthropic, etc.) cannot
-scale up its replicas (no available GPU, or rate-limited), we scale DOWN our
-in-flight request rate instead of queuing requests that will time out.
-Classic AIMD:
-
-    Additive Increase: +1 concurrency slot after N consecutive successes
-    Multiplicative Decrease: /2 concurrency slots after M consecutive failures
-
-This is purely in-process — no Redis, no DB state. Each Stage-3 run starts
-fresh at `initial`. The controller is reusable for any rate-limited endpoint.
+"""Adaptive concurrency controller — AIMD backpressure.
 
 Usage:
 
@@ -67,13 +55,6 @@ class AdaptiveConcurrency:
         self._consecutive_failures = 0
         self._consecutive_successes = 0
         # Lazy-init the Condition on first async use.
-        #
-        # In Python 3.9, `asyncio.Condition()` binds to the event loop at
-        # construction. The module-level `endpoint_controller` is built at
-        # import time before uvicorn's request loop exists, so eager
-        # construction binds the Condition to the wrong loop and later
-        # `slot()` calls raise "got Future attached to a different loop".
-        # Defer creation until the first coroutine enters `slot()`.
         self._cond: Optional[asyncio.Condition] = None
 
     def _get_cond(self) -> asyncio.Condition:
@@ -143,20 +124,7 @@ class AdaptiveConcurrency:
                 pass  # No running loop — limit change still took effect.
 
     def record_failure(self) -> None:
-        """Signal that an in-flight call failed with a backpressure-relevant error.
-
-        Only call this for errors that indicate upstream overload:
-            - APITimeoutError
-            - RateLimitError (429)
-            - Service Unavailable (503)
-            - ConnectionError
-
-        DO NOT call for semantic errors (400 Bad Request, empty JSON response,
-        invalid image format, etc.) — those are not concurrency-related.
-
-        After `failure_threshold` consecutive failures we halve the limit
-        (multiplicative decrease), floored at `minimum`.
-        """
+        """Signal that an in-flight call failed with a backpressure-relevant error."""
         self._consecutive_failures += 1
         self._consecutive_successes = 0
 

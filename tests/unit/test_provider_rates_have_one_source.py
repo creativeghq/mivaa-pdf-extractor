@@ -1,33 +1,4 @@
-"""Provider rates have ONE definition (main repo #365).
-
-THE BUG THIS EXISTS TO STOP. `job_cost_logger`, `mention_cost_logger` and
-`perplexity_price_search_service` each kept their own copy of the Sonar rates; the first two also
-duplicated the Haiku rates and held the DataForSEO SERP price under two different names. Three
-copies of a number cannot disagree loudly — a wrong rate is a valid float, nothing raises, the row
-inserts, and the dashboard total looks plausible.
-
-That is not hypothetical here. Both of the following were live and were found only by solving
-`raw_cost_usd` back out of `ai_usage_logs` and comparing against the providers' published pricing:
-
-  * Sonar Pro recorded 3x light on input and 15x light on output — one shared token constant was
-    applied to both models, correct for Sonar by coincidence.
-  * DataForSEO Labs recorded ~12x light — it was priced at the SERP rate, which is a different
-    product.
-
-Each had to be corrected in two files, with nothing tying the two edits together. The third copy in
-`perplexity_price_search_service` was not found until the consolidation, and was itself using a
-search fee *below* Perplexity's published band.
-
-WHAT THIS ASSERTS. That the rates live in `app/modules/_core/provider_pricing.py` and that no cost
-logger has grown its own copy back. It deliberately does not pin the VALUES — those change when a
-provider changes them, and a test that has to be edited every time a real price moves gets edited
-without being read.
-
-Token rates for models that HAVE an `ai_model_pricing` row are a separate rule, also checked here:
-they must resolve through `AIPricingConfig`, not sit as a literal. `claude-haiku-4-5` has a row, so
-restating its rate would be a second USD source — the thing CLAUDE.md forbids, and the reason
-`ai-logger.ts`'s fallback table was deleted in the same issue.
-"""
+"""Provider rates have ONE definition (main repo #365)."""
 from __future__ import annotations
 
 import re

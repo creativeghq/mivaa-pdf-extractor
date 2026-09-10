@@ -1,13 +1,4 @@
-"""
-Health Check API Endpoints
-
-Provides health status for monitoring systems:
-- Overall system health
-- Database connection health
-- Job monitor health
-- Query performance metrics
-- Circuit breaker status
-"""
+"""Health Check API Endpoints"""
 
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Dict, Any, Literal
@@ -121,47 +112,7 @@ async def health_check() -> BasicHealthResponse:
     description="Comprehensive health check including database, job monitor, query metrics, and circuit breaker status."
 )
 async def detailed_health_check() -> DetailedHealthResponse:
-    """
-    **Detailed System Health Check**
-
-    Comprehensive health status for all critical subsystems:
-
-    **Checks Performed**:
-    - 🗄️ **Database**: Connection pool health, query performance, error tracking
-    - ⚡ **Job Monitor**: Service status, stuck job detection, health state
-    - 📊 **Query Metrics**: Total queries, slow query percentage, avg/max times
-    - 🔌 **Circuit Breaker**: Protection state, failure count
-
-    **Overall Status**:
-    - `healthy`: All systems operational
-    - `degraded`: Some issues detected but service functional
-    - `unhealthy`: Critical issues requiring attention
-
-    **Use Case**: Monitoring dashboards, alerting systems, health reports
-
-    **Response Time**: <100ms
-
-    **Example Response**:
-    ```json
-    {
-      "overall_status": "healthy",
-      "database": {
-        "healthy": true,
-        "connection_test_ms": 12.5,
-        "query_test_ms": 18.3,
-        "performance": {
-          "avg_query_time_ms": 25.4,
-          "slow_query_count": 2
-        }
-      },
-      "job_monitor": {
-        "monitor_running": true,
-        "stuck_jobs_count": 0,
-        "health": "healthy"
-      }
-    }
-    ```
-    """
+    """**Detailed System Health Check**"""
     try:
         # Get database health
         db_health = database_health_service.get_health_status()
@@ -210,20 +161,7 @@ async def detailed_health_check() -> DetailedHealthResponse:
     description="Database connection pool health and performance metrics"
 )
 async def database_health() -> Dict[str, Any]:
-    """
-    **Database Connection Health**
-
-    Monitors database connection pool health and query performance.
-
-    **Metrics**:
-    - Connection test time
-    - Query execution time
-    - Error count and consecutive failures
-    - Uptime
-    - Performance statistics (avg/max query times, slow queries)
-
-    **Use Case**: Database monitoring, performance tracking
-    """
+    """**Database Connection Health**"""
     return database_health_service.get_health_status()
 
 
@@ -234,18 +172,7 @@ async def database_health() -> Dict[str, Any]:
     description="Job monitoring service status and stuck job detection"
 )
 async def job_monitor_health() -> Dict[str, Any]:
-    """
-    **Job Monitoring Service Health**
-
-    Status of the background job monitoring service.
-
-    **Metrics**:
-    - Monitor running status
-    - Stuck jobs count
-    - Overall health state
-
-    **Use Case**: Job queue monitoring, stuck job alerts
-    """
+    """**Job Monitoring Service Health**"""
     return await job_monitor_service.get_health_status()
 
 
@@ -256,22 +183,7 @@ async def job_monitor_health() -> Dict[str, Any]:
     description="Database query performance statistics and slow query tracking"
 )
 async def performance_metrics() -> QueryMetricsResponse:
-    """
-    **Query Performance Metrics**
-
-    Detailed statistics on database query performance.
-
-    **Metrics**:
-    - Total queries executed
-    - Slow query count and percentage
-    - Average/min/max query times
-    - Per-table statistics
-    - Recent slow queries log
-
-    **Slow Query Threshold**: 1000ms
-
-    **Use Case**: Performance optimization, slow query identification
-    """
+    """**Query Performance Metrics**"""
     return query_metrics.get_metrics()
 
 
@@ -282,24 +194,7 @@ async def performance_metrics() -> QueryMetricsResponse:
     description="Circuit breaker states for all protected services"
 )
 async def circuit_breaker_status() -> Dict[str, CircuitBreakerState]:
-    """
-    **Circuit Breaker Status**
-
-    Status of circuit breakers protecting critical services.
-
-    **States**:
-    - `closed`: Normal operation
-    - `open`: Failing fast (service down)
-    - `half_open`: Testing recovery
-
-    **Protected Services**:
-    - `job_monitor_db`: Job monitor database operations (now uses simple error handling)
-
-    **Use Case**: Resilience monitoring, failure detection
-
-    **Note**: JobMonitorService no longer uses circuit breaker pattern.
-    Status is derived from database health metrics.
-    """
+    """**Circuit Breaker Status**"""
     # Get database health to determine circuit breaker status
     db_health = database_health_service.get_health_status()
 

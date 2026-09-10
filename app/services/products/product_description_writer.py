@@ -1,20 +1,4 @@
-"""
-Product description writer — Claude Haiku over product chunks.
-
-Why this exists:
-  The Stage 0 AI metadata extractor is designed to output structured fields.
-  It routinely leaves products.description empty because there's no explicit
-  "description" column in tile catalogs — the description is prose scattered
-  across multiple chunks, interleaved with page markers, bilingual copy, and
-  SKU tables.
-
-  This module takes ALL of a product's chunks, sends them to Claude Haiku with
-  a tight prompt asking for a clean 2-4 sentence English description, and
-  writes the result to products.description.
-
-Cost: ~$0.0003 per product (small Haiku call). Runs inside Stage 4.7 and
-also via the backfill endpoint.
-"""
+"""Product description writer — Claude Haiku over product chunks."""
 
 import logging
 import os
@@ -99,14 +83,6 @@ def write_product_description_from_chunks(
         return None
 
     # Assemble the raw chunk text (capped).
-    #
-    # Bilingual ceramic catalogs (Harmony, Peronda, ...) place the Spanish
-    # paragraph before the English one on spreads. If we just iterate chunks
-    # in document order, the 6000-char cap can fill up on Spanish text and
-    # the English description never makes it to Claude. We sort English-
-    # looking chunks first so the model always gets the English narrative
-    # within the cap, then any leftover budget goes to the Spanish (which
-    # Claude can translate if needed).
     cleaned_chunks: List[tuple] = []  # (cleaned_text, is_english)
     for c in chunks:
         if isinstance(c, dict):

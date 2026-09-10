@@ -1,13 +1,4 @@
-"""
-Administrative and Monitoring API Endpoints
-
-This module provides comprehensive administrative and monitoring capabilities including:
-- Job management and status tracking
-- Service statistics and health monitoring
-- Administrative endpoints for data management
-- Bulk operations for document processing
-- System monitoring and performance metrics
-"""
+"""Administrative and Monitoring API Endpoints"""
 
 from app.dependencies import (
     assert_job_readable,
@@ -71,18 +62,7 @@ def _set_draining(value: bool, reason: Optional[str] = None) -> None:
 
 
 def require_deploy_token(x_admin_token: Optional[str] = Header(None)) -> None:
-    """Route-level gate for the deploy drain hooks.
-
-    These two paths are in ``JWTAuthMiddleware.exclude_paths`` — they are called
-    by CI over SSH with no Supabase JWT — so the middleware cannot protect them.
-    Invariant 5 requires such a route to carry its own guard rather than relying
-    on the network boundary: audit creativeghq/mivaa-pdf-extractor#12 confirmed
-    the deployed nginx proxies ``/api/`` wholesale, so ``pause-for-deploy`` was
-    reachable unauthenticated from the public internet and any caller could hold
-    every upload at 503 indefinitely.
-
-    Fails closed: an unset secret is a 503, never a fall-through to processing.
-    """
+    """Route-level gate for the deploy drain hooks."""
     expected = os.getenv("MIVAA_DEPLOY_TOKEN")
     if not expected:
         logger.error("MIVAA_DEPLOY_TOKEN is not configured — refusing deploy-hook call")
@@ -104,17 +84,7 @@ job_history: List[Dict[str, Any]] = []
 async def pause_for_deploy(
     max_wait_seconds: int = Query(300, ge=10, le=900),
 ):
-    """Fix C: deploy-coordinated drain endpoint.
-
-    Sets the global 'draining' flag (so new uploads return 503), then waits
-    up to `max_wait_seconds` for in-flight PDF jobs to finish. Returns
-    `{ready: True}` when the queue is empty, or `{ready: False, active_jobs: N}`
-    on timeout.
-
-    Gated by ``require_deploy_token`` (X-Admin-Token). The network is NOT the
-    auth boundary — nginx proxies /api/ wholesale, so this was publicly
-    reachable until audit #12.
-    """
+    """Fix C: deploy-coordinated drain endpoint."""
     import asyncio as _asyncio_drain
 
     _set_draining(True, reason="deploy_pause_request")
@@ -450,18 +420,8 @@ async def get_job_statistics():
 
 @router.get("/jobs/health", response_model=DataResponse)
 async def jobs_health_check():
-    """
-    Health check endpoint for the jobs subsystem.
+    """Health check endpoint for the jobs subsystem.
     Prevents /jobs/{job_id} from catching health-check probes that hit /api/jobs/health.
-
-    DELIBERATELY PUBLIC, and the one member of the /api/jobs subtree that is.
-    `/api/jobs` is in `JWTAuthMiddleware.exclude_paths`, so audit #12 gated every
-    other route under it with `verify_internal_access` and left this one open on
-    purpose. Audit #13 MI-5 asked for a route-level gate on all four diagnostics;
-    that is right for the other three — /api/system/health hands out host CPU,
-    memory and disk, and /api/packages/status is a dependency inventory an attacker
-    can match against CVEs — but this endpoint exists TO BE PROBED and discloses two
-    integers. Gating it turns a liveness probe into a 401.
     """
     return {
         "status": "healthy",
@@ -1035,15 +995,7 @@ async def cleanup_temp_files(
     dry_run: bool = Query(True, description="Preview what would be deleted without actually deleting"),
     _admin: User = Depends(require_admin),  # #250 D11: destructive op → admin-only
 ):
-    """
-    Clean up temporary files system-wide.
-
-    Cleans up:
-    - PDF files in /tmp (*.pdf)
-    - pdf_processor folders in /tmp
-    - Files in /var/www/mivaa-pdf-extractor/output
-    - __pycache__ folders
-    - Old files in /tmp/pdf_processing, /tmp/image_extraction, etc.
+    """Clean up temporary files system-wide.
 
     Args:
         max_age_hours: Maximum age of files to keep (default: 24 hours)
@@ -1200,18 +1152,7 @@ async def get_job_product_progress(
     supabase: SupabaseClient = Depends(get_supabase_client),
     claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ):
-    """
-    Get product-level progress for a PDF processing job.
-
-    Returns detailed progress for each product including:
-    - Product name and index
-    - Current status (pending, processing, completed, failed)
-    - Current processing stage
-    - Completed stages list
-    - Metrics (chunks, images, relationships)
-    - Error messages if failed
-    - Processing time
-    """
+    """Get product-level progress for a PDF processing job."""
     # The job decides the tenant; product rows hang off it (audit #13 MI-4).
     await assert_job_readable(job_id, claims)
     try:
@@ -1350,20 +1291,8 @@ async def reprocess_image_ocr(
     workspace_context: WorkspaceContext = Depends(get_workspace_context),
     current_user: User = Depends(require_admin)
 ):
-    """
-    Manually reprocess a single image with OCR and update all related entities.
-    
-    This endpoint is used when an image was skipped during initial processing
-    but the admin determines it should have OCR applied.
-    
-    Process:
-    1. Run PaddleOCR OCR on the image
-    2. Update image.ocr_extracted_text and ocr_confidence_score
-    3. Update related chunks with new OCR text
-    4. Regenerate text embeddings for updated chunks
-    5. Update product associations based on new OCR text
-    6. Update metadata relationships
-    
+    """Manually reprocess a single image with OCR and update all related entities.
+
     Args:
         image_id: UUID of the image to reprocess
         workspace_context: Current workspace context
@@ -1435,8 +1364,6 @@ async def reprocess_image_ocr(
             # METHOD, not emptiness. This endpoint joined `r.text` across results
             # without looking, so a total OCR failure was stored as empty text and then
             # written with processing_status='ocr_complete' and can_reprocess=False —
-            # permanently marking a failed image as done and un-retryable, which is the
-            # one outcome a "reprocess" endpoint must never produce.
             _failed = [r for r in ocr_results if r.method == 'paddleocr_failed']
             if _failed or not ocr_results:
                 logger.error(
@@ -1489,18 +1416,6 @@ async def reprocess_image_ocr(
                     updated_content = f"{chunk.get('content', '')}\n\n[Image OCR: {extracted_text}]"
                     
                     # Generate new text embedding.
-                    #
-                    # This call used to pass `text=` and `model="text-embedding-3-small"`.
-                    # The signature is (query, dimensions=1024, job_id, product_id,
-                    # image_id) — BOTH kwargs were wrong, so every call raised TypeError
-                    # straight into the handler below, `chunks_updated` and
-                    # `embeddings_regenerated` were structurally pinned at 0, and the
-                    # endpoint still returned success: True. The admin re-OCR path had
-                    # never re-embedded a single chunk.
-                    #
-                    # It also assigned the RETURN VALUE into `text_embedding` — that is a
-                    # dict {"success", "embedding", "model"}, not a vector, so even with
-                    # the kwargs fixed the write would have been wrong.
                     try:
                         embed_result = await embeddings_service.generate_text_embedding(
                             updated_content,
@@ -1623,29 +1538,7 @@ async def queue_regenerate_image_embeddings(
     current_user: Dict[str, Any] = Depends(get_current_user),
     supabase: SupabaseClient = Depends(get_supabase_client)
 ):
-    """
-    Queue a background job to regenerate visual embeddings for existing images.
-
-    This endpoint queues an async job that will:
-    1. Fetch existing images from document_images table
-    2. Download images from Supabase Storage
-    3. Generate 5 SLIG embeddings per image (visual, color, texture, style, material)
-    4. Save embeddings to VECS collections
-
-    **Use Cases:**
-    - Fix missing embeddings from old PDF processing
-    - Regenerate embeddings after model upgrades
-    - Bulk embedding generation for imported images
-
-    **Example Request:**
-    ```json
-    {
-      "document_id": "doc-123",  // Optional: limit to specific document
-      "image_ids": ["img-1", "img-2"],  // Optional: specific images
-      "force_regenerate": false,  // Optional: regenerate even if embeddings exist
-      "priority": 0  // Optional: job priority (0 = normal)
-    }
-    ```
+    """Queue a background job to regenerate visual embeddings for existing images.
 
     Args:
         request: Request with optional document_id, image_ids, force_regenerate, priority
@@ -1898,16 +1791,7 @@ async def backfill_understanding_embeddings_endpoint(
 
 
 class ProductEdgesBackfillRequest(BaseModel):
-    """Request body for the product-relationship-edges backfill.
-
-    New ingests build `product_edges` automatically at Stage 4 / XML completion;
-    this backfills workspaces whose products predate that wiring.
-
-    Defaults are safe: `include_llm=False` runs ONLY the free SQL rule derivation.
-    Set `include_llm=True` to also run the schema-locked Haiku text-edge pass
-    (real Haiku spend — bounded by `max_products_per_workspace`). `workspace_id`
-    targets one workspace; omit to sweep every workspace that has products.
-    """
+    """Request body for the product-relationship-edges backfill."""
     workspace_id: Optional[str] = None
     include_llm: bool = False
     max_products_per_workspace: int = 300
@@ -1999,21 +1883,7 @@ async def text_embedding_backfill_endpoint(
     request: TextEmbeddingBackfillRequest,
     user: User = Depends(require_admin),
 ):
-    """Re-embed products and chunks whose text embedding never landed.
-
-    Products: targets `text_embedding_1024 IS NULL` (the
-    metadata.embedding_failure marker stamped by Stage 0 previously had
-    no consumer — these products were invisible to product-level vector
-    search forever). Embedding text is built by the SAME
-    build_product_embedding_text used inline by Stage 4.
-
-    Chunks: targets `has_text_embedding` false/NULL (batch embedding
-    failed mid-import) with the same batch-Voyage + provenance wiring
-    as the inline path.
-
-    Bounded; safe to call repeatedly. Returns per-target
-    scanned/embedded/failed counts.
-    """
+    """Re-embed products and chunks whose text embedding never landed."""
     from app.services.embeddings.text_embedding_backfill import (
         backfill_text_embeddings,
     )
@@ -2048,19 +1918,7 @@ async def classification_backfill_endpoint(
     request: ClassificationBackfillRequest,
     user: User = Depends(require_admin),
 ):
-    """Re-classify quarantined images and embed the confirmed materials.
-
-    Targets document_images with metadata.ai_classification.
-    classification_pending=true — rows persisted WITHOUT embeddings when
-    the classifier API failed during Stage 3 (so an unverified
-    logo/header can't pollute visual search). Per image: re-classify →
-    clear the marker → non-materials stay embedding-free; confirmed
-    materials get the full set (visual SLIG + understanding + 4 aspects).
-
-    A failed re-classification keeps the marker so the next run retries.
-    Bounded by `batch_size` / `max_images`; safe to call repeatedly.
-    Returns scanned/material/non_material/embedded/skipped/failed counts.
-    """
+    """Re-classify quarantined images and embed the confirmed materials."""
     from app.services.embeddings.classification_backfill import (
         backfill_pending_classifications,
     )
@@ -2080,15 +1938,7 @@ async def classification_backfill_endpoint(
 # ──────────────────────────────────────────────────────────────────────
 
 class AspectBackfillRequest(BaseModel):
-    """Request body for the aspect-embeddings backfill endpoint.
-
-    Two modes:
-      - Cron (no selectors): scans up to `max_images` rows globally,
-        re-embeds any with stale aspect collections.
-      - Bulk-admin (with selectors): targets a specific document, product,
-        workspace, or explicit image-id list. `image_ids` overrides the
-        other selectors when present.
-    """
+    """Request body for the aspect-embeddings backfill endpoint."""
     batch_size: int = 25
     max_images: int = 200
     workspace_id: Optional[str] = None
@@ -2102,23 +1952,7 @@ async def backfill_aspect_embeddings_endpoint(
     request: AspectBackfillRequest,
     user: User = Depends(require_admin),
 ):
-    """Re-embed the four aspect collections from cached VisionAnalysis JSON.
-
-    Cheap path — Voyage-embeds 4 short strings per image (~$0.0001 each).
-    Does NOT re-run Claude Opus. If a row has no usable
-    vision_analysis, run `/admin/understanding-embeddings/backfill` first
-    (that one DOES re-run Opus + repopulates the JSON cache).
-
-    Stale = (any aspect collection missing) OR (any aspect_schema_version
-    below current SCHEMA_VERSION) OR (aspect_embedding_model not 'voyage-3').
-
-    Selectors stack (workspace_id ∧ document_id ∧ ...). `image_ids` and
-    `product_id` are special: image_ids resolves directly; product_id
-    joins through image_product_associations.
-
-    Bounded by `batch_size` and `max_images`; safe to call repeatedly.
-    Returns scanned/reembedded/partial/skipped/failed counts.
-    """
+    """Re-embed the four aspect collections from cached VisionAnalysis JSON."""
     from app.services.embeddings.aspect_backfill import (
         backfill_aspect_embeddings,
     )
@@ -2136,16 +1970,7 @@ async def backfill_aspect_embeddings_endpoint(
 
 
 class ImageRebuildRequest(BaseModel):
-    """Request body for per-image manual rebuild.
-
-    `aspects` is the list of aspects to re-embed (all four if omitted).
-    `rerun_vision_analysis` is reserved for a follow-up — when true the
-    endpoint will first re-fetch the image bytes and re-run Claude Opus
-    4.7 to repopulate `document_images.vision_analysis`, then cascade
-    aspect re-embedding. Today (v1) we only support re-embedding from
-    cached VA — operators chain `/admin/understanding-embeddings/backfill`
-    with explicit `image_ids` for the Opus re-run.
-    """
+    """Request body for per-image manual rebuild."""
     aspects: Optional[List[str]] = None
     reason: Optional[str] = None
     rerun_vision_analysis: bool = False
@@ -2220,22 +2045,7 @@ async def get_image_embeddings_status_endpoint(
     image_id: str,
     user: User = Depends(require_admin),
 ):
-    """Diagnostic — return the full embedding state of one image.
-
-    Read-only. The companion to `/admin/images/{id}/rerun-aspect-embeddings` —
-    you call this FIRST when triaging "why is this image returning wrong
-    matches", inspect the source texts each aspect was built from, and
-    THEN call rerun if you find a bad input.
-
-    Surfaces, per image:
-      - VisionAnalysis schema_version + the JSON itself
-      - Each of the six embedding collections: present?, model,
-        schema_version, plus the source text the aspect was derived from
-        (the killer feature — lets you spot e.g. `color="black"` for an
-        obviously white image without hitting the model)
-      - Boolean flags state on document_images
-      - Which collections are stale relative to the current SCHEMA_VERSION
-    """
+    """Diagnostic — return the full embedding state of one image."""
     from app.models.vision_analysis import (
         SCHEMA_VERSION as CURRENT_SCHEMA_VERSION,
         serialize_aspect_color,

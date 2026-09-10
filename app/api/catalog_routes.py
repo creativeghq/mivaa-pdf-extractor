@@ -1,19 +1,4 @@
-"""
-Catalog rasterization helper for the presentation_catalogs flow.
-
-Single endpoint: POST /api/internal/catalog/rasterize-pdf-page
-
-Renders one page of an admin-uploaded source PDF (stored under the
-`catalog-source/` prefix in the `pdf-documents` Supabase Storage bucket) to
-PNG, optionally cropped to a normalized [0..1] bounding box, and uploads the
-result to `pdf-tiles/catalog-extracted/<source_pdf_id>/page-<n>[-<bbox-hash>].png`.
-
-Used by the catalog-extract / catalog-translate edge functions to give every
-extracted material a real image lifted from the source PDF, instead of leaving
-image_url=null and asking the admin to find one.
-
-Auth: x-cron-secret header (same pattern as the other internal endpoints).
-"""
+"""Catalog rasterization helper for the presentation_catalogs flow."""
 from __future__ import annotations
 
 import hashlib

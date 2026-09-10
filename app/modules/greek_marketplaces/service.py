@@ -1,17 +1,4 @@
-"""
-Greek Marketplaces discovery service.
-
-Invoked alongside Perplexity + DataForSEO by
-`perplexity_price_search_service.search_prices()` when all of the
-following are true:
-
-  * country_code == "GR"
-  * the `greek-marketplaces` module is enabled in the `modules` DB table
-
-Returns `List[PriceHit]` merged + deduped by retailer domain so the
-caller can slot them into its normal pipeline (URL prefilter, Firecrawl
-verification, identity classifier).
-"""
+"""Greek Marketplaces discovery service."""
 
 from __future__ import annotations
 
@@ -86,16 +73,12 @@ class GreekMarketplacesService:
 
     @staticmethod
     def _dedupe_by_domain(hits: List[PriceHit]) -> List[PriceHit]:
-        """
-        Keep the first hit per (retailer domain, source) pair. Skroutz runs
+        """Keep the first hit per (retailer domain, source) pair. Skroutz runs
         first so its rows win over scraper fallbacks for the same retailer
         on the SAME source. But a merchant that appears on both Skroutz and
         Bestprice fanouts is kept twice with distinct source tags — the
         outer pipeline handles cross-source dedup with its own merge logic
         (greek-marketplaces > dataforseo > perplexity for the same domain).
-
-        Without the source tie-breaker, a 30-merchant Skroutz fanout
-        collapses to 1 row when Bestprice also surfaces the same merchant.
         """
         seen: set[tuple[str, str]] = set()
         deduped: List[PriceHit] = []

@@ -20,15 +20,6 @@ from app.services.metadata.field_registry import field_registry
 from app.services.utilities.prompt_registry import load_prompt, prefetch, render
 
 # ── Category → default unit mapping (mirrors material_categories.default_unit) ─
-#
-# Two-layer resolution:
-#   1. Coarse "upload categories" (10 buckets, matches the
-#      material_categories table on the DB and the upload-form selector)
-#   2. Fine-grained vocab values from MATERIAL_CATEGORY_VOCAB. Stage 4.7's
-#      auto-classifier writes these (e.g. 'porcelain_tile', 'sofa') so the
-#      coarse-only map silently fell through to 'pcs' for every product.
-#      Adding the fine-grained map below restores correct sqm units for
-#      tile/wood/wall-paint products.
 _CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
     # Coarse buckets
     'tiles': 'sqm',
@@ -70,7 +61,6 @@ _FINE_CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
 # through to 'pcs'. Load the table's coarse key→unit map at runtime (cached per process,
 # fully guarded) so admin-added categories resolve their configured unit; the hardcoded
 # map stays as the fallback. NOTE: this is the COARSE bucket map — it deliberately does
-# NOT touch the fine-grained MATERIAL_CATEGORY_VOCAB (a different, finer vocabulary).
 _DB_CATEGORY_UNITS: Optional[Dict[str, str]] = None
 
 
@@ -94,18 +84,7 @@ def _load_db_category_units(supabase: Any) -> Dict[str, str]:
 
 
 def _resolve_default_unit(material_category: Optional[str], supabase: Any = None) -> str:
-    """Resolve default unit from material category.
-
-    Resolution order:
-      1. Exact match against the fine-grained MATERIAL_CATEGORY_VOCAB map
-         (e.g. 'porcelain_tile' → 'sqm').
-      2. Admin-managed coarse buckets from the material_categories table (#227) —
-         honors categories added in admin beyond the original 10.
-      3. Exact match against the hardcoded coarse upload-bucket map ('tiles' → 'sqm').
-      4. Fuzzy substring match against the hardcoded coarse map (catches mid-pipeline
-         normalizations that strip the suffix).
-      5. Fallback to 'pcs'.
-    """
+    """Resolve default unit from material category."""
     if not material_category:
         return 'pcs'
     cat = material_category.lower().strip()
@@ -216,17 +195,6 @@ async def _trigger_factory_enrichment(
 # ── Controlled vocabulary ────────────────────────────────────────────────────
 # The fine-grained material_category vocabulary lives in
 # `material_categories.controlled_vocab` and is read through `field_registry` (#347 phase 3.2).
-#
-# It used to be a hardcoded set HERE, plus a second hardcoded copy inside _classify_product's
-# prompt string, plus a third in CATEGORY_FIELD_REGISTRY. No two agreed, and the disagreement
-# was load-bearing in both directions: `cladding`/`composite` were offered to the extractor and
-# then rejected by the validator below (re-classifying a correctly-classified product on every
-# run), while `urinal`, `track_light`, `outdoor_light`, `candle_holder`, `wall_coating`,
-# `kitchen_handle` and `kitchen_organiser` were accepted by the validator but offered by no
-# prompt at all, so nothing could ever produce them.
-#
-# zone_intent stays hardcoded: it is a 4-value PIPELINE concept (how the material occupies
-# space), not a product taxonomy an admin curates.
 ZONE_INTENT_VOCAB = {"surface", "full_object", "upholstery", "sub_element"}
 
 
@@ -264,17 +232,6 @@ async def _classify_product(
         existing_category=existing_category or 'N/A', vocab_lines=_vocab_lines)
 
     # A FORCED tool call, with the vocabulary as the schema (#32).
-    #
-    # This asked for JSON in the prompt and then stripped a ```json fence before
-    # parsing. Invariant 9 names exactly this: a classifier whose verdict drives a
-    # database write, parsed from free-form text. The verdict here sets
-    # `material_category`, which decides the product's default unit and its facets.
-    #
-    # The enum is built from the SAME source the validator below checks against, so the
-    # model is now offered only values that will be accepted. Before, a value outside
-    # the vocabulary came back, passed the parse, and was silently dropped by the
-    # membership test — leaving the product uncategorised with nothing to say why.
-    # The validator stays anyway: a schema is a request, and this is the check.
     classify_tool = {
         "name": "emit_product_classification",
         "description": "Assign the material category and zone intent from the controlled vocabulary.",
@@ -452,14 +409,6 @@ async def create_single_product(
     # are the most authoritative source for technical specs (R-rating, PEI,
     # fire rating, frost resistance) because they come from canonical icons
     # in the catalog — write them last to override AI text guesses.
-    #
-    # `_unknown_field_counts` is an audit-only sentinel produced by
-    # `_merge_icon_metadata_into_product` (see audit fix #42). It must NOT
-    # leak onto the product row — it would be picked up by the embedding text
-    # builder below (which iterates known_spec_fields rigorously, but the
-    # row-level metadata dict is also scanned by the frontend / search /
-    # propagation paths). Strip sentinel keys before merging and stash the
-    # audit data under a private prefix on the product instead.
     if icon_rollup:
         unknown_counts = icon_rollup.pop('_unknown_field_counts', None)
         for spec_field, spec_value in icon_rollup.items():
@@ -568,15 +517,6 @@ async def create_single_product(
     # spelling ("MATT" -> "Matt", "R 11" -> "R11"), and four of the enum-constrained fields
     # (pei_rating, slip_resistance, wood_type, application_areas) are also canonicalizable, so
     # the clusterer should see the curated form.
-    #
-    # The registry already declared what these values must be — dropdown_options for 51 fields,
-    # field_type number for 89 — and until now nothing on this path checked. The prompt offered
-    # the enum (`[one of: ...]`) and there was no validator at all, which is the exact asymmetry
-    # #347 exists to prevent, inverted.
-    #
-    # Nothing is dropped. An implausible value is kept and flagged, because a wrong rule must
-    # not be able to destroy extracted data, and the non-canonicalizable fields have no
-    # attributes_raw to replay from.
     try:
         metadata, _validation_report = await validate_metadata_against_registry(metadata)
     except Exception as _val_err:
@@ -591,11 +531,6 @@ async def create_single_product(
     # facet_canonical_values. Greek/German/Italian raw values auto-collapse
     # to canonical English. Identifiers, numerics, codes are skipped.
     # Failures degrade silently — product insert is never blocked by this.
-    #
-    # 30s timeout (2026-05-23): Voyage embedding calls can hang on rate-limit
-    # or network blip. Without a wait_for, the product insert would block
-    # indefinitely behind canonicalization. We degrade to empty attributes
-    # (preserving attributes_raw) on timeout — same contract as a Voyage error.
     import asyncio as _asyncio
     try:
         canonical = await _asyncio.wait_for(
@@ -708,7 +643,6 @@ async def create_single_product(
             # SAME source the backfill reads: the persisted `metadata` dict
             # (== product_data['metadata'] below), NOT product.page_range — the two
             # can differ when discovery pre-set metadata['page_range'] (line ~398
-            # only fills it if absent). Using metadata here guarantees byte-identity.
             page_body_text = await build_product_page_body_text(
                 supabase,
                 document_id,
@@ -791,8 +725,6 @@ async def create_single_product(
         # window where products are searchable but not linked to their images.
         # Best-effort — failure here doesn't block the product creation;
         # Stage 4.7 still runs as a backstop.
-        # Field name verified 2026-05-01: DiscoveredProduct uses `page_range`
-        # (List[int]), NOT product_pages — see document_entity_service.py:42.
         try:
             page_range = (
                 getattr(product, 'page_range', None)
@@ -932,19 +864,6 @@ def build_product_embedding_text(
     """Build the canonical product embedding text from name + description +
     searchable metadata + spec fields + (optionally) the product's reading-order
     page body text.
-
-    Single source of truth shared by Stage 4 inline generation AND the
-    product-embedding backfill — both must produce byte-identical text for
-    the same inputs so backfilled vectors live in the same semantic space.
-
-    ``page_body_text`` is the PaddleOCR-VL reading-order text for the product's
-    pages (built by :func:`build_product_page_body_text`). It is appended LAST so
-    spec-based search matches free-text spec phrasing that never got structured
-    into a metadata field — and so image-only / scanned products (whose
-    ``description`` is often empty and whose specs depend on downstream extractors)
-    still carry the text the VLM actually OCR'd, instead of embedding on
-    ``name + category`` alone. Pass the SAME value from both callers to preserve
-    byte-identity.
     """
     embedding_text_parts = [name or '']
     if description:
@@ -1020,19 +939,7 @@ async def build_product_page_body_text(
     logger: logging.Logger,
     max_chars: int = PRODUCT_BODY_TEXT_MAX_CHARS,
 ) -> str:
-    """Reading-order page body text for a product, from the PaddleOCR-VL cache.
-
-    Joins each of the product's physical pages' cached reading-order text
-    (``document_layout_analysis``, ``processing_version='paddleocr-vl'``) in page
-    order. This is the canonical text the VLM produced for the product's pages —
-    present even for image-only / scanned pages whose PDF text layer is empty.
-
-    Deterministic: pages are de-duplicated + sorted and the cache is immutable
-    post-Stage-1, so the inline Stage 4 path and the backfill produce
-    byte-identical text for the same ``(document_id, page_range)``. Returns ``""``
-    when the cache has no rows for the pages (embedding then relies on name +
-    description + structured specs only) — never raises.
-    """
+    """Reading-order page body text for a product, from the PaddleOCR-VL cache."""
     if not document_id or not page_range:
         return ""
     from app.api.pdf_processing.stage_1_layout_precompute import (
@@ -1062,15 +969,7 @@ async def reembed_product_text(
     known_spec_fields: List[str],
     logger: logging.Logger,
 ) -> bool:
-    """Rebuild + persist a product's text_embedding_1024 from its FINAL fields.
-
-    Used by Stage 4.7 enrichment after it writes a new `description` (S4-2): the
-    inline Stage 4 vector was built before the description existed, so it's stale
-    w.r.t. the persisted row. Re-embedding here — via the SAME
-    build_product_embedding_text + build_product_page_body_text helpers the inline
-    path and backfill use — keeps the stored vector consistent with the row.
-    Returns True on a successful 1024-dim write. Never raises.
-    """
+    """Rebuild + persist a product's text_embedding_1024 from its FINAL fields."""
     try:
         page_body_text = await build_product_page_body_text(
             supabase, document_id, (metadata or {}).get("page_range"), logger,
@@ -1114,18 +1013,7 @@ async def _fetch_known_spec_fields(
     supabase: Any,
     logger: logging.Logger,
 ) -> List[str]:
-    """
-    Fetch the canonical spec field name list from `material_metadata_fields`.
-
-    This is the source of truth for which top-level keys on `products.metadata`
-    are valid spec fields. Used by:
-      1. `_merge_icon_metadata_into_product` — to drop icon entries whose
-         field_name doesn't match a known spec (defensive against the prompt
-         inventing new field names).
-      2. The product embedding text builder — to walk every spec field that
-         is populated on a product and append it to the Voyage embedding text,
-         so a search like "porcelain tile R10 frost resistant" matches.
-    """
+    """Fetch the canonical spec field name list from `material_metadata_fields`."""
     try:
         result = supabase.client.table('material_metadata_fields') \
             .select('field_name') \
@@ -1148,16 +1036,10 @@ async def _merge_icon_metadata_into_product(
     supabase: Any,
     logger: logging.Logger,
 ) -> Dict[str, Any]:
-    """
-    Walk all `document_images` for a product, collect every icon_metadata
+    """Walk all `document_images` for a product, collect every icon_metadata
     entry, normalize field names against `material_metadata_fields`, and
     return a flat dict of `{field_name: value}` to merge into the product's
     top-level metadata.
-
-    Conflict resolution: when two images contribute the same field, the
-    higher-confidence value wins. Anything whose normalized field_name is
-    not in `known_spec_fields` is logged as a warning and dropped — we don't
-    want the icon prompt inventing new fields.
 
     Returns:
         Flat dict of {spec_field_name: value} ready to merge into
@@ -1261,15 +1143,8 @@ async def propagate_common_fields_to_products(
     logger: logging.Logger,
     material_category_override: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    Propagate common fields (factory, manufacturing, material_category) across all products
+    """Propagate common fields (factory, manufacturing, material_category) across all products
     from the same document. If one product has factory info and others don't, share it.
-
-    Common fields to propagate:
-    - factory_name
-    - factory_group_name
-    - country_of_origin / origin
-    - material_category (from upload settings - ALWAYS applied if provided)
 
     Args:
         document_id: Document identifier
@@ -1351,14 +1226,6 @@ async def propagate_common_fields_to_products(
                 best_factory = fobj
 
         # Material-level properties tiles/stones from the same catalog series share.
-        #
-        # These are FLAT keys since #347 phase 2.1 — the extractor's prompt sections
-        # (`material_properties`, `dimensions`, ...) are a prompt device, not a storage schema,
-        # and all three enrichment paths now agree on the flat shape. `legacy_nested_sources`
-        # is the read-only migration bridge: rows written before that change still carry
-        # `{"material_properties": {"thickness": "9mm"}}`, and this stage must be able to find
-        # a value there so a half-migrated document does not silently lose the propagation.
-        # Nothing WRITES nested any more.
         material_fields = ['thickness', 'body_type', 'composition']
         legacy_nested_sources = ['material_properties']
 
@@ -1622,22 +1489,6 @@ def _is_empty_value(value) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════
 # Stage 4.7 — Deterministic product enrichment from chunks + vision_analysis
 # ═══════════════════════════════════════════════════════════════════════════
-#
-# The AI extractor (Stage 0) is probabilistic. When it returns empty sections
-# (which happens regularly on bilingual / narrative-heavy catalogs), this stage
-# fills the gaps deterministically:
-#
-#   - Regex patterns over the product's document_chunks catch factory name
-#     from narrative ("from Harmony", "collaboration with X"), designer full
-#     name ("Stacy Garcia, a New York-based designer"), SKU codes, grout
-#     suppliers with dose, pieces_per_box, patterns_count, body_type.
-#
-#   - Majority-vote over document_images.vision_analysis rolls up per-image
-#     material_type and finish into product-level material_category and finish,
-#     and unions all observed color palettes.
-#
-# Only null/empty fields are filled. Confident AI values are never overwritten.
-# Each written field is tagged with _source so we can trace provenance later.
 
 import re as _re
 
@@ -2017,12 +1868,6 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
     """Pure function: majority-vote rollup of per-image vision_analysis into
     product-level fields.
 
-    Reads the schema-locked field names from
-    `app.models.vision_analysis.VisionAnalysis`. Older legacy keys
-    (`pattern` / `texture` / `design_style` / `material_subtype` /
-    `primary_color_hex` / `color_palette`) are still accepted as fallbacks
-    for pre-2026-05-01 data still in the DB.
-
     Args:
         vision_rows: List of dicts, each containing a vision_analysis JSON blob.
 
@@ -2322,15 +2167,6 @@ async def enrich_products_from_chunks_and_vision(
 ) -> Dict[str, Any]:
     """Stage 4.7: fill null product.metadata fields from chunks and vision_analysis.
 
-    Runs after Stage 0 AI extraction + Stage 4.5 propagation + Stage 4.6 dimension
-    extraction. Only fills empty values. Never overwrites AI-extracted data.
-
-    Now also runs (per product):
-      1. product_spec_vision_extractor — Claude Vision on the product's PDF spec
-         pages for packing data, slip/PEI/fire/shade icons, certifications, etc.
-      2. product_description_writer — Claude Haiku on the product's chunks to
-         generate a clean English description (written to products.description).
-
     Args:
         document_id: Document to enrich.
         supabase: Supabase client.
@@ -2485,9 +2321,6 @@ async def enrich_products_from_chunks_and_vision(
         # Used when a product has no explicit page_range on its metadata:
         # every image linked to the product via image_product_associations
         # gives us a concrete page number to target with the spec vision pass.
-        # Cheap — one query per document — and then in-memory lookups per
-        # product. Keeps pipeline stages decoupled (no dependency on the
-        # layout pass populating metadata.page_range up front).
         try:
             # S4-5: scope to THIS document at the DB (filter on the inner-joined
             # document_images.document_id) instead of pulling every association row
@@ -2540,13 +2373,6 @@ async def enrich_products_from_chunks_and_vision(
             # fell through to a noisy text-marker scan whenever the chunk
             # metadata fetch returned metadata as a string (Supabase JSONB
             # deserialization is not always dict-typed). The union approach
-            # is both cheap and self-healing.
-            #
-            # Signals, in order of authority (all are tried):
-            #   1. products.metadata.page_range      (explicit, if present)
-            #   2. chunks.metadata.product_pages    (MIVAA Stage 2 output)
-            #   3. image_product_associations       (layout result)
-            #   4. '--- # Page NN ---' markers in chunk text (last resort)
             page_set: set = set()
 
             # Helper: parse a value that might be int, str, list, or serialized.
@@ -2627,12 +2453,7 @@ async def enrich_products_from_chunks_and_vision(
             # Tier A: PyMuPDF text-dict parser (free, deterministic)
             # Tier B: Claude Opus Vision (fallback when Tier A insufficient)
             # Tier C: Catalog legend inheritance (fills fields from Layer 2
-            #         global legends, e.g. certifications, PEI defaults)
-            #
-            # Page resolution priority:
-            #   1. Layer 1's authoritative text-based scan
-            #      (catalog_layout.product_pages_by_name[product_name])
-            #   2. page_set computed earlier from chunks + image associations
+            # global legends, e.g. certifications, PEI defaults)
             spec_vision_candidates: Dict[str, Any] = {}
             resolved_page_indices: List[int] = []
             layout_pages = layout_product_pages.get(product_name) or []
@@ -2911,9 +2732,6 @@ async def enrich_products_from_chunks_and_vision(
         # last ~10 pages of the PDF to extract iconography legends, regulations,
         # installation guides, care instructions, sustainability claims, etc.
         # Creates catalog-wide kb_docs and links them to every product.
-        #
-        # Only runs when we're enriching the WHOLE document (target_product_id
-        # is None) — single-product backfill doesn't need to re-scan the catalog.
         if target_product_id is None and products:
             try:
                 from app.services.knowledge.catalog_knowledge_extractor import (

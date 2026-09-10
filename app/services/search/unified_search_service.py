@@ -1,19 +1,4 @@
-"""
-Query understanding for /api/rag/search.
-
-What remains of the "Unified Search Service" is the part a route actually calls:
-`UnifiedSearchService._parse_query_with_ai` (Claude Haiku 4.5 parses a natural-language
-material query into structured filters and picks a 7-vector weight profile; cached in
-`query_understanding_cache`) and `_select_weight_profile`.
-
-The multi-strategy `search()` machinery that used to live here was deleted on
-2026-09-05. No route reached it — rag_routes only ever called `_parse_query_with_ai` —
-and what it did was wrong in ways no test could see: `_search_semantic` read the FIRST
-20 rows of document_chunks with no ORDER BY and ranked those in numpy (an arbitrary
-sample, not a nearest-neighbour search), and `_search_hybrid` summed a cosine
-similarity and a ts_rank as if they shared a scale. Product search is
-`RAGService.multi_vector_search`; KB search is the `kb_hybrid_doc_chunks` RPC.
-"""
+"""Query understanding for /api/rag/search."""
 
 import logging
 from typing import Dict, Any, Optional, Tuple
@@ -89,38 +74,15 @@ class UnifiedSearchService:
         system_prompt: str,
         workspace_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Parse a search query into structured filters using Anthropic Claude
+        """Parse a search query into structured filters using Anthropic Claude
         Haiku 4.5 (fast, cheap, structured-output friendly). Returns the
         parsed dict or raises on failure (caller falls back to GPT-4o-mini).
-
-        Query parsing runs on Claude —
-        removed from the platform but this method retained the legacy
-        name + log strings, which were misleading to operators reading
-        the search-side logs.
-
-        M3-13 (#16): this was a bare `httpx.post` to the Anthropic messages
-        endpoint — no debit, no cost log, no attribution at all, so every
-        query-understanding call was free as far as the platform could tell.
-        It now goes through `tracked_claude_call_async` (pipeline convention
-        10), which logs and debits automatically.
         """
         from app.services.core.claude_tool_call import call_with_tool
 
         # Forced (#32). The fence-stripping this replaces handled ```json, bare ``` and a
         # trailing fence — three separate repairs, which is a good measure of how often
         # the free-form contract was not holding.
-        #
-        # The schema is deliberately open: the filter shape is described inside
-        # `system_prompt`, which is loaded from the database and edited by admins.
-        # Restating those keys here would create a second source, and because the model
-        # is FORCED to satisfy the schema, an admin's edit would silently stop taking
-        # effect. What forcing buys even with an open schema is the whole failure mode —
-        # no prose to repair, and an absent tool block raises `ToolCallNotReturned`
-        # instead of a JSONDecodeError three lines down.
-        #
-        # It still RAISES on failure, which is the contract this method already had: the
-        # caller falls back to the other model.
         call = await call_with_tool(
             task="search_query_understanding",
             model="claude-haiku-4-5",
@@ -210,14 +172,6 @@ class UnifiedSearchService:
                 self.logger.debug(f"Primary query parse failed ({parse_err}), falling back to Claude Haiku")
 
             # Fallback: Claude Haiku 4.5.
-            #
-            # M3-13 (#16): this used to call the SDK client directly and then
-            # hand-roll a log_claude_call AFTER json.loads succeeded — so a
-            # parse failure threw past the logging and the call was billed by
-            # Anthropic but recorded nowhere, and neither user_id nor
-            # workspace_id was ever passed. tracked_claude_call_async logs and
-            # debits around the call itself, which is why the parse can now sit
-            # outside it.
             if parsed_data is None:
                 model_used = "claude-haiku-4-5"
                 # Forced tool (#32). This site is the clearest statement of the problem
@@ -225,11 +179,6 @@ class UnifiedSearchService:
                 # JSON object, no markdown fences, no explanation" — and the code below
                 # it stripped markdown fences anyway. The instruction and the repair are
                 # the same admission, written twice.
-                #
-                # Both are gone. The model cannot return prose, so there is nothing to
-                # instruct against and nothing to strip. The schema stays OPEN because
-                # the filter shape is described in `system_prompt`, which is loaded from
-                # the database — same reasoning as the sibling `_parse_query_with_haiku`.
                 from app.services.core.claude_tool_call import (
                     ToolCallNotReturned,
                     call_with_tool,
@@ -308,13 +257,6 @@ class UnifiedSearchService:
             visual_query = " ".join(visual_parts) if visual_parts else query
 
             # Build filters dictionary (remove null values and visual_query).
-            #
-            # field_mapping targets `products.attributes.*` for descriptive facets
-            # (color, material, finish, style, application, room, material_category)
-            # — these are the canonical English values written by every ingest
-            # path (PDF Stage 4, XML supplier feeds, web scrape, background agents).
-            # Other fields (designer, collection, factory, dimensions) stay in
-            # metadata because they're identifiers, not canonicalizable facets.
             field_mapping = {
                 # Canonicalized facets — target attributes.*
                 "colors": "attributes.color",

@@ -1,14 +1,4 @@
-"""
-Search Query Tracking Service
-
-Tracks all search queries to identify:
-1. Zero-result queries (users searching for things we don't have)
-2. Unmatched terms (words that don't match any prototypes)
-3. Patterns in user search behavior
-
-This data feeds into the prototype discovery system to continuously improve
-metadata validation and search relevance.
-"""
+"""Search Query Tracking Service"""
 
 import logging
 from typing import Dict, Any, List, Optional

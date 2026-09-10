@@ -1,27 +1,4 @@
-"""Guards for the mivaa#14 fixes (MV-1 …).
-
-MV-1 is the sharpest silent zero in this codebase so far, and worth restating
-because the shape recurs: both RAG entry points retrieved context with
-`multi_vector_search`, whose rows are PRODUCT-shaped —
-`{id, product_name, description, metadata, score, ...}`. The context builder read
-`chunk.get('content', chunk.get('text', ''))`. Neither key exists on that shape.
-
-So every RAG answer was synthesised from relevance headers with empty bodies,
-under the instruction "answer based ONLY on the provided context".
-
-Nothing could see it:
-  * the `if not chunks:` guard PASSED — rows existed, they were the wrong shape
-  * the Claude call succeeded, so it was billed and logged as a success
-  * the response reported N chunks retrieved
-  * the answer was a polite refusal or a hallucination from the question alone,
-    both of which read as ordinary model behaviour
-
-`ops.silent_zero` cannot catch it either: the operation self-reports success.
-
-Static, over source text — CI installs pytest alone, so nothing here imports `app`.
-
-Every case was watched to FAIL against the pre-fix tree.
-"""
+"""Guards for the mivaa#14 fixes (MV-1 …)."""
 
 import ast
 import re
@@ -154,15 +131,7 @@ def test_a_metering_fault_does_not_become_free_spend():
 
 
 def test_an_edge_metered_call_is_charged_once():
-    """One DataForSEO call, one charge.
-
-    The main repo's edge spend gate reserves the caller's credits before the call and settles
-    them against the `cost` this client reports back. This client ALSO charged its flat unit,
-    so every SEO-agent call was billed twice — 134 calls in the 30 days to 2026-09-05, found by
-    reading one conversation's credit ledger (main repo conversation 9225f61f). The gate marks
-    its calls `attribution.metered_upstream`; this client must stand down for them, and must
-    still PROCEED (0 = nothing taken), because refusing (None) would turn a paid-for call into
-    a refused one."""
+    """One DataForSEO call, one charge."""
     body = _strip_comments(_func(DFS, "_charge_for_call"))
     assert "metered_upstream" in body, (
         "the edge-metered stand-down is gone from _charge_for_call, so every SEO-agent "
@@ -280,22 +249,6 @@ def test_model_output_does_not_become_a_product_field_on_its_own_say_so():
 
 # ═══════════════════════════════════════════════════════════════════════════
 # The other half of MV-3: a reservation the provider never earned
-#
-# MV-3 moved both paid clients to debit-BEFORE-call (invariant 10). That is right,
-# and it was only half a mechanism. Invariant 10 says take the money before the
-# upstream call; it does not say keep it when the upstream then refuses.
-#
-# Found live, one day after MV-3 shipped: the Perplexity account has been out of
-# quota since 2026-08-01 and answers EVERY request with HTTP 401
-# `insufficient_quota` — 70 consecutive failures over 16 days, ~$0.48 of phantom
-# cost logged for work that never happened. With a reservation and no refund, a
-# dead credential stops being an outage and becomes a credit drain that bills the
-# user forever while every metering signal reads as healthy.
-#
-# The route layer already had the shape right — `Reserve — find_competitors` is
-# always paired with `Refund — find_competitors` in credit_transactions, and
-# website crawls refund on `crawl_failed`. The clients were the layer that did not.
-# ═══════════════════════════════════════════════════════════════════════════
 
 
 def test_perplexity_gives_back_a_reservation_the_provider_never_earned():

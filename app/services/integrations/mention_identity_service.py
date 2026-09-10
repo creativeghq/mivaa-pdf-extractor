@@ -1,24 +1,4 @@
-"""
-Mention identity verification + sentiment classification.
-
-Mirror of `product_identity_service.py` for the mention-monitoring path.
-Pipeline:
-
-  1. Decompose subject into facets ONCE (brand, model, type, must-have tokens,
-     alias variants). Cached on tracked_mentions.subject_facets to skip repeat
-     Haiku calls.
-  2. Pre-filter candidates that can't be a real mention (the alias must appear
-     in title|excerpt|first 200 chars of body) before paying classifier cost.
-  3. Verdict cache lookup keyed on sha1(content_hash || subject_facets_hash) —
-     repeat URLs across daily refreshes hit cache.
-  4. Haiku 4.5 batch-classifies misses — relevance + sentiment + match_kind.
-  5. Persist verdict to cache (7d TTL).
-
-Cost discipline:
-  - Rule-based pre-filter drops obvious mismatches before Haiku.
-  - Up to 50 candidates per Haiku call.
-  - Verdict cache hits cost zero credits.
-"""
+"""Mention identity verification + sentiment classification."""
 
 from __future__ import annotations
 
@@ -139,23 +119,7 @@ def content_hash(*, url: str, title: Optional[str], body: Optional[str]) -> str:
 
 
 def alias_present(text: str, facets: SubjectFacets) -> bool:
-    """Cheap deterministic check: does at least one alias appear in text?
-
-    Strict substring match — every alias is matched as a literal phrase
-    (after case-fold + accent-strip + whitespace collapse). The string the
-    caller supplied is the string we look for. We do NOT split multi-word
-    aliases into individual words and accept "any of them anywhere"; that
-    would silently turn `ORABELLA PRECIOSA` into a query for two unrelated
-    brands and produce false positives.
-
-    To get broader matching on multi-word labels, the caller has two opt-in
-    paths:
-      1. Supply variants explicitly via `aliases` (e.g. ["Orabella",
-         "Preciosa", "Orabella by Preciosa"]) — each is matched as a phrase.
-      2. Set `auto_expand_aliases: true` on subject create — the LLM
-         produces both the full label AND per-word splits as separate
-         aliases, each then matched as a phrase here.
-    """
+    """Cheap deterministic check: does at least one alias appear in text?"""
     if not text:
         return False
     nt = normalize_text(text)
@@ -194,21 +158,7 @@ class MentionIdentityService:
         use_llm: bool = False,
         attribution: Optional[CostAttribution] = None,
     ) -> SubjectFacets:
-        """
-        Decompose the subject into facets.
-
-        Default behavior (use_llm=False): build deterministic facets from the
-        inputs only. No Haiku call. Discovery searches use the label + any
-        aliases the caller supplied — nothing more, nothing less.
-
-        Opt-in behavior (use_llm=True): run Haiku once to expand the label
-        into per-word aliases, infer brand/product_type, and surface
-        competitor brands. Broader recall, higher cost, dependency on
-        Anthropic. Caller persists the result.
-
-        If `cached` is provided (from tracked_mentions.subject_facets) we
-        round-trip via from_dict regardless of use_llm.
-        """
+        """Decompose the subject into facets."""
         if cached:
             try:
                 return SubjectFacets.from_dict(cached)

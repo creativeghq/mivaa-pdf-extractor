@@ -1,23 +1,4 @@
-"""
-Spread-aware region-crop extractor (Stage 3 Layer 2 replacement).
-
-The PaddleOCR structural pass (Stage 1.5) renders each PHYSICAL page as a
-clipped half of its PDF sheet and persists `document_layout_analysis` rows
-keyed by physical page (`page_number`), with region bboxes in PIXEL coords of
-that half-render at LAYOUT_RENDER_DPI.
-
-The previous Layer-2 cropper (`PDFProcessor._extract_region_crops`) was NOT
-spread-aware: it iterated PDF *sheet* indices, looked up the layout cache via
-`page_idx + 1` (the layout is keyed by physical page, not sheet), and rendered
-the FULL sheet. For spread catalogs the lookup missed and almost no IMAGE/FIGURE
-regions got cropped — product tile swatches were detected but never embedded.
-
-This module centralizes region cropping to ONE spread-aware path:
-  - layout cache is queried directly by physical `page_number` (no +1 offset),
-  - each physical page is rendered as the same clipped half Stage 1.5 used
-    (reusing `_render_physical_page` / `_clip_rect_for_position`), so the cached
-    pixel bboxes align with the rendered image directly — crop, no offset.
-"""
+"""Spread-aware region-crop extractor (Stage 3 Layer 2 replacement)."""
 
 from __future__ import annotations
 
@@ -29,18 +10,6 @@ import fitz  # PyMuPDF
 from app.api.pdf_processing.stage_1_layout_precompute import _render_physical_page
 
 # Which layout-region classifications become `extraction_layer='region_crop'` rows.
-#
-# This was a hardcoded ("IMAGE", "FIGURE") that silently overrode the configured
-# value. PDF_CONSTANTS.CROP_REGION_TYPES is ("IMAGE", "FIGURE", "TABLE") and carries a
-# comment explaining exactly why TABLE is in it — ceramic catalogs classify a 12-tile
-# colour-swatch grid as a single TABLE region, and those tiles are flattened into
-# render commands so PyMuPDF cannot see them; without a crop they are lost from
-# extraction entirely. It also documents a PDF_CROP_REGION_TYPES env override.
-#
-# Nothing read either. This module's local tuple was the only value in play, so TABLE
-# crops were never produced, the env override did nothing, and the Stage 3 Phase-3 OCR
-# branch for TABLE/TEXT/TITLE/CAPTION region crops could never execute — 100% of region
-# crops took its skip path. Read the configured value so all three come back to life.
 def _crop_region_types() -> tuple:
     env = os.getenv("PDF_CROP_REGION_TYPES")
     if env:

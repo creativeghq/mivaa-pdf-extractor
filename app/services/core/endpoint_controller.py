@@ -1,41 +1,4 @@
-"""
-Unified endpoint controller for the inference endpoints.
-
-This is the single coordination point for:
-  - lifecycle     (warmup / scale-to-zero of each endpoint)
-  - backpressure  (AdaptiveConcurrency gate per endpoint, AIMD)
-  - observability (one stats() call for everything)
-
-Why:
-  We have two inference endpoints, both Modal-hosted (2026-06-14): SLIG (visual
-  embeddings) and PaddleOCR-VL (the structural pass). Each used to have its own
-  scattered warmup path, its own (or no) concurrency gate, and its own call-site
-  pattern. When one endpoint got overloaded, nothing shrank our in-flight request
-  rate; we just piled requests into a saturated queue and timed them out.
-
-  This controller:
-  - Warms both endpoints in parallel at job start (saves 60-180s vs serial).
-  - Gives each endpoint its own AdaptiveConcurrency slot, tuned to its shape.
-  - Per-endpoint failures shrink that endpoint only — a SLIG meltdown does
-    NOT drag the PaddleOCR gate down with it (the two concurrency gates,
-    slig and paddleocr, are independent).
-  - Modal owns replica autoscaling on the host side; the AIMD gate here shrinks
-    our in-flight rate to match whatever capacity exists under overload.
-
-Call-site pattern:
-
-    from app.services.core.endpoint_controller import endpoint_controller
-
-    async with endpoint_controller.slig.slot():
-        try:
-            result = await slig_call(...)
-            endpoint_controller.record_success("slig")
-        except (APITimeoutError, APIConnectionError, httpx.TimeoutException):
-            endpoint_controller.record_failure("slig")
-            raise
-
-That's the entire integration — one import, one `async with`, two signals.
-"""
+"""Unified endpoint controller for the inference endpoints."""
 
 import asyncio
 import logging
@@ -66,13 +29,6 @@ class EndpointController:
 
     def __init__(self):
         # Per-endpoint AdaptiveConcurrency gates.
-        #
-        # Tuning rationale:
-        #   - SLIG (mh-slig): lightweight text-guided embeddings, fast responses.
-        #     16 concurrent is fine; failures here usually mean network, not load.
-        #   - PaddleOCR (paddleocr): the structural-pass backbone (Modal) — layout
-        #     + OCR + figure boxes per page, ~1-3s warm. Heavier than SLIG; cap at
-        #     8 concurrent, 1 minimum.
         self.slig  = AdaptiveConcurrency(name="slig",  initial=8, minimum=2, maximum=16, failure_threshold=3, success_threshold=15)
         self.paddleocr = AdaptiveConcurrency(name="paddleocr", initial=4, minimum=1, maximum=8,  failure_threshold=2, success_threshold=10)
 
@@ -85,17 +41,6 @@ class EndpointController:
         # scale_all_to_zero queries DB-side for current 'processing' jobs as
         # the source of truth (in-memory count would be lost across worker
         # restarts), but in-memory is the fast path.
-        #
-        # SINGLE-POD CONSTRAINT: this registry is in-process memory. With one
-        # MIVAA pod (current deployment) that's correct; if the backend ever
-        # runs >1 worker process, each process has its own set and
-        # scale-to-zero coordination silently breaks — the DB-side count in
-        # _get_active_job_count is the only cross-process signal. Move this
-        # to a DB/Redis registry before scaling out.
-        #
-        # threading.Lock (not asyncio.Lock): these methods are sync and are
-        # called from both sync and async contexts. The original asyncio.Lock
-        # was created but never acquired (incomplete audit fix #19).
         import threading
         self._active_jobs: set = set()
         self._active_jobs_lock = threading.Lock()
@@ -201,15 +146,6 @@ class EndpointController:
     async def warm_all(self, job_id: str) -> Dict[str, bool]:
         """Warm up the structural endpoints (SLIG + PaddleOCR) in parallel.
 
-        Each endpoint manager's `warmup()` method is sync (it uses `requests`,
-        not httpx); we run them in threads so they can overlap without blocking
-        the event loop.
-
-        Any endpoint whose warmup fails (manager missing, URL empty, all resume
-        attempts failed, warmup probe timeout) has its concurrency gate forced
-        to `minimum=1`. That prevents the pipeline from handing out slots that
-        would just pile up against a broken endpoint.
-
         Args:
             job_id: for logging correlation.
 
@@ -243,17 +179,7 @@ class EndpointController:
             return outcome
 
     async def _warm_one(self, key: str, manager: Any, job_id: str) -> bool:
-        """Resume + warmup a single endpoint.
-
-        Any failure force_minimum()s the corresponding gate.
-
-        Optimization: rag_routes already ran parallel warmup before calling
-        warm_all (so warmup_completed=True for the successful ones). For
-        managers whose prior warmup FAILED, calling manager.warmup() again
-        re-runs the full 360s polling loop unnecessarily — we already know
-        the endpoint is broken. Short-circuit by checking the endpoint
-        status BEFORE entering the polling loop.
-        """
+        """Resume + warmup a single endpoint."""
         gate = self.get_gate(key)
 
         if manager is None:
@@ -360,15 +286,6 @@ class EndpointController:
 
     async def scale_all_to_zero(self, reason: str = "cleanup", force: bool = False) -> Dict[str, bool]:
         """Force every HF endpoint to min_replica=0, with concurrent-job guard.
-
-        Audit fix #19: was unconditional. If Job A finished and called
-        scale_all_to_zero while Job B was still mid-call, Job B's next
-        inference would 503 / cold-start. Now we check `_active_job_count`
-        and skip scale-down if other jobs are still running. Pass
-        force=True for admin-cancel paths that should override.
-
-        Audit fix #39: also resets manager.warmup_completed so the next job
-        knows the endpoint is cold.
 
         Args:
             reason: short tag for log correlation, e.g. "pdf_job_<id>",

@@ -1,27 +1,4 @@
-"""
-A provider call that failed must not appear as money we spent.
-
-`log_external_call` wrote `billed = raw_cost_usd * markup` whatever `success` said, and put
-`success` only into `metadata`. Every flat-rate provider therefore booked its per-call price for
-calls the provider refused. Measured on live data 2026-08-30, over seven days:
-
-    dataforseo-labs-related-keywords   53 failed calls   $0.954 billed
-    sonar (Perplexity, HTTP 401)       35 failed calls   $0.263 billed
-    dataforseo-serp-google-organic      4 failed calls   $0.004 billed
-    firecrawl-v2                        1 failed call    $0.003 billed
-
-Token-priced models never had the bug — their cost comes from `response.usage` and a failed call
-returns no tokens, so the arithmetic already gave zero. That is exactly why this looked like four
-provider-specific quirks and was one line in the shared writer.
-
-The failure mode is the dangerous kind: a plausible number. Nothing errors, nothing is missing,
-and every cost view silently includes spend that never happened.
-
-MIVAA's CI installs pytest and no application dependencies, so `cost_logger.py` (which imports a
-Supabase client at module scope) cannot be imported here. `cost_accounting.py` imports nothing and
-is loaded by path, so this exercises the REAL derivation rather than asserting on source text —
-and a second, source-level check makes sure the writer still calls it.
-"""
+"""A provider call that failed must not appear as money we spent."""
 import importlib.util
 from pathlib import Path
 

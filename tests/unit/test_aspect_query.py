@@ -1,21 +1,4 @@
-"""
-Guard: the aspect query vector is derived from the IMAGE when there is one (#277).
-
-The bug: the search page requires an image for its Color/Texture/Style/Material modes, then
-sends the image's *filename* as the query text. `multi_vector_search` queried all four aspect
-collections with the understanding embedding of that text, so `image_texture_embeddings` was
-searched with `voyage("IMG_2831.jpg")` — while `aspect_bias_weights` put 0.55 of the ranking
-weight on that channel and cut the SLIG visual channel (the only one that had actually seen
-the image) from 0.19 to 0.10. Picking "Texture Pattern" made results worse than not picking it.
-
-Nothing could catch it: a filename embeds to a valid 1024D vector, cosine-compares against
-every row, and returns a confident ordering. Right shape, absent meaning.
-
-These are source-level assertions on purpose. Exercising the real path needs Anthropic +
-Voyage + VECS; this has to run in CI in a second with nothing but pytest, which is the
-difference between a guard that runs on every push and one that quietly never runs. The
-behaviour they pin is structural — WHICH derivation each caller reaches for.
-"""
+"""Guard: the aspect query vector is derived from the IMAGE when there is one (#277)."""
 
 import re
 from pathlib import Path
@@ -155,18 +138,9 @@ def test_the_page_channel_needs_words():
 
 
 def test_query_image_fetch_goes_through_the_ssrf_guard():
-    """
-    Invariant 7. This helper fetches a user-supplied https URL; it originally used a raw
+    """Invariant 7. This helper fetches a user-supplied https URL; it originally used a raw
     httpx.get with follow_redirects=True, so a permitted host could 302 into link-local
     metadata. Wiring these endpoints up made that reachable.
-
-    This asserted `follow_redirects=False` in the source for as long as the fetch was
-    hand-rolled here. It now delegates to `ssrf_guard.safe_fetch_bytes`, which follows
-    redirects and RE-VALIDATES each hop — strictly stronger, and necessary because a
-    blanket ban breaks the provider URLs that legitimately redirect. Asserting the old
-    spelling would now fail on the safer code, which is the failure mode where a guard
-    starts pinning an implementation detail instead of the rule. So: assert the fetch is
-    the guarded one, and let `test_safe_fetch_bytes` own what "guarded" means.
     """
     assert "safe_fetch_bytes" in ASPECT_QUERY_SRC, (
         "the query_image fetch must go through the guarded fetch, not a raw client"
@@ -197,16 +171,9 @@ def test_no_second_embedder_creeps_in(forbidden):
 
 
 def test_image_hits_are_resolved_to_something_a_caller_can_use():
-    """
-    VECS answers an image search with a UUID and a score. That is a correct ranking in an
+    """VECS answers an image search with a UUID and a score. That is a correct ranking in an
     unusable form — an agent cannot describe it and a UI cannot render it — and it reports
     success with a populated `results` array, so nothing looks wrong.
-
-    `/api/rag/search?strategy=multi_vector` never had this problem: it resolves to products
-    and the route enriches them, keying on `result.get('id')`. Image rows have no `id`, so
-    that enrichment silently skipped every one of them.
-
-    Both bare-row endpoints must go through the shared enrichment.
     """
     enrich_src = (_ROOT / "app" / "services" / "search" / "image_results.py").read_text(
         encoding="utf-8"

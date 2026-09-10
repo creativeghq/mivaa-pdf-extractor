@@ -311,19 +311,7 @@ async def validate_metadata_against_registry(
     *,
     stamp: bool = True,
 ) -> Tuple[Dict[str, Any], ValidationReport]:
-    """Validate an extracted metadata dict against the field registry.
-
-    Walks the top level plus one level of section containers (`packaging.pieces_per_box`), the
-    same dotted convention `_extraction_metadata` already uses in stage 4.
-
-    Returns `(metadata, report)`. The dict is returned with canonical enum spellings applied and
-    NOTHING removed. When `stamp` is set, each suspect field also gets a `validation` record
-    merged into its `_extraction_metadata` entry, and the summary lands on `metadata['_validation']`.
-
-    Unknown keys are counted as `unchecked` rather than flagged: the registry does not claim to
-    describe every key the extractor emits (`material_category`, `unit`, `factory_name`), and
-    treating "I have no opinion" as "this is wrong" would bury the real findings.
-    """
+    """Validate an extracted metadata dict against the field registry."""
     from app.services.metadata.field_registry import field_registry
 
     await field_registry.ensure_loaded()

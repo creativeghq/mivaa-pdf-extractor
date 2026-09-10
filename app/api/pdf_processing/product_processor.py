@@ -100,12 +100,6 @@ async def process_single_product(
     prior_stages: set = set()
     prior_db_id: Optional[str] = None
     # Only two resume flags exist because only two stages are skippable here.
-    # `skip_extraction` and `skip_creation` were declared alongside these and never
-    # read: extraction is deliberately always redone (see the comment at the resume
-    # block below — Stage 3 needs the in-memory pages and re-extracting costs no AI
-    # calls), and product CREATION does not happen in this function at all. Stage 0
-    # discovery creates the row; Stage 4 here only updates it, and raises if the id is
-    # missing. Two dead flags that read like unimplemented skips.
     skip_chunking = False
     skip_images = False
     # What a completed-stage checkpoint claimed it wrote, so the DB row counts below
@@ -122,10 +116,6 @@ async def process_single_product(
         # Also peek at job stage_history for per-product checkpoint events
         # tied to THIS product_index (catches resumes where product_tracker
         # state was wiped on the previous restart).
-        # Audit fix #11: previously a transient Supabase 503 here would silently
-        # swallow the exception → prior_stages stays empty → all stages re-run
-        # → duplicate chunks/images. Now we log loudly so operator sees it,
-        # but still don't raise (resume-from-DB-state below is a safety net).
         try:
             sb_resp = supabase.client.table('background_jobs') \
                 .select('stage_history') \
@@ -162,11 +152,6 @@ async def process_single_product(
         # because a stage might have been MID-INSERT when the worker died.
         # If chunks/images for this product already exist in DB, treat the
         # corresponding stage as done.
-        # `> 0` is not "done". A worker that died after writing 2 of 30 chunks (or 1
-        # of 40 images) leaves a non-zero count, which used to set the skip flag and
-        # short-circuit the stage on EVERY future resume — the product stayed
-        # permanently under-processed while the job completed green. The count is
-        # compared against what the completed-stage checkpoint said it wrote.
         try:
             if prior_db_id:
                 existing_chunks = supabase.client.table('document_chunks') \
@@ -738,9 +723,6 @@ async def process_single_product(
         # keyFeatures, productName, studioName}` but those values were never
         # rolled up onto the product's metadata before — leaving
         # `product.metadata.dimensions=[]` even when chunks clearly captured
-        # the size. Audit incident: job acff9ebb 2026-05-03, FOLD chunks
-        # carried `structured_metadata.dimensions='15x38'` but
-        # `products.metadata.dimensions` was an empty list.
         chunk_aggregated: Dict[str, Any] = {}
         try:
             chunk_resp = supabase.client.table('document_chunks') \
@@ -859,14 +841,6 @@ async def process_single_product(
         # (SPN-4, 2026-07-04). `layout_regions` has been ALWAYS [] here since the
         # 2026-06-14 cutover (stage_1_focused_extraction returns layout_regions=[]),
         # so the old `if layout_regions and product_db_id:` block never executed:
-        # no product_layout_regions rows were written and no per-product tables were
-        # extracted. Layout is owned by the PaddleOCR Stage 1 pass. Deleted the dead
-        # block wholesale (issue #248).
-        #
-        # #248 assumed TABLE content (preserved as metadata.html in
-        # document_layout_analysis) was "consumed by Stage 2". It was not — nothing
-        # read that field, so product_tables stayed empty from 2026-07-04 until the
-        # Stage 2.5 wire-up above now parses it.
 
         await product_tracker.mark_stage_complete(
             product_id,
@@ -941,7 +915,6 @@ async def process_single_product(
         # links. Audit incident: job acff9ebb 2026-05-03, FOLD completed
         # cleanly but the cancelled job never reached the finalize block →
         # 0 chunk_image_relationships for an otherwise-successful product.
-        # The end-of-document pass remains as a safety net.
         try:
             chunk_image_links = await entity_linking_service.link_images_to_chunks(
                 document_id=document_id,
@@ -1055,24 +1028,7 @@ async def process_single_product(
 
 
 async def cleanup_product_memory(logger_instance: logging.Logger) -> None:
-    """
-    Smart memory cleanup after processing a product.
-
-    PRESERVES (needed for next products):
-    - file_content (bytes) - Original PDF file
-    - catalog - Product discovery results
-    - temp_pdf_path - Temporary PDF file on disk
-    - tracker - Main job tracker
-    - product_tracker - Product progress tracker
-    - supabase - Database client
-    - config - Processing configuration
-
-    CLEANS UP (product-specific data):
-    - physical_pages (List[int]) - Physical page numbers (1-based) for this product
-    - chunks - Text chunks for this product
-    - images - Image data for this product
-    - embedding vectors - Temporary embeddings
-    - AI model caches - Temporary model outputs
+    """Smart memory cleanup after processing a product.
 
     Args:
         logger_instance: Logger for tracking cleanup

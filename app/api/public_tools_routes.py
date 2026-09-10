@@ -1,20 +1,4 @@
-"""
-Public Tools API — backs the `/tools` lead-gen page.
-
-Authentication is optional but changes the billing model:
-
-  • Anonymous (no Authorization header) — 2 free scans / day per IP, captcha-
-    gated, cache-shielded.
-  • Authenticated (Bearer JWT) — debits `SCAN_CREDIT_COST` credits per scan
-    from `user_credits.balance`, no daily cap, captcha still required.
-    Cache hits do NOT debit. Failed/no-result scans are refunded.
-
-Endpoints (all stateless — do NOT write to tracked_queries / tracked_mentions):
-
-  POST /api/v1/public/price-scan       — turnstile_token + product_name(+facets)
-  POST /api/v1/public/mention-scan     — turnstile_token + subject_label
-  GET  /api/v1/public/quota            — quota + balance + turnstile_site_key
-"""
+"""Public Tools API — backs the `/tools` lead-gen page."""
 
 from __future__ import annotations
 

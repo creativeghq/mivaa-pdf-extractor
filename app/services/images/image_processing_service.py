@@ -1,13 +1,4 @@
-"""
-Image Processing Service - Handles image extraction, classification, upload, and CLIP generation.
-
-This service encapsulates all image-related operations in the PDF processing pipeline:
-1. Extract images from PDF
-2. Classify images (material vs non-material) using Claude
-3. Upload material images to Supabase Storage
-4. Save images to database
-5. Generate SLIG embeddings
-"""
+"""Image Processing Service - Handles image extraction, classification, upload, and CLIP generation."""
 
 import os
 import base64
@@ -34,18 +25,9 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-#: The forced tool for image classification. ONE definition, used by both the primary
-#: classifier and the low-confidence re-check (#20 M7-4).
-#:
-#: It was a dict built inline inside the primary classifier, and the re-check — the path
-#: taken by the images the primary classifier was LEAST sure about — asked for JSON in
-#: the prompt and ran `json.loads` on the text reply. Invariant 9 requires forced
-#: tool-calling for a classifier whose verdict drives a DB write, and this verdict
-#: decides whether an image is a product image at all.
-#:
-#: Two copies would be worse than one inline dict: the two paths must agree on the
-#: vocabulary, and a classifier and its own second opinion disagreeing about what
-#: `MIXED` means is not a failure anything would report.
+# : The forced tool for image classification. ONE definition, used by both the primary
+# : classifier and the low-confidence re-check (#20 M7-4).
+# :
 CLASSIFICATION_TOOL = {
     "name": "emit_classification",
     "description": "Emit the image classification verdict for the building-materials catalog filter.",
@@ -155,20 +137,7 @@ class ImageProcessingService:
             self.classification_prompt = None
 
     def _load_material_analyzer_prompt(self) -> None:
-        """
-        Load the rich material analysis prompt from the database.
-
-        This prompt is used AFTER classification confirms an image is a material,
-        to extract structured properties (material type, color, texture, finish,
-        applications) which are then:
-          1. Stored on `document_images.vision_analysis` (JSONB)
-          2. Passed to `RealEmbeddingsService.generate_all_embeddings(vision_analysis=...)`
-             so the Voyage understanding embedding (1024D) gets generated and
-             written to `vecs.image_understanding_embeddings`.
-
-        Without this prompt loaded, the understanding branch is skipped and the
-        7-vector fusion search degrades to 6 vectors.
-        """
+        """Load the rich material analysis prompt from the database."""
         try:
             result = self.supabase_client.client.table('prompts')\
                 .select('prompt_text, system_prompt')\
@@ -226,16 +195,6 @@ class ImageProcessingService:
         # Both "primary" and "validation" point at the same Anthropic model — Stage 3
         # is single-tier (2026-05-01). The primary/validation parameters are kept for
         # call-site compatibility but the values flow into telemetry only.
-        #
-        # `primary_model` was the literal 'claude-opus-5' while `validation_model`
-        # read the setting, so the comment above was false the moment the setting moved:
-        # they were NOT the same model, and the one that classifies every image was
-        # pinned a generation back with no way to change it short of a deploy.
-        #
-        # This is the gate on the whole vision pipeline — an image classified
-        # DECORATIVE never reaches vision_analysis, never gets an understanding
-        # embedding, and nothing reports it as missing. A weaker model here is not a
-        # slightly worse answer, it is a silently absent product.
         primary_model = primary_model or _cfg.anthropic_model_validation
         validation_model = validation_model or _cfg.anthropic_model_validation
 
@@ -267,15 +226,7 @@ class ImageProcessingService:
             raise ValueError("ANTHROPIC_API_KEY not configured")
 
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
-            """Image classification via Anthropic Claude Opus + tool use.
-
-            Despite the legacy name, this no longer routes through any HF
-            endpoint — Stage 3 has been Anthropic-only since 2026-05-01.
-            Tool use guarantees schema-conformant JSON output (no regex
-            recovery, no markdown stripping, no `_invalid_response` branch).
-            The `model` argument is now a tag used purely for logging; the
-            actual model is always `claude-opus-5`.
-            """
+            """Image classification via Anthropic Claude Opus + tool use."""
             image_base64 = base64_data
             detected_media_type = "image/jpeg"
             try:
@@ -293,19 +244,11 @@ class ImageProcessingService:
 
                 classify_tool = CLASSIFICATION_TOOL
 
-                # Through the shared forced-tool helper (#33 item 2). This was a raw
-                # httpx POST that hand-built the same tool_choice this helper forces,
-                # hand-parsed the tool_use block, and — the part that actually mattered —
-                # priced its own spend from a constant:
-                #
-                #     # Claude Opus 4.7 pricing as of 2026-05-01: $15/M input, $75/M output
-                #     cost = (input_tokens / 1e6) * 15.0 + (output_tokens / 1e6) * 75.0
-                #
-                # commented for Opus 4.7 while calling `claude-opus-5`, so every image
-                # in every catalogue was booked at another model's rate. `ai_model_pricing`
-                # is the one USD source and the helper resolves against it. A hardcoded
-                # price does not fail — it produces a plausible number, which is why this
-                # survived in a per-image hot path.
+                # Through the shared forced-tool helper (#33 item 2). This was a raw httpx POST
+                # that priced its own spend from a constant commented "Claude Opus 4.7 pricing"
+                # while calling `claude-opus-5`, so every image in every catalogue was booked at
+                # another model's rate. `ai_model_pricing` is the one USD source; a hardcoded
+                # price does not fail, it produces a plausible number.
                 from app.services.core.claude_tool_call import (
                     ToolCallNotReturned,
                     call_with_tool,
@@ -420,14 +363,6 @@ class ImageProcessingService:
                 # the prompt and ran `json.loads` on the text reply. Invariant 9
                 # requires forced tool-calling for a classifier whose verdict drives a
                 # DB write, and this verdict decides whether an image is a product
-                # image at all.
-                #
-                # Three of the error branches below went with it. `claude_empty_response`,
-                # `claude_not_json` and the JSONDecodeError handler existed to diagnose
-                # "Expecting value: line 1 column 1 (char 0)" — an error that can no
-                # longer occur, because the model cannot return prose. A missing tool
-                # block raises ToolCallNotReturned instead, which is one typed cause
-                # rather than three guesses at it.
                 from app.services.core.claude_tool_call import (
                     ToolCallNotReturned,
                     call_with_tool,
@@ -682,15 +617,6 @@ class ImageProcessingService:
                     continue
 
                 # On classification failure, QUARANTINE instead of fail-open.
-                # The old behavior treated API errors as is_material=True so
-                # during any Anthropic outage every logo/header/border got
-                # full SLIG + Voyage embeddings and permanently polluted
-                # visual search. Now: keep the image in the pipeline so its
-                # document_images row IS persisted (dropping it would mean
-                # total loss with no retry), but mark classification_pending
-                # — the save path skips vision analysis + embeddings for
-                # quarantined images, and a re-classification backfill can
-                # target metadata->ai_classification->>classification_pending.
                 if 'error' in classification or '_failed' in classification.get('model', '') or '_empty_response' in classification.get('model', ''):
                     logger.warning(f"   ⚠️ Classification uncertain for {img_data.get('filename')}: {classification.get('reason')}")
                     logger.warning("   → Quarantining (classification_pending) — persisted WITHOUT embeddings, eligible for re-classification")
@@ -875,34 +801,6 @@ class ImageProcessingService:
     # ------------------------------------------------------------------ #
     # Icon-candidate detection (Stage 3 split)                            #
     # ------------------------------------------------------------------ #
-    #
-    # After classification, some images that look like product specs
-    # (R-rating badges, PEI icons, slip-resistance symbols, packaging
-    # icons, etc.) get routed to the icon extraction pipeline INSTEAD of
-    # the regular image embedding pipeline. They get OCR + Claude → spec
-    # metadata, NOT visual SLIG / specialized SLIG / understanding vectors.
-    # This keeps the visual VECS collections clean of icon junk while
-    # capturing the structured spec data into product.metadata.
-    #
-    # Detection rules (all must hold):
-    #   1. width  < ICON_MAX_DIM and height < ICON_MAX_DIM
-    #   2. ICON_MIN_ASPECT <= width/height <= ICON_MAX_ASPECT
-    #   3. ≥ ICON_MIN_PER_PAGE such images on the same page_number
-    #
-    # The 3rd rule is the strictest — a single small image on a page is
-    # almost certainly a logo or thumbnail, but a row of N small images
-    # together is the spec icon strip. Catalogs with ceramic specs
-    # typically have 5-8 icons in a single row at the bottom of the page.
-    #
-    # Two sources feed the icon candidate pool:
-    #   (a) `material_images`     — the vision model classified them as PRODUCT_IMAGE/MIXED
-    #                               but they're actually small spec icons
-    #   (b) `non_material_images` — the vision model classified them as DECORATIVE
-    #                               (logos, headers, etc.); the DECORATIVE
-    #                               override re-routes them to icon extraction
-    #                               IF they meet the size + grid rules
-    #
-    # Anything that fails all 3 rules stays in its original bucket.
     ICON_MAX_DIM = 200          # px — both width and height must be below this
     ICON_MIN_ASPECT = 0.5       # width/height ≥ 0.5 (not super-tall)
     ICON_MAX_ASPECT = 2.0       # width/height ≤ 2.0 (not super-wide)
@@ -941,19 +839,11 @@ class ImageProcessingService:
         material_images: List[Dict[str, Any]],
         non_material_images: Optional[List[Dict[str, Any]]] = None,
     ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """
-        Split classified images into 3 routing buckets:
-          - regular_material_images : full Stage 3 pipeline (visual SLIG +
-                                      4 specialized + understanding embedding)
-          - icon_candidates         : icon extraction pipeline only
-                                      (OCR + Claude → spec metadata, NO embeddings)
-          - remaining_non_material  : pure decoration / technical diagrams
-                                      (logos, headers, page borders) — dropped
-                                      from further processing as before
-
-        Detection: a candidate is icon-shaped if (width, height < ICON_MAX_DIM)
-        AND aspect ratio in [ICON_MIN_ASPECT, ICON_MAX_ASPECT]. The page-grouping
-        rule (≥ ICON_MIN_PER_PAGE per page) is enforced as the second pass.
+        """Split classified images into 3 routing buckets:
+        - regular_material_images : full Stage 3 pipeline (visual SLIG +
+        4 specialized + understanding embedding)
+        - icon_candidates         : icon extraction pipeline only
+        (OCR + Claude → spec metadata, NO embeddings)
 
         Args:
             material_images: Images the vision model classified as PRODUCT_IMAGE / MIXED
@@ -1026,20 +916,6 @@ class ImageProcessingService:
     # ------------------------------------------------------------------ #
     # Material analysis (vision_analysis JSON) — feeds understanding emb #
     # ------------------------------------------------------------------ #
-    #
-    # The flow is:
-    #   1. Run Claude Opus via Anthropic tool use (schema-locked
-    #      VisionAnalysis Pydantic model) — the sole vision producer post
-    #      the sole vision producer.
-    #   2. Tool use eliminates JSON regex recovery and provides a hard
-    #      guarantee of schema adherence.
-    #   3. Parse the response into a dict, validate against the expected
-    #      schema, and return None if both providers failed.
-    #
-    # Result is stored on `document_images.vision_analysis` (JSONB) and
-    # passed to `RealEmbeddingsService.generate_all_embeddings(vision_analysis=)`
-    # so the Voyage understanding (1024D) embedding gets generated and saved
-    # to `vecs.image_understanding_embeddings`.
 
     # Top-level fields the Material Image Analyzer prompt is expected to
     # return. We treat the analysis as valid if AT LEAST `_MIN_REQUIRED_FIELDS`
@@ -1063,13 +939,6 @@ class ImageProcessingService:
     _MIN_REQUIRED_VISION_FIELDS = 4  # at least this many non-null keys
 
     # `_parse_vision_analysis_json` was deleted here (#20 M7-3).
-    #
-    # It tolerated plain JSON, ```json fences and prose around a first-{...} match.
-    # With the tool-use path no longer falling back to it, nothing called it — and a
-    # dead JSON-repair helper sitting next to a vision call is an invitation. The
-    # rule for this path is real tool_use with a forced tool_choice; a reply that is
-    # not one is a failed analysis, because a repaired payload validates on SHAPE
-    # just as well as a real one and then becomes an indexed embedding.
 
 
     @classmethod
@@ -1150,16 +1019,7 @@ class ImageProcessingService:
         product_id: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Second reader for the same image (#393 Step 4). Returns a record, or None.
-
-        Returns None — leaving `vision_consensus` NULL — only when no second read was
-        ATTEMPTED, i.e. no checker model is configured. A checker that ran and failed
-        is recorded as `checker_failed`, because "we never looked" and "we looked and
-        agreed" must never render the same way.
-
-        The checker's analysis is never persisted and never embedded. `writer_analysis`
-        is the record; this only says whether a second reader saw the same thing.
-        """
+        """Second reader for the same image (#393 Step 4). Returns a record, or None."""
         checker_model = (
             getattr(get_settings(), "anthropic_model_vision_checker", "") or ""
         ).strip()
@@ -1294,22 +1154,7 @@ class ImageProcessingService:
         product_id: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Material analysis via Claude Opus + Anthropic tool_use.
-
-        Schema is locked at the API layer via `tools=[VISION_ANALYSIS_TOOL]` +
-        `tool_choice={'type':'tool','name':...}`. The model is forced to emit a
-        tool_use block whose `input` JSON matches the `VisionAnalysis` schema —
-        no regex repair, no JSON-parse fallback. Malformed inputs (Claude
-        ignoring the tool, returning text instead) surface as an explicit None
-        return and propagate to the embedding path which then skips Voyage.
-
-        Every exit point stamps document_images.vision_analysis_failed +
-        vision_analysis_attempts so per-image failures are queryable.
-
-        This is the only vision path. The
-        function name is retained to avoid churn across call sites.
-        """
+        """Material analysis via Claude Opus + Anthropic tool_use."""
         try:
             from app.services.core.ai_client_service import get_ai_client_service
             from app.models.vision_analysis import VISION_ANALYSIS_TOOL
@@ -1386,11 +1231,6 @@ class ImageProcessingService:
                 # correctly reads that as "the model ignored the tool" and stamps
                 # `vision_analysis_failed`. So an under-budgeted call is indistinguishable
                 # from a refusal, and `detected_text` — a LIST of SKUs, IP ratings and
-                # socket codes, the longest field and the most valuable one — is exactly
-                # what gets cut first.
-                #
-                # Adaptive thinking (below) also draws on this budget, so it has to cover
-                # reasoning AND the emitted arguments, not just the arguments.
                 max_tokens=VISION_MAX_TOKENS,
                 messages=[{"role": "user", "content": content}],
                 system=self.material_analyzer_system_prompt or None,
@@ -1420,25 +1260,6 @@ class ImageProcessingService:
 
             if tool_input is None:
                 # No tool_use block is a FAILURE, not a parsing problem (#20 M7-3).
-                #
-                # What was here read the text blocks instead and ran them through
-                # `_parse_vision_analysis_json` — fenced-block extraction and a
-                # first-`{...}` match — under a comment describing it as
-                # backward-compat for a tight token budget. The platform rule for this
-                # path is explicit and the comment forty lines above says it too: real
-                # tool_use with a forced tool_choice, "no regex repair, no JSON-parse
-                # fallback".
-                #
-                # It is not a style rule here. A repaired reply was persisted as
-                # `vision_analysis` and then fed the Voyage understanding embedding, so
-                # an unvalidated response became a vector that is indexed and ranked
-                # exactly like a real one. Nothing downstream can tell them apart —
-                # `_validate_vision_analysis` checks the SHAPE, and a repaired payload
-                # can be perfectly well-shaped.
-                #
-                # A tight token budget produces a truncated answer. Recovering JSON from
-                # it does not recover the analysis; it recovers a fragment and gives it
-                # the same standing as a complete one.
                 logger.error(
                     f"   ❌ Claude returned no tool_use block for {image_id} — marking "
                     "vision analysis failed rather than parsing the text reply"
@@ -1471,22 +1292,8 @@ class ImageProcessingService:
         product_id: Optional[str] = None,  # FK for ai_usage_logs cost attribution
         job_id: Optional[str] = None,
     ) -> Tuple[Optional[Dict[str, Any]], str, Optional[Dict[str, Any]]]:
-        """
-        Run rich material analysis on a confirmed-material image and return
+        """Run rich material analysis on a confirmed-material image and return
         a structured `vision_analysis` JSON, plus the second reader's verdict.
-
-        This is the input the Voyage understanding embedding consumes — it
-        captures material type, color, texture, finish, applications, etc.
-        as structured properties, which then become a 1024D embedding in
-        `vecs.image_understanding_embeddings`.
-
-        Strategy:
-          1. Run Claude Opus via Anthropic tool use (schema-locked
-             VisionAnalysis) — the sole vision producer since the
-             sole vision producer.
-          2. On failure, return (None, FAILED) so the caller can record the
-             failure in job-level stats and the image gets all other
-             vectors except `understanding_1024`.
 
         Returns:
             (vision_analysis_dict, source) where source is the string value
@@ -1697,13 +1504,6 @@ class ImageProcessingService:
                 # `vision_analysis` JSON. This is the input the Voyage
                 # understanding embedding consumes — without it, the 1024D
                 # understanding branch is skipped and we lose the 7th vector.
-                # The (vision_analysis, source) tuple lets us track which
-                # provider produced the result for job-level stats.
-                # The path is passed alongside the bytes so the vision call can ground
-                # itself in this same crop's OCR text (#393 Step 1). Whichever file
-                # fed `vision_base64_raw` is the one OCR'd — the padded sidecar when
-                # there is one, the tight crop otherwise — so the transcription always
-                # describes the pixels the model is looking at.
                 ocr_source_path = (
                     vision_input_path
                     if vision_input_path and os.path.exists(vision_input_path)
@@ -1722,11 +1522,6 @@ class ImageProcessingService:
                 # rest of the platform can read it (admin UI, search filters,
                 # downstream services). Best-effort — we never want a JSONB write
                 # failure to block embedding generation.
-                #
-                # Defensive gate: only persist if BOTH vision_analysis is present
-                # AND the source value is in the persistable set (`claude` or
-                # `claude_fallback`). The DB CHECK constraint enforces the same
-                # rule, so writing a non-persistable value would fail anyway.
                 try:
                     persistable_source = VisionProvider(vision_analysis_source).is_persistable()
                 except ValueError:
@@ -1837,14 +1632,6 @@ class ImageProcessingService:
                 # Save understanding embedding to VECS if present (1024D from Voyage AI).
                 # Pass embedding_model + schema_version so the row is provenance-tagged
                 # — the admin UI uses these to detect Voyage→OpenAI fallback drift.
-                #
-                # NOTE 2026-05-02: provenance lives at embedding_result['metadata'],
-                # NOT inside the local `embeddings` sub-dict (which only carries
-                # the vectors). Reading from `embeddings.get('metadata')` here used
-                # to resolve to {} every time, so understanding_embedding_model
-                # silently stayed NULL on every row — Voyage→OpenAI drift detection
-                # was inert until this fix. Confirmed via job 184ad4cf where 4
-                # images had has_understanding_embedding=true and embedding_model=NULL.
                 understanding_embedding = embeddings.get('understanding_1024')
                 if understanding_embedding:
                     try:
@@ -1870,14 +1657,6 @@ class ImageProcessingService:
                     # The has_color_slig / has_texture_slig / has_style_slig /
                     # has_material_slig flags on document_images are updated by
                     # vecs_service automatically after each successful upsert.
-                    #
-                    # S3-7: wrap like the understanding write above. Previously this
-                    # was unwrapped, so a transient aspect-VECS error propagated to the
-                    # outer per-image retry loop and RE-RAN THE WHOLE IMAGE — re-billing
-                    # Opus vision + SLIG for a failure isolated to the aspect write. On
-                    # failure the has_*_slig flags simply stay false, so the image is
-                    # discoverable by the aspect-embedding backfill (no data loss, no
-                    # double-billing).
                     try:
                         await self.vecs_service.upsert_specialized_embeddings(
                             image_id=image_id,
@@ -1943,16 +1722,6 @@ class ImageProcessingService:
                     + (1 if understanding_embedding else 0)
                 )
                 # ZERO vectors is a failure, not a success with nothing in it.
-                #
-                # This returned (True, True, …) unconditionally, so an image that
-                # produced no vectors at all — SLIG and Voyage both down — was counted
-                # toward clip_embeddings_generated and reported as embedded. Raising
-                # here instead routes it through the retry loop and, on exhaustion, to
-                # the terminal `embedding_metadata.status='failed'` marker written at
-                # the bottom of this function. That marker's own comment describes its
-                # subject as "an image that saved its document_images row but got ZERO
-                # vectors after all retries" — the case was unreachable, because the
-                # only way out of this try was this unconditional success.
                 if total_embeddings == 0:
                     raise RuntimeError(
                         f"no_vectors_generated: image {image_id} produced 0 embeddings "
@@ -1983,12 +1752,6 @@ class ImageProcessingService:
         # S3-8 — this is the ORPHAN-DISCOVERY marker for an image that saved its
         # document_images row but got ZERO vectors after all retries. Backfill /
         # ops query for these with:
-        #     embedding_metadata->>'status' = 'failed'
-        #     (optionally AND has_slig_embedding = false to exclude any later-
-        #      succeeded rows, since the flag flips true on a successful re-embed).
-        # This is the embedding-failure parallel to the ai_classification->
-        # >classification_pending quarantine marker and the vision_analysis_failed
-        # boolean — a genuine all-vectors-failed image is NOT silent.
         failed_image_id = img_data.get('id')
         if failed_image_id:
             try:
@@ -2034,20 +1797,7 @@ class ImageProcessingService:
         idx: int,
         total: int,
     ) -> Tuple[bool, bool, Optional[str], Dict[str, Any]]:
-        """
-        Process a single icon-candidate image.
-
-        Steps:
-          1. save_single_image — write the document_images row with category='icon_metadata'
-          2. ocr_service.extract_icon_metadata — OCR + Claude with the
-             `Icon-Based Metadata Extraction` prompt
-          3. UPDATE document_images.metadata['icon_metadata'] with the
-             extracted IconMetadata items (audit trail)
-          4. NO embedding generation, NO VECS writes, NO SLIG calls.
-
-        The Stage 4 product consolidation step reads metadata['icon_metadata']
-        across all images for a product and rolls them up into the flat
-        top-level keys on products.metadata that match material_metadata_fields.
+        """Process a single icon-candidate image.
 
         Returns:
             (image_saved, embedding_generated, error_message, per_image_stats)
@@ -2201,19 +1951,7 @@ class ImageProcessingService:
         icon_candidates: Optional[List[Dict[str, Any]]] = None,  # NEW: spec icons → OCR + Claude path
         product_id: Optional[str] = None,  # FK to products.id for per-product cost attribution
     ) -> Dict[str, Any]:
-        """
-        Save images to database and generate SLIG embeddings with batching and retry logic.
-
-        This method implements:
-        1. Batch processing (default: 20 images per batch)
-        2. Retry logic with exponential backoff (up to 3 retries per image)
-        3. Checkpoint recovery (resume from last successful batch)
-        4. Detailed error tracking (log which images fail and why)
-        5. Per-image progress events to ProgressTracker (visible in admin UI)
-        6. Per-vector statistics aggregation (visual + 4 specialized + understanding)
-        7. Icon candidate processing — when `icon_candidates` is provided,
-           those images are routed to OCR + Claude for spec extraction and
-           are NOT given any visual embeddings.
+        """Save images to database and generate SLIG embeddings with batching and retry logic.
 
         Args:
             material_images: List of regular material image data (full Stage 3 pipeline)
@@ -2248,17 +1986,6 @@ class ImageProcessingService:
             }
         """
         # The document and the workspace must actually be related (#20 M7-5).
-        #
-        # `document_id`, `workspace_id`, `product_id` and `image_id` arrive here
-        # independently and are then combined into `document_images` rows, VECS metadata,
-        # embeddings and cost attribution. Nothing in this file checked that the first
-        # two describe the same thing, and MIVAA has no RLS backstop — every call runs
-        # as service role.
-        #
-        # One check at the entry point rather than four at the write sites: the two
-        # per-image helpers below both run underneath this, so this is the narrowest
-        # place that covers all of them, and a check that has to be repeated is a check
-        # that will be forgotten once.
         self._assert_document_in_workspace(document_id, workspace_id)
 
         icon_candidates = icon_candidates or []
@@ -2298,12 +2025,6 @@ class ImageProcessingService:
         # S3-1: _get_embedding_checkpoint counts DOCUMENT-WIDE embedded images, so
         # it is only meaningful for the legacy document-wide call (product_id None).
         # For a PER-PRODUCT call (product_id set — the Stage 3 path) it's the bug:
-        # after product A embeds N images, product B's document-wide count is N,
-        # which slices B's (shorter) list to empty and SKIPS product B's images
-        # entirely, never embedding them. document_images has no product_id column
-        # to scope the count by, so for per-product calls we simply don't skip —
-        # the product-level skip_images gate in product_processor already prevents
-        # re-running fully-done products on resume, so this won't mass-reprocess.
         checkpoint_index = 0
         if product_id is None:
             checkpoint_index = await self._get_embedding_checkpoint(document_id)
@@ -2464,9 +2185,6 @@ class ImageProcessingService:
         # ──────────────────────────────────────────────────────────────── #
         # Icons are processed AFTER the regular material loop so they
         # don't compete for the vision (Claude) call slots while embeddings are running.
-        # Each icon gets a single Claude call (the icon prompt is small and
-        # the OCR step is local), so we run them with a smaller concurrency
-        # cap to avoid hammering the Anthropic rate limit.
         if icon_candidates:
             from app.config import get_settings as _get_settings_for_icon_sem
             ICON_CONCURRENCY = _get_settings_for_icon_sem().icon_concurrency

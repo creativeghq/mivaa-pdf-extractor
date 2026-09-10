@@ -1,26 +1,4 @@
-"""Cron credit metering (Python side of public.cron_charge_workspace / cron_charge_user).
-
-A workspace-scoped cron's per-subject loop calls charge_cron() once per UNIT OF WORK (one
-price/mention/job refresh, one digest, one probe). It charges the workspace owner (pool -> personal
-via debit_credits) or, when the subject has no workspace, the user's personal balance. Returns:
-  - True  -> proceed with the work.
-  - False -> skip this subject (payer out of credits). The next cron tick re-charges and
-             auto-resumes the moment the owner tops up.
-
-FAILURE MODES ARE NOT THE SAME THING, and this used to treat them as one (audit #18 M5-4).
-
-  - No payer at all (subject has neither workspace nor user): proceeds. There is nobody to
-    bill; skipping would just stop the work forever. Recorded, not silent.
-  - The charge RPC failed, or returned nothing: SKIPS. Invariant 10 is explicit -- "on debit
-    failure, do not perform the work" -- and a cron is the highest-volume caller of these
-    endpoints, so failing open converts a billing outage into unbounded free provider spend
-    across every scheduled run. The next tick re-charges and auto-resumes, exactly as it does
-    for an out-of-credit payer, so a transient outage costs a delay and not a bill.
-
-Both non-charging outcomes leave a durable breadcrumb in `system_logs`, because "we could not
-meter this run" that exists only in a container log is indistinguishable from "we metered it"
-by the time anyone looks (#17 M4-2).
-"""
+"""Cron credit metering (Python side of public.cron_charge_workspace / cron_charge_user)."""
 from __future__ import annotations
 
 import logging
@@ -39,18 +17,7 @@ def charge_cron(
     description: Optional[str] = None,
     subject: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    """Charge one unit of a metered cron's work; return True to proceed, False to skip.
-
-    Pass the RAW supabase client (e.g. ``service.supabase.client``). Workspace subjects bill the
-    workspace owner; workspace-less subjects bill ``user_id``. Fails CLOSED when the charge
-    itself fails -- see the module docstring for why that is not the same as having no payer.
-
-    ``subject`` is merged into ``credit_transactions.metadata`` so the charge can be attributed
-    back to what it paid for -- e.g. ``{"tracked_job_id": "..."}``. Without it the ledger recorded
-    only ``{cron_key, workspace_id, units}``, so per-subject credit totals were unfillable and
-    ``tracked_jobs.total_partner_credits_debited`` read 0 forever while real credits were being
-    spent (audit #305 finding 6).
-    """
+    """Charge one unit of a metered cron's work; return True to proceed, False to skip."""
     try:
         if workspace_id:
             res = supabase_client.rpc(

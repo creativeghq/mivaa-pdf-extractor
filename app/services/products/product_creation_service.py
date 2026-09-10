@@ -20,13 +20,12 @@ from app.utils.exceptions import TenancyViolation
 logger = logging.getLogger(__name__)
 
 
-#: M3-11 (#16). Stage 1 decides which chunks become product candidates and
-#: Stage 2 decides what data is written to the gold layer. Both used to be
-#: plain-text Claude responses mined with `re.search(r'(\{.*\}|\[.*\])')`, with
-#: heuristic fallbacks when the regex missed. Invariant 9 requires forced
-#: tool_choice for any classifier whose verdict drives a DB write: a supplier
-#: PDF is untrusted input, and injected text shaping free-form JSON stops
-#: mattering once the only thing the model can emit is a validated schema.
+# : M3-11 (#16). Stage 1 decides which chunks become product candidates and
+# : Stage 2 decides what data is written to the gold layer. Both used to be
+# : plain-text Claude responses mined with `re.search(r'(\{.*\}|\[.*\])')`, with
+# : heuristic fallbacks when the regex missed. Invariant 9 requires forced
+# : tool_choice for any classifier whose verdict drives a DB write: a supplier
+# : PDF is untrusted input, and injected text shaping free-form JSON stops
 STAGE1_CLASSIFICATION_TOOL = {
     "name": "record_chunk_classifications",
     "description": (
@@ -137,18 +136,6 @@ class ProductCreationService:
         workspace_id: Optional[str]
     ) -> str:
         """Derive the workspace to write products into from the SOURCE DOCUMENT.
-
-        Two ids that are each individually valid are not a tenancy check
-        (invariant 1, #250). Before this, chunks were read by `document_id`
-        alone and products were written with a caller-supplied `workspace_id`
-        that nothing reconciled against the document — so a product could be
-        written into tenant B out of tenant A's catalogue, and because
-        products are the GOLD layer it would then propagate into embeddings,
-        facets and search.
-
-        The document wins: it is the row the content actually came from. A
-        caller-supplied workspace_id is accepted only as an assertion, and a
-        disagreement raises rather than picking one.
 
         Raises:
             TenancyViolation: if the document does not exist, carries no
@@ -2032,31 +2019,7 @@ class ProductCreationService:
 
     @staticmethod
     def _merge_meta_field(existing: Any, aggregated: List[str]) -> Any:
-        """Union an existing metadata value with chunk-aggregated values, deduped case-insensitively.
-
-        **This must never raise.** Its caller catches everything and falls back to
-        `_create_product_from_chunk`, so an exception here does not surface as an error — the
-        product is still created, silently stripped of every attribute the enrichment found,
-        leaving one log line behind. A crash would be safer than what actually happens.
-
-        The previous version raised on two shapes that occur in real data:
-
-          * `colors` as a list of `{"name": ..., "hex": ...}` objects — a shape the frontend's
-            `getAvailableColors` explicitly supports — hit `set(...)` over dicts and threw
-            `unhashable type: 'dict'`.
-          * any list mixing strings with a number threw on `sorted()`, which cannot order
-            `int` against `str`.
-
-        Both became reachable when #347 phase 2.1 flattened metadata: `colors` used to sit
-        nested under `appearance`, so `metadata['colors']` was absent and the merge took the
-        "nothing here yet" branch. Flat keys mean the merge branches now actually run.
-
-        The resolution follows the intent the original code already stated for the top-level
-        dict case — *AI extraction takes priority* — and simply applies it to list ELEMENTS too:
-        a list we cannot safely fold is kept exactly as it is. Structured colour objects carry
-        more information than the keyword scanner's strings, so overwriting or stringifying
-        them would be a downgrade.
-        """
+        """Union an existing metadata value with chunk-aggregated values, deduped case-insensitively."""
         if not aggregated:
             return existing
 

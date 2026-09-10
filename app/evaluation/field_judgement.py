@@ -1,21 +1,4 @@
-"""The judge's verdicts, validated: pure stdlib, loaded by path in tests.
-
-A second model reads the RENDERED PAGE beside the fields the first model extracted
-and says, per field, whether the page supports the value. This module is the part
-that does not talk to a model: it decides which of the judge's verdicts are usable
-and what they add up to.
-
-Rules:
-
-* A verdict on a field that was never put in front of the judge is DROPPED, and the
-  drop is counted. A model can name a field it invented; storing that would let the
-  judge hallucinate a column into the review queue.
-* A verdict outside the enum, or a score outside 1..5, or a verdict with no reason,
-  is dropped for the same reason. Never coerced — a coerced verdict is a valid-
-  looking row nothing can raise on (the platform's silent-zero rules).
-* The summary is COUNTS, not an average: "2 wrong, 1 suspect, 9 ok" is what the
-  reviewer needs; a 0.83 is not.
-"""
+"""The judge's verdicts, validated: pure stdlib, loaded by path in tests."""
 
 from __future__ import annotations
 

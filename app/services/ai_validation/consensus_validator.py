@@ -1,15 +1,4 @@
-"""
-Consensus Validation Service
-
-Multi-model consensus validation for critical AI decisions.
-Runs 2-3 models in parallel and uses weighted voting to determine final result.
-
-Features:
-- Parallel model execution
-- Agreement scoring
-- Weighted voting based on model strengths
-- Human-in-the-loop flagging for low consensus
-"""
+"""Consensus Validation Service"""
 
 import asyncio
 from typing import Dict, Any, List, Optional, Callable
@@ -179,12 +168,6 @@ class ConsensusValidator:
         else:
             # Below LOW_AGREEMENT the models do not agree on anything: this is not
             # a decision with low confidence, it is the absence of a decision.
-            # Returning success=True here (which is what used to happen, for ANY
-            # agreement score down to 0.0) meant a caller checking `success` got a
-            # green light from a vote nobody won -- needs_human_review was set, but
-            # a flag alongside success=True is advisory and gets ignored. This is
-            # the confidence floor invariant 9 asks for before a verdict drives a
-            # write. LOW_AGREEMENT existed as a constant and was never read.
             logger.error(
                 f"❌ Consensus failed for '{task_type}': agreement "
                 f"{agreement_score:.2f} < {self.LOW_AGREEMENT} across "
@@ -327,12 +310,6 @@ class ConsensusValidator:
         # Two consensus extractors, both Anthropic — Haiku (fast) + Opus
         # (high-fidelity). Disagreement between them surfaces low-confidence
         # extractions that need a human review or downstream rechecking.
-        #
-        # Both run the SAME prompt through the SAME forced tool. That is the point:
-        # a consensus vote between two differently-shaped answers measures the
-        # shapes, not the answers. The prompt is a database row (there is no code
-        # fallback, by rule), and the document text is fenced as DATA because it
-        # comes out of a supplier PDF (invariant 9).
         template = await load_prompt("extraction", "consensus_extraction", stage="validation")
         prompt = render(template, extraction_type=extraction_type, content=content[:1000])
 

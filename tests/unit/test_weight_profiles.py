@@ -1,15 +1,4 @@
-"""
-Guard for the canonical search fusion weights.
-
-These weights decide search relevance, and a wrong one is still a valid float — no
-typecheck sees it, no integrity probe sees it, and search just quietly gets worse. The
-specific failure this guards is adding an embedding vector and missing a profile or a
-vocabulary mapping: that vector then scores zero on the path you missed while being
-computed, stored and billed, which is the `ops.silent_zero` shape.
-
-Deliberately imports only `weight_profiles` (which imports nothing from `app`) so it
-runs with no DB, no secrets and no application bootstrap.
-"""
+"""Guard for the canonical search fusion weights."""
 
 import importlib.util
 from pathlib import Path

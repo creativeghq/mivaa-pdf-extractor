@@ -11,18 +11,7 @@ from pydantic import BaseModel, Field
 
 
 class PriceExtraction(BaseModel):
-    """
-    Fields Firecrawl should pull from a competitor product page.
-
-    Stored raw (strings) because sites return prices with locale-specific
-    formatting and currency symbols. Numeric parsing happens downstream via
-    `price_parser`.
-
-    product_name + product_breadcrumb + visible_attributes are the trio the
-    identity classifier uses to decide whether the page actually matches the
-    query. Without them a page showing any price on the same domain would
-    silently slip in as a "verified" hit for the wrong SKU.
-    """
+    """Fields Firecrawl should pull from a competitor product page."""
 
     price: Optional[str] = Field(
         default=None,

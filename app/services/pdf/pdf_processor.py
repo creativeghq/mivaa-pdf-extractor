@@ -76,7 +76,6 @@ class PDFProcessingConstants:
     # is commonly classified as a single TABLE region or a FIGURE) still
     # produce per-region crops — tiles invisible to PyMuPDF (flattened into
     # render commands) are otherwise lost from extraction entirely.
-    # Override via `PDF_CROP_REGION_TYPES` env var (comma-separated).
     CROP_REGION_TYPES: tuple = ("IMAGE", "FIGURE", "TABLE")
 
     # Region crop padding — fraction of page dimensions added on each side of
@@ -421,10 +420,6 @@ class PDFProcessor:
         # the URL AND of every redirect hop, and caps the body while streaming. The cap is
         # the same one upload accepts (Settings.max_file_size), so a document we took by
         # upload cannot be refused on the re-download path.
-        #
-        # Imported OUTSIDE the try on purpose: an `except SSRFError` whose name is bound
-        # by a statement inside the same try turns an ImportError into a NameError raised
-        # from the handler, which is a worse error than the one it was hiding.
         from app.utils.ssrf_guard import MAX_PDF_BYTES, SSRFError, safe_fetch_bytes
 
         try:
@@ -503,20 +498,6 @@ class PDFProcessor:
                         if k not in ('checkpoint_recovery_service', 'progress_tracker', 'job_id')
                     }
                     # A KILLABLE subprocess, not a thread (#22 M9-5).
-                    #
-                    # This was `asyncio.wait_for(loop.run_in_executor(...))`. `wait_for`
-                    # cancels the coroutine waiting on the future; it cannot touch the
-                    # thread, because Python has no way to interrupt one. So a malformed
-                    # PDF declared timed out kept consuming CPU and memory indefinitely,
-                    # enough of them exhausted the pool, and the job was marked timed out
-                    # while the work that caused it was still running — which is also why
-                    # the recovery machinery could not reason about it.
-                    #
-                    # `run_killable` runs the same module-level worker with the same
-                    # already-filtered options and terminates the process on the
-                    # deadline. The executor thread is still used, but it is now blocking
-                    # on something that CAN be stopped rather than being the thing that
-                    # cannot.
                     markdown_content, metadata, page_chunks, _ = await loop.run_in_executor(
                         self.executor,
                         functools.partial(
@@ -722,20 +703,7 @@ class PDFProcessor:
         checkpoint_recovery_service: Optional[Any] = None,
         progress_tracker: Optional[Any] = None,
     ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-        """
-        Enhanced async image extraction with Supabase Storage upload.
-
-        NOW USES STREAMING EXTRACTION to prevent OOM on large PDFs.
-
-        Features:
-        - STREAMING extraction in small batches (prevents memory accumulation)
-        - Process and upload images immediately (don't accumulate in memory)
-        - Aggressive garbage collection between batches
-        - Image format conversion and optimization
-        - Advanced metadata extraction (EXIF, dimensions, quality metrics)
-        - Upload to Supabase Storage instead of local storage
-        - Quality assessment and duplicate detection
-        - Full checkpoint and progress tracking integration
+        """Enhanced async image extraction with Supabase Storage upload.
 
         Returns:
             Tuple of (images_list, extraction_stats)
@@ -767,11 +735,6 @@ class PDFProcessor:
             # per-page — extraction, OCR, classification, embeddings — so an
             # implausible page count is an unbounded amount of paid work, and the
             # compressed byte count cannot predict it.
-            #
-            # The rule lives in `app.utils.pdf_bounds` and not here. This is the THIRD
-            # place the same missing bound was found (#22 M9-6, #24 M11-6, #35 M20-2);
-            # a local copy is how one of the three drifts, which is exactly what the
-            # seven copies of the credit-debit rule in #30 demonstrated.
             from app.utils.pdf_bounds import assert_page_count
 
             assert_page_count(total_pages)
@@ -961,8 +924,6 @@ class PDFProcessor:
         # per-sheet `_extract_region_crops` here was NOT spread-aware (it keyed
         # the layout cache by PDF sheet index + 1 and rendered the full sheet),
         # so for spread catalogs it missed the layout and dropped IMAGE/FIGURE
-        # crops entirely. It is intentionally NOT called here anymore — this
-        # batch path contributes only embedded images (Layer 1).
 
         # Layer 3: Full page render is already handled in PyMuPDF method
         # (it renders full page if no embedded images found)
@@ -2404,18 +2365,6 @@ class PDFProcessor:
 
         except Exception as e:
             # An explicit failure marker, not an empty result (#22 M9-7).
-            #
-            # `return "", []` made a whole-document OCR failure identical to a document
-            # that genuinely contains no text in its images — and the caller does
-            # `if ocr_text:` before folding the word count in, so both paths simply skip
-            # it. Nothing anywhere could tell "OCR ran and found nothing" from "OCR
-            # never completed", which is the ambiguity pipeline convention 1 exists to
-            # remove. Same shape as #25 M12-3 one layer down, where `extract_icon_metadata`
-            # filtered the `paddleocr_failed` marker out and returned [].
-            #
-            # The list is the channel rather than an exception: images have already been
-            # extracted and the rest of the result is usable, so failing the whole
-            # document over OCR would discard work that succeeded.
             self.logger.error("Error in OCR processing: %s", str(e), exc_info=True)
             return "", [{
                 "image_path": None,

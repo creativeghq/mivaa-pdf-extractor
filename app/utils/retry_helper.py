@@ -106,17 +106,7 @@ _HTML_PAGE_RE = re.compile(r"<!DOCTYPE.*|<html[^a-zA-Z].*", re.IGNORECASE | re.D
 
 
 def describe_exception(exc: BaseException, limit: int = 300) -> str:
-    """One line naming an exception, safe to put in a log message.
-
-    Interpolated raw, a Cloudflare 522 became the Sentry ISSUE TITLE (MIVAA-5K3: six
-    kilobytes of markup where the error should be) and a 6 KB `system_logs` row for every
-    retry decision taken during the outage. The diagnosis is in the first line; the page
-    is not diagnosis.
-
-    Also prepends the exception TYPE and, where there is one, the PostgREST/Postgres error
-    code — neither of which a bare `{e}` carried, and the code is the thing that says
-    whether a repeat could ever have helped.
-    """
+    """One line naming an exception, safe to put in a log message."""
     text = _HTML_PAGE_RE.sub("<html error page omitted>", str(exc))
     text = " ".join(text.split())
     if len(text) > limit:
@@ -206,15 +196,11 @@ _TRANSIENT_SQLSTATE_CLASSES = frozenset({
 #: Individually transient, in classes that are otherwise permanent.
 _TRANSIENT_SQLSTATES = frozenset({"40001", "40P01", "55P03"})
 
-#: Gateway / rate-limit statuses. Supabase sits behind Cloudflare, which answers 522 when
-#: the origin times out; PostgREST surfaces that as an APIError whose `code` is the HTTP
-#: status rather than a SQLSTATE.
-#:
-#: The whole Cloudflare origin family (520–527, 530), not just the two that had been seen.
-#: 530 is "Origin DNS error" — Cloudflare could not resolve the Supabase host for a moment —
-#: and it arrived 26 times as MIVAA-5JB: an un-retried SELECT logged at ERROR every time,
-#: because 530 was not on this list and an unknown numeric code reads as permanent. Every
-#: code in the family says the same thing: the request never reached the origin.
+# : Gateway / rate-limit statuses. Supabase sits behind Cloudflare, which answers 522 when
+# : the origin times out; PostgREST surfaces that as an APIError whose `code` is the HTTP
+# : status rather than a SQLSTATE.
+# :
+# : The whole Cloudflare origin family (520–527, 530), not just the two that had been seen.
 _TRANSIENT_HTTP_STATUS = frozenset({
     408, 425, 429, 502, 503, 504,
     520, 521, 522, 523, 524, 525, 526, 527, 530,
@@ -239,15 +225,7 @@ def _error_code(exception: Exception) -> str:
 
 
 def classify_error_code(code: str):
-    """True = retry, False = never retry, None = the code says nothing either way.
-
-    This is the half that must run BEFORE any text matching. The text of a rejection is
-    not ours to control: a CHECK violation quotes the FAILING ROW back at you, so a row
-    that merely happens to mention a connection or a timeout used to be classified as a
-    transient network fault. That is how a permanent 23514 on
-    `agent_run_logs_level_check` was reported as "PostgREST transient failure"
-    (MIVAA-5JV) — the words came from the data, not from the fault.
-    """
+    """True = retry, False = never retry, None = the code says nothing either way."""
     if not code:
         return None
 
@@ -325,21 +303,8 @@ async def execute_db_with_retry(
     initial_delay: float = 0.5,
     max_delay: float = 8.0,
 ) -> T:
-    """
-    Run a synchronous Supabase/PostgREST query with retry on transient
+    """Run a synchronous Supabase/PostgREST query with retry on transient
     connection errors.
-
-    PostgREST keeps a pooled keep-alive HTTP connection; after a long idle
-    period (e.g. between background-cron ticks) the server closes it, so the
-    next query raises httpx "Server disconnected" / ConnectError. Re-issuing
-    the request transparently establishes a fresh connection, so a short
-    backoff retry is all that's needed.
-
-    `query_factory` MUST build AND execute the query (a zero-arg callable that
-    returns the PostgREST response). It is re-invoked from scratch on every
-    attempt so each retry issues a brand-new request rather than replaying a
-    consumed builder. Non-retryable exceptions (per `should_retry_exception`)
-    are raised immediately without burning attempts.
     """
     delay = initial_delay
     last_exception = None

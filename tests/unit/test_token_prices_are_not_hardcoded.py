@@ -1,17 +1,5 @@
 """A per-token USD rate written into Python is a wrong number that nothing raises on.
 
-`ai_model_pricing` is the single USD source for this platform. Before this guard,
-`image_processing_service` priced its own spend from a constant:
-
-    # Claude Opus 4.7 pricing as of 2026-05-01: $15/M input, $75/M output.
-    cost = (input_tokens / 1_000_000) * 15.0 + (output_tokens / 1_000_000) * 75.0
-
-The comment names Opus 4.7. The call three lines above it asks for `claude-opus-4-8`.
-So every image in every catalogue — a per-image hot path — was booked at a rate that
-belonged to a different model, and had been since the model string was bumped without
-the constant beneath it.
-
-WHY THIS SHAPE SURVIVES
 -----------------------
 It is the silent-zero defect wearing a different hat. There is no failure: the
 multiplication succeeds, a float lands in `ai_usage_logs`, every dashboard renders, and

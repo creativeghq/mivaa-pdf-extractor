@@ -168,16 +168,7 @@ def test_the_checker_result_is_never_written_back_into_vision_analysis() -> None
 
 
 def test_the_checker_is_never_the_same_model_as_the_writer() -> None:
-    """Whatever the checker is set to, it must not be the writer.
-
-    The default was "" (off) until 2026-08-28 and is now `claude-sonnet-5` — activated
-    deliberately, and deliberately as the CHEAPEST probe rather than the best one: the
-    open question is whether a second reader finds anything at all, and the cheapest
-    non-writer model answers that.
-
-    What still has to hold is the pairing. The same model twice measures sampling
-    noise, not agreement, and bills for the privilege.
-    """
+    """Whatever the checker is set to, it must not be the writer."""
     cfg = (_ROOT / "app" / "config.py").read_text(encoding="utf-8")
     pat = r'{}:\s*str\s*=\s*Field\(\s*\n?\s*default="([^"]*)"'
     checker = re.search(pat.format("anthropic_model_vision_checker"), cfg)

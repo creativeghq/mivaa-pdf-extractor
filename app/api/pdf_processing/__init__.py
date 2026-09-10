@@ -1,18 +1,4 @@
-"""
-PDF Processing Pipeline Modules
-
-Product-centric pipeline with single-product processing functions:
-- Stage 0: Product Discovery (stage_0_discovery.py)
-- Stage 1: extract_product_pages (stage_1_focused_extraction.py)
-- Stage 2: process_product_chunking (stage_2_chunking.py)
-- Stage 3: process_product_images (stage_3_images.py)
-- Stage 4: create_single_product (stage_4_products.py)
-- Stage 4.5: propagate_common_fields_to_products (stage_4_products.py)
-- Stage 4.6: extract_dimensions_from_document_chunks (stage_4_products.py)
-- Stage 5: Quality Enhancement (stage_5_quality.py)
-- Product Processor: process_single_product (product_processor.py)
-- Parallel Processor: process_products_parallel (parallel_product_processor.py)
-"""
+"""PDF Processing Pipeline Modules"""
 
 from .stage_0_discovery import process_stage_0_discovery
 from .stage_1_layout_precompute import precompute_document_layout, get_layout_from_document_cache

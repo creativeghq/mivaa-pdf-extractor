@@ -1,17 +1,4 @@
-"""
-Shared monitoring cost-logging core.
-
-The per-module cost loggers (job_cost_logger.py, mention_cost_logger.py, and any
-future monitoring module) had a byte-for-byte duplicate `CostAttribution` bag +
-`log_external_call()` ai_usage_logs insert, differing only in `module_slug` and
-the subject-id metadata key (tracked_job_id / tracked_mention_id). This is the
-single implementation.
-
-Each module keeps its OWN pricing tables, per-source `log_*_call` wrappers, and
-credit debit/refund/stamp RPCs (those genuinely differ) and delegates the insert
-here via a thin `CostAttribution` subclass + a `log_external_call` passthrough
-that fills in `module_slug`. No call site changes — behaviour is identical.
-"""
+"""Shared monitoring cost-logging core."""
 from __future__ import annotations
 
 import logging
@@ -66,7 +53,6 @@ class CostAttribution:
         # the client (or into its logger module) files every caller's spend under one slug. That
         # is exactly what happened — all SEO DataForSEO spend landed under 'mention-monitoring'
         # and `seo-toolkit` showed 0 rows while the operator dashboard read a hardcoded 0.
-        # It travels with the ATTRIBUTION because the attribution is built by the call site.
         self.module_slug = module_slug
         # True when the caller has ALREADY reserved credits for this call and will settle them
         # against the cost we report — the edge spend gate (`_shared/tools/dataforseo-spend-gate.ts`
@@ -93,18 +79,7 @@ ZERO_USAGE_MARKER = "usage_missing: provider reported 0 input and 0 output token
 
 
 def usage_anomaly(input_tokens: int, output_tokens: int, success: bool) -> Optional[str]:
-    """A marker when a SUCCESSFUL call reports no tokens, else None.
-
-    A model call that succeeded consumed tokens. Zero of both is not a cheap call — it
-    is an accounting failure, and it does not fail: `int(x or 0)` turns a missing usage
-    block into 0, 0 tokens produce 0 raw cost, and the row is still written
-    `success=True`. That feeds #30 M16-1 directly — a zero cost becomes a zero amount
-    becomes a free operation reporting success, all the way down.
-
-    `success` stays whatever the caller reported. What is being marked is the USAGE, not
-    the call: the provider may genuinely have answered. Flipping success to False would
-    trade a wrong cost for a wrong outcome.
-    """
+    """A marker when a SUCCESSFUL call reports no tokens, else None."""
     if success and not int(input_tokens or 0) and not int(output_tokens or 0):
         return ZERO_USAGE_MARKER
     return None

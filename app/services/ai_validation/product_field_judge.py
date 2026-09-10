@@ -1,28 +1,4 @@
-"""A second model reads the PAGE beside the fields the first model extracted.
-
-Adopted 2026-09-05 from the GAIK toolkit's `LLMJudge`: the judge is shown the
-RENDERED page image and the extracted JSON, and returns per-field verdicts with a
-severity, a Likert score, a reason and a suggested value. Our consensus validator
-votes between models over the same TEXT; this is the one instrument that looks at
-the pixels a human reviewer would look at.
-
-WHERE IT RUNS. Stage 5, after image validation, for the products of this document
-whose `confidence_score` is below the extraction floor (capped per job). A judge
-failure is stamped on the product and never fails the job.
-
-WHAT IT WRITES. One `product_field_judgements` row per field (replacing the
-previous set for that product), and `products.metadata.field_judgement` =
-{status, counts, model, judged_at} — a status on EVERY product it touched,
-including `skipped` with the reason and `failed` with the error, so a judge that
-silently did nothing is distinguishable from one that found nothing wrong.
-
-INVARIANTS. The verdict is a FORCED tool call (#9); the prompt comes from the
-database (no fallback); the page is rendered here from the source PDF, because
-`document_page_embeddings` renders were never written (`ops.page_embeddings_never_written`);
-every read is bound to the workspace the service was built for.
-
-Guarded by tests/unit/test_field_judgement.py.
-"""
+"""A second model reads the PAGE beside the fields the first model extracted."""
 
 from __future__ import annotations
 

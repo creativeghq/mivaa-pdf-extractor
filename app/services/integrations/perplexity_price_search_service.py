@@ -1,30 +1,4 @@
-"""
-Perplexity-powered price discovery via Sonar.
-
-Replaces the Claude + web_search_20250305 path. Claude's API search tool
-(Brave-based, snippets only, no geo-location) was materially weaker than
-claude.ai's internal search; Perplexity Sonar has deeper page reading and
-real user_location support, which is the difference between seeing
-"€25,00/m²" on youbath.gr and missing it entirely.
-
-Design:
-- Model: sonar-pro (best quality for retail product search)
-- Structured output via response_format.json_schema — forces clean JSON
-  per the PriceHit schema, no regex parsing
-- user_location.country biases results to the user's market
-- search_recency_filter="month" trims stale prices
-- Credit logging via ai_usage_logs (same pattern as Claude usage)
-
-Why REST + httpx instead of an SDK wrapper:
-- Perplexity's API is simple chat-completions shape; an SDK adds little
-- Keeps the service in the same Python backend as the rest of price
-  monitoring (price_lookups, ai_usage_logs, credits) — no runtime split
-- Matches the exact shape the Vercel AI SDK produces (it just POSTs here)
-
-Kept API-compatible with ClaudePriceSearchService: same PriceHit /
-PriceSearchResult types and `search_prices()` method signature so the
-route code can swap one import without touching anything else.
-"""
+"""Perplexity-powered price discovery via Sonar."""
 
 import asyncio
 import hashlib
@@ -116,15 +90,8 @@ def _facets_hash(facets: Optional[QueryFacets]) -> str:
 
 
 def _rule_shortcut(facets: Optional[QueryFacets], candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Cheap deterministic pre-classifier (PR-D #10). Returns a verdict dict when
+    """Cheap deterministic pre-classifier (PR-D #10). Returns a verdict dict when
     the case is unambiguous, None when the LLM should make the call.
-
-    Confident cases:
-      * SKU anchor present in slug ∪ name → exact (no LLM needed)
-      * Required brand+model tokens missing entirely → mismatch
-      * Slug+name empty → unverifiable
-    Everything else falls through to Haiku.
     """
     if facets is None:
         return None
@@ -292,25 +259,8 @@ class PerplexityPriceSearchService:
         tracked_query_id: Optional[str] = None,
         product_id: Optional[str] = None,
     ) -> PriceSearchResult:
-        """
-        Run one Sonar search for the given product. Returns PriceSearchResult
+        """Run one Sonar search for the given product. Returns PriceSearchResult
         with hits + usage metadata. Stateless — caller handles DB persistence.
-
-        Pipeline:
-          1. Facet extraction (Haiku) — decompose the query into brand/model/
-             type/variants. Skipped when caller passes pre-cached facets.
-          2. Perplexity + DataForSEO in parallel, merged + deduped.
-          3. URL pre-filter — drop homepage/SERP/aggregator URLs before
-             spending Firecrawl credits on them.
-          4. Firecrawl verification — fetch each remaining product page
-             and extract price + product_name + breadcrumb + attributes.
-          5. Identity classification (batched Haiku) — decide per hit whether
-             the page is an exact/variant/family/mismatch/unverifiable
-             match for the query. Mismatches are dropped. Variants are kept
-             with a human-readable match_note.
-
-        Pass `query_facets` to skip step 1 (caller cached them on the tracked
-        query). Pass `manufacturer_hint` to override Haiku's brand guess.
         """
         if not self.api_key:
             return PriceSearchResult(success=False, error="PERPLEXITY_API_KEY not configured")
@@ -586,19 +536,9 @@ class PerplexityPriceSearchService:
         workspace_id: Optional[str],
         promoted_urls: Optional[Dict[str, str]] = None,
     ) -> List[PriceHit]:
-        """
-        Ask the identity classifier which hits are exact/variant/family/
+        """Ask the identity classifier which hits are exact/variant/family/
         mismatch/unverifiable, stamp match_kind/score/note onto each hit,
         and drop only `mismatch` rows.
-
-        Family rows are KEPT (with `match_kind='family'`) so the UI can
-        render them under a "Similar Products" section. Stats / sanity /
-        alerts / chart treat `family` as inert downstream.
-
-        `promoted_urls` is an optional dict of `{product_url: override_kind}` —
-        when an admin has manually promoted a family row to tracked via the
-        promote-family-row endpoint, we override the classifier's verdict
-        with the stored override on every future refresh of the same URL.
         """
         identity_svc = get_product_identity_service()
         promoted_urls = promoted_urls or {}
@@ -824,11 +764,6 @@ class PerplexityPriceSearchService:
         # Cost calc honors the actual model used. Class #5: previously every
         # call was billed at SONAR_PRO rates even when model_override='sonar'
         # made the cheaper model do the work, overstating raw_cost_usd by ~3×.
-        # NOTE: the numbers move slightly. This file previously used $0.005/request for sonar-pro
-        # and half that for sonar, both BELOW Perplexity's published search-fee bands ($5-14 per
-        # 1000, and $6-14 for Pro). The shared rates are inside them, so this is more correct, not
-        # merely more consistent. Safe to change: this service has never written an ai_usage_logs
-        # row, so there is no historical series to keep compatible.
         search_per_call, input_per_1k, output_per_1k = sonar_rates(model_name)
         cost_usd = (
             (input_tokens / 1000) * input_per_1k
@@ -884,19 +819,7 @@ class PerplexityPriceSearchService:
         user_id: Optional[str],
         workspace_id: Optional[str],
     ) -> Optional[int]:
-        """Debit the reservation for one price search.
-
-        Returns the amount actually taken: `None` refuses the call, `0` proceeds
-        UNBILLED (cron sweeps legitimately have no payer, and that is RECORDED rather
-        than waved through — invariant 10, the distinction ai_call_logger's UNBILLED
-        markers already draw), a positive number is a real charge that `_refund_spend`
-        must give back if the provider does no billable work.
-
-        The return type is deliberately NOT a bool. `0` is a legitimate "proceed", so a
-        truthiness test at the call site would abort every unbilled cron run — the same
-        shape that made `bool(data)` treat a failed debit as a successful one in
-        `price_cost_logger.debit_credits` (audit #217 H3).
-        """
+        """Debit the reservation for one price search."""
         if not user_id:
             logger.info("perplexity: no payer on this search — proceeding UNBILLED")
             return 0
@@ -923,18 +846,7 @@ class PerplexityPriceSearchService:
         workspace_id: Optional[str],
         amount: Optional[int],
     ) -> None:
-        """Give back a reservation the provider never earned.
-
-        Invariant 10 says debit BEFORE the upstream call. It does not say keep the money
-        when the upstream then refuses to do the work. Perplexity's account has been out
-        of quota since 2026-08-01 and answers every request with 401 `insufficient_quota`,
-        so without this half the #14 MV-3 reservation turns a dead credential into a
-        credit drain: the user is charged for nothing, forever, while every signal reads
-        as correctly metered.
-
-        `amount` of 0/None means nothing was taken (no payer) — refunding then would MINT
-        credits, so it is a no-op, not a refund of zero.
-        """
+        """Give back a reservation the provider never earned."""
         if not amount or not user_id:
             return
         try:
@@ -988,16 +900,7 @@ class PerplexityPriceSearchService:
         limit: int,
         known_retailer_domains: Optional[List[str]] = None,
     ) -> Tuple[str, str]:
-        """Returns (system_prompt, user_prompt).
-
-        Dimensions are passed as a SOFT hint, not a hard filter — retailers
-        often print sizes in different notations than the catalog (60×60 cm
-        vs 600×600 mm vs 60x60 vs 60/60). Forcing the dimension string into
-        the literal query loses 30-50% of valid hits when the notation
-        diverges. Instead, we list the brand+model in the primary query and
-        flag dimensions in a separate "additional context" line so the
-        model can use it as a tie-breaker among multi-size SKUs.
-        """
+        """Returns (system_prompt, user_prompt)."""
         product_spec = product_name.strip()
         today = datetime.now(timezone.utc).date().isoformat()
 
@@ -1148,24 +1051,9 @@ class PerplexityPriceSearchService:
         workspace_id: Optional[str] = None,
         double_read: bool = False,
     ) -> int:
-        """
-        Second-stage verification: fetch each retailer's actual product page via
+        """Second-stage verification: fetch each retailer's actual product page via
         Firecrawl, extract price + product_name + breadcrumb + visible_attributes,
         and rewrite the hit in place. Runs all URLs in parallel via asyncio.gather.
-
-        Mutates `hits` list in place. Also writes extraction details keyed by
-        `product_url` into `extractions_out` (when provided) so the identity
-        classifier can use them without re-scraping.
-
-        Semantics per row:
-          - Firecrawl finds a price on the page → replace `price`, fill
-            `original_price` if was/now visible and sane (discarded if
-            original < price, or original/price > 5 — that's a SKU/ID, not
-            a promo). Set `verified=True`.
-          - Firecrawl returns no price (404, blocked, truly missing) → leave
-            the row as-is with `verified=False`.
-          - Firecrawl price differs by >20% from the Perplexity/DataForSEO
-            price → trust Firecrawl + append a discrepancy note.
         """
         firecrawl = get_firecrawl_client()
 
@@ -1387,24 +1275,7 @@ class PerplexityPriceSearchService:
         dataforseo_hits: List[MerchantHit],
         country_code: Optional[str],
     ) -> List[PriceHit]:
-        """
-        Merge Perplexity + DataForSEO hits.
-
-        Dedupe policy:
-          - Perplexity hits keyed by retailer DOMAIN (their URL is a real
-            product page — host is unique per retailer).
-          - DataForSEO hits keyed by (retailer_name, product_title). Their
-            URL is a google.gr/search Shopping redirect, so domain-dedup
-            would collapse all 20 merchants into 1. The Shopping feed
-            already gives us a distinct product_title per listing, so use
-            that as the primary discriminator.
-          - When a retailer appears in BOTH sources (Perplexity found the
-            direct product page + DataForSEO has it in the feed), keep the
-            Perplexity row — it has richer fields (availability, city,
-            notes) and a directly-scrapable URL.
-          - DataForSEO-only retailers come through with source='dataforseo'
-            and their Shopping-feed metadata (image, rating).
-        """
+        """Merge Perplexity + DataForSEO hits."""
         merged: List[PriceHit] = []
         perplexity_domains: set[str] = set()
 
@@ -1611,19 +1482,7 @@ class PerplexityPriceSearchService:
         product_id: Optional[str] = None,
         error_message: Optional[str] = None,
     ) -> None:
-        """Insert into ai_usage_logs.
-
-        `error_message` marks a call that FAILED. Timeouts, request failures and
-        non-200s all returned before reaching this method (audit #14 MV-5), so the one
-        class of paid call you would most want in the cost table was the one class that
-        never appeared in it.
-
-        Class #5 (cost attribution gap): previously this row carried no
-        module_slug / tracked_query_id / product_id, so per-subject cost
-        rollups couldn't see Perplexity spend. The model_name was also
-        hardcoded `sonar-pro` even when the actual call ran on cheaper
-        `sonar` (model_override path), corrupting per-model spend dashboards.
-        """
+        """Insert into ai_usage_logs."""
         # Compute the true input/output costs at the actual model's rates.
         _, in_per_1k, out_per_1k = sonar_rates(model_name)
         try:

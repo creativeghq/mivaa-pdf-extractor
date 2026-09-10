@@ -1,14 +1,4 @@
-"""
-Locale-aware price string parser.
-
-Wraps the `price-parser` library and normalizes currency symbols to ISO 4217
-codes. Handles:
-    "$49.99"        -> (Decimal('49.99'), 'USD')
-    "€1.299,00"     -> (Decimal('1299.00'), 'EUR')     # European format
-    "£1,299.00"     -> (Decimal('1299.00'), 'GBP')     # US thousands
-    "From $49"      -> (Decimal('49'), 'USD')
-    "49.99 EUR"     -> (Decimal('49.99'), 'EUR')
-"""
+"""Locale-aware price string parser."""
 
 from decimal import Decimal
 from typing import Optional, Tuple

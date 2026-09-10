@@ -348,21 +348,7 @@ async def extract_functional_properties(
     workspace_id: str = None,
     product_id: Optional[str] = None,
 ) -> PropertyExtractionResult:
-    """
-    Convenience function for stage_4_products.py integration.
-
-    Usage in stage_4_products.py:
-        from app.services.products.enhanced_material_property_extractor import (
-            extract_functional_properties,
-        )
-        result = await extract_functional_properties(
-            analysis_text=combined_chunk_text,
-            product_name=product_name,
-            job_id=job_id,
-        )
-        if result.coverage_pct > 0:
-            new_metadata["functional_properties"] = result.properties
-    """
+    """Convenience function for stage_4_products.py integration."""
     extractor = EnhancedMaterialPropertyExtractor(
         workspace_id=workspace_id,
     )

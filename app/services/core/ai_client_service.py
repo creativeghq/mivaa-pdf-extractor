@@ -23,17 +23,6 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Anthropic SDK shims (2026-05-23 — SDK removed, standardized on httpx)
-#
-# The `anthropic-sdk-python` package was removed as a dependency. Older call
-# sites use `client.messages.create(**kwargs)`; these shims preserve that API
-# by proxying to `claude_helper._call_anthropic_async / _sync`. Returns a
-# `ClaudeResponse` shaped identically to the SDK's Message object, so
-# `.content[i].type/.text/.input`, `.usage.input_tokens`, `.model`, etc.
-# work unchanged.
-#
-# New code should call `tracked_claude_call_async` directly. The shims exist
-# to make this migration zero-touch for the dozen-ish existing call sites.
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 class _AnthropicMessagesAsync:

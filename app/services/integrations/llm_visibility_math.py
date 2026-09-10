@@ -1,19 +1,4 @@
-"""
-LLM-visibility derivations — pure functions over probe rows.
-
-Split out of `llm_mention_probe_service` for two reasons, in this order:
-
-1. These are DERIVATIONS. Share of voice, average rank, a sentiment score, a ghost-
-   citation count and a trend are all read off the same `llm_mention_probes` rows,
-   and every one of them is a number that is wrong-but-valid when the arithmetic
-   drifts. Keeping them in one module means there is one place each is computed.
-2. The service they came from cannot be imported without a Supabase client, and this
-   repo's CI installs pytest and nothing else — so a rollup living there is a rollup
-   no test can exercise. Everything here imports stdlib only, deliberately.
-
-Nothing in this module touches the network or the database. Callers fetch rows and
-pass them in.
-"""
+"""LLM-visibility derivations — pure functions over probe rows."""
 
 from __future__ import annotations
 
@@ -163,20 +148,7 @@ def answered_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def visibility_rollup(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Mention counts and share of voice over a set of probe rows.
-
-    **The denominator is probes that ANSWERED, never probes that were sent.**
-
-    Measured on production 2026-08-27: of 636 stored probes, 213 are errors — every
-    single `gpt-4o-mini` call, all `HTTP 429`. Dividing mentions by rows-sent renders
-    that model at `0.0` share of voice, which reads as "AI assistants never mention
-    us" and gets acted on as a content problem. It is a broken API key.
-
-    So a set with nothing to divide by returns `share_of_voice: None`, NOT 0.0. None
-    means "no verdict" and forces the caller to say so; 0.0 is a claim about the
-    world. Same reason `position_rollup` returns None rather than 0 for "never
-    ranked", and the same rule the SEO dashboard applies to a failed collector.
-    """
+    """Mention counts and share of voice over a set of probe rows."""
     answered = answered_rows(rows)
     mentioned = sum(1 for r in answered if r.get("mentioned"))
     _, avg_position = position_rollup(answered)

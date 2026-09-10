@@ -1,26 +1,4 @@
-"""
-Claude Validation Service
-
-Provides async background validation for images with low quality scores, to
-enhance image analysis quality.
-
-ARCHITECTURE (vision is Anthropic-only):
-- Initial per-image analysis runs on Claude Opus during sync processing
-- Claude validation queued for low-quality images (score < 0.7)
-- Updates image records with enhanced analysis
-
-TENANCY (audit #23 M10-1). Every method here takes an explicit `workspace_id` and
-binds it into every read and write. MIVAA connects as service role, so RLS is not a
-backstop: without the predicate a caller holding any valid `image_id` could read
-another tenant's `document_images` row in full, spend Claude analysing it, and
-overwrite its validation metadata. `document_images` is the SILVER layer — a
-corrupted verdict there propagates into embeddings, search ranking and product
-association, and no drift check would surface it.
-
-Two ids are never trusted to agree: `queue_image_for_validation` resolves the image
-inside the workspace and rejects a `document_id` that is not the one the image
-actually belongs to, rather than storing the pair the caller asserted.
-"""
+"""Claude Validation Service"""
 
 import logging
 import asyncio

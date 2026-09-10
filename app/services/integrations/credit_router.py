@@ -108,10 +108,6 @@ def debit_row(
         # "Server disconnected" mid-POST on the first tick of the rank tracker (MIVAA-5KJ),
         # a Cloudflare 52x, a timeout. The retry patch cannot repeat a debit (a second
         # attempt could charge twice), so for a transient fault the outcome is UNKNOWN:
-        # the credits may or may not have been taken, and the paid call they were for did
-        # not happen. Logging that as "likely insufficient" at INFO named the one cause it
-        # could not be, at a level nobody reads. The caller still gets a refusal — the
-        # conservative answer — but the reason now says which of the two facts this was.
         if should_retry_exception(e):
             logger.warning(
                 "%s: credit debit outcome UNKNOWN for %s (%s credits) — transport failure "

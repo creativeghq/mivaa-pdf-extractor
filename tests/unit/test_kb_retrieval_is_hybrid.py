@@ -1,21 +1,4 @@
-"""KB retrieval runs two channels, ships their counts, and is measured.
-
-Until 2026-09-05 the corpus the agent searches (kb_doc_chunks, ~9.8k sections) had a
-vector column and nothing else: no lexical index, so a question carrying an exact term
-(a framework name, a model code, a Greek word the embedding handles poorly) depended
-entirely on cosine similarity. The fix is one RPC, `kb_hybrid_doc_chunks`, that runs a
-vector channel and an English/Greek tsvector channel over ONE gated candidate set and
-fuses them by rank (RRF). These tests pin the three things that would silently undo it:
-
-  * the kb_docs branch going back to `kb_match_doc_chunks` (vector-only) or dropping
-    `query_text` — the lexical channel is off and nothing errors;
-  * the per-channel counts leaving `search_metadata` — a dead lexical channel then looks
-    exactly like a healthy one;
-  * the eval runner losing its gate or building its query vector some other way than
-    `kb_query_vector` (input_type=query is decided there, once).
-
-Source-scanning, stdlib only: MIVAA CI installs pytest and nothing from `app`.
-"""
+"""KB retrieval runs two channels, ships their counts, and is measured."""
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "app"

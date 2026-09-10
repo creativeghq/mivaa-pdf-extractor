@@ -1,18 +1,4 @@
-"""
-Provider abstraction for the structural-pass endpoint (PaddleOCR-VL on Modal).
-
-The :class:`PaddleOCRManager` holds an :class:`EndpointProvider` and delegates
-every lifecycle call (warmup / resume / scale-to-zero / health) to it, keeping
-the inference + parse + metrics logic provider-agnostic. Today there is one
-provider — :class:`ModalEndpointProvider` — because Modal owns autoscaling: a
-scaled-down app auto-wakes on the first request and auto-drains after the
-``scaledown_window`` configured at deploy time. So "resume"/"warmup" is just a
-health probe until the container is up, and "scale to zero" is a no-op (Modal's
-idle clock handles it).
-
-The abstraction is kept (rather than inlined) so a second host can be added
-later as another ``EndpointProvider`` with no change to the manager.
-"""
+"""Provider abstraction for the structural-pass endpoint (PaddleOCR-VL on Modal)."""
 
 import logging
 import time
@@ -160,17 +146,7 @@ class EndpointProvider(ABC):
 # Modal (and any self-managed HTTP endpoint behind a stable URL)
 # ====================================================================== #
 class ModalEndpointProvider(EndpointProvider):
-    """Modal-hosted endpoint. Modal owns autoscaling:
-
-    * a scaled-down app **auto-wakes** on the first request,
-    * it **auto-drains** the GPU container after ``scaledown_window`` (set at
-      deploy time in ``modal_app/paddleocr_vl.py``).
-
-    So warmup == health-probe-until-up, resume == warmup (the probe wakes it),
-    and scale-to-zero is a no-op handled by Modal's idle clock. The URL is
-    static (the ``modal deploy`` output) and the bearer is the value of the
-    ``paddleocr-api-key`` Modal secret.
-    """
+    """Modal-hosted endpoint. Modal owns autoscaling:"""
 
     provider_name = "modal"
 

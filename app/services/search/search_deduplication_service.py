@@ -1,16 +1,4 @@
-"""
-Search Deduplication Service
-
-Implements AI-powered smart deduplication for saved searches to prevent
-database bloat while respecting important contextual differences.
-
-Features:
-- Claude Haiku 4.5 for semantic analysis
-- Voyage text embeddings for similarity matching
-- Multi-layer matching (exact, semantic, metadata)
-- Context-aware merging (floor vs wall, indoor vs outdoor)
-- Attribute conflict detection
-"""
+"""Search Deduplication Service"""
 
 import json
 import logging
@@ -123,31 +111,7 @@ class SearchDeduplicationService:
             )
     
     async def _generate_semantic_fingerprint(self, text: str) -> Optional[List[float]]:
-        """Embed a search query through Voyage, the platform's only embedder.
-
-        THREE THINGS WERE WRONG HERE, and each was individually silent.
-
-        1. It called OpenAI `text-embedding-3-small`. This platform is Voyage-or-nothing
-           for embeddings — the OpenAI fallback was deleted on 2026-08-08 precisely
-           because two models at the same dimension are the same SHAPE and a different
-           SPACE, so a substituted vector stores, indexes and ranks without anything
-           raising. This call site survived that deletion.
-
-        2. It was called `_generate_clip_embedding` and its docstring said "CLIP". It was
-           neither CLIP nor, since the deletion, anything this codebase still uses. A name
-           that describes no provider and no model is a name that stops anyone looking.
-
-        3. On any failure it returned `[0.0] * 1024` — a zero vector, at a dimension the
-           model it called does not even produce (`text-embedding-3-small` is 1536D).
-           A zero vector has cosine similarity 0.0 with everything, so every candidate
-           scored below `SEMANTIC_THRESHOLD` and semantic dedup silently returned "no
-           matches" forever. With `OPENAI_API_KEY` unset — which it is: the
-           `platform_secrets` row is empty — `.openai_async` raises on property access, so
-           this was EVERY call. Saved-search dedup has been doing exact matching only.
-
-        `None` means NO VECTOR. Callers skip semantic matching rather than compare against
-        a number that means nothing.
-        """
+        """Embed a search query through Voyage, the platform's only embedder."""
         try:
             from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
@@ -448,16 +412,7 @@ class SearchDeduplicationService:
         new_material_filters: Dict,
         analysis: SearchAnalysis
     ) -> str:
-        """
-        Merge new search into existing one.
-
-        Strategy:
-        1. Keep most specific query as primary
-        2. Merge attributes (union, no conflicts)
-        3. Update filters to be more inclusive
-        4. Increment merge_count
-        5. Update last_merged_at
-        """
+        """Merge new search into existing one."""
 
         try:
             # Get existing search

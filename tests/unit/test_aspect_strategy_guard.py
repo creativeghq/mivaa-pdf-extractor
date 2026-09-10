@@ -1,27 +1,4 @@
-"""
-Guard: /api/rag/search must REFUSE an aspect it cannot honor, never ignore it (#277).
-
-`SearchRequest.aspect` is read by exactly one branch of the strategy dispatch —
-`multi_vector`, which re-weights the fusion toward that aspect's channel via
-`aspect_bias_weights`. The `image` branch ranks on the SLIG visual vector alone and
-`material` is JSONB filtering; neither has anywhere to apply it.
-
-Both used to accept the field and drop it. `visual_search` called
-`strategy=image` with `aspect=texture`, Pydantic validated it, the branch never looked at
-it, and the caller got plain visual similarity that was indistinguishable from a working
-texture search. Nothing raised, nothing logged, no test failed — the `ops.silent_zero`
-shape, one layer up from the DB.
-
-The fix is a single pre-dispatch check, placed BEFORE the `if strategy == ...` chain
-precisely so a strategy added later cannot quietly inherit the silent drop: a new branch
-has to opt in by name. This test fails if that check moves back inside a branch, loses a
-strategy, or disappears.
-
-Reads the route file as TEXT on purpose. Importing `app.api.rag_routes` pulls in the
-Supabase client, the settings bootstrap and the whole runtime dependency set; this guard
-has to run in CI in a second with nothing installed but pytest, which is the difference
-between a guard that runs on every push and one that quietly never runs.
-"""
+"""Guard: /api/rag/search must REFUSE an aspect it cannot honor, never ignore it (#277)."""
 
 import re
 from pathlib import Path

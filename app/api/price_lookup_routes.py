@@ -1,17 +1,4 @@
-"""
-Public Price Lookup API — `POST /api/v1/prices/lookup`
-
-External callers authenticate with a key from the `api_keys` table
-(`Authorization: Bearer <key>`), pass a URL (and optional product name hint),
-and get back structured price data.
-
-Billing: debited from the API key owner's workspace via the shared
-FirecrawlClient + AICallLogger path. Rate limit: per-key sliding window
-backed by `price_lookups` row count.
-
-This is a one-shot lookup — it does NOT create a `competitor_sources` row.
-For ongoing monitoring, users still go through the price monitoring flow.
-"""
+"""Public Price Lookup API — `POST /api/v1/prices/lookup`"""
 
 import logging
 from dataclasses import dataclass
@@ -88,15 +75,6 @@ async def authenticate_api_key(
 
     # One verifier, in SQL (#390 on the platform repo). `api_keys.api_key` used to hold
     # the credential in directly usable form and this compared against it in plaintext.
-    # It is hashed now, and the comparison lives in `verify_api_key` rather than being
-    # reimplemented here, in four edge functions and in the browser — five
-    # implementations of "hash it the same way" is five chances to disagree about
-    # encoding, and disagreeing here is a total auth failure, or worse a silent mismatch
-    # on one runtime only.
-    #
-    # The RPC returns metadata only. Everything below — is_active, expires_at,
-    # allowed_endpoints — is still enforced here: it answers "which key is this", not
-    # "may it do that".
     res = sb.rpc("verify_api_key", {"p_key": token}).execute()
     rows = res.data if res else None
     key = (rows[0] if isinstance(rows, list) and rows else rows) or {}
@@ -117,14 +95,6 @@ async def authenticate_api_key(
     # allowed_endpoints: None means allow-all. A non-empty list must include
     # the path of the route ACTUALLY being served (or a trailing-wildcard prefix
     # match).
-    #
-    # This used to check the module constant ENDPOINT_PATH instead, which
-    # inverted scoping in both directions for every importer of this dependency
-    # (audit #18 M5-1). Four other route modules mount it —
-    # /api/v1/jobs/track, /api/v1/mentions/track, /api/v1/projects and
-    # /api/v1/prices/track, 54 routes in total — so a key scoped only to
-    # /api/v1/prices/lookup passed all of them, and a key scoped correctly to
-    # /api/v1/projects/* was rejected on every project route.
     requested_path = request.url.path
     allowed = key.get("allowed_endpoints")
     if allowed:

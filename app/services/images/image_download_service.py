@@ -1,13 +1,4 @@
-"""
-Image Download Service
-
-Handles concurrent image downloads from URLs:
-- Validates image URLs and content
-- Downloads images with retry logic
-- Stores images in Supabase Storage
-- Returns image references for product linking
-- Supports concurrent downloads (max 5 parallel)
-"""
+"""Image Download Service"""
 
 import logging
 import asyncio
@@ -125,10 +116,6 @@ class ImageDownloadService:
                     # came from an LLM / supplier feed, so it goes through the shared
                     # SSRF guard (scheme allowlist + DNS-resolve every record and
                     # reject private / loopback / link-local / 169.254.169.254).
-                    # follow_redirects is off because the guard validates the URL we
-                    # were given, not wherever a 302 points -- aiohttp follows
-                    # redirects by default, which would have handed an attacker the
-                    # bypass for free.
                     try:
                         assert_safe_url(url, allow_schemes=("https",))
                     except SSRFError as ssrf_err:
@@ -168,7 +155,6 @@ class ImageDownloadService:
                         # response.read() that pulled the whole body into memory
                         # before the 10MB limit was consulted. The cap that matters is
                         # the streaming one below -- a hostile or broken server cannot
-                        # opt out of it by omitting a header.
                         content_length = response.headers.get('Content-Length')
                         if content_length:
                             try:

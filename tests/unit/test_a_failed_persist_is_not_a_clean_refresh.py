@@ -1,31 +1,4 @@
-"""A refresh that could not persist must not report success (mivaa#19 M6-3/M6-4/M6-5).
-
-The shape, in one sentence: the write failed, and the code then advanced every piece of
-state that means "this worked".
-
-    tracked_queries    the history insert raised -> `rows = []` -> the row was updated
-                       with `last_error: None`, `first_refresh_verified: True` and a
-                       full set of NULL `current_*` columns, and the call returned
-                       `status: "refreshed"`.
-
-So a database outage CLEARED the previous error, wiped a cached price that was still the
-best answer anyone had, marked the row verified, and told cron there was nothing to
-retry. The dashboard showed a confident empty. Nothing raised, nothing logged above
-warning, and `ops.silent_zero` cannot see it — the metric it would look at is the one
-that got nulled.
-
-M6-3 is the same defect one layer over: the gold `current_*` cache was summarised from
-the IN-MEMORY rows rather than the committed ones, so a partial write produced a
-confident summary of silver rows nobody can read back — sitting next to counts that ARE
-read from the database, so the row disagreed with itself.
-
-M6-5 is the same shape in the failure ledger: a Claude call that timed out AFTER
-Anthropic accepted and billed it was written as `cost=0.0` with nothing marking it, so
-the spend was permanently indistinguishable from a free no-op.
-
-Static analysis, so these pin the SHAPE. Every case was watched to fail against the
-pre-fix source.
-"""
+"""A refresh that could not persist must not report success (mivaa#19 M6-3/M6-4/M6-5)."""
 
 import ast
 import re

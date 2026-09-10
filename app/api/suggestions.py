@@ -60,16 +60,7 @@ async def autocomplete(
     # product names to any authenticated caller. Same shape as M3-1 (#16).
     workspace_context: WorkspaceContext = Depends(get_workspace_context),
 ) -> AutoCompleteResponse:
-    """
-    Get auto-complete suggestions for a partial query.
-    
-    This endpoint provides:
-    - Real-time suggestions as user types
-    - Trending searches
-    - Recent user searches
-    - Popular searches
-    - Product/material name matches
-    """
+    """Get auto-complete suggestions for a partial query."""
     try:
         start_time = datetime.now()
         

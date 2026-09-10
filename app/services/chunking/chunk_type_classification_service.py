@@ -32,20 +32,7 @@ class ChunkType(Enum):
     UNCLASSIFIED = 'unclassified'
 
 class ChunkClassificationResult:
-    """Classification result with confidence and metadata.
-
-    `failed` is the whole point of audit #17 M4-12. `chunk_type_status` in
-    {pending, classified, failed} exists SPECIFICALLY to separate "the classifier returned
-    'unclassified' as its verdict" from "the classifier crashed mid-batch". The `failed`
-    state is reachable and IS written — but only when an exception escapes to
-    stage_2_chunking. This service caught every per-chunk exception first and returned
-    `ChunkType.UNCLASSIFIED` with `confidence=0.0`, so the stage never saw a failure and
-    stamped the chunk `classified`. The distinction the schema was designed for was lost one
-    layer below where it is recorded.
-
-    `confidence=0.0` cannot stand in for it: a genuine low-confidence verdict looks
-    identical. A valid value is not a failure marker (pipeline convention 1).
-    """
+    """Classification result with confidence and metadata."""
     def __init__(
         self,
         chunk_type: ChunkType,
@@ -140,23 +127,7 @@ class ChunkTypeClassificationService:
             )
 
     async def _classify_with_claude(self, content: str) -> Optional[ChunkClassificationResult]:
-        """Classify an ambiguous chunk with Claude (tool use, schema-locked).
-
-        Goes through `tracked_claude_call_async` (audit #17 M4-11). This used to be a raw
-        `httpx.AsyncClient().post()` straight at api.anthropic.com with its own
-        `os.getenv("ANTHROPIC_API_KEY")`: no debit, no rate limit, no cost row, no
-        attribution — and every failure path returned None into the pattern fallback, so the
-        spend left no trace of any kind. Pipeline convention 10 says new code calls the
-        tracked wrapper precisely so that cannot happen; this predates it.
-
-        One Sonnet call per ambiguous chunk across a whole catalogue is not a rounding error.
-        The wrapper debits, writes the ai_usage_logs row with the product and job attached,
-        and records an UNBILLED marker when there is nobody to charge.
-
-        Still returns None on any failure: the caller falls back to the pattern verdict,
-        which is a real classification rather than an absence. What changed is that the money
-        is now visible.
-        """
+        """Classify an ambiguous chunk with Claude (tool use, schema-locked)."""
         try:
             from app.services.core.claude_helper import tracked_claude_call_async
 

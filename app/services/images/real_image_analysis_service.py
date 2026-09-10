@@ -1,14 +1,4 @@
-"""
-Real Image Analysis Service - Stage 4 Implementation
-
-1. Vision model (Claude Opus via Anthropic tool use) for detailed image analysis
-2. SigLIP2 (SLIG 768D) embeddings for visual similarity
-3. Material property extraction
-4. Quality scoring
-
-All vision tasks run on Claude — same schema,
-same tool-use guarantees. No HF vision endpoint involved.
-"""
+"""Real Image Analysis Service - Stage 4 Implementation"""
 
 import logging
 import asyncio
@@ -244,16 +234,7 @@ class RealImageAnalysisService:
         job_id: Optional[str] = None,
         document_id: Optional[str] = None
     ) -> ImageAnalysisResult:
-        """
-        Perform VISION-ONLY image analysis with quality scoring.
-
-        NEW ARCHITECTURE (per user requirements):
-        - Use ONLY vision model (configurable) for sync processing
-        - Calculate quality score based on vision model confidence
-        - Queue Claude validation ONLY if vision score < threshold (0.7)
-        - Keep ALL 5 SLIG embeddings
-
-        This prevents OOM crashes by removing dual-model sync processing.
+        """Perform VISION-ONLY image analysis with quality scoring.
 
         Args:
             image_base64: Base64-encoded image data
@@ -396,24 +377,6 @@ class RealImageAnalysisService:
                 raise ValueError(error_msg)
 
             # A FORCED tool call through the tracked helper (#32 + #33 item 2).
-            #
-            # What was here did three things wrong at once. It was the SYNC
-            # `messages.create` from an `async def`, blocking the loop for a whole Opus
-            # vision round-trip. It wrote its cost row by hand afterwards, so a call
-            # that raised was billed by Anthropic and recorded by nobody. And it parsed
-            # free-form text through a three-strategy repair chain — first-brace to
-            # last-brace, then trailing-comma and single-quote fixes, then a regex for a
-            # balanced object — under a comment calling it "Strategy 1".
-            #
-            # A repair chain that deep is not robustness; it is a record of how often
-            # the free-form contract failed. With the tool forced there is nothing to
-            # repair, and an absent block is a typed error instead of a JSONDecodeError
-            # three strategies down.
-            #
-            # The schema is deliberately OPEN: the validation shape is described inside
-            # `self.claude_prompt`, which is loaded from the database. Restating those
-            # keys here would create a second source, and because the model is forced to
-            # satisfy the schema, an admin's edit would silently stop taking effect.
             from app.services.core.claude_helper import tracked_claude_call_async
             from app.services.core.claude_tool_call import (
                 ToolCallNotReturned,
@@ -738,23 +701,6 @@ class RealImageAnalysisService:
         """Unified quality score for both the vision-only path
         (`analyze_image_from_base64`) and the legacy hybrid path
         (`analyze_image`).
-
-        Weights are chosen so the vision-only score (no Claude validation,
-        no SLIG check) and the hybrid score remain comparable — both top out
-        at 1.0 and bottom at 0.0, both penalize missing fields equally.
-
-        Components (all included; zeros are skipped from the denominator):
-
-          - Vision confidence (always counted, weight 0.40)
-          - Claude validation overall_quality (only if success, weight 0.30)
-          - Material properties completeness — fraction of the 6 expected
-            keys (color/finish/pattern/texture/composition/confidence) that
-            are non-empty (always counted, weight 0.20)
-          - SLIG embedding validity — at least 10% non-zero values
-            (only if embedding provided, weight 0.10)
-
-        Result is a normalized weighted average. Returns 0.5 when nothing
-        was scored (preserves prior behavior).
         """
         score = 0.0
         weight = 0.0

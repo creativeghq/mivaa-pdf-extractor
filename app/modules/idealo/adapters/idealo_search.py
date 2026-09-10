@@ -1,20 +1,4 @@
-"""
-Idealo search-page adapter — Firecrawl scrape.
-
-Idealo.* doesn't publish a public search API. We scrape the public results
-page sorted by price ascending. Returns up to `limit` PriceHit rows.
-
-URL format the public site uses:
-    https://www.idealo.de/preisvergleich/MainSearchProductCategory.html?q=<query>
-
-The result page has a sortBar with `?sortKey=Cheapest` (DE) — added below.
-For non-DE locales the slug stays similar; scraping the rendered page bypasses
-locale-specific deep links.
-
-ToS caveat: Idealo's terms prohibit automated scraping at scale. Treat the
-adapter the same as the Skroutz/Bestprice ones — fine at admin-triggered
-volumes, not safe to scale without a commercial agreement.
-"""
+"""Idealo search-page adapter — Firecrawl scrape."""
 
 from __future__ import annotations
 

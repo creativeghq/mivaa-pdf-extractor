@@ -29,16 +29,7 @@ async def process_product_chunking(
     temp_pdf_path: Optional[str] = None,
     layout_regions: Optional[List[Any]] = None
 ) -> Dict[str, Any]:
-    """
-    Create text chunks for a single product (product-centric pipeline).
-
-    Uses PHYSICAL PAGE NUMBERS (1-based) throughout.
-
-    Pipeline:
-    1. Metadata-First: Exclude product metadata pages from chunking
-    2. Extract per-page text for each chunkable page
-    3. Chunk + embed via RAGService.index_pdf_content (with layout regions if available)
-    4. Classify chunk types + attach structured metadata
+    """Create text chunks for a single product (product-centric pipeline).
 
     Returns:
         Dictionary with chunks_created count and processing stats.
@@ -151,7 +142,6 @@ async def process_product_chunking(
     # above; the per-product writer in product_processor is permanently disabled
     # (layout_regions=[]). Reading the table here only ever returned stale pre-cutover
     # rows or nothing, so the branch + its get_layout_regions query are dropped to keep
-    # the cutover consistent. New + re-chunked products use the doc-level cache.
 
     # Telemetry: record which chunking strategy actually fired for this product.
     # `pipeline_strategy_metrics` is the per-stage distribution log the 2026-05-01
@@ -227,13 +217,6 @@ async def process_product_chunking(
             # Structure-first text source. Stage 1 ran the PaddleOCR-VL structural
             # pass on EVERY page and persisted each region's reading-order
             # `text_content` to the cache loaded above as `layout_regions_by_page`.
-            # Prefer that text (canonical, multilingual, and present even for
-            # image-only / scanned pages whose PDF text layer is empty) and fall
-            # back to the PyMuPDF text layer only on a cache miss — mirroring
-            # discovery's build_page_text_from_layout_cache (robustness, not a
-            # parallel pipeline). Before this, an image-only page the VLM had
-            # already OCR'd was dropped here because get_physical_page_text
-            # returned empty, silently discarding the cached text → 0 chunks.
             from app.api.pdf_processing.stage_1_layout_precompute import (
                 page_text_from_layout_regions,
             )
@@ -281,15 +264,6 @@ async def process_product_chunking(
                 os.unlink(used_temp_path)
     except Exception as e:
         # Do NOT discard what was already extracted.
-        #
-        # This used to set `page_chunks_data = []`, throwing away every page the loop
-        # had already read because a LATER page (or the doc.close()) raised. The
-        # per-page loop above deliberately isolates page errors and continues; this
-        # outer handler undid that work wholesale, and the function then returned the
-        # ordinary `chunks_created: 0` shape with nothing to distinguish "the extractor
-        # broke" from "this product genuinely has no text". Combined with the
-        # checkpoint path, the product was recorded complete at 0 chunks and never
-        # retried.
         extraction_failed = True
         extraction_error = str(e)
         logger.error(
@@ -454,7 +428,6 @@ async def _classify_and_update_chunks(
             # a real verdict — admin UI / search filters / RPC indexes that key off
             # the column never saw it. Audit incident: job acff9ebb 2026-05-03,
             # 16/16 chunks had column='unclassified' while metadata.chunk_type was
-            # correct on every row.
             supabase.client.table('document_chunks') \
                 .update({
                     'metadata': existing_meta,

@@ -136,8 +136,6 @@ class CreditsIntegrationService:
             # wallet can hold. Sentry is wired at event_level=ERROR (main.py), so logging
             # that at ERROR would raise an event per AI call and bury the cases where money
             # was actually owed and not taken. The aggregatable record is the
-            # `unbilled_reason` COLUMN; see ai_call_logger._record_missing_principal, which
-            # makes the same argument for the same reason.
             log = self.logger.warning if reason == 'below_quantum' else self.logger.error
             log(
                 "⚠️ UNBILLED (%s) user=%s op=%s model=%s credits=%.4f: %s",
@@ -404,17 +402,7 @@ class CreditsIntegrationService:
         metadata: Optional[Dict[str, Any]] = None,
         module_slug: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        Debit credits for external (non-AI) per-unit service operations.
-
-        Twilio, Apollo, Hunter.io, ZeroBounce, Firecrawl (edge variant), and the metered
-        MIVAA image endpoints.
-
-        `calculate_external_service_cost` RAISES for a service it does not know — the
-        finding's "a missing pricing row returns 0" reading is wrong, and that path already
-        surfaced as an error. What did silently succeed with a zero debit was `units <= 0`
-        and any price that rounded away; both are now recorded as unbilled.
-        """
+        """Debit credits for external (non-AI) per-unit service operations."""
         if units is None or units <= 0:
             return await self._unbillable(
                 user_id, workspace_id, operation_type, service_name,
@@ -586,18 +574,7 @@ class CreditsIntegrationService:
         user_id: str,
         workspace_id: Optional[str] = None,
     ) -> Optional[float]:
-        """Total credits this user can spend right now: workspace pool + personal balance.
-
-        Read-only; reserves nothing. Exists so a paid pipeline can refuse to START rather than
-        discovering it is unfunded one debit at a time. Every debit_credits_* method above runs
-        AFTER its upstream call, so a failed debit is money already spent — the log says
-        "UNBILLED" and that is all it can do. (invariant 10, audit #286)
-
-        Returns None when the balance cannot be read. Callers MUST treat None as "unknown,
-        proceed", never as "empty, block": a transient RPC failure must not stop paying
-        customers from processing documents. The failure being removed is unbounded spend by an
-        account with zero credits, not one job on a flaky read.
-        """
+        """Total credits this user can spend right now: workspace pool + personal balance."""
         try:
             resp = self.supabase.client.rpc(
                 'get_available_credits',

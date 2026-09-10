@@ -53,20 +53,7 @@ def _load_own_doc(
     ctx: WorkspaceContext,
     supabase_client: SupabaseClient,
 ) -> Dict[str, Any]:
-    """Fetch a kb_doc and prove the CALLER's workspace owns it, or 404.
-
-    Issue #15: `GET`/`PATCH`/`DELETE /api/kb/documents/{doc_id}` and the two
-    attachment readers took a doc_id straight off the path and queried it with the
-    service-role client — no workspace predicate anywhere. The audit asked whether
-    those routes were shadowed by a gated twin the way `management_routes.py` is.
-    They are NOT: `/api/kb` is a prefix no other router declares, so they were live,
-    and any authenticated member of ANY workspace could read, edit or delete another
-    tenant's KB document by id. MIVAA holds no RLS backstop (service-role client), so
-    this predicate is the only thing between the two tenants.
-
-    404 rather than 403 on mismatch, per invariant 1 — a 403 confirms the id exists
-    and turns the endpoint into an existence oracle.
-    """
+    """Fetch a kb_doc and prove the CALLER's workspace owns it, or 404."""
     _require_uuid(doc_id)
     caller_ws = getattr(ctx, "workspace_id", None)
     if not caller_ws:
@@ -93,7 +80,6 @@ def _load_own_doc(
 # `caller` field. Fixing MV2-12 by adding another private copy is what prompted this
 # extraction. The one implementation is `resolve_kb_caller` in
 # app/services/kb/kb_access.py, and it now also clamps the widening request that the
-# rag path was honouring unchecked.
 
 
 # ============================================================================
@@ -206,21 +192,7 @@ async def _upsert_kb_document(
     workspace_id: Optional[str],
     user_id: Optional[str] = None,
 ) -> KBDocResponse:
-    """Create-or-update a KB doc against an ALREADY-RESOLVED workspace_id.
-
-    MV2-15: `create_kb_document_from_pdf` used to finish with
-    `await create_kb_document(create_request, supabase_client)` — calling the route
-    function directly, two positional args, so `current_user` kept its DEFAULT value,
-    which is the `Depends(get_current_user)` marker object itself. That object was then
-    handed to `resolve_workspace_id`, which reads `.get("sub")` off it. FastAPI only
-    resolves dependencies for requests it ROUTES; a direct call gets the marker.
-    `/api/kb/documents/from-pdf` therefore failed 100% of the time, silently, in the
-    body of a `try` that reported it as a generic 500 — the third endpoint in this repo
-    found sitting at a 100% failure rate with nothing complaining.
-
-    The workspace is resolved by the CALLER and passed in, so this helper cannot be
-    invoked without one having been bound to a verified identity first.
-    """
+    """Create-or-update a KB doc against an ALREADY-RESOLVED workspace_id."""
     try:
         if request.price_doc_type is not None and request.price_doc_type not in PRICE_DOC_TYPES:
             raise HTTPException(
@@ -307,13 +279,6 @@ async def _upsert_kb_document(
             text_embedding = embedding_result.get("embeddings", {}).get("text_1024")
             embedding_status = "success"
             # Provenance comes from the EMBEDDER, not from a literal.
-            #
-            # This row used to be stamped `"text-embedding-3-small"` unconditionally,
-            # written next to a vector that Voyage produced. The column exists so a model
-            # change can be found across the collection — a hardcoded name means the one
-            # query it was added for returns the exact wrong set. (The 677 live rows all
-            # read `voyage-4`, so this was latent rather than realised: the literal was
-            # wrong for whatever the next doc created through THIS path would have been.)
             embedding_model = (
                 embedding_result.get("models", {}).get("text")
                 or embedding_result.get("model")
@@ -852,12 +817,6 @@ class SearchKBRequest(BaseModel):
     # and its access-level gate — one of which was documented, in the API contract,
     # as "Overrides category access gating". Any authenticated member could send
     # `{"is_admin_caller": true}` and read the workspace's private KB.
-    #
-    # They are gone rather than defaulted-and-ignored: a field the published OpenAPI
-    # still advertises is one a caller still sends, and the next person to wire it up
-    # re-opens the hole. Both values are now derived server-side in the handler from
-    # `workspace_members.role`. Pydantic ignores unknown keys, so an existing caller
-    # that still sends them keeps working — it just no longer gets to decide.
     match_threshold: float = Field(default=0.5, description="Minimum similarity for semantic search", ge=0.0, le=1.0)
 
 
@@ -895,81 +854,13 @@ async def search_kb_documents(
     request: SearchKBRequest,
     supabase_client: SupabaseClient = Depends(), current_user: dict = Depends(get_current_user)
 ) -> SearchKBResponse:
-    """
-    Search knowledge base documents: semantic (vector) or full_text (ILIKE).
-
-    **Architecture:**
-    1. Frontend calls MIVAA API with search query
-    2. MIVAA generates the query embedding through Voyage (the platform's only embedder)
-    3. MIVAA calls Supabase `kb_match_docs()` RPC function with query embedding
-    4. Supabase performs vector similarity search using pgvector `<=>` operator
-    5. Returns ranked results with similarity scores
-
-    **Why MIVAA Backend is Required:**
-    - Document embeddings already stored in `kb_docs.text_embedding` (generated when doc created)
-    - Search only generates ONE embedding (for the query)
-    - Cannot generate embeddings in Supabase RPC (requires an outbound API call)
-    - Uses pgvector's optimized cosine similarity for fast search
-
-    **Search Types:**
-    - **semantic**: Vector similarity using pgvector cosine distance
-      - Generates the query embedding via Voyage (kb_query_vector, input_type=query)
-      - Compares against stored document embeddings
-      - Returns results with similarity scores (0.0 - 1.0)
-      - Minimum threshold: 0.5
-    - **full_text**: ILIKE-based keyword matching
-      - Searches title and content fields, newest first (no relevance ranking)
-      - Case-insensitive
-    - **hybrid**: REFUSED with 400. `kb_search_docs` takes `search_type` and never reads
-      it, so the "weighted scoring" this docstring used to promise never existed — the
-      mode was ILIKE-by-created_at under another name. The admin SearchInterface fuses
-      `kb_keyword_search` + semantic client-side; the agent path fuses inside the
-      `kb_hybrid_doc_chunks` RPC.
-
-    **Example Request:**
-    ```json
-    {
-      "workspace_id": "uuid",
-      "query": "sustainable wood materials",
-      "search_type": "semantic",
-      "limit": 20
-    }
-    ```
-
-    **Example Response:**
-    ```json
-    {
-      "results": [
-        {
-          "id": "uuid",
-          "title": "Sustainable Wood Guide",
-          "similarity": 0.87,
-          "content": "...",
-          "category_id": "uuid"
-        }
-      ],
-      "search_time_ms": 145.3,
-      "total_results": 5
-    }
-    ```
-    """
+    """Search knowledge base documents: semantic (vector) or full_text (ILIKE)."""
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
 
     # MV2-12: derive the read scope from who the caller IS, not from what they sent.
     # `include_private` and the access-level list are the same gate expressed twice, so
     # they are resolved together and once — a non-admin cannot widen either.
-    #
-    # Both derivations now come from app/services/kb/kb_access.py, shared with
-    # /api/rag/search/knowledge-base. This endpoint used to keep private copies of
-    # both, which is how its query vector ended up built in "document" mode while the
-    # sibling built its in "query" mode against the same document-side vectors.
-    #
-    # per_doc_agent_gate=False: this route runs `kb_match_docs`, which — unlike the
-    # agent path's `kb_match_doc_chunks` — applies NO per-doc `allowed_agents` or
-    # category access_level gate. `include_private` is therefore the only thing between
-    # a non-admin and private content here, so it must track admin-ness rather than
-    # following the agent path's "private just means unpublished" rule.
     caller = await resolve_kb_caller(supabase_client, current_user, None, workspace_id)
     kb_scope = resolve_kb_access_scope(
         supabase_client, str(workspace_id), caller, request.query,

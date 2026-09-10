@@ -161,17 +161,7 @@ class JobProgressMonitor:
                 sentry_sdk.capture_exception(e)
                 
     async def _report_status(self):
-        """Report detailed status to logs and Sentry.
-
-        Source of truth: `background_jobs.stage_history` JSONB. The
-        in-memory `self.stage_history` only sees top-level orchestrator
-        transitions (product_discovery → quality_enhancement etc.) and
-        misses the per-product stage events (pdf_extracted, chunks_created,
-        images_classified, product_created) that get appended directly
-        via `append_stage_history()` from the per-product loop. Query DB
-        every minute so the report matches reality instead of looking
-        permanently stuck on "1/9 stages".
-        """
+        """Report detailed status to logs and Sentry."""
         time_in_current_stage = (datetime.utcnow() - self.current_stage_start).total_seconds()
         total_time = sum(s["duration_seconds"] for s in self.stage_history) + time_in_current_stage
 
@@ -295,10 +285,6 @@ class JobProgressMonitor:
                 # Suppress the "stuck" alert while the job is inside a KNOWN long
                 # operation it declared via current_slow_operation (Stage 1.5,
                 # discovery, Stage 3 set it with an expected_max_seconds budget).
-                # This is the same signal the auto-recovery cron honors — a 140-page
-                # Stage 1.5 legitimately sits in "initializing" for ~15-20 min. Only
-                # suppress while within 1.5× the declared budget, so a genuinely-hung
-                # op still surfaces eventually.
                 if should_fire and isinstance(db_slow_op, dict) and db_slow_op.get("operation"):
                     try:
                         _started = db_slow_op.get("started_at")

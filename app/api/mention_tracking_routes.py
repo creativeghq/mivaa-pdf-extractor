@@ -1,21 +1,4 @@
-"""
-Public Mention Tracking API — /api/v1/mentions/track/*
-
-External projects authenticate with an `api_keys` Bearer token, register
-tracked mention subjects (brand / keyword / product name), and control
-the refresh cadence.
-
-Mirror of `tracked_queries_routes.py` for mention monitoring. Uses the
-same `authenticate_api_key` dependency so api_keys with the Bearer prefix
-`kai_*` are accepted exactly the same way as the price-tracking flow.
-
-Routing:
-  api_key_id NOT NULL  → external API consumer (this file)
-  api_key_id IS NULL   → internal product/brand flow (mention_monitoring_routes.py)
-
-Deleting the api_key CASCADEs out every tracked subject + mention history
-tied to it (enforced at the DB level via ON DELETE CASCADE).
-"""
+"""Public Mention Tracking API — /api/v1/mentions/track/*"""
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -532,18 +515,7 @@ async def get_opportunities(
     body: Optional[OpportunitiesRequest] = None,
     ctx: ApiKeyContext = Depends(authenticate_api_key),
 ):
-    """Generate content + outreach opportunities from existing mention data.
-
-    Returns a ranked list of typed opportunities the user can act on:
-      - trending_topic        (write a post on a recurring theme)
-      - outlet_pitch          (warm outlets to pitch)
-      - keyword_opportunity   (high-volume related keywords)
-      - pao_question          (questions readers are asking)
-      - author_relationship   (warm author contacts)
-      - sentiment_response    (negative mentions to address)
-
-    Read-only — does not mutate state or trigger a refresh.
-    """
+    """Generate content + outreach opportunities from existing mention data."""
     sb = get_supabase_client().client
     _check_owner(sb, tracking_id=tracking_id, api_key_id=ctx.api_key_id)
     body = body or OpportunitiesRequest()

@@ -1,16 +1,4 @@
-"""
-Progress tracking service for PDF processing jobs.
-
-This service provides real-time progress tracking, page-level status monitoring,
-database integration status, and automatic persistence to Supabase.
-
-Features:
-- In-memory tracking for fast access
-- Automatic database persistence (background_jobs + job_progress tables)
-- Support for new 5-stage pipeline (discovery, extraction, chunking, images, products)
-- Page-level status tracking
-- Error and warning tracking
-"""
+"""Progress tracking service for PDF processing jobs."""
 
 import asyncio
 import logging
@@ -115,21 +103,12 @@ class ProgressTracker:
     # `_last_history_stage` is the stage whose `in_progress` event has already been
     # written, so `_sync_to_database` emits one per TRANSITION rather than one per
     # progress tick (stage_history trims to 100 — flooding it evicts the boundaries).
-    # `_last_real_stage` is the last NON-terminal stage, kept because the terminal
-    # paths overwrite `current_stage` with COMPLETED/FAILED before the closing event
-    # is appended, which made every terminal event name a synthetic stage instead of
-    # the real one that ended. "Job failed during FAILED" answers nothing.
     _last_history_stage: Optional[str] = field(default=None, init=False, repr=False)
     _last_real_stage: Optional[str] = field(default=None, init=False, repr=False)
 
     # Heartbeat monitoring
     # Note (2026-05-23 round-3 cleanup): the asyncio-based heartbeat loop
     # (start_heartbeat / stop_heartbeat / _heartbeat_task / _heartbeat_running)
-    # was deleted. JobHeartbeat (services/tracking/job_heartbeat.py) is now
-    # the sole liveness mechanism — runs in a thread so it survives blocked
-    # event loops. `update_heartbeat()` below is retained as a one-shot tick
-    # for callers that want to refresh `last_heartbeat` synchronously during
-    # long sync work (product_processor, product_discovery_service).
     last_heartbeat: Optional[datetime] = None
     last_db_sync: Optional[datetime] = None
     MIN_SYNC_INTERVAL: float = 2.0  # Minimum seconds between database syncs (reduced from 5.0 for more responsive updates)
@@ -234,13 +213,6 @@ class ProgressTracker:
             # skipped its own history entry. `start_processing()` was one: it moved the
             # job to DOWNLOADING through a bare `_sync_to_database()`, so the FIRST
             # stage of every job emitted no `in_progress` at all. Pipeline convention 9
-            # asks for a boundary event on EVERY stage because "the audit log must show
-            # why a job ended"; a log that can silently omit stages shows a job stuck
-            # mid-stage forever instead.
-            #
-            # The stage now falls back to the enum the tracker is actually in, so
-            # `stage_name` is a finer-grained LABEL (sub_stage) rather than the switch
-            # that decides whether history happens.
             effective_stage = stage or getattr(self.current_stage, 'value', None)
 
             # Remember the last stage that was real work, for the terminal event.
@@ -280,8 +252,6 @@ class ProgressTracker:
             # disagreeing, and a swallowed append let a job complete with no audit entry
             # explaining why — the append was best-effort for a record whose entire
             # purpose is to be the reliable one. `update_job_progress_and_append_history`
-            # is the atomic twin of `update_checkpoint_and_append_history`, which
-            # pipeline convention 3 names as the pattern.
             self._supabase.client.rpc(
                 'update_job_progress_and_append_history',
                 {
@@ -596,8 +566,6 @@ class ProgressTracker:
             # signal, so `_sync_to_database()` on the very next line wrote the stale
             # in-memory counter and nothing anywhere said so. That is the platform's
             # dominant documented failure ("a number that should be non-zero sitting
-            # at zero forever while nothing complains") occurring inside the function
-            # whose entire purpose is to prevent it.
             if actual_embeddings != self.text_embeddings_generated:
                 logger.warning(
                     f"⚠️ Text embedding count mismatch: tracker={self.text_embeddings_generated}, "
@@ -835,9 +803,6 @@ class ProgressTracker:
                 # parent job but a child task never re-dispatched, its row stayed
                 # at status='processing' forever and the UI kept showing the job
                 # as in-flight even though background_jobs.status='completed'.
-                # Anything still pending/processing at job-completion time is
-                # provably orphaned — flip it to 'failed' so admin metrics + UI
-                # presence checks reflect reality.
                 try:
                     self._supabase.client.table('product_processing_status')\
                         .update({
@@ -1009,7 +974,6 @@ class ProgressTracker:
                         # for any reason doesn't see a stale "fresh" timestamp
                         # belonging to a dead job. complete_job already clears
                         # this; fail_job was not, leaving the marker live on
-                        # failed rows.
                         'current_slow_operation': None,
                     })\
                     .eq('id', self.job_id)\
@@ -1184,20 +1148,7 @@ class ProgressTracker:
             logger.error(f"❌ Failed to update heartbeat for job {self.job_id}: {e}")
 
     def _append_terminal_event(self, status: str, data: Dict[str, Any]) -> None:
-        """Append the boundary event that closes a job's audit log.
-
-        Every stage emits ``in_progress`` on entry via ``_sync_to_database``, but
-        the terminal paths (``complete_job``, ``fail_job``,
-        ``CheckpointRecoveryService._mark_job_failed``) used to flip
-        ``background_jobs.status`` with no closing event at all. Pipeline
-        convention 9 asks for ``in_progress`` at start AND ``completed``/
-        ``failed`` at end precisely so the audit log can answer why a job ended;
-        without this the history just stops mid-stage and the reason lives only
-        in a column that the next write can overwrite.
-
-        Best-effort and synchronous: it runs immediately before the status write,
-        so the audit entry can never be newer than the status it explains.
-        """
+        """Append the boundary event that closes a job's audit log."""
         if not (self._db_sync_enabled and self._supabase):
             return
         try:
@@ -1232,24 +1183,7 @@ class ProgressTracker:
         operation: str,
         expected_max_seconds: int,
     ) -> None:
-        """Mark the job as inside a known long-running stage.
-
-        Writes ``current_slow_operation = {operation, started_at,
-        expected_max_seconds}`` so auto-recovery cron can suppress
-        false-positive "stuck job" recovery while a legitimate slow op
-        is in flight (per the post-2026-05-01 pipeline convention).
-
-        Nest-safe: in parallel mode, multiple products may each enter Stage 3
-        concurrently. Each set_slow_operation call appends a marker to an
-        in-memory stack; the DB sees the most-recent marker. Clear pops the
-        matching key from the stack and writes the next-most-recent (or NULL).
-        This closes the per-job-not-per-product collision flagged in the
-        2026-05-23 audit — product B's clear() no longer wipes product A's
-        active marker.
-
-        Always paired with `clear_slow_operation()` once the op completes
-        or fails.
-        """
+        """Mark the job as inside a known long-running stage."""
         if not (self._db_sync_enabled and self._supabase):
             return
         # Initialize lazily so we don't fight __init__ signature changes.
@@ -1278,16 +1212,7 @@ class ProgressTracker:
             logger.warning(f"⚠️ Failed to set current_slow_operation for {self.job_id}: {e}")
 
     async def clear_slow_operation(self, operation: Optional[str] = None) -> None:
-        """Clear the in-flight slow-op marker.
-
-        If `operation` is provided, only the matching stack entry is removed.
-        Otherwise the most-recent entry is popped (legacy call sites without
-        the operation kwarg).
-
-        After removal, the DB field reflects the next-most-recent marker on
-        the stack (so a longer-running parallel sibling stays protected),
-        or NULL when the stack is empty.
-        """
+        """Clear the in-flight slow-op marker."""
         if not (self._db_sync_enabled and self._supabase):
             return
         if not hasattr(self, '_slow_op_stack'):

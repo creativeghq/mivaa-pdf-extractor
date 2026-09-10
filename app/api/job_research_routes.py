@@ -1,27 +1,4 @@
-"""
-Job Research API Routes — internal flow (session JWT) + cron endpoints.
-
-Endpoint inventory:
-  POST   /api/v1/job-research/track                      — create tracked_job
-  GET    /api/v1/job-research/track                      — list user's tracked_jobs
-  GET    /api/v1/job-research/track/{id}                 — read one
-  PUT    /api/v1/job-research/track/{id}                 — update
-  DELETE /api/v1/job-research/track/{id}                 — soft delete (deactivate)
-
-  POST   /api/v1/job-research/track/{id}/refresh         — re-run discovery
-  GET    /api/v1/job-research/track/{id}/listings        — list job_listings rows
-  GET    /api/v1/job-research/track/{id}/summary         — aggregate snapshot
-  POST   /api/v1/job-research/track/{id}/exclude         — add exclusion (url/domain/company)
-  GET    /api/v1/job-research/track/{id}/exclusions      — list exclusions
-  DELETE /api/v1/job-research/exclusions/{exclusion_id}  — remove exclusion
-
-  POST   /api/v1/job-research/listings/{listing_id}/action  — mark saved/applied/dismissed
-
-  POST   /api/v1/job-research/cron-refresh               — internal cron tick (x-cron-secret)
-  POST   /api/v1/job-research/cron-digest                — digest tick (x-cron-secret)
-
-External (api_key) flow lives in `job_tracking_routes.py` (added in a follow-up).
-"""
+"""Job Research API Routes — internal flow (session JWT) + cron endpoints."""
 
 from __future__ import annotations
 
@@ -280,19 +257,7 @@ async def refresh_tracked_job(
     force_full_discovery: bool = Query(False),
     user: User = Depends(get_current_user),
 ):
-    """Session-JWT twin of `POST /api/v1/job-tracking/{id}/refresh`.
-
-    Both doors run the identical paid fan-out — DataForSEO SERP, Perplexity Sonar, Firecrawl
-    career-page scrapes, Haiku classification. The partner door has debited 5 credits up front
-    since it shipped; this one debited nothing, so the cheapest way to spend the operator's
-    DataForSEO/Firecrawl/Anthropic budget was to press "Refresh" in the app rather than call the
-    API. Two doors onto one paid operation, one of which checks — the shape that keeps costing
-    this platform money.
-
-    Metering mirrors the partner route (invariant 10: debit BEFORE the upstream call, refund
-    when the work could not be delivered), with one addition — the debit passes `workspace_id`,
-    so a funded workspace pool pays before the member's personal balance.
-    """
+    """Session-JWT twin of `POST /api/v1/job-tracking/{id}/refresh`."""
     user_id = user.get("sub")
     if not user_id:
         # No payer means no debit. Refuse rather than fall through to a free paid refresh —
@@ -516,20 +481,6 @@ def _verify_cron_secret(x_cron_secret: Optional[str] = Header(default=None)) -> 
 
 # ─── Sites configuration (operator-curated list of job-board sites) ──────
 # These endpoints back the hidden admin page at /admin/knowledge-base/job-sources.
-#
-# The write routes take `require_admin` (#21 M8-1). They used to take only
-# `get_current_user` under a comment claiming "RLS on `job_research_sites` enforces
-# admin-only writes". The policy is real and well-formed — and void here, because MIVAA
-# connects as service role, which bypasses row-level security entirely. So any
-# authenticated user could add, alter or delete rows in a PLATFORM-WIDE operator-curated
-# list that feeds scheduled discovery defaults for everyone.
-#
-# The tell was in the error messages: both 404s said "no permission (admin-only writes)"
-# — written by someone who believed a check was happening one layer down. "RLS enforces
-# X" is never a valid justification in this codebase; there is no connection here for it
-# to apply to.
-#
-# Reads stay open to any authenticated user: the list is operator-curated, not secret.
 
 @router.get("/sites")
 async def list_job_sites(
@@ -586,11 +537,6 @@ async def resync_job_sites_kb_doc(
     """v0.5.1: trigger the KB doc resync. Called by the frontend after it does
     a direct-Supabase CRUD on `job_research_sites`. Cheap (~50ms — one DB
     SELECT + one kb_docs UPDATE). Returns the sections that were touched.
-
-    Admin-only for the same reason as its siblings (#21 M8-1): it rewrites a
-    PLATFORM-WIDE KB document. The direct-Supabase CRUD it follows runs in the browser
-    under the user's own key, where the admin-write policy genuinely applies — so the
-    only legitimate caller of this is already an admin.
     """
     try:
         from app.services.integrations.job_sites_kb_sync import sync_all
@@ -734,7 +680,6 @@ async def cron_refresh(
             # as free provider spend. Failing open is a defensible default for a USER
             # request, where blocking a paying customer is the greater harm; cron is the
             # highest-volume caller here, unattended, and nobody is waiting on it — so a
-            # billing-infrastructure outage must stop the spend, not silently absorb it.
             logger.error(f"job-cron: owner lookup failed — refusing to refresh unmetered: {e}")
             return {
                 "error": "owner_lookup_failed",

@@ -1,13 +1,4 @@
-"""
-Job Health Monitoring API Routes
-
-Provides real-time monitoring of background job health:
-- Live job status and progress
-- Heartbeat monitoring
-- Stuck job detection
-- Performance metrics
-- Health alerts
-"""
+"""Job Health Monitoring API Routes"""
 
 from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any

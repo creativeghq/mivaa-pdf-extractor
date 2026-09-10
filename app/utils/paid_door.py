@@ -1,35 +1,4 @@
-"""One wrapper for "this route spends real money", so the debit cannot drift after the spend.
-
-Invariant 10: debit and rate-limit BEFORE the upstream (LLM / Perplexity / DataForSEO /
-Firecrawl) call, not after; on debit failure, do not perform the work.
-
-Thirteen user-triggered doors in `price_monitoring_routes` and `mention_monitoring_routes`
-entered paid provider work with no checked debit at all (audit #18 M5-3). Each one was
-individually plausible — the callee logs usage to `ai_usage_logs` afterwards, so cost
-telemetry looked healthy while nobody was ever charged. The reference implementation each
-of them should have copied lived in `job_research_routes` as fourteen hand-written lines
-(debit / define `_refund` / try / except-refund / outcome-refund), and hand-copying it
-thirteen more times is how the fourteenth copy ends up subtly different.
-
-So it lives here once:
-
-    async with metered_door(
-        user_id=current_user_id(user), workspace_id=ws,
-        cost=costs.PRICE_OP_CREDIT_COST["refresh"],
-        operation_type="price_monitoring.refresh",
-        debit=costs.debit_credits, refund=costs.refund_credits,
-    ) as paid:
-        outcome = await service.refresh(tq["id"])
-        if outcome.get("status") != "refreshed":
-            paid.refund("nothing was delivered")
-
-* The debit happens before the block runs; insufficient balance raises 402 and the block
-  never executes.
-* An exception inside the block refunds and re-raises.
-* `paid.refund(...)` is idempotent, so the exception path cannot double-refund work a door
-  already refunded itself. That idempotency is the other half of M5-3: without a wrapper,
-  a door that grew a second refund branch would quietly hand back the credit twice.
-"""
+"""One wrapper for "this route spends real money", so the debit cannot drift after the spend."""
 
 from __future__ import annotations
 

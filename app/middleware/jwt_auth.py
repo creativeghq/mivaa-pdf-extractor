@@ -1,16 +1,4 @@
-"""
-JWT Authentication Middleware for Mivaa PDF Extractor Service
-
-This module implements JWT authentication middleware with workspace-aware security
-following the patterns defined in the JWT integration architecture document.
-
-Key Features:
-- JWT token validation with required claims checking
-- Workspace isolation and context extraction
-- Permission-based access control
-- Token blacklist support (optional Redis integration)
-- Security headers and error handling
-"""
+"""JWT Authentication Middleware for Mivaa PDF Extractor Service"""
 
 import logging
 import os
@@ -102,14 +90,6 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # Authorization header and tests `res.ok`. The AI Services row on the health
             # dashboard has therefore read "unhealthy: HTTP 401" for as long as it has
             # existed — a false RED, which is the silent-zero shape with the sign flipped:
-            # nobody chases a light that has never been green.
-            #
-            # Safe to exclude and NOT a bare prefix: matching is segment-boundary, so this
-            # entry covers exactly one path. The handler returns a hardcoded dict of
-            # service names — no DB read, no user data, no spend — which is why it needs
-            # no route-level gate, same as /api/v1/health and /api/system/health above.
-            # The eight sibling routes that DO reach a model keep their
-            # Depends(get_workspace_context) and stay behind the middleware.
             "/api/v1/ai-services/health",
             "/api/system/metrics",
             "/api/packages/status",
@@ -154,22 +134,12 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # no auth). They were always open pre-A1. Excluded to restore them;
             # FOLLOW-UP (#250): send the mk_ key from those callers + add a
             # route-level guard, then remove this line.
-            #
-            # "/api/svbrdf" was here for generate-pbr-maps. That edge function was
-            # deleted and this app registers no SVBRDF router, so the entry authenticated
-            # nothing — it just reserved an unauthenticated prefix that the next route
-            # added under /api/svbrdf/* would silently inherit. Removed 2026-07-31
-            # (audit #304 finding 8). Re-adding a PBR route means giving it its own
-            # Depends(...) guard, not restoring this line.
             "/api/embeddings",            # SLIG/Voyage text+image embeddings (edge callers)
             # Deploy drain hooks — called by CI over SSH with no Supabase JWT, so
             # they cannot pass this middleware. Specific paths only, so the rest of
             # /api/admin (logs, backfills, facets — all called by the admin UI and
             # edge functions) stays JWT-enforced. Both now carry their own
             # fail-closed X-Admin-Token guard (require_deploy_token in api/admin.py);
-            # the #250 follow-up is done. "/api/admin/restart-service" was here too —
-            # a root systemd-restart endpoint with zero callers in either repo and an
-            # unset token; deleted in audit #12 rather than gated.
             "/api/admin/pause-for-deploy",
             "/api/admin/resume-from-deploy",
         ]
@@ -298,8 +268,6 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         # public access silently the day someone added it, which is invariant 5's
         # "never a bare prefix that swallows everything" as a matching-strategy bug
         # rather than a bad entry. Subtree exclusion is still deliberate and intact
-        # for /api/rag, /api/internal, /api/embeddings and /api/jobs; verified that
-        # this changes the verdict for zero existing routes.
         for excluded in self.exclude_paths:
             base = excluded.rstrip("/")
             if path == base or path.startswith(base + "/"):

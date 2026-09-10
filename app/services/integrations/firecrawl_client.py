@@ -1,40 +1,4 @@
-"""
-Shared Firecrawl v2 HTTP client.
-
-Used by:
-- Price monitoring URL verification (`price_monitoring` refresh path)
-- Public price lookup API (`/api/v1/prices/lookup`)
-- Future consumers that need structured extraction from a URL
-
-Design:
-- Accepts a Pydantic model → uses `model_json_schema()` so the extraction
-  schema cannot drift from the code that reads the result.
-- `use_javascript_render=True` opts into a slower path with an explicit
-  wait action for JS-heavy pages (costs slightly more Firecrawl credits).
-- Retry + exponential backoff + credit logging centralized here so every
-  caller gets the same behavior.
-
-SSRF (audit #30 M16-2 / M16-3, invariant 7). `url` reaches this client from stored
-monitoring rows and from partner request bodies, and it used to go straight into the
-request body with no scheme check, no private/loopback/link-local rejection and no DNS
-resolution. Fetching THROUGH a third party relocates the primitive, it does not remove
-it: Firecrawl performs the server-side fetch on MIVAA's behalf, so a URL naming an
-internal host is an internal fetch with an extra hop.
-
-`assert_safe_url` therefore runs immediately before EVERY scrape, not only when the URL
-is written. Two reasons it has to be here rather than at write time:
-
-  * monitoring re-fetches stored URLs on a SCHEDULE, so one write buys a recurring
-    fetch and DNS can be re-pointed at an internal address between the two
-  * Firecrawl follows redirects on the target page and gives us no way to disable it,
-    so a URL that passed validation can still land somewhere else. Validating per
-    fetch is the mitigation we actually control; the redirect hop is not, and saying so
-    is more useful than a comment implying it is covered.
-
-Response sizes are capped on our side for the same reason: the request body has no
-maximum content, markdown or extraction size, and an unbounded `markdown` string flows
-into logs, prompts and the caller's memory.
-"""
+"""Shared Firecrawl v2 HTTP client."""
 
 import asyncio
 import logging

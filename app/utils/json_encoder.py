@@ -14,17 +14,7 @@ from dataclasses import is_dataclass, asdict
 
 
 class CustomJSONEncoder(json.JSONEncoder):
-    """
-    Custom JSON encoder that handles datetime objects and other common types.
-    
-    This encoder automatically converts:
-    - datetime objects to ISO format strings
-    - date objects to ISO format strings  
-    - time objects to ISO format strings
-    - Decimal objects to float
-    - UUID objects to string
-    - Sets to lists
-    """
+    """Custom JSON encoder that handles datetime objects and other common types."""
     
     def default(self, obj: Any) -> Any:
         """

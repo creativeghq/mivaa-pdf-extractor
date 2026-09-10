@@ -1,32 +1,4 @@
-"""
-Auto-canonicalizing facet system.
-
-Every ingest path (PDF Stage 4, XML supplier import, web scrape, background
-agents, catalog candidate promote) routes raw facet values through this single
-chokepoint before products.attributes is written.
-
-Pipeline:
-  L0  Upstream LLM prompt rule ("return values in English") — implemented in the
-      prompts themselves; this module assumes most values arrive in English but
-      handles the residual non-English values via L0.5 below.
-  L0.5 Haiku pretranslate (facet_translator) — only when the value contains
-       non-ASCII characters. Batched per canonicalize_product call so the
-       Haiku cost is one HTTP request per product regardless of N values.
-       ASCII-only values bypass entirely.
-  L1  Deterministic string normalize (NFKC, lowercase, whitespace/separator
-      collapse). Pure function, no I/O.
-  L2  Voyage multilingual embedding + cosine cluster vs existing
-      facet_canonical_values rows. Threshold 0.92 (cross-lingual auto-merge).
-
-Optimisations:
-  * Diff-before-canonicalize: when canonicalising an existing product we read
-    its current attributes_raw and skip pairs already seen, so re-ingest is
-    near-free on stable products.
-  * Batch RPC: resolve_facet_values_batch handles N values in one DB round-trip.
-
-Threshold is locked at 0.92. products.attributes_raw is lossless — re-canonicalize
-any time by replaying the raw arrays.
-"""
+"""Auto-canonicalizing facet system."""
 
 from __future__ import annotations
 
@@ -87,13 +59,6 @@ class CanonicalizedAttributes:
     attributes_raw: Dict[str, List[str]]    # facet -> raw values seen (cumulative across runs)
     resolutions: List[FacetResolution]
     # 'ok' | 'degraded' — whether the canonical map is TRUSTWORTHY, not just present.
-    #
-    # Every failure path here degrades to empty: a Voyage batch-embed exception becomes
-    # [None] * n, and resolve_facet_values_batch returns [] on any exception. The product
-    # is then written with attributes={} — byte-identical to a product that genuinely has
-    # no canonicalizable facets. During a Voyage or RPC outage that produces a whole
-    # catalog of empty-attribute products with nothing marking them for re-canonicalization,
-    # and no way to tell them apart afterwards. This field is that marker.
     status: str = 'ok'
 
 
@@ -444,12 +409,6 @@ async def resolve_query_term(
     """Query-side canonicalizer. L1 normalize → alias lookup against
     facet_canonical_values. Returns canonical English if known, else the
     L1-normalized form so the filter still matches whatever else is in the DB.
-
-    No embedding cost — query terms either match an existing alias (cheap)
-    or don't (free; we fall back to the normalized form). Uses three safe
-    parameterised lookups instead of one f-string interpolated PostgREST
-    `.or_()` filter so untrusted user terms (Greek words containing quotes,
-    commas, brackets) can't break the query.
     """
     norm = normalize_string(raw_term)
     if not norm:
@@ -502,14 +461,6 @@ def collect_raw_attributes(raw_metadata: Dict[str, Any]) -> Dict[str, List[str]]
     FacetCanonicalizer._collect_pending's whitelist rules.
     """
     # Exactly ONE of these rules applies, never both.
-    #
-    # Loaded: the registry is authoritative. Layering the structural denylist on top of it would
-    # let a hardcoded list silently veto an admin who turned `canonicalize` on for one of its keys.
-    #
-    # Not loaded: this function is very often called from the `except` block of
-    # canonicalize_product_attributes — i.e. the registry load is exactly what failed. Raising
-    # here would replace a degraded-but-complete result with a crash AND lose the lossless raw
-    # map, the one thing this function exists to protect. So it over-captures instead.
     if field_registry.is_loaded:
         def keep(k: str, v: Any) -> bool:
             return v is not None and is_canonicalizable(k)

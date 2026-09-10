@@ -1,31 +1,9 @@
 """Field-level extraction evaluation: precision, recall, F1, hallucination, agreement.
 
-Adopted 2026-09-05 from the GAIK toolkit's `ExtractionEvaluator` and its
-`measuring-extraction` reference, which records the wrong numbers its authors
-published first. The rules that keep a comparison honest, each encoded below:
-
-* **The denominator does not move.** A metric is computed over every (case, field)
-  pair with a non-empty expectation, whether or not anything happened. Averaging a
-  loss rate only over the documents that lost something makes two runs incomparable.
-* **A failed case scores zero and stays in the sample.** Dropping it lets a pipeline
-  raise its own average by crashing on the hardest inputs. A case whose product was
-  never created, or whose extraction is empty, is a row with a failure class, not a
-  missing row.
-* **Failure is a result, not a missing row.** `no_product`, `no_extraction` and
-  `pipeline_failed` all score zero and are three different findings.
-* **Cell agreement and byte agreement say different things.** One repeat returning
-  ``1000.0`` where four returned ``1000`` is cell agreement 1.0 and byte agreement
-  0.6. Both are computed; the first is about quality, the second about whether
-  outputs can be diffed.
-* **Stability alone rewards silence.** A configuration that leaves fields empty is
-  perfectly repeatable. Agreement is reported beside completeness, never alone.
-* **Only fields the page actually carries belong in the expectation.** An expected
-  ``null`` for a field the source system does not record scores a correct ``"KG"``
-  as a mistake. That is a rule for whoever writes the golden case; `strict=False`
-  (the default) does not punish extra extracted fields, because a golden case here
-  is usually a PARTIAL statement of what is on the page.
-
-Pure stdlib. Loaded by path in `tests/unit/test_extraction_eval.py`.
+Only fields the page actually carries belong in the expectation: an expected ``null`` for a field
+the source system does not record scores a correct ``"KG"`` as a mistake. `strict=False` (the
+default) therefore does not punish extra extracted fields, because a golden case here is usually a
+PARTIAL statement of what is on the page.
 """
 
 from __future__ import annotations

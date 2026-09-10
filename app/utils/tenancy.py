@@ -93,17 +93,7 @@ def assert_products_in_document(
     document_id: str,
     workspace_id: str,
 ) -> List[str]:
-    """Raise unless every id in `product_ids` belongs to that document AND workspace.
-
-    Returns the verified ids, so the caller uses the checked list rather than the one it
-    was handed — a check whose result is discarded is a check that can be removed
-    without anything failing.
-
-    Raises rather than filtering. These ids arrive from a pipeline that just created the
-    products from this same document, so a mismatch is a bug or an attempt, not a
-    routine condition. Silently dropping them would attach catalogue knowledge to some
-    products and not others, and report success.
-    """
+    """Raise unless every id in `product_ids` belongs to that document AND workspace."""
     ids = [p for p in (product_ids or []) if p]
     if not ids:
         return []
@@ -141,23 +131,7 @@ def assert_job_tuple(
     document_id: str,
     workspace_id: str,
 ) -> None:
-    """Raise unless `job_id`, `document_id` and `workspace_id` describe one ingestion.
-
-    The seventeenth instance of the two-ids class (#35 M20-3), and it matters more in
-    the orchestrator than in a leaf service: a mismatched tuple there does not corrupt
-    one row, it misroutes an ENTIRE ingestion — products written under the wrong
-    workspace, another tenant's document marked completed.
-
-    The finding's fix note asks for the tuple to be validated once at entry and the
-    validated workspace threaded through every stage. This does the first half. The
-    second half is a refactor of a 1,800-line function and is deliberately not attempted
-    here — but the check at entry is what makes the parameter trustworthy, and rethreading
-    it changes nothing about a tuple that has already been proven coherent.
-
-    `background_jobs.document_id` and `.workspace_id` are nullable, so they are compared
-    WHERE PRESENT and their absence is logged rather than treated as agreement. The
-    document/workspace pair is always verified, which is the half that binds the tenant.
-    """
+    """Raise unless `job_id`, `document_id` and `workspace_id` describe one ingestion."""
     if not job_id:
         raise TenancyViolation("job_id is required")
 

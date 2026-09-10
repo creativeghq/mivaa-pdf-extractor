@@ -1,38 +1,4 @@
-"""
-Price Monitoring API Routes — internal product flow.
-
-Thin wrapper over `tracked_queries_service`. Every internal product that gets
-enrolled becomes a `tracked_queries` row with `api_key_id IS NULL` and
-`product_id NOT NULL`. The legacy `competitor_sources` / `price_history` /
-`price_monitoring_products` tables were dropped 2026-05-01; everything routes
-through `tracked_query_price_history` now.
-
-Endpoint surface:
-  POST   /products/{product_id}/track          — get-or-create + refresh
-  DELETE /products/{product_id}/track          — deactivate (soft delete)
-  GET    /products/{product_id}                — read tracked_query summary
-  POST   /products/{product_id}/refresh        — force refresh
-  GET    /products/{product_id}/sources        — latest retailer rows (split)
-  GET    /products/{product_id}/history        — historical price rows
-  POST   /products/{product_id}/exclude        — exclude URL/domain
-  POST   /products/{product_id}/include        — undo exclusion
-  GET    /products/{product_id}/exclusions     — list exclusions
-  POST   /products/{product_id}/verify         — re-verify URLs (Firecrawl)
-  POST   /products/{product_id}/url-only       — add pinned URL (custom monitoring)
-  GET    /products/{product_id}/url-only       — list pinned URLs
-
-Cross-flow endpoints (also serve external API consumers):
-  POST   /market-check                         — stateless market scan
-  POST   /classifier-correction                — feed few-shot classifier loop
-  POST   /promote-family-row                   — admin override (sticky)
-  POST   /demote-to-family                     — undo promotion
-  POST   /tracked-queries/cron-refresh         — cron-target batch refresh
-  POST   /broadcast-api-announcement           — admin email broadcast
-
-Legacy aliases kept for short-term frontend compatibility:
-  /start, /stop, /check-now, /discover, /status/{product_id},
-  /history/{product_id}, /sources/{product_id}
-"""
+"""Price Monitoring API Routes — internal product flow."""
 
 import logging
 import os

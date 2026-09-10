@@ -1,26 +1,4 @@
-"""Guard: the text half of material visual search never reads across tenants (M3-1, #16).
-
-`_search_by_text_description` queried `products` and `document_images` on the
-service-role client with no tenant predicate, while the VECS half of the very
-same function built its filter from `request.workspace_id` and failed closed.
-So one search returned tenant-scoped visual hits merged with platform-wide text
-hits — names, descriptions and metadata from every workspace on the platform.
-
-Nothing could catch it from the outside. MIVAA has no RLS backstop by design,
-every row returned is a valid row, and a cross-tenant leak looks exactly like a
-generous search. So the guard has to watch the queries themselves.
-
-There is no "shared catalog" reading that would make this legal. Cross-workspace
-publishing on this platform is an explicit granted act into a separate surface —
-`workspace_catalog_grants`, `catalog_master_products`, `marketplace_listings` —
-never a widened read of `products`, whose `workspace_id` is NOT NULL and whose
-RLS select policy is `is_workspace_member(workspace_id)`.
-
-Static, not runtime: CI installs pytest alone (`deploy.yml`) and these unit
-tests import nothing from `app`, so this parses the source instead. The upside
-is that a NEWLY ADDED query against a tenant table fails this test by default
-rather than needing the guard to be taught about it first.
-"""
+"""Guard: the text half of material visual search never reads across tenants (M3-1, #16)."""
 
 import ast
 import importlib.util

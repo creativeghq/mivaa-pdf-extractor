@@ -1,26 +1,4 @@
-"""Retrieved KB text reaches a model as DATA, and a failed branch says so (mivaa#29).
-
-`app.utils.untrusted_content` is pure stdlib, so unlike most of `app/` it can be
-imported and its BEHAVIOUR checked — not just its shape. That matters here: a delimiter
-is only worth anything if it cannot be forged, and "the marker string appears in the
-file" would not have caught that.
-
-M15-1. A knowledge-base document is a PERSISTENT injection primitive — authored once,
-replayed into every future agent turn that retrieves it. `kb_docs` holds 677 rows and
-retrieval matches CHUNKS (10,161), so the surface is an order of magnitude larger than
-the document count suggests. Four edge-function tools consume these endpoints and every
-one hands the text to a model.
-
-M15-4. Four search branches each caught their own failure and returned nothing, and the
-response carried counts with no per-branch status — so an RPC error, an embedding
-outage or schema drift was indistinguishable from "found nothing". Nobody investigates
-"nothing".
-
-On watching these fail: the 5 source-based cases were run against the pre-fix tree and
-all 5 fired. The 7 behaviour cases exercise `untrusted_content`, which is NEW — there is
-no pre-fix state for them to fail against, and saying so is more useful than implying a
-run that could not have happened.
-"""
+"""Retrieved KB text reaches a model as DATA, and a failed branch says so (mivaa#29)."""
 
 import ast
 import importlib.util

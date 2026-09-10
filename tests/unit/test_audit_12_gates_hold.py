@@ -243,22 +243,6 @@ def test_discovery_rejects_gpt_rather_than_silently_using_claude():
 # ═══════════════════════════════════════════════════════════════════════════
 # Finding 4, as a class rather than a file
 # ═══════════════════════════════════════════════════════════════════════════
-#
-# The check above pins `product_discovery_service`, the one file finding 4 named.
-# That left the same vestigial-OpenAI shape live in three other places, found by
-# looking for the class instead of the file:
-#
-#   * dynamic_metadata_extractor.py held its own module-load OPENAI_API_KEY,
-#     read by nothing
-#   * ai_call_logger carried log_gpt_call + _calculate_gpt_cost — ~100 lines of
-#     OpenAI BILLING path with zero callers
-#   * rag_routes still advertised discovery_model='gpt-vision' in the OpenAPI
-#     description and the endpoint docstring, so a caller following the docs got
-#     a rejection from a model the API told them to use
-#
-# None of it could execute; all of it read as an OpenAI integration. That is what
-# makes a future reader re-raise the refuted Critical, which is the stated reason
-# finding 4 was recorded at all.
 
 def _app_root() -> Path:
     return Path(__file__).resolve().parents[2] / "app"
@@ -308,20 +292,6 @@ def test_the_api_does_not_advertise_a_model_it_rejects():
 # ═══════════════════════════════════════════════════════════════════════════
 # consensus_validator — the second ai_validation classifier
 # ═══════════════════════════════════════════════════════════════════════════
-#
-# The third pass fixed its confidence FLOOR (below LOW_AGREEMENT now returns
-# success=False) and recorded the extraction as "a different fix from
-# document_classifier", which was never made. It is a different fix, but for a
-# sharper reason than invariant 9 alone:
-#
-# consensus compares the extracted VALUES across two models. With both voters
-# returning free text, "The product name is VALENOVA sofa." and "VALENOVA sofa"
-# scored as a disagreement — and worse, `_calculate_agreement` read keys
-# (`name`, `category`, …) that this path's voters never returned at all, so it
-# fell through to comparing the two hardcoded confidences, "0.7" vs "0.95".
-# Agreement was 0.0 on every call. Once the floor landed, that meant
-# success=False on every call. The mechanism was not weak; it was measuring
-# something else.
 
 def _consensus_path():
     return _app_root() / "services" / "ai_validation" / "consensus_validator.py"

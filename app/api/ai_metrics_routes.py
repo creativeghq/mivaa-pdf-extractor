@@ -1,13 +1,4 @@
-"""
-AI Metrics API endpoints.
-
-Provides comprehensive AI usage metrics for monitoring dashboard:
-- Real-time cost tracking
-- Model usage statistics
-- Confidence score distribution
-- Latency metrics
-- Fallback rate tracking
-"""
+"""AI Metrics API endpoints."""
 
 import logging
 from datetime import datetime, timedelta

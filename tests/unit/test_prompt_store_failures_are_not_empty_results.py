@@ -1,31 +1,4 @@
-"""A prompt-store outage is not an empty prompt list (mivaa#28 M14-5, #29 M15-5).
-
-M14-5. Thirteen handlers across three services caught every exception and returned `[]`,
-`None`, `{}` or `False`. So a database outage read as "this workspace has no prompts
-configured", which is a completely different fact and calls for a completely different
-response.
-
-The platform rule is explicit that `PromptNotConfigured` ("add the row") must be
-DISTINGUISHABLE from `PromptStoreUnavailable` ("the database is down"), because the six
-loaders `prompt_registry` replaced returned `None` for both and no caller could react
-correctly to either. That distinction exists in the registry — and every one of these
-handlers erased it one layer up.
-
-It is the same failure this codebase keeps producing in different costumes: `[]` for a
-failed read (#21 M8-5), `""` and `[]` for a failed OCR (#22 M9-7), a filtered-out
-`paddleocr_failed` marker (#25 M12-3), a `0.5` for a comparison that never ran (#25
-M12-1). A plausible empty answer, nothing raised, nothing to see.
-
-M15-5 is the third instance of unbounded batch input on a paid path, after #23 M10-2 and
-the rechunk loop it names. Bounds are generous on purpose: a cap that fires on real usage
-gets raised by the next person who hits it, and then it is not a cap.
-
-WATCHED TO FAIL: run against the pre-fix tree, 15 of 18 cases fired. The three that
-pass both ways pin PREMISES rather than fixes: that the two prompt error types are
-still distinct, that `prompt_registry` itself still refuses to guess, and that
-`all=True` backfill still exists — capping `doc_ids` without it would just move the
-problem onto whoever has 900 docs to rechunk.
-"""
+"""A prompt-store outage is not an empty prompt list (mivaa#28 M14-5, #29 M15-5)."""
 
 import ast
 import re

@@ -1,12 +1,5 @@
-"""
-Pipeline observability helpers — structured Sentry spans and per-job log
+"""Pipeline observability helpers — structured Sentry spans and per-job log
 correlation for the PDF processing pipeline.
-
-The pipeline runs in a FastAPI BackgroundTask, which means the FastAPI
-request scope is gone by the time stages execute. We bridge job_id /
-document_id / product_id into both Sentry transactions and the stdlib
-logging context, so a single grep can follow one job through its full
-lifecycle.
 """
 
 import logging
@@ -52,21 +45,6 @@ class JobContextLogFilter(logging.Filter):
 def install_job_context_filter() -> None:
     """Make sure every log record has job_id/document_id/product_id/pdf_stage
     attrs set BEFORE any formatter runs.
-
-    The previous design only attached this filter to the root logger,
-    which works for records that propagate up the standard Python logging
-    tree — but fails for records emitted by sub-loggers that have their
-    own handlers (uvicorn, sentry, third-party libs running on threads).
-    Those records bypass the root filter, hit a formatter with
-    %(job_id)s in the pattern, and crash with KeyError.
-
-    Observed failure mode: paddleocr_endpoint_manager logs from a worker
-    thread → no filter runs → KeyError: 'job_id' → format error handler
-    re-emits → infinite loop → kernel OOM kill.
-
-    Approach: monkey-patch logging.LogRecord.__init__ so the four attrs are
-    ALWAYS pre-set on every record, including ones created by libraries we
-    don't control. Filter still attached as belt-and-braces.
     """
     root = logging.getLogger()
     if not any(isinstance(f, JobContextLogFilter) for f in root.filters):

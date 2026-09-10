@@ -22,16 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class ProductProgressTracker:
-    """
-    Tracks processing progress for individual products.
-    
-    Provides methods to:
-    - Initialize product tracking
-    - Update product stage
-    - Mark product complete/failed
-    - Get product status
-    - Get job summary
-    """
+    """Tracks processing progress for individual products."""
     
     def __init__(self, job_id: str, supabase=None):
         self.job_id = job_id
@@ -198,17 +189,7 @@ class ProductProgressTracker:
         stage: ProductStage,
         status: ProductStatus = ProductStatus.PROCESSING
     ) -> None:
-        """
-        Update the current processing stage for a product.
-
-        Terminal-state guard (audit incident 2026-05-03 / job acff9ebb):
-        the wrapper's `asyncio.wait_for` cancels the inner product task externally,
-        but a Supabase HTTP request already in-flight inside that task can still
-        complete *after* the wrapper writes status='failed' via mark_product_failed.
-        That late write would silently revert the row to status='processing'. We
-        therefore filter on status NOT IN ('failed','completed') so any update
-        racing with terminal-state writes is a no-op.
-        """
+        """Update the current processing stage for a product."""
         try:
             update_data = {
                 "status": status.value,

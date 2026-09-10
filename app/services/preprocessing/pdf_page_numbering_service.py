@@ -1,21 +1,4 @@
-"""
-PDF Page Numbering Service
-
-Pre-processing service that adds PHYSICAL page numbers to each PDF page
-BEFORE discovery begins. This ensures:
-1. Every page has a visible, unambiguous page number
-2. Claude and other AI models can reference exact pages
-3. Debugging and verification is straightforward
-4. Page numbers persist through all processing stages
-
-SPREAD-AWARE: For PDFs with 2-page spreads, this service adds TWO page
-numbers per PDF sheet (one on the left half, one on the right half),
-matching the physical/human-readable page numbers used throughout the system.
-
-Example: PDF page 12 (a spread) shows "Page 24" on the left and "Page 25" on the right.
-
-Uses PyMuPDF (fitz) to overlay page numbers in a non-intrusive way.
-"""
+"""PDF Page Numbering Service"""
 
 import asyncio
 import logging
@@ -77,15 +60,7 @@ class PDFPageNumberingService:
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         product_pages: Optional[Dict[str, list]] = None
     ) -> Tuple[str, Dict[str, Any]]:
-        """
-        Add page numbers to all pages of a PDF.
-
-        This is the main entry point for the service. It:
-        1. Checks for existing checkpoint (skip if already done)
-        2. Opens the PDF
-        3. Adds page numbers with progress tracking
-        4. Saves to output path
-        5. Creates checkpoint
+        """Add page numbers to all pages of a PDF.
 
         Args:
             input_path: Path to input PDF

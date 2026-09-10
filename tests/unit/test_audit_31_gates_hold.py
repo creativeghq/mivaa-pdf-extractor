@@ -1,29 +1,4 @@
-"""Guards for the mivaa#31 catalog-extractor fixes (M17-2, M17-3).
-
-`M17-1` (agent-run helpers mutating by bare id) landed in bff2a48 and is guarded in
-`test_audit_28_31_gates_hold.py`.
-
-M17-2. Both extractors wrote model output into `kb_docs` as `status='published'` with no
-review gate, no draft state and no write-side provenance marker. Paired with #29 M15-1
-that is a complete persistent-injection path: a supplier PDF plants instructions once,
-they become a published KB document, and they are replayed into every future agent turn
-that retrieves them.
-
-M17-3. Both asked for JSON in the prompt and repaired the reply by stripping markdown
-fences — part of the #32 class, and the verdict here decides what becomes a KB document.
-
-9 of the 10 cases were watched to fail against the pre-fix tree. The tenth,
-`test_the_legend_extractor_is_still_on_the_ratchet_and_not_pretended_fixed`, passes both
-ways by design — it exists to make the exclusion below deliberate.
-
-NOT covered, and the reason is a decision rather than an omission:
-`catalog_legend_extractor_v2._call_claude` is STILL a free-form parser. Its caller scores
-candidate legend types with `sum(1 for v in r.values() if v not in (None, [], "", {}))`
-— an open-ended dict whose key set is the signal. A forced schema would make that score
-count only declared keys, which is arguably better but is a behaviour change to the
-type-detection heuristic, not a mechanical migration. It stays on the #32 ratchet until
-someone decides what the legend schema should be.
-"""
+"""Guards for the mivaa#31 catalog-extractor fixes (M17-2, M17-3)."""
 
 import ast
 import re
@@ -155,18 +130,6 @@ def test_the_legend_extractor_is_still_on_the_ratchet_and_not_pretended_fixed():
 
 # ───────────────────────────────────────────────────────────────────────────
 # M17-4 — the ids must describe the same thing
-#
-# Sixteenth instance of the two-unchecked-ids class. `documents` read and UPDATED
-# by bare id; `product_ids` taken from the caller and given attachments with no
-# check that they belong to this document or this workspace. MIVAA has no RLS
-# backstop — every call is service role — so the check exists in Python or it does
-# not exist at all (invariant 1).
-#
-# The rule lives in `app.utils.tenancy`, not in these files. It was written inline
-# for #20 M7-5 first; needing it here would have made three copies of a rule whose
-# entire purpose is uniformity, which is how the credit-debit rule reached seven
-# copies with one of them still carrying a bug the others had fixed (#30 M16-1).
-# ───────────────────────────────────────────────────────────────────────────
 
 TENANCY = ROOT / "app" / "utils" / "tenancy.py"
 

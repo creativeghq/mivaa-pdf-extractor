@@ -1,15 +1,4 @@
-"""
-Memory Pressure Monitoring
-
-Monitors system memory usage and prevents OOM crashes by pausing processing
-when memory pressure is high.
-
-Features:
-- Real-time memory monitoring
-- Automatic pause/resume based on thresholds
-- Memory cleanup triggers
-- Logging and alerts
-"""
+"""Memory Pressure Monitoring"""
 
 import psutil
 import asyncio

@@ -1,35 +1,4 @@
-"""
-Background Agent API Routes
-
-Handles long-running agent tasks delegated from Supabase edge functions.
-The edge function fires-and-forgets here when a task exceeds the 25s timeout.
-
-Endpoints:
-  POST /api/agents/run       - Receive delegated agent task, run in background
-  GET  /api/agents/runs/{id} - Get status of a specific run
-  GET  /api/agents/catalog   - List all available agent types
-
-AUTH (audit #24 M11-1). `_require_internal_key` fails CLOSED. The previous form was
-`if expected_key and authorization != ...`, so an unset `MIVAA_API_KEY` short-circuited
-the `and` and ran no check at all — on the route that spends AI credits and writes to
-`products`. A missing env var is not hypothetical here: #16 M3-4 found the Supabase
-client falling back to the anon key when the service-role key is absent, and this
-repository has no startup assertion that either variable is present. The correct
-fail-closed form was already in `catalog_routes._check_secret` and `seo_agent_routes`.
-
-TENANCY (audit #24 M11-2 / M11-3, schema drift #26 M13-1). Both handlers selected the
-first `batch_size` products PLATFORM-WIDE and updated them by product id alone, so one
-tenant's agent run could rewrite another tenant's gold layer. The workspace now comes
-from the `agent_runs` row (falling back to the agent's own workspace), never from the
-request body, and every read and write carries it.
-
-Those handlers were also unreachable: they referenced `material_type`, `tags`,
-`image_url` and `search_keywords`, none of which exist on `products` — they live in the
-`attributes` jsonb, resolved through the facet registry. PostgREST rejected the request
-before any update ran, which is why the unscoped write was latent rather than live. The
-column fix and the workspace predicate land in the SAME change deliberately: correcting
-the columns alone would activate the cross-tenant write in one commit.
-"""
+"""Background Agent API Routes"""
 
 import logging
 import os
@@ -371,18 +340,7 @@ async def _canonicalize_into_attributes(
     source: str,
     workspace_id: str,
 ) -> Optional[Dict[str, Any]]:
-    """Merge `proposed` into the product's attributes through the facet registry.
-
-    Returns the `{attributes, attributes_raw}` update, or None when the
-    canonicalizer degraded. Degraded means "the canonical map is not trustworthy",
-    not "there are no facets" — writing it would be indistinguishable from a product
-    that genuinely has none, which is the silent-zero shape the status flag exists to
-    prevent.
-
-    The merge is done HERE because `CanonicalizedAttributes.attributes` is built from
-    this run's resolutions alone. Writing it wholesale would erase every facet the
-    product already had. `attributes_raw` is already cumulative and is written as-is.
-    """
+    """Merge `proposed` into the product's attributes through the facet registry."""
     from app.services.facets import canonicalize_product_attributes
 
     result = await canonicalize_product_attributes(

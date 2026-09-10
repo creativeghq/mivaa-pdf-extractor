@@ -1,34 +1,4 @@
-"""Two shapes that raise AttributeError on every call, swept out of `app/` (mivaa#20, #22 M9-4).
-
-Both look like working code, both sit inside a `try`, both get swallowed by a broad
-`except`, and both take out precisely the behaviour the surrounding comment promises.
-Neither is visible to the tools already gating this repo: ruff does not resolve
-attributes, and the tests never enter the branch.
-
-    1. `self.X` read but never assigned.
-       `image_processing_service` -> the embedding-failure marker never written, so
-       nothing could tell "never run" from "ran and failed".
-       `material_visual_search_service` -> the outage fallback dead, so an outage
-       presented as a search returning nothing.
-       `search_prompt_service` -> all four search-prompt features (#19 M6-1).
-
-    2. The DOUBLE `.client` unwrap: `x = <expr>.client` and then `x.client.table(...)`.
-       Invisible to the first sweep, because the name IS assigned — it is the second
-       `.client` that is wrong. 16 sites across 3 files: nothing was ever queued for
-       image processing, and saved-search deduplication had never found a duplicate
-       (it raised, printed to stdout, and returned [] — which is exactly what a
-       genuinely unique search looks like).
-
-Both sweeps DERIVE their scope from the tree, so unlike a declared list they cannot
-drift as files are added. Neither has an exemption list, deliberately: the moment one
-exists, the next finding goes into it.
-
-Static analysis, so it is bounded on purpose. A class with a base class, or one that
-calls `setattr(self, ...)`, is skipped — its attributes can come from anywhere. Most of
-this tree is pydantic models, so MORE classes are skipped than examined and that is
-correct rather than a gap; what is pinned instead is a floor on the number actually
-examined, so the sweep cannot quietly narrow itself to nothing.
-"""
+"""Two shapes that raise AttributeError on every call, swept out of `app/` (mivaa#20, #22 M9-4)."""
 
 import ast
 from pathlib import Path

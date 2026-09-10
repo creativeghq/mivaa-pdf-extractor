@@ -1,13 +1,4 @@
-"""
-Comprehensive Error Logging Middleware
-
-Provides centralized error logging with:
-- Structured logging with correlation IDs
-- Request/response context capture
-- Error categorization and severity levels
-- Integration with monitoring systems
-- Performance metrics tracking
-"""
+"""Comprehensive Error Logging Middleware"""
 
 import logging
 import time
@@ -26,16 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class ErrorLoggingMiddleware(BaseHTTPMiddleware):
-    """
-    Middleware for comprehensive error logging and tracking.
-    
-    Features:
-    - Automatic correlation ID generation
-    - Request/response context capture
-    - Error categorization by severity
-    - Performance metrics tracking
-    - Structured logging format
-    """
+    """Middleware for comprehensive error logging and tracking."""
     
     def __init__(
         self,
@@ -96,9 +78,6 @@ class ErrorLoggingMiddleware(BaseHTTPMiddleware):
                     # single largest producer of retention-EXEMPT rows in system_logs - 3,835 of
                     # them, still climbing, and the commonest message is
                     # "GET /term.php - Status: 404": a vulnerability scanner probing for PHP.
-                    # Internet background noise was being preserved forever under a level that
-                    # exists to mean "look at this". Same rule the edge api-logger already
-                    # follows: 4xx are client errors, not bugs, and are never reported.
                     log = logger.warning if response.status_code >= 500 else logger.info
                     log(
                         f"[{correlation_id}] Request failed: {request.method} {request.url.path} "

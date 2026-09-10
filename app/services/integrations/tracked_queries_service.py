@@ -1,31 +1,4 @@
-"""
-Service layer for API-consumer price tracking.
-
-Backs the public /api/v1/prices/track endpoints. External projects use
-their api_keys Bearer token to register tracked queries (product name +
-country + refresh cadence), our cron refreshes them on schedule via
-Perplexity, and they poll or receive results. Deleting the api_key
-cascades out every tracked_queries row and its price history.
-
-Kept separate from the platform's internal price monitoring flow
-(price_monitoring_products + competitor_sources) so the external data
-model can evolve independently without touching catalog products.
-
-SSRF (audit #19 M6-2, invariant 7). The URLs here are STORED and RE-FETCHED ON A
-SCHEDULE, indefinitely — which makes a single accepted write a recurring internal-fetch
-primitive that outlives the session that created it. That is what separates this from
-every other fetch site in the tree, and it is why the guard runs in BOTH places:
-
-  * at WRITE, so a URL naming an internal host is refused at the door rather than
-    living in the table until someone notices
-  * immediately before EVERY re-fetch, because DNS can be re-pointed at an internal
-    address between the write and any of the fetches that follow it
-
-A refusal at re-fetch is recorded as `last_error` and stops that refresh. It must NOT
-disable the row: `assert_safe_url` also raises when resolution fails, so a transient
-DNS outage is indistinguishable from a blocked host, and disabling on it would silently
-retire live monitoring.
-"""
+"""Service layer for API-consumer price tracking."""
 
 import logging
 import re
@@ -375,12 +348,6 @@ class TrackedQueriesService:
         """Return the internal DISCOVERY tracked_query attached to this product,
         if any. At most one exists — enforced by
         `uniq_tracked_queries_internal_product_discovery`.
-
-        The `mode='discovery'` filter is load-bearing, not decoration: a product
-        also owns N `mode='url-only'` siblings (Custom Monitoring pinned URLs)
-        which share its `product_id`. Without the filter this `LIMIT 1` returns
-        an arbitrary row, so `/products/{id}/refresh`, `/track` and the
-        exclusion routes would act on a pinned URL instead of the discovery row.
         """
         res = (
             self.supabase.client.table("tracked_queries")
@@ -504,12 +471,6 @@ class TrackedQueriesService:
         own row so refresh history is per-URL and cadence/exclusions stay
         independent. The internal product can have at most one
         `mode='discovery'` row + N `mode='url-only'` rows.
-
-        The row carries `product_id` like any internal row — the partial unique
-        index `uniq_tracked_queries_internal_product_discovery` is scoped to
-        `mode = 'discovery'`, so the siblings don't compete for it. Refresh
-        takes the Firecrawl-only path in `_refresh_url_only()`; it never runs
-        discovery.
         """
         # Validate at the door. The row that is written here is re-fetched on a
         # schedule forever, so an unchecked write is not one bad fetch — it is a
@@ -556,16 +517,9 @@ class TrackedQueriesService:
     # ────────── Refresh flow ──────────
 
     async def refresh(self, tracking_id: str, force: bool = False) -> Dict[str, Any]:
-        """
-        Run discovery for this tracked query and persist results.
+        """Run discovery for this tracked query and persist results.
         Respects refresh_interval_hours unless force=True.
         Returns {status, results, error?}.
-
-        Two modes, and the split is a cost boundary, not a detail:
-          - `mode='url-only'` (Custom Monitoring) → `_refresh_url_only()`.
-            One Firecrawl scrape of the pinned URL. No Perplexity, no
-            DataForSEO, no marketplaces, no Haiku classifier.
-          - everything else → the full discovery pass below.
         """
         tq = await self.get(tracking_id)
         if not tq:
@@ -621,10 +575,6 @@ class TrackedQueriesService:
         # Option 2: domain pinning. If the caller has saved preferred retailer
         # domains, Perplexity's search_domain_filter forces those to be probed.
         # verify_prices controls the Firecrawl verification pass (default True).
-        # First refresh = double-read verification pass to catch transient /
-        # A/B-tested prices. Subsequent refreshes single-read. We flip the
-        # marker AFTER a successful refresh so a crash mid-run doesn't lose
-        # the chance to double-read.
         is_first_refresh = not bool(tq.get("first_refresh_verified"))
 
         # Pull known retailer domains from history so Perplexity can prioritize
@@ -736,18 +686,7 @@ class TrackedQueriesService:
         )
 
     async def _refresh_url_only(self, tracking_id: str, tq: Dict[str, Any]) -> Dict[str, Any]:
-        """Refresh a Custom Monitoring row: scrape the one pinned URL.
-
-        1 Firecrawl credit, no LLM call. The user picked the exact page, so
-        there is nothing to discover and no identity to classify — the hit is
-        stamped `match_kind='exact'` so it feeds the chart, the rolling median
-        and the alerts like any other verified retailer row.
-
-        A page that loads but yields no price is still persisted, with
-        `verified=false` and a note. Pipeline convention #1: an explicit
-        failure marker beats an empty return, and `_select_cheapest` skips
-        null-price rows so the `current_*` cache keeps its last good value.
-        """
+        """Refresh a Custom Monitoring row: scrape the one pinned URL."""
         start = datetime.now(timezone.utc)
         pinned = (tq.get("pinned_url") or "").strip()
         if not pinned:
@@ -1151,16 +1090,9 @@ class TrackedQueriesService:
         *,
         urls: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """
-        Re-verify the latest results — re-fetch each URL via Firecrawl, refresh
+        """Re-verify the latest results — re-fetch each URL via Firecrawl, refresh
         the price + verified flag, and write the changes back to the same
         refresh_run_id rows in `tracked_query_price_history`.
-
-        Different from /refresh — does NOT call Perplexity / DataForSEO /
-        marketplace adapters; only re-runs Firecrawl verification on URLs we
-        already have. Cheaper (1 Firecrawl credit per URL, no LLM cost) and
-        useful when a partner sees a stale 'verified=false' row and wants to
-        check if the page is back up.
 
         Args:
             tracking_id: target tracked query
@@ -1359,15 +1291,7 @@ class TrackedQueriesService:
         return kept
 
     async def latest_results_split(self, tracking_id: str) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Same as latest_results but returns two arrays:
-          {
-            "results":         exact + variant + unverifiable rows (the tracked product),
-            "family_results":  family rows (similar products in the same series — inert),
-          }
-        Family rows never feed the chart/median/alerts. The UI renders them
-        in a collapsed "Similar Products in this series" section.
-        """
+        """Same as latest_results but returns two arrays:"""
         rows = await self.latest_results(tracking_id)
         primary: List[Dict[str, Any]] = []
         family: List[Dict[str, Any]] = []
@@ -1404,15 +1328,6 @@ class TrackedQueriesService:
         """Used by the cron-refresh admin escape-hatch endpoint. Returns
         INTERNAL-flow active queries whose `next_check_at` is in the past
         (volatility-based cadence — set by the SQL helper after each refresh).
-
-        Rows that predate the cadence column have next_check_at backfilled
-        by the migration; new rows get it set on first refresh.
-
-        Class #4 + money-leak guard: filter on `api_key_id IS NULL` so
-        external API consumers (`api_key_id NOT NULL`) are NEVER refreshed
-        by our cron path. Per CLAUDE.md / Price Monitoring v3, external
-        partners pay per call and control their own cadence — unsolicited
-        refreshes here would surprise per-call billing.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
         candidates = (

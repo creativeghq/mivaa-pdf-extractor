@@ -1,15 +1,4 @@
-"""Guards for the fixes in issue #15.
-
-One test per defect that a typecheck cannot see and no integrity probe can reach —
-which, in this repo, is most of them. Source/AST based so they run in about a second and
-therefore actually run.
-
-Scoping note, since #15's headline finding was about exactly this: where a check CAN be
-expressed over the whole tree it is (`test_no_kb_route_reads_by_id_without_ownership`
-walks every route in the file rather than naming the five that were broken). Where it
-genuinely pins one call site, the test says so in its own docstring instead of implying
-breadth it does not have.
-"""
+"""Guards for the fixes in issue #15."""
 
 from __future__ import annotations
 
@@ -78,16 +67,7 @@ def test_management_routes_is_gone():
 
 
 def test_no_kb_route_reads_by_id_without_ownership():
-    """EVERY /api/kb handler taking an id must prove the caller's workspace owns it.
-
-    Scoped to the whole file, not to the five routes that were broken: `GET`, `PATCH`,
-    `DELETE /documents/{doc_id}`, `GET /documents/{doc_id}/attachments` and
-    `GET /products/{product_id}/documents` all took an id off the path and queried it
-    with the service-role client, no workspace predicate anywhere. MIVAA has no RLS
-    backstop, so any authenticated member of ANY workspace could read, edit or delete
-    another tenant's KB document by id. `/api/kb` is a prefix no other router declares,
-    so — unlike management_routes — these were live.
-    """
+    """EVERY /api/kb handler taking an id must prove the caller's workspace owns it."""
     src = _src(_KB)
     tree = ast.parse(src)
 
@@ -166,16 +146,7 @@ def test_search_cannot_declare_itself_admin():
 
 
 def test_admin_status_is_read_from_workspace_members():
-    """Not from the JWT `role` claim / `permissions`.
-
-    A real Supabase token carries role="authenticated", which falls through
-    `UserRole(...)` to MEMBER with an empty permissions list — deriving admin from it
-    would make every admin a member, which is the silent-zero shape pointed at an access
-    gate. `workspace_members.role` is what the platform means by admin-of-a-workspace.
-
-    Now lives in the shared module — this used to check a private copy in
-    knowledge_base.py, which was itself the second implementation.
-    """
+    """Not from the JWT `role` claim / `permissions`."""
     body = _func(_KB_ACCESS, "resolve_kb_caller")
     assert "workspace_members" in body
     assert "owner" in body and "admin" in body

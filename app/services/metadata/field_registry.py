@@ -40,23 +40,6 @@ logger = logging.getLogger(__name__)
 CACHE_TTL_SECONDS = 300
 
 # `FALLBACK_CATEGORY` and `SECTION_ORDER` used to be module constants here (#30 M16-7).
-#
-# This module is otherwise the best-behaved registry consumer in the codebase — it reads
-# `material_metadata_fields` and `material_categories` rather than restating them, and it
-# writes no registry rows. These two were the exception: the category an unknown upload
-# routes to, and the order prompt sections appear in, were facts an admin editing the
-# registry could neither see nor change.
-#
-# They now come from `material_categories.is_fallback` (exactly one row, enforced by a
-# partial unique index) and `material_field_sections.display_order`, both loaded with the
-# rest of the cache. There is deliberately NO constant left to fall back to: a fallback
-# is invisible when it fires, and the whole point of this module is that the registry is
-# the source.
-#
-# Not derived from `material_metadata_fields.sort_order`, which was the obvious move and
-# is wrong: that column is 0 on almost every row, so MIN(sort_order) per section ties
-# fourteen sections at zero and produces an arbitrary order. Replacing a correct
-# hardcoded order with an incorrect derived one is not a fix.
 
 
 class FieldRegistryNotLoaded(RuntimeError):
@@ -350,18 +333,7 @@ class FieldRegistry:
         return frozenset(v for c in cache.categories.values() for v in c.controlled_vocab)
 
     def category_for_vocab(self, value: str) -> Optional[str]:
-        """Which category group owns this fine-grained value? `floor_tile` -> `tiles`.
-
-        Derived from `material_categories.controlled_vocab`, never from a second map. Added
-        for audit #17 M4-10: the ingest field-registration path had no way to say WHICH
-        category a newly discovered field was observed under, so it wrote
-        `applies_to_categories: []` — which `_load_blocking` above reads as `None`, i.e.
-        "applies to EVERY category". A field seen once in a tile catalogue was then offered
-        in the lighting prompt and accepted by the lighting validator.
-
-        Returns None when the value belongs to no category, which is itself the answer:
-        do not assert a scope you cannot evidence.
-        """
+        """Which category group owns this fine-grained value? `floor_tile` -> `tiles`."""
         if not value:
             return None
         needle = value.strip().lower()

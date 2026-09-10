@@ -74,44 +74,13 @@ _USER_INFLUENCED = re.compile(
 )
 
 # THERE IS NO ALLOWLIST ANY MORE.
-#
-# #15 shipped `KNOWN_UNGUARDED` with nine entries — the sites widening had surfaced,
-# named honestly rather than hidden by a narrow scan. All nine are now fixed, and the
-# set is DELETED rather than left empty, which is the same call the frontend made for
-# `KNOWN_UNCLUSTERED` / `KNOWN_UNBOUND`: an empty allowlist is a furnished place to put
-# the next exception, and the next exception is always "just this one, it's a provider
-# URL". With the name gone, adding one means re-introducing the mechanism on purpose
-# and writing down why.
-#
-# What the nine turned out to be, since this list was the only record of them:
-#   - Five DB-column URLs (`document_images.image_url`, `documents.file_path`, a
-#     `storage_url` on the classification path, a `pdf_url`) — attacker-influenced at
-#     one remove, through PDF extraction or a supplier feed.
-#   - Four provider-output URLs from Replicate / Gemini / Modal responses.
-#   - And one that #15 recorded as NOT being a request-body URL, wrongly:
-#     `interior_design_routes.derive_product_pbr_maps` fetches `body.image_url` straight
-#     off the request. It also read AND wrote `products` on a body-supplied id with no
-#     workspace check, against a service-role client. Both fixed.
-#
-# They are all fixed the same way, which is the other half of the lesson: nine sites
-# held nine opinions about how much of invariant 7 to implement, and each one looked
-# fine on its own. The guard now owns the FETCH as well as the check —
-# `app.utils.ssrf_guard.safe_fetch_bytes` validates the scheme and resolved address of
-# every redirect hop and caps the body while streaming — so a raw client call on a
-# user-influenced URL is now the thing that is wrong, rather than the thing that needs
-# a correct-looking comment in its enclosing function.
 
-#: NOT matched, deliberately: a bare `url` identifier. Nearly every one in this tree is a
-#: module constant or an f-string over a configured base (ANTHROPIC_API, DATAFORSEO_*,
-#: `{self.platform_url}/...`) — 93 dynamic-URL fetches across 43 files, of which the
-#: overwhelming majority are vendor endpoints. Including `url` would drown the signal and
-#: the guard would be muted within a week, which is the failure mode this whole file
-#: exists to argue against. The named forms above (`image_url`, `query_image`,
-#: `file_url`, …) are the ones that carry outside data, and they are what invariant 7 is
-#: about. If a bare `url` ever does carry caller input, name the variable for what it is.
-#:
-#: `test_the_allowlist_does_not_rot` enforces the consequence: an entry that stops firing
-#: must be deleted, so this exclusion cannot quietly grow a shadow allowlist.
+# : NOT matched, deliberately: a bare `url` identifier. Nearly every one in this tree is a
+# : module constant or an f-string over a configured base (ANTHROPIC_API, DATAFORSEO_*,
+# : `{self.platform_url}/...`) — 93 dynamic-URL fetches across 43 files, of which the
+# : overwhelming majority are vendor endpoints. Including `url` would drown the signal and
+# : the guard would be muted within a week, which is the failure mode this whole file
+# : exists to argue against. The named forms above (`image_url`, `query_image`,
 
 
 def _enclosing_function(tree: ast.AST, lineno: int):

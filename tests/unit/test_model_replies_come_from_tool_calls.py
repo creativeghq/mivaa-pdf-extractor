@@ -31,6 +31,7 @@ violations, and reading it as one would overstate the case.
 """
 
 import ast
+import importlib.util
 import json
 import re
 from pathlib import Path
@@ -54,25 +55,30 @@ _PARSES = (
 #: Markdown-fence repair — the strongest single signal, counted separately.
 _FENCE = ("```json", '"```"', "```")
 
-#: The TRANSPORT, which is not a parser.
-#:
-#: `tracked_claude_stream_async` decodes Anthropic's own wire protocol: SSE frames, and
-#: the `input_json_delta` fragments that a FORCED tool call's input arrives in. Its
-#: `json.loads` reassembles a tool input, it does not repair prose — the model was never
-#: free to return prose, because `stream_with_tool` forces `tool_choice` one frame up,
-#: exactly as `call_with_tool` does for the blocking path.
-#:
-#: The sweep cannot see that: it reads one function at a time and looks for the literal
-#: `tool_choice`, which lives in the CALLER. So the exemption is by name, not by file —
-#: a real parser added to `claude_helper.py` tomorrow is still counted. This mirrors
-#: `test_anthropic_calls_go_through_the_helper.ALLOWED`, which already says the same
-#: thing about the same module for the same reason: the helper is where this is
-#: SUPPOSED to live.
-#:
-#: `test_the_transport_exemption_is_still_transport` below holds it honest.
+# : The TRANSPORT, which is not a parser.
+# :
 _TRANSPORT = {
     "app/services/core/claude_helper.py::tracked_claude_stream_async",
+    # Its inner half. Both forward whatever the caller forces via `**extra`; neither decides
+    # anything from the reply, so neither is a parser.
+    "app/services/core/claude_helper.py::_stream_anthropic_async",
 }
+
+#: A body carrying one of these has forced the tool and cannot receive prose.
+_FORCED = ("tool_choice", "call_with_tool")
+
+
+def _load_blank_comments():
+    """Load the comment blanker by path — this test imports no app module."""
+    spec = importlib.util.spec_from_file_location(
+        "comment_budget_for_replies", ROOT / "scripts" / "comment_budget.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.blank_comments
+
+
+_blank_comments = _load_blank_comments()
 
 
 def _files():
@@ -92,13 +98,17 @@ def sweep():
             tree = ast.parse(src)
         except SyntaxError:
             continue
-        if not _PROVIDER.search(src):
+        # The sweep reads CODE. Against the raw text, a function was exempted because a comment
+        # happened to say `tool_choice`, and `classify_images` — which forces the tool through
+        # call_with_tool — was skipped for the words in a comment rather than for what it does.
+        code = _blank_comments(src)
+        if not _PROVIDER.search(code):
             continue
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            body = ast.get_source_segment(src, node) or ""
-            if "tool_choice" in body:
+            body = ast.get_source_segment(code, node) or ""
+            if any(marker in body for marker in _FORCED):
                 continue  # forced — this is the fix, not the defect
             if not any(marker in body for marker in _PARSES):
                 continue

@@ -1,17 +1,4 @@
-"""Ask a spreadsheet a question: profile → SQL (forced tool) → guard → run → answer.
-
-The loop is GAIK's `TabularAgent` shape — generate, validate, run, feed the error back,
-retry — on this platform's rails: every model call goes through `call_with_tool` (a
-forced tool, so no salvage parser and the cost lands in `ai_usage_logs`), both prompts
-come from the database, and the engine is locked before the first generated query.
-
-What the model is told is the DATA, not just its shape: for every low-cardinality column
-the values it actually holds. That is the single biggest accuracy lever — it stops the
-query filtering on a category that does not exist. Cell values therefore reach the
-prompt, so they are fenced as untrusted (invariant 9): a hostile spreadsheet can make
-the model write a bad query, and the two guard layers bound that to "a wrong answer from
-your own file".
-"""
+"""Ask a spreadsheet a question: profile → SQL (forced tool) → guard → run → answer."""
 
 from __future__ import annotations
 

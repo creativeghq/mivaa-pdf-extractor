@@ -65,16 +65,7 @@ def _sources():
 
 
 def _model_payload_regions(tree):
-    """AST subtrees that hand text to a model.
-
-    Two shapes, because the payload is not always inline at the call:
-      * a Call with a `messages=` / `system=` / `prompt=` keyword, or `json={...}`
-        whose dict has one of those keys;
-      * ANY dict literal carrying one of those keys — which is how
-        `perplexity_price_search_service` does it: `body = {"messages": [...]}` is
-        built first and passed as `json=body` several lines later, so the literal
-        never appears inside the call node at all.
-    """
+    """AST subtrees that hand text to a model."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             if {k.arg for k in node.keywords if k.arg} & _MODEL_ARGS:
@@ -99,25 +90,7 @@ def _model_payload_regions(tree):
 
 
 def _prompt_literals(tree):
-    """Long literals that REACH a model call. Structural, not keyword-based.
-
-    The rule used to be `length >= 220 AND >= 2 words from a hint list`, and the
-    hints were the only discriminator after length — which this file's own docstring
-    forbids, in those words, because "prompts do not reliably look like anything".
-    It let through `rag_service`'s "You are an expert document analyst. Answer the
-    following question based ONLY on the provided context." — 376 chars, in a file
-    with four LLM markers — because "document analyst" does not contain "analyze"
-    and one hint is not two (audit #14 MV-2).
-
-    A literal now offends if it is long and either sits inside a model payload, or is
-    bound to a NAME that appears inside one. The name hop is what reaches across a
-    function boundary: Perplexity's system prompt is assigned in `_build_messages`
-    and consumed in the caller's `body["messages"]`.
-
-    This is deliberately not "every long literal in a file that calls a model" —
-    that flags 56 strings including a base64 test fixture, an OpenAPI description and
-    an HTML page, and would need an allowlist big enough to rot.
-    """
+    """Long literals that REACH a model call. Structural, not keyword-based."""
     candidates = {}
     docstrings, nested = set(), set()
     for node in ast.walk(tree):

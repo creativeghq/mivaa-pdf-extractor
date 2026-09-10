@@ -11,18 +11,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 
 
-#: The platform's own workspace. ONE literal (M3-14, #16): the same UUID was
-#: hardcoded in 11 places - two settings defaults, a FastAPI Query default, two
-#: module constants and a set of OpenAPI examples - any of which could drift
-#: from the configured value while every one of them still looked authoritative.
-#:
-#: Some uses are legitimate: the shared knowledge base genuinely lives here. The
-#: defect was the copies, and in particular a ROUTE DEFAULT - omitting
-#: workspace_id silently targeted this tenant.
-#:
-#: Read it through `get_settings().default_workspace_id` so an env override
-#: actually takes effect; import the constant only where a settings call is
-#: impossible (i.e. defining the settings defaults themselves).
+# : The platform's own workspace. ONE literal (M3-14, #16): the same UUID was
+# : hardcoded in 11 places - two settings defaults, a FastAPI Query default, two
+# : module constants and a set of OpenAPI examples - any of which could drift
+# : from the configured value while every one of them still looked authoritative.
+# :
 PLATFORM_DEFAULT_WORKSPACE_ID = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
 
 
@@ -84,16 +77,6 @@ class Settings(BaseSettings):
     # max_concurrent_products = simultaneous products processed inside one PDF job.
     # Each product holds a reference to the shared file_content bytes plus its own
     # buffers (chunks, image PIL objects, vision_analysis JSON).
-    #
-    # Default = 1 on a 4 GB droplet — verified the only safe setting that
-    # stays under the systemd MemoryHigh=2.5 GB cgroup cap. At MAX=2 on
-    # 4 GB, peak RSS hit 2.83 GB and the orchestrator stalled in cgroup
-    # throttling (Apr 29 incident). At MAX=3, kernel OOM-killed the process.
-    #
-    # Override on bigger droplets via the MAX_CONCURRENT_PRODUCTS env var:
-    #   - 4 GB droplet  → 1 (this default)
-    #   - 8 GB droplet  → 2 or 3
-    #   - 16 GB droplet → 4 (matches HF maxReplica=4 for full saturation)
     max_concurrent_products: int = Field(
         default=1, env="MAX_CONCURRENT_PRODUCTS",
         description="Simultaneous products processed within one PDF job"
@@ -112,7 +95,6 @@ class Settings(BaseSettings):
     # `document_layout_analysis`. Stage 2 chunker reads from that cache so
     # layout-aware chunking actually has populated text_content (was the
     # root cause of chunks=0 on stylized catalog pages). Set False to
-    # bypass and rely on the chunker's text-based fallback (round-14 fix).
     layout_precompute_enabled: bool = Field(
         default=True, env="LAYOUT_PRECOMPUTE_ENABLED",
         description="Run Stage 1.5 layout+text precompute and cache to document_layout_analysis"
@@ -414,20 +396,6 @@ class Settings(BaseSettings):
         env="ANTHROPIC_MODEL_VALIDATION"
     )
     # SECOND reader for vision_analysis (issue #393 Step 4). Empty string = off.
-    #
-    # ACTIVATED 2026-08-28 with `claude-sonnet-5`, deliberately as the CHEAPEST probe
-    # rather than the best one. The open question is not "which second model is best"
-    # but "does a second reader find anything at all" — and that is answered by the
-    # cheapest reader that is not the writer. Sonnet 5 is ~40% of Opus 5 per token, so
-    # this is well short of doubling the bill.
-    #
-    # Must differ from `anthropic_model_validation`; the same model twice measures
-    # sampling noise, not agreement, and `_run_vision_checker` refuses that pairing.
-    #
-    # If the first real corpus shows the two agreeing on essentially everything, a
-    # checker adds nothing and this goes back to "". If it shows real disagreement,
-    # that is when a DIFFERENT LINEAGE earns its cost — two Anthropic models correlate
-    # their mistakes, so agreement between them is weaker evidence than it looks.
     anthropic_model_vision_checker: str = Field(
         default="claude-sonnet-5",
         env="ANTHROPIC_MODEL_VISION_CHECKER"
@@ -806,24 +774,9 @@ class Settings(BaseSettings):
     @field_validator("*", mode="before")
     @classmethod
     def _coerce_empty_string_to_default(cls, v, info):
-        """
-        Fall back to each field's declared default when the env provides ''
+        """Fall back to each field's declared default when the env provides ''
         for a non-string field. Protects against empty GitHub Secrets
         crashing pydantic int/bool/float parsing at startup.
-
-        Background: GitHub Actions expands ${{ secrets.FOO }} to '' when the
-        secret is unset. Without this, pydantic-settings tries to coerce ''
-        to int/float/bool and raises ValidationError at startup. We substitute
-        the field's own declared default in that case.
-
-        Returning None would not work here: pydantic treats an explicitly
-        supplied None as a *value*, not "use default," so None → int fails
-        the same way '' → int did.
-
-        Rule for str fields: fall back to the declared default only when that
-        default is itself non-empty. So `'' → "https://..."` is restored, but
-        `'' → ""` stays as the explicit user choice (some fields genuinely
-        default to empty — e.g. optional API keys for disabled providers).
         """
         if v != "":
             return v
@@ -1000,15 +953,7 @@ class Settings(BaseSettings):
         return config
     
     def get_cors_config(self) -> Dict[str, Any]:
-        """Get CORS configuration.
-
-        Pentest #250 A2: a wildcard origin combined with credentials is unsafe —
-        Starlette reflects the caller's Origin back with `Allow-Credentials: true`,
-        letting ANY site make credentialed cross-origin calls. MIVAA authenticates
-        with Bearer JWTs (not cookies), so credentials mode isn't needed for the API
-        to work; force it off whenever origins aren't explicitly pinned. Deployments
-        that set an explicit CORS_ORIGINS allowlist still get credentials support.
-        """
+        """Get CORS configuration."""
         wildcard = "*" in self.cors_origins
         return {
             "allow_origins": self.cors_origins,

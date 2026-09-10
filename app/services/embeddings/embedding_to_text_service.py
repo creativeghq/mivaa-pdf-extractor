@@ -115,31 +115,12 @@ class EmbeddingToTextService:
 
             # Through the tracked helper (#33 item 2). What was here did four things
             # wrong at once, none of which failed:
-            #
-            #   * priced itself from a constant — `_calculate_cost` charged $3/$15 per
-            #     million while calling `claude-opus-5`. Those are Sonnet rates, so
-            #     every conversion was booked at roughly a fifth of what it cost.
-            #     `ai_model_pricing` is the one USD source and the helper resolves
-            #     against it.
-            #   * called the SYNC `messages.create` from an `async def`, blocking the
-            #     event loop for a whole Opus round-trip per image.
-            #   * logged `job_id=image_id` — an image id in the job column, so the spend
-            #     joined to no job and the helper's job -> billable-user resolution had
-            #     nothing to work with. `image_id` and `workspace_id` are the columns
-            #     that actually describe this call.
-            #   * recorded nothing at all when the call raised, since the log came after
-            #     it. Anthropic bills a request it accepted regardless.
             from app.services.core.claude_helper import tracked_claude_call_async
 
             # Forced tool (#32). The parse below was `re.search(r'\{.*\}', ...)` — a
             # greedy match for anything between the first { and the last }, which
             # silently swallows prose on either side and produces a dict from whatever
             # happened to be in between.
-            #
-            # The schema is OPEN: the metadata shape is described inside `self.prompt`,
-            # loaded from the database. Restating those keys here would create a second
-            # source, and because the model is forced to satisfy the schema, an admin's
-            # edit would silently stop taking effect.
             _METADATA_TOOL = {
                 "name": "emit_visual_metadata",
                 "description": (

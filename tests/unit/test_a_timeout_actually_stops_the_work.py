@@ -1,15 +1,5 @@
 """A timeout must stop the work, not just stop waiting for it (mivaa#22 M9-5).
 
-`asyncio.wait_for(loop.run_in_executor(pool, fn, ...), timeout=...)` cancels the
-COROUTINE waiting on the future. It cannot touch the thread, because Python has no
-mechanism to interrupt one. So a malformed PDF declared timed out kept consuming CPU and
-memory for as long as it liked; enough of them exhausted the worker pool; and the job was
-marked timed out while the work that caused it was still running — which is also why the
-recovery machinery could not reason about it.
-
-A process can be killed. That is the whole difference.
-
-THESE ARE BEHAVIOUR TESTS, NOT SOURCE ASSERTIONS
 ------------------------------------------------
 Most guards in this suite read source, because MIVAA's own CI installs pytest and nothing
 else. `killable.py` is stdlib-only, so it can actually be RUN — and "the process is
@@ -83,15 +73,6 @@ def _run_probe():
     """`killable` uses `spawn`, and `spawn` re-imports `__main__` in the child. Under
     `python -m pytest` that IS pytest, so every spawn from inside a pytest process
     re-runs the session and exits 1.
-
-    That is multiprocessing behaving as documented, not a defect — it is why
-    `if __name__ == "__main__":` is mandatory there — and production is unaffected
-    because the service runs under the guarded `uvicorn` console script. The probe
-    therefore has its own guarded entrypoint and is run as a subprocess.
-
-    Switching the module to `fork` so these could be plain test functions would have
-    meant choosing the start method for the convenience of the test rather than the
-    safety of the thing under test.
     """
     proc = subprocess.run(
         [sys.executable, str(PROBE)],
@@ -199,11 +180,6 @@ def _third_party_in_chain(start: Path) -> dict:
     # Seed with the start module's OWN package chain. `import app.utils.killable`
     # executes `app/__init__.py` and `app/utils/__init__.py` before a single line of
     # `killable.py` runs — and that is precisely where the dependency was hiding.
-    #
-    # The first version of this walker started from the file alone and reported the
-    # broken placement CLEAN, which is worse than having no check: it would have
-    # certified the exact regression it exists to catch. Verified by pointing it at the
-    # old location and watching it pass.
     queue = [start]
     parent = start.parent
     while parent != ROOT and ROOT in parent.parents or parent == ROOT / "app":
@@ -251,15 +227,6 @@ def test_the_child_can_import_the_module_with_nothing_installed():
     """MIVAA's CI installs pytest and NOTHING ELSE, and `spawn` makes the child import
     the module defining its target. Any third-party dependency anywhere in this module's
     import chain therefore kills every spawned child in CI.
-
-    Not hypothetical. This module first lived in `app/utils`, which I checked LOCALLY —
-    where every dependency is present — and it imported fine. In CI,
-    `app/utils/__init__.py` imports `.logging`, which does `from app.config import
-    get_settings`, which needs `pydantic_settings`. Every child died with
-    ModuleNotFoundError, and the probe faithfully reported six crashed workers.
-
-    Checking the chain beats remembering the rule, and beats checking it somewhere the
-    dependencies happen to exist.
     """
     offenders = _third_party_in_chain(APP / "killable.py")
     assert not offenders, (

@@ -1,16 +1,4 @@
-"""
-Query Understanding Cache
-
-Caches the LLM-based query parser output (Claude Haiku 4.5) so that repeat
-queries skip the ~2-5 second LLM call entirely.
-
-The parse output is deterministic for a given query (system prompt is fixed,
-temperature 0.1) so caching is safe and the only invalidation needed is when
-the system prompt itself changes.
-
-Storage: Postgres table `query_understanding_cache`, keyed on sha256 of the
-normalised query text.
-"""
+"""Query Understanding Cache"""
 
 import hashlib
 import logging

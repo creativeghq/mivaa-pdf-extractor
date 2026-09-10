@@ -1,14 +1,4 @@
-"""
-Cleanup Service
-
-Handles cleanup of temporary resources after PDF processing completes.
-
-Cleanup tasks (per user requirements):
-1. Delete temporary images from disk
-2. Clear job from job_storage in-memory dict
-3. Kill background processes
-4. Force garbage collection to free memory
-"""
+"""Cleanup Service"""
 
 import logging
 import os
@@ -178,22 +168,7 @@ class CleanupService:
         return cleaned_count
     
     def live_job_ids(self) -> Optional[set]:
-        """Ids (job AND document) whose working directories must NOT be reaped.
-
-        MV2-6: the temp sweeps deleted purely by age — `if file_age > max_age_seconds:
-        os.remove(...)` on a ONE HOUR threshold, with no check against a live job. Age
-        is not a reference check. This platform has `current_slow_operation` precisely
-        because legitimate stages run long, so a slow OCR or extraction pass crossing
-        the hour mark had its working directory removed underneath it — by a sweep that
-        `cleanup_after_processing` runs for a DIFFERENT job, on every job completion.
-
-        Returns None — meaning "liveness unknown" — on any failure, and callers skip
-        the age-based reap entirely when they get it. An empty set would mean "nothing
-        is running, delete freely", which is the exact opposite conclusion to draw from
-        a failed query. A reaper that cannot see the world must not act on the
-        assumption that the world is empty; that is the direction the platform's
-        janitor bugs have always gone wrong.
-        """
+        """Ids (job AND document) whose working directories must NOT be reaped."""
         live: set = set()
         try:
             from app.services.core.supabase_client import get_supabase_client
@@ -529,21 +504,7 @@ class CleanupService:
         derived_only: bool = False,
         source_only: bool = False,
     ) -> int:
-        """
-        Wipe storage objects that belong to a document.
-
-        - `pdf-tiles` under `extracted/{document_id}/` (Stage 1.5 + Phase 3 outputs)
-        - the legacy `documents` bucket under `{document_id}/`
-        - the original PDF in `pdf-documents` (resolved from
-          `documents.storage_bucket` / `storage_object_path`, falling back to
-          `metadata.file_url`)
-
-        MV2-5: those are TWO different layers and callers need to pick. The tiles are
-        SILVER — they are the bytes `document_images.storage_object_path` and
-        `document_page_embeddings` point at. The original PDF is BRONZE — the source
-        the silver layer was derived from. `source_only=True` deletes the PDF and
-        leaves the derived tiles intact, which is what "preserve the outputs" has to
-        mean if the preserved rows are to keep resolving.
+        """Wipe storage objects that belong to a document.
 
         Args:
             document_id: Document UUID
@@ -617,51 +578,7 @@ class CleanupService:
         delete_storage_files: bool = True,
         preserve_outputs: bool = False,
     ) -> Dict[str, Any]:
-        """
-        Delete a job, with two distinct semantics based on `preserve_outputs`.
-
-        Two modes:
-
-        ──────────────────────────────────────────────────────────────────
-        preserve_outputs=False (default — CANCELLATION / FAILURE wipe)
-        ──────────────────────────────────────────────────────────────────
-        Wipes EVERYTHING tied to the job. Use when the user cancels a job,
-        a job fails irrecoverably, or admin wants to remove a stuck/bad job
-        and its partial outputs from the catalog. Removes:
-          - background_jobs row
-          - document row
-          - document_chunks
-          - document_images
-          - VECS embeddings (text + image collections)
-          - products + product_layout_regions + product_tables + product_enrichments
-          - image_product_associations + chunk_image_relationships +
-            image_metafield_values + image_validations
-          - product_processing_status
-          - storage bucket files (if delete_storage_files=True)
-          - server-side temp files in /tmp
-
-        ──────────────────────────────────────────────────────────────────
-        preserve_outputs=True (COMPLETED-JOB cleanup)
-        ──────────────────────────────────────────────────────────────────
-        Removes ONLY the job's tracking state — keeps the produced catalog
-        data so it remains queryable / sellable / exportable. Use when the
-        user deletes a completed job from the UI: they want the job entry
-        gone from "Recent jobs", but the products/images/chunks the job
-        produced should stay in the catalog. Removes:
-          - background_jobs row (and its embedded stage_history,
-            recovery_history, last_checkpoint JSONB columns)
-          - product_processing_status (per-product job state — not catalog data)
-          - server-side temp files in /tmp (workspace cleanup)
-        Preserves:
-          - documents, document_chunks, document_images
-          - products and all product child tables
-          - VECS embeddings
-          - the DERIVED storage objects those rows point at
-            (`pdf-tiles/extracted/{document_id}/`, incl. rendered pages)
-        Also removes, when delete_storage_files=True:
-          - the original source PDF only (bronze). It is no longer load-bearing
-            once the catalog outputs are durable, and leaving it behind was the
-            leak that filled `pdf-documents` with zombie PDFs.
+        """Delete a job, with two distinct semantics based on `preserve_outputs`.
 
         Args:
             job_id: Job ID to delete
@@ -786,15 +703,6 @@ class CleanupService:
                         # or a swallowed failure between them left a live `documents`
                         # row pointing at an object that no longer exists, which is
                         # the inverse of the platform's storage-GC hazard and strictly
-                        # worse: an orphaned OBJECT gets reaped by
-                        # storage-orphan-cleanup-cron, an orphaned POINTER is a
-                        # permanent 404 that nothing sweeps.
-                        #
-                        # Clearing the pointer first means the object drops out of
-                        # build_storage_reference_set() immediately, so if we die on
-                        # the next line the cron collects it. Losing the race in this
-                        # direction costs disk for one cron interval; losing it in the
-                        # other direction corrupts the row.
                         try:
                             supabase_client.client.table('documents')\
                                 .update({
@@ -822,18 +730,6 @@ class CleanupService:
                         # deliberately preserves `documents`, `document_chunks`,
                         # `document_images` and `products`. Those preserved rows carry
                         # `storage_bucket='pdf-tiles'` and a path under that very
-                        # prefix, and `document_page_embeddings` records its render
-                        # path there too, so "preserve the outputs" was deleting the
-                        # bytes every preserved output pointed at and leaving a catalog
-                        # of permanent 404s. The docstring for this mode said storage
-                        # was preserved; the code deleted it. An operator picking the
-                        # safe-sounding mode got the destructive one.
-                        #
-                        # This is also prefix deletion, not reference-set GC: it cannot
-                        # know whether another row still references a tile. Restricting
-                        # it to the source PDF — the one object this document
-                        # unambiguously owns, and the actual leak that filled
-                        # `pdf-documents` — keeps the win and drops the corruption.
                         stats['storage_files_deleted'] = self.cleanup_document_storage(
                             document_id, supabase_client, document_row=document_row,
                             source_only=True,
@@ -871,15 +767,8 @@ class CleanupService:
 
             # 1b. Resolve the canonical product_id list for this job. The real
             # products.id (a UUID) is reachable via:
-            #   - `products.source_job_id = job_id`           (XML import, scraping, PDF stage_4)
-            #   - `products.source_document_id = document_id` (PDF, legacy rows)
-            # NOTE: we deliberately do NOT union in
-            # `product_processing_status.product_id` — that column is a TEXT
-            # business key (e.g. "product_5_CASTELLO"), NOT the products.id
-            # UUID. Feeding it into `.in_('id', …)` raised 22P02 and aborted
-            # every product + product-child delete. pps rows are cleaned by
-            # job_id separately (step 7b). We also UUID-validate the final list
-            # as belt-and-braces so a stray non-UUID can never poison the query.
+            # - `products.source_job_id = job_id`           (XML import, scraping, PDF stage_4)
+            # - `products.source_document_id = document_id` (PDF, legacy rows)
             product_ids: List[str] = []
             try:
                 pid_set = set()
@@ -973,9 +862,6 @@ class CleanupService:
             # the vecs collection on a `document_id` *metadata* field that the
             # ingest path never reliably wrote — so it found 0 ids and deleted
             # nothing, orphaning every embedding while reporting success.
-            # `delete_embeddings_by_image_ids` deletes by primary key across all
-            # six collections, which works regardless of stored metadata. Fall
-            # back to the metadata path only when we have no image_ids at all.
             if vecs_service and (image_ids or document_id):
                 try:
                     if image_ids:
@@ -1086,22 +972,6 @@ class CleanupService:
             stats['checkpoints_deleted'] = 0
 
             # 8. Delete the document ROW first, then the storage bytes.
-            #
-            # MV2-4: this order used to be reversed — storage was wiped in step 8 and
-            # the row deleted in step 9, with a storage failure caught, appended to
-            # stats['errors'], and execution CONTINUING to the row delete anyway.
-            #
-            # Only one direction of that race is serious, so be precise about which.
-            # Files orphaned by a failed/partial delete SELF-HEAL: they drop out of
-            # `build_storage_reference_set()` the moment the row is gone and
-            # `storage-orphan-cleanup-cron` reaps them. The state that does NOT heal is
-            # a crash inside the window with the OLD order — bytes gone, row still live
-            # — leaving a `documents` row pointing at objects that no longer exist, and
-            # nothing in the platform sweeps a dangling pointer.
-            #
-            # Deleting the row first inverts the race into the harmless direction, and
-            # is the platform's stated model for entity-delete cleanup: drop the row,
-            # let GC reap the files.
             if document_id:
                 try:
                     doc_response = supabase_client.client.table('documents')\
@@ -1116,12 +986,6 @@ class CleanupService:
                     stats['errors'].append(f"Document deletion failed: {str(e)}")
 
             # 9. Delete files from storage (only if delete_storage_files=True).
-            # cleanup_document_storage covers pdf-tiles + the legacy
-            # `documents` bucket + the original file in pdf-documents
-            # resolved from documents.storage_bucket / storage_object_path —
-            # which is why `document_row` is passed: the row is gone by now, so the
-            # path can no longer be looked up, only read from the copy fetched at the
-            # top of this function.
             if document_id and delete_storage_files:
                 try:
                     stats['storage_files_deleted'] = self.cleanup_document_storage(
@@ -1139,12 +1003,6 @@ class CleanupService:
             # 9b. Delete XML import companion tables.
             # XML jobs maintain three companion tables that the cleanup
             # function ignored before 2026-05-01:
-            #   data_import_jobs.background_job_id → background_jobs.id
-            #   data_import_job_products.job_id   → data_import_jobs.id
-            #   data_import_history.job_id        → data_import_jobs.id
-            # Without explicit cleanup, deleting an XML job leaves these
-            # rows orphaned forever — admin UIs that read them show ghosts
-            # and disk fills with stale operational state.
             try:
                 import_jobs_resp = supabase_client.client.table('data_import_jobs')\
                     .select('id')\
@@ -1190,13 +1048,6 @@ class CleanupService:
             # writes them and they no longer exist, so there is nothing to clean up.
 
             # 10. Delete job record.
-            # NOTE: deleting the document in step 9 CASCADEs to background_jobs
-            # (background_jobs.document_id is ON DELETE CASCADE), so the job row
-            # may already be gone — and the explicit delete below can even raise
-            # a transient "Server disconnected" right after a large cascade. We
-            # therefore define job_deleted as "is the row actually gone now?",
-            # determined by an existence check that runs EVEN IF the delete
-            # raises, so a fully-successful wipe never returns a spurious 404.
             try:
                 supabase_client.client.table('background_jobs')\
                     .delete()\
@@ -1246,16 +1097,7 @@ class CleanupService:
         max_age_hours: int = 24,
         dry_run: bool = False
     ) -> Dict[str, Any]:
-        """
-        Comprehensive system-wide temporary file cleanup.
-
-        Cleans up:
-        1. PDF files in /tmp (*.pdf)
-        2. pdf_processor folders in /tmp
-        3. Files in /var/www/mivaa-pdf-extractor/output
-        4. Empty temp/uploads/logs folders
-        5. __pycache__ folders
-        6. Old files in /tmp/pdf_processing, /tmp/image_extraction, etc.
+        """Comprehensive system-wide temporary file cleanup.
 
         Args:
             max_age_hours: Maximum age of files to keep (default: 24 hours)

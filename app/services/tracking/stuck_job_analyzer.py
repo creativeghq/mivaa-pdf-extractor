@@ -16,16 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class StuckJobAnalyzer:
-    """
-    Analyzes stuck jobs to identify patterns and root causes.
-    
-    Tracks:
-    - Which stage jobs get stuck at
-    - How long each stage takes
-    - Memory usage patterns
-    - API call failures
-    - Common error patterns
-    """
+    """Analyzes stuck jobs to identify patterns and root causes."""
     
     def __init__(self):
         self.supabase_client = get_supabase_client()

@@ -31,18 +31,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load():
-    """Imported by its REAL name, not loaded by path under a synthetic one.
-
-    `spawn` pickles the child target by qualified name, so the child must be able to
-    import the module that defines it. A path-loaded module lives only in the parent's
-    `sys.modules`, and the child dies with `ModuleNotFoundError` — which is exactly what
-    the first version of this probe did, while faithfully reporting it as a crashed
-    worker.
-
-    `app.killable` sits at the top of the package because `app/__init__.py` is the
-    only `__init__` here with no third-party imports — which is what lets the child
-    import it in CI, where nothing but pytest is installed.
-    """
+    """Imported by its REAL name, not loaded by path under a synthetic one."""
     sys.path.insert(0, str(ROOT))
     import app.killable as module
 

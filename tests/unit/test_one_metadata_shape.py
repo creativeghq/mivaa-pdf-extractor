@@ -1,29 +1,4 @@
-"""
-`products.metadata` has ONE shape (#347 phase 2.1).
-
-The extractor returns metadata grouped into sections — `material_properties`, `dimensions`,
-`appearance`, `electrical_specs`, `performance`, `packaging`. Those sections are a PROMPT device:
-they tell the model what to hunt for, per category, and the field registry already records which
-section a field belongs to. They were never a storage schema.
-
-But `product_discovery_service` had three enrichment paths and they disagreed:
-
-  * the validated path ran the prototype validator's `_flatten_metadata` -> FLAT
-  * the validation-failure fallback flattened by hand                    -> FLAT
-  * the no-validation path spread `discovered` straight into the merge   -> NESTED
-
-Which shape a document ended up with depended on which branch happened to run.
-
-That is not cosmetic, and it is the reason this test exists. `FacetCanonicalizer._collect_pending`
-and `collect_raw_attributes` iterate TOP-LEVEL keys only. So for any product enriched down the
-nested path, `finish` — a whitelisted, canonicalizable facet — never reached
-`products.attributes`. It was extracted, stored, rendered on the product page, and silently
-unfilterable. Nothing raised, nothing logged, and the value was right there in the JSON.
-
-It also reaches money: `product_m2_per_piece()` reads `products.metadata.dimensions`, so a
-mis-shaped row makes `convert_to_base_unit` return NULL, and a configured pallet price break
-"simply never matches" — silently.
-"""
+"""`products.metadata` has ONE shape (#347 phase 2.1)."""
 import importlib.util
 from pathlib import Path
 

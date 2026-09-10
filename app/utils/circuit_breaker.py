@@ -1,13 +1,4 @@
-"""
-Circuit Breaker Pattern for AI API Calls
-
-Prevents cascading failures by failing fast when AI APIs are down or slow.
-Automatically recovers when service is healthy again.
-
-States:
-- CLOSED: Normal operation, requests pass through
-- OPEN: Service is down, fail fast without calling API
-- HALF_OPEN: Testing if service recovered, allow limited requests
+"""Circuit Breaker Pattern for AI API Calls
 
 Example:
     breaker = CircuitBreaker(

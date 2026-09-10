@@ -1,30 +1,4 @@
-"""
-Async wrapper for the synchronous supabase-py client.
-
-supabase-py 2.x ships only a synchronous client. Every `.execute()` call
-makes a blocking HTTP request that holds the asyncio event loop hostage for
-50-200 ms per call. At batch scale (10 products × 15 DB calls each = 150
-calls per batch) this freezes all other FastAPI requests for up to 30 s.
-
-This module intercepts the query builder chain at the final `.execute()` step
-and offloads it to `asyncio.to_thread()`, which runs it in the ThreadPoolExecutor
-configured in main.py's lifespan (max_workers=20, thread_name_prefix="supabase-io").
-
-Usage — drop-in replacement, just add `await` and use `self.db` instead of
-`self.supabase`:
-
-    # Before (blocks event loop):
-    result = self.supabase.table('products').insert(record).execute()
-
-    # After (non-blocking):
-    result = await self.db.table('products').insert(record).execute()
-
-    # RPC:
-    result = await self.db.rpc('merge_background_job_metadata', {...}).execute()
-
-    # Schema-qualified (vecs):
-    result = await self.db.schema('vecs').from_('image_slig_embeddings').select('*').execute()
-"""
+"""Async wrapper for the synchronous supabase-py client."""
 
 import asyncio
 from typing import Any

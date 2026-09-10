@@ -1,14 +1,4 @@
-"""
-Public-tools quota + cache layer.
-
-Two responsibilities:
-  1. Quota check — count rows in `public_lookup_log` for an IP (or user_id) in
-     the last 24h. Returns remaining + limit + reset_at.
-  2. Result cache — read/write `public_lookup_cache` keyed on (query_hash,
-     scan_type) with a 24h TTL. Identical queries skip the upstream APIs.
-
-The quota is COMBINED across scan types (2 total scans/day/IP).
-"""
+"""Public-tools quota + cache layer."""
 
 from __future__ import annotations
 
@@ -51,15 +41,7 @@ def query_hash(scan_type: str, query: str, country_code: Optional[str] = None) -
 
 
 def check_quota(*, ip_address: Optional[str], user_id: Optional[str]) -> QuotaStatus:
-    """Return current quota usage for this IP (or user_id).
-
-    Counts ONLY successful, NON-cached scans — rate-limited / captcha-failed /
-    errored attempts don't burn quota, and neither do cache hits. An identical
-    repeat query is served free from public_lookup_cache (no upstream spend), so
-    it must not consume one of the 2 free daily scans. A user who hits the limit
-    then refreshes the page should not be punished for failed bot-check attempts
-    or for re-running a query that was already answered from cache.
-    """
+    """Return current quota usage for this IP (or user_id)."""
     sb = get_supabase_client().client
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     since_iso = since.isoformat()

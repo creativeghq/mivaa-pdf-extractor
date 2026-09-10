@@ -1,29 +1,4 @@
-"""
-Search Prompt Service
-
-Manages admin-configurable prompts for search result enhancement, formatting, filtering, and enrichment.
-Allows admins to customize search behavior without code changes.
-UPDATED: Now uses UnifiedPromptService for all prompt operations.
-
-This feature had never executed once (audit #19 M6-1). TWO independent breakages, and
-the order matters, because repairing only the second would have left it dead and made
-it LOOK fixed:
-
-  1. `get_search_prompts` filters `.eq('subcategory', <subtype>)`, and all nine
-     `prompt_type='search'` rows carried `subcategory = NULL`. NULL never equals a
-     value, so the lookup matched zero of nine on every call and every method returned
-     early. Fixed in data: the four rows that map to the four subtypes were backfilled
-     by name. The other five belong to different consumers that read them by category.
-  2. `self.llm_client` was assigned nowhere, so the four branches that tested it
-     raised AttributeError on the CONDITION — which put the `_simple_*` fallback out of
-     reach as well, and dropped the whole call into a broad handler that returned the
-     unenhanced input.
-
-A zero-match lookup is now logged at WARNING naming the subtype. An admin editing a
-prompt that nothing consumes is the platform's signature failure — "saved and changed
-nothing forever while every health signal stayed green" — and it needs a signal that
-does not require reading a stack trace that fires on 100% of calls.
-"""
+"""Search Prompt Service"""
 
 import logging
 from typing import List, Dict, Any, Optional

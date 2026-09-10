@@ -1,29 +1,4 @@
-"""One derivation for "what vector represents this query's <aspect>?" (#277).
-
-The four per-aspect collections (`image_{color,texture,style,material}_embeddings`) hold
-**Voyage 1024D embeddings of vision-analysis TEXT** — never image vectors. A row's vector is
-`voyage(ASPECT_SERIALIZERS[aspect](VisionAnalysis))`, built at ingest.
-
-So a query only lands in the same space by reproducing that exact chain. Two callers need it
-and they must not each grow their own copy:
-
-  * the four `/api/search/by-<aspect>` endpoints — one aspect, one query
-  * `rag_service.multi_vector_search` — all four aspects, one image
-
-Before this module the second caller had no derivation at all: it queried every aspect
-collection with the *understanding embedding of the query text*. That is correct when the user
-typed words, and silently wrong when they did not — the search page requires an image for its
-aspect modes and sends the image's FILENAME as the query, so `image_texture_embeddings` was
-being searched with `voyage("IMG_2831.jpg")` at 0.55 of the total ranking weight.
-
-Nothing raised: a filename embeds to a perfectly valid 1024D vector, cosine-compares against
-every row, and returns confident nonsense. Same failure family as a wrong-space vector — the
-shape is right, the meaning is absent.
-
-Vision runs ONCE per image here, not once per aspect: a VisionAnalysis carries all four
-aspects' source fields, so four serializers share one Claude call and differ only in the four
-cheap Voyage embeds that follow.
-"""
+"""One derivation for "what vector represents this query's <aspect>?" (#277)."""
 
 from __future__ import annotations
 
@@ -68,11 +43,6 @@ async def _resolve_image_base64(query_image: str) -> Tuple[Optional[str], Option
         # rejected an oversized image only once the cost had been paid. `safe_fetch_bytes`
         # aborts mid-stream. Same reason escapeHtml has one owner — two implementations of
         # one rule end up at two strengths, and you find out which is weaker afterwards.
-        #
-        # This also tightens the scheme: `assert_safe_url`'s default allowed plaintext
-        # http, while invariant 7 and `image_download_service` both say https-only. A
-        # plaintext query_image now comes back as "blocked url scheme: 'http'" rather
-        # than being fetched. That is a deliberate narrowing, not a side effect.
         from app.utils.ssrf_guard import SSRFError, safe_fetch_bytes
 
         try:
@@ -202,26 +172,7 @@ async def image_query_vectors(
     query_image: str,
     channels: Tuple[str, ...] = ASPECTS + ("understanding",),
 ) -> Tuple[Dict[str, List[float]], Dict[str, str], Optional[str]]:
-    """Every text-space query vector an IMAGE can supply, from ONE vision call.
-
-    Returns `(embeddings, source_texts, error)` keyed by channel — the four aspects plus
-    `understanding`. Each mirrors exactly what ingestion embedded for that collection:
-    `ASPECT_SERIALIZERS[aspect](va)` for the aspects, `serialize_vision_analysis_to_text(va)`
-    for understanding. Same serializer, same model, same space.
-
-    Understanding is included because it is the single heaviest channel in the balanced
-    profile (18%) and it was being fed the caller's query TEXT. When that text is a filename
-    — which is what the search page sends for its image modes — 18% of the ranking came from
-    `voyage("IMG_2831.jpg")`. The vision analysis needed for the aspects already describes
-    the whole image, so filling this channel from it costs one extra Voyage embed and no
-    extra Claude call.
-
-    `error` is set only when the whole derivation failed (no vision analysis). A per-channel
-    miss is normal and NOT an error — an image with no discernible pattern legitimately
-    yields no texture string — so that channel is simply absent. Callers must treat a missing
-    key as "no query vector for this channel" and skip it rather than substituting another
-    channel's vector, which would answer a different question with full confidence.
-    """
+    """Every text-space query vector an IMAGE can supply, from ONE vision call."""
     from app.models.vision_analysis import (
         ASPECT_SERIALIZERS,
         serialize_vision_analysis_to_text,

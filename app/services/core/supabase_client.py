@@ -59,20 +59,7 @@ def log_sink_write():
 
 
 def read_rpc(sb, func: str, params: Optional[Dict[str, Any]] = None):
-    """Build a READ-ONLY RPC call, sent over GET so a transient blip can be retried.
-
-    PostgREST sends every `.rpc()` as POST, and the retry patch below refuses to repeat a
-    POST because it cannot tell a SELECT from a credit debit. A function declared STABLE
-    or IMMUTABLE may be called with GET instead — and PostgREST answers 405 if it is not,
-    so the database's own volatility stays the authority and no list here can go stale.
-
-    Use this for every read-only RPC on a path that runs after an idle gap (every cron:
-    Supabase closes the pooled connection between ticks, so the first call of the tick is
-    the one that dies). `app.utils.readonly_rpc` explains which argument shapes cannot make
-    the trip; they raise here rather than becoming a cast error inside Postgres.
-
-    Returns the builder, so call sites keep their `.execute()`.
-    """
+    """Build a READ-ONLY RPC call, sent over GET so a transient blip can be retried."""
     payload: Dict[str, Any] = dict(params or {})
     reason = read_rpc_param_error(func, payload)
     if reason:
@@ -83,23 +70,6 @@ def read_rpc(sb, func: str, params: Optional[Dict[str, Any]] = None):
 def repeatable_insert(sb, table: str, row: Dict[str, Any], *, id_field: str = "id"):
     """Build an INSERT the retry patch below is ALLOWED to repeat. The write-side twin
     of `read_rpc`.
-
-    A plain `.insert()` is a bare POST, so `_is_safe_to_repeat` refuses it — a disconnect
-    after the server committed is indistinguishable from one before, and repeating would
-    write the row twice. That refusal is right, and its price is that a transient blip
-    DROPS the row instead.
-
-    Minting the primary key here removes the ambiguity: an upsert replaying the same `id`
-    collapses onto whatever the first attempt left behind. `.upsert()` sends
-    `Prefer: resolution=merge-duplicates`, which is exactly what the patch already
-    whitelists, so the retry covers the write without any change to the patch.
-
-    Both halves matter for a cost row. A dropped one under-reports spend and a doubled one
-    over-reports it; both are valid numbers, so neither raises and no cost view can tell.
-    `ai_call_logger` was buffering failed `ai_usage_logs` rows and re-INSERTing them with no
-    key, which is the doubling half taken by hand one layer above the patch that refuses it.
-
-    Returns the builder, so call sites keep their `.execute()`.
     """
     payload: Dict[str, Any] = dict(row)
     payload.setdefault(id_field, str(uuid.uuid4()))
@@ -111,25 +81,7 @@ def _install_postgrest_retry_once(
     initial_delay: float = 0.5,
     max_delay: float = 8.0,
 ) -> None:
-    """
-    Centralize transient-disconnect retry for EVERY Supabase/PostgREST query.
-
-    PostgREST keeps a pooled keep-alive HTTP connection; after an idle period
-    the server closes it, so the next query raises httpx "Server disconnected"
-    / ConnectError. We were patching this per call-site (job_monitor_service,
-    rag_service, …) — easy to miss. Instead, wrap the sync request-builder's
-    `.execute()` at the library boundary so a fresh request is re-issued
-    transparently on transient failures.
-
-    This single patch covers BOTH access paths:
-      • sync   — `supabase_client.client.table(...).execute()`
-      • async  — `supabase_client.async_client.table(...).execute()`, which
-                 dispatches the SAME sync `.execute()` via asyncio.to_thread.
-
-    Discovers the builder classes that define their own `execute` (rather than
-    hardcoding class names) so it survives postgrest version bumps. Non-retryable
-    errors (per should_retry_exception) propagate immediately.
-    """
+    """Centralize transient-disconnect retry for EVERY Supabase/PostgREST query."""
     global _postgrest_retry_installed
     if _postgrest_retry_installed:
         return
@@ -141,22 +93,7 @@ def _install_postgrest_retry_once(
     _IDEMPOTENT_METHODS = {"GET", "HEAD", "PUT", "PATCH", "DELETE"}
 
     def _is_safe_to_repeat(builder) -> bool:
-        """Whether re-issuing this request can duplicate an effect.
-
-        A transient "Server disconnected" is AMBIGUOUS: the server may have
-        committed the write and died before answering. Re-issuing a SELECT or a
-        filtered PATCH/DELETE is free; re-issuing an INSERT creates a second row,
-        and re-issuing an RPC runs the function twice — `append_stage_history`
-        would append the same event twice, `charge_cron` would debit twice.
-
-        Audit #12: this patch wrapped every builder's execute() unconditionally,
-        so the convenience of transparent retry was being bought with silent
-        duplicates on exactly the calls where a duplicate matters.
-
-        Upserts are the one POST that IS safe — they carry
-        `Prefer: resolution=merge-duplicates` and collapse onto the conflict
-        target — so they keep their retry.
-        """
+        """Whether re-issuing this request can duplicate an effect."""
         request = getattr(builder, "request", None)
         method = (getattr(request, "http_method", "") or "").upper()
         if method in _IDEMPOTENT_METHODS:
@@ -178,20 +115,7 @@ def _install_postgrest_retry_once(
         return
 
     def _say(level: str, message: str) -> None:
-        """Report a retry decision — to stderr when the failing request IS the log sink.
-
-        `SupabaseLoggingHandler._write_batch` inserts into `system_logs`, which is a POST
-        and therefore non-idempotent, so a transient disconnect during a log flush lands
-        in the branch below. That branch called `logger.error(...)`, which the root logger
-        routes straight back into the handler that just failed — and, because Sentry's
-        LoggingIntegration has `event_level=ERROR`, raised a Sentry event for it.
-
-        The handler already prints to stderr precisely to avoid that recursion; this patch
-        sits underneath it and defeated it. 27 Sentry events in one day, all of them a
-        dropped LOG ROW rather than dropped business data.
-
-        Business callers still get the ERROR and the Sentry event, which is the point.
-        """
+        """Report a retry decision — to stderr when the failing request IS the log sink."""
         if getattr(_log_sink_guard, "active", False):
             print(f"[postgrest-retry] {message}", file=sys.stderr)
             return
@@ -336,16 +260,6 @@ class SupabaseClient:
             logger.info("✅ Created httpx client with connection pooling (max_connections=50, max_keepalive=20)")
 
             # Create Supabase client.
-            #
-            # The service-role key is REQUIRED, not preferred. MIVAA has no RLS
-            # backstop by design — the architecture assumes service role — so
-            # falling back to the anon key does not degrade gracefully: writes
-            # fail and reads come back RLS-filtered, which the helpers below
-            # then report as "found nothing" rather than "misconfigured". One
-            # missing env var used to present as an empty platform.
-            #
-            # If an anon-scoped client is ever genuinely needed, build it
-            # separately and name it as such; never silently substitute it here.
             supabase_key = settings.supabase_service_role_key
             if not supabase_key:
                 raise ValueError(
@@ -887,7 +801,6 @@ class SupabaseClient:
     # value, contradicting the "never persist file_url" rule. The
     # pdf_processing_results table still exists but is now write-orphan; if
     # ever needed, prefer reading from background_jobs + document_chunks +
-    # document_images directly.
 
     async def save_knowledge_base_entries(self, document_id: str, chunks: list, images: list) -> dict:
         """

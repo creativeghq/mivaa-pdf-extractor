@@ -51,28 +51,6 @@ BASELINE_PATH = ROOT / ".github" / "ruff-baseline.json"
 TARGET = "app/"
 
 # At zero today. Keep them there.
-#
-#   F821  undefined name.        41 -> 0. The whole bug class: a search path that never
-#         searched, six endpoints that always 500'd, four modules using an unimported
-#         module. An undefined name is code that cannot run.
-#   F811  redefinition.          10 -> 0. Not hygiene — it discards the earlier binding
-#         and which one you get depends on your line number. Three of the ten were live
-#         bugs, including an exception handler registered against a different class than
-#         the one being raised.
-#   F401  unused import.        371 -> 0. Individually harmless, but 371 of them are
-#         what made the two rules above invisible: nobody scans a 400-line report. Held
-#         at zero because it is now free to hold there — `ruff --fix` removes them.
-#   F541  f-string, no fields.  139 -> 0. Same argument: pure noise, now absent.
-#   F841  unused local.         53 -> 0. Cleared by dropping the binding while KEEPING
-#         the call, which is why ruff's own --unsafe-fixes was not used: it deletes the
-#         whole statement, and most of these were `x = something()` where the call has
-#         side effects and only the name was dead.
-#   F403/F405 star imports.      27 -> 0. app/schemas/__init__.py bound 22 names via
-#         five `import *`, so neither ruff nor a reader could tell whether its __all__
-#         was honest. Now explicit.
-#   invalid-syntax               A file ruff cannot parse is unchecked AND reports clean,
-#         which is worse than any finding. app/api/images.py sat like that behind a
-#         wrong requires-python.
 ZERO_TOLERANCE = {
     "F821", "F811", "F401", "F541", "F841", "F403", "F405", "W605", "invalid-syntax",
 }

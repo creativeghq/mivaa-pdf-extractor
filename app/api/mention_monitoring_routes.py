@@ -1,45 +1,4 @@
-"""
-Mention Monitoring API Routes — internal product/brand flow + external API.
-
-Mirror of `price_monitoring_routes.py` for the mention-monitoring path.
-
-Internal flow (product enrollment, session JWT):
-  POST   /api/v1/mention-monitoring/products/{product_id}/track
-  DELETE /api/v1/mention-monitoring/products/{product_id}/track
-  GET    /api/v1/mention-monitoring/products/{product_id}
-  POST   /api/v1/mention-monitoring/products/{product_id}/refresh
-  GET    /api/v1/mention-monitoring/products/{product_id}/feed
-  GET    /api/v1/mention-monitoring/products/{product_id}/history
-  GET    /api/v1/mention-monitoring/products/{product_id}/summary
-  GET    /api/v1/mention-monitoring/products/{product_id}/llm-visibility
-  GET    /api/v1/mention-monitoring/products/{product_id}/llm-visibility-trend
-  GET    /api/v1/mention-monitoring/products/{product_id}/ai-overview-history
-  POST   /api/v1/mention-monitoring/products/{product_id}/probe-llm
-
-Subject-id flow (brand/keyword + admin lookups):
-  POST   /api/v1/mention-monitoring/track
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}
-  PUT    /api/v1/mention-monitoring/track/{tracked_mention_id}
-  DELETE /api/v1/mention-monitoring/track/{tracked_mention_id}
-  POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/refresh
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/feed
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/history
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/summary
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/llm-visibility
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/llm-visibility-trend
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/ai-overview-history
-  POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/probe-llm
-  POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/exclude
-  POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/include
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/exclusions
-  POST   /api/v1/mention-monitoring/track/{tracked_mention_id}/promote
-  GET    /api/v1/mention-monitoring/track/{tracked_mention_id}/share-of-voice
-
-Cross-flow:
-  POST   /api/v1/mention-monitoring/classifier-correction
-  POST   /api/v1/mention-monitoring/cron-refresh        (x-cron-secret)
-  POST   /api/v1/mention-monitoring/cron-probe-llm      (x-cron-secret)
-"""
+"""Mention Monitoring API Routes — internal product/brand flow + external API."""
 
 import logging
 import os

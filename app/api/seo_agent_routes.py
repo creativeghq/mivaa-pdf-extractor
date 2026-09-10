@@ -1,24 +1,4 @@
-"""
-SEO Agent Routes — internal-only DataForSEO dispatch surface.
-
-Used exclusively by the KAI agent's SEO toolkit (supabase/functions/_shared/
-tools/seo-agent-tools.ts and friends). Auth: `x-cron-secret` header — same
-secret used by mention-monitoring + price-monitoring crons.
-
-Endpoint design:
-  - One generic dispatcher: `POST /api/v1/seo-agent/dataforseo/{kind}`
-    where {kind} maps to a method on `DataForSEOUnifiedClient`. The body is
-    forwarded as **kwargs. This lets us add new endpoints without adding a
-    new HTTP route every time.
-  - Plus a handful of composed routes for multi-step audits (URL audit,
-    site review, brand search audit) that orchestrate multiple DataForSEO
-    calls + external services (Firecrawl, the existing seo-analyze edge
-    function).
-
-Cost: every call goes through the unified client which logs to ai_usage_logs
-with per-attribution metadata. Caller (the agent tool) supplies user_id +
-workspace_id in the request body.
-"""
+"""SEO Agent Routes — internal-only DataForSEO dispatch surface."""
 
 import logging
 import os
@@ -204,13 +184,10 @@ class SiteReviewRequest(BaseModel):
 @router.post("/site-review")
 async def site_review(request: Request, body: SiteReviewRequest):
     """Composite domain audit:
-       - domain_rank_overview   (rank, traffic, ranking-keywords count)
-       - ranked_keywords        (top organic keywords by traffic)
-       - competitors_domain     (top competitors)
-       - backlinks_summary      (referring domains, total backlinks, spam score)
-
-    Calls run in parallel. Per-section failures don't fail the whole call.
-    Internal cost: ~$0.005-0.012 depending on which sections are enabled.
+    - domain_rank_overview   (rank, traffic, ranking-keywords count)
+    - ranked_keywords        (top organic keywords by traffic)
+    - competitors_domain     (top competitors)
+    - backlinks_summary      (referring domains, total backlinks, spam score)
     """
     _check_secret(request)
     import asyncio
@@ -342,12 +319,6 @@ async def brand_search_audit(request: Request, body: BrandSearchAuditRequest):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OnPage long-running orchestration helpers
-#
-# OnPage crawls are async (POST → poll). The agent tool can either:
-#  (a) call /onpage/start then poll /onpage/status until ready
-#  (b) call /onpage/quick-page for a single-page instant audit (Lighthouse +
-#      content_parsing in parallel) — returns ~10s, no polling needed.
-# ─────────────────────────────────────────────────────────────────────────────
 
 class OnpageStartRequest(BaseModel):
     target: str

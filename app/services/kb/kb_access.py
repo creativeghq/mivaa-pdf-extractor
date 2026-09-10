@@ -71,18 +71,7 @@ async def kb_query_vector(
     user_id: Optional[str] = None,
     job_id: Optional[str] = None,
 ) -> Optional[List[float]]:
-    """Embed query text into the KB's 1024D text space. The only way to do this.
-
-    `input_type="query"` (via `entity_type="query"`) is decided HERE, once. Voyage
-    embeds asymmetrically — a vector built in document mode sits in a slightly
-    different region from one built in query mode, and the model is trained so that
-    query-mode vectors score best against document-mode vectors. Getting it wrong costs
-    ranking quality and nothing else, which is exactly why it survived: no exception, no
-    zero, no failed probe, just quietly worse results.
-
-    Returns None when the embedding could not be produced. None means NO VECTOR — the
-    caller must skip the vector branch, never substitute one from somewhere else.
-    """
+    """Embed query text into the KB's 1024D text space. The only way to do this."""
     from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
     if not query or not query.strip():
@@ -115,33 +104,7 @@ async def resolve_kb_caller(
     requested_caller: Optional[str],
     workspace_id: Optional[str],
 ) -> str:
-    """Decide what kind of caller this REALLY is. Never take it from the body.
-
-    `caller` was a request-body field feeding the access scope directly
-    (`request.caller or "agent"`), and `caller="admin"` grants admin access levels plus
-    private docs. `PriceLookupDrawer` sends `caller: 'admin'` from the FRONTEND through
-    mivaa-gateway, and the gateway forwards the end user's own JWT for `/api/rag/*`
-    paths (deliberately — so MIVAA enforces ownership). So the assertion arrived on an
-    ordinary user token and was honoured unchecked: any authenticated member could send
-    one string and read the workspace's admin-level and private KB. Same defect as
-    MV2-12 on the sibling endpoint, one door along.
-
-    Two trusted shapes, mirroring `authorize_rag_workspace`:
-
-      * **Service caller** (`claims['service'] == 'mivaa'`, settable only by
-        `_validate_simple_api_key` — a Supabase user token cannot carry it). This is a
-        deliberate platform credential: `price-tools.ts` calls MIVAA directly with
-        MIVAA_API_KEY and asserts `caller: 'admin'` on purpose. Honour it. Absent an
-        explicit request, default to `agent`, NOT admin — several gateway paths forward
-        the service key on behalf of an ordinary user, and defaulting to admin there
-        would hand every user the admin scope through the back door.
-
-      * **A real user JWT** — derive from `workspace_members.role`. A request may always
-        narrow (asking for `public` is honoured) and may never widen: asking for `admin`
-        without the role clamps to `agent`.
-
-    Fails closed: an unreadable membership table yields `agent`, never `admin`.
-    """
+    """Decide what kind of caller this REALLY is. Never take it from the body."""
     requested = (requested_caller or "").strip().lower() or None
     if requested and requested not in VALID_CALLERS:
         logger.warning(f"Unknown KB caller {requested!r} — treating as 'agent'")
@@ -195,35 +158,7 @@ def resolve_kb_access_scope(
     *,
     per_doc_agent_gate: bool,
 ) -> Dict[str, Any]:
-    """What this caller may read from the KB: levels, category allow-list, shared scope.
-
-    ONE definition, shared by `/api/kb/search`, `/api/rag/search/knowledge-base` and
-    `/search/read-section`. A read-by-id endpoint that re-derived this slightly
-    differently would be a BOLA hole (the caller supplies the kb_doc_id), which is why
-    it was already shared between the last two — this just finishes the job.
-
-    `caller` must already have been through `resolve_kb_caller`. Passing a body-supplied
-    string here is the bug this module exists to prevent.
-
-    `accessible_category_ids` is None when no post-filter is needed (admin/public).
-
-    ── per_doc_agent_gate ────────────────────────────────────────────────────────────
-    This is NOT a preference. It is a statement about which gate the CORPUS RPC applies
-    downstream, and it is the one place the two endpoints genuinely differ:
-
-      * `kb_match_doc_chunks` (the agent path) enforces category `access_level` AND
-        per-doc `allowed_agents` inside the RPC. There, `visibility='private'` means
-        only "not published to the public KB website" — it is not an agent gate — so an
-        agent legitimately reads private docs. Pass True.
-      * `kb_match_docs` (the admin path) has no per-doc agent gate. `include_private`
-        is the ONLY thing standing between a non-admin and private content, so it must
-        track admin-ness. Pass False.
-
-    Passing True from a corpus with no per-doc gate silently widens a non-admin's read
-    to every private doc in the workspace. That is why it is a required keyword rather
-    than a default — there is no value that is right for both, so there is no default
-    that is safe to forget.
-    """
+    """What this caller may read from the KB: levels, category allow-list, shared scope."""
     query_lower = (query or "").lower()
     shared_id = kb_shared_workspace_id()
     shared_workspace_id = shared_id if workspace_id != shared_id else None

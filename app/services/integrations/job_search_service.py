@@ -1,25 +1,5 @@
-"""
-Job Search Service — discovery across DataForSEO Google Jobs, Perplexity Sonar,
+"""Job Search Service — discovery across DataForSEO Google Jobs, Perplexity Sonar,
 and Firecrawl careers-page scraping.
-
-Three sources, each implemented as a separate async method:
-
-  1. DataForSEO Google Jobs (task-based: `/serp/google/jobs/task_post` →
-     `/serp/google/jobs/task_get/advanced/{id}`; there is NO live endpoint).
-     Cheapest, broadest coverage (Google for Jobs aggregates Indeed, LinkedIn,
-     Glassdoor, ZipRecruiter etc.). Flat ~$0.0006/req.
-
-  2. Perplexity Sonar with `search_domain_filter=[linkedin.com/jobs, indeed.com,
-     glassdoor.com, weworkremotely.com, ...]` and a JSON-schema response. Reads
-     job pages directly when DataForSEO misses them. ~$0.005/sweep.
-
-  3. Firecrawl scrape of user-pinned career-page URLs with a `JobListing[]`
-     extraction schema. Direct from companies' own pages — highest signal,
-     pays Firecrawl credits per scrape.
-
-Each adapter returns `List[JobHit]`. The orchestrator (`job_research_service`)
-canonicalizes URLs, dedupes by content_hash, then hands the survivors to the
-classifier.
 """
 
 from __future__ import annotations
@@ -49,8 +29,6 @@ logger = logging.getLogger(__name__)
 # semaphores (6 + 5) that ran concurrently within one refresh, so ~11 requests
 # hit Firecrawl at once and it returned 429 for a third of the boards (which
 # then failed with no retry). One global concurrency cap + a minimum spacing
-# between requests keeps us under the plan limit; 429s are retried with
-# exponential backoff honouring Retry-After instead of dropping the source.
 _FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 _FIRECRAWL_MAX_CONCURRENCY = int(os.getenv("FIRECRAWL_MAX_CONCURRENCY", "3"))
 _FIRECRAWL_MIN_INTERVAL_S = float(os.getenv("FIRECRAWL_MIN_INTERVAL_S", "0.4"))
@@ -74,13 +52,6 @@ async def firecrawl_scrape(payload: Dict[str, Any], *, api_key: str,
     """POST to Firecrawl /scrape under the global concurrency cap, retrying on
     429 (and transient 5xx / timeouts) with exponential backoff. Returns the
     parsed JSON body; raises on non-retryable errors or exhausted retries.
-
-    The target URL is SSRF-checked here, at the chokepoint, rather than at each
-    call site (M3-9, #16). Fetching *through* a third party does not remove the
-    primitive, it relocates it: Firecrawl will happily resolve an internal
-    hostname or a link-local address on our behalf and hand back the body. Both
-    call sites feed it model-derived or stored URLs, and the RSS path in this
-    same file was already guarded — the asymmetry was the bug.
 
     Raises:
         SSRFError: if the payload names a URL that must not be fetched.
@@ -258,14 +229,9 @@ def _is_category_page_url(url: str) -> bool:
     """Heuristic: True if the URL is a category / topic-landing / job-board
     INDEX page (lists many jobs) vs an individual job posting (one specific
     role with apply CTA). Strategy:
-      1. POSITIVE signal first — if the path has a 4+ digit number ANYWHERE,
-         it's almost certainly a job ID → NOT a category. Same for ?jk=<hash>
-         and known patterns like /viewjob, /job-listing.
-      2. Otherwise check for explicit category indicators (/jobs/category/,
-         path ending in /jobs or /jobs/?, /X-jobs path suffix).
-      3. Otherwise: short slug-only last segment with no digits and looks like
-         a topic word (e.g. /python, /remote-senior-python-developer, /jobs/python)
-         → category.
+    1. POSITIVE signal first — if the path has a 4+ digit number ANYWHERE,
+    it's almost certainly a job ID → NOT a category. Same for ?jk=<hash>
+    and known patterns like /viewjob, /job-listing.
     """
     if not url:
         return False
@@ -366,18 +332,7 @@ def _looks_hallucinated_url(url: str) -> bool:
 
 
 def _looks_like_category_title(title: Optional[str]) -> bool:
-    """Title-shape heuristic for aggregator/category pages. Catches:
-      - "25 Python jobs in Developer / Engineer"
-      - "Python Job Board"
-      - "Best Remote Python Jobs in NYC, NY 2026"
-      - "Top Remote Python Jobs in San Francisco Bay Area, CA"
-      - "Remote Python Jobs (May 2026)"
-      - "Python Jobs" (bare plural)
-    Does NOT catch real job titles like:
-      - "Senior Software Engineer - Backend/Python - USA Only (100% Remote)"
-      - "Principal Backend Engineer AI (Python) in Remote"
-      - "Drupal with Python Developer (Senior)"
-    """
+    """Title-shape heuristic for aggregator/category pages. Catches:"""
     if not title:
         return False
     t = title.strip()
@@ -470,11 +425,6 @@ async def search_via_dataforseo_jobs(
     # 100+ char query that matches nothing. Use ONLY the user's primary
     # keyword (first in the list); rely on Google's own synonym matching for
     # nearby titles.
-    # FAN-OUT ACROSS ALL KEYWORDS (fix 2026-07-25). Google Jobs takes ONE literal
-    # search phrase per task, so the old code searched keywords[0] only — every
-    # keyword after the first (e.g. "Vibe Coder", "Product Builder") was never
-    # queried. Now we post one task PER keyword and merge, so nothing is dropped.
-    # Bounded by max_keywords (generous, not 1) with truncation logged by name.
     kw_list = [k.strip() for k in (keywords or []) if k and k.strip()]
     if not kw_list:
         return []
@@ -627,15 +577,6 @@ def _to_int(v: Any) -> Optional[int]:
 
 # ────────────────────────────────────────────────────────────────────────────
 # Source 5 (v0.4) — DataForSEO general Google web SERP
-#
-# Why this exists: `search_via_dataforseo_jobs` only hits Google's STRUCTURED
-# Jobs index (pages with Schema.org JobPosting markup). For niche queries,
-# Google Jobs is sparse. The general web SERP catches Lever / Greenhouse /
-# Workable / SmartRecruiters / company-blog career announcements that Google
-# indexes as regular pages but doesn't always promote into Google Jobs.
-#
-# Same DataForSEO auth, similar cost (~$0.0006/req).
-# ────────────────────────────────────────────────────────────────────────────
 
 async def search_via_dataforseo_serp(
     *,
@@ -712,12 +653,6 @@ async def search_via_dataforseo_serp(
                         canonical = canonicalize_url(url)
                         host = domain_of(url)
                         # v0.4.1: NEVER set company from the host for google_serp hits.
-                        # The host is the aggregator (arc.dev, weworkremotely.com,
-                        # careers-cotiviti.icims.com); the actual employer must be
-                        # extracted from the title or description by the classifier
-                        # downstream. Leaving company=None forces honest attribution
-                        # rather than misleading "Arc" / "Cotiviti" / "Weworkremotely"
-                        # labels.
                         out.append(JobHit(
                             url=url,
                             canonical_url=canonical,
@@ -757,15 +692,6 @@ async def search_via_dataforseo_serp(
 
 # ────────────────────────────────────────────────────────────────────────────
 # LinkedIn enrichment — read the REAL (re)posted date + closed status
-#
-# LinkedIn job-view URLs that come from SERP/Perplexity carry no date in the
-# search result, and LinkedIn RE-POSTS long-closed roles, so we can't trust them.
-# But LinkedIn's public guest endpoint exposes both signals without auth:
-#   • the visible "(Re)posted X ago" date  → real recency
-#   • "No longer accepting applications"     → the role is CLOSED
-# We fetch it per LinkedIn hit, set the true posted_at, and drop closed roles.
-# Reachable from the prod IP (verified 2026-06-28).
-# ────────────────────────────────────────────────────────────────────────────
 
 _LINKEDIN_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -825,16 +751,6 @@ async def enrich_linkedin_listings(hits: List[JobHit], *, max_concurrent: int = 
 
 # ────────────────────────────────────────────────────────────────────────────
 # Universal lead verification — makes broad discovery (Perplexity / SERP) reliable
-#
-# Perplexity and Google-SERP are LEAD generators: they reach the open web (so we
-# are NOT limited to a hand-curated board list), but they don't guarantee a URL is
-# real, open, or recent. Before any such lead enters results we fetch the ACTUAL
-# page and confirm: it exists, it is a single applyable posting, it is not closed,
-# and its TRUE posted date. LinkedIn uses its free guest endpoint; everything else
-# uses Firecrawl (JS-render + anti-bot). Verdicts cached 7 days so daily refreshes
-# don't re-pay. EVERY Firecrawl call is cost-attributed to the search/user. Already-
-# structured sources (careers scrape, RSS) are trustworthy and skip verification.
-# ────────────────────────────────────────────────────────────────────────────
 
 _DISCOVERY_SOURCES = {"perplexity_sonar", "google_serp"}
 
@@ -1162,15 +1078,6 @@ def load_manual_review_boards() -> List[Dict[str, str]]:
 
 # ────────────────────────────────────────────────────────────────────────────
 # No-board fallback — discover the right local job boards ON THE FLY
-#
-# When a search targets a location we haven't curated boards for (e.g. Greece,
-# where kariera.gr / skywalker.gr / jobfind.gr aren't in the perplexity_domain
-# list), the engine is blind to where those jobs actually live. Rather than
-# require manual board curation up front, we run ONE cheap Haiku call per refresh
-# that asks "where are these roles posted in this location?" and feed the answer
-# into the Perplexity domain filter for THIS run only. Temporary + per-search,
-# nothing persisted — a stop-gap until an operator curates real boards.
-# ────────────────────────────────────────────────────────────────────────────
 
 _ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
@@ -1348,12 +1255,6 @@ async def search_via_perplexity(
     # fill a structured JSON array when it can't find enough real ones (e.g.
     # company='Acme Inc.', palindromic Glassdoor IDs, sequential WeWorkRemotely
     # IDs 12345/12346/12347). Three counter-measures applied:
-    #   1. Cap limit aggressively (5 not 15) — less pressure to invent
-    #   2. Explicit anti-hallucination directive + permission for empty results
-    #   3. Post-call hallucination detector (see _looks_like_hallucinated_hit)
-    # v0.4.5: bump cap 5→7. The anti-hallucination guards (placeholder companies,
-    # sequential/palindromic IDs) catch fabricated entries; more headroom lets
-    # Sonar surface 2-3 real listings per call instead of stopping at 1-2.
     capped_limit = min(limit, 7)
     user_prompt = render(
         await load_prompt("extraction", "job_posting_search", stage="job_research"),
@@ -1369,10 +1270,6 @@ async def search_via_perplexity(
     # v0.4: load the operator-curated list from job_research_sites (editable in the
     # hidden admin page at /admin/knowledge-base/job-sources). Falls back to the
     # hardcoded constant if the DB read fails or returns nothing.
-    # Discovered/region-specific domains (extra_domains) go FIRST so they survive
-    # the 10-domain cap — otherwise a location search's local boards (e.g. Greek
-    # boards passed in by the no-board fallback) would be truncated away behind
-    # the global defaults.
     base_domains = _load_perplexity_domains_from_db()
     domains: List[str] = []
     for d in list(extra_domains or []) + base_domains:
@@ -1541,15 +1438,6 @@ async def search_via_firecrawl_careers(
         # on most board layouts (4dayWeek/TheProductFolks/ChoppingBlock all yielded
         # nothing despite the jobs being in the HTML). onlyMainContent off + a
         # render wait so JS-built boards populate.
-        #
-        # Daily flow: when recent_days is set, extract ONLY the freshest postings.
-        # A big archive board (hundreds of roles) otherwise blows the render /
-        # extraction budget and times out — the exact failure the daily "one day at
-        # a time" model is meant to avoid. Boards list newest-first, so we take the
-        # last `recent_days` days when dates are shown, else the top N. A board with
-        # nothing new that day correctly returns 0 (the digest reports it as an
-        # empty source) — that is "slowly and steady", not a miss, because the
-        # sent-ledger dedup means an overlapping window never double-delivers.
         if recent_days and recent_days > 0:
             _TOP_N_UNDATED = 30
             _EXTRACT_PROMPT = render(
@@ -1670,16 +1558,6 @@ async def search_via_firecrawl_careers(
 
 # ────────────────────────────────────────────────────────────────────────────
 # Source 4 — RSS feeds (v0.3)
-#
-# Users pin RSS URLs (their target companies' careers feeds, WeWorkRemotely,
-# remoteok.com/remote-jobs.rss, HN "Who's Hiring" archives, etc.). We poll each
-# feed, extract item title + link + description, and emit JobHits. No LLM here
-# — the classifier downstream decides relevance like for the other sources.
-#
-# Implementation note: we parse RSS/Atom by hand via xml.etree to avoid a
-# `feedparser` dependency. Feeds are small (typically <50 items × <2KB each),
-# so the parse is microseconds even on the slow path.
-# ────────────────────────────────────────────────────────────────────────────
 
 # Pentest #250 I1: defusedxml forbids DTDs/entity expansion, so a hostile RSS feed
 # URL can't billion-laughs the worker. Drop-in for stdlib ElementTree (same
@@ -1889,17 +1767,6 @@ def dedupe_hits(hits: List[JobHit]) -> List[JobHit]:
 
 # ────────────────────────────────────────────────────────────────────────────
 # Source 5 — ATS boards (Greenhouse / Lever / Ashby public JSON)
-#
-# Roles are published to the company's ATS FIRST and only sometimes syndicate
-# out to job boards, so this is the earliest + most complete source we have.
-# All three expose documented, unauthenticated JSON — no scraping, no Firecrawl
-# credits, no anti-bot fragility:
-#   greenhouse : GET boards-api.greenhouse.io/v1/boards/{slug}/jobs
-#   lever      : GET api.lever.co/v0/postings/{slug}?mode=json
-#   ashby      : GET api.ashbyhq.com/posting-api/job-board/{slug}
-# Configured in job_research_sites as site_type='ats_board',
-# url_or_domain='<provider>:<slug>' (a full board URL is also accepted).
-# ────────────────────────────────────────────────────────────────────────────
 
 _ATS_PROVIDERS = ("greenhouse", "lever", "ashby")
 

@@ -1,24 +1,4 @@
-"""Guards for the mivaa#18 audit fixes (M5-1 … M5-9).
-
-One file per audit, matching `test_audit_12_gates_hold.py` and
-`test_audit_16_gates_hold.py`.
-
-Static, not runtime: CI installs pytest alone (`deploy.yml`) and these unit tests
-import nothing from `app`, so each case parses source instead. That constrains what
-can be checked — a guard here proves the SHAPE is gone, not that the replacement
-behaves. Where a case can only assert an absence, it says so rather than implying
-more. The exception is `app.utils.text_fold`, which is pure stdlib and therefore
-importable; those cases assert real behaviour.
-
-Every case below was watched to FAIL against the pre-fix source before being
-committed. A guard nobody has seen fire is a guard that might be asserting nothing.
-
-NOT covered here, deliberately:
-  * M5-2's product half, M5-7 and M5-10 were already fixed by the #16 batch and by
-    #250 H1 before this audit was written; their guards live with those fixes.
-  * The paid-door metering (M5-3/M5-4) is guarded by `test_paid_route_metering.py`,
-    which now enumerates the doors from source instead of listing three by hand.
-"""
+"""Guards for the mivaa#18 audit fixes (M5-1 … M5-9)."""
 
 import ast
 import importlib.util

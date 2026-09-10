@@ -1,34 +1,4 @@
-"""Guards for the mivaa#20 image-processing fixes (M7-3, M7-4, M7-5).
-
-M7-1 and M7-2 landed earlier and are held elsewhere: `test_no_undefined_attribute_access`
-sweeps for the `self.supabase.client` shape that made both dead, and the workspace
-predicate M7-2 needed is in `material_visual_search_service` itself.
-
-M7-3 is the one whose own file already forbade it. Forty lines above the offending code,
-a comment states the rule: the ingestion path uses real Anthropic tool_use with a forced
-tool_choice — "no regex repair, no JSON-parse fallback". Underneath, when Claude returned
-text instead of a tool block, the reply went through `_parse_vision_analysis_json`:
-fenced-block extraction and a first-`{...}` match.
-
-Why that mattered more than an ordinary parser: the repaired payload was persisted as
-`vision_analysis` and then fed the Voyage understanding embedding. So an unvalidated
-reply became a vector that is indexed and ranked exactly like a real one, and nothing
-downstream can tell them apart — `_validate_vision_analysis` checks the SHAPE, and a
-repaired fragment can be perfectly well-shaped. A tight token budget produces a truncated
-answer; recovering JSON from it recovers a fragment and gives it the standing of a
-complete analysis.
-
-M7-4 is the same class on the path taken by the images the primary classifier was LEAST
-sure about — exactly where an unvalidated verdict does the most damage.
-
-M7-5 is the twelfth instance of the two-unchecked-ids class, and the finding scoped it
-honestly: a guard could have existed in a caller, it just did not exist anywhere.
-
-WATCHED TO FAIL: the file was run against the pre-fix source. 14 of 15 cases fired. The
-one that passes both ways is `test_the_ingestion_vision_path_still_forces_its_tool`,
-which pins the PREMISE rather than the fix — the vision call already forced its tool, and
-every M7-3 case is guarding a contract nobody is asking for if that stops.
-"""
+"""Guards for the mivaa#20 image-processing fixes (M7-3, M7-4, M7-5)."""
 
 import ast
 import re

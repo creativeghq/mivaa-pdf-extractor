@@ -1,30 +1,4 @@
-"""
-Bestprice.gr adapter — Firecrawl scrape of the site search page.
-
-Bestprice.gr does not publish a public search API for non-merchants. We
-scrape the public search results page sorted by price ascending so the
-top row is the cheapest offer for the query.
-
-URL format the user verified works:
-  https://www.bestprice.gr/cat/<category-id>/<slug>.html?q=<query>&from=cat&o=2
-
-But we don't always know the right category id up front. The site also
-honours a category-less search at:
-  https://www.bestprice.gr/search?q=<query>&o=2
-
-`o=2` is the "price ascending" sort. We use the simpler URL — the
-extractor only needs to read the top row.
-
-ToS caveat: bestprice.gr's terms prohibit automated scraping. Treat the
-adapter the same way as the Skroutz one — fine at admin-triggered
-volumes, not safe to scale without a commercial agreement.
-
-One scrape per query → at most one PriceHit. Stricter extraction now:
-result is dropped unless the matched product name plausibly shares
-tokens with the query, to avoid the "fallback featured product"
-false-positive class we saw on bestdeals.gr (which is a different,
-unrelated site we accidentally targeted in a previous iteration).
-"""
+"""Bestprice.gr adapter — Firecrawl scrape of the site search page."""
 
 from __future__ import annotations
 

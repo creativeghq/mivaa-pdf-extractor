@@ -1,24 +1,4 @@
-"""
-Product Relationship Service
-
-Related products are served from the gold-layer `product_edges` table:
-- material_family (same material type)
-- pattern_match (same finish + overlapping colors)
-- collection (same collection / designer / factory)
-- complementary (products that work together, via the category map)
-- alternative (similar technical specs — slip, fire rating, dimensions)
-
-These five deterministic edge types are DERIVED IN SQL from silver
-(`products.attributes` canonical facets, else `products.metadata`) by the
-`rebuild_product_edges(workspace)` RPC and read back with a single indexed
-query via `get_related_products(...)`. The old per-query full-catalog Python
-scans (five workspace-wide table pulls per call) are gone — the read path is
-now O(neighbours), and the relationships are persisted so every consumer
-(search enrichment, agent tools, moodboard/quote surfaces) shares one edge set.
-
-`custom` relationships stay LIVE: they are per-prompt and not a stable edge, so
-they are evaluated by the LLM at query time and never persisted.
-"""
+"""Product Relationship Service"""
 
 import asyncio
 import logging
@@ -231,22 +211,7 @@ class ProductRelationshipService:
         max_products: int = 300,
         concurrency: int = 8,
     ) -> int:
-        """
-        Extract complementary/alternative edges STATED IN CATALOG TEXT via Haiku.
-
-        Rule-derived edges only connect products whose structured fields line up.
-        This reads each product's catalog prose (its own description + linked
-        `document_chunks`) and captures relationships the manufacturer wrote out —
-        "complete with SKIRTING 7x60", "replaces AVANT 60" — that no spec match
-        recovers. Persisted with derived_from='llm', so `rebuild_product_edges`
-        never touches them.
-
-        Scoped to `product_ids` (a job's products) when given, else the whole
-        workspace up to `max_products`. Best-effort and idempotent: existing llm
-        edges for the processed sources are refreshed, not accumulated.
-
-        Returns the number of edges written.
-        """
+        """Extract complementary/alternative edges STATED IN CATALOG TEXT via Haiku."""
         try:
             if product_ids:
                 pids = list(dict.fromkeys(product_ids))

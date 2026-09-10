@@ -15,25 +15,7 @@ from .common import BaseResponse, PaginationParams
 
 
 class JobStatus(str, Enum):
-    """`background_jobs.status` allowed values.
-
-    These are the ONLY values Postgres will accept — see the
-    `background_jobs_status_check` CHECK constraint. Writing any other
-    value silently fails (the UPDATE is rejected). If you find yourself
-    needing a new status, add it BOTH here AND in the DB constraint via
-    a migration.
-
-    Migration history:
-        2026-05-01: 'retrying' added (edge functions were already trying
-                    to write it; the constraint had been silently rejecting
-                    the update for weeks). See migration
-                    `add_retrying_to_background_jobs_status_check`.
-
-    The previous version of this enum had values 'queued', 'running',
-    'paused' that were aspirational only — not in the DB constraint.
-    Using them would have produced silent failures. Removed for that
-    reason.
-    """
+    """`background_jobs.status` allowed values."""
 
     PENDING = "pending"
     PROCESSING = "processing"

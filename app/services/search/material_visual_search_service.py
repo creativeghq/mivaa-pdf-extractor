@@ -412,12 +412,6 @@ class MaterialVisualSearchService:
         # whole path raised AttributeError on every call: the fallback that exists to keep
         # search working during an outage failed instantly, and the outage presented as a
         # search that returned nothing.
-        #
-        # Repairing the attribute ALONE would have been worse than leaving it dead. The
-        # query below filters on material_types and limit only — no tenant predicate — over
-        # a service-role connection, so a working fallback is a cross-tenant read of every
-        # workspace's products. Same file and same defect as #16 M3-1. The predicate lands
-        # in the same change, and fails closed exactly as the VECS path above does.
         if not request.workspace_id:
             logger.warning(
                 "material visual search fallback called without workspace_id - "
@@ -569,16 +563,6 @@ class MaterialVisualSearchService:
                 # authenticated caller could point it at 169.254.169.254 or any RFC1918
                 # address and use this service as a proxy into the private network
                 # (invariant 7).
-                #
-                # `aspect_query._resolve_image_base64` already does exactly this job
-                # correctly for the SAME `query_image` field on the sibling endpoint —
-                # it now delegates to `ssrf_guard.safe_fetch_bytes` (https-only,
-                # every redirect hop re-validated, 20MB cap enforced mid-stream). Two
-                # implementations of one operation, one of them guarded, is how the
-                # guarded one stops being the one that runs. Reuse it.
-                #
-                # The old SSRF guard test declared ONE file (image_download_service),
-                # which is why this survived. It now walks the tree.
                 from app.services.search.aspect_query import _resolve_image_base64
 
                 encoded, resolve_err = await _resolve_image_base64(request.query_image)
@@ -610,14 +594,6 @@ class MaterialVisualSearchService:
                     # text — same model and embedding space as the aspect
                     # collection rows. No fallback embedder exists, so this
                     # cannot silently become a wrong-space query vector.
-                    #
-                    # We embed the user's query ONCE and share it across all
-                    # 4 aspect collections. The 4 collections rank against
-                    # different per-aspect row text (color text vs texture
-                    # text vs style text vs material text), so per-aspect
-                    # signal still comes from the row side. Doing 4 identical
-                    # Voyage calls (the previous behavior) wasted ~$0.0003
-                    # per search and produced byte-identical query vectors.
                     try:
                         from app.services.embeddings.real_embeddings_service import (
                             RealEmbeddingsService,
@@ -1042,20 +1018,7 @@ class MaterialVisualSearchService:
         supabase: Any,
         workspace_id: str
     ) -> List[Dict[str, Any]]:
-        """
-        Search for products and images by text description matching.
-
-        Searches products.name, products.description and
-        document_images.caption for text matches, scoped to one workspace.
-
-        `workspace_id` is required and this raises without it. MIVAA runs
-        every query on the service-role client, so there is no RLS backstop:
-        an unscoped predicate here returns products, descriptions and
-        metadata from every tenant on the platform. The VECS half of this
-        same search fails closed for the same reason — see the filter built
-        in `_perform_database_search`. Sharing a catalog across workspaces is
-        a deliberate, granted act that publishes into `catalog_master_products`
-        or `marketplace_listings`; it is never a widened read of `products`.
+        """Search for products and images by text description matching.
 
         Args:
             query_text: Text query to search for

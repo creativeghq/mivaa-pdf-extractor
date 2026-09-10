@@ -195,10 +195,6 @@ class PageEmbeddingService:
             # thread at a time, and every render here runs in a worker thread against
             # the SAME document. Without this lock, concurrency > 1 races inside the C
             # layer — which does not raise cleanly, it corrupts or segfaults.
-            #
-            # Serializing renders costs almost nothing: a page rasterizes in tens of
-            # milliseconds while the Voyage round-trip takes seconds, so the
-            # concurrency that matters (upload + embed) is untouched.
             render_lock = asyncio.Lock()
 
             async def _one(page_no: int) -> str:

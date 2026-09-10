@@ -1,17 +1,4 @@
-"""The schema-drift lint's own logic, checked without a database (mivaa#26 M13-3).
-
-`scripts/check_schema_drift.py` needs the live schema to do its job, and CI has the
-service-role key for that. This file guards the half that needs nothing: the AST
-extraction, and the rule about what gets skipped.
-
-That split matters. A lint whose extractor silently stops matching is worse than no
-lint — it reports "0 stale references" out of 0 pairs examined and looks exactly like a
-clean checkout. The cases below feed it synthetic source with known answers, including
-every shape it is supposed to REFUSE to guess at.
-
-The module is stdlib-only by design (`ast` + `urllib`), so unlike most of `app/` it can
-simply be imported here — CI installs pytest alone.
-"""
+"""The schema-drift lint's own logic, checked without a database (mivaa#26 M13-3)."""
 
 import importlib.util
 import sys

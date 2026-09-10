@@ -1,41 +1,4 @@
-"""
-Guard: a request-model field that no code reads (#277 audit).
-
-The defect class, stated once: **a parameter that is declared, accepted, validated, and then
-never read.** The caller sets it, the API takes it, nothing happens, nothing raises. The
-response is plausible — it is simply the response you would have got without the parameter.
-
-This is not hypothetical; it is how #277 stayed broken for months. `SearchRequest.aspect` was
-honored by exactly one branch of the strategy dispatch, and `visual_search` sent it to a
-different branch. Pydantic validated it. The branch ignored it. Every "find a similar texture
-to this image" returned plain visual similarity, confidently.
-
-A field being unread is worse than a missing feature, because the API *documents* it. The
-frontend sends `include_content` on every single search; MIVAA reads it nowhere, so a caller
-asking to exclude content receives it anyway. `enable_embedding` defaults to True and is never
-read, so a caller setting it False is billed for embeddings they asked to skip.
-
-ALLOWLIST POLICY — shrink-only. Every entry is a live defect with a reason, not an exemption.
-Fix one, delete its line. Adding a line requires justifying why a documented parameter that
-does nothing is acceptable, which it usually is not; the honest alternative is to delete the
-field from the model so the API stops advertising it.
-
-DETECTION, and the one way it lies. A field counts as "read" if its name appears ANYWHERE in
-app/ outside its own class body — a string key or an unrelated identifier is enough. That is
-deliberately generous, so it under-reports.
-
-It also over-reported, once, and the fix is below. `request.dict()` / `.model_dump()` reads
-every field of a model WITHOUT NAMING ANY, so a model consumed that way looked entirely unread
-while working perfectly. `CreateCategoryRequest.icon` and `.parent_category_id` were reported
-as dropped when `create_category` was in fact inserting them — via mass assignment, which is
-its own invariant-8 bug (now fixed with an allowlisted payload). `_models_consumed_wholesale()`
-now recognizes that pattern, so those fields are correctly seen as read.
-
-Both blind spots share a cause worth remembering: this guard reasons about NAMES, and a
-value can travel without its name. It cannot see the reverse case either — a field read by
-only ONE branch of several, the exact #277 shape — which is guarded separately by
-tests/unit/test_aspect_strategy_guard.py.
-"""
+"""Guard: a request-model field that no code reads (#277 audit)."""
 
 import ast
 import re
@@ -47,15 +10,6 @@ _ROOT = Path(__file__).resolve().parents[2]
 _APP = _ROOT / "app"
 
 # Known-unread fields, each a real defect awaiting a fix. SHRINK ONLY.
-#
-# Emptied by the #338 sweep. All ten original entries are resolved:
-#   - 6 belonged to DocumentUploadRequest / MMRSearchRequest / AdvancedQueryRequest, which no
-#     route referenced at all. Deleted the models rather than implementing dead knobs.
-#   - SearchRequest.include_content and ChatRequest.include_history are now honored.
-#   - CreateCategoryRequest.icon / .parent_category_id were false positives (see the module
-#     docstring) — stored all along via a mass assignment that is now an explicit payload.
-#
-# Keep it empty. An entry here is a documented parameter that does nothing.
 KNOWN_UNREAD: dict = {}
 
 

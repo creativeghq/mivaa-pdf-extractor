@@ -1,16 +1,4 @@
-"""
-Document Entities API Routes
-
-This module provides API endpoints for managing document entities
-(certificates, logos, specifications, marketing, bank statements, etc.)
-and their relationships with products.
-
-ARCHITECTURE:
-- Document entities are stored separately from products
-- Linked to products via product_document_relationships table
-- Support factory/group filtering for agentic queries
-- Managed in "Docs" admin page
-"""
+"""Document Entities API Routes"""
 
 import logging
 from typing import Dict, Any, Optional, List
@@ -117,17 +105,7 @@ async def get_document_entities(
     offset: int = Query(0, description="Number of entities to skip"),
     service: DocumentEntityService = Depends(get_document_entity_service), current_user: dict = Depends(get_current_user)
 ):
-    """
-    Get all document entities for a workspace.
-    
-    Supports filtering by:
-    - entity_type: certificate, logo, specification, marketing, bank_statement
-    - factory_name: Filter by specific factory
-    - factory_group: Filter by factory group
-    
-    Example agentic query: "Get all certifications for Castellón Factory"
-    → GET /api/document-entities?workspace_id=xxx&entity_type=certificate&factory_name=Castellón Factory
-    """
+    """Get all document entities for a workspace."""
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:

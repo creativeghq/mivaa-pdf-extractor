@@ -1,18 +1,4 @@
-"""
-Job Keyword Expansion — Haiku-driven keyword variant generation.
-
-For "Product Manager" the user almost always wants to also catch "Senior
-Product Manager", "PM", "Product Lead", "Principal PM", "Head of Product".
-Manually listing every variant is friction; a one-shot Haiku call covers it
-with high recall.
-
-When called:
-  - On first save (`JobResearchService.create()` runs this synchronously)
-  - On `POST /track/{id}/regenerate-keywords` (manual refresh of the variants)
-
-Cost: one Haiku tool-use call per tracked_job, ~$0.001. Cached on
-`tracked_jobs.expanded_keywords` so we never re-run unless asked.
-"""
+"""Job Keyword Expansion — Haiku-driven keyword variant generation."""
 
 from __future__ import annotations
 

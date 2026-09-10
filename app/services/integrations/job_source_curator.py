@@ -1,20 +1,4 @@
-"""
-Job-source self-curation (2026-06-30).
-
-Runs at the END of every refresh. Closes the discovery loop:
-  • tracks which board domains actually produced VERIFIED matches this run,
-  • AUTO-LEARNS new boards that Perplexity/SERP surfaced — promoting a domain
-    into the curated `perplexity_domain` list once it has yielded verified
-    matches for >=3 distinct employers across >=2 separate refreshes (proof it's
-    a real multi-employer board, not a one-off company page),
-  • bumps yield stats on curated sources that delivered,
-  • SELF-CLEANS: auto-disables domains WE auto-added that then go stale (>30d
-    with no yield). Operator-seeded rows are only FLAGGED, never auto-removed.
-  • writes a one-row audit per run to `job_source_review`.
-
-Best-effort: never raises into the refresh path. No external API calls — pure
-aggregation over data we already store.
-"""
+"""Job-source self-curation (2026-06-30)."""
 
 from __future__ import annotations
 

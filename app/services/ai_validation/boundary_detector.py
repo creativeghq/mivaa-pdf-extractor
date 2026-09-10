@@ -1,14 +1,4 @@
-"""
-Product Boundary Detection Service
-
-Detects product boundaries in PDF documents using:
-- Semantic embeddings
-- Structural markers (page breaks, headers, images)
-- Content similarity analysis
-- Visual layout analysis
-
-Helps identify where one product ends and another begins.
-"""
+"""Product Boundary Detection Service"""
 
 from typing import Dict, Any, List, Optional
 import logging

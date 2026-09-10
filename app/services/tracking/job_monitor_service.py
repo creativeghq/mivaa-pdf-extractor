@@ -1,15 +1,4 @@
-"""
-Job Monitoring and Auto-Recovery Service
-
-This service continuously monitors background jobs and automatically:
-1. Detects stuck jobs (processing too long without progress)
-2. Restarts stuck jobs from last checkpoint
-3. Kills zombie processes
-4. Cleans up orphaned data
-5. Reports health metrics
-
-Run as a background task in the FastAPI application.
-"""
+"""Job Monitoring and Auto-Recovery Service"""
 
 import asyncio
 import logging
@@ -35,18 +24,7 @@ except ImportError:
 
 
 class JobMonitorService:
-    """
-    Monitors background jobs and performs auto-recovery.
-
-    Features:
-    - Detect stuck jobs
-    - Auto-restart from checkpoints
-    - Kill zombie processes
-    - Health reporting
-    - Retry logic with exponential backoff
-    - Circuit breaker for database protection
-    - Query performance tracking
-    """
+    """Monitors background jobs and performs auto-recovery."""
 
     def __init__(
         self,
@@ -165,21 +143,7 @@ class JobMonitorService:
             logger.error(f"❌ Error in check_and_recover: {e}", exc_info=True)
 
     async def _detect_crashed_at_startup_jobs(self, max_age_seconds: int = 180) -> List[Dict[str, Any]]:
-        """
-        Fast-fail detection for jobs that crashed immediately at startup.
-
-        These jobs have:
-        - status = 'processing'
-        - progress = 0
-        - No metadata.stage (null)
-        - Heartbeat only from creation (same second)
-        - Been alive > max_age_seconds (default: 3 minutes)
-
-        This catches the scenario where the background task crashes before
-        the heartbeat loop or progress tracker starts (e.g., import errors,
-        missing dependencies, unhandled exceptions at function entry).
-        Normal jobs always write at least one checkpoint within 60 seconds.
-        """
+        """Fast-fail detection for jobs that crashed immediately at startup."""
         try:
             cutoff_time = (datetime.utcnow() - timedelta(seconds=max_age_seconds)).isoformat()
 

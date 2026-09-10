@@ -1,18 +1,4 @@
-"""
-AI Model Pricing Configuration
-
-Centralized pricing for all AI models used in the platform.
-Prices are per million tokens (input/output) unless otherwise specified.
-
-Last Updated: 2026-04-24
-Sources:
-- Anthropic: https://www.anthropic.com/pricing
-- OpenAI: https://openai.com/api/pricing/
-- Voyage AI: https://docs.voyageai.com/docs/pricing
-- HuggingFace: Time-based billing for inference endpoints
-
-IMPORTANT: Verify prices monthly and update this file.
-"""
+"""AI Model Pricing Configuration"""
 
 import logging
 from typing import Dict, Optional
@@ -91,15 +77,7 @@ class AIPricingConfig:
 
     @classmethod
     def _warn_on_pricing_drift(cls, model_key: str, db_row: Dict) -> None:
-        """Report a hardcoded price that disagrees with the authoritative table.
-
-        `ai_model_pricing` is the single source for USD; the dicts in this file
-        are a fallback copy for when it is unreachable. CLAUDE.md's rule for any
-        cached copy of a money quantity is a drift check against the derivation —
-        this is that check. It cannot live in SQL (the copy is Python) and it
-        cannot live in a unit test (the derivation is in the DB), so it runs where
-        both values are in hand: at lookup time.
-        """
+        """Report a hardcoded price that disagrees with the authoritative table."""
         if model_key in cls._drift_reported:
             return
         hard = (
@@ -650,22 +628,7 @@ class AIPricingConfig:
         image_pixels: int,
         include_markup: bool = True
     ) -> Dict[str, Decimal]:
-        """Cost of one voyage-multimodal call — the token term PLUS the pixel term.
-
-        `calculate_cost` cannot do this job: it only knows tokens, and for a rendered
-        catalog page the pixels are the overwhelming majority of the bill (a full page
-        is ~$0.0012 of pixels against ~$0.00006 of text). Routing a page embedding
-        through the token-only path would report a cost roughly 20× too low — a wrong
-        number that is still a valid Decimal, so nothing downstream could catch it.
-
-        Voyage clamps PER IMAGE before charging, and so does this function — which is
-        only equivalent because the page-embedding path sends exactly one image per
-        call. Batching several images into one call would need the clamp applied per
-        image before summing; passing the combined total here would under-bill.
-
-        Returns the same key set as calculate_cost() so callers and dashboards can
-        treat the two interchangeably.
-        """
+        """Cost of one voyage-multimodal call — the token term PLUS the pixel term."""
         pricing = cls.get_model_pricing(model)
         px = cls.MULTIMODAL_PIXEL_PRICING
 

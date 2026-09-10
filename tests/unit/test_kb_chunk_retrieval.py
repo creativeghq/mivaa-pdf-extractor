@@ -1,28 +1,4 @@
-"""
-Guards for PDF-chunk retrieval in /search/knowledge-base (issue #318).
-
-Three things here are load-bearing and none of them is visible to a typecheck:
-
-1. **One route, one declaration.** `/search/knowledge-base` used to be declared TWICE —
-   in `app/api/rag_routes.py` and in `app/api/documents/query_routes.py` — with
-   Starlette serving whichever router main.py included FIRST. The duplicate has been
-   deleted; the guard now pins the path to a single declaration, so include_router
-   order can never again decide which implementation answers.
-
-2. **Retrieval must be a vector search.** The original chunks branch pulled an unordered
-   `select * limit top_k*3` sample of the workspace and scored it with `+0.15 per query
-   word found as a substring` against a threshold defaulting to 0.7. That returns
-   plausible-looking rows, so nothing downstream can tell it apart from real retrieval.
-
-3. **A hit must carry its address.** Without `document_id` + `chunk_index` + `product_id`
-   a retrieved chunk cannot be read outward from, and `read_document_section` 404s
-   against the wrong corpus. `chunk_index` restarts at 0 per product inside a document,
-   so the product id is part of the address, not decoration.
-
-AST/source based on purpose: it imports neither `app` nor a DB, so it runs in CI in
-about a second — the difference between a guard that runs on every push and one that
-quietly never runs.
-"""
+"""Guards for PDF-chunk retrieval in /search/knowledge-base (issue #318)."""
 
 import ast
 from pathlib import Path
@@ -63,29 +39,12 @@ def _function_source(tree: ast.AST, source: str, name: str) -> str:
     ],
 )
 def test_route_is_declared_exactly_once(route_path):
-    """Stronger than the ordering guard it replaces.
-
-    These paths used to be declared in BOTH rag_routes.py and documents/query_routes.py,
-    with Starlette serving whichever router main.py included first. Working retrieval sat
-    three lines away from being silently swapped for the shadowed copy's substring scorer,
-    and neither a reorder nor a stale edit to the wrong copy would raise anything. The
-    duplicates are deleted; one declaration is the invariant, so ordering never matters.
-
-    This is the third instance of the same shape in this repo — `upload_routes.py` was
-    deleted for it too — which is why the rule is pinned rather than left to review.
-    """
+    """Stronger than the ordering guard it replaces."""
     # Scoped to the routers MOUNTED AT /api/rag, not every file in app/api. A bare
     # "/search" is declared by images.py and knowledge_base.py too, but those routers
     # carry different prefixes (/api/images, /api/kb) so they resolve to different full
     # paths and are not duplicates. The hazard is specifically two routers sharing one
     # prefix.
-    #
-    # That set is DERIVED from main.py, not listed here. Issue #15's headline finding
-    # is that this repo's guards read as though they cover their class while actually
-    # scanning a hardcoded list, and every defect found landed in the gap. This test
-    # was an instance: it named three files, one of which (management_routes.py) has
-    # since been deleted, and a fourth router mounted at /api/rag tomorrow would be
-    # invisible to it while the test kept passing and kept sounding comprehensive.
     mounted_at_api_rag = routers_mounted_at(_ROOT, "/api/rag")
     assert mounted_at_api_rag, (
         "no routers resolved for /api/rag — the include_router parser in "
@@ -208,15 +167,7 @@ def test_entity_embeddings_are_persisted_not_just_counted():
 
 
 def test_chunk_writes_are_idempotent_per_namespace():
-    """Re-chunking must REPLACE its (document, product) namespace, not append to it.
-
-    chunk_pages() restarts chunk_index at 0 every call and stage_2 calls it once per
-    product, so a re-run used to leave every index present twice. Retrieval treats
-    chunk_index as an address (#318): duplicates make expansion return each neighbour
-    twice and make a span read spend its budget on repeats — answers get worse without
-    anything failing. The delete must be scoped to the product namespace, and `is null`
-    is a different query from `eq(<uuid>)` in PostgREST, so both branches must exist.
-    """
+    """Re-chunking must REPLACE its (document, product) namespace, not append to it."""
     service = _ROOT / "app" / "services" / "search" / "rag_service.py"
     source = service.read_text(encoding="utf-8")
     src = _function_source(ast.parse(source), source, "index_pdf_content")

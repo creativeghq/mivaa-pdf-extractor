@@ -1,14 +1,4 @@
-"""
-Search Enrichment Service
-
-Enriches VECS search results with relationship data from:
-- image_product_associations
-- chunk_image_relationships
-- chunk_product_relationships
-
-This service queries the relationship tables to provide complete context
-for search results, including related products, chunks, and relevance scores.
-"""
+"""Search Enrichment Service"""
 
 import logging
 from typing import List, Dict, Any, Optional

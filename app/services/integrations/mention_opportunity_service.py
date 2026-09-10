@@ -1,27 +1,5 @@
-"""
-Mention Opportunity Service — surfaces actionable content + outreach
+"""Mention Opportunity Service — surfaces actionable content + outreach
 opportunities for a tracked subject.
-
-Inputs (cheap, already paid for):
-  - The subject's existing mention_history rows (DB read)
-  - DataForSEO Labs Related Keywords / Keyword Suggestions APIs
-  - DataForSEO SERP People-Also-Ask extraction (already in our SERP responses)
-
-Output: a list of typed opportunities the user can act on:
-  - trending_topic       — recurring theme across recent mentions worth writing about
-  - outlet_pitch         — outlet that's been actively covering this subject area
-  - keyword_opportunity  — high-volume related keyword to target with content
-  - pao_question         — "People Also Ask" question to answer in a post
-  - author_relationship  — author who's mentioned the subject 2+ times (warm contact)
-  - sentiment_response   — negative-sentiment mention worth addressing publicly
-
-Cost discipline:
-  - Default path: DB aggregation only (free) + 1 DataForSEO Labs call (~$0.001)
-  - Optional Haiku narrative summarization (`use_llm_summary=True`) for
-    polished prose around each opportunity (~$0.005-0.015 per call)
-
-The endpoint is read-only — it doesn't mutate state, doesn't trigger refreshes,
-and doesn't write to mention_history. It's a pure analysis pass over existing data.
 """
 
 from __future__ import annotations
@@ -110,23 +88,7 @@ class Opportunity:
 
 
 def _empty_serp_blocks() -> Dict[str, Any]:
-    """The SERP block shape, declared ONCE.
-
-    Every consumer indexes this dict by literal key (`blocks["videos"]`), so a missing key is a
-    KeyError rather than a falsy value. It was written out twice — the full ten keys in
-    `_parse_serp_blocks`, and a five-key copy as the "nothing found" default in `_serp_signals`
-    that was never updated when v0.4.6 added videos / news_stories / knowledge_graph / paid /
-    shopping.
-
-    The five-key copy is the one a FAILED run lands on, so the two never disagreed on a good day:
-    when DataForSEO answered, the parser's dict replaced the default and every key was there. Only
-    when every seed errored — or every round came back with no signal — did the default survive to
-    be read, and then the first v0.4.6 reader raised. The caller wraps the whole thing in
-    `except Exception`, so the entire SERP half of the opportunity report disappeared behind one
-    WARNING line: a failure inside the failure path, visible only as absence.
-
-    Adding a block type means adding it HERE, and both readers get it.
-    """
+    """The SERP block shape, declared ONCE."""
     return {
         "pao": [], "ai_overview": None, "featured_snippet": None,
         "related_searches": [], "organic": [],
@@ -165,52 +127,10 @@ class MentionOpportunityService:
         # history were loaded by `tracked_mention_id` alone, and the
         # `mention_ai_overview_checks` row was then written using the workspace_id and
         # user_id copied OUT of that unscoped subject row — so a caller supplying
-        # another tenant's id would read their data and bill the paid external calls to
-        # the victim's workspace.
-        #
-        # All four callers authorize today; this is the invariant-1 backstop, at the
-        # layer that actually spends the money. `caller_is_admin` is explicit rather
-        # than re-derived here, because the routes have already paid for that lookup.
         caller_user_id: Optional[str] = None,
         caller_is_admin: bool = False,
     ) -> Dict[str, Any]:
-        """
-        Generate opportunities for a tracked subject.
-
-        Two modes:
-          1. Persisted (DB-backed): pass `tracked_mention_id`. Subject is loaded
-             from `tracked_mentions`, mentions from `mention_history`, and the
-             lifetime-cost rollup runs at the end.
-          2. Stateless (synthetic subject): pass `subject_override` with the
-             subject fields inline. No DB load, no mention history, no lifetime
-             rollup. Used by the SEO pipeline so research runs don't spawn
-             ephemeral tracked_mentions rows. `tracked_mention_id` is ignored
-             in this mode (mention-derived types are also skipped — they need
-             history that doesn't exist).
-
-        Two categories of opportunity types:
-
-        Subject-driven (work on a fresh subject with zero mention history):
-          - keyword_opportunity   — DataForSEO Labs Related Keywords on subject_label
-          - pao_question          — DataForSEO SERP "People Also Ask" block
-          - ai_overview           — Google's generative AI Overview answer; brand-mention check
-          - featured_snippet      — current position-0 snippet to outrank
-          - related_search        — Google's "Searches related to" block
-          - competitor_ranking    — top organic pages currently ranking for the subject
-          - video_carousel        — Google's video / shorts / inline-video blocks (TikTok / YT / IG mix)
-          - news_carousel         — Google's "Top stories" featured news block
-          - knowledge_graph       — whether the subject has a Google entity card
-          - paid_competitor       — Google Ads / shopping-ad bidders on the keyword
-          - shopping_listing      — Google Shopping carousel hits with prices
-
-        Mention-derived (require existing mention_history; skip silently when 0):
-          - trending_topic        — bigram analysis over recent mention titles/excerpts
-          - outlet_pitch          — outlets that have covered the subject
-          - author_relationship   — authors who covered the subject 2+ times
-          - sentiment_response    — recent negative-sentiment mentions
-
-        types: subset of all 17 names; default = all
-        """
+        """Generate opportunities for a tracked subject."""
         stateless = subject_override is not None
 
         types = types or [
@@ -637,24 +557,7 @@ class MentionOpportunityService:
     # ───── 5. Keyword opportunities (DataForSEO Labs) ─────
 
     def _fallback_seeds(self, subject: Dict[str, Any]) -> List[str]:
-        """Order of seeds to try when keyword-research APIs return 0 items.
-
-        Niche multi-word product SKUs often have no search volume in
-        DataForSEO's database, so the API returns empty for the literal
-        label. To still produce useful results, we try ONLY seeds the
-        caller explicitly provided:
-
-          1. subject_label    (always tried first)
-          2. brand_name       (when set on the row)
-          3. aliases[*]       (when supplied)
-
-        We do NOT autonomously split the label into individual words —
-        that decomposes the input string in ways the caller didn't
-        request and risks producing unrelated keyword data (a niche SKU's
-        last word is often not a meaningful brand or category). To get
-        that breadth, the caller supplies their own variants in `aliases`
-        or sets `auto_expand_aliases: true` at create time.
-        """
+        """Order of seeds to try when keyword-research APIs return 0 items."""
         seeds: List[str] = []
         seen: set = set()
 
@@ -1037,7 +940,6 @@ class MentionOpportunityService:
         # round returning no signal, leaves `blocks` at the default and the reader below then does
         # `blocks["videos"]` → KeyError. Swallowed by the caller's `except Exception`, so the
         # entire SERP half of the opportunity report vanished behind one WARNING line. Live on
-        # 2026-08-26 05:16.
         blocks: Dict[str, Any] = _empty_serp_blocks()
 
         for seed in seeds[:3]:
@@ -1398,19 +1300,7 @@ class MentionOpportunityService:
         self, ai_overview: Optional[Dict[str, Any]],
         subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
     ) -> Optional[str]:
-        """Persist one AI Overview observation (#349 A6). Returns an error, or None.
-
-        Best-effort about RAISING: a failed write must not cost the caller their SERP
-        call, which has already been made and billed.
-
-        Not best-effort about REPORTING (#21 M8-5). This docstring already claimed a
-        broken insert was "visible as something other than 'the AI Overview never
-        appears'" — it was not. It logged at WARNING and returned None, so every caller
-        saw success, and `ai_overview_history` later showed the check as simply absent.
-        An observation is the only thing that can ever answer "were we in the AI Overview
-        last month"; a missing one is indistinguishable from a month we were not there.
-        The error now travels back so `generate` can put it in `errors`.
-        """
+        """Persist one AI Overview observation (#349 A6). Returns an error, or None."""
         tracked_mention_id = subject.get("id")
         if not tracked_mention_id:
             return None  # stateless/override subject — no row to hang history on
@@ -1658,17 +1548,7 @@ class MentionOpportunityService:
         subject: Dict[str, Any], used_seed: str, seed_was_fallback: bool,
         limit: int,
     ) -> List[Opportunity]:
-        """Return top-ranked organic results for the seed keyword as-is.
-
-        We do NOT auto-skip the brand's own domain. The same tracked subject
-        gets used in two opposite ways:
-          - In-house team tracking their own brand → wants competitor cards only.
-          - Third-party analyst / distributor / competitor tracking the brand →
-            wants the brand's own ranking too (signals SEO ownership).
-        Implicit filtering would silently break the second use case. Callers
-        who want to filter their own domain can use `mention_excluded_urls`
-        (the existing exclude mechanism takes a `domain` field).
-        """
+        """Return top-ranked organic results for the seed keyword as-is."""
         out: List[Opportunity] = []
         kept = 0
         for item in organic:

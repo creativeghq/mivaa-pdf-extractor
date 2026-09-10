@@ -1,12 +1,7 @@
-"""
-Auto-sync `job_research_sites` → ONE consolidated kb_doc in the
+"""Auto-sync `job_research_sites` → ONE consolidated kb_doc in the
 "Internal Configuration" category (access_level='agent'; agent reads it,
 public KB hides it). Three Markdown sections in one doc, regenerated on
 every CRUD.
-
-The category is generic on purpose — future configurable subsystems
-(mention outlets, price retailers, etc.) live as sibling docs in the same
-category, sharing the same access_level model.
 """
 
 from __future__ import annotations

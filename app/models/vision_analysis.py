@@ -1,20 +1,5 @@
-"""
-VisionAnalysis schema — single source of truth for the structured material
+"""VisionAnalysis schema — single source of truth for the structured material
 analysis the vision LLM emits and that Voyage embeds.
-
-Used by three call paths that MUST stay aligned or the
-`vecs.image_understanding_embeddings` collection drifts:
-
-1. Stage 3 ingestion (image_processing_service) — vision_analysis JSON
-   produced by Claude Opus via Anthropic tool use → serialised to text
-   via `serialize_vision_analysis_to_text` → embedded by Voyage → stored.
-2. RAG service `analyze_material_image` — same shape, same call pattern.
-3. Backfill cron — re-runs the above on existing images when schema_version
-   bumps so the index stays in one coherent embedding space.
-
-`schema_version` is bumped any time the field set or serialiser changes.
-Existing rows in `vecs.image_understanding_embeddings` are tagged with the
-version they were embedded under, so the backfill knows what's stale.
 """
 
 from typing import Optional, List, Dict, Any
@@ -23,41 +8,11 @@ from pydantic import BaseModel, Field, ConfigDict
 
 # Bump this when the ANALYSIS THIS PRODUCES changes materially — not only when the
 # field set or the serialiser does.
-#
-# The wider rule is deliberate (2026-08-29). The old wording was "when the schema or
-# the serialiser changes", and #393 is exactly the case it failed to cover: the field
-# set did not move at all, while the analysis behind it changed enormously — OCR
-# grounding, category context, Opus 4.8 -> Opus 5, thinking off -> adaptive, strict
-# schema enforcement. Under the narrow reading nothing needed bumping, and every row
-# written before that work would have sat in `image_understanding_embeddings`
-# describing materials worse than the rows beside it, permanently.
-#
-# What this number actually protects is not the SHAPE of a row. It is whether two
-# rows in one collection are COMPARABLE — because
-# `serialize_vision_analysis_to_text` makes the vector encode the model's word
-# choices, so a better analysis is a different dialect, not just a better answer.
-# `understanding_backfill._fetch_stale_images` treats `schema_version < SCHEMA_VERSION`
-# as stale, and it is the ONLY switch that re-runs an existing corpus.
-#
-# v3 (2026-08-29, #393): the vision call gained an OCR grounding block, a
-# registry-derived category block, Opus 5, adaptive thinking and `strict: true`, and
-# all four call paths were aligned onto one regime. Bumped while `document_images`
-# held ZERO rows, so it cost nothing — the same bump against a real catalogue means
-# re-running vision on every image.
-#
-# v2 (2026-05-04): added 4 per-aspect serializers (color/texture/style/material)
-# that produce real per-image text from VisionAnalysis fields. The aspect
-# embedding collections (image_color_embeddings etc.) consume these.
 SCHEMA_VERSION: int = 3
 
 
-#: Token budget for ONE vision_analysis call, shared by every path that makes one.
-#:
-#: Must cover adaptive thinking AND the emitted tool arguments. It was 1024 on the
-#: ingestion path and 4096 on the other three — 1024 is under the floor for a schema
-#: carrying three lists, and a truncated tool_use block is reported as a FAILED
-#: analysis rather than a short one, so an under-budgeted call was indistinguishable
-#: from a refusal.
+# : Token budget for ONE vision_analysis call, shared by every path that makes one.
+# :
 VISION_MAX_TOKENS: int = 8192
 
 #: Reasoning effort. `high` is the API default; named here so the tuning knob is
@@ -66,24 +21,7 @@ VISION_EFFORT: str = "high"
 
 
 def vision_call_extra_kwargs() -> Dict[str, Any]:
-    """The `extra_kwargs` every vision_analysis call passes, identically.
-
-    WHY THIS EXISTS. The module docstring above says the call paths MUST stay
-    aligned or `vecs.image_understanding_embeddings` drifts, and they had already
-    drifted: ingestion ran Opus 5 at 8192 tokens with adaptive thinking, while the
-    backfill, the aspect-query path and the RAG path all ran `claude-opus-5` at
-    4096 with thinking OFF.
-
-    That is not a cosmetic difference. `serialize_vision_analysis_to_text` turns the
-    result into the string Voyage embeds, so a backfilled image and a freshly
-    ingested one landed in the same collection describing the same material in two
-    different regimes — and the query path analysed the SEARCH image in a third.
-    Nothing raises: every vector is well-formed.
-
-    Callers still pass their own `tools`/`tool_choice` because `call_with_tool`
-    builds those from the tool it is given; this carries the parameters that have
-    nothing to do with the schema and everything to do with staying comparable.
-    """
+    """The `extra_kwargs` every vision_analysis call passes, identically."""
     return {
         "thinking": {"type": "adaptive"},
         "output_config": {"effort": VISION_EFFORT},
@@ -217,31 +155,12 @@ VISION_ANALYSIS_TOOL: Dict[str, Any] = {
     ),
     "input_schema": VisionAnalysis.anthropic_tool_input_schema(),
     # Grammar-constrain the emitted JSON against `input_schema`.
-    #
-    # `tool_choice={'type':'tool','name':...}` already forces the model to CALL this
-    # tool; `strict` is what makes the arguments it calls with provably conform. The
-    # two are not the same guarantee, and the gap between them is where a
-    # well-shaped-but-wrong payload used to slip through — `_validate_vision_analysis`
-    # checks shape, and shape is exactly what a plausible hallucination gets right.
-    #
-    # Free to turn on here: `VisionAnalysis` sets `extra="forbid"`, so
-    # `anthropic_tool_input_schema()` already emits `additionalProperties: false`
-    # plus `required`, which is precisely what strict mode demands.
     "strict": True,
 }
 
 
 def serialize_vision_analysis_to_text(va: VisionAnalysis) -> str:
-    """Deterministic text serialisation of VisionAnalysis for Voyage.
-
-    CRITICAL: this function MUST produce byte-identical output for any two
-    VisionAnalysis instances with the same field values, regardless of how
-    they were constructed or in what order fields were set. Otherwise the
-    Voyage embedding for the same material drifts between runs and the
-    `image_understanding_embeddings` collection becomes inconsistent.
-
-    Both ingestion and query paths call this — single source of truth.
-    """
+    """Deterministic text serialisation of VisionAnalysis for Voyage."""
     parts: List[str] = []
 
     # Order is fixed and stable across calls. Lists are joined comma-space.
@@ -282,19 +201,6 @@ def serialize_vision_analysis_to_text(va: VisionAnalysis) -> str:
 
 # ──────────────────────────────────────────────────────────────────────
 # Per-aspect serializers (v2, 2026-05-04)
-#
-# Each function consumes the same VisionAnalysis instance and returns a
-# deterministic text string that captures one aspect of the material as
-# the vision model actually saw it. Voyage embeds these strings into the
-# four aspect collections (image_color_embeddings etc.) — replacing the
-# pre-v2 "SLIG blend" trick where every image got the same fixed text
-# vector mixed into its visual embedding regardless of its actual content.
-#
-# Critical contract: byte-identical output for any two VisionAnalysis
-# instances with the same field values. Otherwise the aspect embedding
-# space drifts between runs. Caller treats `None` as "skip this aspect"
-# (insufficient source data on the image).
-# ──────────────────────────────────────────────────────────────────────
 
 
 def serialize_aspect_color(va: VisionAnalysis) -> Optional[str]:

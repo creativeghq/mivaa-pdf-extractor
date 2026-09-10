@@ -102,51 +102,7 @@ async def list_prompts(
     category: Optional[str] = None,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    **📋 List Extraction Prompts - Admin Configuration**
-
-    List all AI extraction prompts configured for a workspace with optional filtering.
-
-    ## 🎯 Use Cases
-
-    - View all configured extraction prompts
-    - Filter prompts by processing stage
-    - Filter prompts by extraction category
-    - Audit prompt configurations
-
-    ## 📝 Query Parameters
-
-    - **workspace_id** (required): Workspace UUID
-    - **stage** (optional): Filter by stage (discovery, extraction, validation)
-    - **category** (optional): Filter by category (products, certificates, logos, specifications)
-
-    ## ✅ Response Example
-
-    ```json
-    [
-      {
-        "id": "prompt-uuid-1",
-        "workspace_id": "workspace-uuid",
-        "stage": "discovery",
-        "category": "products",
-        "prompt_template": "Identify all products in this PDF...",
-        "system_prompt": "You are an expert at identifying products...",
-        "is_custom": true,
-        "version": 2,
-        "created_by": "user-uuid",
-        "created_at": "2025-11-08T10:00:00Z",
-        "updated_at": "2025-11-08T12:00:00Z"
-      }
-    ]
-    ```
-
-    ## ⚠️ Error Codes
-
-    - **400 Bad Request**: Invalid workspace_id
-    - **401 Unauthorized**: Authentication required
-    - **403 Forbidden**: Insufficient permissions
-    - **500 Internal Server Error**: Database error
-    """
+    """**📋 List Extraction Prompts - Admin Configuration**"""
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
@@ -195,21 +151,7 @@ async def update_prompt(
     request: UpdatePromptRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    Update prompt with audit trail
-    
-    Path Parameters:
-    - stage: Extraction stage (discovery, chunking, image_analysis, entity_creation)
-    - category: Content category (products, certificates, logos, specifications)
-    
-    Query Parameters:
-    - workspace_id: Workspace ID
-    
-    Body:
-    - prompt_template: New prompt template
-    - system_prompt: Optional system prompt
-    - change_reason: Reason for the change
-    """
+    """Update prompt with audit trail"""
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:

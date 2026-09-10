@@ -1,14 +1,4 @@
-"""
-Vision provider provenance for material image analysis.
-
-Tracks WHICH code path produced the `vision_analysis` JSON on a document_image
-row, so we can distinguish "primary path succeeded" from "safety net rescued
-the image" in stats and dashboards.
-
-Vision is Anthropic-only — CLAUDE is the primary producer and CLAUDE_FALLBACK
-marks a retry that rescued an image the first call failed on. Both are enforced
-by the `check_vision_provider_values` CHECK constraint on document_images.
-"""
+"""Vision provider provenance for material image analysis."""
 
 from enum import Enum
 

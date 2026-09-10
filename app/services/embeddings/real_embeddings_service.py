@@ -1,17 +1,5 @@
-"""
-Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
+"""Real Embeddings Service - Step 4 Implementation (Updated for Voyage AI)
 
-Generates embedding types using AI models:
-1. Text (1024D) - Voyage AI voyage-4
-2. Visual Embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
-3. Understanding (1024D) - Claude Opus vision_analysis JSON -> Voyage AI text embedding
-4. Page (1024D) - voyage-multimodal, whole rendered catalog page (#239)
-
-Text Embedding Strategy:
-- Voyage AI voyage-4 (1024D default, supports 256/512/1024/2048)
-- Supports input_type parameter: "document" for indexing, "query" for search
-
-THERE IS NO SECOND EMBEDDING PROVIDER, AND ADDING ONE IS A BUG
 --------------------------------------------------------------
 This service used to fall back to OpenAI `text-embedding-3-small` when Voyage failed.
 It was removed (2026-08-08) because a fallback embedder is not a resilience feature -
@@ -95,21 +83,7 @@ MIVAA_GATEWAY_URL = os.getenv("MIVAA_GATEWAY_URL", "http://localhost:3000")
 
 
 class RealEmbeddingsService:
-    """
-    Generates embedding types using AI models.
-
-    This service provides:
-    - Text embeddings via Voyage AI (1024D) - no fallback provider, by design
-    - Visual embeddings (768D) - SLIG (SigLIP2) via HuggingFace Cloud Endpoint
-    - Understanding embeddings (1024D) - Claude vision_analysis → Voyage AI text embedding
-    - Multimodal fusion (1792D) - combined text+visual (1024D + 768D = 1792D)
-
-    Concurrency:
-    - All outbound embedding calls go through process-wide asyncio semaphores
-      (`_slig_semaphore`, `_voyage_semaphore`). 1000-image catalogs no longer
-      open 1000 simultaneous HTTP connections to HF / Voyage. Caps come from
-      settings.slig_concurrency / settings.voyage_concurrency.
-    """
+    """Generates embedding types using AI models."""
 
     # Process-wide semaphores; created lazily on first use so the event loop
     # is bound to the running loop, not module import time.
@@ -262,12 +236,6 @@ class RealEmbeddingsService:
                 # Provenance = the model that ACTUALLY produced the vector (S3-3).
                 # Was a hardcoded "voyage-4" that lied whenever Settings.voyage_model
                 # was set to a different version.
-                # The `voyage_enabled is False` arm used to stamp
-                # "text-embedding-3-small" here. With the fallback removed that arm is
-                # unreachable - Voyage disabled means text_embedding is None and this
-                # block never runs - but it was also WRONG on its own terms: it would
-                # have labelled a row with a model that did not embed it, which is the
-                # one thing provenance exists to prevent.
                 embeddings["metadata"]["model_versions"]["text"] = (
                     self._last_provider or self.voyage_model
                 )
@@ -304,16 +272,6 @@ class RealEmbeddingsService:
                         pass
 
             # 2a. Per-aspect embeddings (color / texture / style / material).
-            #
-            # Each aspect string is built deterministically from per-image
-            # VisionAnalysis fields (colors[], textures[]+finish, style+
-            # surface_pattern+applications, material_type+category+subcategory)
-            # and Voyage-embedded to 1024D — same model and embedding space
-            # as image_understanding_embeddings. The aspect vector encodes
-            # what THIS image's color/texture/style/material looks like
-            # according to Claude Opus. Skipped when vision_analysis
-            # is missing (caller provides it for image entities; not for
-            # text-only entities).
             if vision_analysis:
                 aspect_embeddings = await self._generate_specialized_aspect_embeddings(
                     vision_analysis=vision_analysis,
@@ -467,20 +425,7 @@ class RealEmbeddingsService:
         user_id: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        Public method to generate a visual-space embedding from text query.
-
-        Uses SLIG (SigLIP2) cloud endpoint to convert text into the visual
-        embedding space (768D), enabling text-to-image search across visual,
-        color, texture, style, and material embeddings.
-
-        MV2-9: this method hit a billed GPU endpoint and returned WITHOUT calling the
-        logger at all — every text-to-visual query in the search path was free as far
-        as `ai_usage_logs` was concerned. It is a search entry point, so it is called
-        far more often than ingestion; the spend it hid was not a rounding error. The
-        attribution args are optional because a couple of callers genuinely have no
-        tenant (health probes), and a required arg would have been supplied as `None`
-        at those sites anyway — better an honest blank than a confident wrong tenant.
+        """Public method to generate a visual-space embedding from text query.
 
         Args:
             query: Text query to convert to visual embedding space
@@ -712,21 +657,7 @@ class RealEmbeddingsService:
         image_id: Optional[str] = None,
         task: str = "page_embedding_generation",
     ) -> Optional[Dict[str, Any]]:
-        """One call to Voyage's multimodal endpoint. Returns vector + real usage.
-
-        `content` is Voyage's interleaved list: `{"type": "text", "text": ...}` and
-        `{"type": "image_base64", "image_base64": "data:image/png;base64,..."}` items
-        that are embedded TOGETHER into a single vector — that fusion is the whole
-        point, and it is why the page vector can match a query against a product name
-        that exists only as pixels inside a photograph.
-
-        There is deliberately NO fallback provider. voyage-4 is a text-only model in a
-        different latent space, and OpenAI has no equivalent; substituting either on
-        failure would push a wrong-space vector into `page_embeddings` and quietly
-        corrode every page search. That is audit gap B's lesson, applied before it can
-        happen rather than after. On failure we return None and the page stays
-        unembedded for the backfill to retry — visible, and recoverable.
-        """
+        """One call to Voyage's multimodal endpoint. Returns vector + real usage."""
         from app.config import settings as _settings
 
         if not self.voyage_api_key:
@@ -933,15 +864,7 @@ class RealEmbeddingsService:
         )
 
     async def generate_page_query_embedding(self, query: str) -> Dict[str, Any]:
-        """Embed a text query into the PAGE vector space for search.
-
-        Must use the same multimodal model the pages were embedded with, with
-        `input_type="query"`. Reaching for the ordinary voyage-4 text embedding here
-        would be the easy mistake and a silent one: both are 1024D, so the query would
-        be accepted by the collection and return confidently-scored nonsense rather
-        than erroring. Different model, different space — dimension agreement proves
-        nothing.
-        """
+        """Embed a text query into the PAGE vector space for search."""
         result = await self._voyage_multimodal_embed(
             content=[{"type": "text", "text": query}],
             input_type="query",
@@ -1015,8 +938,6 @@ class RealEmbeddingsService:
                 # embedded by voyage-4 and queried with the new model -- both 1024D,
                 # so VECS accepts the mixed-space vector and ranks confident
                 # nonsense instead of raising. Latent only because the config
-                # default happens to match. The single-text path already used
-                # self.voyage_model; only the batch path diverged.
                 request_data = {
                     "model": self.voyage_model,
                     "input": processed_texts,  # Use processed texts (no empty strings)
@@ -1045,12 +966,6 @@ class RealEmbeddingsService:
 
                     # Validate the response against what we asked for BEFORE any
                     # caller can zip it back onto its inputs. A batch is positional:
-                    # caller i gets embeddings[i]. A 100-text batch that came back
-                    # with 99 vectors, or came back out of order, silently attached
-                    # every chunk to its neighbour's embedding -- stored, indexed and
-                    # ranked with nothing raising. Voyage returns an explicit `index`
-                    # per item; order is not part of the contract, so sort by it
-                    # rather than trusting arrival order.
                     items = data.get("data") or []
                     if len(items) != len(processed_texts):
                         raise ValueError(
@@ -1261,9 +1176,6 @@ class RealEmbeddingsService:
                         # one log row, so a clean first-call success and a success after
                         # three throttled attempts were indistinguishable — and the
                         # latency of the second is dominated by sleep, not by Voyage.
-                        # Carried into confidence_breakdown below rather than emitted as
-                        # extra rows: the retries cost WAITING, not tokens, and a row per
-                        # attempt would triple the apparent spend of one embedding.
                         throttled_ms += int(retry_after * 1000)
                         await asyncio.sleep(retry_after)
                         response = await client.post(
@@ -1544,7 +1456,6 @@ class RealEmbeddingsService:
                         # the spend was invisible precisely when it was pure waste. The
                         # latency is the whole retry loop, which is what was actually
                         # billed. action="fallback_failed" so this cannot be mistaken for
-                        # a successful embed in the dashboards.
                         await self.ai_logger.log_time_based_call(
                             task="visual_embedding_generation",
                             model="slig-768d",
@@ -1660,36 +1571,7 @@ class RealEmbeddingsService:
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
     ) -> Optional[Dict[str, List[float]]]:
-        """Generate 4 per-image aspect embeddings (1024D Voyage) from VisionAnalysis.
-
-        Replaces the legacy SLIG-blend trick (`_generate_specialized_siglip_embeddings`)
-        which produced 4 vectors that were ~80% identical to the base image
-        embedding because they were just blended copies of it with 4 fixed
-        global text directions. This new path embeds **per-image** aspect
-        text derived from the vision-model's structured output, so the
-        4 vectors actually carry independent per-aspect signal.
-
-        Source mapping (see app.models.vision_analysis):
-          color    → VisionAnalysis.colors[]
-          texture  → VisionAnalysis.textures[] + finish
-          style    → VisionAnalysis.style + surface_pattern + applications
-          material → VisionAnalysis.material_type + category + subcategory
-
-        Behavior:
-          - color/texture/style aspects skip when their source fields are
-            empty (returns dict missing that key — caller upserts only the
-            ones present). Material always returns text since material_type
-            is required.
-          - Returns None on hard failure (vision_analysis unparseable, all
-            Voyage calls failed). Caller treats None as "skip aspect
-            embeddings entirely for this image".
-          - Each per-aspect Voyage call is logged via ai_call_logger so
-            cost attribution lines up with the rest of the pipeline.
-
-        Cost: 4 short Voyage `voyage-3` text embeddings per image. Aspect
-        strings average <30 tokens, so ~$0.0001 per image — much cheaper
-        than the ~12 SLIG calls the legacy path made.
-        """
+        """Generate 4 per-image aspect embeddings (1024D Voyage) from VisionAnalysis."""
         # Normalize input → VisionAnalysis instance. Accepts dict (from
         # cached DB JSON), VisionAnalysis (when called directly from
         # ingestion), or legacy dict shape (from pre-schema rows).
@@ -1732,11 +1614,6 @@ class RealEmbeddingsService:
         # aspect skip (rather than all-or-nothing) because color/texture/
         # style are legitimately optional — we don't want a missing color
         # field to also wipe out a perfectly good material vector.
-        #
-        # On a Voyage outage the aspect for this image stays unembedded and the
-        # backfill cron picks it up next run. It cannot instead be filled by another
-        # provider's same-dimension vector - that fallback was removed, so mixed
-        # spaces in these four collections are structurally impossible now.
         embeddings: Dict[str, List[float]] = {}
         any_failure = False
         for aspect, text in aspect_texts.items():

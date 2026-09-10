@@ -1,18 +1,4 @@
-"""Guards for the mivaa#16 audit fixes (M3-2 … M3-15).
-
-One file per audit, matching `test_audit_12_gates_hold.py`. M3-1 has its own
-file because its guard is substantial; everything else lives here.
-
-Static, not runtime: CI installs pytest alone (`deploy.yml`) and these unit
-tests import nothing from `app`, so each case parses source instead. That
-constrains what can be checked - a guard here proves the SHAPE is gone, not
-that the replacement behaves. Where a case can only assert an absence, it says
-so rather than implying more.
-
-Every case below was watched to FAIL against the pre-fix source before being
-committed. A guard nobody has seen fire is a guard that might be asserting
-nothing.
-"""
+"""Guards for the mivaa#16 audit fixes (M3-2 … M3-15)."""
 
 import ast
 import re
@@ -382,10 +368,7 @@ def test_the_unreachable_search_strategies_do_not_come_back():
     `_search_semantic` read the FIRST 20 rows of document_chunks with no ORDER BY and
     ranked those in numpy (an arbitrary sample, not a nearest-neighbour search), and
     `_search_hybrid` summed a cosine similarity and a ts_rank as if they shared a scale.
-    Product search is `RAGService.multi_vector_search`; KB search is the
-    `kb_hybrid_doc_chunks` RPC. The M3-12 degradation guard that used to live here
-    covered code nothing executed. Checked on DEFINITIONS (ast), not on text: the
-    module docstring names the deleted functions on purpose, so a grep would fail."""
+    """
     tree = ast.parse(_read(UNIFIED))
     defined = {
         n.name for n in ast.walk(tree)
@@ -420,9 +403,15 @@ def test_query_understanding_goes_through_the_tracked_helper():
         "POST has no debit and no cost log, so the call is free as far as the "
         "platform can tell"
     )
-    assert src.count("tracked_claude_call_async") >= 2, (
-        "both the primary and the fallback query parse must use the tracked "
-        "helper (pipeline convention 10)"
+    # The primary parse and the fallback both route through `call_with_tool`, which is where the
+    # tracked helper is actually called. Counting `tracked_claude_call_async` in THIS file
+    # counted two mentions in a docstring and a comment — the file has never called it.
+    assert src.count("await call_with_tool(") >= 2, (
+        "both the primary and the fallback query parse must go through call_with_tool "
+        "(pipeline convention 10)"
+    )
+    assert "tracked_claude_call_async" in _read(APP / "services" / "core" / "claude_tool_call.py"), (
+        "call_with_tool must itself use the tracked helper, or neither parse is billed or logged"
     )
 
 
@@ -435,7 +424,9 @@ def test_the_platform_workspace_uuid_appears_exactly_once():
         for i, line in enumerate(_read(path).splitlines(), 1):
             if PLATFORM_WS in line:
                 hits.append(f"{path.relative_to(APP)}:{i}")
-    assert hits == ["config.py:26"], (
+    # The FILE is the assertion, not the line — pinning a line number makes any edit above it
+    # look like a tenancy regression.
+    assert [h.rsplit(":", 1)[0] for h in hits] == ["config.py"], (
         f"the platform workspace UUID appears at {hits}. It has a config home; "
         "copies can disagree with it, and one of them used to be a ROUTE "
         "DEFAULT - omitting workspace_id silently targeted that tenant. "

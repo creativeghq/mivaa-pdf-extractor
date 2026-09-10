@@ -68,8 +68,6 @@ class ClipTextRequest(BaseModel):
     # unattributed AI spend. Per-tenant cost views cannot see them and the
     # is_workspace_admin RLS branch cannot match them. The callers are edge
     # functions that know the workspace; they just had nowhere to put it.
-    # Advisory only: this route authenticates by x-cron-secret / platform token,
-    # so this value is for ATTRIBUTION, never for authorization.
     workspace_id: Optional[str] = Field(
         default=None,
         description="Workspace to attribute this call's cost to (cost attribution only)"
@@ -120,62 +118,7 @@ async def generate_clip_image_embedding(
     request: ClipImageRequest,
     embedding_service: RealEmbeddingsService = Depends(get_embedding_service)
 ) -> EmbeddingResponse:
-    """
-    **🖼️ Visual Image Embedding - Powered by SigLIP2**
-
-    Generate 768-dimensional visual embedding using SLIG (SigLIP2) cloud endpoint
-    for superior material image similarity search.
-
-    ## 🎯 Use Cases
-
-    - Visual product search
-    - Material similarity matching
-    - Multimodal search (combine with text embeddings)
-    - Image clustering and categorization
-
-    ## 📝 Request Example
-
-    ```json
-    {
-      "image_data": "data:image/jpeg;base64,/9j/4AAQSkZJRg...",
-      "model": "siglip2-so400m-patch14-384"
-    }
-    ```
-
-    ## ✅ Response Example
-
-    ```json
-    {
-      "embedding": [0.123, -0.456, 0.789, ...],
-      "dimension": 512,
-      "model": "siglip-so400m-patch14-384",
-      "processing_time_ms": 234.5
-    }
-    ```
-
-    ## 📊 Technical Details
-
-    - **Model**: Google SigLIP ViT-SO400M-14-384
-    - **Dimension**: 512
-    - **Accuracy**: +19-29% improvement over CLIP on material images
-    - **Normalization**: L2 normalized (unit vector)
-    - **Distance Metric**: Cosine similarity
-    - **Processing Time**: 150-400ms
-
-    ## ⚠️ Error Codes
-
-    - **400 Bad Request**: Invalid base64 image data
-    - **413 Payload Too Large**: Image exceeds 10MB
-    - **415 Unsupported Media Type**: Unsupported image format
-    - **500 Internal Server Error**: Embedding generation failed
-    - **503 Service Unavailable**: SigLIP model not available
-
-    ## 📏 Limits
-
-    - **Max image size**: 10MB
-    - **Supported formats**: JPEG, PNG, WebP
-    - **Rate limit**: 100 requests/minute
-    """
+    """**🖼️ Visual Image Embedding - Powered by SigLIP2**"""
     try:
         logger.info(f"Generating SigLIP2 image embedding with model: {request.model}")
 
@@ -213,83 +156,7 @@ async def generate_clip_text_embedding(
     request: ClipTextRequest,
     embedding_service: RealEmbeddingsService = Depends(get_embedding_service)
 ) -> EmbeddingResponse:
-    """
-    **📝 Text Embedding - Powered by Voyage AI**
-
-    Generate a text embedding using Voyage AI. There is no fallback provider —
-    on a Voyage outage this returns an error rather than a vector from a different
-    model, because a same-dimension vector from a different latent space is
-    indistinguishable from a correct one until it silently ranks wrongly.
-    Supports input_type optimization for better retrieval quality.
-
-    ## 🎯 Use Cases
-
-    - Document indexing (use input_type="document")
-    - Search queries (use input_type="query")
-    - Semantic search and retrieval
-    - Text-to-image search
-    - Multimodal search
-
-    ## 📝 Request Example
-
-    ```json
-    {
-      "text": "modern minimalist oak dining table",
-      "model": "voyage-4",
-      "input_type": "document",
-      "dimensions": 1024
-    }
-    ```
-
-    ## ✅ Response Example
-
-    ```json
-    {
-      "embedding": [0.234, -0.567, 0.891, ...],
-      "dimensions": 1024,
-      "model": "voyage-4",
-      "success": true
-    }
-    ```
-
-    ## 📊 Technical Details
-
-    - **Model**: Voyage AI voyage-4 (the only text embedder)
-    - **Default Dimension**: 1024
-    - **Supported Dimensions**: 256, 512, 1024, 2048
-    - **Input Types**: "document" (for indexing), "query" (for search)
-    - **Normalization**: L2 normalized (unit vector)
-    - **Distance Metric**: Cosine similarity
-    - **Processing Time**: 100-300ms
-
-    ## 💡 Usage Pattern
-
-    1. For indexing documents:
-       ```json
-       {"text": "...", "input_type": "document", "dimensions": 1024}
-       ```
-    2. For search queries:
-       ```json
-       {"text": "...", "input_type": "query", "dimensions": 1024}
-       ```
-    3. Search using cosine similarity:
-       ```sql
-       SELECT * FROM chunks
-       ORDER BY text_embedding <=> '[your_embedding]'
-       LIMIT 10
-       ```
-
-    ## ⚠️ Error Codes
-
-    - **400 Bad Request**: Empty or invalid text
-    - **500 Internal Server Error**: Embedding generation failed
-    - **503 Service Unavailable**: Voyage AI unavailable
-
-    ## 📏 Limits
-
-    - **Max text length**: 8000 tokens
-    - **Rate limit**: 100 requests/minute
-    """
+    """**📝 Text Embedding - Powered by Voyage AI**"""
     try:
         logger.info(f"Generating text embedding with model: {request.model}, input_type: {request.input_type}, dimensions: {request.dimensions}")
 

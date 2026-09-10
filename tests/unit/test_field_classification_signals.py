@@ -1,19 +1,4 @@
-"""Deterministic field-classification signals (#347 phase 4.2).
-
-Plurality and SKU correlation decide most fields for free, before any model call. Both are pure
-functions of the extracted document, so both can be tested without a database — which matters,
-because the alternative is discovering the rule was wrong on a live catalogue.
-
-The bias under test is the plan's, and it is deliberately asymmetric: when plurality fires,
-default to IDENTITY. Wrongly marking a field identity SPLITS stock into duplicate rows, which is
-visible and fixable. Wrongly marking it descriptive MERGES stock that should be separate, which
-is invisible — and is the defect this whole issue exists to remove.
-
-SOURCE-BASED, following test_field_registry_is_the_source.py: `dynamic_metadata_extractor`
-imports the Supabase client at module load, so importing it would need credentials CI does not
-have. The function under test is pure, so it is lifted out of the AST and executed on its own —
-the REAL code, not a transcription of it.
-"""
+"""Deterministic field-classification signals (#347 phase 4.2)."""
 import ast
 from pathlib import Path
 
@@ -127,11 +112,6 @@ def test_llm_tier_uses_forced_tool_use_and_no_salvage():
     # built its own httpx POST. It now goes through `call_with_tool`, which FORCES the
     # tool from `tool["name"]` — so the string moved into the shared helper and this
     # test was pinning the implementation rather than the property.
-    #
-    # The property is unchanged and is what is checked now: the model cannot answer with
-    # prose, and a missing tool block leaves the field unclassified instead of producing
-    # a guess. `claude_tool_call` is held to the forcing half by
-    # `test_model_replies_come_from_tool_calls.py`.
     assert "call_with_tool(" in body, (
         "the field-role classifier no longer forces its tool call (invariant 9)"
     )

@@ -1,14 +1,4 @@
-"""
-Data Import Service — process XML import jobs into products.
-
-- Batch processing (10 products at a time)
-- Image downloads (5 concurrent)
-- Metadata extraction + product normalization
-- Chunking + inline text embeddings (Voyage AI)
-- Image classification + SLIG embeddings (understanding embeddings generated
-  inline when vision_analysis is available — no queue/worker step)
-- Checkpoint recovery + real-time progress
-"""
+"""Data Import Service — process XML import jobs into products."""
 
 import logging
 import os
@@ -173,17 +163,6 @@ class DataImportService:
                 )
 
                 # Get job details.
-                #
-                # audit #17 M4-4 — TENTH instance of "two ids each individually valid, never
-                # checked against each other", and the second this session that writes to the
-                # gold layer. The route authorizes the caller against `request.workspace_id`
-                # (authorize_rag_workspace), which is real protection — for the WORKSPACE side.
-                # Nothing checked the JOB. So a member of workspace A could pass workspace A
-                # plus a job id belonging to workspace B and import B's supplier feed into
-                # their own catalogue: every product, price and image, with the tenancy check
-                # passing cleanly the whole way.
-                #
-                # MIVAA has no RLS, so this fetch IS the boundary.
                 job = await self._get_job(job_id, workspace_id)
                 if not job:
                     raise ValueError(f"Job {job_id} not found")
@@ -244,7 +223,6 @@ class DataImportService:
                         # a clean, successful, entirely empty import. It now returns None for
                         # "the read failed" and [] for "there is genuinely nothing here",
                         # which is pipeline convention 1: an explicit failure marker, because
-                        # emptiness alone is ambiguous.
                         raise RuntimeError(
                             f"Could not read products {batch_start}-{batch_end} for job "
                             f"{job_id}. Failing the job rather than completing it short."
@@ -306,11 +284,6 @@ class DataImportService:
                 # quota clamp that lost count — because all of them arrive here as a number
                 # that does not add up. Without it, the only signal was a completed job whose
                 # processed count nobody compared to anything.
-                # A quota-skipped product is counted inside `processed` — _process_batch
-                # increments one of the two for EVERY product it is handed, and a quota skip
-                # returns None from create_product_from_payload rather than raising. So the
-                # invariant is the pair, not a triple; adding _quota_skipped here would fail
-                # every clamped job.
                 accounted = processed_count + failed_count
                 if accounted != total_products:
                     raise RuntimeError(
@@ -571,13 +544,6 @@ class DataImportService:
         # data_import_job_products. Re-applying field_mappings here was dead
         # (its keys are raw XML tags, absent from the canonical dict) and a
         # latent corruption vector when a raw tag happened to equal a canonical
-        # key (it would overwrite the orchestrator's resolved + manual-value
-        # fallback). field_mappings is retained in the signature for callers /
-        # back-compat but is intentionally no longer re-applied.
-        # audit #17 M4-5: this was a DENYLIST of exactly one key ('metadata'), so every other
-        # supplier-controlled key rode straight through into the normalized product. It stays
-        # a copy of the feed — this function's job is shape, not trust — but the keys the
-        # platform owns are removed here too, so they cannot arrive pre-set from outside.
         normalized = {
             k: v for k, v in product.items()
             if k != 'metadata' and k not in _SUPPLIER_RESERVED_METADATA_KEYS
@@ -658,17 +624,12 @@ class DataImportService:
         job_id: Optional[str] = None,
         status: str = 'draft',
     ) -> Optional[str]:
-        """
-        Shared single-product create core — the ONE place that turns a structured
+        """Shared single-product create core — the ONE place that turns a structured
         payload into a searchable product row: canonical metadata → facet
         canonicalization → Voyage text_embedding_1024 → image linking → optional
         chunking. Called by the XML importer and the dealer "Add Product" flow (and,
         as a follow-up, PDF Stage 4) so the embedding/canonicalization standard never
         drifts across ingest paths.
-
-        source: provenance tag ('xml_import' | 'dealer_manual' | …) — drives the
-                extracted_from / source_type / created_from_type / import_* fields.
-        Returns the created/updated product id (or None on failure).
         """
         try:
             product_name = product_data.get('name', 'Unknown Product')
@@ -702,11 +663,6 @@ class DataImportService:
             # provenance and classification of the product being created. (The products row's
             # own workspace_id column was never reachable this way; what a supplier could
             # rewrite is this jsonb, which is what canonicalization, faceting and the admin UI
-            # all read.)
-            #
-            # Supplier content still arrives — it is the point of an import — but it goes in
-            # FIRST, and the fields we own are written over it afterwards. Reserved keys are
-            # dropped rather than merged, so their loss is logged instead of inferred.
             supplier_meta = dict(inner_meta)
             rejected = [k for k in supplier_meta if k in _SUPPLIER_RESERVED_METADATA_KEYS]
             for k in rejected:
@@ -784,11 +740,6 @@ class DataImportService:
             # "7012<greek-M><greek-T>" and "7012MT" are one product that compared unequal, and
             # every re-import of that feed minted a duplicate. "7012-MT" and "7012 mt" did the
             # same through separators and case.
-            #
-            # Raw stays raw (it is what the supplier calls it, and what a PO has to quote);
-            # `external_sku_folded` is what identity is decided on, with a unique index behind
-            # it. Same helper the CRM company dedupe and mention identity use — one fold, not
-            # a fourth one.
             external_sku_folded = fold_model_token(external_sku) if external_sku else None
             if external_sku:
                 product_record['external_sku'] = external_sku
@@ -828,9 +779,6 @@ class DataImportService:
             # XML has no LLM upstream, so this path relies entirely on the
             # canonicalizer's L0.5 (Haiku pretranslate) + L2 (Voyage cosine).
             # Multilingual raw values from supplier feeds (Greek/Italian/German)
-            # auto-collapse to English canonicals here. Passing existing_id
-            # enables diff-before-canonicalize so re-imports skip already-seen
-            # values without re-paying translation/embedding cost.
             try:
                 canonical = await canonicalize_product_attributes(
                     self.db, product_metadata, source=source,
@@ -841,11 +789,6 @@ class DataImportService:
                     # canonicalizer drops its tenancy predicate entirely: `_fetch_existing`
                     # prefetches facet values across ALL workspaces, and
                     # `resolve_facet_values_batch` writes any new canonical value with a NULL
-                    # workspace, i.e. into the shared/golden namespace. One supplier's raw
-                    # Greek finish name would become everyone's canonical.
-                    #
-                    # The argument the method was already given is the tenant. A mutable
-                    # instance field is not a tenant source of truth.
                     workspace_id=workspace_id,
                 )
                 product_record['attributes'] = canonical.attributes

@@ -1,33 +1,4 @@
-"""
-Public Project Workspace API — /api/v1/projects/*
-
-External integrations authenticate with an `api_keys` Bearer token (`kai_*`)
-and manage Projects: a container above moodboards, quotes, rooms, tasks,
-and collaborators for a single engagement.
-
-Mirror of `mention_tracking_routes.py` / `job_tracking_routes.py` for the
-Projects module. Auth dependency is identical (`authenticate_api_key`) so the
-same `kai_*` key works across price / mention / job / project tracking.
-
-Routing summary:
-  api_key_id → projects.user_id (api_key's owning user) is the acting user.
-              Every project created here is owned by that user, with all
-              the normal Supabase RLS guarantees (other users / api_keys
-              can't read or write it).
-
-Internal flow (browser session JWT) talks to Supabase directly and is not
-exposed here — see docs/projects.md for the SDK surface.
-
-Credit cost (all reads = 0; writes itemised below):
-  create_project              = 0 cr (no upstream services hit)
-  invite_collaborator         = 1 cr (sends a transactional email)
-  All other writes (rooms, tasks, updates, deletes, revokes) = 0 cr.
-
-Tables / RPCs touched (see Phase 1-4 migrations):
-  projects, project_rooms, project_tasks, project_events,
-  project_collaborators, accept_project_invitation,
-  get_project_invitation_preview.
-"""
+"""Public Project Workspace API — /api/v1/projects/*"""
 
 import logging
 from typing import Any, Dict, List, Optional
@@ -577,8 +548,6 @@ async def invite_collaborator(
     `accept_project_invitation` RPC stamps their `user_id` so RLS grants
     read access to the project, rooms, moodboards, sheets, and `client_visible`
     tasks.
-
-    Credits: 1 (covers the transactional email).
     """
     if not ctx.user_id:
         raise HTTPException(status_code=403, detail="API key has no associated user")

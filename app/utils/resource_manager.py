@@ -222,27 +222,7 @@ def sweep_orphan_temp_pdfs(
     tmp_dir: str = "/tmp",
     max_age_hours: int = 12,
 ) -> Dict[str, int]:
-    """Disk-level janitor for orphan PDF temp files left by crashes.
-
-    The ResourceManager only knows about resources from the currently-running
-    process. On SIGKILL / OOM kill, the in-memory state is lost and any temp
-    PDF that was registered orphans on the host's /tmp filesystem with no
-    cleanup. Across many incidents this fills the partition.
-
-    This sweep:
-      1. Scans `tmp_dir` for files matching the PDF temp patterns we know
-         the orchestrator creates (`tmp*.pdf` from NamedTemporaryFile +
-         the per-document subdirs `pdf_processor_*`).
-      2. Filters to files / dirs older than `max_age_hours` (default 12h —
-         well past the per-product timeout, so we never touch live work).
-      3. Deletes them. Honours errors silently (don't crash startup over a
-         file we can't unlink).
-
-    Called from `lifespan()` at startup so each fresh process inherits a
-    clean /tmp. Safe to call multiple times.
-
-    Returns counts: `{scanned, deleted, errors, skipped_recent}`.
-    """
+    """Disk-level janitor for orphan PDF temp files left by crashes."""
     import os as _os
     import shutil as _shutil
     import time as _time

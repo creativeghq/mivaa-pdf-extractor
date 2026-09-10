@@ -1,19 +1,4 @@
-"""
-Background heartbeat for in-flight PDF jobs.
-
-Stage transitions update `background_jobs.last_heartbeat` opportunistically,
-but a job can sit inside one stage (e.g. waiting on Stage 0 vision discovery)
-for many minutes. Without a periodic heartbeat the auto-recovery cron cannot
-distinguish "still working" from "process died." This helper writes a
-heartbeat every `JOB_HEARTBEAT_INTERVAL_SECONDS` while the orchestrator is
-running, regardless of stage progress.
-
-Heartbeat runs on a real OS thread (not asyncio.create_task) so even if
-the orchestrator's event loop is blocked by a long synchronous call
-(PyMuPDF page processing, sync HF SDK, big GC pause) the heartbeat keeps
-firing. Otherwise a CPU-bound stage looks "stuck" to the auto-recovery
-cron and triggers unnecessary recovery attempts.
-"""
+"""Background heartbeat for in-flight PDF jobs."""
 
 import asyncio
 import logging

@@ -1,24 +1,4 @@
-"""
-Text-embedding backfill for products and chunks.
-
-Closes the consumer gap on two failure markers that previously had none:
-
-- Products created with `text_embedding_1024 IS NULL` (Voyage retries
-  exhausted during Stage 4 / XML import — Stage 0 stamps
-  metadata.embedding_failure but nothing retried it). These products are
-  invisible to product-level vector search until re-embedded.
-- document_chunks with `has_text_embedding` false/NULL (batch embedding
-  failed mid-import in rag_service Step 3b). These chunks are invisible
-  to chunk-level RAG retrieval.
-
-Embedding text for products is built by stage_4_products.
-build_product_embedding_text — the SAME function the inline path uses —
-so backfilled vectors live in the same semantic space. Chunks embed their
-`content` verbatim, exactly like the inline batch path.
-
-Triggered by POST /admin/text-embeddings/backfill; bounded by
-`max_products` / `max_chunks`; safe to call repeatedly.
-"""
+"""Text-embedding backfill for products and chunks."""
 
 from __future__ import annotations
 
@@ -40,14 +20,7 @@ async def _fetch_products_missing_embedding(
 ) -> List[Dict[str, Any]]:
     """Products with no text embedding. Explicit product_ids override the
     NULL filter so the admin UI can force a re-embed of specific rows.
-
-    The unfiltered scan skips services: they are written by servicesService with
-    no ingest-core call, so no embedding was ever owed on one, and nothing reads
-    a service by vector (search_products_by_embedding serves RAG and product
-    enrichment). Left in, a workspace's service list consumes the bounded scan
-    while products whose embedding genuinely failed wait behind it. An explicit
-    product_ids call still re-embeds whatever it names — that is an operator
-    pressing "re-embed" on a specific row, not a sweep."""
+    """
     client = get_supabase_client().client
     query = (
         client.table("products")

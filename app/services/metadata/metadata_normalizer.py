@@ -1,15 +1,4 @@
-"""
-Metadata Normalization Service
-
-Automatically normalizes metadata field names to a standardized schema.
-Uses semantic similarity to detect variations without hardcoding every possible field name.
-
-This allows the system to:
-1. Handle new field name variations automatically
-2. Standardize existing inconsistencies
-3. Work for ANY metadata field (not just known ones)
-4. Minimal performance impact (~50ms per product)
-"""
+"""Metadata Normalization Service"""
 
 import logging
 import unicodedata
@@ -154,15 +143,8 @@ def _normalize_for_match(s: str) -> str:
 
 
 def filter_codes_by_product(codes: Any, product_name: str) -> Any:
-    """
-    Filter a sku_codes / product_codes dict so only entries that belong to
+    """Filter a sku_codes / product_codes dict so only entries that belong to
     `product_name` are kept.
-
-    Keys that have a recognisable product-name prefix (e.g. "ONA MINT/12X45"
-    or "valenova_blue_30x60") are only kept when that prefix matches
-    `product_name`.  Plain colour/variant names that have no product prefix
-    (e.g. "white", "clay") are always kept — they are already product-scoped
-    because they came from the right product text.
     """
     if not product_name or not isinstance(codes, dict):
         return codes
@@ -226,23 +208,9 @@ _FACTORY_GROUP_ALIASES = ('factory_group',)
 
 
 def normalize_factory_keys(metadata: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Standardize factory/manufacturer keys to the canonical schema:
-      - factory_name        — the maker (e.g. "Harmony")
-      - factory_group_name  — the parent group, when meaningfully different (e.g. "Peronda Group")
-
-    Folds in legacy / AI-emitted aliases (manufacturer, brand, supplier, factory_group)
-    so the rest of the pipeline only needs to know about the two canonical keys.
-
-    Behavior:
-      - If `factory_name` is empty/missing: copy from manufacturer → brand → supplier (first non-empty wins).
-      - If `factory_name` is empty AND `factory` is a string (not a dict): use that.
-      - If `factory_group_name` is empty/missing: copy from `factory_group`.
-      - All alias keys are then deleted from the metadata to enforce a single source of truth.
-      - The nested `factory` object (if present as a dict) is left untouched — that's the
-        rich nested location built by stage_4_products._build_factory_object().
-
-    Idempotent — safe to call multiple times. Mutates and returns the same dict.
+    """Standardize factory/manufacturer keys to the canonical schema:
+    - factory_name        — the maker (e.g. "Harmony")
+    - factory_group_name  — the parent group, when meaningfully different (e.g. "Peronda Group")
     """
     if not isinstance(metadata, dict):
         return metadata
@@ -286,19 +254,6 @@ def normalize_factory_keys(metadata: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================================
 
 # ALIASES, not a vocabulary. audit #17 M4-9.
-#
-# This map used to BE the list of categories: whatever it returned was the answer, and a value
-# it did not know became `category.title()` — an invented category, spelled plausibly, that no
-# validator accepts and no prompt offers. That is the shape which made `cladding` re-classify
-# on every run.
-#
-# What a category IS lives in `material_categories.controlled_vocab` (the DB registry). This map
-# only says which FREEFORM SPELLINGS collapse onto one of those values — "ceramic tiles" and
-# "stoneware" are supplier prose, not category keys, and the registry has no place to hold every
-# way a supplier might write them. Every value on the right-hand side is checked against the live
-# vocabulary at runtime by `normalize_material_category`, exactly as
-# `stage_4_products._normalize_material_category` checks its own alias map. An alias pointing at
-# a value an admin has since removed is dropped and logged, never written.
 MATERIAL_CATEGORY_MAPPING = {
     # Tiles — all tile variations keep their controlled-vocab slug
     "tile": "floor_tile",
@@ -437,11 +392,6 @@ def normalize_material_category(category: str) -> Tuple[str, Optional[str]]:
     # audit #17 M4-9. The registry decides what a category is; this function only spells
     # things. The old code kept any snake_case string unchanged and Title-cased everything
     # else, so "Ceramic Composite Panel" became a category by virtue of having been typed.
-    #
-    # `is_loaded` rather than a try/except: this is a SYNC function reachable from paths that
-    # have not loaded the registry, and it must degrade to its previous behaviour there rather
-    # than raise mid-extraction. Where the registry IS loaded — every ingest path — an
-    # unknown value is dropped instead of invented.
     if field_registry.is_loaded:
         vocab = field_registry.all_controlled_vocab()
         if base_category not in vocab:

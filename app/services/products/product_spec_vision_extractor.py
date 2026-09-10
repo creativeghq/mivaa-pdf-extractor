@@ -1,24 +1,4 @@
-"""
-Product spec extraction via Claude Vision on rendered PDF spec pages.
-
-Why Claude Vision instead of per-icon OCR:
-  Ceramic catalog icon strips use stylized vector glyphs that document OCR
-  (PaddleOCR) struggles with at icon scale. Individual 67x67 px icon crops also
-  fail because they lack surrounding context — no label, no value, nothing
-  to anchor the interpretation.
-
-  Rendering the full PDF page at 300 DPI and passing it to Claude Haiku Vision
-  gives Claude both the icon AND the surrounding text/layout. We consistently
-  recover: product_name, dimensions, body_type, colors, variants/SKUs,
-  pieces_per_box, m²/box, sqft/box, weight, pallet info, and (for pages with
-  per-product spec grids) slip/PEI/fire/shade/frost ratings.
-
-Cost: ~1 Claude Haiku Vision call per product spec page (~2000 input tokens,
-~600 output tokens) = ~$0.001-0.002 per product. Cheap.
-
-Runs after Stage 4.7 (chunk+vision_analysis rollup) and only fills fields that
-are still null/empty. Never overwrites AI values that already exist.
-"""
+"""Product spec extraction via Claude Vision on rendered PDF spec pages."""
 
 import base64
 import io
@@ -73,19 +53,8 @@ def _build_spec_prompt(product_name: str) -> str:
 # Was `SPEC_PROMPT = _build_spec_prompt(...)`, evaluated at IMPORT time — which can neither
 # await nor reach the prompt store. A function instead, resolved when it is actually needed
 # (#347 phase 3P).
-#: The forced tool for spec extraction (#25 M12-2).
-#:
-#: The schema is deliberately PERMISSIVE — an object, no declared properties, nothing
-#: required. That is not laziness: the shape of a spec reply is described inside the
-#: prompt, which is stored in the database and edited by admins at /admin/ai-configs.
-#: Restating those keys here would create a second source that drifts the first time
-#: somebody edits the prompt, and a tool schema that disagrees with the prompt is worse
-#: than no schema at all — the model is forced to satisfy the schema, so the edit would
-#: silently stop taking effect.
-#:
-#: What forcing the tool buys, even with an open schema, is the entire failure mode:
-#: the model cannot return prose, so there is nothing to strip, and an absent tool block
-#: is a typed error instead of a None that reads exactly like "this page had no specs".
+# : The forced tool for spec extraction (#25 M12-2).
+# :
 SPEC_VISION_TOOL = {
     "name": "emit_product_spec",
     "description": (
@@ -133,21 +102,7 @@ def _render_page_under_limit(
     page_index: int,
     max_bytes: int = MAX_IMAGE_BYTES,
 ) -> Optional[bytes]:
-    """Render a PDF page into bytes guaranteed to fit under `max_bytes`.
-
-    Strategy:
-      1. Try PNG at the default DPI. Keep if it's already under max_bytes.
-      2. If too big, try PNG at progressively lower DPIs (180, 150, 120).
-      3. If PNG still too big, switch to JPEG at 180/150/120 DPI with
-         quality 88/82/75.
-      4. Return the smallest rendering we can produce; return None only
-         if every attempt fails at the PyMuPDF level.
-
-    This bypasses PIL entirely — PyMuPDF produces both PNG and JPEG
-    natively, so we never have to round-trip through Image.open, which
-    was choking on high-res Harmony pages with "cannot identify image
-    file".
-    """
+    """Render a PDF page into bytes guaranteed to fit under `max_bytes`."""
     # Pass 1: PNG at several DPIs
     for dpi in (PAGE_RENDER_DPI, 180, 150, 120):
         try:
@@ -179,21 +134,7 @@ def _render_page_under_limit(
 
 
 def _shrink_if_needed(png_bytes: bytes, max_bytes: int = MAX_IMAGE_BYTES) -> bytes:
-    """Downscale a PNG (and optionally flatten to JPEG) to fit under max_bytes.
-
-    Guarantees a return value under max_bytes whenever possible. Tries PNG at
-    progressively smaller sizes first; if PNG can't get small enough (very
-    high-res brochure pages with many gradients compress poorly), falls back
-    to JPEG at quality 85 which is ~4-6x more efficient for photographic
-    catalog content. Icon glyphs and spec table text survive JPEG 85.
-
-    PIL occasionally fails to open a valid-looking PNG produced by PyMuPDF
-    (seen on high-resolution Harmony spread pages — raises "cannot identify
-    image file"). In that case we return the original bytes unchanged and
-    let the caller either send them through to Claude (if under 5 MB) or
-    log a downstream failure. Never propagate the PIL error — a single
-    unreadable page should not abort the rest of the scan.
-    """
+    """Downscale a PNG (and optionally flatten to JPEG) to fit under max_bytes."""
     if len(png_bytes) <= max_bytes:
         return png_bytes
     try:
@@ -258,18 +199,7 @@ def _call_claude_vision(
     product_id: Optional[str] = None,
     model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Single Claude Vision call, returns parsed JSON dict or None on failure.
-
-    `job_id` + `product_id` are forwarded to `tracked_claude_call` so per-
-    product cost attribution lands in `ai_usage_logs.product_id` (audit
-    fix: previously every Stage 4.7 spec-vision call landed without
-    product_id and showed up as orphan spend on the cost dashboard).
-
-    `model` overrides the module-default `CLAUDE_VISION_MODEL` for this call
-    ONLY (Tier B passes Opus). Passing it per-call — instead of mutating the
-    module global — is what keeps concurrent jobs from leaking each other's
-    model choice (the S4-1 race).
-    """
+    """Single Claude Vision call, returns parsed JSON dict or None on failure."""
     if prompt is None:
         prompt = default_spec_prompt()
     if not ANTHROPIC_API_KEY:
@@ -329,18 +259,7 @@ def _call_claude_vision(
 
 
 def _get_source_pdf_path(document_id: str) -> Optional[str]:
-    """Find the source PDF for a document on disk.
-
-    PDFs are kept under /tmp/pdf_processor_{document_id}/{document_id}.pdf during
-    processing. If the temp dir was cleaned, we can re-download from Supabase
-    storage via the documents.file_path field — handled by the caller.
-
-    Also rejects 0-byte files: when the previous orchestrator crashed mid-
-    write (e.g. kernel OOM kill on Apr 29), the temp dir was left with an
-    empty file. Treating it as "found" then handing it to pymupdf produces
-    the "Cannot open empty file" error chain. Returning None instead lets
-    the caller re-download from Supabase storage.
-    """
+    """Find the source PDF for a document on disk."""
     candidates = [
         f"/tmp/pdf_processor_{document_id}/{document_id}.pdf",
         f"/tmp/pdf_processor_{document_id}/source.pdf",
@@ -378,17 +297,7 @@ def _normalize_for_match(s: str) -> str:
 
 
 def _load_cache_page_texts(document_id: Optional[str]) -> Dict[int, str]:
-    """0-indexed PDF page → PaddleOCR-VL reading-order text, from the layout cache.
-
-    Lets name-based page resolution match products whose name is rendered INSIDE
-    a page image (designer fonts / logos / stylized titles) — the embedded PDF
-    text layer misses those, but the VLM OCR'd them into
-    ``document_layout_analysis``. Returns ``{}`` on any failure / no document_id,
-    so the caller falls back to the raw text layer only (never raises).
-
-    Memoized per document (see :data:`_CACHE_TEXT_BY_DOC`) so a catalog with many
-    image-baked-name products reads the layout table ONCE, not once per product.
-    """
+    """0-indexed PDF page → PaddleOCR-VL reading-order text, from the layout cache."""
     if not document_id:
         return {}
     memo = _CACHE_TEXT_BY_DOC.get(document_id)
@@ -445,12 +354,6 @@ def _find_pdf_pages_by_text(
 ) -> List[int]:
     """Scan the PDF TEXT LAYER and return 0-indexed page indices whose text
     contains `product_name` (case- and accent-insensitive).
-
-    This is the authoritative signal for "where does this product live in the
-    PDF" when the chunk metadata's `product_pages` turns out to be catalog
-    folio labels (two per physical spread) rather than absolute PDF indices.
-    Pages whose name is baked into an image (empty text layer) are handled by
-    the cache-backed :func:`_find_pages_by_name_in_texts` fallback in the resolver.
     """
     needle = _normalize_for_match(product_name)
     if not needle:
@@ -475,27 +378,7 @@ def _resolve_pdf_pages_for_product(
     product_name: Optional[str] = None,
     document_id: Optional[str] = None,
 ) -> List[int]:
-    """Return 0-indexed PDF page indices where `product_name` actually lives.
-
-    Priority:
-      1. **Text scan** (authoritative): open the PDF and find every page
-         that literally contains the product name. Accent/case-insensitive.
-      2. **Fallback**: treat `product_page_range` as 1-indexed PDF page
-         numbers and subtract 1. This is only correct when the upstream
-         pipeline stored true PDF page numbers (which it does for some
-         catalogs, but NOT for Harmony-style catalogs where the chunk
-         metadata stores printed folio labels — two folios per spread).
-
-    Background: earlier revisions trusted `product_page_range` and applied a
-    fuzzy `(-2..+1)` offset heuristic, and then a strict `n - 1` conversion.
-    Both were wrong for Harmony: chunk metadata stored catalog folio labels
-    like [26, 27, 28, 29, 30, 31] for a product whose actual PDF pages were
-    [13, 14, 15] (one physical page = two printed folios). Claude Vision was
-    scanning brand-intro pages that had no VALENOVA data on them at all.
-
-    We still honor `product_page_range` as a fallback so products with no
-    name match (e.g. renamed, SKU-only) can still get scanned.
-    """
+    """Return 0-indexed PDF page indices where `product_name` actually lives."""
     if not pdf_path or not os.path.exists(pdf_path):
         return []
 
@@ -695,16 +578,7 @@ def extract_specs_from_pdf_pages(
 def map_vision_specs_to_product_metadata(
     specs: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Transform the flat vision result into the nested product.metadata shape.
-
-    The vision extractor returns a flat dict like {slip_resistance: "R9", ...}
-    but products.metadata is nested: {performance: {slip_resistance: "R9"}, ...}.
-    This function performs that mapping.
-
-    Returns a dict with the same nested shape used by Stage 4.7's
-    _merge_enriched_fields_into_metadata — so the caller can feed it directly
-    into the existing merge pipeline.
-    """
+    """Transform the flat vision result into the nested product.metadata shape."""
     out: Dict[str, Any] = {}
 
     # Material properties

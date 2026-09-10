@@ -1,26 +1,4 @@
-"""
-PaddleOCR-VL structural-pass endpoint manager.
-
-Drives the PaddleOCR-VL pipeline hosted on Modal — the two-stage document parser
-(PP-DocLayoutV3 detector + 0.9B VLM) that produces the page layout + OCR text +
-figure boxes per page, with tight RT-DETR crop boxes and a dedicated reading order.
-
-The manager speaks the Modal app's custom ``/parse`` contract (NOT OpenAI chat):
-
-    POST /parse  {"image_b64": "...", "mode": "page"|"block"}
-      → {"regions":[{"bbox":[x0,y0,x1,y1] px,"label","content","order"}],
-         "width","height"}
-
-Lifecycle (warmup / scale-to-zero / health) is delegated to a
-:class:`~app.services.pdf.endpoint_providers.ModalEndpointProvider` — Modal owns
-autoscaling, so warmup is a ``/health`` probe and scale-to-zero is Modal's idle
-clock. The inference / parse / metrics logic lives here.
-
-Two modes (the only two the pipeline uses):
-* ``page`` — full-page structural pass (default). Returns :class:`PaddleRegion`
-  list with layout label + OCR content + 0..1 bbox + reading order.
-* ``block`` — OCR a single cropped block image to text (per-image OCR).
-"""
+"""PaddleOCR-VL structural-pass endpoint manager."""
 
 import logging
 import time
@@ -47,27 +25,7 @@ def _log_paddleocr_gpu_cost(
     product_id: Optional[str],
     outcome: str = "success",
 ) -> None:
-    """Log the GPU-seconds cost of a PaddleOCR call to ai_usage_logs.
-
-    PaddleOCR-VL runs on a Modal GPU endpoint — billed per GPU-second (time-based,
-    $1/GPU-hour), NOT per token.
-
-    Called on EVERY attempt that reached the endpoint, not only successful ones.
-    Modal bills for the GPU-seconds a failed attempt consumed exactly as it does for
-    a successful one, and a failing endpoint burns up to _MAX_ATTEMPTS × 180s per
-    page. Logging only the success branch meant `total_ai_cost_usd` read LOWEST
-    precisely when real spend was HIGHEST — a degraded endpoint produced a large
-    bill and zero ai_usage_logs rows. `metadata.outcome` distinguishes the rows so
-    cost dashboards can split successful work from burn.
-
-    DIRECT SYNCHRONOUS insert: ``run_structural_pass`` is
-    sync (dispatched via ``asyncio.to_thread``), the supabase client is a process
-    singleton, and the insert is ~ms — so we just write the row inline. The
-    previous fire-and-forget pattern spawned a daemon thread with a FRESH
-    ``asyncio.new_event_loop()`` per call and never closed it: 140 page passes →
-    140 leaked event loops → FD exhaustion ("Too many open files" + "deallocating
-    an open event loop"). Best-effort — never raises into the structural pass.
-    """
+    """Log the GPU-seconds cost of a PaddleOCR call to ai_usage_logs."""
     try:
         from datetime import datetime, timezone
         from app.config.ai_pricing import ai_pricing
@@ -249,15 +207,6 @@ class PaddleOCRManager:
     ) -> Dict[str, Any]:
         """Full-page structural pass (``page`` mode).
 
-        Returns::
-
-            {
-              "regions": List[PaddleRegion],   # 0..1 bbox, label + content + order
-              "generated_text": str,           # reading-order plain text
-              "raw": dict,                      # raw /parse response
-              "attempts_made": int,
-            }
-
         Raises:
             PaddleOCRResponseError: a non-empty response that parsed to zero
                 regions, after retries — the page is marked ocr_failed (retryable).
@@ -316,23 +265,6 @@ class PaddleOCRManager:
             raw_regions = payload.get("regions")
             regions: List[PaddleRegion] = parse_parse_response(payload)
             # Two distinct zero-region causes, previously collapsed into one.
-            #
-            # The retry used to trigger only when the `regions` KEY was absent, so a
-            # response of {"regions": []} — or one whose regions were ALL dropped by
-            # the bbox guard in parse_parse_response — fell straight through to
-            # outcome="success", region_count=0. Stage 1 then cached the page as
-            # "empty_page", which is NOT in _RETRY_CACHE_STATUSES: a dense page the
-            # VLM hiccuped on was permanently stored as blank, with the metrics table
-            # reporting success.
-            #
-            # `raw_regions` truthy but `regions` empty is unambiguous — the endpoint
-            # DID find regions and our parser discarded every one, which is never a
-            # blank page. That is retried here. A genuinely empty `raw_regions` is not
-            # retried at this layer: it is indistinguishable from a blank page from
-            # inside the client, so Stage 1 decides using the rendered image it
-            # already holds (see _OCR_PRODUCTIVE_STATUSES there). Retrying it here
-            # would burn three GPU calls on every separator page of every catalog,
-            # every run, and still never reach a terminal state.
             _dropped_every_region = bool(raw_regions) and not regions
             if raw_regions is None or _dropped_every_region:
                 last_error = PaddleOCRResponseError(

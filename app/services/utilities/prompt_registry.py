@@ -58,16 +58,6 @@ CACHE_TTL_SECONDS = 300
 
 
 # ── Workspace scope ──────────────────────────────────────────────────────────────────────────
-#
-# A prompt row lives EITHER under a tenant workspace (a customisation) or under the global
-# workspace (the platform default). Every loader in this service used to filter
-# `.eq('workspace_id', workspace_id)` and stop there, so a platform default was invisible to
-# every tenant and each workspace needed its own copy of all ~30 pipeline prompts.
-#
-# That is not a theoretical gap: 32 defaults were sitting under one tenant, and moving them to
-# the global workspace — the correct place for a default — broke PDF ingestion outright, because
-# no loader looked there. The move is only safe once every loader resolves like
-# `prompt_registry.load_prompt` does: workspace first, then global.
 
 
 def workspace_scope(workspace_id: Optional[str]) -> list:
@@ -276,16 +266,12 @@ def render(template: str, **values: Any) -> str:
     return template
 
 
-#: Every prompt key this service loads with a literal (prompt_type, category, stage).
-#:
-#: No-fallback means a missing row stops the work cold — correct, but it must be discovered at
-#: deploy time, not at 2am halfway through a catalog. `check_required_prompts()` verifies these
-#: exist; /health reports the result (#347 phase 3P.6).
-#:
-#: This list is DECLARED, not derived, because a running service cannot AST-scan itself. It is
-#: kept honest by tests/unit/test_prompts_come_from_the_database.py, which walks every
-#: `load_prompt(...)` / `get_cached(...)` call in app/ and fails when one is missing here — so
-#: the declaration cannot drift from the code the way a hand-kept list normally would.
+# : Every prompt key this service loads with a literal (prompt_type, category, stage).
+# :
+# : No-fallback means a missing row stops the work cold — correct, but it must be discovered at
+# : deploy time, not at 2am halfway through a catalog. `check_required_prompts()` verifies these
+# : exist; /health reports the result (#347 phase 3P.6).
+# :
 REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("agent", "segmentation", None),
     ("classification", "chunk_scope", "chunking"),

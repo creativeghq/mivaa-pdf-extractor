@@ -1,25 +1,4 @@
-"""Guards for the mivaa#28 (prompt registry) and #31 M17-1 (agent-run helpers) fixes.
-
-Both audits found the same shape, which is why they are held in one file: **the route
-did the security work and the layer below discarded it.** Anyone reading the route would
-conclude the endpoint was safe.
-
-    #28 M14-2   the route calls `resolve_workspace_id`, says so in a comment, and passes
-                the result to a service method that ACCEPTS the parameter and never
-                applies it — so the endpoint returned every active prompt on the platform.
-    #31 M17-1   `create_background_agent` records `workspace_id` correctly, and every
-                update path then filters on id alone.
-
-Static analysis, so these pin the SHAPE. 12 of the 14 cases were watched to fail against
-the pre-fix source; the other two are stays-as-they-are guards that pass both ways, named
-so they are not mistaken for coverage:
-`test_the_prompt_list_still_shows_platform_defaults` (a bare `.eq()` here would be a
-different bug — a correct filter that hides half the data) and
-`test_the_routers_are_still_included_without_a_blanket_dependency` (so the per-route
-gates are not first made redundant and then removed).
-
-NOT covered: #28 M14-5 onward and #31 M17-2/M17-3 are untouched by this batch.
-"""
+"""Guards for the mivaa#28 (prompt registry) and #31 M17-1 (agent-run helpers) fixes."""
 
 import ast
 import re

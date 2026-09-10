@@ -1,32 +1,4 @@
-"""Guards for the mivaa#23 audit fixes (M10-1 … M10-4).
-
-One file per audit, matching `test_audit_18_gates_hold.py`.
-
-Static, not runtime: CI installs pytest alone (`deploy.yml`) and these unit tests
-import nothing from `app`, so each case parses source instead. That constrains what
-can be checked — a guard here proves the SHAPE is gone, not that the replacement
-behaves.
-
-Every case below was watched to FAIL against the pre-fix source before being
-committed, with one exception that earned its own lesson:
-`test_health_check_is_reachable_without_a_token` originally asserted only that no
-route-level dependency existed, passed both ways, and was cited as evidence for a
-claim that turned out to be false in production. It now asserts the middleware
-exclusion too. A guard that checks half of a claim reads exactly like one that checks
-all of it.
-
-NOT covered here, deliberately:
-  * M10-4 (no pre-debit on these services) was fixed AFTER this batch, in d683113,
-    and its guard lives in `test_paid_route_metering.py` — which enumerates the paid
-    doors from source rather than listing them by hand, so a new door here fails on
-    the day it is written. Capping the arrays bounded the amplification; it did not
-    make anyone pay, and that was deliberately left as separate work rather than
-    covered by a green test here.
-
-    (This paragraph used to read "is not fixed by this batch", which was true when
-    written and had become a coverage gap that no longer existed. A stale NOT-COVERED
-    note is worse than none: it is the one place a reader trusts.)
-"""
+"""Guards for the mivaa#23 audit fixes (M10-1 … M10-4)."""
 
 import ast
 import re
@@ -170,18 +142,7 @@ def test_every_model_calling_route_gates_itself(func: str):
 
 
 def test_health_check_is_reachable_without_a_token():
-    """Two halves, and the first shipped believing the second was already true.
-
-    When this batch landed I wrote that /health "stays open". Only half of that was
-    ever the case: no route-level dependency was added, but `/api/v1/ai-services` is
-    not in `JWTAuthMiddleware.exclude_paths`, so the middleware 401'd the probe anyway
-    — measured against production after the deploy. `health-check`'s
-    `checkPythonEndpoint` sends no Authorization header and tests `res.ok`, so that
-    dashboard row had never been green.
-
-    So the guard now asserts BOTH halves. The route has no dependency AND the exact
-    path is excluded. Asserting only the first is what let a false claim look verified.
-    """
+    """Two halves, and the first shipped believing the second was already true."""
     body = _source_of(_read(AI_ROUTES), "health_check")
     assert "Depends(" not in body, (
         "health_check grew a route-level dependency — the health-check edge function "

@@ -198,14 +198,6 @@ def analyze_pdf_layout(pdf_path: str, progress_callback: Optional[Callable[[int,
         # Portrait/square: aspect < 1.2 (single page)
         # Landscape: aspect > 1.4 (spread - two pages)
         # In-between (1.2-1.4): treat as single to be safe.
-        #
-        # The 1.2-1.4 band is ambiguous — landscape catalogs printed at
-        # 4:3-ish aspect (1.33) silently fall into "single" and lose their
-        # right-half products to the left-half. We can't reliably split
-        # without more signals (image-rect distribution, text-column
-        # detection), so we still default to SINGLE — but at WARNING level
-        # so operators can hand-inspect the catalog before discovery routes
-        # all content to the left-half product.
         if 1.2 <= aspect_ratio <= 1.4:
             logger.warning(
                 f"   ⚠️ PDF page {pdf_page_idx + 1} aspect={aspect_ratio:.2f} is in the "

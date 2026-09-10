@@ -1,27 +1,4 @@
-"""
-Idealo discovery service.
-
-Module gating + locale routing + adapter dispatch. Mirrors the shape of
-`app.modules.greek_marketplaces.service`:
-
-    svc = get_idealo_service()
-    hits = await svc.search(query="Hansgrohe Talis E", country_code="DE")
-
-Returns a list of PriceHit (the same type the perplexity service uses) so
-the orchestrator can merge them with the existing two-source pipeline.
-
-Locale → site mapping:
-  DE / AT → idealo.de
-  IT → idealo.it
-  UK / GB → idealo.co.uk
-  ES → idealo.es
-  FR → idealo.fr
-
-The country_code argument is the user's market. If we don't have a locale
-for it we return an empty list (no fallback to .de — that would surface
-out-of-stock-in-country results). The greek_marketplaces module has the
-same policy.
-"""
+"""Idealo discovery service."""
 
 from __future__ import annotations
 

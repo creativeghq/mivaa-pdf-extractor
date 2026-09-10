@@ -50,18 +50,7 @@ _KNOWN_NON_COLLECTION_EMBEDDER = "search_deduplication_service.py"
 
 
 def _executable_source(path: Path, text: str | None = None) -> str:
-    """Module source with comments and DOCSTRINGS stripped — but other strings kept.
-
-    Both halves of that matter, and the first draft of this file got the second half
-    wrong. Docstrings must go because these modules explain IN PROSE exactly which
-    provider they refuse to call, so a raw scan matches the sentence documenting the
-    rule and reports the rule as broken.
-
-    But ordinary string literals must STAY. Stripping every string was mutation-tested
-    and found blind to `_url = "https://api.openai.com/v1/embeddings"` — which is
-    precisely how a provider gets reintroduced. A guard that cannot see a URL is no
-    guard on a question about which URL gets called.
-    """
+    """Module source with comments and DOCSTRINGS stripped — but other strings kept."""
     tree = ast.parse(text if text is not None else path.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -114,23 +103,7 @@ def test_the_per_call_opt_out_is_gone():
 
 
 def test_nothing_calls_an_openai_embedding_endpoint():
-    """The check this file's NAME implies, which it did not previously make.
-
-    Every other assertion here is about the removed opt-out flag and the dead config
-    keys — the *mechanism* of the old fallback. None of them looked for the thing itself:
-    a call to an OpenAI embeddings endpoint.
-
-    So one survived. `search_deduplication_service._generate_clip_embedding` called
-    `openai.embeddings.create(model="text-embedding-3-small")` — under a name that says
-    CLIP, for a service whose docstring said CLIP, in a codebase where CLIP was removed —
-    and returned `[0.0] * 1024` on failure. With `OPENAI_API_KEY` unset the client raises
-    on property access, so every call took that path: a zero vector, cosine 0.0 against
-    everything, semantic dedup silently answering "nothing similar" for as long as it has
-    existed. Voyage-or-nothing is the rule; this is the assertion for it.
-
-    Deliberately about the CALL, not the package: `gpt-4o-mini` in the mention probe is a
-    legitimate OpenAI use and the test below pins it.
-    """
+    """The check this file's NAME implies, which it did not previously make."""
     offenders = []
     for path in _APP.rglob("*.py"):
         try:
@@ -176,17 +149,7 @@ _OPENAI_CHAT_ALLOWED = ("app/services/integrations/llm_mention_probe_service.py"
 
 
 def test_openai_is_chat_only_and_lives_in_one_file():
-    """OpenAI is a chat provider for the mention probe and NOTHING else.
-
-    The 2026-08-23 removal was total: package, clients, settings, health check, and the
-    probe model, after 212 probe rows produced 212 failures and an embedding call had
-    quietly survived the Voyage-or-nothing rule. This test used to assert the removal.
-
-    Restoring ChatGPT to the probe is worth doing — it is the largest answer engine — but
-    only in the shape that cannot regrow the fallback: HTTP over httpx (no package),
-    chat completions only (never embeddings), and in exactly one file. Everything else
-    OpenAI stays banned, and the embedding tests above stay untouched.
-    """
+    """OpenAI is a chat provider for the mention probe and NOTHING else."""
     offenders = []
     for path in _APP.rglob("*.py"):
         try:
@@ -230,15 +193,7 @@ def test_the_openai_package_is_not_a_dependency():
 
 
 def test_failure_returns_nothing_rather_than_something_else():
-    """The contract that replaced the fallback: absence, never a substitute.
-
-    Every caller already handles None — the work is retryable and the gap is visible.
-    A vector from another model is neither, and so is a FABRICATED one: a zero vector
-    is the other classic way to make a failure look like a success. It is worse than a
-    wrong-space vector in one respect — cosine against all-zeros is undefined, so it
-    ranks arbitrarily rather than merely wrongly, and it is `[float]` all the way down
-    so nothing downstream can tell it from a real embedding.
-    """
+    """The contract that replaced the fallback: absence, never a substitute."""
     for path in _EMBEDDING_MODULES:
         tree = ast.parse(_executable_source(path))
         for node in ast.walk(tree):

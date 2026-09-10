@@ -1,15 +1,4 @@
-"""POST /api/internal/tabular/ask — a question about a spreadsheet held in our storage.
-
-Trusted-service only (x-cron-secret, the service-role JWT, the mk_ key): the caller is
-inbox-api, which has already checked that the member may see the thread the file came
-from and has RESERVED the member's credits (invariant 10). This route reads the object,
-runs `TabularAgent`, and returns the answer with the tokens it spent so the caller can
-settle the reservation. It does not meter on its own — two ledgers for one question is
-the shape that made credit_transactions and ai_usage_logs disagree before.
-
-`/api/internal` is excluded from the JWT middleware, so the gate on the route is the
-gate (invariant 5).
-"""
+"""POST /api/internal/tabular/ask — a question about a spreadsheet held in our storage."""
 
 from __future__ import annotations
 

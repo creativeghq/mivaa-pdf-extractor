@@ -1,17 +1,4 @@
-"""
-Admin Linking API - Manual entity linking endpoints for debugging and fixing relationships.
-
-These endpoints allow admins to manually trigger entity linking for documents
-that may have failed during processing or need re-linking.
-
-AUTH (audit #24 M11-5). `/api/admin/linking/link-chunks-to-products` was
-admin-NAMED and admin-nothing-else: no `require_admin`, no user dependency, and no
-workspace predicate on the document, chunk or product reads before invoking the
-mutating linker. It writes the silver-to-gold boundary, so it now requires admin AND
-resolves the document inside the caller's workspace first. Everything the linker
-touches downstream hangs off that one document, so binding the document binds the
-chain.
-"""
+"""Admin Linking API - Manual entity linking endpoints for debugging and fixing relationships."""
 
 import logging
 from typing import Optional

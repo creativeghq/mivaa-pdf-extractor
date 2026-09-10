@@ -1,15 +1,4 @@
-"""
-Unified Prompt Service
-
-Single service for accessing all prompts from the unified 'prompts' table.
-Replaces: prompt_template_service, search_prompt_service.
-
-NOT admin_prompt_service (#347 phase 3P.3, decided 2026-08-14). That module is the admin
-CRUD and audit surface — update_prompt, get_prompt_history, test_prompt, _create_audit_entry —
-behind seven endpoints in api/admin_prompts.py. Nothing here replaces any of it: this service
-only READS. Deleting it on the strength of this line would remove the ability to edit prompts
-at all, which is the entire point of prompts living in the database.
-"""
+"""Unified Prompt Service"""
 
 import logging
 from typing import Dict, Any, Optional, List

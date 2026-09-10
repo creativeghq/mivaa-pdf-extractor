@@ -1,31 +1,4 @@
-"""
-PaddleOCR-VL structural-pass contract + parser.
-
-PaddleOCR-VL is a **two-stage** document parser run in one process by the
-``paddleocr`` package on Modal: PP-DocLayoutV3 (RT-DETR detector; multi-point
-boxes and reading order predicted in the decoder — V2 in the v1 pipeline only)
-localizes regions, labels them, and predicts reading order; the
-PaddleOCR-VL-0.9B VLM recognizes the content inside each region (text,
-tables→markdown, formulas→LaTeX, charts). The RT-DETR boxes are tight
-(→ clean product crops) and the reading order comes from a dedicated model.
-
-The Modal app ([modal_app/paddleocr_vl.py](../../../modal_app/paddleocr_vl.py))
-returns a JSON ``/parse`` response::
-
-    {"regions": [{"bbox": [x0,y0,x1,y1] px, "label": str,
-                  "content": str, "order": int}],
-     "width": int, "height": int}
-
-This module is PURE (no I/O). It maps that response onto the platform's existing
-``document_layout_analysis`` element schema so every downstream consumer (Stage 2
-chunking, Stage 3 crops, focused extraction) stays untouched.
-
-Coordinate convention: PaddleOCR returns **pixel** bboxes on the image we sent.
-We normalize to **0..1** at this boundary (dividing by the sent image's
-width/height), then :func:`region_to_layout_element` denormalizes back to the
-pixel space of the crop render — keeping the normalize→pixel conversion in one
-place.
-"""
+"""PaddleOCR-VL structural-pass contract + parser."""
 
 from __future__ import annotations
 
@@ -159,8 +132,6 @@ def parse_parse_response(payload: Dict[str, Any]) -> List[PaddleRegion]:
     # 1.0, collapsing every region onto the page edge, and nothing raised. A
     # response we cannot normalise is a malformed response, not a page with odd
     # layout: raise so the caller marks the page `ocr_failed` and retries it.
-    # Imported lazily: paddleocr_endpoint_manager imports from THIS module, so a
-    # module-level import back would be circular.
     from app.services.pdf.paddleocr_endpoint_manager import PaddleOCRResponseError
 
     try:

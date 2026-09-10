@@ -1,20 +1,5 @@
 """Files calling Anthropic directly may only DECREASE (mivaa#33 item 2).
 
-`claude_helper` is the correct path and the reason is not style. It:
-
-  * recovers the billable principal from `job_id` when `user_id` is absent, so the
-    spend is attributed instead of landing on nobody
-  * logs failures, including the `billable_attempt_failed` marker added in 6ef86a4 —
-    a raw httpx POST that times out AFTER Anthropic accepted and billed the request
-    leaves no trace at all
-  * is the one place `tools` / `tool_choice` can be forced from (`claude_tool_call`
-    builds on it)
-
-26 of 41 Anthropic-calling files use it. The rest hit `api.anthropic.com` or
-`messages.create` themselves, so they reach the `if user_id:` branch with `None`, skip
-the debit, and write no UNBILLED marker.
-
-WHY A RATCHET
 -------------
 Fifteen files cannot honestly be migrated in one change — each has its own payload
 shape, retry policy and failure semantics — and a guard that fails from the day it is

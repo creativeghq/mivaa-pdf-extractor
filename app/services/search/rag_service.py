@@ -1,19 +1,4 @@
-"""
-RAG Service - Direct Vector DB Implementation
-
-This service provides multi-vector search capabilities using VECS collections
-as the single source of truth for image embeddings.
-
-Search Strategy:
-- Multi-Vector Search: Combines 7 vectors in parallel
-  1. document_chunks.text_embedding (1024D Voyage AI, 20%) - Semantic text
-  2. vecs.image_slig_embeddings (768D SLIG, 20%) - General visual similarity
-  3. vecs.image_color_embeddings (768D SLIG, 12.5%) - Color palette matching
-  4. vecs.image_texture_embeddings (768D SLIG, 12.5%) - Texture pattern matching
-  5. vecs.image_style_embeddings (768D SLIG, 12.5%) - Design style matching
-  6. vecs.image_material_embeddings (768D SLIG, 12.5%) - Material type matching
-  7. vecs.image_understanding_embeddings (1024D Voyage from Claude Opus vision, 10%) - Vision-understanding
-"""
+"""RAG Service - Direct Vector DB Implementation"""
 
 import logging
 import os
@@ -198,9 +183,6 @@ class RAGService:
                 # which is cache-first off the PaddleOCR structural cache and ALWAYS
                 # passes page_chunks — so this branch is effectively unreached. It is
                 # kept only as a robustness fallback for any direct caller that indexes
-                # a PDF without pre-derived page text. Do NOT wire new ingestion through
-                # here expecting VLM/cache text; it would silently lose image-only pages.
-                # Extract text from PDF using PyMuPDF4LLM with page_chunks=True
                 try:
                     import pymupdf4llm
                     import tempfile
@@ -282,17 +264,6 @@ class RAGService:
 
             # Make the write idempotent: clear this (document, product) namespace before
             # inserting into it.
-            #
-            # chunk_pages() restarts chunk_index at 0 on every call, and stage_2 calls it
-            # ONCE PER PRODUCT against the same document_id — so (document_id, product_id)
-            # is the addressable namespace. Nothing here ever deleted, which made a
-            # re-run purely additive: re-process a document and every index exists twice.
-            # That is not merely wasted rows. Retrieval reads chunk_index as an ADDRESS
-            # (issue #318): expand_document_chunk_hits would pull each neighbour twice
-            # and read_document_chunk_span would spend its budget returning the same
-            # section repeatedly, so a duplicated document degrades answers rather than
-            # failing loudly. Deleting first also means a shrinking re-chunk (fewer
-            # chunks than last time) cannot strand orphans at the tail.
             try:
                 _clear = self.supabase_client.client.table('document_chunks') \
                     .delete() \
@@ -473,13 +444,6 @@ class RAGService:
 
                             # Use UPDATE per row, not UPSERT — UPSERT falls back to INSERT on
                             # missing IDs and trips the NOT NULL `content` constraint.
-                            # Provenance (2026-05-23): stamp embedding_model +
-                            # embedding_dimension + embedding_generated_at on every chunk
-                            # so Voyage→OpenAI drift is detectable on chunk rows the
-                            # same way it is on image rows. Pulls the actual provider
-                            # that returned the vector via _last_provider (set inside
-                            # generate_batch_embeddings); falls back to the configured
-                            # voyage_model name.
                             from datetime import datetime as _dt
                             _emb_model = (
                                 getattr(self.embeddings_service, '_last_provider', None)
@@ -623,35 +587,7 @@ class RAGService:
         search_config: Optional[Dict[str, Any]] = None,
         image_base64: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """
-        🎯 HYBRID MULTI-SOURCE SEARCH - Combines ALL available data sources.
-
-        **SEARCH SOURCES (All enabled by default):**
-        1. **Visual Embeddings** (6 VECS collections, 768D SLIG / 1024D Voyage)
-           - vecs.image_slig_embeddings (general visual similarity)
-           - vecs.image_color_embeddings (color palette matching)
-           - vecs.image_texture_embeddings (texture pattern matching)
-           - vecs.image_style_embeddings (design style matching)
-           - vecs.image_material_embeddings (material type matching)
-           - vecs.image_understanding_embeddings (Claude Opus vision → Voyage 1024D)
-
-        2. **Text Embeddings** (document_chunks) - Semantic text search
-           - Searches document_chunks.text_embedding (halfvec(1024) Voyage AI 3.5)
-           - Maps chunks to products via chunk_product_relationships
-
-        3. **Direct Product Search** - Product-level embeddings
-           - Searches products.text_embedding_1024 (halfvec(1024) Voyage AI 3.5)
-           - Direct metadata matching
-
-        4. **Keyword Matching** - Traditional text search
-           - Product name/description matching
-           - Metadata field matching
-
-        **INTELLIGENT SCORING:**
-        - Combines all sources with configurable weights
-        - Applies relevance_score from relationships
-        - Boosts based on metadata filters
-        - Configurable per use-case
+        """🎯 HYBRID MULTI-SOURCE SEARCH - Combines ALL available data sources.
 
         Args:
             query: Search query text
@@ -906,20 +842,6 @@ class RAGService:
                 # The 4 aspect collections are 1024D Voyage embeddings of per-aspect text
                 # from VisionAnalysis (always-on post-Phase-10). Query must live in the same
                 # space — a 768D SLIG visual would dim-mismatch and return [] from all 4.
-                #
-                # WHICH text, though, is the whole game (#277):
-                #
-                #  - With an IMAGE, derive each aspect's query text from the image itself, the
-                #    same vision_analysis -> ASPECT_SERIALIZERS chain ingestion ran, so each
-                #    collection is asked its own question. The search page requires an image
-                #    for its aspect modes and passes the FILENAME as `query`, so the old
-                #    shared-text path searched image_texture_embeddings with
-                #    voyage("IMG_2831.jpg") — a valid vector, compared confidently, meaning
-                #    nothing. Costs one Claude call, shared across all four aspects.
-                #
-                #  - With TEXT only, keep the understanding embedding. The user's words
-                #    describe every aspect at once, so one vector for four collections is the
-                #    right approximation and stays free.
                 aspect_queries = image_query_vecs
 
                 if not aspect_queries and not understanding_embedding:
@@ -1204,16 +1126,6 @@ class RAGService:
                     product_scores[product_id]['keyword'] = max(existing, score)
 
             # 3E: Map pages to products (#239).
-            #
-            # A page hit has to reach a product to score, and the honest route is the
-            # one the pipeline already built: the images lifted off that page, which
-            # carry image_product_associations. Going via `products.source_document_id`
-            # instead would attribute a single page's hit to every product in the
-            # catalog — a whole-document boost dressed up as a page-level signal.
-            #
-            # Images with no page number are excluded rather than defaulted to page 1;
-            # a wrong page attribution here would spread one page's score across
-            # unrelated products with nothing to flag it.
             if page_scores:
                 try:
                     by_document: Dict[str, List[int]] = {}
@@ -1842,16 +1754,7 @@ class RAGService:
         similarity_threshold: float = 0.7,
         document_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """
-        ✅ Visual similarity search using VECS with relationship enrichment.
-
-        Searches images using VECS visual embeddings (SLIG (SigLIP2)) with HNSW indexing.
-        Returns rows resolved to what they depict — caption, url, page, document, and the
-        associated product where there is one (see services/search/image_results.py).
-
-        This docstring used to promise "related products and chunks" and deliver neither: the
-        route's `_enhance_search_results` keys on `result.get('id')`, which image rows do not
-        carry, so it skipped every one. Products are real now; chunks are still not returned.
+        """✅ Visual similarity search using VECS with relationship enrichment.
 
         Args:
             workspace_id: Workspace ID to filter results
@@ -2030,24 +1933,7 @@ class RAGService:
         limit: int = 10,
         similarity_threshold: float = 0.0,
     ) -> List[Dict[str, Any]]:
-        """Chunks with REAL TEXT, for synthesis. Raises rather than returning [].
-
-        `multi_vector_search` — which both RAG entry points used to call — returns
-        PRODUCT-shaped rows: {id, product_name, description, metadata, score, ...}.
-        There is no `content` key and no `text` key anywhere in it. So
-        `chunk.get('content', chunk.get('text', ''))` returned '' on every iteration
-        and the context handed to Claude was relevance headers with empty bodies,
-        under the instruction "answer based ONLY on the provided context".
-
-        Nothing caught it because every signal stayed green: the `if not chunks`
-        guard passed (rows existed, wrong shape), the call was billed and logged as a
-        success, and the answer — a polite refusal, or a hallucination from the
-        question alone — reads as ordinary model behaviour.
-
-        The document filter is a HARD predicate in SQL. Passing document_id through
-        `material_filters` on the product path applies it as a score BOOST, which
-        does not constrain which documents the answer is drawn from.
-        """
+        """Chunks with REAL TEXT, for synthesis. Raises rather than returning []."""
         if not workspace_id:
             # Refusing beats searching every tenant's chunks on the caller's behalf.
             raise ContextRetrievalError(
@@ -2166,10 +2052,6 @@ class RAGService:
             # SYNC `messages.create` from an `async def` — blocking the loop for a whole
             # Opus round-trip on a user-facing search — with the cost row written by
             # hand afterwards, so a call that raised was billed and recorded nowhere.
-            #
-            # No forced tool here, deliberately: the reply is a prose ANSWER, not a
-            # structured verdict. There is nothing to parse and therefore nothing to
-            # repair, so this is not part of the #32 class.
             from app.services.core.claude_helper import tracked_claude_call_async
 
             response = await tracked_claude_call_async(
@@ -2405,16 +2287,8 @@ class RAGService:
         document_id: str = None,
         embedding_service: Any = None
     ) -> Dict[str, Any]:
-        """
-        Analyze material image with Claude Opus vision via Anthropic tool use
+        """Analyze material image with Claude Opus vision via Anthropic tool use
         to extract material properties, quality, and confidence.
-
-        Tool use forces a schema-conformant JSON response (no parsing/regex
-        recovery needed). The schema matches `app.models.vision_analysis.
-        VisionAnalysis` so the same shape feeds the Voyage understanding
-        embedding pipeline downstream — this is the single point that
-        keeps query-side analysis aligned with ingestion-side analysis,
-        preventing Voyage embedding-space drift.
 
         Args:
             image_base64: Base64 encoded image
@@ -2566,16 +2440,6 @@ class RAGService:
             # product_indicators array. Force-calling the tool guarantees
             # the API returns this exact structure.
             # The classification tool schema is NOT restated here (#20 M7-4 / #32).
-            #
-            # This was a THIRD copy of `emit_classification` — after the one in
-            # `image_processing_service`'s primary classifier and the one in its
-            # low-confidence re-check, both of which were consolidated into
-            # `CLASSIFICATION_TOOL` earlier. Three copies of an enum that three call
-            # sites must agree on is how one of them ends up offering a fifth value that
-            # `is_material_classification` silently maps to False.
-            #
-            # Imported lazily because `image_processing_service` is a heavy module and
-            # this is a search path.
             from app.services.images.image_processing_service import CLASSIFICATION_TOOL
             from app.services.core.claude_tool_call import (
                 ToolCallNotReturned,

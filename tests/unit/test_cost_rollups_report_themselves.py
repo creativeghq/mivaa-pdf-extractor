@@ -1,36 +1,4 @@
-"""The rollup says whether it ran, and a free success is marked (mivaa#30 M16-5, M16-6).
-
-M16-5. `stamp_refresh_cost` and `recompute_lifetime_cost` existed twice — once per
-subject domain — and both copies had the same three properties:
-
-    if not tracked_x_id or not refresh_run_id:
-        return                                   # a bug, shaped exactly like "nothing to do"
-    try:
-        ...rpc...
-    except Exception as e:
-        logger.warning(...)                      # swallowed
-                                                 # -> None, so no caller could react
-
-`stamp_job_refresh_cost` is the platform's CANONICAL silent zero. It referenced a column
-that did not exist, the exception was swallowed, and per-subject billing read 0 for
-months while every health signal stayed green. The column was fixed. The shape that hid
-it was still in both files, waiting for the next one.
-
-The rollup is what makes spend visible. When it stops, no number goes wrong — the numbers
-stop moving, which is indistinguishable from a quiet month.
-
-M16-6. A model call that succeeded consumed tokens. Zero of both is an accounting
-failure, and it fails silently: `int(x or 0)` turns a missing usage block into 0, 0
-tokens produce 0 raw cost, and the row is written `success=True`. That is the input to
-M16-1 — a zero cost becomes a zero amount becomes a free operation reporting success.
-
-`success` is deliberately NOT flipped. What is marked is the usage, not the call: the
-provider may genuinely have answered, and turning a wrong cost into a wrong outcome is
-not an improvement.
-
-WATCHED TO FAIL: the source cases were run against the pre-fix tree and fired. The
-behaviour cases exercise `usage_anomaly` and `stamp_rollup`, which are new.
-"""
+"""The rollup says whether it ran, and a free success is marked (mivaa#30 M16-5, M16-6)."""
 
 import ast
 import importlib.util

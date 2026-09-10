@@ -1,15 +1,4 @@
-"""
-Performance Monitoring Module for MIVAA PDF Extractor
-
-This module provides comprehensive performance monitoring capabilities including:
-- Request/response time tracking
-- Memory usage monitoring
-- CPU utilization tracking
-- Database query performance
-- Custom metrics collection
-- Performance alerts and thresholds
-- Integration with Sentry for performance monitoring
-"""
+"""Performance Monitoring Module for MIVAA PDF Extractor"""
 
 import time
 import psutil

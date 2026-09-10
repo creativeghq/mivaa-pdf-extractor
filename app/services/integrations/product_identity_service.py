@@ -1,25 +1,4 @@
-"""
-Product identity verification for price discovery.
-
-Verifies that a scraped retailer page is the asked product, not a
-same-brand sibling. Pipeline:
-
-  1. Decompose query into facets ONCE (brand, model, type, variants).
-     Cached on tracked_queries.query_facets to skip repeat Haiku calls.
-  2. Pre-filter URLs that can't be product pages (homepages, search,
-     catalog, aggregator-wrapped) before paying Firecrawl credits.
-  3. Firecrawl extracts product_name + breadcrumb + visible_attributes
-     alongside the price (expanded PriceExtraction).
-  4. Haiku 4.5 batch-classifies each page vs the facets — returns
-     match_kind + match_score + match_note per hit.
-  5. Drop only `mismatch`. Keep `variant` rows with an annotation so the
-     UI can show a "Color differs" badge and stats can exclude them.
-
-Variant policy: same model + different color/finish/size → KEEP with
-variant annotation. Different model under same brand → drop. Classifier
-is soft on finish descriptors (MATT ≈ BLACK MATT ≈ MATTE BLACK) and hard
-on brand + model identity.
-"""
+"""Product identity verification for price discovery."""
 
 from __future__ import annotations
 
@@ -51,10 +30,6 @@ logger = logging.getLogger(__name__)
 # Covers the visually-identical lookalikes we keep seeing in product codes.
 # "7012ΜΤ" (Greek Μ + Τ) and "7012MT" (Latin M + T) must compare equal.
 # The map, the fold and the model-token normalizer all used to be written out here.
-# `normalize_text` did NOT apply the lookalike map while `normalize_model_token` in the
-# same file did, so the two disagreed about whether Greek M equals Latin M depending on
-# which one you happened to call, and neither folded the final sigma (#18 M5-9).
-# One fold now, in app.utils.text_fold.
 _GREEK_TO_LATIN = GREEK_TO_LATIN
 _MODEL_SEP_RE = re.compile(r"[\s\-_./]+")
 _strip_accents = strip_accents
@@ -98,25 +73,7 @@ def url_prefilter(
     *,
     source: Optional[str] = None,
 ) -> UrlVerdict:
-    """
-    Decide whether a URL is worth Firecrawl-scraping.
-
-    `source` changes what counts as "bad" — DataForSEO hits come with a
-    Google Shopping SERP-style URL by design, and their price/title/image/
-    rating data is authoritative from the feed. Filtering them would strip
-    every DataForSEO merchant from the list, which is the opposite of what
-    we want.
-
-    Drops (returns keep=False):
-      - Empty / malformed URLs
-      - Paths of "/" (bare homepage)
-      - SERP / search / catalog / brand index pages
-        (skipped when source == 'dataforseo' — those URLs ARE SERP-shaped
-        but carry trusted Shopping-feed data)
-      - Aggregator-hosted URLs when the row claims to be a different retailer
-        (also skipped when source == 'dataforseo')
-      - Very short slugs (<8 chars after the last "/") — homepages in disguise
-    """
+    """Decide whether a URL is worth Firecrawl-scraping."""
     if not url or not url.strip():
         return UrlVerdict(False, "empty URL")
 
@@ -239,21 +196,9 @@ class QueryFacets:
 
 
 def facets_from_catalog(product_row: Optional[Dict[str, Any]]) -> Optional[QueryFacets]:
-    """
-    When /discover runs for a catalog product we already have structured
+    """When /discover runs for a catalog product we already have structured
     metadata — use it as the reference facets rather than re-parsing the
     free-text name. Much cleaner signal than Haiku guessing from a name.
-
-    Reads the real metadata layout produced by the PDF ingestion pipeline:
-      - metadata.factory_name      → brand
-      - metadata.collection         → model/series name
-      - metadata.commercial.sku_codes (dict of variant_name → sku)
-        + metadata.commercial.vision_variants[].sku → digit-anchor SKU tokens
-      - metadata.material_category  → product_type
-      - metadata.material_properties.{finish}, available_colors, dimensions → variants
-
-    Forward-compatible: still honors flat metadata.manufacturer/brand/model/sku
-    keys if a future ingestion path writes them at the top level.
     """
     if not product_row:
         return None
@@ -487,26 +432,7 @@ class ProductIdentityService:
         user_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """
-        Classify a batch of scraped pages against the query facets.
-
-        `candidates` is a list of dicts shaped like:
-            {
-              "retailer": "<retailer_name>",
-              "url": "<product_url>",
-              "product_name": str | None,
-              "breadcrumb": str | None,
-              "visible_attributes": dict | None,
-              "url_slug_tokens": [str, ...],
-            }
-
-        Returns a list aligned 1:1 with candidates; each verdict is:
-            {"match_kind": str, "match_score": int, "variant_diffs": list, "match_note": str | None}
-
-        When the API key is missing or the call fails, falls back to a
-        rule-based classifier so the pipeline degrades gracefully rather
-        than dropping every row.
-        """
+        """Classify a batch of scraped pages against the query facets."""
         if not candidates:
             return []
 
@@ -840,20 +766,6 @@ class ProductIdentityService:
         }
 
     # ── Usage logging ──
-    #
-    # There is deliberately no `_log_classifier_call` here. It inserted a SECOND
-    # `ai_usage_logs` row for a call `tracked_claude_call_async` had already logged
-    # with its real tokens and real cost — a duplicate in the cost ledger, carrying
-    # zero spend and `success: True`, once per classification. `ops.silent_zero_provider`
-    # judges a provider on exactly those rows, so the duplicates would have diluted the
-    # anthropic outcome rate with entries that never made a call.
-    #
-    # It never actually ran: it wrote `provider` / `model`, which are not columns
-    # (`api_provider` / `model_name` are), so PostgREST rejected every row and the
-    # failure was swallowed at DEBUG — zero rows written, ever, with nothing to notice.
-    # Correcting the column names would have turned a write that never worked into a
-    # double count, so the write is gone instead: the spend has one writer, and the
-    # request/response detail is already captured on `ai_call_logs` by the same helper.
 
 
 def _extract_json_content(anthropic_body: Dict[str, Any]) -> Optional[Dict[str, Any]]:

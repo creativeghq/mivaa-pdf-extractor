@@ -1,23 +1,4 @@
-"""
-Mention Search Service — multi-source discovery + verification.
-
-Cost-optimized parallel discovery over enabled sources (DataForSEO News +
-Perplexity Sonar + RSS + YouTube), then dedupe + classify + persist.
-
-Reddit was dropped 2026-05-03 — the API onboarding (Responsible Builder
-Policy review) wasn't worth the friction for marginal coverage gain. Sonar
-+ News pick up Reddit threads that get cited by news/blogs anyway.
-
-Cost discipline (mirrors price v3):
-  - Every source is opt-in per-subject via tracked_mentions.sources_enabled
-  - Sonar (cheap) by default; Sonar-pro only on first refresh / forced refresh
-  - Verdict cache hits cost zero credits
-  - Rule pre-filter drops obvious mismatches before Haiku
-  - Body fetch via Firecrawl is conditional — only when title/excerpt aren't
-    enough for the classifier (out of scope for v1; we send what we have)
-
-Returns one parallel list of MentionHit, sorted by published_at DESC.
-"""
+"""Mention Search Service — multi-source discovery + verification."""
 
 from __future__ import annotations
 
@@ -299,17 +280,7 @@ class MentionSearchService:
     # ───── Helpers ─────
 
     def _fanout_queries(self, facets: SubjectFacets, *, max_queries: int = 3) -> List[str]:
-        """Pick distinctive aliases to fan discovery queries across.
-
-        Strategy: full label first, then single-word aliases ranked by
-        distinctiveness (length + uppercase letters as a cheap signal).
-        Skip aliases that are very short (<3 chars) or pure numeric, since
-        those return mostly noise.
-
-        The first query is always the most specific (full label). Subsequent
-        queries broaden coverage when the niche subject has zero exact-phrase
-        mentions globally.
-        """
+        """Pick distinctive aliases to fan discovery queries across."""
         candidates: List[str] = []
         seen: set = set()
         for a in facets.all_aliases():

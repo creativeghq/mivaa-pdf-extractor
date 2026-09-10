@@ -96,14 +96,10 @@ _BASE_PROFILES: Dict[str, Dict[str, float]] = {
     },
 }
 
-#: The 8th vector's share, per intent (#239). `page` is a voyage-multimodal-3
-#: embedding of the whole rendered catalog page — text and picture in one vector.
-#: It is weighted by how much an intent depends on what a page LOOKS like as a
-#: composed unit, and specifically on text the structural OCR pass never reads:
-#: `Image`/`Figure`/`chart` regions are crop sources only, so a product name
-#: printed inside a photo is invisible to every other channel. That is why
-#: product_name gets the largest share and the aspect-specific intents (which are
-#: already served by a dedicated per-aspect vector) get the smallest.
+# : The 8th vector's share, per intent (#239). `page` is a voyage-multimodal-3
+# : embedding of the whole rendered catalog page — text and picture in one vector.
+# : It is weighted by how much an intent depends on what a page LOOKS like as a
+# : composed unit, and specifically on text the structural OCR pass never reads:
 PAGE_WEIGHTS: Dict[str, float] = {
     "product_name": 0.15,   # the gap this vector exists to close
     "specification": 0.10,  # spec values baked into diagram artwork
@@ -116,21 +112,7 @@ PAGE_WEIGHTS: Dict[str, float] = {
 
 
 def _with_page(base: Dict[str, float], page_weight: float) -> Dict[str, float]:
-    """Carve `page_weight` out of a 7-aspect profile PROPORTIONALLY.
-
-    Every pre-existing aspect is scaled by the same (1 - page_weight), so the
-    ratios among the original seven are untouched — the page channel takes a slice
-    of the whole, it does not rob one specific aspect. Two things follow, and both
-    are load-bearing:
-
-      * Re-tuning is one number per profile (PAGE_WEIGHTS) instead of eight, so the
-        "renormalize every profile and miss one" failure this module exists to
-        prevent has nothing to bite on.
-      * `image_only_weights` normalizes over the collections it actually queried, and
-        normalizing cancels a common factor — so the image-only fan-out, which has no
-        page channel, produces byte-identical weights to before this vector existed.
-        `test_image_only_full_set_matches_pre_refactor_constants` still pins that.
-    """
+    """Carve `page_weight` out of a 7-aspect profile PROPORTIONALLY."""
     scaled = {aspect: w * (1.0 - page_weight) for aspect, w in base.items()}
     scaled["page"] = page_weight
     return scaled
@@ -194,26 +176,7 @@ def image_only_weights(
     has_understanding: bool,
     specialized_types: Sequence[str],
 ) -> Dict[str, float]:
-    """Weights for the image-only fan-out (`vecs_service.search_all_collections`).
-
-    There is no text channel when searching image collections, so the `text` share is
-    folded into `visual` — the visual vector is what carries the query in that path.
-    Channels that were not queried are dropped and the rest renormalized, so omitting
-    (say) color does not dilute the vectors that ARE present.
-
-    `page` is deliberately absent and that is NOT the silent-zero bug this module
-    guards against. This fan-out ranks IMAGES; a page vector keys a page, so there is
-    no page score to attach to an image row — including the channel would mean
-    inventing one. The page channel is scored in the product-level fusion
-    (`rag_service.multi_vector_search`), which is where a page hit has somewhere real
-    to land. Because `_with_page` scales the seven remaining aspects by a common
-    factor and this function renormalizes, the numbers here are unchanged by the
-    page channel's existence.
-
-    Derived from the `balanced` profile rather than restated as constants: before this,
-    the equivalent numbers were hardcoded (0.30 / 0.20 / 0.50) next to a comment
-    explaining which doc they were copied from, which is precisely how they drift.
-    """
+    """Weights for the image-only fan-out (`vecs_service.search_all_collections`)."""
     balanced = WEIGHT_PROFILES[DEFAULT_PROFILE]
 
     weights: Dict[str, float] = {"visual": balanced["text"] + balanced["visual"]}

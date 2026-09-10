@@ -1,30 +1,4 @@
-"""Guards for the six live MIVAA Sentry issues (2026-08-16).
-
-The set divided cleanly into two kinds, and both are worth naming:
-
-  DEFECTS — code that was wrong
-    * 89 reads of `user.id` off the JWT CLAIMS DICT, across three route files that
-      annotated the dependency `user: User`. FastAPI does not coerce a `Depends()`
-      parameter to its annotation, so every one of those routes raised
-      `AttributeError: 'dict' object has no attribute 'id'` on its first call.
-    * /api/rag/health answered 500 because `services` is `Dict[str, Dict[str, Any]]`
-      and one entry was the bare string "Direct Vector DB" — a health check reporting
-      itself unhealthy because it could not serialise its own healthy answer.
-
-  NOISE — correct behaviour raising alerts
-    * the PostgREST retry patch logged a failed LOG-SINK flush at ERROR, which re-entered
-      the sink that had just failed and (event_level=ERROR) raised a Sentry event about
-      the alerting. 27 events in one day, every one a dropped log row.
-    * the global HTTPException handler reported 4xx as Sentry events, against the rule
-      the edge runtime already follows.
-
-An alert that fires on the common case is not an alert; it buries the uncommon ones. Both
-halves of this file exist to keep that true.
-
-Static over source text — CI installs pytest alone, so nothing here imports `app`.
-
-Every case was watched to FAIL against the pre-fix tree.
-"""
+"""Guards for the six live MIVAA Sentry issues (2026-08-16)."""
 
 import ast
 import re

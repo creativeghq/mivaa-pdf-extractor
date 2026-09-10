@@ -1,36 +1,4 @@
-"""
-Catalog-wide knowledge extractor.
-
-Ceramic tile (and similar) catalogs typically have 4-8 pages of shared,
-catalog-wide content at the END that applies to ALL products from that
-catalog: iconography legends, technical standards, installation guides,
-care/cleaning instructions, sustainability claims, legal notices.
-
-These pages are NOT product-specific — they describe rules and guides that
-cover every product in the catalog. We extract them ONCE per document and
-link the resulting KB docs to every product in that document via
-kb_doc_attachments.
-
-How it works:
-
-  1. `extract_catalog_knowledge_from_pdf(document_id, pdf_path, product_ids)`
-     scans the PDF pages looking for knowledge content (heuristic: last N
-     pages + text-density check + keyword match).
-  2. For each matching page, Claude Haiku Vision reads the page and returns
-     structured JSON describing the page type and the content in markdown.
-  3. For each extracted section, create a kb_docs row with
-     `metadata.auto_generated=true, metadata.catalog_knowledge=true`.
-  4. For each product in the document, insert a kb_doc_attachments row
-     linking the new kb_doc to that product with the appropriate
-     relationship_type (regulation, installation, care, sustainability,
-     certification).
-  5. Voyage AI embeddings generated for semantic search.
-
-Cost: ~5 Claude Haiku Vision calls per document (~$0.005 total). Cheap.
-
-Complements `AutoKBDocumentService` which creates per-product docs from
-metadata. This one creates catalog-wide docs from actual PDF content.
-"""
+"""Catalog-wide knowledge extractor."""
 
 import base64
 import io
@@ -161,10 +129,6 @@ async def _call_claude_vision_knowledge(
     # repair the reply by stripping markdown fences — the fence-strip being an admission
     # that the free-form contract does not hold. The verdict here decides what becomes a
     # published KB document, which is exactly what invariant 9 names.
-    #
-    # Also now AWAITED. `tracked_claude_call` is the SYNC helper and both callers of this
-    # function are `async def`, so every page blocked the event loop for the whole
-    # vision round-trip.
     try:
         from app.services.core.claude_tool_call import call_with_tool
         result = await call_with_tool(
@@ -194,13 +158,6 @@ async def _call_claude_vision_knowledge(
 # ──────────────────────────────────────────────────────────────────────────
 
 # Map page_type → kb_doc_attachments.relationship_type.
-#
-# kb_doc_attachments.relationship_type has a CHECK constraint limiting it to:
-#   primary | supplementary | related | certification | specification.
-# Every other value (regulation, installation, care, etc.) gets rejected
-# with 23514 at insert time. We fold the richer page_type taxonomy down
-# onto that vocabulary here; the ORIGINAL page_type is still preserved in
-# `kb_docs.metadata.page_type` for display purposes on the frontend.
 PAGE_TYPE_TO_RELATIONSHIP: Dict[str, str] = {
     "iconography":    "related",
     "packing":        "specification",
@@ -239,14 +196,6 @@ async def extract_catalog_knowledge_from_pdf(
                     attachments_created, errors.
     """
     # The ids must describe the same thing before anything is written (#31 M17-4).
-    #
-    # `documents` was read and updated by `.eq("id", document_id)`, and `product_ids`
-    # arrived from the caller and had attachments written for them with no check that
-    # they belong to this document or this workspace. MIVAA has no RLS backstop — every
-    # call here is service role — so the check exists in Python or it does not exist.
-    #
-    # First, before the prompt load and before the PDF is opened: a run that must not
-    # happen should cost nothing.
     product_ids = assert_products_in_document(
         supabase, product_ids, document_id, workspace_id
     )
@@ -365,15 +314,6 @@ async def extract_catalog_knowledge_from_pdf(
                     # become a published KB doc, and they are replayed into every future
                     # agent turn that retrieves them. `draft` keeps it out of retrieval
                     # until somebody looks at it.
-                    #
-                    # `private`, not `workspace`: that third spelling is rejected by
-                    # `kb_docs_visibility_check`, so this call was failing outright.
-                    # 90e5a52 fixed the same value in `job_sites_kb_sync` and missed
-                    # these two files.
-                    #
-                    # `source_trust` is the write-side marker the finding asks for:
-                    # retrieval can tell operator-authored text from catalogue-derived
-                    # text without re-deriving it from the other metadata keys.
                     "p_status": "draft",
                     "p_visibility": "private",
                     "p_metadata": {

@@ -1,37 +1,4 @@
-"""
-Centralised Claude call wrapper.
-
-Single sanctioned entry point for ALL Claude messages.create calls in the mivaa
-backend. Wraps the API call + logging in one atomic operation so it is
-impossible to make an untracked Claude call.
-
-Architecture (post-2026-05-23 SDK removal):
-- Calls go through `_call_anthropic_async` / `_call_anthropic_sync`, both of
-  which use `httpx` against the public `POST /v1/messages` endpoint.
-- The `anthropic-sdk-python` package is NOT a dependency. Standardising on
-  httpx eliminates the SDK-pin failure mode (job_classifier/job_keyword
-  workarounds existed because the SDK pin was too old to accept `tools`;
-  the Stage 3 vision tool_use fix tripped on the same trap).
-- `ClaudeResponse` mimics the SDK's response shape (.content[].type/.text/
-  .input/.id/.name, .usage.input_tokens, .usage.output_tokens, .model,
-  .stop_reason) so existing call sites parse the response unchanged.
-- AICallLogger reads the same attributes (.usage.* and .content[0].text) —
-  no logger changes needed.
-
-Why this exists:
-- Before this helper, ~25 Claude call sites bypassed the AICallLogger.
-- Tokens, costs, and credits were silently uncounted for those calls — real
-  spend was ~3x what the dashboard reported.
-
-Rules:
-- Every Claude call MUST go through tracked_claude_call() (sync) or
-  tracked_claude_call_async() (async).
-- Direct calls via the `anthropic` SDK package are no longer possible
-  (the package is removed). The `get_ai_client_service().anthropic[_async]`
-  property returns a shim whose `.messages.create(...)` proxies here.
-- user_id is optional but strongly preferred. If absent, the call is logged
-  to ai_call_logs (cost tracking) but credits are not debited.
-"""
+"""Centralised Claude call wrapper."""
 
 from __future__ import annotations
 
@@ -59,18 +26,7 @@ _DEFAULT_CONFIDENCE = 0.9
 
 
 def _resolve_confidence(confidence: Union[float, Callable[[Any], float]], response: Any) -> float:
-    """A float, or a callable applied to the response once it has arrived.
-
-    Six call sites log the confidence the MODEL reported inside its own reply
-    (`result['confidence']`, `result['confidence_score']`). That value does not exist
-    at call time, so before this the only way to migrate them off a hand-written
-    `log_claude_call` was to downgrade a measured confidence to the default — trading
-    an invisible-cost bug for a quietly-wrong quality signal.
-
-    It runs inside a try on purpose: the call has COMPLETED and Anthropic has already
-    billed for it. A bookkeeping helper must never be the reason a paid-for result is
-    lost, so a callable that raises costs us the confidence, not the response.
-    """
+    """A float, or a callable applied to the response once it has arrived."""
     if not callable(confidence):
         return float(confidence)
     try:
@@ -93,24 +49,8 @@ _DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
 # Models where the Anthropic API now rejects the `temperature` parameter
 # (status: deprecated → invalid_request_error 400). Callers can keep passing
 # temperature; we silently drop it for these models so the call still succeeds.
-#: Models that ACCEPT sampling parameters (`temperature` / `top_p` / `top_k`).
-#:
-#: This is an ALLOWLIST on purpose. It used to be a denylist
-#: (`_MODELS_WITHOUT_TEMPERATURE`) naming only `claude-opus-4-8` and
-#: `claude-opus-4-6`, so every model absent from it was sent `temperature` —
-#: including `claude-opus-5`, `claude-opus-4-7`, `claude-sonnet-5` and
-#: `claude-fable-5`, which REMOVED sampling params and reject them with a hard
-#: 400.
-#:
-#: A denylist fails OPEN here, and `_build_payload` defaults temperature to 0.0
-#: so nobody has to opt in: pointing `anthropic_model_validation` at
-#: `claude-opus-5` would have 400'd every call through this helper at once —
-#: vision, product discovery, stage 4, the document classifier, chunk-type
-#: classification, ~20 sites — and none of them would have looked wrong until
-#: they ran.
-#:
-#: Inverted, an unknown model runs at the provider's default sampling. That is a
-#: difference nobody will notice, which is the correct way for this to fail.
+# : Models that ACCEPT sampling parameters (`temperature` / `top_p` / `top_k`).
+# :
 _MODELS_WITH_TEMPERATURE = (
     "claude-haiku-4-5",
 )
@@ -276,18 +216,7 @@ async def _stream_anthropic_async(
     system: Optional[Any] = None,
     **extra: Any,
 ) -> AsyncIterator[Dict[str, Any]]:
-    """Stream `POST /v1/messages`, yielding each decoded SSE event dict.
-
-    Same request as `_call_anthropic_async` with `stream: true` added, so `tools` /
-    `tool_choice` behave identically — a forced tool arrives as `content_block_start`
-    (an empty `input`) followed by `input_json_delta` fragments of the input's JSON
-    TEXT, which is what lets a caller act on the first array element without waiting
-    for the last.
-
-    Events are yielded raw. Assembling them into a `ClaudeResponse` is
-    `tracked_claude_stream_async`'s job, and it must happen there rather than here
-    because that is where the usage numbers have to reach the logger.
-    """
+    """Stream `POST /v1/messages`, yielding each decoded SSE event dict."""
     payload = _build_payload(
         model=model, messages=messages, max_tokens=max_tokens,
         temperature=temperature, system=system, extra=extra,
@@ -409,14 +338,6 @@ async def _log_failed_claude_call_async(
             # Unknown, not zero-cost. The row exists to record that the call
             # happened and failed; cost attribution for a raised call is not
             # recoverable client-side.
-            #
-            # The comment above was already right and the DATA did not say it (#19
-            # M6-5). A timeout or 5xx AFTER Anthropic accepted and billed the request
-            # was written as cost=0.0 with nothing marking it, so the spend was
-            # permanently indistinguishable from a free no-op — the silent-zero shape
-            # applied to the failure ledger instead of the success one.
-            # `unbilled_reason` is the column that already exists for exactly this:
-            # NULL means billed, anything else names why it was not.
             input_tokens=0,
             output_tokens=0,
             cost=0.0,
@@ -587,22 +508,7 @@ async def tracked_claude_stream_async(
     image_id: Optional[str] = None,
     system_initiated: bool = False,
 ) -> AsyncIterator[Dict[str, Any]]:
-    """Streaming twin of `tracked_claude_call_async`, with the same logging contract.
-
-    Yields, in order:
-
-      ``{"type": "text", "text": str}``            — a text delta
-      ``{"type": "input_json", "partial": str}``   — a fragment of a tool input's JSON
-      ``{"type": "complete", "response": ClaudeResponse}`` — once, last
-
-    The assembled `ClaudeResponse` is shape-identical to the non-streaming one, so
-    `extract_tool_input`, `AICallLogger` and every existing reader work on it unchanged.
-
-    Cost is logged after the final event and failures go through
-    `_log_failed_claude_call_async`, exactly as the non-streaming path does. A streamed
-    call that skipped this would be spend Anthropic bills and no cost view can see —
-    the failure shape this module was written to close, reopened one API away.
-    """
+    """Streaming twin of `tracked_claude_call_async`, with the same logging contract."""
     start = time.time()
     blocks: Dict[int, _ContentBlock] = {}
     partials: Dict[int, List[str]] = {}

@@ -1,17 +1,4 @@
-"""
-SLIG (SigLIP2) visual-embedding endpoint manager.
-
-Thin lifecycle wrapper over a :class:`ModalEndpointProvider` — Modal owns
-autoscaling, so ``warmup`` = a GET ``/health`` probe and ``scale_to_zero`` is
-Modal's idle clock (a no-op here). The actual inference (image / text / zero-shot
-/ similarity over POST ``/infer``) lives in :class:`SLIGClient`; this manager only
-provides the uniform lifecycle interface that the EndpointController + ``warm_all``
-orchestrator call across every Modal-hosted endpoint.
-
-Migrated off HuggingFace Inference Endpoints 2026-06-14 (parity verified,
-cosine = 1.0 vs the HF endpoint). All ``huggingface_hub`` pause/resume/scale code
-is gone — SLIG is the `slig` Modal app (``modal_app/slig.py``).
-"""
+"""SLIG (SigLIP2) visual-embedding endpoint manager."""
 
 import logging
 import time

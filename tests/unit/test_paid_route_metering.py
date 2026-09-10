@@ -1,25 +1,4 @@
-"""Guard: every door onto a paid job-research refresh debits before it spends.
-
-The bug this exists to stop: `svc.refresh()` runs a paid fan-out — DataForSEO SERP, Perplexity
-Sonar, Firecrawl career-page scrapes, Haiku classification. It had THREE callers:
-
-    job_tracking_routes.py   partner API key   debits 5 credits up front   ✅
-    job_research_routes.py   /cron-refresh     charge_cron per subject     ✅
-    job_research_routes.py   /track/{id}/refresh  (the button in the app)  ❌ nothing
-
-Two doors onto one paid operation, one of which checks. Nothing could see it: the unmetered
-door returns 200 with real listings, the cost lands in `ai_usage_logs` exactly as it should,
-and the only trace of the problem is a number that stays at zero in a different table.
-
-`ops.silent_zero` cannot catch this one either. Its `ai_spend_never_debited` probe reads
-`ai_usage_logs.credits_debited`, and job-research charges through `credit_transactions`
-instead — so a module that meters perfectly and one that does not meter at all look identical
-from there. (That probe now defers to `cron_metering:*` for cron-metered modules; this test
-covers the interactive doors it still cannot see.)
-
-SCOPE. This reads source text, so it pins the SHAPE of each route, not its runtime behaviour.
-It cannot tell you the debit succeeded — only that the code cannot spend before trying.
-"""
+"""Guard: every door onto a paid job-research refresh debits before it spends."""
 
 from __future__ import annotations
 
@@ -114,16 +93,6 @@ def test_both_refresh_doors_agree_on_the_price():
 # ═══════════════════════════════════════════════════════════════════════════
 # The monitoring modules — enumerated, not listed
 # ═══════════════════════════════════════════════════════════════════════════
-#
-# Everything above pins THREE doors by hand. That is why audit #18 M5-3 found
-# thirteen more entering Perplexity / DataForSEO / Firecrawl / LLM work with no
-# debit at all: they were outside a test whose reassuring name ("paid route
-# metering") is exactly why nobody looked.
-#
-# So this half does not name doors. It finds every route in the two monitoring
-# modules that reaches a paid operation and asserts each one meters — which means
-# a NEW paid door fails this test on the day it is written, without anyone
-# remembering to add it here.
 
 MONITORING_MODULES = [
     ROOT / "app" / "api" / "price_monitoring_routes.py",

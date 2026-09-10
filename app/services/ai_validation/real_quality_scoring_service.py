@@ -1,14 +1,4 @@
-"""
-Real Quality Scoring Service - Step 5 Implementation
-
-Calculates real quality scores based on actual data instead of hardcoded values:
-1. Image Quality Scores - Based on analysis results, dimensions, format
-2. Chunk Quality Scores - Based on content length, coherence, boundaries
-3. Product Quality Scores - Based on metadata, properties, embeddings
-4. Confidence Scores - Based on model confidence and data completeness
-
-Replaces all hardcoded quality scores (0.85, 0.90, 0.95) with real calculations.
-"""
+"""Real Quality Scoring Service - Step 5 Implementation"""
 
 import logging
 from typing import Dict, Any, Tuple

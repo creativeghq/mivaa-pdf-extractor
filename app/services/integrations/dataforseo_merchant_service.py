@@ -1,21 +1,4 @@
-"""
-DataForSEO Merchant API client — Google Shopping panel / merchant listings.
-
-This closes the gap that Perplexity can't reach: Google Shopping's paid
-placements that don't appear in organic web search. Each Shopping result
-is a distinct merchant with their own price, all served via DataForSEO's
-feed access.
-
-Runs in parallel with Perplexity inside PerplexityPriceSearchService.
-Results are merged into the unified response, each hit tagged with
-`source='dataforseo'`.
-
-Auth: Basic Auth (DATAFORSEO_LOGIN:DATAFORSEO_PASSWORD) — same credentials
-used by the TypeScript `dataforseo-client.ts` SEO pipeline. Needs to be
-added to MIVAA's systemd env via deploy.yml.
-
-Pricing: ~$0.001 per 40 results (live mode). Negligible vs Perplexity.
-"""
+"""DataForSEO Merchant API client — Google Shopping panel / merchant listings."""
 
 import asyncio
 import base64
@@ -245,36 +228,7 @@ class DataForSeoMerchantService:
     # ────────── Internals ──────────
 
     def _parse_response(self, data: Dict[str, Any], limit: int) -> tuple[List[MerchantHit], int]:
-        """
-        DataForSEO Merchant /products/task_get/advanced response shape:
-        {
-          tasks: [{
-            result: [{
-              items: [
-                {
-                  "type": "google_shopping_serp",
-                  "title": "IKEA Billy Bookcase",
-                  "price": 79,                              # flat number, NOT nested
-                  "currency": "USD",                        # flat, NOT under price.
-                  "seller": null | "<merchant name>",       # often null on SERP items
-                  "domain": null | "<domain>",              # often null on SERP items
-                  "shopping_url": "https://google.com/search?ibp=oshop&...",  # Google redirect
-                  "product_images": [{"image_url":"..."}, ...],
-                  "product_rating": {"value": 4.5, "votes_count": 1000},
-                  "shop_rating": {...},
-                  ...
-                },
-                ...
-              ]
-            }]
-          }]
-        }
-
-        The SERP is PRODUCT-centric — each item is a product variant with its best
-        price surfaced. To get per-merchant prices we'd need a second call to
-        /merchant/google/sellers with each product_id. For now we expose what SERP
-        gives: the product itself, price, and link to Google's Shopping detail page.
-        """
+        """DataForSEO Merchant /products/task_get/advanced response shape:"""
         tasks = data.get("tasks") or []
         if not tasks:
             return [], 0

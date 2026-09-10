@@ -1,15 +1,4 @@
-"""
-Product Enrichment Service - Stage 5 Implementation
-
-This service enriches products with real data from:
-1. Image analysis results (Claude Vision, SLIG embeddings)
-2. Material properties extracted from images
-3. Product embeddings for semantic search
-4. Related product linking
-5. Product descriptions from image analysis
-
-Replaces mock enrichment with real AI-powered data extraction.
-"""
+"""Product Enrichment Service - Stage 5 Implementation"""
 
 import logging
 import json
@@ -33,16 +22,7 @@ from app.services.utilities.prompt_registry import load_prompt, render
 
 
 class ProductEnrichmentService:
-    """
-    Enriches products with real data from image analysis and AI models.
-    
-    This service:
-    - Links products to images based on semantic similarity
-    - Extracts material properties from image analysis
-    - Generates product descriptions
-    - Creates product embeddings
-    - Links related products
-    """
+    """Enriches products with real data from image analysis and AI models."""
     
     def __init__(self, supabase_client):
         """
@@ -284,24 +264,7 @@ class ProductEnrichmentService:
         product_id: Optional[str] = None,
         workspace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Generate the product's embeddings and report whether they LANDED.
-
-        Returns an envelope, never a bare map::
-
-            {"status": "ok" | "failed", "embeddings": {...},
-             "model_versions": {...}, "reason": str | None, "error": str | None}
-
-        `{}` used to be the answer to three different questions -- the embedder
-        raised, the embedder ran and produced nothing, and there was nothing worth
-        embedding -- so a product could be persisted un-embedded with nothing on the
-        row marking it for replay (#348). `generate_all_embeddings` already tells
-        those apart via `success` / `error`; this method discarded that with
-        `.get("embeddings", {})` and re-flattened it to `{}` two lines later.
-
-        `status: "ok"` means at least one vector came back, NOT that it was stored.
-        Storing is `_store_enrichment_results`, which stamps the failure marker when
-        the text vector does not reach the column.
-        """
+        """Generate the product's embeddings and report whether they LANDED."""
         try:
             materials = ', '.join(material_properties.get('materials', []) or [])
             colors = ', '.join(material_properties.get('colors', []) or [])
@@ -384,16 +347,7 @@ class ProductEnrichmentService:
         query_vector: Optional[List[float]],
         workspace_id: str
     ) -> List[str]:
-        """Find related products by text-embedding similarity.
-
-        `search_similar_products` is not a function in this database and never has
-        been, so every call landed in the warning handler below and the answer was a
-        permanent `[]` -- the silent-zero shape wearing "related products are
-        genuinely rare" as a disguise. The real RPC is
-        `search_products_by_embedding(query_embedding, p_workspace_id, p_limit)`; it
-        returns `product_id` (not `id`), and it has no exclude argument, so the
-        source product is filtered out here.
-        """
+        """Find related products by text-embedding similarity."""
         if not query_vector:
             # No vector is not "no neighbours". Asking anyway would rank against
             # whatever a malformed argument coerces to.
@@ -423,25 +377,7 @@ class ProductEnrichmentService:
         product_id: str,
         enrichment_result: Dict[str, Any]
     ) -> bool:
-        """
-        Store enrichment results in database.
-
-        Text embedding: the 1024D product vector from step 4 is written to
-        `products.text_embedding_1024` -- the column `search_products_by_embedding`
-        ranks on, and the one `text_embedding_backfill` reads as "needs embedding".
-        It used to be generated and dropped on the floor, so every product this
-        service enriched was billed for a Voyage call and stayed invisible to product
-        vector search regardless of whether that call succeeded.
-
-        Per-aspect and visual vectors are NOT written here: they belong to VECS
-        collections keyed by IMAGE, and this path has no image entity to key them to.
-
-        Both jsonb columns are read-modify-written. They are not this service's to
-        own -- stage 4 writes `metadata.facet_canonicalization`, stage 0 writes
-        `metadata.embedding_failure`, and `_create_product_from_candidate` writes the
-        layout provenance into `properties`. A whole-object update erased all of it,
-        including the neighbours of the marker this method now stamps itself.
-        """
+        """Store enrichment results in database."""
         try:
             # Calculate real quality score (not hardcoded)
             product_data = {

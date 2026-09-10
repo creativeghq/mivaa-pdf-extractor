@@ -1,15 +1,4 @@
-"""
-VECS Service for managing vector embeddings with Supabase.
-
-This service uses the vecs library (Supabase's recommended approach) for:
-- Storing SLIG image embeddings (768D)
-- Storing understanding embeddings (1024D) from Voyage AI
-- Fast similarity search with automatic indexing
-- Metadata filtering
-- Batch operations
-
-Replaces manual SQL queries with <=> operator.
-"""
+"""VECS Service for managing vector embeddings with Supabase."""
 
 import os
 import logging
@@ -25,16 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_page_space_model(model: Optional[str]) -> bool:
-    """Does this model name identify the voyage-MULTIMODAL page space?
-
-    Deliberately a name test rather than an allow-list of exact versions: the page
-    collection is written by `_settings.voyage_multimodal_model`, which moves
-    (voyage-multimodal-3 → -3.5 → next), and an exact list would start rejecting the
-    CORRECT model the day that setting is bumped — a guard that fails closed on the
-    right answer gets deleted by the next person in a hurry. "multimodal" is exactly
-    the property that matters: it is what separates this space from voyage-4 text,
-    which is the only vector anyone would plausibly pass here by mistake.
-    """
+    """Does this model name identify the voyage-MULTIMODAL page space?"""
     return bool(model) and "multimodal" in str(model).lower()
 
 
@@ -71,29 +51,7 @@ class VecsService:
         flag_column: str,
         extra_columns: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Set a presence flag (e.g. has_slig_embedding=true) on document_images.
-
-        Failures are logged at WARNING because the flag is the canonical
-        O(1) lookup retrievers use — silent drift here means a row is in
-        VECS but the flag is false, so the retriever skips it and the
-        whole specialized embedding stops contributing to search.
-
-        `extra_columns` lets the caller persist provenance alongside the
-        flag in a single round-trip (e.g. embedding_model + schema_version
-        for understanding embeddings). NULL values are dropped so we don't
-        overwrite existing data with NULL.
-
-        Fallback: if the combined UPDATE fails (most likely cause: a
-        provenance column doesn't exist yet — e.g. operator flipped the v2
-        feature flag before applying the SQL migration), we retry with
-        ONLY the flag column. This guarantees the flag never silently
-        diverges from VECS contents — the worst-case is provenance ends up
-        NULL on this row, which the staleness detector + backfill cron
-        will pick up next run. Without the fallback, a single missing
-        provenance column would block the flag set and leave the VECS
-        vector orphaned (search retriever would skip it forever via the
-        O(1) flag pre-filter even though the vector is materially present).
-        """
+        """Set a presence flag (e.g. has_slig_embedding=true) on document_images."""
         update: Dict[str, Any] = {flag_column: True}
         if extra_columns:
             for k, v in extra_columns.items():
@@ -350,25 +308,7 @@ class VecsService:
         embedding_model: Optional[str] = None,
         schema_version: Optional[int] = None,
     ) -> Dict[str, bool]:
-        """
-        Upsert per-aspect embeddings for an image with rollback semantics.
-
-        v2 architecture (post-2026-05-04): each aspect collection is
-        halfvec(1024) holding Voyage embeddings of per-image VisionAnalysis
-        text. Dimension is derived from the first non-empty embedding so
-        that callers passing wrong-dim data fail loudly at the Postgres
-        boundary rather than silently storing mis-shaped vectors.
-
-        Audit fix #32: previously each upsert+flag pair was independent — if
-        color succeeded and texture failed, the flag set was inconsistent with
-        VECS contents (has_color_slig=true, has_texture_slig=false, but the
-        next consumer might re-attempt all 4 and double-write). Now we:
-          1. Write all vectors to VECS first (collect failures).
-          2. Only set flags for the ones that succeeded.
-          3. Persist provenance (`<aspect>_aspect_embedding_model` and
-             `<aspect>_aspect_schema_version`) alongside the flag in a
-             single round-trip — mirrors the pattern already used for
-             `understanding_embedding_model` / `understanding_schema_version`.
+        """Upsert per-aspect embeddings for an image with rollback semantics.
 
         Args:
             image_id: Image UUID
@@ -409,12 +349,6 @@ class VecsService:
         # commented "768 legacy SLIG or 1024 Voyage"), which meant a 768D vector would
         # CREATE a 768D aspect collection in any fresh or partially-migrated environment
         # and set the presence flags for it. That is the removed space quietly kept
-        # alive by the write path, and nothing raises: a 768D vector is a perfectly
-        # valid list of floats.
-        #
-        # Reject instead of coerce. There is no correct way to turn a SLIG vector into a
-        # Voyage one, and writing it into a 1024D collection would be the fallback-
-        # embedder mistake wearing a different hat — same shape, different space.
         for aspect_name, emb in embeddings.items():
             if emb and len(emb) != self.ASPECT_DIMENSION:
                 logger.error(
@@ -456,11 +390,6 @@ class VecsService:
         # Phase 2: set flags ONLY for successful upserts, with provenance.
         # The flag column name is kept as `has_<aspect>_slig` for now to
         # avoid touching the 30+ frontend/SQL/script references in one PR;
-        # the column rename to `has_<aspect>_aspect` is queued as a follow-
-        # up after the v2 rollout settles. The provenance columns DO carry
-        # the new naming — `<aspect>_aspect_embedding_model` /
-        # `<aspect>_aspect_schema_version` — so we can distinguish v1 vs
-        # v2 rows even while flag names stay legacy.
         is_v2 = derived_dim == 1024
         for embedding_type in succeeded_types:
             extra: Dict[str, Any] = {}
@@ -718,23 +647,7 @@ class VecsService:
         document_id: Optional[str] = None,
         include_metadata: bool = True,
     ) -> List[Dict[str, Any]]:
-        """Search page embeddings. Query must come from the SAME multimodal model.
-
-        MV2-7: `embedding_model` is REQUIRED and keyword-only, and it is checked. This
-        used to be a docstring sentence over an untyped `List[float]` — the invariant
-        held only because the single caller happened to be right. `page_embeddings` is
-        the one collection in a different latent space from everything else in this
-        service, and voyage-4 and voyage-multimodal are BOTH 1024D, so a wrong-space
-        query is accepted by the collection and returns confidently-scored nonsense
-        instead of raising. A guard on the PRODUCER (`test_page_embeddings`) cannot see
-        that; the hazard is at the boundary, so the check belongs at the boundary. The
-        second caller was always the risk, and this is what a second caller now hits.
-
-        Inherits the Phase-0 read invariant (0.1): no workspace/document filter means
-        no results. Fails closed, and loudly — an unfiltered vector search is the
-        cheapest possible cross-tenant leak, and returning [] makes the bug show up as
-        "search found nothing" instead of "search found someone else's catalog".
-        """
+        """Search page embeddings. Query must come from the SAME multimodal model."""
         try:
             if not _is_page_space_model(embedding_model):
                 logger.error(
@@ -1108,16 +1021,7 @@ class VecsService:
         filters: Optional[Dict[str, Any]] = None,
         include_metadata: bool = True
     ) -> Dict[str, Any]:
-        """
-        Search all VECS collections in parallel and return combined results with multi-vector scores.
-
-        This enables true multi-vector search by querying:
-        - image_slig_embeddings (primary visual, 768D SLIG)
-        - image_understanding_embeddings (vision-understanding, 1024D Voyage)
-        - image_color_embeddings (1024D Voyage of VisionAnalysis.colors[])
-        - image_texture_embeddings (1024D Voyage of VisionAnalysis.textures+finish)
-        - image_style_embeddings (1024D Voyage of style+pattern+applications)
-        - image_material_embeddings (1024D Voyage of material_type+category+sub)
+        """Search all VECS collections in parallel and return combined results with multi-vector scores.
 
         Args:
             visual_query_embedding: Primary 768D SLIG visual query embedding
@@ -1230,9 +1134,6 @@ class VecsService:
             # canonical `balanced` profile rather than restated here: this block used to
             # hardcode 0.30 / 0.20 / 0.50 beside a comment naming the doc it was copied
             # from, which is exactly how a copied number drifts from its source.
-            # image_only_weights() folds the text share into visual (there is no text
-            # channel in an image-only fan-out) and renormalizes over whichever
-            # collections were actually queried.
             base_weights: Dict[str, float] = image_only_weights(
                 has_understanding=has_understanding,
                 specialized_types=specialized_types_to_run,
@@ -1434,15 +1335,8 @@ class VecsService:
             return 0
 
     async def delete_embeddings_by_image_ids(self, image_ids: List[str]) -> int:
-        """
-        Delete embeddings for an explicit list of image IDs across all six
+        """Delete embeddings for an explicit list of image IDs across all six
         collections, keyed on the collection PRIMARY KEY (== document_images.id).
-
-        Prefer this over `delete_document_embeddings` whenever the caller
-        already knows the image_ids: that method filters the vecs collection on
-        a `document_id` *metadata* field which the ingest path never reliably
-        wrote, so it silently matched nothing and orphaned every embedding.
-        Deleting by primary key works regardless of what metadata was stored.
 
         Args:
             image_ids: document_images.id values (uuid strings).

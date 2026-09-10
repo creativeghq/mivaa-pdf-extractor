@@ -1,30 +1,4 @@
-"""Guards for the mivaa#17 fixes — billing core, XML import, field registry, classifier.
-
-The billing findings are worth restating, because the numbers are the argument.
-
-M4-1 was filed as "a zero or unpriced cost returns success: True and debits nothing". True,
-and two layers deeper than that:
-
-  * `user_credits.balance` was BIGINT while every ledger row, every debit RPC local and the
-    workspace pool are numeric(10,2). `debit_user_credits` assigns a numeric(10,2) result to
-    that bigint column, which Postgres ROUNDS — so on the personal wallet a debit under half
-    a credit cost NOTHING, and 1.60 charged 2. 173 of 725 live transactions are fractional.
-    One user is measurably adrift: the ledger's last balance_after says 0.17, the wallet
-    holds 0.
-  * 7,701 of the 8,567 ai_usage_logs rows ever written carry credits_debited = 0 against a
-    non-zero billed cost. 90% of every AI call this platform has made charged nothing.
-
-M4-2 was filed as "debit and usage-log are not atomic". Also true, and it had already fired:
-three of the five copies posted `api_provider` / `credits_used` / `operation_details` as
-COLUMNS, none of which exist on ai_usage_logs, so PostgREST rejected every one with PGRST204.
-`debit_credits_for_external_service` has never written a usage row in its life — the eight
-per-unit rows in that table all came from an edge function. The debit went through; the
-record did not; the caller was told the call failed.
-
-Static, over source text — CI installs pytest alone, so nothing here imports `app`.
-
-Every case was watched to FAIL against the pre-fix tree.
-"""
+"""Guards for the mivaa#17 fixes — billing core, XML import, field registry, classifier."""
 
 from __future__ import annotations
 

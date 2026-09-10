@@ -1,16 +1,4 @@
-"""
-Understanding-embedding backfill.
-
-Re-runs vision_analysis (Claude Opus + tool use) on document_images that
-either (a) lack an understanding embedding, (b) were embedded under a stale
-VisionAnalysis schema_version, or (c) were embedded by the OpenAI fallback
-rather than Voyage (audit gap A — embedding-space drift).
-
-Triggered by an admin endpoint or cron; bounded by `batch_size` and
-`max_images` so a single run can't pin the Anthropic + Voyage clients for
-hours. Concurrency is capped via the existing Voyage semaphore inside
-RealEmbeddingsService.
-"""
+"""Understanding-embedding backfill."""
 
 from __future__ import annotations
 
@@ -165,12 +153,6 @@ async def _analyze_one(
                         {
                             "type": "text",
                             # The SAME prompt row ingestion uses, not a hardcoded twin.
-                            # This said "Use the emit_vision_analysis tool to return a
-                            # structured catalog-grade material analysis for this image"
-                            # — a different instruction from the one every ingested image
-                            # received, writing into the same embedding collection. The
-                            # backfill exists to make stale rows match current ones; a
-                            # private prompt made it produce a third regime instead.
                             "text": load_material_analyzer_prompt()[0],
                         },
                     ],
@@ -248,10 +230,6 @@ async def _trigger_product_rollup_recompute(image_ids: List[str]) -> int:
         # errored and the whole rollup recompute raised on every backfill run — leaving
         # `products.metadata` stale behind correct embeddings, which is precisely the
         # state this function exists to prevent.
-        #
-        # The document a rollup belongs to is the PRODUCT's source document, so it is
-        # resolved from `products.source_document_id` in a second read rather than
-        # guessed at from the image.
         assoc_resp = await asyncio.to_thread(
             lambda: client.table("image_product_associations")
             .select("product_id")

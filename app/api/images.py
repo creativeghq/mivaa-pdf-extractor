@@ -1,13 +1,4 @@
-"""
-Image Analysis & Material Kai Integration API endpoints.
-
-This module provides comprehensive image processing capabilities including:
-- Image analysis using Material Kai Vision Platform
-- Batch image processing
-- Image similarity search
-- OCR and object detection
-- Integration with document processing workflow
-"""
+"""Image Analysis & Material Kai Integration API endpoints."""
 
 import logging
 import uuid
@@ -110,78 +101,7 @@ async def analyze_image(
     material_kai: MaterialKaiService = Depends(get_material_kai_service),
     current_user: User = Depends(get_current_user),
 ) -> ImageAnalysisResponse:
-    """
-    **🔍 Image Analysis - AI-Powered Visual Understanding**
-
-    Analyze images using Claude Opus Vision (via Anthropic tool use) for
-    comprehensive visual understanding. All
-    vision tasks run on Claude — same schema, same tool-use guarantees.
-
-    ## 🎯 Analysis Types
-
-    - **description**: Generate natural language description of the image
-    - **ocr**: Extract text from the image using OCR
-    - **objects**: Detect and identify objects in the image
-    - **materials**: Identify materials and their properties
-    - **quality**: Assess image quality and technical specifications
-    - **all**: Run all analysis types
-
-    ## 📝 Request Example
-
-    ```json
-    {
-      "image_url": "https://example.com/product.jpg",
-      "analysis_types": ["description", "materials", "quality"],
-      "confidence_threshold": 0.7
-    }
-    ```
-
-    Or use existing image ID:
-    ```json
-    {
-      "image_id": "550e8400-e29b-41d4-a716-446655440000",
-      "analysis_types": ["all"]
-    }
-    ```
-
-    ## ✅ Response Example
-
-    ```json
-    {
-      "image_id": "550e8400-e29b-41d4-a716-446655440000",
-      "analysis_results": {
-        "description": "Modern oak dining table with minimalist design",
-        "materials": ["oak wood", "metal legs"],
-        "quality_score": 0.92,
-        "ocr_text": "NOVA Collection - Premium Oak",
-        "objects": ["table", "chair", "lamp"]
-      },
-      "confidence_scores": {
-        "description": 0.95,
-        "materials": 0.88,
-        "quality": 0.92
-      },
-      "processing_time": 1.23,
-      "model_used": "claude-opus-5"
-    }
-    ```
-
-    ## ⚠️ Error Codes
-
-    - **400 Bad Request**: Invalid parameters (missing image_id/image_url, invalid analysis types)
-    - **404 Not Found**: Image ID not found in database
-    - **413 Payload Too Large**: Image exceeds size limit (10MB)
-    - **415 Unsupported Media Type**: Unsupported image format
-    - **500 Internal Server Error**: AI analysis failed
-    - **503 Service Unavailable**: Vision model not available
-
-    ## 📏 Limits
-
-    - **Max image size**: 10MB
-    - **Supported formats**: JPEG, PNG, WebP
-    - **Max concurrent requests**: 10 per user
-    - **Timeout**: 30 seconds per image
-    """
+    """**🔍 Image Analysis - AI-Powered Visual Understanding**"""
     try:
         logger.info(f"Starting image analysis for image: {request.image_id or request.image_url}")
 
@@ -743,56 +663,7 @@ async def export_document_images(
     max_images: int = Query(500, ge=1, le=500, description="Maximum images to export"),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    **📦 Batch Image Export - Streaming ZIP Generation**
-
-    Export all images from a document as a ZIP archive with memory-safe streaming.
-
-    ## 🎯 Features
-
-    - **Streaming Implementation**: Constant 5-10MB memory usage regardless of image count
-    - **Format Conversion**: Support for PNG, JPEG, WEBP
-    - **Metadata Included**: Complete image metadata in JSON format
-    - **Memory Safe**: Processes one image at a time, no OOM risk
-
-    ## 📝 Request Example
-
-    ```bash
-    curl -X POST "/api/images/export/{document_id}?format=PNG&quality=95" \\
-      -H "Authorization: Bearer $TOKEN" \\
-      -o images.zip
-    ```
-
-    ## ✅ Response
-
-    Returns a ZIP file containing:
-    - All document images (renamed sequentially)
-    - metadata.json with image details
-
-    ## 📊 Performance
-
-    | Images | Total Size | Memory Usage | Time | Safe? |
-    |--------|-----------|--------------|------|-------|
-    | 10 | 5 MB | 5 MB | 2s | ✅ |
-    | 50 | 25 MB | 5 MB | 10s | ✅ |
-    | 100 | 50 MB | 5 MB | 20s | ✅ |
-    | 500 | 250 MB | 10 MB | 100s | ✅ |
-
-    ## ⚠️ Error Codes
-
-    - **400 Bad Request**: Invalid parameters (unsupported format, invalid quality)
-    - **404 Not Found**: Document not found or no images
-    - **413 Payload Too Large**: Too many images (>500) or size exceeds 500MB
-    - **500 Internal Server Error**: ZIP generation failed
-    - **503 Service Unavailable**: Storage service unavailable
-
-    ## 📏 Limits
-
-    - **Max images**: 500 per export
-    - **Max ZIP size**: 500 MB
-    - **Supported formats**: PNG, JPEG, WEBP
-    - **Rate limit**: 5 exports/hour per user
-    """
+    """**📦 Batch Image Export - Streaming ZIP Generation**"""
     try:
         logger.info(f"📦 Starting image export for document {document_id} by user {current_user.get("user_id")}")
 
@@ -949,17 +820,7 @@ async def reclassify_image(
     force_validation: bool = Query(False, description="Force validation with secondary model regardless of confidence"),
     current_user: User = Depends(get_current_user),
 ):
-    """
-    **🔄 Re-classify Image - Trigger AI Re-classification**
-
-    Re-run the material vs non-material classification on a specific image.
-
-    This endpoint:
-    1. Fetches the image from document_images table
-    2. Downloads the image from Supabase Storage
-    3. Re-runs Claude Vision classification
-    4. Optionally validates with a secondary Claude pass
-    5. Updates the database with new classification results
+    """**🔄 Re-classify Image - Trigger AI Re-classification**
 
     Args:
         image_id: UUID of the image to re-classify
@@ -1164,29 +1025,7 @@ async def segment_image_stream(
     request: SegmentRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """
-    **🔍 Material Zone Segmentation — streamed**
-
-    The same detection as `POST /segment`, delivered as newline-delimited JSON so the
-    caller can render each zone the moment the model finishes writing it instead of
-    waiting ~40s for the whole array.
-
-    Response is `application/x-ndjson`; one JSON object per line:
-
-        {"type":"zone","index":0,"zone":{...}}
-        {"type":"zone","index":1,"zone":{...}}
-        {"type":"done","count":12,"processing_time_ms":41203}
-        {"type":"error","error":"..."}          ← instead of `done`, on failure
-
-    NDJSON rather than SSE because that is already the streaming shape in this platform
-    (agent-chat streams the same way and the frontend has a reader for it), and a
-    second framing convention would be a second parser to keep correct.
-
-    **An error arrives in the BODY, not the status.** Headers are sent with the first
-    zone, so a failure after that point cannot become a 500 — a caller that only checks
-    `response.ok` will read a truncated list as a complete one. Check for the `done`
-    line.
-    """
+    """**🔍 Material Zone Segmentation — streamed**"""
     await resolve_workspace_id(current_user, request.workspace_id)
     from app.services.images.segmentation_service import get_segmentation_service
 

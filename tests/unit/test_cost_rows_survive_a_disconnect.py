@@ -43,13 +43,10 @@ pytestmark = pytest.mark.unit
 _ROOT = Path(__file__).resolve().parents[1].parent
 _APP = _ROOT / "app"
 
-#: Tables whose rows are money. A lost or doubled row here is a wrong number that
-#: every downstream cost view reports as fact.
-#:
-#: `ai_call_logs` belongs here even though the cost MIRROR lives in `ai_usage_logs`:
-#: `log_ai_call` writes the mirror only `if result.data`, so a dropped call row takes
-#: the cost row with it. Guarding one table and not the other leaves the busiest path
-#: in the platform exactly as exposed as it was.
+# : Tables whose rows are money. A lost or doubled row here is a wrong number that
+# : every downstream cost view reports as fact.
+# :
+# : `ai_call_logs` belongs here even though the cost MIRROR lives in `ai_usage_logs`:
 _LEDGER_TABLES = ("ai_usage_logs", "ai_call_logs")
 
 #: `sb.table("ai_usage_logs").insert(` — the shape that cannot be retried. Either quote
@@ -61,17 +58,7 @@ _PLAIN_INSERT = re.compile(
 
 
 def _code_only(text: str) -> str:
-    """The source with PROSE blanked — comments and docstrings — and nothing else.
-
-    `credits_integration_service` DOCUMENTS this anti-pattern in its module docstring —
-    it is the file that fixed it — so a raw text scan accuses the one writer that got it
-    right. Blanking rather than deleting keeps every line number honest.
-
-    Only docstrings, never string literals in general: the table name this scans for IS a
-    string literal, so blanking all of them makes the guard match nothing and pass
-    vacuously on a codebase full of offenders. The first version of this did exactly that.
-    `test_the_guard_sees_a_planted_offender` below is what holds the line.
-    """
+    """The source with PROSE blanked — comments and docstrings — and nothing else."""
     lines = text.splitlines(keepends=True)
 
     def blank(r1, c1, r2, c2):

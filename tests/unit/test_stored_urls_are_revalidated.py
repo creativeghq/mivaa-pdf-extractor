@@ -1,23 +1,4 @@
-"""A URL that is STORED and RE-FETCHED ON A SCHEDULE needs the guard twice (mivaa#19 M6-2).
-
-`test_ssrf_guard_coverage.py` already sweeps for unguarded server-side fetches. This
-file holds the thing that sweep cannot express: for the price-monitoring URLs, passing
-validation ONCE is not enough.
-
-Everywhere else in the tree, a URL is fetched once in response to a request. Here the
-URL is written to `tracked_queries.pinned_url` / `tracked_query_price_history.product_url`
-and fetched again every refresh interval, indefinitely — so a single accepted write buys
-a recurring internal-fetch primitive that outlives the session that created it, and DNS
-can be re-pointed at an internal address at any point between the write and any of the
-fetches that follow it.
-
-Static, not runtime: CI installs pytest alone (`deploy.yml`) and these unit tests import
-nothing from `app`, so each case parses source. A guard here proves the CALL is present,
-not that the guard behaves — `assert_safe_url`'s own behaviour is covered by
-`test_safe_fetch_bytes.py`.
-
-Every case was watched to fail against the pre-fix source.
-"""
+"""A URL that is STORED and RE-FETCHED ON A SCHEDULE needs the guard twice (mivaa#19 M6-2)."""
 
 import ast
 import re

@@ -1,18 +1,5 @@
-"""
-Category context handed to the vision model (issue #393 Step 3).
+"""Category context handed to the vision model (issue #393 Step 3).
 
-STDLIB ONLY — same contract as `ocr_context.py`. MIVAA CI installs pytest and
-nothing else, so keeping the formatting importable by path is what lets the guard
-assert on behaviour instead of grepping source.
-
-Why this exists: `Material Image Analyzer` is ONE prompt row, so a tile, a tap and a
-pendant lamp were all asked the same generic question. Meanwhile
-`material_categories` and `material_metadata_fields` already carry per-category
-extraction tips, a controlled vocabulary, and an explicit do-not-extract list — the
-registry knows that `body_material` means vitreous china in sanitary and rattan in
-lighting, and the vision prompt was not asking.
-
-WHAT IS DELIBERATELY NOT INCLUDED
 ---------------------------------
 `FieldRegistry.priority_fields_prompt()` exists and is NOT used here. It enumerates
 the PRODUCT extraction schema (`material_subtype`, `physical_properties`, …), which is

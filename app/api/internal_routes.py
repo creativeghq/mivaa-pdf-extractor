@@ -1,26 +1,4 @@
-"""
-Internal API Routes - Modular endpoints for PDF processing pipeline stages.
-
-These endpoints are called internally by the main orchestrator to execute
-individual stages of the PDF processing pipeline. Each endpoint is focused
-on a single responsibility and can be tested/debugged independently.
-
-Endpoints:
-- POST /api/internal/classify-images/{job_id} - Classify images as material/non-material
-- POST /api/internal/upload-images/{job_id} - Upload material images to storage
-- POST /api/internal/save-images-db/{job_id} - Save images to DB and generate SLIG embeddings
-- POST /api/internal/detect-products/{job_id} - Product discovery
-- POST /api/internal/create-chunks/{job_id} - Text chunking with duplicate prevention
-- POST /api/internal/create-relationships/{job_id} - Create chunk-image and product-image relationships
-- POST /api/internal/extract-metadata/{job_id} - Extract product metadata using AI
-- POST /api/internal/generate-product-embeddings - Generate embeddings for products without them
-- POST /api/internal/regenerate-image-embeddings - Regenerate visual embeddings for existing images
-- POST /api/internal/reset-job/{job_id} - Reset a stuck/failed job back to initialized state
-- POST /api/internal/extract-entities - Match document entities to products
-- POST /api/internal/generate-entity-embeddings - Generate text embeddings for document entities
-- POST /api/internal/regenerate-text-embeddings - Generate text embeddings for chunks missing them
-- POST /api/internal/validate-pipeline/{job_id} - Audit pipeline completion status across all stages
-"""
+"""Internal API Routes - Modular endpoints for PDF processing pipeline stages."""
 
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
@@ -90,24 +68,7 @@ async def report_stage(
     percent: int,
     details: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Report a pipeline stage transition for `job_id`. Never raises.
-
-    Uses the LIVE tracker when the job is being driven in this process — it owns the
-    real `total_pages` and the accumulated per-page counters.
-
-    When there is no live tracker (these endpoints are service-to-service, so the
-    caller can be a different process and `ProgressTrackingService.trackers` is an
-    in-process dict) we deliberately do NOT construct one. A fresh
-    ProgressTracker(job_id, document_id, total_pages=0) would look harmless and then
-    `_sync_to_database` would write total_pages and every counter back to
-    `background_jobs` as zero — overwriting real progress with a confident-looking
-    zero, which is the precise failure shape this pipeline keeps producing. Instead
-    we append a boundary event to stage_history: append-only, cannot regress
-    anything, and matches pipeline convention §9.
-
-    Progress reporting is auxiliary. A failure here must never cost the stage's
-    actual work, so everything is best-effort and logged.
-    """
+    """Report a pipeline stage transition for `job_id`. Never raises."""
     mapped = _PIPELINE_STAGES.get(stage_key)
     if mapped is None:
         # A typo'd key is a programming error, but not one worth failing a pipeline
@@ -301,33 +262,7 @@ async def classify_images(
     request: ClassifyImagesRequest,
     _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
 ):
-    """
-    Classify images as material or non-material using Claude Vision (+ Claude validation).
-
-    This endpoint:
-    1. Uses vision model for fast initial classification
-    2. Validates uncertain cases (confidence < threshold) with Claude Opus
-    3. Returns separated lists of material and non-material images
-
-    AI Configuration (Optional):
-    - classification_primary_model: Primary classification model (default: claude-haiku-4-5)
-    - classification_validation_model: Validation model (default: claude-opus-5)
-    - classification_confidence_threshold: Threshold for validation (default: 0.7)
-    - classification_temperature: Temperature setting (default: 0.1)
-    - classification_max_tokens: Max tokens for responses (default: 512)
-
-    Example with custom AI config:
-    ```json
-    {
-      "job_id": "abc123",
-      "extracted_images": [...],
-      "ai_config": {
-        "classification_primary_model": "claude-haiku-4-5",
-        "classification_validation_model": "claude-opus-5",
-        "classification_confidence_threshold": 0.8
-      }
-    }
-    ```
+    """Classify images as material or non-material using Claude Vision (+ Claude validation).
 
     Args:
         job_id: Job ID for tracking
@@ -444,31 +379,7 @@ async def save_images_to_db(
     request: SaveImagesRequest,
     internal_claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ):
-    """
-    Save images to database and generate visual embeddings (SLIG (SigLIP2)).
-
-    This endpoint:
-    1. Saves images to document_images table
-    2. Generates visual embeddings using SLIG (SigLIP2)
-    3. Creates 5 specialized embeddings per image (visual, color, texture, style, material)
-    4. Saves embeddings to database table AND VECS collection
-
-    AI Configuration (Optional):
-    - visual_embedding_primary: Primary visual model (default: SigLIP ViT-SO400M)
-    - visual_embedding_fallback: Fallback visual model (default: CLIP ViT-B/32)
-
-    Example with custom AI config:
-    ```json
-    {
-      "job_id": "abc123",
-      "material_images": [...],
-      "document_id": "doc123",
-      "workspace_id": "ws123",
-      "ai_config": {
-        "visual_embedding_primary": "google/siglip-so400m-patch14-384"
-      }
-    }
-    ```
+    """Save images to database and generate visual embeddings (SLIG (SigLIP2)).
 
     Args:
         job_id: Job ID for tracking
@@ -534,20 +445,7 @@ async def create_chunks(
     supabase_client: SupabaseClient = Depends(get_supabase_client),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    Create semantic chunks and generate text embeddings.
-
-    This endpoint:
-    1. Creates semantic chunks from extracted text
-    2. Saves chunks to database
-    3. Generates text embeddings for each chunk
-    4. Creates chunk-to-product relationships
-    5. **Prevents duplicates** - skips if chunks already exist
-
-    **Use Cases:**
-    - Regenerate chunks after text extraction updates
-    - Create chunks for documents that failed chunking
-    - Manual chunk generation for testing
+    """Create semantic chunks and generate text embeddings.
 
     Args:
         job_id: Job ID for tracking
@@ -923,18 +821,7 @@ async def generate_product_embeddings(
     supabase: SupabaseClient = Depends(get_supabase_client),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    Generate embeddings for products that don't have them yet.
-
-    This endpoint:
-    1. Finds products without embeddings (no associated chunks)
-    2. Creates chunks from product name + description
-    3. Queues embedding generation jobs
-
-    **Use Cases:**
-    - Fix missing embeddings from old PDF processing
-    - Regenerate embeddings after product updates
-    - Bulk embedding generation for imported products
+    """Generate embeddings for products that don't have them yet.
 
     Args:
         request: Request with workspace_id, optional document_id and product_ids
@@ -1110,30 +997,7 @@ async def regenerate_image_embeddings(
     supabase: SupabaseClient = Depends(get_supabase_client),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    Regenerate visual embeddings for existing images in the database.
-
-    This endpoint:
-    1. Fetches existing images from document_images table
-    2. Downloads images from Supabase Storage
-    3. Generates 5 SLIG embeddings per image (visual, color, texture, style, material)
-    4. Generates understanding embedding (1024D) if vision_analysis exists
-    5. Saves embeddings to VECS collections
-
-    **Use Cases:**
-    - Fix missing embeddings from old PDF processing
-    - Regenerate embeddings after model upgrades
-    - Bulk embedding generation for imported images
-
-    **Example Request:**
-    ```json
-    {
-      "workspace_id": "00000000-0000-0000-0000-000000000000",
-      "document_id": "doc-123",  // Optional: limit to specific document
-      "image_ids": ["img-1", "img-2"],  // Optional: specific images
-      "force_regenerate": false  // Optional: regenerate even if embeddings exist
-    }
-    ```
+    """Regenerate visual embeddings for existing images in the database.
 
     Args:
         request: Request with workspace_id, optional document_id and image_ids
@@ -1454,16 +1318,8 @@ async def reset_job(
     supabase: SupabaseClient = Depends(get_supabase_client),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    Reset a stuck / failed / stale job back to `pending` so the scheduler
+    """Reset a stuck / failed / stale job back to `pending` so the scheduler
     can pick it up again.
-
-    Status must be one of pending / processing / completed / failed /
-    cancelled / interrupted (enforced by `background_jobs_status_check`).
-
-    By default this endpoint refuses to reset a job that's already in a
-    terminal success state (`completed`) — overwriting a completed job
-    discards the successful result. Pass `?force=true` to override.
 
     Args:
         job_id: Job ID to reset
@@ -2054,18 +1910,8 @@ async def run_catalog_knowledge(
     # from it — the largest blast radius in this file (audit #13 MI-1).
     claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ) -> RunCatalogKnowledgeResponse:
-    """
-    Standalone runner for Layer 1 (catalog layout analyzer) + Layer 2
+    """Standalone runner for Layer 1 (catalog layout analyzer) + Layer 2
     (catalog legend extractor) against a single document.
-
-    Use this when you want to (re)process the catalog-wide data — page
-    classification, legend extraction, certification propagation — WITHOUT
-    re-running the full Stage 0-4 pipeline. This is the only endpoint that
-    re-runs the catalog_legends and certifications propagation for every
-    product in the document.
-
-    Query param `force=true` bypasses the idempotency check and re-analyzes
-    even if `documents.metadata.catalog_layout.analyzed_at` exists.
     """
     await assert_document_in_workspace(document_id, claims)
     try:
@@ -2179,21 +2025,8 @@ async def document_extraction_status(
     # would 403 the Admin UI's health panel.
     claims: Optional[Dict[str, Any]] = Depends(verify_internal_access),
 ) -> DocumentExtractionStatusResponse:
-    """
-    Observability endpoint — returns a snapshot of how well a document has
+    """Observability endpoint — returns a snapshot of how well a document has
     been processed end-to-end. Shows:
-
-      - Whether Layer 1 (catalog layout) ran
-      - Whether Layer 2 (catalog legends + certs) ran
-      - Which legend types were found
-      - Global certifications propagated
-      - Per-product field coverage (populated / missing critical)
-      - Source breakdown (how many fields came from chunks vs vision vs legend)
-      - Issues detected (missing legend pages, failed extractions, etc.)
-
-    Use this to triage a catalog after ingestion: run it, see which products
-    are underfilled and which legends are missing, and decide whether to
-    re-run a specific layer or accept the current state.
     """
     await assert_document_in_workspace(document_id, claims)
     try:
@@ -2369,16 +2202,7 @@ async def backfill_page_embeddings(
     supabase: SupabaseClient = Depends(get_supabase_client),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Render + embed pages for documents that have no page vectors yet (#239).
-
-    The remedy the `ops.page_embeddings_never_written` probe points at, and the way
-    catalogs ingested before this feature existed get their 8th vector. The ingest
-    pipeline covers new uploads; this covers everything else.
-
-    Bounded on purpose: `max_documents` defaults to 5 because one document is one API
-    call per page. `documents_remaining` is returned so a caller can page through the
-    backlog deliberately instead of discovering the cost after the fact.
-    """
+    """Render + embed pages for documents that have no page vectors yet (#239)."""
     try:
         # Tenancy from the verified JWT, not from the body (security invariant 1).
         await authorize_rag_workspace(claims, request.workspace_id)

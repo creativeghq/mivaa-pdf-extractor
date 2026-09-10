@@ -1,14 +1,4 @@
-"""
-SAM (Segment Anything) Mask Generation Routes
-
-Generates binary inpainting masks from zone hints.
-Primary path: SAM 2 via Replicate (`meta/sam-2`) — pixel-perfect masks.
-Fallback: Pillow bbox/ellipse — instant, zero cost.
-
-Inpainting:
-- AnyDoor (Replicate `ali-vilab/anydoor`) when `reference_image_url` provided — places real product photo.
-- FLUX Fill Pro otherwise — text-guided replacement.
-"""
+"""SAM (Segment Anything) Mask Generation Routes"""
 
 import base64
 import io
@@ -325,16 +315,6 @@ _INPAINT_MODELS = {
 _ANYDOOR_VERSION = "ali-vilab/anydoor"
 
 # `ai_model_pricing.model_key` per inpaint model.
-#
-# This used to be ONE flat key, "image-inpaint", for every request (audit #304 finding 6).
-# The quality selector therefore changed neither the price nor — on the reference-image
-# path, which is the normal case for a catalog product photo — the model, because that
-# branch never reads request.model at all. A "Best" FLUX Fill Pro run bills the same as
-# a "Fast" one, which is how the platform came to lose money on every Pro inpaint.
-#
-# The keys are admin-editable rows in ai_model_pricing, and the frontend reads its
-# labels from the same rows, so the displayed price and the debited price cannot drift.
-# Adding a model means adding a row AND an entry here.
 _INPAINT_PRICING_KEYS = {
     "flux-fill-pro": "inpaint-flux-fill-pro",
     "flux-fill-dev": "inpaint-flux-fill-dev",

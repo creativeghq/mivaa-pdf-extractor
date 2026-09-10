@@ -102,14 +102,6 @@ class MultiModalImageProductAssociationService:
                 }
 
             # The tenant this run belongs to, derived ONCE and verified (#25 M12-4).
-            #
-            # Images were fetched by document_id and products by source_document_id,
-            # and the row written afterwards named only the two ids — no workspace
-            # anywhere in the path. `image_product_associations` now carries
-            # workspace_id with a composite FK to (products.id, workspace_id), so a
-            # cross-tenant association is refused by Postgres; this derivation is what
-            # supplies it, and the disagreement check below is what stops a corrupt
-            # document silently picking whichever workspace sorted first.
             workspace_ids = {p.get('workspace_id') for p in products if p.get('workspace_id')}
             if len(workspace_ids) != 1:
                 raise ValueError(
@@ -146,23 +138,6 @@ class MultiModalImageProductAssociationService:
                         association = await self._evaluate_association(image, product, options)
 
                         # Spatial is a GATE, not just the heaviest weight.
-                        #
-                        # _calculate_spatial_score returns 0.0 for an image that is
-                        # not on one of the product's declared pages — the hard rule
-                        # added 2026-05-02 after a 140-page catalog wrote 12
-                        # associations for 4 images. But the weighted sum let that
-                        # rule be voted down by two NEUTRAL scores: with spatial 0.0,
-                        # overall = 0.3*caption + 0.3*clip, and both default to 0.5
-                        # in the ordinary case — a generic "Image from page 22"
-                        # caption (which is what the pipeline generates) and a
-                        # product with no visual embedding (which is every product,
-                        # since products carry only text_embedding_1024 and visual
-                        # vectors are DERIVED from these very associations). That is
-                        # 0.0 + 0.15 + 0.15 = exactly 0.30, which passed a >= 0.30
-                        # threshold. So the wrong-page images the hard cutoff was
-                        # written to exclude were being written anyway.
-                        #
-                        # Two neutral "I don't know"s must not add up to a "yes".
                         if association.spatial_score <= 0.0:
                             continue
 
@@ -285,21 +260,7 @@ class MultiModalImageProductAssociationService:
         )
 
     async def _calculate_spatial_score(self, image: Dict[str, Any], product: Dict[str, Any]) -> float:
-        """Calculate spatial proximity score (0-1).
-
-        HARD RULE (added 2026-05-02 after audit incident): an image is
-        spatially associated with a product **only if its page_number falls
-        inside the product's declared page_range**. Adjacent / nearby pages
-        score 0.0 — they belong to the *next* product, not this one.
-
-        Previously this method gave 0.85 to adjacent pages, 0.7 to ±2
-        pages, etc. With overall_threshold=0.3 that meant every image got
-        linked to 2-3 products in dense catalogs. Concrete failure: a 140-
-        page catalog (job 184ad4cf) wrote 12 image_product_associations
-        for 4 images — every page-34/36 image was linked to VALENOVA (24-
-        31), FOLD (32-37), AND PIQUÉ (38-51). Search retrieval was
-        contaminated by 3× the correct row count.
-        """
+        """Calculate spatial proximity score (0-1)."""
         image_page = image.get('page_number', 0)
         if not image_page:
             return 0.0  # No image page info — can't anchor it.
@@ -403,37 +364,7 @@ class MultiModalImageProductAssociationService:
     async def _calculate_clip_score(
         self, image: Dict[str, Any], product: Dict[str, Any]
     ) -> Optional[float]:
-        """The visual similarity score, or None when there is no visual signal.
-
-        None is the point of this function (#25 M12-1). What was here read three
-        columns that do not exist:
-
-            image.get('clip_embedding') or image.get('visual_embedding') or image.get('embedding')
-
-        `document_images` has none of them — image vectors live in VECS, and the
-        canonical O(1) presence check is the `has_*_embedding` boolean. The rows are
-        fetched with `select('*')`, so PostgREST returned the columns that DO exist and
-        `.get()` answered None for the rest: no KeyError, no warning, the `or` chain
-        collapsed, and the documented "neutral score" fallback fired on every call ever
-        made. The product side guessed too — `text_embedding`, where the column is
-        `text_embedding_1024`.
-
-        A constant 0.5 at 30% weight is not a neutral fallback. It is:
-
-          * a fixed +0.15 on every overall score, so the threshold means something
-            different from what it says
-          * a third data point in `_calculate_confidence`'s variance, which rewards
-            "agreement" with a number that agrees with nothing
-          * the string 'moderate visual relevance' in the stored reasoning of every
-            association, because 0.5 clears that branch's threshold exactly
-
-        So returning None and renormalising is not a smaller answer than 0.5 — it is
-        the difference between an absent signal and a fabricated one.
-
-        The comment that caused it was `# could be under different field names`. The
-        author was unsure of the schema and hedged across three guesses; the platform
-        rule against exactly that hedge is why `has_slig_embedding` exists.
-        """
+        """The visual similarity score, or None when there is no visual signal."""
         try:
             # The canonical O(1) checks. Cheap, and true only when a vector really
             # exists in the matching VECS collection.
@@ -585,22 +516,7 @@ class MultiModalImageProductAssociationService:
         associations: List[ImageProductAssociation],
         workspace_id: str
     ) -> int:
-        """Write the associations. ONE upsert, tenant-bound (#25 M12-4, M12-5).
-
-        This used to upsert the same rows to the same table TWICE: first with
-        `reasoning: "depicts"` and `metadata: {}`, then again with the real reasoning
-        and the score breakdown. Both were wrapped in one try that logged and swallowed,
-        and `created` — taken from the FIRST write — was returned either way.
-
-        So a failure of the second write left a complete-looking association whose
-        stated reason was the placeholder and whose metadata was empty, reported as a
-        success. That is indistinguishable from a genuine low-information association,
-        which is the ambiguity pipeline convention 3 exists to remove: one atomic write,
-        not two that can disagree.
-
-        The first write was also pure waste — same table, same conflict target, same
-        rows, immediately overwritten.
-        """
+        """Write the associations. ONE upsert, tenant-bound (#25 M12-4, M12-5)."""
         if not associations:
             return 0
 

@@ -1,17 +1,4 @@
-"""
-Duplicate Material Detection Service
-
-CRITICAL RULE: Duplicates are ONLY detected when materials are from the SAME factory/manufacturer.
-Visual similarity, color, or pattern alone do NOT constitute duplicates.
-
-Detection criteria:
-1. MUST have same factory/manufacturer in metadata (REQUIRED)
-2. THEN check name similarity
-3. THEN check description similarity
-4. Visual similarity is supplementary only
-
-If factory/manufacturer differs, materials are NOT duplicates regardless of visual similarity.
-"""
+"""Duplicate Material Detection Service"""
 
 import logging
 from typing import List, Dict, Any, Optional

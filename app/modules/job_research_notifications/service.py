@@ -1,26 +1,4 @@
-"""
-Job Digest Dispatcher — consolidated daily email per user.
-
-Cron sequence:
-  job-research-digest-hourly (cron at :05) → MIVAA POST /cron-digest →
-    JobDigestDispatcher.dispatch_due_users(current_hour_utc) →
-      for each user whose tracked_job.digest_hour_utc == current_hour_utc
-        and last_digest_sent_at < today:
-          - load all of that user's tracked_jobs
-          - for each tracked_job, fetch new match listings since last digest
-          - if any tracked_job has new listings:
-              build one consolidated email, send via email-api,
-              also write bell notification, optionally POST webhook,
-              call append_job_alert_log for each tracked_job (which also
-                stamps last_digest_sent_at on tracked_jobs)
-          - if NO tracked_job has new listings:
-              still stamp last_digest_sent_at on each so we don't reprocess
-              for another 24h ("no new listings today" is itself a state)
-
-Module gate: every dispatch first checks
-`is_module_enabled('job-research-notifications')`. Bell channel always
-sends; email/webhook respect alert_channels config.
-"""
+"""Job Digest Dispatcher — consolidated daily email per user."""
 
 from __future__ import annotations
 
@@ -177,14 +155,6 @@ class JobDigestDispatcher:
         # Meter the digest BEFORE it goes out. Registered cron_key 'job-research-digest' (3 cr),
         # priced "per user consolidated job digest" — so it is charged per SEND, once for the
         # whole consolidated email, not per tracked_job in it.
-        #
-        # Deliberately placed AFTER the no_new_matches return: an empty day costs nothing.
-        # Charging on the way in and refunding later is the shape the cron-billing docstring
-        # warns about, and there is no cron_refund_user to make it symmetric anyway. This is the
-        # last point before any outward work (email build + send), so it still satisfies
-        # "debit before the upstream call".
-        #
-        # Fails OPEN on any metering error, False only when the payer is genuinely out of credits.
         digest_workspace_id = next((tj.get("workspace_id") for tj in tracked_jobs if tj.get("workspace_id")), None)
         if not charge_cron(
             self.sb, "job-research-digest",
@@ -500,25 +470,7 @@ class JobDigestDispatcher:
             return []
 
     def _build_action_path(self, tracked_job: Dict[str, Any], *, conversation_id: Optional[str] = None) -> str:
-        """The in-app destination, as a PATH.
-
-        Deep-link to the conversation this search reports into — the findings card is already
-        sitting there, posted by `_post_findings_to_chat`, so the click opens the answer rather
-        than asking for it.
-
-        The fallback runs only when a conversation could not be opened at all, and it names the
-        search the way the OWNER named it. It used to seed
-        `Show me today's findings for tracked_job_id ff62d59f-b8b9-4d70-9c4a-0a13359b7788`, which
-        AgentHub renders as the user's own message: a raw uuid in the chat, addressed to an agent
-        that then has to spend a whole turn re-fetching findings the digest had already computed.
-        An internal identifier is never a thing to show someone.
-
-        This is what goes on the bell notification, and it must NOT be absolute. The bell hands
-        `user_notifications.action_url` to react-router's `navigate()`, which reads ANY string as
-        a path — so an absolute URL became the path `/https://app.materialshub.gr/agent-hub` and
-        every digest ever sent 404'd when clicked. `_absolute()` is for the email, where a path
-        would be equally wrong.
-        """
+        """The in-app destination, as a PATH."""
         if conversation_id:
             return "/agent-hub?" + urlencode({"agent": "kai", "conversation": conversation_id})
         label = (tracked_job.get("label") or "").strip() or "my job search"
@@ -528,23 +480,7 @@ class JobDigestDispatcher:
         })
 
     async def _ensure_digest_conversation(self, tracked_job: Dict[str, Any]) -> Optional[str]:
-        """The conversation this tracked search reports into, opening one the first time.
-
-        `source_conversation_id` is set by `track_job_search` only when the search was created
-        from a KAI chat turn that already had a conversation. Everything else — the direct API
-        route, a search created before that wiring existed — left it NULL, and NULL meant the
-        daily digest skipped `_post_findings_to_chat` entirely. So the findings, which are the
-        product, were never posted anywhere a person looks; the bell fell back to a seeded prompt;
-        and the email was the only real delivery. Measured 2026-08-26: 1 of 1 tracked_jobs had it
-        NULL, so that was 100% of them.
-
-        Opening one here is the same repair as `ensureResultConversation` on the background-task
-        dispatcher: a feature that promises to report into a chat must HAVE a chat. Stamped back
-        onto the row so every later digest lands in the same thread and it reads as one running
-        conversation about that search, not a new one each morning.
-
-        Returns None if it cannot be created — the digest still sends by bell and email.
-        """
+        """The conversation this tracked search reports into, opening one the first time."""
         existing = tracked_job.get("source_conversation_id")
         if existing:
             return existing
@@ -596,11 +532,9 @@ class JobDigestDispatcher:
     ) -> Dict[str, Any]:
         """Called from JobResearchService.refresh() after each refresh completes.
         Fires a single chat-post + bell notification if:
-          - the tracked_job has alert_on_burst=true
-          - new_match_count >= burst_threshold (default 10)
-          - last_burst_alert_at was at least 2 hours ago (or NULL)
-          - module is enabled
-        Skips silently otherwise.
+        - the tracked_job has alert_on_burst=true
+        - new_match_count >= burst_threshold (default 10)
+        - last_burst_alert_at was at least 2 hours ago (or NULL)
         """
         if not self._module_active() or new_match_count <= 0:
             return {"skipped": True, "reason": "module disabled or no matches"}
@@ -819,24 +753,8 @@ class JobDigestDispatcher:
                         "to": to_email,
                         "subject": title,
                         # WHOSE email this is, for the LOG ROW only.
-                        #
-                        # The workspace is resolved a hundred lines above to decide who pays for
-                        # the digest, and it never reached the send — so every one of these landed
-                        # in `email_logs` with no workspace. That table's member policy is
-                        # `workspace_id IS NOT NULL AND is_workspace_member(workspace_id)`, so the
-                        # tenant could not see mail going out in their own name.
-                        #
-                        # `attribution_workspace_id`, NOT `workspace_id`: the latter also picks the
-                        # workspace's BYOK sender and meters its daily cap, and a platform-sent
-                        # digest must keep taking neither.
                         **({"attribution_workspace_id": workspace_id} if workspace_id else {}),
                         # NO templateSlug: email-api's renderTemplateWithVariables()
-                        # escapeHtml's every {{var}}, so the template's {{body}} turned
-                        # our pre-built section HTML into literal <h2>…</h2> text in the
-                        # inbox. We send the fully-rendered `html` below instead — same
-                        # design as the template, but with body_html embedded raw (its
-                        # dynamic fields are already _html_escape'd in _build_body_html,
-                        # so this is XSS-safe).
                         "html": (
                             f'<!DOCTYPE html><html><body style="background:#0f0f0f;color:#e6e6e6;'
                             f'font-family:Helvetica,Arial,sans-serif;padding:24px;">'

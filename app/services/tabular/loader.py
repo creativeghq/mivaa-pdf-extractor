@@ -1,15 +1,4 @@
-"""Files → tables in an in-memory DuckDB, profiled, then the engine is locked.
-
-What a real supplier spreadsheet looks like: a title in row 1, a blank spacer, the header
-in row 4, a "Σύνολο" row after every group, prices written `1.234,56`, a notes block at
-the bottom. The clean-up here is DETERMINISTIC and cheap — no model call — and every
-removal is logged so a row count that looks wrong is answerable from the log.
-
-Order matters and is the whole security story: the files are read while external
-access is ON (our loader, our paths), then `lock_down` turns it OFF and locks the
-configuration BEFORE the first generated query runs. After that DuckDB itself refuses to
-read files, install extensions, attach databases or re-enable any of it.
-"""
+"""Files → tables in an in-memory DuckDB, profiled, then the engine is locked."""
 
 from __future__ import annotations
 

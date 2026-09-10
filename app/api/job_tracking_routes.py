@@ -1,27 +1,4 @@
-"""
-Public Job Tracking API — /api/v1/jobs/track/*
-
-External projects authenticate with an `api_keys` Bearer token (`kai_*`),
-register tracked job searches, and control the refresh cadence themselves
-(no platform cron polls these — partners pay per call).
-
-Mirror of `mention_tracking_routes.py` for job research. Uses the same
-`authenticate_api_key` dependency.
-
-Routing:
-  api_key_id NOT NULL  → external API consumer (this file)
-  api_key_id IS NULL   → internal session-JWT flow (job_research_routes.py)
-
-Deleting the api_key CASCADEs out every tracked_jobs row + job_listings tied
-to it (enforced at the DB level via ON DELETE CASCADE).
-
-Per-call partner billing (debit on entry, refund on hard failure / no-op):
-  refresh           → 5 credits
-  digest_preview    → 1 credit
-  regenerate-keys   → 2 credits
-  classifier-correct→ 0 credits (read-write but cheap)
-  CRUD reads        → 0 credits
-"""
+"""Public Job Tracking API — /api/v1/jobs/track/*"""
 
 from __future__ import annotations
 

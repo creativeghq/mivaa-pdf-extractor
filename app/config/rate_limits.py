@@ -1,17 +1,4 @@
-"""
-Vision / Modal GPU Endpoint Rate Limit Configuration
-
-This module defines rate limits for the SLIG visual-embedding endpoint and the
-PaddleOCR-VL structural pass (both Modal-hosted as of 2026-06-14), plus Anthropic
-vision tiers. Tiers are based on usage capacity and determine concurrency limits.
-
-Tiers:
-- Tier 1: Default (Modal GPU endpoints + entry-level Anthropic)
-- Tier 2: Medium capacity
-- Tier 3: High capacity
-- Tier 4: Very high capacity
-- Tier 5: Maximum capacity
-"""
+"""Vision / Modal GPU Endpoint Rate Limit Configuration"""
 
 from dataclasses import dataclass
 from typing import Dict
@@ -101,15 +88,7 @@ def get_current_tier() -> RateLimitTier:
 
 
 def get_vision_concurrency_limit() -> int:
-    """
-    Calculate safe concurrency limit for vision model requests.
-
-    Vision models are part of LLM rate limits. We want to stay well below
-    the limit to account for:
-    - Other concurrent API usage
-    - Retry attempts
-    - Burst traffic
-    - Model-specific capacity constraints (especially for large vision models on a single GPU replica)
+    """Calculate safe concurrency limit for vision model requests.
 
     Returns:
         int: Safe number of concurrent vision requests
@@ -134,25 +113,7 @@ def get_vision_concurrency_limit() -> int:
 
 
 def get_claude_concurrency_limit() -> int:
-    """
-    Get safe concurrency limit for Claude API requests.
-
-    Stage 3 image classification AND
-    vision_analysis both run through Anthropic Claude Opus. The
-    previous hardcoded `2` was set when Claude was a rare fallback —
-    leaving it at 2 now serializes ~80 images/product behind a 2-wide
-    gate at ~10s per Opus call, eating the full 600s per-product budget
-    on classification alone (incident: VALENOVA, 2026-05-03, job
-    acff9ebb-8daf-48f0-acd3-4f77308faf8b).
-
-    Anthropic Tier 1 = 600 RPM = 10 RPS. With ~10s avg vision-call
-    latency, Little's Law allows ~100 in-flight before saturation;
-    we cap at 10 by default to leave headroom for product_discovery,
-    icon extraction, and retries running in parallel.
-
-    Override via `CLAUDE_VISION_CONCURRENCY` env var to tune per-tier
-    without redeploy.
-    """
+    """Get safe concurrency limit for Claude API requests."""
     return int(os.getenv('CLAUDE_VISION_CONCURRENCY', '10'))
 
 

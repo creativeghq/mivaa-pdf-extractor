@@ -1,30 +1,4 @@
-"""
-The 3-source meta merge must be TOTAL (#347 phase 2.1 follow-up).
-
-`_build_enriched_product_data` folds keyword-scanned chunk values into whatever the AI
-extraction already found — the "belt and suspenders" described in docs/meta-field-aggregation.md,
-where "NOVA available in Clay" on page 31 still reaches a product created from page 12.
-
-Why this file exists: that merge raised on two shapes that occur in real data.
-
-  * `colors` as a list of ``{"name": ..., "hex": ...}`` objects — a shape the frontend's
-    `getAvailableColors` explicitly supports — built a ``set()`` over dicts and threw
-    ``unhashable type: 'dict'``.
-  * any list mixing strings with a number threw in ``sorted()``, which cannot order ``int``
-    against ``str``.
-
-And the failure is worse than a crash. `_build_enriched_product_data` catches everything and
-falls back to `_create_product_from_chunk`, so the product is still created — silently stripped
-of every attribute the enrichment found, leaving one log line nobody reads. A valid-looking row
-with no metadata is exactly the silent-zero shape this codebase keeps getting bitten by.
-
-Both shapes became REACHABLE when phase 2.1 flattened `products.metadata`: `colors` used to sit
-nested under `appearance`, so `metadata['colors']` was absent and the merge took its
-"nothing here yet" branch. Flat keys mean the real branches now run.
-
-Loaded by AST rather than imported: `product_creation_service` pulls in the Supabase client, and
-MIVAA's unit tests import no app module — see `test_no_fallback_embedder`.
-"""
+"""The 3-source meta merge must be TOTAL (#347 phase 2.1 follow-up)."""
 import ast
 from pathlib import Path
 

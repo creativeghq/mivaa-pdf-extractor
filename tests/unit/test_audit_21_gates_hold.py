@@ -1,36 +1,4 @@
-"""Guards for the mivaa#21 partner-key and paid-monitoring fixes (M8-1 ... M8-5).
-
-M8-1 is the shape worth naming, because it is the INVERSE of the one that cleared about
-a third of this engagement's findings. Repeatedly an application-layer finding turned out
-to be bounded by a guard in SQL. Here the guard is in SQL, it is correct and well-formed,
-and it is void -- because MIVAA connects as service role, which bypasses row-level
-security entirely.
-
-Four comments asserted RLS protection. The tell was in the error messages: two of the
-`/sites` routes returned 404 with the text "no permission (admin-only writes)", written
-by someone who believed a check was happening one layer down. Nothing was checking. Any
-authenticated user could add, alter or delete rows in a PLATFORM-WIDE operator-curated
-list feeding scheduled discovery defaults for everyone, delete another user's exclusion,
-or mark another user's job listing.
-
-"RLS enforces X" is never a valid justification in this codebase. There is no connection
-here for a row-level policy to apply to. That is why one case below greps for the phrase
-rather than checking any particular route: the assumption spreads by being read.
-
-M8-2 is the same distinction the credit router already makes and the cron path did not.
-Failing open is defensible for a USER request, where blocking a paying customer is the
-greater harm. Cron is unattended, is the highest-volume caller, and nobody is waiting on
-it -- so a billing-infrastructure outage there converts every scheduled run into free
-provider spend, invisibly.
-
-WATCHED TO FAIL: the whole file was run against the pre-fix tree (seven sources restored
-from HEAD). 23 of 25 cases fired. The two that pass both ways do so by design and say so
-in their own docstrings: `test_the_read_route_stays_open_to_any_authenticated_user` pins
-a gate that must NOT be widened by reflex, and
-`test_the_cost_attribution_still_comes_from_the_subject_row` pins the thing the M8-4 fix
-had to avoid breaking — reading attribution from the subject was never the defect, the
-subject being unvalidated was.
-"""
+"""Guards for the mivaa#21 partner-key and paid-monitoring fixes (M8-1 ... M8-5)."""
 
 import ast
 import re

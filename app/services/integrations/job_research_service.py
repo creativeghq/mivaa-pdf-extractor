@@ -1,33 +1,4 @@
-"""
-Job Research Service — orchestration for the job-research module.
-
-Single chokepoint that:
-  - Provides CRUD for tracked_jobs (internal flow + external api_key flow)
-  - Runs the refresh pipeline: discovery → dedupe → classify → persist → cadence
-  - Reads listings + summary + history for the UI
-  - Marks user actions on individual listings (saved/applied/dismissed)
-
-The refresh pipeline is the heart of the module. It:
-  1. Loads the tracked_job + builds JobFacets + (optionally) expands keywords via Haiku.
-  2. Fans out across enabled sources in parallel (asyncio.gather):
-       - DataForSEO Google Jobs   (cheap, broad)
-       - Perplexity Sonar         (deep page reading on big boards)
-       - Firecrawl careers pages  (direct from companies the user pinned)
-  3. Cross-source dedupe by content_hash.
-  4. Drops URLs/companies/domains in `job_excluded_urls` (user blocklist).
-  5. Drops dupes already in the DB (UNIQUE (tracked_job_id, content_hash) catches
-     the rest, but pre-filtering avoids wasted classifier credits).
-  6. Classifier batch (rule shortcut → 7d cache → Haiku).
-  7. Persists `match` + `tangential` + `unverifiable` rows; drops `mismatch`.
-  8. Updates denormalized cache (`current_*`) on tracked_jobs.
-  9. Stamps refresh cost via `stamp_job_refresh_cost` RPC.
- 10. Updates next_check_at via `update_tracked_job_cadence` RPC.
-
-The digest dispatcher (in app/modules/job_research_notifications/service.py)
-is the *consumer* of `job_listings` rows that haven't been included in a
-digest yet. It runs on a separate hourly cron tick at :05 (this refresh runs
-at :45) so a digest can pick up rows that were just refreshed an hour ago.
-"""
+"""Job Research Service — orchestration for the job-research module."""
 
 from __future__ import annotations
 
@@ -87,15 +58,6 @@ _REL_AGO_RE = re.compile(r"(\d+)\s*\+?\s*(hour|hr|day|week|month|year)s?\s*ago",
 def normalize_posted_at(v: Any) -> Optional[str]:
     """Normalize a source-reported posted date into an ISO-8601 timestamp string
     (or None) so it never crashes the `posted_at timestamptz` insert.
-
-    Job boards render the posted date as human text — "New", "Just posted",
-    "2 days ago", "1 month ago", "30+ days ago", "Today", "Yesterday" — which
-    Postgres rejects (22007). Before this normalizer every careers-page /
-    job-board listing carrying a relative date was silently dropped at insert
-    (audit 2026-06-26: 47/56 matched listings lost in one refresh).
-
-    Strategy: already-ISO/datetime → pass through; relative phrases → compute
-    from now(); anything unparseable → None (drop the field, keep the listing).
     """
     if v is None:
         return None
@@ -391,11 +353,6 @@ class JobResearchService:
         """Read-authorization for the internal (session-JWT) UI. A user may READ a
         tracked_job if they own it directly (internal flow) OR if it is owned by an
         api_key that THEY own (external flow surfaced back into the premade pages).
-
-        Used by the read endpoints (get / listings / summary / exclusions /
-        correct-match owner-check). Write endpoints (refresh / update / delete)
-        intentionally stay on the strict `get(owner_user_id=...)` path — api_key
-        jobs are mutated through the external /api/v1/jobs/track API, not the UI.
         """
         row = self.get(tracked_job_id)
         if not row:
@@ -722,13 +679,6 @@ class JobResearchService:
                 ))
             if sources_enabled.get("perplexity", True):
                 # Fan out Perplexity across ALL keywords (fix 2026-07-25).
-                # search_via_perplexity ORs at most ~3-4 keywords per call (Sonar
-                # handles long OR-lists poorly), so a single primary call silently
-                # searched only keywords[:3] — every keyword after the third
-                # (Product AI Builder, Vibe Coder, …) was never queried. Now we
-                # CHUNK the user's original keywords into groups of 3 and run one
-                # call per chunk, so nothing is dropped. Plus the Haiku phrasing
-                # variants. content_hash dedupes the overlap.
                 model_primary = "sonar-pro" if (force_full_discovery or not tj.get("last_refreshed_at")) else "sonar"
                 _kw_chunks = [keywords[i:i + 3] for i in range(0, len(keywords), 3)] or [all_search_terms[:3]]
                 _kw_chunks = _kw_chunks[:6]  # generous ceiling: up to 18 keywords
@@ -955,10 +905,6 @@ class JobResearchService:
                 # audit #17 M4-3. Failed sources are recorded as -1 above and skipped; a run
                 # where EVERY source raised therefore arrived here and completed as a clean,
                 # successful, zero-result refresh. Three things followed from that, all wrong:
-                # the user was charged for a run that found nothing because nothing ran, the
-                # cadence advanced as though it had succeeded (so the NEXT run was delayed
-                # too), and the source_report / sources_empty detail was dropped on this
-                # early return — so not even a human could reconstruct which it had been.
                 _attempted = [n for n in per_source_counts.values()]
                 _all_failed = bool(_attempted) and all(n == -1 for n in _attempted)
 
@@ -1013,7 +959,6 @@ class JobResearchService:
             # slightly different title/company can slip through (e.g. the Close
             # WeWorkRemotely job appearing twice with title "Senior Software
             # Engineer – Backend / Python" and "...USA Only (100% Remote)").
-            # Force canonical_url uniqueness within a run.
             _seen_urls: set = set()
             url_unique: List[JobHit] = []
             for h in deduped:
@@ -1031,7 +976,6 @@ class JobResearchService:
             # both keyed on the URL, so both survived. Collapse on the role identity
             # itself: normalized (title + company), keeping the first occurrence
             # (deduped is already source-priority-ordered). Only fires when both
-            # title and company are present so distinct-but-untitled rows aren't merged.
             def _norm_key(s: str) -> str:
                 return re.sub(r"[\s\-_/|]+", " ", (s or "").strip().lower()).strip()
             # Strip trailing location parenthetical(s) from the title so the SAME
@@ -1074,8 +1018,6 @@ class JobResearchService:
             # applications"), and read its TRUE posted date. This is what makes the
             # broad open-web sources reliable instead of trusted-on-faith. Runs BEFORE
             # the recency gate so verified dates + closed-drops drive the decision.
-            # LinkedIn uses the free guest endpoint; others use Firecrawl (cost-
-            # attributed to this search). Structured sources (careers/RSS) skip it.
             _pre_v = len(candidates)
             candidates = await verify_job_listings(candidates, attribution=attribution)
             _v_dropped = _pre_v - len(candidates)
@@ -1089,12 +1031,6 @@ class JobResearchService:
             # no longer accepting applications. STRICT: a listing is kept ONLY if it
             # carries a trustworthy posted date that is within max_age_days. If we
             # cannot verify the date, we DROP it — we do not guess.
-            #
-            # The earlier "undated LinkedIn/Perplexity link ≈ fresh" assumption was
-            # wrong: LinkedIn keeps RE-POSTING long-closed roles (observed: a job
-            # surfaced as "live" that was actually "Reposted 11 months ago"), and that
-            # posted date lives in the page body our SERP/Perplexity extraction never
-            # sees. Undatable = unverifiable = dropped, for every source.
             _cutoff = _utcnow() - timedelta(days=max_age_days)
 
             def _is_fresh(h: JobHit) -> bool:
@@ -1325,19 +1261,7 @@ class JobResearchService:
             logger.warning(f"job-refresh cadence: {e}")
 
     def _mark_new_board_jobs(self, hits: List[JobHit]) -> None:
-        """Position-based freshness for dateless job boards.
-
-        The strict recency gate drops any listing without a trustworthy posted date,
-        which silently wiped ~23 aggregator boards that just don't print per-job dates
-        (ai-native-builder, productbuilderjobs, choppingblock, 4dayweek, remoteok…).
-        Instead of a date we use POSITION: boards list newest-first, so we keep a
-        per-board cursor of the job hashes we saw last time. On the next scrape we walk
-        the board's listings from the top and everything ABOVE the first job we
-        recognise is genuinely NEW — fresh by first appearance. Those get
-        is_new_on_board=True and the recency gate keeps them; a job we've already seen
-        is not re-emitted. First contact seeds a small starter set so the board isn't
-        silent for a day, and a per-run cap bounds the flood if the cursor goes stale.
-        """
+        """Position-based freshness for dateless job boards."""
         _STARTER = 8            # first-ever contact: surface the newest few immediately
         _MAX_NEW_PER_BOARD = 25 # bound a flood when the cursor can't find its marker
         _CAP = 600              # per-board cursor memory (hashes retained)
@@ -1503,15 +1427,7 @@ class JobResearchService:
         )
 
     def remove_exclusion(self, exclusion_id: str, *, owner_user_id: str) -> bool:
-        """Delete an exclusion the caller owns, via its parent tracked_job (#21 M8-1).
-
-        `owner_user_id` is keyword-only and has NO default on purpose. This took an id
-        alone under a route comment reading "RLS enforces ownership" — and MIVAA
-        connects as service role, which bypasses row-level security entirely, so any
-        authenticated user who knew an id could delete another user's exclusion. A
-        default of None would let the next caller reintroduce exactly that by omission;
-        this way the check cannot be skipped without editing the signature.
-        """
+        """Delete an exclusion the caller owns, via its parent tracked_job (#21 M8-1)."""
         row = (
             self.sb.table("job_excluded_urls")
             .select("tracked_job_id").eq("id", exclusion_id).maybe_single().execute()

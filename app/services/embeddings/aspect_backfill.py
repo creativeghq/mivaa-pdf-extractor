@@ -1,35 +1,4 @@
-"""
-Per-aspect embedding backfill (post-2026-05-04).
-
-Re-embeds the four aspect collections (image_color_embeddings,
-image_texture_embeddings, image_style_embeddings, image_material_embeddings)
-from cached VisionAnalysis JSON on document_images.vision_analysis. The
-aspect strings are derived deterministically from the VisionAnalysis
-fields by `app.models.vision_analysis.serialize_aspect_*`, then
-Voyage-embedded (1024D) and upserted to VECS.
-
-Stale = (any aspect collection missing) OR (any aspect_schema_version <
-current SCHEMA_VERSION) OR (aspect_embedding_model not 'voyage-3'). When
-VisionAnalysis JSON itself is missing or unparseable on a target row, the
-backfill optionally re-runs Claude Opus (same path as the
-understanding-embedding backfill) to repopulate it before computing aspects.
-
-This module is the cron- and bulk-mode workhorse. The per-image manual
-rebuild endpoint (admin.py /admin/images/{id}/rerun-embeddings) calls
-into the same primitives but with explicit-target semantics.
-
-Design notes:
-  - Reads cached vision_analysis JSONB from document_images. Rows whose
-    JSON predates SCHEMA_VERSION = 2 are still usable because the new
-    serializers consume the same field set; the schema_version column is
-    purely a freshness marker for THIS module's aspect-embedding output.
-  - Per-aspect skip rather than all-or-nothing — if a row's
-    VisionAnalysis.colors[] is empty the color aspect is skipped but the
-    other three are still embedded. The vecs_service.upsert handles the
-    presence flag for each independently.
-  - Concurrency capped via the existing Voyage semaphore inside
-    RealEmbeddingsService — no new semaphore here.
-"""
+"""Per-aspect embedding backfill (post-2026-05-04)."""
 
 from __future__ import annotations
 
@@ -80,20 +49,7 @@ def _is_aspect_stale(row: Dict[str, Any], aspect: str) -> bool:
 
 
 def _coerce_vision_analysis(va_raw: Any, image_id: Optional[str] = None) -> Optional[VisionAnalysis]:
-    """Parse cached VisionAnalysis JSON into the strict Pydantic model.
-
-    Tolerates three shapes seen in production:
-      - already a VisionAnalysis instance (admin tool path)
-      - dict matching the strict schema (post-2026-05-01 ingestion)
-      - legacy free-form dict from older rows (handled by
-        `vision_analysis_from_legacy_dict`)
-
-    When validation fails, the *specific* failure reason is logged so
-    operators can distinguish "schema drift" from "missing required field"
-    from "error envelope from upstream". Without this logging the backfill
-    silently treats every malformed row as "skipped" with no actionable
-    signal.
-    """
+    """Parse cached VisionAnalysis JSON into the strict Pydantic model."""
     if va_raw is None:
         return None
     if isinstance(va_raw, VisionAnalysis):
@@ -238,14 +194,6 @@ async def backfill_aspect_embeddings(
 ) -> Dict[str, Any]:
     """Re-embed stale aspect collections from cached VisionAnalysis JSON.
 
-    Cheap path: reads vision_analysis JSON straight from document_images,
-    Voyage-embeds 4 short strings per image, upserts to VECS. ~$0.0001 per
-    image. Does NOT re-run Claude Opus — that's the understanding-
-    embedding backfill's job. If a row has no usable vision_analysis JSON,
-    it's reported as `failed` and the operator can chain
-    /admin/understanding-embeddings/backfill (which DOES re-run Opus)
-    before re-running this one.
-
     Args:
         batch_size: Concurrent images per gather batch
         max_images: Hard ceiling on rows scanned per call
@@ -361,20 +309,7 @@ async def rerun_aspect_embeddings_for_image(
     image_id: str,
     aspects: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Per-image manual rebuild — synchronous, used by the admin endpoint.
-
-    Reads the row's cached vision_analysis JSON, generates aspect
-    embeddings (only for aspects in `aspects`, or all four if None),
-    upserts to VECS. Returns a detailed result so the admin tool can
-    show the operator exactly what changed.
-
-    Differs from `backfill_aspect_embeddings` in three ways:
-      - Targets exactly one image (no batching, no concurrency)
-      - Bypasses the staleness gate (force=true semantics)
-      - Returns per-aspect outcome + the source text used so the
-        diagnostic UI can render "what was actually embedded for this
-        aspect" without a follow-up query
-    """
+    """Per-image manual rebuild — synchronous, used by the admin endpoint."""
     aspects = aspects or list(ASPECT_NAMES)
 
     client = get_supabase_client().client

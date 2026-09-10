@@ -1,19 +1,4 @@
-"""
-Shopflix.gr adapter — Firecrawl scrape of the Spryker-powered search page.
-
-Shopflix is a marketplace of third-party Greek sellers, built on
-Spryker / Algolia. The canonical search URL with price-asc sort:
-
-  https://shopflix.gr/search
-    ?prod_GR_spryker[query]=<query>
-    &prod_GR_spryker[sortBy]=prod_GR_spryker_search-result-data.price_asc
-    &k=<query>
-
-`prod_GR_spryker[query]` and `k` are both required — the second is
-the URL-bar canonical that the JS framework reads on hard reload.
-`sortBy=...price_asc` puts the cheapest match at the top, matching
-the price-asc convention used by the Skroutz and Bestprice adapters.
-"""
+"""Shopflix.gr adapter — Firecrawl scrape of the Spryker-powered search page."""
 
 from __future__ import annotations
 

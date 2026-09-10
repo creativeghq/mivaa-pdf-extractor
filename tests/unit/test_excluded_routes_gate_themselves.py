@@ -32,6 +32,7 @@ Source-based: parses text, imports no app module, touches no DB. MIVAA's CI inst
 pytest only, so a test that imports the app cannot run there at all.
 """
 
+import importlib.util
 import re
 from pathlib import Path
 
@@ -58,6 +59,10 @@ _PUBLIC_BY_DESIGN = {
     # remaining-count and the Turnstile site key. It is what the public form calls BEFORE
     # authenticating, so gating it would break the surface it serves.
     "/api/v1/public/quota",
+    # Liveness for the jobs subtree, deliberately ungated: it exists TO BE PROBED and
+    # discloses two integers (active job count, history size). Every OTHER route under
+    # /api/jobs carries verify_internal_access.
+    "/api/jobs/health",
 }
 
 #: How a route in this codebase says "I check the caller myself".
@@ -81,6 +86,8 @@ _GATE_MARKERS = (
     "kai_",
     "turnstile",
     "Turnstile",
+    "_require_internal_kb_caller",   # /api/rag/kb-eval/* — internal caller check
+    "workspace_context is None",     # the refusal itself, for routes taking the optional dep
 )
 
 
@@ -93,11 +100,42 @@ def _excluded_prefixes() -> list[str]:
     return [s for s in re.findall(r'"([^"]+)"', src[start:end]) if s.startswith("/")]
 
 
+def _load_blank_comments():
+    """Load the comment blanker by path — this test imports no app module, and must not start."""
+    spec = importlib.util.spec_from_file_location(
+        "comment_budget_for_routes", _ROOT / "scripts" / "comment_budget.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.blank_comments
+
+
+_blank_comments = _load_blank_comments()
+
+
+def _handler_source(rest: str) -> str:
+    """The decorated handler, whole, and nothing after it.
+
+    A fixed character window is wrong in both directions: `upload_document` declares ~70 form
+    parameters, so 4000 characters stopped short of its own refusal, and for the last route in a
+    file the window ran on into unrelated helpers whose text could satisfy a marker.
+    """
+    own = re.search(r"\n?(?:async\s+)?def\s+\w+", rest)
+    start = own.end() if own else 0
+    nxt = re.search(r"\n(?:@|def\s|async\s+def\s)", rest[start:])
+    return rest[: start + (nxt.start() if nxt else len(rest) - start)]
+
+
 def _routes() -> list[tuple[str, str, Path, str]]:
-    """(method, full path, file, handler source) for every @router decorator in app/."""
+    """(method, full path, file, handler source) for every @router decorator in app/.
+
+    Comments and docstrings are blanked first, at the same offsets: a gate marker must be
+    satisfied by CODE. `/api/jobs/health` used to pass this test because its docstring
+    mentioned the `verify_internal_access` its SIBLING routes use, and it has no gate at all.
+    """
     out: list[tuple[str, str, Path, str]] = []
     for path in _APP.rglob("*.py"):
-        src = path.read_text(encoding="utf-8", errors="replace")
+        src = _blank_comments(path.read_text(encoding="utf-8", errors="replace"))
         prefix = ""
         router_has_deps = False
         m = re.search(r"APIRouter\(([^)]*)\)", src, re.S)
@@ -110,13 +148,11 @@ def _routes() -> list[tuple[str, str, Path, str]]:
             r"""@router\.(get|post|put|patch|delete)\(\s*["']([^"']*)["']""", src
         ):
             route = (prefix + dm.group(2)) or "/"
-            rest = src[dm.end():]
-            nxt = rest.find("\n@router.")
-            body = rest[: nxt if nxt != -1 else len(rest)]
+            body = _handler_source(src[dm.end():])
             # A router-level `dependencies=[...]` gates every route it carries.
             if router_has_deps:
                 body += " get_current_user"
-            out.append((dm.group(1).upper(), route, path, body[:4000]))
+            out.append((dm.group(1).upper(), route, path, body))
     return out
 
 

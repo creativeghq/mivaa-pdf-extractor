@@ -1,20 +1,4 @@
-"""
-AI Services API Routes
-
-Endpoints for Phase 1-4 AI services:
-- Document classification
-- Boundary detection
-- Product validation
-- Consensus validation
-- Escalation metrics
-
-Auth (audit #23 M10-2, and #22 M9-1): every model-calling route below declares its
-own ``Depends(get_workspace_context)``. The prefix is not in
-``JWTAuthMiddleware.exclude_paths``, so a token was already required — but invariant 5
-requires the route to gate itself rather than rely on the middleware alone, and these
-routes had no dependency of any kind. ``/health`` stays open: the ``health-check`` edge
-function polls it and it reads nothing.
-"""
+"""AI Services API Routes"""
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -420,16 +404,7 @@ async def validate_product(
     user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
-    """
-    Validate product extraction quality.
-    
-    Checks:
-    - Minimum content requirements
-    - Substantive content (not just headers/footers)
-    - Distinguishing features
-    - Associated assets (images, specs)
-    - Semantic coherence
-    """
+    """Validate product extraction quality."""
     try:
         async with metered_door(
             user_id=current_user_id(user),
@@ -467,20 +442,7 @@ async def consensus_validate(
     user: Dict[str, Any] = Depends(get_current_user),
     workspace: WorkspaceContext = Depends(get_workspace_context),
 ):
-    """
-    Validate extraction using multi-model consensus.
-    
-    Runs 2-3 models in parallel and uses weighted voting
-    to determine the most accurate result.
-    
-    Critical for:
-    - Product name extraction
-    - Material classification
-    - Safety information
-    - Compliance data
-    - Technical specifications
-    - Pricing data
-    """
+    """Validate extraction using multi-model consensus."""
     try:
         # Two voters per request, one of them Opus — priced accordingly (M10-3).
         async with metered_door(
@@ -537,9 +499,6 @@ async def check_if_critical(
 # #12. Neither execute_with_escalation nor execute_with_fallback had a single
 # caller anywhere in the repo, so the only reachable part of a 321-line engine was
 # this endpoint — reporting counters that could not be anything but zero, forever.
-# That is the platform's own silent-zero shape: a metric that looks healthy
-# because nothing is producing it. The confidence thresholds it used
-# (app/config/confidence_thresholds.py) stay; unified_chunking_service uses them.
 
 
 # ============================================================================

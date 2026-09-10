@@ -1,31 +1,4 @@
-"""
-Saved Searches API Endpoints
-
-This module provides endpoints for managing user saved searches with
-AI-powered deduplication to prevent database bloat while respecting
-important contextual differences.
-
-Features:
-- CRUD operations for saved searches
-- Smart deduplication with Claude Haiku 4.5
-- Merge suggestions and execution
-- Search execution tracking
-- Similar search discovery
-
-AUTH (audit #22 M9-4). Every route here took `user_id` from the request — a body field
-or a query parameter — and no route had a gate of any kind. So the caller named whose
-saved searches to read, edit, merge or delete, and `verify_user_access` faithfully
-verified the id against itself.
-
-It was invisible because the module was ALSO dead: `search_deduplication_service` had a
-double `.client` unwrap, so /check-duplicates and /merge raised on every call. Repairing
-that typo without binding the identity in the same change is what would have made the
-BOLA live — the trap #27 named for this module by name. Both land together.
-
-`user_id` now comes from `current_user_id(get_current_user(...))` on all eight routes and
-appears in no request model. The response still carries it: that is a fact about the row,
-not a claim by the caller.
-"""
+"""Saved Searches API Endpoints"""
 
 import logging
 from typing import Dict, List, Optional, Any
@@ -254,16 +227,7 @@ async def merge_into_existing(
     user: Dict[str, Any] = Depends(get_current_user),
     dedup_service: SearchDeduplicationService = Depends(get_dedup_service),
 ):
-    """
-    Merge a new search into an existing saved search.
-    
-    Strategy:
-    - Keeps most specific query
-    - Merges attributes (union, no conflicts)
-    - Updates filters to be more inclusive
-    - Increments merge_count
-    - Updates last_merged_at timestamp
-    """
+    """Merge a new search into an existing saved search."""
     try:
         logger.info(f"Merging search into {search_id} for user {current_user_id(user)}")
         

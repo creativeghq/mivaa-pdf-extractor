@@ -155,29 +155,7 @@ def _get_jwt_middleware() -> JWTAuthMiddleware:
 
 
 async def verify_internal_access(request: Request) -> Optional[Dict[str, Any]]:
-    """Auth gate for routes the JWT middleware cannot cover.
-
-    Some prefixes are in ``JWTAuthMiddleware.exclude_paths`` because their real
-    callers cannot present a Supabase *user* JWT -- edge functions calling with a
-    service-role token, pg_cron calling with ``x-cron-secret``, the ``mk_``
-    platform key. Excluding them from the middleware is correct; leaving them with
-    no gate at all is not, and invariant 5 requires both.
-
-    Accepts EITHER the shared ``x-cron-secret`` OR any token
-    ``JWTAuthMiddleware._validate_token`` accepts (user JWT, service-role JWT, or
-    the ``mk_`` platform key). Rejects anonymous callers, fail-closed.
-
-    Returns the validated claims for the token path and ``None`` for the
-    ``x-cron-secret`` path. Routes that scope by a body-supplied ``workspace_id``
-    need that distinction: this gate admits ANY valid platform token, including an
-    end user's, so without the claims a route cannot tell a trusted cron call from
-    a user naming someone else's workspace. Declaring it as a parameter as well as
-    a decorator dependency is free -- FastAPI caches a dependency per request.
-
-    Originally ``internal_routes.verify_internal_access`` (pentest #250 D19/D20);
-    promoted here by audit #12 so the 15 other excluded-and-ungated routes it
-    found could use the same gate instead of growing a second copy.
-    """
+    """Auth gate for routes the JWT middleware cannot cover."""
     secret = os.getenv("CRON_SECRET")
     if secret and request.headers.get("x-cron-secret") == secret:
         return None
@@ -193,25 +171,7 @@ async def verify_internal_access(request: Request) -> Optional[Dict[str, Any]]:
 
 
 def current_user_id(user: Any) -> str:
-    """The caller's user id, from whatever shape the auth dependency handed back.
-
-    `get_current_user` returns the raw JWT CLAIMS DICT, whose id lives under `sub`. Three
-    route files nevertheless annotated it `user: User` (the pydantic model in
-    `middleware/jwt_auth`, which does have `.id`) and then wrote `str(user.id)` — 81 times.
-    FastAPI does not coerce a `Depends()` parameter to its annotation, so the dict passed
-    straight through and every one of those routes raised
-    `AttributeError: 'dict' object has no attribute 'id'` on its first call. Sentry caught
-    it on `/api/v1/price-monitoring/products/{product_id}`; the other 80 sites were the
-    same bug waiting for traffic.
-
-    Accepts the model form too, so this stays correct if the dependency is ever changed to
-    return one. Raises 401 rather than returning None: a route that reached here has
-    already authenticated, so an unresolvable id is a broken token, not an anonymous call —
-    and returning None would push a `str(None)` = `"None"` user id into an ownership check.
-
-    NOT for the metering path: `credit_metering._user_id` deliberately returns Optional
-    because "no payer" is a legitimate state there (cron sweeps). Here it never is.
-    """
+    """The caller's user id, from whatever shape the auth dependency handed back."""
     if isinstance(user, dict):
         uid = user.get("sub") or user.get("user_id")
     else:
@@ -320,17 +280,7 @@ async def resolve_workspace_id(
     requested_workspace_id: Optional[str],
     request: Optional[Request] = None,
 ) -> Optional[str]:
-    """Bind a caller-supplied `workspace_id` to the authenticated identity.
-
-    Thin wrapper over `app.auth.workspace_resolution.resolve_workspace_id` — that
-    module holds the rule and the reasoning and is unit-tested; this supplies the two
-    things it cannot import: the real membership check, and the workspace the
-    middleware already validated for this request.
-
-    Use it in any route that reads a `workspace_id` off the request::
-
-        workspace_id = await resolve_workspace_id(claims, request.workspace_id, http_request)
-    """
+    """Bind a caller-supplied `workspace_id` to the authenticated identity."""
     jwt_middleware = _get_jwt_middleware()
 
     async def _is_member(user_id: str, workspace_id: str) -> bool:
@@ -461,26 +411,6 @@ async def get_optional_workspace_context(
 # ────────────────────────────────────────────────────────────────────────────
 # Authorization for the /api/internal surface (audit #13)
 # ────────────────────────────────────────────────────────────────────────────
-#
-# `verify_internal_access` above proves AUTHENTICATION and says so in its own
-# docstring: it admits any valid platform token, including an end user's. Seven
-# `/api/internal` mutation routes used it as their only gate and then took the
-# object id straight from the path, so any authenticated user could name another
-# tenant's document, product or job and have MIVAA mutate it with service-role
-# DB access and no RLS behind it (audit #13 MI-1).
-#
-# There are two correct answers, and which one applies depends on whether the
-# route has a real user caller:
-#
-#   * no user caller  -> `require_trusted_service`, which admits ONLY the cron
-#     secret, the `mk_` platform key or a service-role token.
-#   * real user caller (the Admin UI sends the operator's own Supabase JWT
-#     straight to MIVAA) -> keep the user in, and check that they own the id.
-#     That is `assert_job_in_workspace` / `assert_document_in_workspace` /
-#     `assert_product_in_workspace` below.
-#
-# Applying the first to a route that has a user caller breaks it; applying the
-# second to a route that has none is busywork. The split is recorded per route.
 
 
 def is_trusted_service_caller(claims: Optional[Dict[str, Any]]) -> bool:
@@ -589,17 +519,7 @@ async def assert_product_in_workspace(product_id: str, claims: Optional[Dict[str
 
 
 async def assert_document_belongs_to(document_id: str, workspace_id: Optional[str]) -> None:
-    """The document must live in the workspace the caller was already authorized for.
-
-    `authorize_rag_workspace(claims, body.workspace_id)` proves the caller may act in
-    the workspace they named. It says nothing about the OTHER id in the same request.
-    Naming your own workspace and another tenant's `document_id` produced chunks,
-    image rows, embeddings and relationships with cross-tenant references baked in
-    (audit #13 MI-2) — the "two ids each individually valid, never checked against
-    each other" class, and its sixth confirmed instance across the two repos.
-
-    404, not 403: see _assert_row_in_caller_workspace.
-    """
+    """The document must live in the workspace the caller was already authorized for."""
     if not document_id or not workspace_id:
         return
     sb = _get_supabase_client().client

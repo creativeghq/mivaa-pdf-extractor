@@ -262,7 +262,6 @@ async def process_stage_0_discovery(
         # per resume on the same 71-page catalog. Cache the catalog JSON in
         # background_jobs.metadata.catalog_cache after first success and reuse
         # it here. The cache key includes pdf file_size so a re-uploaded PDF
-        # doesn't trigger a stale hit.
         catalog = None
         # SHA-256 the file content so the cache key is content-addressed.
         # Previous key (file_size only) hit stale cache on a truncated re-export
@@ -714,15 +713,6 @@ async def process_stage_0_discovery(
         # discovery and re-enters this loop. Without this check, every resume
         # creates an additional N copies of the same N products (22 rows for
         # 11 distinct products after one resume, 33 after two, etc).
-        # Look up existing products for this document and reuse their IDs
-        # instead of inserting duplicates.
-        #
-        # CORRECTION (2026-05-23): the key was `lowercased(name)` only, which
-        # collapsed two real products both called e.g. "Standard" (common
-        # dimension/finish label) to one row. The key is now
-        # `(lowercased(name), first_page)` — page_range disambiguates legitimate
-        # repeats. Falls back to name-only when page_range is absent so legacy
-        # rows still dedupe.
         def _idem_key(name: str, page_range) -> str:
             nm = (name or '').strip().lower()
             try:
@@ -888,7 +878,6 @@ async def process_stage_0_discovery(
                     # a marker on the row's metadata so a backfill cron can
                     # target these products — without this the flag is
                     # discarded and the product is invisible to vector search
-                    # forever, with no signal to recover it.
                     if product_creation_result.get('embedding_failed'):
                         logger.error(
                             f"   ❌ [{i}/{len(catalog.products)}] Product {product.name} "

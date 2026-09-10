@@ -1,18 +1,4 @@
-"""
-Admin facet canonicalization API.
-
-Used by:
-  - canonicalize-attributes edge function (proxy for background agents
-    invoking the canonicalizer through service-role auth)
-  - admin UI / observability for inspecting canonical values + the merge log
-
-The actual canonicalization logic lives in
-app.services.facets.facet_canonicalizer; this module is a thin HTTP surface.
-
-Auth: pattern follows admin_linking.py (no explicit auth in this layer — the
-edge function proxy enforces JWT before forwarding, and reverse-proxy ACLs gate
-the /api/admin/* prefix at the platform boundary).
-"""
+"""Admin facet canonicalization API."""
 
 from __future__ import annotations
 

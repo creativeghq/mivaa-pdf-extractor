@@ -1,19 +1,4 @@
-"""
-Mention Alert Dispatcher — chokepoint for all mention-monitoring alerts.
-
-Mirrors `price_monitoring_notifications.service.PriceAlertDispatcher`. Wraps
-the four detector functions (mention spike, negative sentiment, new outlet,
-LLM visibility change) and the multi-channel sender (bell / email / webhook)
-with credit metering and 24h dedupe.
-
-Module gate: every dispatch first checks
-`is_module_enabled('mention-monitoring-notifications')`.
-
-Channels (CHANNEL_CREDIT_COST):
-  bell    = 0 cr
-  email   = 1 cr
-  webhook = 0 cr
-"""
+"""Mention Alert Dispatcher — chokepoint for all mention-monitoring alerts."""
 
 from __future__ import annotations
 
@@ -408,18 +393,7 @@ class MentionAlertDispatcher:
     # ───── Credits ─────
 
     def _charge_credits(self, *, user_id: str, amount: int, operation_type: str) -> bool:
-        """Atomic debit via the shared credit router. True only if credits actually moved.
-
-        This copy still carried the audit #217 H3 bug that was fixed in the three cost
-        loggers and never here: `bool(result.data) if hasattr(result, "data") else True`.
-        The RPC returns `[{success: bool, ...}]` and an insufficient balance is a
-        NON-EMPTY, truthy row — so `bool(data)` read a REFUSED debit as a successful one,
-        and the `else True` branch called a missing response a success too. Either way the
-        alert went out and nothing was charged.
-
-        Found by the one-implementation sweep, not by reading: the fix had been applied to
-        three files and this was the fourth.
-        """
+        """Atomic debit via the shared credit router. True only if credits actually moved."""
         return _router_debit_credits(
             user_id=user_id,
             amount=amount,

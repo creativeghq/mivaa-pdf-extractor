@@ -1,26 +1,4 @@
-"""Guard: no route may use a caller-supplied `workspace_id` unbound (invariant 1, #250).
-
-A body field or query param named `workspace_id` is caller-controlled. Used directly as
-a tenancy filter it is a BOLA: the caller names the tenant whose data they get back.
-
-This sweep fails the build when a route consumes one without any of the guards below.
-It is deliberately generous about WHAT counts as a guard, because the ways this codebase
-legitimately binds a workspace are genuinely varied — and a guard that only recognises
-one idiom trains people to work around it:
-
-  * `resolve_workspace_id(...)`      — the shared rule (app/auth/workspace_resolution.py)
-  * `authorize_rag_workspace(...)`   — the /api/rag equivalent, predates it
-  * `Depends(get_workspace_context)` — derives the workspace from the JWT instead
-  * `require_admin` / `_admin_user_id_from_request` — platform admin, intentionally
-    not tenant-scoped: an operator sweeping a workspace they do not belong to is the
-    normal case, so a membership check there breaks maintenance
-  * overwriting the field from verified claims (`request.workspace_id = user.get(...)`)
-
-Both parameter defaults AND decorator `dependencies=[...]` are inspected. Missing the
-decorator form is not hypothetical: it is exactly how this sweep's first draft reported
-`save_images_to_db` and `recanonicalize` as unguarded when both already had a gate, which
-nearly produced two "fixes" that would have 401'd a cron path and broken admin sweeps.
-"""
+"""Guard: no route may use a caller-supplied `workspace_id` unbound (invariant 1, #250)."""
 
 import ast
 from pathlib import Path

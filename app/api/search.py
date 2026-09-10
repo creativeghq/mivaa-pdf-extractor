@@ -866,16 +866,7 @@ async def multimodal_analysis(
     # document read below can be scoped by it (invariant 1).
     workspace_context: WorkspaceContext = Depends(get_workspace_context),
 ) -> MultiModalAnalysisResponse:
-    """
-    Perform comprehensive multi-modal analysis of a document.
-    
-    This endpoint provides:
-    - Complete document structure analysis
-    - Text content analysis and summarization
-    - Image content analysis and description
-    - OCR text extraction and analysis
-    - Cross-modal relationship detection
-    """
+    """Perform comprehensive multi-modal analysis of a document."""
     try:
         # Verify document exists
         document_data = await supabase.get_document_by_id(
@@ -984,16 +975,7 @@ async def material_visual_search(
     material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service),
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> MaterialSearchResponse:
-    """
-    Perform material-specific visual search with advanced filtering and analysis.
-
-    This endpoint provides:
-    - Visual similarity search using SLIG embeddings
-    - Material property filtering (spectral, chemical, mechanical, thermal)
-    - Claude Vision analysis for material understanding
-    - Multi-modal fusion with configurable weights
-    - Integration with Supabase visual search infrastructure
-    """
+    """Perform material-specific visual search with advanced filtering and analysis."""
     # Authorize the caller for the requested workspace (invariant 1); the route
     # does not filter by it, so this is the check, not a value.
     await resolve_workspace_id(user, request.workspace_id)
@@ -1040,16 +1022,7 @@ async def analyze_material_image(
     material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service),
     user: Dict[str, Any] = Depends(get_current_user),
 ) -> SuccessResponse:
-    """
-    Analyze a material image using integrated visual analysis.
-
-    This endpoint provides comprehensive material analysis including:
-    - Visual feature extraction
-    - Material identification and classification
-    - Spectral, chemical, and mechanical property analysis
-    - SLIG embedding generation
-    - Claude Vision material understanding
-    """
+    """Analyze a material image using integrated visual analysis."""
     try:
         image_data = request.get("image_data")
         analysis_types = request.get("analysis_types", ["visual", "spectral", "chemical"])
@@ -1167,16 +1140,7 @@ async def find_similar_materials(
 async def material_search_health_check(
     material_search_service: MaterialVisualSearchService = Depends(get_material_visual_search_service)
 ) -> SuccessResponse:
-    """
-    Check the health of material visual search services.
-    
-    This endpoint provides information about:
-    - Material Visual Search service status
-    - Supabase visual search function connectivity
-    - Material Kai service integration status
-    - SLIG embedding service availability
-    - Overall system health
-    """
+    """Check the health of material visual search services."""
     try:
         health_status = await material_search_service.health_check()
         
@@ -1296,15 +1260,7 @@ async def _build_aspect_query_embedding(
     query_image: Optional[str],
     query_text: Optional[str],
 ) -> tuple[Optional[List[float]], Optional[str], Optional[str]]:
-    """Resolve `(query_image | query_text) -> (1024D Voyage embedding, source text, error)`.
-
-    Thin delegate. The derivation itself lives in `services/search/aspect_query.py` because
-    the multi-vector fusion path needs the same chain (vision_analysis -> ASPECT_SERIALIZERS
-    -> Voyage) and a second copy here would be a second thing to keep in the collections'
-    latent space. It previously fetched a user-supplied https query_image with a raw
-    `httpx.get(..., follow_redirects=True)`; the shared version routes that through the SSRF
-    guard with redirects off and a size cap (invariant 7).
-    """
+    """Resolve `(query_image | query_text) -> (1024D Voyage embedding, source text, error)`."""
     from app.services.search.aspect_query import aspect_query_embedding
 
     return await aspect_query_embedding(

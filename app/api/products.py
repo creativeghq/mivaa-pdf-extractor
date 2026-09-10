@@ -187,18 +187,7 @@ class ProductCreationResponse(BaseModel):
 async def create_products_from_chunks(
     request: ProductCreationRequest, current_user: dict = Depends(get_current_user)
 ) -> ProductCreationResponse:
-    """
-    Create products from document chunks using two-stage classification.
-
-    This endpoint uses an advanced two-stage classification system:
-    - Stage 1: Fast text-only classification using Claude 4.5 Haiku for initial filtering
-    - Stage 2: Deep enrichment using Claude Opus for confirmed products
-
-    The system provides significant performance improvements:
-    - 60% faster processing through intelligent model selection
-    - Reduced API costs by using Haiku for initial filtering
-    - Higher accuracy through Opus enrichment of confirmed candidates
-    - Batch processing reduces API call overhead
+    """Create products from document chunks using two-stage classification.
 
     Args:
         request: Product creation request parameters
@@ -525,17 +514,10 @@ async def create_manual_product(
     request: ManualProductRequest,
     ctx: WorkspaceContext = Depends(get_workspace_context),
 ) -> Dict[str, Any]:
-    """
-    Dealer/supplier "Add Product" — creates ONE product in the caller's workspace via the
+    """Dealer/supplier "Add Product" — creates ONE product in the caller's workspace via the
     SAME ingest core as XML import (facet canonicalization → Voyage text_embedding_1024 →
     full image suite). Attributed to the dealer through factory_name = their business name.
     Price + supply_mode seed the marketplace cascade (product_prices on the dealer's row).
-
-    Credit-metered. The image suite is the expensive part — every photo runs Claude vision
-    (`vision_analysis`) plus Voyage for the understanding and four aspect vectors — and this
-    route is reachable by any authenticated workspace member, so it ran that for free on
-    every dealer-added product. Debited BEFORE the work per invariant #10, and refunded if
-    creation fails.
     """
     svc = DataImportService()
     ws = ctx.workspace_id

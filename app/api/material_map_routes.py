@@ -1,22 +1,4 @@
-"""
-Deriving a normal map from a material's albedo (#321 / #260 item 6).
-
-WHY THIS IS NOT A GENERATION CALL. A diffusion model asked for "a normal map of this fabric"
-returns an image that LOOKS like one — purple-blue, plausible — but a normal map is not a picture.
-Each pixel's RGB encodes the surface direction at that point, and the renderer does arithmetic with
-it. Invented directions do not correspond to the actual surface, so the lighting comes out wrong and
-the material reads as cheap plastic. A bad normal map is worse than none.
-
-So this derives one, deterministically, from the albedo the tenant already chose: luminance is
-treated as height, the gradient of that height field gives the surface direction, and the direction
-is encoded as RGB. That is the standard height-from-luminance approximation. It is an approximation
-— a dark fabric is not a deep one — but it is an approximation OF THE REAL IMAGE rather than an
-invention, it costs no credits, it is instant, and it is the same answer every time.
-
-WHY HERE AND NOT IN AN EDGE FUNCTION. Supabase edge functions have no image decoding at all. MIVAA
-already ships numpy, opencv and Pillow and already uses them, so this is a few lines against a stack
-that exists rather than a new dependency anywhere.
-"""
+"""Deriving a normal map from a material's albedo (#321 / #260 item 6)."""
 
 import io
 import logging

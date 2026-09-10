@@ -1,23 +1,4 @@
-"""
-Guard: a browser data URL must be normalized before it reaches base64.b64decode.
-
-This is the rare one in this area that can be tested for real — no Anthropic, no Voyage, no
-VECS — because the bug is pure string handling. It is also the one that was hardest to SEE.
-
-`base64.b64decode` defaults to `validate=False`: it drops characters outside the base64
-alphabet and keeps the rest. Every letter in `dataimagejpegbase64` is in that alphabet, and so
-is `/`. So decoding a raw data URL does not raise — it folds ~19 junk characters into the
-stream and shifts every byte after them. You get plausible-looking bytes of pure noise.
-
-Downstream in rag_service, PIL failed to open that noise, the caller caught the exception, and
-the visual channel fell back to embedding the *query text* — which on the search page is the
-uploaded file's NAME. Five of that page's seven modes require an image; none of them looked at
-one, and the only trace was a warning line.
-
-The first test below is the whole reason this module exists: it asserts the naive decode is
-WRONG-but-silent. If a future Python made b64decode raise on that input, the bug would have
-been loud all along and this normalizer would be redundant.
-"""
+"""Guard: a browser data URL must be normalized before it reaches base64.b64decode."""
 
 import base64
 import importlib.util

@@ -1,17 +1,4 @@
-"""
-Materials plan-quota helpers (#214).
-
-The hard boundary is the `enforce_material_quota` DB trigger on `products`
-(BEFORE INSERT, service rows exempt) — nothing here replaces it. These helpers
-exist so bulk pipelines can fail fast / clamp BEFORE burning per-product LLM
-spend on rows whose insert would be refused anyway.
-
-The derivation lives in SQL (`material_quota_remaining(workspace)` RPC — the
-plan limit minus the workspace's non-service product count; -1 = unlimited),
-so Python never re-implements the count. Both helpers FAIL OPEN (-1) on any
-error: a broken pre-flight must not block ingestion — the trigger still holds
-the line.
-"""
+"""Materials plan-quota helpers (#214)."""
 
 import logging
 

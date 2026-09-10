@@ -1,29 +1,4 @@
-"""
-LLM Mention Probe Service — measures how subjects appear in AI answers.
-
-Runs a fixed bank of probe templates against frontier models, then post-
-processes responses with a Haiku tool-use call to extract:
-  - mentioned: bool
-  - position: rank (1-based) when listed
-  - sentiment: positive | neutral | negative
-  - competitors_mentioned: list of competitor names
-  - context_snippet: the sentence containing the mention
-  - cited_urls: the sources the answer pointed at (native for Sonar, extracted
-    from the prose for the models that inline their links)
-
-`cited_urls` + `brand_cited` are what make a GHOST CITATION visible: our page used
-as a source while the brand is never named in the answer. That is invisible to a
-mention count, and it is the single measurement this pipeline was missing.
-
-Cost discipline:
-  - Default 4 templates × the CHEAP tier = up to 12 calls/subject/cycle
-  - Frontier models are OPT-IN per subject via `tracked_mentions.probe_tier`
-  - Weekly cadence by default
-
-The docstring used to promise the opt-in came through `probe_template_overrides`. That
-name existed in this comment and nowhere else — no column, no code path, no caller. It is
-`probe_tier` now, and it is real (#349 A7).
-"""
+"""LLM Mention Probe Service — measures how subjects appear in AI answers."""
 
 from __future__ import annotations
 
@@ -73,17 +48,6 @@ SONAR = "sonar"
 GPT_MINI = "gpt-5-mini"
 
 # Frontier tier (#349 A7) — the models a person is actually answered by.
-#
-# Every one of these has a row in `ai_model_pricing`, which is deliberate: an unpriced
-# model falls through to that config's conservative default, and a frontier model costed
-# at a cheap-tier guess under-reports spend by more than an order of magnitude. If you add
-# a model here, add its price row first.
-#
-# ChatGPT is the largest answer engine and was the one this probe could not ask between
-# 2026-08-23 and 2026-09-05 (its earlier `gpt-4o-mini` had produced 212 rows and 212
-# failures against an account that never worked). It is back as a deliberate provider
-# decision: a working key under OPENAI_API_KEY, price rows for both models, and the
-# roster route reporting "no key configured" rather than silently dropping it.
 OPUS = "claude-opus-5"
 GEMINI_PRO = "gemini-3.1-pro"
 SONAR_PRO = "sonar-pro"
@@ -162,27 +126,7 @@ class ModelReply(NamedTuple):
 # ────────────────────────────────────────────────────────────────────────────
 
 class LlmMentionProbeService:
-    """Probe matrix runner.
-
-    KEYS ARE RESOLVED, NOT CAPTURED. This class used to read `os.getenv` for all four
-    providers in `__init__`, and `get_llm_mention_probe_service()` returns a module-level
-    singleton — so the four keys were read once per worker process, from env only.
-
-    Two consequences, both silent:
-
-      - `platform_secrets` was never consulted. An admin pasting a key into
-        /admin → Keys saved it correctly and this service could not see it, which is the
-        same shape as the Zernio outage (env-only read of an admin-editable secret).
-        `GEMINI_API_KEY` is empty in that table today and Gemini has produced ZERO probe
-        rows since the feature shipped — not failures, none at all, because a provider
-        with no key never enters `enabled_models()` and therefore never appears in the
-        matrix it is advertised as part of.
-      - Even a real env value was captured at first use, so a key added later needed a
-        process restart to take effect.
-
-    `resolve_secret` is env-first with a DB fallback and a 30s cache, so per-call
-    resolution is both correct and cheap.
-    """
+    """Probe matrix runner."""
 
     def __init__(self) -> None:
         self.supabase = get_supabase_client()

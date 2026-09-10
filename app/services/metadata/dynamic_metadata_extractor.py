@@ -1,19 +1,4 @@
-"""
-Dynamic Metadata Extraction Service
-
-This service uses AI to dynamically discover and extract metadata from PDFs,
-rather than hardcoding checks for 250+ attributes.
-
-Architecture:
-- Tier 1: Critical fields (material_category, factory_name, factory_group_name) - ALWAYS extracted
-- Tier 2: Dynamic discovery - AI finds and extracts any metadata present
-- Tier 3: Schema validation - Ensures extracted data is properly structured
-
-This allows the system to:
-1. Handle new/unknown attributes without code changes
-2. Adapt to different PDF formats and industries
-3. Maintain consistency for critical business fields
-"""
+"""Dynamic Metadata Extraction Service"""
 
 import logging
 import re
@@ -238,17 +223,7 @@ class DynamicMetadataExtractor:
             return None
     
     def _extract_relevant_sections(self, pdf_text: str, max_chars: int = 100000) -> str:
-        """
-        Smart extraction: Find and extract only relevant sections from PDF.
-
-        This reduces token usage while preserving critical information.
-
-        Strategy:
-        1. Always include first 12000 chars (product name, description, basic specs)
-        2. Search for section headers (Packaging, Compliance, Care, Technical, etc.)
-           in multiple languages (EN, IT, FR, ES, DE, EL)
-        3. Extract 6000 chars around each relevant section (3000 before + 3000 after)
-        4. Always include last 8000 chars (often contains packaging/compliance)
+        """Smart extraction: Find and extract only relevant sections from PDF.
 
         Args:
             pdf_text: Full PDF text
@@ -504,15 +479,7 @@ class DynamicMetadataExtractor:
     _CALL_CACHE_MAX = 64
 
     async def _call_claude(self, prompt: str) -> str:
-        """Call Claude for metadata extraction.
-
-        P0-6 cost control:
-          - Uses claude-haiku-4-5 by default (12× cheaper than Opus, accurate
-            enough for structured field extraction). Override via env
-            METADATA_EXTRACTOR_MODEL if you need to escalate.
-          - SHA-256 cache by prompt: identical inputs return cached responses
-            instead of re-billing.
-        """
+        """Call Claude for metadata extraction."""
         import hashlib
         import os as _os
 
@@ -663,31 +630,7 @@ class DynamicMetadataExtractor:
         }
 
     async def _register_and_classify_fields(self, extracted_data, category_hint=None):
-        """Register discovered fields in `material_metadata_fields` and classify each one.
-
-        #347 phase 4.1/4.2. This replaced two BYTE-IDENTICAL copies of
-        `_ensure_properties_exist` (Python silently kept the second, so 86 lines were dead) which
-        wrote to `material_properties` -- the sixth registry this issue exists to collapse.
-
-        Classification happens here because it is free and the evidence is in front of us:
-
-        * Plurality. A field the catalogue enumerates FOR ONE PRODUCT
-          (available_sizes: ["60x60", "30x60"]) is a variant axis by construction -- you cannot
-          ship "both sizes". A scalar (pei_rating: "IV") is a property of the product already
-          chosen. This alone decides most fields and costs nothing.
-        * SKU correlation. Where the catalogue maps variant names to SKU codes, the fields that
-          vary across those variants ARE identity. Ground truth, straight from the document.
-
-        The verdict is applied through the `classify_field_role` RPC, never by writing `role`
-        directly: that RPC owns the signal ladder (warehouse feedback > sku correlation >
-        plurality > llm > seed) and the demotion veto. A second ladder here would be a second
-        derivation of the same decision.
-
-        Bias, per the plan: when plurality fires, default to IDENTITY. The two errors are not
-        symmetric -- wrongly identity SPLITS stock into duplicate rows, visible and fixable;
-        wrongly descriptive MERGES stock that should be separate, which is invisible and is the
-        bug this whole issue is about.
-        """
+        """Register discovered fields in `material_metadata_fields` and classify each one."""
         from app.services.core.supabase_client import get_supabase_client
 
         supabase = get_supabase_client()
@@ -723,13 +666,6 @@ class DynamicMetadataExtractor:
         # as a field of lighting, sanitary, kitchen and every other category at once — offered
         # by their extraction prompts and accepted by their validators. That is a plausible
         # mechanism for the original `cladding` divergence, and the reason a discovered field
-        # must carry the scope it was actually observed in.
-        #
-        # Scope resolution order: the caller's category_hint (the upload category, which is
-        # exactly this question answered by a human), else the category that owns the extracted
-        # material_category value, derived from the registry's own controlled vocabulary. If
-        # neither yields anything we write NULL and say so — an unknown scope is a fact, and
-        # asserting "all categories" in its place is what this fix removes.
         observed_category = self._observed_category(extracted_data, category_hint)
         if observed_category is None:
             self.logger.warning(
@@ -827,25 +763,7 @@ class DynamicMetadataExtractor:
             return None
 
     async def _classify_residual_fields_with_llm(self, supabase, residual):
-        """Classify what plurality and SKU correlation could not (#347 phase 4.3).
-
-        Reached only for the RESIDUAL: fields whose value was a scalar or a single-element list,
-        which is weak evidence of `descriptive` rather than proof of it. Asserting the weak
-        direction from thin evidence is precisely the failure this phase exists to avoid, because
-        `descriptive` is the direction that merges stock invisibly.
-
-        Per security invariant 9 this uses real Anthropic tool_use with a FORCED `tool_choice` —
-        never free-form JSON rescued by a parser. A model that does not emit the tool block has
-        not answered, and the field simply stays unclassified for a human; there is no salvage
-        path, because a salvaged verdict is indistinguishable from a real one.
-
-        The prompt comes from the database with no code fallback (phase 3P). If the row is
-        missing, `load_prompt` raises and this returns without classifying — ingest continues and
-        the fields wait, which is the correct failure: a silently-substituted prompt produces
-        plausible verdicts that are wrong in ways nothing downstream can see.
-
-        One batched call for the whole product, not one per field.
-        """
+        """Classify what plurality and SKU correlation could not (#347 phase 4.3)."""
         import json
         import os
 

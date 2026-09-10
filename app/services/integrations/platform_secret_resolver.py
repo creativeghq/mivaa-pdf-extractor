@@ -1,17 +1,4 @@
-"""
-Platform secret resolver — env-first, DB-fallback.
-
-Mirrors the Deno `_shared/secrets.ts → resolveSecret()` pattern for the Python
-backend so admins can set keys at `/admin/operations → Keys` without a redeploy
-and MIVAA picks them up on the next cold start (within a 30s cache window).
-
-Priority is ALWAYS:
-  1. os.getenv(key)              — explicit deployer choice wins
-  2. platform_secrets.value      — admin self-service via UI
-  3. platform_secrets.default    — last resort
-
-The DB call is cached for 30s per worker so per-request resolution is cheap.
-"""
+"""Platform secret resolver — env-first, DB-fallback."""
 
 from __future__ import annotations
 

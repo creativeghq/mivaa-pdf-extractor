@@ -1,15 +1,4 @@
-"""The job-research run log writes a level the DB CHECK accepts (MIVAA-5JV).
-
-`agent_run_logs_level_check` allows `debug | info | warn | error` — the edge writer's
-vocabulary. Python spells the third one `warning`, every caller here did as well, and
-`append_log` passed it through verbatim: each warning-level row was refused with 23514 and
-the refusal was logged at DEBUG, so the run's audit trail silently lost exactly the lines
-that said something had gone wrong.
-
-Source-based, like the rest of this suite: MIVAA's CI installs pytest and no application
-dependencies, so the module cannot be imported here. The normaliser itself is pure and is
-exercised by loading it out of the file.
-"""
+"""The job-research run log writes a level the DB CHECK accepts (MIVAA-5JV)."""
 from __future__ import annotations
 
 import re

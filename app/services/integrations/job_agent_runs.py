@@ -1,19 +1,4 @@
-"""
-Job Research — background_agents bookkeeping helpers.
-
-Wires the job-research module into the platform's existing background-agents
-framework so each tracked_job appears in `/admin/background-agents` alongside
-the other background agents (product enrichment, material tagger, etc.).
-
-We do NOT use the `background-agent-runner` edge function as the executor
-(our cron at :45 is the orchestrator). We just write the rows so the admin
-UI can render runs + logs uniformly.
-
-Mapping:
-  background_agents row    ←→ tracked_jobs row (1:1, via tracked_jobs.background_agent_id)
-  agent_runs row           ←→ one refresh of one tracked_job
-  agent_run_logs rows      ←→ per-source progress messages (DataForSEO / Sonar / Firecrawl / Classifier / Persist)
-"""
+"""Job Research — background_agents bookkeeping helpers."""
 
 from __future__ import annotations
 
@@ -75,17 +60,7 @@ def create_background_agent_for_tracked_job(
 
 
 def _set_agent_enabled(agent_id: Optional[str], workspace_id: Optional[str], enabled: bool) -> None:
-    """Toggle one background agent, inside one workspace.
-
-    `workspace_id` is REQUIRED and this refuses without it (#31 M17-1). The update used
-    to filter on id alone under a service-role connection, so a valid id was enough to
-    disable another workspace's background agent — and disabling is the worst of the
-    mutations here because it is SILENT: an agent that stops running looks exactly like
-    an agent with nothing to do.
-
-    The column is already populated (`create_background_agent` writes it), so this needs
-    no migration — the tenant was known all along and simply was not used.
-    """
+    """Toggle one background agent, inside one workspace."""
     if not agent_id:
         return
     if not workspace_id:

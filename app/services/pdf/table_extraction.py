@@ -1,23 +1,4 @@
-"""
-Table Extraction Service — VLM-native.
-
-Tables are recognized by PaddleOCR-VL during the Stage 1 structural pass and
-persisted as markdown/HTML on every TABLE layout element
-(``document_layout_analysis.layout_elements[].metadata.html``). This module
-parses that cached content into rows and writes it to ``product_tables``, which
-:class:`~app.services.metadata.table_metadata_extractor.TableMetadataExtractor`
-then mines for dimensions / packaging / performance specs during Stage 5.
-
-Layering: silver → gold. The VLM already read every table off the page, so this
-NEVER re-derives tables from the PDF. The previous pdfplumber implementation did
-exactly that, was never called by any stage (dead since #248), and failed on the
-borderless spec tables that dominate material catalogs.
-
-Features:
-- Parses both markdown pipe tables and ``<table>`` HTML (the VLM emits either)
-- Classifies table type (multilingual — catalogs are IT/ES/FR as often as EN)
-- Stores in product_tables, idempotently per product
-"""
+"""Table Extraction Service — VLM-native."""
 
 import logging
 import re
@@ -181,19 +162,7 @@ class TableExtractor:
         supabase: Any,
         logger: Optional[logging.Logger] = None,
     ) -> int:
-        """Parse this product's cached TABLE regions and store them.
-
-        Reads the same ``document_layout_analysis`` cache Stage 2 chunking uses,
-        so no PDF is reopened and no inference is re-run — the table content was
-        recognized once, during the Stage 1 structural pass.
-
-        Idempotent: every row is fully derived from the cache, so this product's
-        existing rows are cleared first. Safe to call on resume, and it MUST be
-        called on resume — a job that ran before this stage existed has chunks
-        but no tables.
-
-        Returns the number of tables stored.
-        """
+        """Parse this product's cached TABLE regions and store them."""
         log = logger or self.logger
         if not document_id or not product_id or not physical_pages:
             return 0
@@ -255,8 +224,6 @@ class TableExtractor:
         # tables destroyed, no new tables, and a return value of 0 that is
         # indistinguishable from "this product has no tables". Destructive step
         # last means a failure is merely a no-op with stale data, never data loss.
-        # (No unique constraint on product_tables beyond the PK, so the brief
-        # overlap between old and new rows is safe.)
         try:
             existing = supabase.client.table('product_tables') \
                 .select('id') \

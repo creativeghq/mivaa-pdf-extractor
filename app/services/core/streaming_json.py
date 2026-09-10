@@ -36,17 +36,7 @@ _WHITESPACE = " \t\r\n"
 
 
 class ArrayItemStreamer:
-    """Feed it JSON text in arbitrary chunks; get back finished array elements.
-
-    Chunk boundaries are meaningless to the caller — the key name, a `:` and the
-    opening `[` may each arrive in a different fragment, and an element may be split
-    mid-string. State is carried across `feed()` calls so none of that matters.
-
-        streamer = ArrayItemStreamer("zones")
-        for fragment in fragments:
-            for zone in streamer.feed(fragment):
-                ...   # a complete zone dict, as soon as it closed
-    """
+    """Feed it JSON text in arbitrary chunks; get back finished array elements."""
 
     def __init__(self, array_key: str) -> None:
         self._key_token = f'"{array_key}"'

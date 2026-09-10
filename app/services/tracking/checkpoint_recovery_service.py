@@ -1,16 +1,4 @@
-"""
-Checkpoint-Based Recovery Service
-
-This service provides granular checkpoint-based recovery for PDF processing jobs.
-It allows jobs to resume from the last successful checkpoint instead of restarting from scratch.
-
-Features:
-- Checkpoint creation at each processing stage
-- Automatic recovery from last checkpoint
-- Smart restart detection (stuck jobs, failed operations)
-- Partial result preservation
-- Idempotent operations (safe to retry)
-"""
+"""Checkpoint-Based Recovery Service"""
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -46,12 +34,6 @@ class ProcessingStage(str, Enum):
 class RestartOutcome(str, Enum):
     """Why ``auto_restart_stuck_job`` stopped, so callers can tell the two
     failures apart.
-
-    ``bool`` collapsed ``LOST_CLAIM`` and ``ERROR`` into one ``False``, and the
-    job monitor read that False as "restart failed" and marked the row failed.
-    LOST_CLAIM is the compare-and-swap working: another recovery tick, or the
-    worker itself waking up, got there first. Failing on it kills a job that is
-    alive and making progress (audit #18 M5-5).
     """
 
     RESTARTED = "restarted"      # we claimed the job and queued it for resume
@@ -138,7 +120,6 @@ class CheckpointRecoveryService:
                     # 0 text chunks (CLIP/SLIG image embeddings are the value
                     # there). Don't fail the whole job because of one such
                     # product — the document-level COMPLETED stage check
-                    # below is where "the whole job produced nothing" lives.
                     is_per_product_checkpoint = bool(
                         (metadata or {}).get('product_db_id')
                         or data.get('product_db_id')
@@ -222,14 +203,6 @@ class CheckpointRecoveryService:
 
             # A stage that produced NOTHING is checkpointed distinctly from one that
             # produced something.
-            #
-            # Both used to be written as status='completed', and the resume path adds
-            # any stage found in stage_history to the skip set — so a product that
-            # chunked to 0 once was marked done and could NEVER be chunked again, on
-            # any resume, forever. `should_warn` above already computed exactly this
-            # condition and then only logged it; now it changes the recorded status,
-            # which is what makes it actionable. Mirrors the ocr_failed / page_failed
-            # treatment Stage 1.5 already applies.
             event_status = 'completed_empty' if should_warn else 'completed'
 
             now_iso = datetime.utcnow().isoformat()
@@ -269,9 +242,6 @@ class CheckpointRecoveryService:
                 # exists to eliminate — and, worse, this function returned True
                 # afterwards even when BOTH paths had failed, so a caller could
                 # not tell a written checkpoint from a lost one. The RPC is
-                # deployed (public.update_checkpoint_and_append_history(uuid,
-                # jsonb, jsonb)); audit #12 deleted the fallback rather than
-                # keeping a second, non-atomic way to do the same write.
                 logger.error(
                     f"Atomic checkpoint+history write failed for {job_id} @ {stage.value}: {atomic_err}"
                 )
@@ -367,17 +337,7 @@ class CheckpointRecoveryService:
         return dt.astimezone(timezone.utc).replace(tzinfo=None).isoformat() + "Z"
 
     def _slow_operation_within_grace(self, job: Dict[str, Any], now: datetime) -> bool:
-        """True while a declared long-running stage is still inside its budget.
-
-        ``current_slow_operation`` is written by
-        ``ProgressTracker.set_slow_operation`` as
-        ``{operation, started_at, expected_max_seconds}`` and exists precisely so
-        auto-recovery does not false-positive on a legitimately slow stage.
-
-        Grace is the declared budget plus ``SLOW_OP_GRACE_SECONDS``. Past that
-        the marker stops protecting the job, so a leaked marker (stages 1.5 and 3
-        can both leak one on an exception path) cannot shield a dead job forever.
-        """
+        """True while a declared long-running stage is still inside its budget."""
         marker = job.get("current_slow_operation")
         if not isinstance(marker, dict):
             return False
@@ -402,22 +362,7 @@ class CheckpointRecoveryService:
         timeout_minutes: int = 30,
         heartbeat_timeout_seconds: int = 900,
     ) -> List[Dict[str, Any]]:
-        """
-        Detect jobs that are stuck (processing for too long without progress).
-
-        A job counts as stuck only when ALL THREE hold:
-
-        1. ``updated_at`` is older than ``timeout_minutes`` (no stage progress);
-        2. ``last_heartbeat`` is null or older than ``heartbeat_timeout_seconds``
-           (the worker process is not alive);
-        3. it is not inside a declared slow operation still within its budget.
-
-        Audit #12 finding 2: this used to test (1) alone. ``JobHeartbeat`` writes
-        ONLY ``last_heartbeat``, never ``updated_at``, so a worker 35 minutes into
-        a Stage 3 vision call has a fresh heartbeat and a stale ``updated_at`` --
-        and was restarted while still running, duplicating the work and
-        double-spending on Claude/Voyage. Both protective mechanisms already
-        existed; neither was read here.
+        """Detect jobs that are stuck (processing for too long without progress).
 
         Args:
             timeout_minutes: No-progress threshold on ``updated_at``.

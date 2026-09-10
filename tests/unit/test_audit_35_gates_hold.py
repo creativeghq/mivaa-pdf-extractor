@@ -1,41 +1,4 @@
-"""Guards for the mivaa#35 ingestion-orchestrator fixes (M20-1, M20-2).
-
-Latent — every ingestion table holds zero rows — which is the argument for fixing them
-now: this is the code that goes live on the first production ingestion.
-
-M20-1. The pre-stage validations raised BARE, outside any orchestrator handler, so a
-missing file, an unstattable file or a zero-byte PDF exited the function with
-`background_jobs.status` still `processing` and NO terminal `stage_history` event.
-That is the state the rest of the system handles worst, and the interaction is
-three-way: auto-recovery hunts jobs stuck in `processing`; `reprocess` refuses to touch
-a document whose job is pending/processing (#34 M19-3), so a stranded job also BLOCKS
-the obvious retry; and none of it is visible because the job simply stops. A file that
-does not exist is the most ordinary failure this pipeline has.
-
-M20-2. Third location for an unbounded PDF, after #22 M9-6 and #24 M11-6. The rule now
-lives in one module — three copies is how one of them drifts, and the credit-debit
-helper had seven before it was unified.
-
-`app.utils.pdf_bounds` is pure stdlib-plus-duck-typing, so its BEHAVIOUR is checked
-here, not just its shape.
-
-On watching these fail: the 7 source-based cases were run against the pre-fix tree and
-all 7 fired. The 10 behaviour cases exercise `pdf_bounds`, which is NEW, so there is no
-pre-fix state for them to fail against. `test_the_bound_still_precedes_the_allocation`
-also passes both ways on purpose — the ORDER was already right in catalog_routes and the
-consolidation had to keep it that way.
-
-M20-3 is now covered in HALF, deliberately and explicitly. The finding asks for two
-things: validate the tuple once at entry, and thread the validated workspace through
-every stage instead of re-trusting the parameter. The first is done —
-`app.utils.tenancy.assert_job_tuple`, called before the credit preflight and before any
-file is touched. The second is a refactor of an 1,800-line function and is not attempted.
-
-That split is a judgement, not an oversight: rethreading changes nothing about a tuple
-that has already been proven coherent, and the entry check is what makes the parameter
-trustworthy in the first place. The residual gap is that a later stage could still be
-handed a different workspace_id by a future edit, and nothing would catch it.
-"""
+"""Guards for the mivaa#35 ingestion-orchestrator fixes (M20-1, M20-2)."""
 
 import ast
 import importlib.util
@@ -282,18 +245,6 @@ def test_zero_products_from_real_candidates_is_reported():
 
 # ───────────────────────────────────────────────────────────────────────────
 # #22 M9-6 / M9-7 — the third copy of the bound, and the empty OCR result
-#
-# Kept in this file rather than a new one because M20-2 is the same finding: the
-# PDF page bound was missing in THREE places, found by three separate audits, and
-# consolidating it was the fix. A guard per audit issue would be three guards over
-# one rule.
-#
-# Watched to fail: 3 of these 4 fired against the pre-fix tree.
-# `test_the_pdf_processor_uses_the_shared_bound_not_its_own` passes both ways by
-# design — it is an INVERSE assertion. There was no local copy of the limit before
-# and there must not be one after; it exists to catch the tempting wrong fix
-# (paste the constant in) rather than a regression of the old state.
-# ───────────────────────────────────────────────────────────────────────────
 
 PDF_PROCESSOR = APP / "services" / "pdf" / "pdf_processor.py"
 

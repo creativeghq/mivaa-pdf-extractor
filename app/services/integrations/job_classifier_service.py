@@ -1,19 +1,4 @@
-"""
-Job Classifier — Haiku-based relevance gate.
-
-For each candidate JobHit, classify against the user's keywords + filters into:
-  - match        : title + description clearly hit the user's intent
-  - tangential   : adjacent role (e.g. "React" listing for a "Vue" search)
-  - mismatch     : entirely different field (drop)
-  - unverifiable : page didn't load enough signal — keep but flag
-
-Cost discipline:
-  1. Rule shortcut first (deterministic). Drops ~60% of candidates before Haiku.
-  2. 7d verdict cache keyed on sha1(content_hash + facets_hash). Repeat URLs
-     across daily refreshes hit ~95% cache rate.
-  3. Batched Haiku call (≤25 candidates per call) with tool-use response shape
-     so we get a hard JSON guarantee (no regex recovery).
-"""
+"""Job Classifier — Haiku-based relevance gate."""
 
 from __future__ import annotations
 
@@ -232,9 +217,6 @@ def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
     # Researcher", "Wireless Technical Support Engineer" all share product/
     # technical with "Product Manager" but are not the role. For a multi-word
     # keyword we now require the whole phrase (contiguous) in the title; a
-    # single-word distinctive keyword still matches on the token. Anything that
-    # only overlaps loosely falls through to Haiku rather than auto-matching.
-    # Untrusted SERP sources never fast-promote at all.
     if hit.source not in _UNTRUSTED_FAST_PROMOTE_SOURCES:
         title_norm = _normalize(hit.title or "")
         title_tokens = _tokens(hit.title or "")
@@ -333,15 +315,6 @@ def _load_recent_corrections(
 ) -> List[Dict[str, Any]]:
     """Pull recent classifier corrections to feed Haiku as few-shot examples —
     this is the "training" signal that slowly tightens the classifier.
-
-    Two tiers, most-specific first:
-      1. Corrections on THIS tracked_job (the user's direct feedback on this search).
-      2. Corrections from OTHER searches in the SAME workspace — so a lesson taught
-         on one search ("a Sales Director is not a Product role") compounds and
-         applies to every future search, instead of being re-learned each time.
-
-    Deduped by job_listing_id, per-job examples ranked ahead of workspace ones.
-    Workspace tier is best-effort: any error degrades to just the per-job tier.
     """
     if not tracked_job_id and not workspace_id:
         return []

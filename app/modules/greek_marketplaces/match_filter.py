@@ -1,17 +1,4 @@
-"""
-Match-quality safeguard for the marketplace adapters.
-
-When a search query has no real matches, scrape targets often fall back
-to showing featured / suggested products. The Firecrawl extractor will
-happily report those as the "first product on the page" — that's how a
-faucet query came back with a Brenthaven notebook lock from bestdeals.gr
-in earlier testing.
-
-This module catches that class of false positive WITHOUT a second LLM
-call: it tokenizes the query and the candidate URL slug, and rejects
-results that share zero meaningful tokens. Cheap, deterministic,
-language-agnostic (works for both Greek and Latin script).
-"""
+"""Match-quality safeguard for the marketplace adapters."""
 
 from __future__ import annotations
 

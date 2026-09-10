@@ -1,29 +1,4 @@
-"""
-Guards for page embeddings — the 8th fusion vector (#239).
-
-Four things here are load-bearing and none of them fails loudly on its own:
-
-1. **The query must be embedded by the multimodal model, not the text model.**
-   `voyage-4` and `voyage-multimodal-3.5` are BOTH 1024D. Query the page collection
-   with a voyage-4 vector and Postgres accepts it, the HNSW index returns neighbours,
-   and every score is confident nonsense. Nothing raises — not a typecheck, not a dim
-   check, not an integrity probe. Matching dimensions prove nothing about the space,
-   which is exactly why this needs a test rather than a code comment.
-
-2. **Every page vector carries `workspace_id`.** Phase-0 write invariant (0.2). An
-   unattributable vector in a tenant collection cannot be filtered out of another
-   tenant's search.
-
-3. **Reads fail closed.** Phase-0 read invariant (0.1). An unfiltered vector search is
-   the cheapest possible cross-tenant leak.
-
-4. **A page is only marked `embedded` if a vector actually landed.** The row is what
-   the backfill and the silent-zero probe read; a row claiming success over a refused
-   upsert makes the page invisible forever and tells the probe everything is fine.
-
-Source/AST based where it needs to be, behavioural where it can be — neither form
-imports the app or touches a DB, so the whole file runs in CI in about a second.
-"""
+"""Guards for page embeddings — the 8th fusion vector (#239)."""
 
 import ast
 import asyncio

@@ -1,31 +1,4 @@
-"""
-Guard: every `from <our own module> import <name>` must actually resolve.
-
-This catches a bug class the linter structurally CANNOT. `ruff --select F821`
-reports undefined names, but an import statement *binds* the name it imports — so
-
-    from ..services.embeddings.real_embeddings_service import get_embeddings_service
-
-is invisible to F821 even when that module has never exported `get_embeddings_service`.
-The failure surfaces only as an ImportError at the moment the line executes. When the
-import is lazy (inside a function, as this codebase often does to break cycles) that
-moment may be months after the code shipped.
-
-That exact case was live in `app/api/admin.py`: an admin OCR-reprocessing endpoint
-imported a factory function that has never existed in the target module, which exports
-a class instead. Dead on arrival, and clean to every reader and every tool.
-
-Same family as `JobTracker` (a class deleted while six call sites kept calling it) and
-`vecs_service.search_similar` (a method that never existed) — the platform's
-characteristic failure: code on a path nobody exercised, reporting nothing.
-
-Resolves relative imports properly, including the level-1-inside-`__init__.py` case
-where `.` means the package itself rather than its parent. Getting that wrong produces
-false positives on every well-formed package `__init__`. Recognises legitimate
-submodule imports (`from pkg import module_file`) as resolvable.
-
-Pure AST over the source tree: no `app` import, no DB, ~1s.
-"""
+"""Guard: every `from <our own module> import <name>` must actually resolve."""
 
 import ast
 from pathlib import Path

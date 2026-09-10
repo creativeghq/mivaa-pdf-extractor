@@ -1,33 +1,5 @@
-"""
-Catalog Legend Extractor (v2) — Layer 2 of the reusable PDF spec pipeline.
+"""Catalog Legend Extractor (v2) — Layer 2 of the reusable PDF spec pipeline.
 
-Runs ONCE per document. Consumes the page classification stored on
-`documents.metadata.catalog_layout` by Layer 1 (catalog_layout_analyzer) and:
-
-  1. For every legend page (icons, regulation, certification, installation,
-     care, sustainability) — runs Claude Vision to extract the STRUCTURED
-     values on that page. Stores the result in
-     `documents.metadata.catalog_legends.{type}` so it can be queried later.
-
-  2. For fields that apply catalog-wide to every product (certifications
-     found on certification / regulation pages, optionally performance
-     icon defaults on an iconography page), propagates the values into
-     `products.metadata.compliance.*` / `performance.*` with provenance
-     `source: "catalog_legend"` so we can trace where each value came
-     from and re-run individual fields later.
-
-  3. Creates one `kb_docs` row per legend section for the Knowledge Base
-     UI — this extends the original `catalog_knowledge_extractor.py`
-     which was focused only on markdown KB docs and didn't extract
-     structured values.
-
-This module is the structured-legend entry point and runs alongside the
-sibling `catalog_knowledge_extractor.py` (which produces unstructured
-markdown KB docs from tail catalog pages). Both are still imported by
-[stage_4_products.py](../../api/pdf_processing/stage_4_products.py); they
-are complementary, not a v1/v2 superseded pair.
-
-Design notes
 ------------
 - Layer 1 MUST have run first. If `documents.metadata.catalog_layout`
   is missing, this service calls `analyze_catalog_layout` on-demand
@@ -226,13 +198,6 @@ async def extract_catalog_legends(
 ) -> Dict[str, Any]:
     """Extract structured legend values from a catalog and propagate catalog-
     wide fields to every product in the document.
-
-    This is the entry point Stage 4.7 calls after Layer 1 has classified
-    the pages. It assumes `documents.metadata.catalog_layout.legend_pages`
-    is populated; if missing, it falls back to scanning the last 10 pages.
-
-    Returns a stats dict with `legends_extracted`, `products_updated`,
-    `kb_docs_created`, `errors`.
     """
     # The document must belong to the workspace before anything is read or written
     # (#31 M17-4). This function reads and UPDATES `documents` by bare id and then
@@ -517,15 +482,6 @@ async def extract_catalog_legends(
                         # become a published KB doc, and they are replayed into every future
                         # agent turn that retrieves them. `draft` keeps it out of retrieval
                         # until somebody looks at it.
-                        #
-                        # `private`, not `workspace`: that third spelling is rejected by
-                        # `kb_docs_visibility_check`, so this call was failing outright.
-                        # 90e5a52 fixed the same value in `job_sites_kb_sync` and missed
-                        # these two files.
-                        #
-                        # `source_trust` is the write-side marker the finding asks for:
-                        # retrieval can tell operator-authored text from catalogue-derived
-                        # text without re-deriving it from the other metadata keys.
                         "p_status": "draft",
                         "p_visibility": "private",
                         "p_metadata": {

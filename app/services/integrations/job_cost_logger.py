@@ -1,17 +1,4 @@
-"""
-Job Research — cost logging + credit metering helpers.
-
-Single chokepoint for writing `ai_usage_logs` entries from the job-research
-services. Every external API call (DataForSEO Jobs, Perplexity Sonar,
-Firecrawl, Anthropic Haiku) goes through `log_external_call()` so we get:
-
-  - Per-subject cost attribution (metadata.tracked_job_id)
-  - Per-run cost attribution (metadata.refresh_run_id)
-  - Module-level rollup via module_slug='job-research'
-
-Mirrors mention_cost_logger.py — same ai_usage_logs schema, different
-operation_type prefix and credit table.
-"""
+"""Job Research — cost logging + credit metering helpers."""
 
 from __future__ import annotations
 
@@ -45,9 +32,6 @@ MODULE_SLUG = "job-research"
 # loudly: a wrong rate is a valid number, nothing raises, and the totals look plausible. That is
 # precisely how Sonar Pro ended up 3x/15x light and DataForSEO Labs ~12x light, and why fixing them
 # meant editing two files that nothing tied together. (main repo #365)
-#
-# `DATAFORSEO_SERP_PER_CALL` is gone: it held the same $0.0006 standard-queue rate as the News
-# constant next door, under a second name, which read as two independent facts and was one.
 
 
 class CostAttribution(_CoreCostAttribution):

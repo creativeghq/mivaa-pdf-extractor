@@ -113,28 +113,7 @@ manager = ConnectionManager()
 
 @router.websocket("")
 async def websocket_endpoint(websocket: WebSocket, room: str = "default"):
-    """
-    Main WebSocket endpoint for real-time communication.
-    
-    Query Parameters:
-    - room: Room name to join (default: "default")
-    
-    Message Format:
-    ```json
-    {
-        "type": "message_type",
-        "payload": {...},
-        "timestamp": "2024-01-15T10:30:00.000Z"
-    }
-    ```
-    
-    Supported Message Types:
-    - heartbeat: Keep connection alive
-    - subscribe: Subscribe to specific events
-    - unsubscribe: Unsubscribe from events
-    - progress_update: Job progress updates
-    - status_update: System status updates
-    """
+    """Main WebSocket endpoint for real-time communication."""
     # #250 D29: require a valid token before accepting the connection. Previously ANY
     # anonymous client could connect to any room (job progress) AND broadcast into it.
     # The token is passed as a query param (browsers can't set WS Authorization headers).

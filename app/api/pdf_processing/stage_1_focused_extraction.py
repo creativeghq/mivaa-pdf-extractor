@@ -1,19 +1,4 @@
-"""
-Stage 1: Focused Extraction with PaddleOCR Layout Detection
-
-This module handles page extraction and layout analysis for individual products
-in the product-centric pipeline.
-
-IMPORTANT: This module uses PHYSICAL PAGE NUMBERS (1-based) throughout.
-Physical pages are what users see in catalogs. PDF sheet indices are only
-used internally when accessing PyMuPDF - never exposed to other stages.
-
-Features:
-- Page validation (physical pages)
-- Layout detection (TEXT, IMAGE, TABLE, TITLE, CAPTION regions)
-- Layout region storage in database
-- Caption-to-image linking
-"""
+"""Stage 1: Focused Extraction with PaddleOCR Layout Detection"""
 
 import logging
 from typing import Any, Optional, Dict, List
@@ -31,18 +16,7 @@ async def extract_product_pages(
     product_id: Optional[str] = None,
     catalog: Optional[Any] = None,  # Catalog with spread layout info
 ) -> Dict[str, Any]:
-    """
-    Extract pages and detect layout regions for a single product.
-
-    IMPORTANT: Returns PHYSICAL PAGE NUMBERS (1-based) as the primary output.
-    PDF sheet indices are only used internally for PyMuPDF access.
-
-    This function:
-    1. Validates PHYSICAL page numbers
-    2. Handles spread layouts internally (for layout detection)
-    3. Detects layout regions using the PaddleOCR structural pass (if enabled)
-    4. Stores layout regions in database
-    5. Links captions to images
+    """Extract pages and detect layout regions for a single product.
 
     Args:
         file_content: PDF file bytes

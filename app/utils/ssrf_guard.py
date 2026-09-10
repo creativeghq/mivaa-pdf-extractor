@@ -1,25 +1,4 @@
-"""
-Shared SSRF guard (pentest #250 E6).
-
-Every place the server fetches a URL whose host a user can influence must validate it
-through `assert_safe_url()` first, and disable redirect-following (a permitted external
-host can 302 into an internal target). This blocks the classic SSRF-to-cloud-metadata
-(169.254.169.254) and internal-service reachability found in the audit (sam_routes,
-image-analyze, feed URLs, alert webhooks, …).
-
-Usage — prefer the guarded fetch, which does all four halves of the invariant:
-
-    from app.utils.ssrf_guard import safe_fetch_bytes, MAX_IMAGE_BYTES
-    result = await safe_fetch_bytes(image_url, max_bytes=MAX_IMAGE_BYTES)
-    if result.ok:
-        ... result.content
-
-Use `assert_safe_url` on its own only when you are not the one fetching (validating a
-URL at write time, gating a URL you hand to a provider):
-
-    from app.utils.ssrf_guard import assert_safe_url
-    assert_safe_url(url)                      # raises SSRFError on a blocked target
-"""
+"""Shared SSRF guard (pentest #250 E6)."""
 
 from __future__ import annotations
 
@@ -91,31 +70,6 @@ def assert_safe_url(url: str, allow_schemes: tuple[str, ...] = ("http", "https")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # The canonical guarded fetch.
-#
-# `assert_safe_url` validates a URL. It cannot make anyone FETCH safely, and the
-# audit (#15) measured what that costs: nine server-side fetches of user-influenced
-# URLs across the tree, each of which had independently decided how much of the
-# invariant to implement. Three of the four requirements are easy to forget one at a
-# time — validate the host, refuse to follow a redirect blindly, cap the body — and
-# every site that forgot one looked correct in review.
-#
-# So the guard now owns the fetch, the way `escapeHtml` owns escaping: one
-# implementation, and hand-rolling a local copy is the bug.
-#
-# Two design choices worth stating, because both were the reason sites diverged:
-#
-#   Redirects are FOLLOWED, and every hop is re-validated. The docstring above says
-#   "follow_redirects=False (or re-validate every hop)" and every existing caller
-#   picked the first half — which is safe but wrong for the URLs this platform
-#   actually fetches. Replicate hands back `replicate.delivery` URLs that redirect,
-#   and Supabase public URLs redirect through the CDN. A blanket ban does not make
-#   those sites safe, it makes them BROKEN, and a guard that breaks the feature it
-#   guards gets reverted. Re-validating each hop is the version that survives.
-#
-#   `max_bytes` has NO default. A default is a number someone else chose for your
-#   endpoint: 20MB is right for an image and silently truncates a 100MB catalogue
-#   PDF. Making it required costs one argument and removes the whole class.
-# ─────────────────────────────────────────────────────────────────────────────
 
 #: An image, anywhere in this platform. Matches `aspect_query._MAX_IMAGE_BYTES`.
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
@@ -166,24 +120,7 @@ async def safe_fetch_bytes(
     headers=None,
     client=None,
 ) -> SafeFetchResult:
-    """GET `url` with the full invariant-7 treatment, and return bounded bytes.
-
-    Validates the scheme and resolved address of the initial URL AND of every redirect
-    hop, streams the body, and aborts the moment it passes `max_bytes` — so peak memory
-    is bounded by the cap regardless of what the server declares or sends.
-
-    A non-2xx status is RETURNED, not raised: every call site here has its own message
-    and its own idea of whether a 404 is fatal. Only the safety failures raise —
-    `SSRFError` for a blocked target, redirect loop or missing Location, and
-    `ResponseTooLarge` (an SSRFError) for the cap.
-
-    `allow_schemes` defaults to https only, per invariant 7. Widen it only where a
-    legacy plaintext URL is genuinely in play, and say so at the call site.
-
-    Pass `client` to reuse an open `httpx.AsyncClient` (connection reuse in a loop).
-    Redirect-following is overridden per-request, so a client configured with
-    `follow_redirects=True` cannot smuggle an unvalidated hop past us.
-    """
+    """GET `url` with the full invariant-7 treatment, and return bounded bytes."""
     # httpx is imported lazily AND only when we have to build a client, for two
     # reasons that turn out to be the same reason. CI installs pytest and nothing else
     # (`deploy.yml`), so a module-level third-party import here would make every test

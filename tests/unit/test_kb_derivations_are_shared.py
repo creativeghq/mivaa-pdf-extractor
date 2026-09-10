@@ -169,15 +169,7 @@ def _scope_lineno() -> int:
 
 
 def test_per_doc_agent_gate_is_required_and_never_defaulted():
-    """There is no value that is right for both corpora, so there is no safe default.
-
-    `kb_match_doc_chunks` enforces category access_level AND per-doc allowed_agents
-    inside the RPC, so an agent may read a `visibility='private'` doc there — private
-    means "not published to the public KB website", not "hidden from agents".
-    `kb_match_docs` enforces neither, so `include_private` is the only thing between a
-    non-admin and private content and must track admin-ness. Passing True from the
-    second corpus silently opens every private doc in the workspace to any member.
-    """
+    """There is no value that is right for both corpora, so there is no safe default."""
     tree = ast.parse(KB_ACCESS.read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "resolve_kb_access_scope":
@@ -197,15 +189,7 @@ def test_per_doc_agent_gate_is_required_and_never_defaulted():
 
 
 def test_no_route_takes_its_kb_caller_from_the_request_body():
-    """`caller` decides access levels AND include_private. It cannot come from the body.
-
-    `PriceLookupDrawer` sends `caller: 'admin'` from the frontend through
-    mivaa-gateway, and the gateway deliberately forwards the END USER's JWT for
-    `/api/rag/*` (so MIVAA enforces ownership). So `request.caller or "agent"` honoured
-    an admin claim made on an ordinary user token — the same defect as MV2-12, one door
-    along. `resolve_kb_caller` honours a platform service credential, lets any caller
-    narrow, and clamps a widening request.
-    """
+    """`caller` decides access levels AND include_private. It cannot come from the body."""
     offenders = []
     for path in _app_files():
         rel = _rel(path)

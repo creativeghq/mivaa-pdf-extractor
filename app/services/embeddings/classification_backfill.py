@@ -1,27 +1,4 @@
-"""
-Classification backfill for quarantined images.
-
-Targets document_images rows whose metadata.ai_classification
-.classification_pending = true — set by Stage 3 when the classifier API
-failed (the image was persisted WITHOUT vision analysis or embeddings so
-an unverified logo/header can't pollute visual search).
-
-Per image:
-  1. Re-run the material classification (Claude Opus vision, same path
-     as the per-image /reclassify endpoint).
-  2. Clear classification_pending and stamp the fresh verdict.
-  3. Non-material → stays embedding-free (correct end state).
-  4. Material → run vision analysis (Opus + tool use) and generate the
-     FULL embedding set: visual SLIG 768D + understanding 1024D + 4
-     aspect vectors, upserted to VECS with provenance — identical wiring
-     to the Stage 3 save path.
-
-Triggered by POST /admin/images/classification-backfill; bounded by
-`batch_size` / `max_images` so a run can't pin the Anthropic/SLIG/Voyage
-clients for hours. Safe to call repeatedly — each processed row either
-loses its classification_pending marker or is counted as failed and
-retried on the next run.
-"""
+"""Classification backfill for quarantined images."""
 
 from __future__ import annotations
 

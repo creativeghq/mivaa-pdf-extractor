@@ -1,13 +1,4 @@
-"""
-Endpoint Registry - Singleton manager for HuggingFace endpoint clients.
-
-This module provides a centralized registry for endpoint managers and clients
-to ensure they are only initialized and warmed up once per job/process.
-
-This prevents:
-- Repeated endpoint warmups during product processing
-- Multiple SLIGClient instances being created
-- Unnecessary PaddleOCR endpoint manager re-initializations
+"""Endpoint Registry - Singleton manager for HuggingFace endpoint clients.
 
 Usage:
     from app.services.embeddings.endpoint_registry import endpoint_registry

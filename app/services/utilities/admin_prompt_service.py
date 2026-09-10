@@ -50,9 +50,6 @@ class AdminPromptService:
             # the endpoint returned every active prompt row on the platform (#28 M14-2).
             # The security work was done at the route and discarded one layer below,
             # which is why reading the route would tell you it was safe.
-            #
-            # `workspace_scope` rather than a bare equality: platform defaults live in
-            # the global workspace and an admin is meant to see them alongside their own.
             query = self.supabase.client.table('prompts')\
                 .select('*')\
                 .in_('workspace_id', workspace_scope(workspace_id))\
@@ -151,13 +148,6 @@ class AdminPromptService:
             # extraction-only get_prompt() here returned None for it and the insert
             # branch then created an inert duplicate stamped prompt_type='extraction'
             # that the pipeline (which reads 'classification') never sees (audit #217 H9).
-            # Resolving by (stage, category) lets the update-by-id branch preserve the
-            # row's real prompt_type.
-            # DELIBERATELY workspace-scoped, unlike every READ path (#347). This is the admin
-            # SAVE lookup: it decides update-vs-insert. Widening it to the global workspace
-            # would make a tenant editing their prompt find the PLATFORM DEFAULT and update it
-            # for every other tenant. A read falling back to the default is correct; a write
-            # falling through to it is not.
             existing = self.supabase.client.table('prompts')\
                 .select('*')\
                 .eq('workspace_id', workspace_id)\
@@ -176,8 +166,6 @@ class AdminPromptService:
                 # is bracket access, so it RAISED rather than returning None, and it sat
                 # on the update-existing branch BEFORE both the audit entry and the
                 # update: editing a prompt through this path had never worked, and left
-                # no audit trail precisely because the audit call is what raised (#28
-                # M14-1).
                 await self._create_audit_entry(
                     prompt_id=current['id'],
                     old_prompt=current.get('prompt_text'),

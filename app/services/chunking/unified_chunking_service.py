@@ -1,15 +1,4 @@
-"""
-Unified Chunking Service.
-
-Consolidates chunking strategies into a single service:
-1. Semantic - paragraph/sentence boundaries
-2. Fixed-size - character count with word-boundary fallback
-3. Hybrid - semantic first, fixed-size for oversized chunks
-
-Layout-aware chunking is NOT a strategy; it's activated by passing
-`layout_regions_by_page` into `chunk_pages()`, which routes through
-`_chunk_with_layout_regions` to respect layout region boundaries.
-"""
+"""Unified Chunking Service."""
 
 import logging
 import hashlib
@@ -71,18 +60,7 @@ class ChunkQualityMetrics:
 
 
 class UnifiedChunkingService:
-    """
-    Unified chunking service.
-
-    Strategies:
-    - Semantic: content-meaning boundaries
-    - Fixed-size: character count with word-boundary fallback
-    - Hybrid: semantic + fixed-size for oversized segments
-
-    Layout-aware chunking is activated per-call by passing layout_regions_by_page
-    to chunk_pages(); it routes through `_chunk_with_layout_regions` and respects
-    layout region boundaries, keeps TABLE regions atomic, and combines TITLE+TEXT.
-    """
+    """Unified chunking service."""
 
     SENTENCE_ENDINGS = r'[.!?]+\s+'
     PARAGRAPH_BREAKS = r'\n\s*\n'
@@ -304,8 +282,6 @@ class UnifiedChunkingService:
         # upstream OCR / PDF-text-by-bbox stage runs first. If we hand the
         # layout-aware path regions with all-empty text_content, every
         # region gets skipped (line ~819) and the page produces zero
-        # chunks despite having valid text. Bug-D recurrence on every
-        # fresh job — see VALENOVA / job b7d70de1.
         regions_have_text = bool(layout_regions) and any(
             (r.get('text_content') or '').strip()
             for r in layout_regions
@@ -340,7 +316,6 @@ class UnifiedChunkingService:
                 # (clean) page's chunks and over-counted the metric. The accurate,
                 # per-page signal is the per-chunk `chunking_strategy_fallback` stamp
                 # below; a page-level fallback count = chunks carrying that key.
-            # Select and execute chunking strategy on the full page text
             chunks = self._select_chunking_strategy(text, document_id, metadata, page_number)
             # Track that we fell back so the page-level metric is accurate.
             for ch in chunks or []:
@@ -643,15 +618,7 @@ class UnifiedChunkingService:
         return text[-overlap_size:]
     
     def _calculate_chunk_quality(self, chunk: Chunk) -> float:
-        """Calculate quality score for a chunk.
-
-        Scores four signals:
-          - length: fraction of max_chunk_size used (20%)
-          - end boundary: ends with sentence punctuation (30%)
-          - start boundary: starts cleanly (capital / digit / bullet), not
-            mid-word lowercase (20%) — catches splits like "acy Garcia..."
-          - semantic completeness: sentence count proxy (30%)
-        """
+        """Calculate quality score for a chunk."""
         try:
             content = chunk.content.strip()
             if not content:
@@ -853,14 +820,6 @@ class UnifiedChunkingService:
         sorted_regions = sorted(layout_regions, key=lambda r: r.get('reading_order', 999))
 
         # Group regions into semantic chunks.
-        # S2-6: `current_position` is an APPROXIMATE running offset into the
-        # reading-order-concatenated region text (the actual chunk source) — it
-        # advances by emitted chunk length, so it's monotonic/ordinal but not an
-        # exact character offset (region separators / skipped-empty regions aren't
-        # counted) and is NOT an offset into the raw PyMuPDF `text` param (which the
-        # layout path ignores). The only consumer (product_creation_service) uses it
-        # as a "rough page-relative fraction", which tolerates this. Do not treat
-        # start/end_position from a layout-aware chunk as an exact source offset.
         current_chunk_text = ""
         current_chunk_regions = []
         current_position = 0

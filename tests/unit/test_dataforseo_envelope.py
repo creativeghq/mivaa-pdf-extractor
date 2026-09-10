@@ -1,26 +1,4 @@
-"""Behavioral tests for the one place that decides whether DataForSEO actually succeeded.
-
-Real tests, not a source scan — `app.services.integrations.dataforseo_envelope` imports
-nothing beyond `typing`, so it can be exercised directly under CI's pytest-only install.
-
-CI CONSTRAINT (see test_workspace_resolution.py): CI installs pytest and NOTHING else.
-A third-party import here makes the module uncollectable and takes the ENTIRE suite down.
-This file therefore imports only stdlib plus the module under test.
-
-The two defects these pin, both found by the 2026-08-26 agent tool sweep:
-
-  1. `20100 Task Created` was treated as a FAILURE. It is the success code for the async
-     endpoints — the task was accepted and queued. `seo_trustpilot_search` reported
-     "dataforseo task 20100: Task Created." as its error, on a call that had worked and
-     been paid for. `job_search_service` had always tolerated 20100 at its own call site;
-     when three copies of this check were consolidated into this module, that case was the
-     one left behind — the same shape as the consolidation it was fixing.
-
-  2. `tasks_error` was checked BEFORE the per-task loop and returned a bare count. Eleven
-     tools in that sweep came back with the identical sentence "dataforseo reported 1
-     failed task(s)", none of them saying what went wrong — while the reason sat one field
-     away in the task the loop would have read.
-"""
+"""Behavioral tests for the one place that decides whether DataForSEO actually succeeded."""
 
 import importlib.util
 import os

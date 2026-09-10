@@ -43,19 +43,7 @@ class IconMetadata:
 
 @dataclass
 class OCRResult:
-    """Data class for OCR extraction results.
-
-    `blocks` carries the per-block bbox list derived from PaddleOCR's structural
-    pass (each entry is {text, x, y, w, h} in image pixel coordinates).
-    Consumers that need bbox-aware processing (icon-metadata extraction) must
-    read `blocks`, NOT the legacy single-`bbox` field.
-
-    `method` values:
-      - 'paddleocr'     — successful OCR
-      - 'paddleocr_failed'  — all retries exhausted; text is "" and blocks is []
-                          (explicit failure marker; downstream can distinguish
-                          from "crop genuinely had no text")
-    """
+    """Data class for OCR extraction results."""
     text: str
     confidence: float
     bbox: Optional[List[int]] = None  # [x1, y1, x2, y2] — legacy, generally None
@@ -183,18 +171,6 @@ class OCRService:
 
         # Per-file memo of OCR results, so one image is OCR'd ONCE per job even
         # though two stages now want its text (issue #393 Step 1).
-        #
-        # `vision_analysis` reads it before the Claude call to ground `detected_text`;
-        # `_run_phase_3_ocr_for_product` reads it afterwards to write
-        # `document_images.ocr_*`. Without the memo that is two PaddleOCR passes per
-        # image — which is exactly the regression Stage 3 already fought once: an
-        # extraction-phase OCR pass duplicating the Phase 3 one cost ~7-15 min per
-        # product and pushed job 72031fb0 past its 1200s budget
-        # (`enable_multimodal=False` in stage_3_images.py is the scar).
-        #
-        # Keyed on identity AND content (mtime, size) so a regenerated crop at the
-        # same path is never served a stale read. Only path inputs are memoised;
-        # ndarray/PIL callers are ad-hoc and not worth hashing.
         self._result_cache: Dict[str, List[OCRResult]] = {}
 
         # Use the warmed-up PaddleOCR manager from the registry. The orchestrator
@@ -393,17 +369,6 @@ class OCRService:
         self._result_cache.clear()
     
     # `extract_text_simple` and `get_text_with_confidence` were removed (#25 M12-3).
-    #
-    # `_call_paddleocr` implements pipeline convention 1 correctly: it returns
-    # `OCRResult(method='paddleocr_failed')` on error and on retry exhaustion, so a real
-    # failure is distinguishable from a crop that genuinely held no text. Both of these
-    # methods then threw that distinction away — one returned joined text only, the
-    # other filtered the failed marker out by confidence and returned empty metadata.
-    #
-    # Neither had a single caller anywhere in the tree. Propagating a marker through
-    # code nobody runs would have been ceremony; the ambiguity is gone because the
-    # convenience wrappers that reintroduced it are gone. Callers use
-    # `extract_text_from_image`, which returns the OCRResult list with `method` intact.
 
     def _load_image(self, image_input: Union[str, Path, np.ndarray, Image.Image]) -> np.ndarray:
         """
@@ -516,16 +481,6 @@ class OCRService:
             )
 
             # A FAILED OCR is not an empty one (#25 M12-3).
-            #
-            # This used to filter the `paddleocr_failed` marker out alongside empty
-            # results and return [] for both. The caller logs [] as "no spec items
-            # extracted" and reports the image processed successfully — so a PaddleOCR
-            # crash and a crop with genuinely no text produced the identical outcome,
-            # which is precisely the ambiguity the marker was introduced to remove.
-            #
-            # Raising is right rather than returning a sentinel: the caller already
-            # wraps this in `except Exception` and returns a real failure tuple from it.
-            # The distinction just had nothing to travel through.
             ocr_results = list(ocr_results or [])
             if any(r.method == 'paddleocr_failed' for r in ocr_results):
                 raise RuntimeError(
@@ -564,21 +519,6 @@ class OCRService:
 
             if use_ai:
                 # #347 phase 3P.3/3P.4 - through the registry, not a hand-rolled query.
-                #
-                # This block used to select from `prompts` itself, filtered on
-                # `.eq('workspace_id', workspace_id)`, and on a miss logged "using fallback"
-                # and returned []. Three faults in one:
-                #
-                #   1. It never fell back to anything. It returned NO icons, silently and
-                #      forever - a metric sitting at zero while everything reports success.
-                #   2. The workspace filter meant only ONE workspace could ever match. The row
-                #      exists for exactly one tenant, so every other tenant got the empty path.
-                #   3. It bypassed the resolution order (workspace custom -> workspace default
-                #      -> platform default) that every other prompt site goes through.
-                #
-                # `load_prompt` applies that order and RAISES on a genuine miss, which is the
-                # point of the no-fallback policy: a missing prompt must stop the work loudly
-                # rather than quietly produce nothing.
                 from app.services.utilities.prompt_registry import load_prompt
 
                 prompt_template = await load_prompt(

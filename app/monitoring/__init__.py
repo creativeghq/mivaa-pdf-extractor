@@ -1,13 +1,4 @@
-"""
-Monitoring Package for MIVAA PDF Extractor
-
-This package provides comprehensive monitoring capabilities including:
-- Performance monitoring and metrics collection
-- System resource monitoring
-- Request/response tracking
-- Custom metrics and alerts
-- Integration with Sentry for error and performance tracking
-"""
+"""Monitoring Package for MIVAA PDF Extractor"""
 
 from .performance_monitor import (
     PerformanceMonitor,

@@ -114,17 +114,7 @@ def build_probes(
     include_defaults: bool = True,
     site: Optional[str] = None,
 ) -> List[Dict[str, str]]:
-    """The probe set for one subject.
-
-    `include_defaults=False` lets a workspace replace the stock questions entirely
-    rather than only appending to them — asking four irrelevant questions
-    alongside four good ones dilutes share of voice with noise the merchant did
-    not choose to measure.
-
-    Falls back to the defaults when a caller disables them AND supplies nothing
-    usable, because a subject with zero probes would silently stop being measured
-    while still looking tracked.
-    """
+    """The probe set for one subject."""
     product_type = getattr(facets, "product_type", None) or "products"
     label = getattr(facets, "label", "") or ""
     brand = getattr(facets, "brand", None) or label

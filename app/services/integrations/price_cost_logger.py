@@ -1,15 +1,4 @@
-"""
-Price Tracking / Lookup — partner credit metering helpers (Layer B).
-
-The external `kai_*` price flows (`/api/v1/prices/track/*`, `/api/v1/prices/lookup`)
-debit credits before running the paid upstream work (Perplexity + DataForSEO +
-Firecrawl) and refund on hard failure / no-op — mirroring the mention and job
-tracking flows (`mention_cost_logger` / `job_cost_logger`).
-
-Per-call ai_usage_logs rows are already written deeper in the pipeline by the
-Perplexity / Firecrawl services (via AICallLogger), so this module only owns the
-partner-facing credit debit/refund + the per-operation cost table.
-"""
+"""Price Tracking / Lookup — partner credit metering helpers (Layer B)."""
 
 from __future__ import annotations
 

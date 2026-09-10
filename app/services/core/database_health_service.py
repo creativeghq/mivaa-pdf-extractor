@@ -1,15 +1,4 @@
-"""
-Database Connection Pool Health Monitoring Service
-
-Monitors Supabase connection pool health and provides metrics:
-- Active connections
-- Idle connections
-- Connection wait times
-- Query performance
-- Connection errors
-
-Provides health check endpoint for monitoring systems.
-"""
+"""Database Connection Pool Health Monitoring Service"""
 
 import asyncio
 import logging

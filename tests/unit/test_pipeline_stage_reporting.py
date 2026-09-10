@@ -1,18 +1,4 @@
-"""
-Guards for pipeline stage reporting and for the lint gate that protects it.
-
-Six internal pipeline endpoints opened with `tracker = JobTracker(job_id)`.
-`JobTracker` stopped existing on 2025-11-22, when commit 5ee4538 fixed a
-crash-on-boot by swapping the IMPORT to `ProgressTracker` and left every call site
-alone. The result was worse than the crash it replaced: the module imported fine and
-all six endpoints raised NameError on their first line, were swallowed by
-`except Exception`, and answered 500 having done nothing — for eight months.
-
-No test could have caught that, because nothing calls those endpoints. A linter
-catches it in one second. That is why the gate guarded here exists.
-
-Source-based on purpose: imports neither `app` nor a DB, so it runs in CI in ~1s.
-"""
+"""Guards for pipeline stage reporting and for the lint gate that protects it."""
 
 import ast
 import json

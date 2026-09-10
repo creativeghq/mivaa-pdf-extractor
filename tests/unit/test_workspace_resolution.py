@@ -1,28 +1,4 @@
-"""Behavioral tests for the workspace-binding rule (BOLA, invariant 1, #250).
-
-Real tests, not a source scan — `app.auth.workspace_resolution` is deliberately free
-of third-party imports so this can exercise the actual function against a stubbed
-membership check.
-
-The two branches that matter, and why getting either wrong is severe:
-
-  - Reject the service key's requested workspace -> every edge function breaks at
-    once, because the platform identity is not tenant-scoped and the workspace can
-    only come from the request.
-  - Accept an end user's requested workspace without a membership check -> any logged
-    in user reads any tenant's data. That is the live shape on the excluded prefixes
-    (`/api/rag`, `/api/internal`, `/api/interior`), where the middleware never runs.
-
-TWO CI CONSTRAINTS, both learned the hard way — this file broke the deploy once:
-
-  1. CI installs pytest and NOTHING else (`deploy.yml`: `pip install pytest==7.4.3`).
-     No fastapi, no pytest-asyncio. A third-party import here makes the module
-     uncollectable and takes the ENTIRE suite down with it, not just this file.
-  2. Therefore no `@pytest.mark.asyncio`. Without the plugin that marker is
-     unregistered, and pytest.ini sets `--strict-markers`, so it is a hard collection
-     error. Coroutines are driven with `asyncio.run`, which is what the rest of this
-     suite does (see test_page_embeddings.py).
-"""
+"""Behavioral tests for the workspace-binding rule (BOLA, invariant 1, #250)."""
 
 import asyncio
 import importlib.util

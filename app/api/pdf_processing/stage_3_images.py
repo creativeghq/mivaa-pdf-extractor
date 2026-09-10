@@ -1,22 +1,4 @@
-"""
-Stage 3: Image Processing
-
-This module handles image processing for individual products in the product-centric pipeline.
-
-IMPORTANT: This module uses PHYSICAL PAGE NUMBERS (1-based) throughout.
-Physical pages are what users see in catalogs. PDF sheet indices are only
-used internally when accessing PyMuPDF - never exposed to other modules.
-
-It also exposes `process_catalog_wide_icons()`, a once-per-document pre-pass
-that scans the PDF's SUPPLEMENTARY pages (pages not assigned to any product
-during discovery — i.e. shared legend / iconography / regulation / care /
-certification pages) for spec icon strips and routes them through the same
-OCR + Claude icon extraction pipeline used for per-product icons. The
-resulting `document_images` rows are stored with the document_id, so the
-existing `_merge_icon_metadata_into_product` rollup in Stage 4 naturally
-picks them up for every product in the catalog without any per-product
-association logic.
-"""
+"""Stage 3: Image Processing"""
 
 import os
 import asyncio
@@ -84,23 +66,7 @@ async def process_product_images(
     tracker: Optional[Any] = None,
     product_db_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Own the ``current_slow_operation`` marker across the whole stage.
-
-    Registers this stage as a known long-running op so auto-recovery's stuck-job
-    detector does not false-positive while we fan out SLIG / Voyage / Anthropic
-    calls, and clears it in a ``finally`` so no exception path can leak it.
-
-    Audit #12: the push used to live inside the body with three separate clear
-    sites (no-images, classification-failure, success) and no enclosing
-    try/finally, so a raise in ``process_pdf_from_bytes``,
-    ``upload_images_to_storage`` or ``save_images_and_generate_clips`` left the
-    marker set. That was inert only for as long as auto-recovery ignored the
-    marker entirely; now that ``detect_stuck_jobs`` reads it, a leaked marker
-    would suppress recovery for the job until the +600s grace expired.
-
-    Bound to the per-product wrapper timeout
-    (PRODUCT_PROCESSING_TIMEOUT_SECONDS, default 600s).
-    """
+    """Own the ``current_slow_operation`` marker across the whole stage."""
     operation = f"stage_3_images:{product.name}"
     if tracker is not None:
         try:
@@ -229,10 +195,6 @@ async def _process_product_images(
         # would otherwise run a per-image OCR pass inside extraction. That pass
         # is REDUNDANT with the canonical Phase 3 OCR run
         # (`_run_phase_3_ocr_for_product`) that fires after save_images_and_generate_clips.
-        # Doubling OCR was burning ~7-15 min/product on a 30-image catalog (job
-        # 72031fb0 hit the 1200s budget because of it). The Phase 3 pass is the
-        # canonical writer for `document_images.ocr_text` / `ocr_failed` markers,
-        # so disabling extraction-phase OCR doesn't lose any data.
         processing_options = {
             'extract_images': True,
             'extract_text': False,
@@ -420,8 +382,6 @@ async def _process_product_images(
             # would each get a full SLIG + Voyage + Opus embedding bundle → duplicate
             # visual vectors in VECS + ~2x embedding spend. Run the SAME per-layer
             # phash dedup over the region-crop set (all layer='region_crop', so they
-            # only compare against each other — cross-layer collisions with embedded
-            # images are intentionally preserved, matching the existing design).
             _pre = len(region_crops)
             try:
                 region_crops = get_pdf_processor()._deduplicate_images(region_crops, job_id=job_id)
@@ -548,9 +508,6 @@ async def _process_product_images(
     # (icon/spec path) — stamp the reason on each dict so save_single_image
     # persists it under metadata.bundle_skipped_reason. remaining_non_material
     # is dropped entirely (no document_images row), so it can't be stamped — we
-    # surface an aggregate count in the stage log + result below instead. The
-    # regular_material_images carry no marker (None) — they DID go through the
-    # bundle.
     for _icon_img in icon_candidates:
         _icon_img['bundle_skipped_reason'] = 'icon_candidate_spec_path'
     logger.info(
@@ -721,22 +678,7 @@ async def _run_phase_3_ocr_for_product(
     product_name: str,
     logger: logging.Logger,
 ) -> Optional[Dict[str, int]]:
-    """Run PaddleOCR on text-bearing product images, write to document_images.ocr_*.
-
-    Filtering rule (per audit Q2):
-    - region_crop of region_type ∈ {TABLE, TEXT, TITLE, CAPTION}: OCR'd
-    - embedded with metadata.text_detected=True (Phase 1 OpenCV flagged): OCR'd
-    - full_render: SKIPPED (Stage 1.5 already covered the page)
-    - photo / decoration / region_crop of IMAGE: SKIPPED (no text expected)
-
-    Each OCR result lands in `document_images.{ocr_text, ocr_blocks, ocr_failed,
-    ocr_attempts, ocr_skipped_reason}`. Never flows into chunker. Runs AFTER
-    vision_analysis (which executes inside save_images_and_generate_clips above),
-    so it does NOT enrich the vision prompt — consumed by icon-metadata
-    extraction and image-search labels only.
-
-    Returns counts dict for the per-product log line.
-    """
+    """Run PaddleOCR on text-bearing product images, write to document_images.ocr_*."""
     if not uploaded_regular:
         return None
 
@@ -746,15 +688,6 @@ async def _run_phase_3_ocr_for_product(
     sb = get_supabase_client()
 
     # Map image_id → uploaded image dict so we can look up local paths.
-    # `save_images_and_generate_clips` mutates each uploaded dict in place
-    # to set `id` (image_processing_service.py:1335) — that DB id is the
-    # canonical join key. Previously this code queried `document_images`
-    # by `filename`, but `document_images` has no `filename` column —
-    # the query 500'd, the outer except swallowed it, and the entire
-    # Phase 3 OCR pass silently no-op'd, leaving every image row with
-    # ocr_attempts=0 / ocr_skipped_reason=null in violation of the
-    # "explicit failure markers" audit rule. Audit incident: job
-    # acff9ebb 2026-05-03, FOLD's 4 images all NULL on every OCR field.
     by_image_id = {img.get('id'): img for img in uploaded_regular if img.get('id')}
     if not by_image_id:
         return None
@@ -787,16 +720,11 @@ async def _run_phase_3_ocr_for_product(
         region_type = (metadata.get("region_type") or "").upper()
 
         # Apply text-bearing filter (CLAUDE.md "Phase 3 OCR" spec):
-        #   region_crop  + region ∈ {TABLE, TEXT, TITLE, CAPTION}        → OCR
-        #   region_crop  + region ∈ {IMAGE, FIGURE, PHOTO}               → SKIP (photo)
-        #   region_crop  + region unknown / other                        → OCR (conservative)
-        #   embedded   + metadata.text_detected is True                → OCR
-        #   embedded   + metadata.text_detected is False               → SKIP (embedded_no_text_detected)
-        #   embedded   + text_detected missing                          → OCR (conservative)
-        #   full_render                                                → SKIP (dup of Stage 1.5)
-        # Rationale: OCR calls aren't free. Stage 1.5 already covered
-        # full_render pages and IMAGE-class layout crops are explicitly
-        # classified as non-text, so OCRing them was burning OCR calls.
+        # region_crop  + region ∈ {TABLE, TEXT, TITLE, CAPTION}        → OCR
+        # region_crop  + region ∈ {IMAGE, FIGURE, PHOTO}               → SKIP (photo)
+        # region_crop  + region unknown / other                        → OCR (conservative)
+        # embedded   + metadata.text_detected is True                → OCR
+        # embedded   + metadata.text_detected is False               → SKIP (embedded_no_text_detected)
         photo_regions        = {"IMAGE", "FIGURE", "PHOTO"}
 
         skipped_reason: Optional[str] = None
@@ -830,24 +758,6 @@ async def _run_phase_3_ocr_for_product(
         # 'path'; we also check 'local_path' / 'image_path' for forward-compat.
         src = by_image_id.get(image_id) or {}
         # Prefer the padded sidecar, falling back to the tight crop.
-        #
-        # This is the SAME file the vision call OCR'd for its grounding block
-        # (#393 Step 1), so the OCR service's per-file memo turns this into a cache
-        # hit rather than a second PaddleOCR pass — which is what keeps this change
-        # off the 7-15 min/product regression Stage 3 already fought once.
-        #
-        # It is also the richer transcription: the padded crop is a superset of the
-        # tight one, and the SKU or dimension label is routinely printed just OUTSIDE
-        # the tile it belongs to, so the tight crop loses exactly the text worth having.
-        #
-        # THE TRADE, stated because `document_images.ocr_text` is also what image search
-        # reads (`include_ocr_text`). Padding buys RECALL and costs PRECISION: on a dense
-        # catalogue page the margin can carry the NEIGHBOURING product's text, so a tile
-        # whose neighbour prints "R11" can now surface in a search for R11 that is not
-        # its rating. Accepted deliberately — for a materials catalogue the product's own
-        # SKU is the highest-value string on the page and losing it is the worse failure.
-        # If that inverts, revert to `src.get('path')` first and accept a second
-        # PaddleOCR pass on padded region crops.
         local_path = (
             src.get('vision_input_path')
             or src.get('path')
@@ -950,24 +860,7 @@ async def process_catalog_wide_icons(
     catalog: Any,
     logger: logging.Logger,
 ) -> Dict[str, Any]:
-    """
-    Catalog-wide icon extraction pre-pass.
-
-    Scans the PDF's SUPPLEMENTARY pages — i.e. pages not assigned to any product
-    during Stage 0 discovery — for spec icon strips and routes them through the
-    same OCR + Claude icon extraction pipeline as per-product icons.
-
-    This exists because ceramic catalogs commonly put shared legend/iconography
-    pages (R9/R10/R11 slip ratings, PEI wear classes, fire ratings, shade
-    variation V1-V4) at the start or end of the book, not on each product page.
-    Without this pass, those icons are never OCR'd because per-product Stage 3
-    only looks at the product's own pages.
-
-    Per-product rollup is unchanged — the icon rows land in `document_images`
-    with `document_id` set, and `_merge_icon_metadata_into_product` in Stage 4
-    already walks all images for the document (not just a product's associated
-    images), so every product in the catalog gets those catalog-wide spec
-    defaults merged into `product.metadata` automatically.
+    """Catalog-wide icon extraction pre-pass.
 
     Args:
         file_content: PDF file bytes.
@@ -1038,16 +931,6 @@ async def process_catalog_wide_icons(
         return pdf_idx + 1  # 1-based physical = 0-based pdf idx + 1
 
     # Extract images from every supplementary PDF page IN PARALLEL.
-    # Pre-2026-05-03 this was a sequential loop, and `process_pdf_from_bytes`
-    # auto-enabled multimodal OCR on every supplementary page even
-    # though the icon-classification step downstream runs its own OCR per icon
-    # candidate. Net effect: 30+ supplementary pages × 1-3 wasted OCR calls
-    # × 80s each = 1-2+ hours of pure waste before reaching the actual
-    # processing (job 051e1dda timed out here). Two changes:
-    #   - `enable_multimodal=False` skips the redundant page-level OCR pass.
-    #   - `asyncio.gather` with a semaphore (4 concurrent) parallelizes the
-    #     per-page extract step, so layout/PyMuPDF work runs in parallel instead
-    #     of single-file.
     catalog_icon_sem = asyncio.Semaphore(4)
     extracted_images_list: List[Dict[str, Any]] = []
 

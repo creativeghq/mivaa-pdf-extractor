@@ -1,19 +1,5 @@
 """Guards for the mivaa#25 ingestion-service fixes (M12-1 ... M12-5).
 
-M12-1 is the one worth reading twice. `_calculate_clip_score` read three columns that
-do not exist on `document_images` -- `clip_embedding`, `visual_embedding`, `embedding` --
-and two that do not exist on `products`. The rows are fetched with `select('*')`, so
-PostgREST returned what existed and `.get()` answered None for the rest: no KeyError, no
-warning. The `or` chain collapsed and the "neutral score" fallback fired on every call
-ever made, so a service documented as multi-modal has been text-only for its whole life.
-
-A constant 0.5 at 30% weight is not neutral. It added a fixed +0.15 to every overall
-score, it was a third data point in a variance calculation that rewards agreement, and
-it cleared the `>= 0.5` branch in `_generate_reasoning` exactly -- so every association
-this service ever wrote carried the stored phrase 'moderate visual relevance',
-describing a comparison that never happened.
-
-WHY None RATHER THAN 0.0
 ------------------------
 0.0 means "compared them and found no resemblance". None means "no comparison happened".
 Those are different claims about the world and only one of them is true here. The column
@@ -290,15 +276,6 @@ def test_every_writer_to_the_association_table_carries_a_workspace():
     """The migration added workspace_id NOT NULL, so a writer that omits it is a hard
     runtime error from the second it was applied — the same shape CLAUDE.md's
     `schema:writers` rule exists for on the platform side.
-
-    Two other writers existed and neither carried a tenant: `product_merge_service`
-    (which copies an association onto a merged product) and `data_import_service`
-    (which had taken workspace_id as a parameter all along and simply never wrote it).
-    Both would have raised on the first XML import and the first product merge after
-    the migration.
-
-    The sweep is deliberately blunt — any `.insert(` / `.upsert(` whose payload literal
-    mentions the table within a short window must also mention workspace_id.
     """
     offenders = []
     for path in sorted(APP.rglob("*.py")):

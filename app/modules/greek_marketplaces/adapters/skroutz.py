@@ -1,34 +1,4 @@
-"""
-Skroutz.gr adapter — Firecrawl scrape of the public search page.
-
-Why not the official API: Skroutz's developer Products API is merchant-only
-(requires a Skroutz merchant account to obtain an API token). Since this
-platform isn't a Skroutz-registered shop, the API path isn't available —
-we read the public website the same way a browser would.
-
-ToS caveat: Skroutz's Terms of Service prohibit automated scraping. Low-volume
-admin-triggered or per-product-refresh queries are usually tolerated;
-high-volume automated scraping can lead to rate limiting or IP blocking.
-Before scaling this adapter up, either (a) contract with Skroutz for
-commercial data access or (b) confirm legal clearance.
-
-Flow: one scrape of
-`skroutz.gr/search?keyphrase=<query>&order_by=pricevat&order_dir=asc`
-→ Skroutz returns the cheapest offer first, so the top row IS the
-lowest price for the query. We extract that single row and return a
-PriceHit pointing at the product's Skroutz page (which aggregates every
-merchant). Same credit cost as the other two Greek adapters (1
-Firecrawl credit per call).
-
-Why sort by price asc:
-* Lowest price is what price-monitoring is trying to track.
-* Skroutz's "find the right product" step often returns multiple
-  variants; sorting by price puts the same-product cheapest offer at
-  the top, which is the canonical row we want to extract.
-* Firecrawl only sees the first viewport in many JS-rendered pages —
-  sorting ensures the cheapest offer is always in the first viewport,
-  reducing the chance Skroutz's lazy-load defeats us.
-"""
+"""Skroutz.gr adapter — Firecrawl scrape of the public search page."""
 
 from __future__ import annotations
 

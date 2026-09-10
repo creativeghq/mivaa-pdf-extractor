@@ -43,36 +43,12 @@ from app.dependencies import current_user_id, get_current_user, get_optional_wor
 from app.utils.untrusted_content import as_untrusted_data
 from app.utils.pdf_bounds import PdfBoundsError, assert_page_count
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
-# Importing it at the top triggers `app.api.documents.__init__` →
-# `management_routes` → `app.orchestration` → back into this (still partially
-# initialized) module, raising a circular-import ImportError on startup
-# (Sentry MIVAA-5HQ). It is only used inside request handlers at runtime, so
-# deferring the import to end-of-module — after `job_storage` and
-# `process_document_with_discovery` are defined — breaks the cycle.
 
 logger = logging.getLogger(__name__)
 
 
 def _fail_job_terminally(job_id: str, reason: str, *, source: str) -> None:
-    """Mark a job failed AND write the terminal stage_history event (#35 M20-1).
-
-    Pipeline convention 9: the audit log must show why a job ended. Before this, the
-    pre-stage validations raised BARE — a missing file, an unstattable file, a zero-byte
-    PDF — outside any orchestrator handler, so the function exited with
-    `background_jobs.status` still `processing` and no terminal event at all.
-
-    That is the state the rest of the system handles worst, and the interaction is
-    three-way:
-      * auto-recovery hunts jobs stuck in `processing` and judges staleness on
-        `updated_at` (#18 M5-5, mivaa#12)
-      * `reprocess` refuses to act on a document whose job is pending/processing
-        (#34 M19-3) — so a stranded job also BLOCKS the obvious way to retry it
-      * and none of it is visible, because the job simply stops
-
-    A file that does not exist is the most ordinary failure this pipeline has, and it
-    produced the worst state. Best-effort and never raises: the caller is already
-    failing, and a bookkeeping error must not replace the real one.
-    """
+    """Mark a job failed AND write the terminal stage_history event (#35 M20-1)."""
     try:
         sb = get_supabase_client()
         sb.client.table("background_jobs").update({
@@ -105,14 +81,6 @@ async def require_rag_resource_access(
     """FastAPI dependency authorizing a caller against the workspace that owns the resource a
     sensitive /api/rag route operates on — resolved from the request (job_id → background_jobs,
     document_id → documents, path param or ?document_id query).
-
-    The /api/rag prefix is excluded from the global JWT middleware (it's called by edge functions
-    with a service-role JWT), so destructive/read routes here would otherwise be reachable
-    UNAUTHENTICATED by anyone who can guess a document_id/job_id. This mirrors resume_job's
-    in-body guard: allow the x-cron-secret automation bypass, else require a JWT whose workspace
-    owns the target. Attached via the route decorator's `dependencies=[...]` so it runs ONLY for
-    real HTTP calls — internal callers (e.g. resume_job -> restart_job_from_checkpoint) invoke the
-    handler directly and are unaffected. Fail-closed on any lookup error.
     """
     cron_secret_header = (request.headers.get("x-cron-secret") or "").strip()
     expected_cron_secret = (os.getenv("CRON_SECRET") or "").strip()
@@ -212,19 +180,7 @@ def run_async_in_background(async_func):
     return wrapper
 
 def _require_uuid(value: Any, field: str) -> str:
-    """Return `value` as a string, or raise 400 when it is not a UUID.
-
-    A document id reaches these routes from an AGENT, and an agent that has not yet
-    looked one up will happily send the thing it was searching for — the live case was
-    `kb_doc_id="tile"`. Handed straight to the RPC, Postgres raised `22P02 invalid
-    input syntax for type uuid`, which the route's `except Exception` re-raised as a
-    500. A caller sending the wrong TYPE is a 400; reporting it as a 500 puts a
-    client-side mistake in the platform's error budget and buries the real ones.
-
-    Deliberately only a SYNTAX check. Whether the id exists, and whether this caller
-    may see it, is decided by the RPC and reported as 404 — proving a document exists
-    before checking access would turn the route into an enumeration oracle.
-    """
+    """Return `value` as a string, or raise 400 when it is not a UUID."""
     from uuid import UUID
 
     try:
@@ -264,28 +220,8 @@ def _evict_expired_job_storage() -> None:
 
 
 async def initialize_job_recovery():
-    """
-    Initialize job recovery service AND auto-resume jobs that were interrupted
+    """Initialize job recovery service AND auto-resume jobs that were interrupted
     by the previous shutdown.
-
-    Why this matters:
-    - The shutdown hook (main.py lifespan) marks `processing` jobs as
-      'interrupted' because uvicorn cannot drain BackgroundTasks during a
-      systemd restart.
-    - Without auto-resume, those jobs sat 'interrupted' until the auto-
-      recovery cron noticed (up to 5 min later) — and historically the cron
-      filtered on status='processing' only, so they sat stuck *indefinitely*.
-    - This startup hook closes the loop: after marking, we immediately
-      re-dispatch eligible jobs into the new event loop using the same
-      orchestrator the upload endpoint uses (process_document_with_discovery).
-      The orchestrator's checkpoint logic resumes from the last completed stage.
-
-    Eligibility for auto-resume:
-      - status was just flipped to 'interrupted' by THIS startup pass (or by
-        the previous shutdown — interrupted_at within the last 4 hours).
-      - recovery_attempts < 3 (same cap the cron uses).
-      - The original PDF still exists on disk (temp files survive a service
-        restart but not a full host reboot — fall back gracefully if missing).
     """
     global job_recovery_service
 
@@ -393,9 +329,6 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
         # Uses the same SQL function the auto-recovery cron calls, then
         # forces status back to 'processing' (the helper sets it to 'pending'
         # but we have everything we need to run it right now).
-        # Audit fix (this PR): the second UPDATE that flips pending→processing
-        # is now conditional on status='pending' so a parallel cron tick that
-        # already claimed (and dispatched) this job doesn't double-dispatch.
         try:
             claimed = supabase_client.client.rpc(
                 'mark_pdf_job_for_recovery',
@@ -695,205 +628,9 @@ async def upload_document(
     # JWT and derive the workspace from JWT claims — the form-supplied
     # `workspace_id` is treated as a hint and rejected when it doesn't match
     # the caller's workspace membership.
-    #
-    # The dependency is OPTIONAL (get_optional_workspace_context → returns None
-    # instead of raising 403 on a missing/invalid bearer). The actual auth gate
-    # is enforced in the body so a trusted internal trigger carrying an
-    # `x-cron-secret` (the E2E harness, cron-initiated uploads) can bypass the
-    # JWT requirement — mirroring resume_job. If we kept the hard
-    # Depends(get_workspace_context) here, HTTPBearer(auto_error=True) would 403
-    # at the dependency layer BEFORE we could check the secret.
     workspace_context = Depends(get_optional_workspace_context),
 ):
-    """
-    **🎯 CONSOLIDATED UPLOAD ENDPOINT — Single Entry Point**
-
-    ## 🔐 Authentication (added 2026-05-23)
-
-    Requires a valid JWT in `Authorization: Bearer <token>`. The form-supplied
-    `workspace_id` is reconciled against the caller's JWT-derived workspace:
-    if it doesn't match (and isn't the platform default), the request returns
-    HTTP 403. Anonymous uploads are no longer accepted.
-
-    For uploads via the Supabase MIVAA gateway: the gateway forwards your JWT
-    transparently. Pass your session token to `mivaa-gateway`; do NOT pass
-    the platform service key from the frontend.
-
-    ## 📤 File handoff (private bucket)
-
-    `pdf-documents` is a private bucket. The frontend must:
-      1. Upload the file to `{user_id}/{timestamp}-{filename}` in `pdf-documents`.
-      2. Mint a short-lived signed URL via `supabase.storage.from('pdf-documents').createSignedUrl(path, 3600)`.
-      3. POST the SIGNED URL to this endpoint via the `file_url` form field
-         (or attach the multipart `file` directly).
-    NEVER pass `getPublicUrl()` on `pdf-documents` — that returns a 403 URL.
-    The backend persists `storage_bucket` + `storage_object_path` (not `file_url`)
-    so resume can re-mint a fresh signed URL via service role.
-
-    ## 🎨 Category-Based Extraction
-
-    Control what gets extracted:
-    - `categories="products"` - Extract only products
-    - `categories="certificates"` - Extract only certificates
-    - `categories="logos"` - Extract only logos
-    - `categories="specifications"` - Extract only specifications
-    - `categories="products,certificates"` - Extract multiple categories
-    - `categories="all"` - Extract everything (default - comprehensive deep analysis)
-    - `categories="extract_only"` - **STAGE 1.5 ONLY mode**: runs document
-      layout precompute and then completes. NO discovery, NO products, NO
-      chunks, NO embeddings, NO quality. Cannot be combined with other
-      categories (returns 400). Use when you want raw layout extraction
-      without paying for the full pipeline.
-
-    ## 🌐 URL Processing
-
-    Upload from URL instead of file:
-    - Set `file_url="<signed-url-on-pdf-documents>"`
-    - Leave `file` parameter empty
-    - System downloads and processes immediately
-
-    ## 🤖 Discovery Model
-
-    Stage 0 product discovery is currently **text-based** regardless of the
-    `discovery_model` choice. The model parameter selects which Claude model
-    handles the JSON discovery prompt; it does NOT send page images.
-    Catalogs with product names rendered as part of page images
-    (custom display fonts, logos) will silently miss those products —
-    this is a known limitation, not a bug. See CLAUDE.md "Where vision
-    actually runs" for the full breakdown.
-
-    Choose:
-    - `discovery_model="claude-vision"` - Claude Opus (default)
-    - `discovery_model="claude-haiku-vision"` - Claude Haiku 4.5 (cheaper, fast)
-
-    Real vision DOES run at Stage 3 per-image material analysis (Claude Opus
-    4.7 with Anthropic `tool_use` + the `VISION_ANALYSIS_TOOL` schema lock).
-
-    ## 💬 Agent Prompts
-
-    Use natural language instructions:
-    - `agent_prompt="extract all products"` - Enhanced with product extraction details
-    - `agent_prompt="search for NOVA"` - Enhanced with search context
-    - `agent_prompt="find certificates"` - Enhanced with certificate extraction details
-
-    ## 📊 Processing Pipeline
-
-    **Stage 0: Discovery (0-15%)**
-    - AI analyzes entire PDF
-    - Identifies all content by category
-    - Maps images to entities
-    - Extracts metadata
-
-    **Stage 1: Extraction (15-30%)**
-    - Extracts content for specified categories
-    - Filters pages based on discovery results
-
-    **Stage 2: Chunking (30-50%)**
-    - Creates semantic chunks
-    - Tags chunks with categories
-    - Generates text embeddings
-
-    **Stage 3: Image Processing (50-70%)**
-    - Processes images for specified categories
-    - AI analysis (Vision models)
-    - Generates image embeddings (CLIP)
-
-    **Stage 4: Entity Creation (70-90%)**
-    - Creates products, certificates, logos, specifications
-    - Links chunks and images
-    - Attaches metadata
-
-    **Stage 5: Quality Enhancement (90-100%)**
-    - Async quality validation
-    - Advanced embeddings
-    - Entity enrichment
-
-    ## 📝 Examples
-
-    ### Product Extraction
-    ```bash
-    curl -X POST "/api/rag/documents/upload" \\
-      -F "file=@catalog.pdf" \\
-      -F "categories=products"
-    ```
-
-    ### Multiple Categories
-    ```bash
-    curl -X POST "/api/rag/documents/upload" \\
-      -F "file=@catalog.pdf" \\
-      -F "categories=products,certificates,logos"
-    ```
-
-    ### URL Processing
-    ```bash
-    curl -X POST "/api/rag/documents/upload" \\
-      -F "file_url=https://example.com/catalog.pdf" \\
-      -F "categories=all"
-    ```
-
-    ### Agent-Driven Extraction
-    ```bash
-    curl -X POST "/api/rag/documents/upload" \\
-      -F "file=@catalog.pdf" \\
-      -F "agent_prompt=search for NOVA product" \\
-      -F "categories=products"
-    ```
-
-    ## ✅ Response Example
-
-    ```json
-    {
-      "job_id": "550e8400-e29b-41d4-a716-446655440000",
-      "document_id": "660e8400-e29b-41d4-a716-446655440001",
-      "status": "pending",
-      "message": "Document upload successful. Processing started.",
-      "status_url": "/api/rag/documents/job/550e8400-e29b-41d4-a716-446655440000",
-      "categories": ["products", "certificates"],
-      "estimated_time": "2-5 minutes"
-    }
-    ```
-
-    ## 📊 Monitoring Progress
-
-    Poll the status URL to track processing:
-    ```bash
-    curl -X GET "/api/rag/documents/job/{job_id}"
-    ```
-
-    Response includes:
-    - Current stage and progress percentage
-    - Checkpoint information
-    - AI model usage statistics
-    - Extracted entities count (chunks, images, products)
-    - Error details if failed
-
-    ## ⚠️ Error Codes
-
-    - **400 Bad Request**: Invalid parameters (missing file/URL, invalid mode, unsupported file type)
-    - **401 Unauthorized**: Missing or invalid authentication
-    - **413 Payload Too Large**: File exceeds size limit (100MB)
-    - **415 Unsupported Media Type**: Non-PDF file uploaded
-    - **500 Internal Server Error**: Processing initialization failed
-    - **503 Service Unavailable**: Background job queue full
-
-    ## 📏 Limits
-
-    - **Max file size**: 100MB
-    - **Max concurrent jobs**: 5 per workspace
-    - **Supported formats**: PDF only
-    - **URL download timeout**: 60 seconds
-
-    ## 🔄 Migration from Old Endpoints
-
-    **Old:** `POST /api/documents/process`
-    **New:** `POST /api/rag/documents/upload`
-
-    **Old:** `POST /api/documents/process-url`
-    **New:** `POST /api/rag/documents/upload` with `file_url` parameter
-
-    **Old:** `POST /api/documents/upload`
-    **New:** `POST /api/rag/documents/upload` (same endpoint, enhanced parameters)
-    """
+    """**🎯 CONSOLIDATED UPLOAD ENDPOINT — Single Entry Point**"""
 
     try:
         # Fix B/C: refuse new uploads while a deploy drain is in progress so
@@ -936,8 +673,6 @@ async def upload_document(
         # `workspace_id` must either match it, or be left at the platform
         # default (which we replace with the JWT-derived value). This closes
         # the cross-workspace data-leak hole flagged in the 2026-05-23 audit.
-        # On a cron-secret call there is no JWT workspace, so the form-supplied
-        # `workspace_id` (defaulting to the platform default) is trusted as-is.
         _PLATFORM_DEFAULT_WS = get_settings().default_workspace_id
         if workspace_context is not None:
             _jwt_ws = str(workspace_context.workspace_id)
@@ -1535,22 +1270,7 @@ async def get_job_checkpoints(job_id: str):
 
 @router.post("/jobs/{job_id}/restart", response_model=StatusResponse, dependencies=[Depends(require_rag_resource_access)])
 async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundTasks):
-    """
-    Manually restart a job from its last checkpoint.
-
-    This endpoint allows manual recovery of stuck or failed jobs.
-    The job will resume from the last successful checkpoint.
-
-    Audit fix (this PR): re-entrancy guard. Two cron ticks (or a cron tick +
-    a manual operator restart) can both POST /resume for the same job_id
-    within seconds. Without an atomic claim, both would download the PDF and
-    dispatch process_document_with_discovery, producing two orchestrators on
-    the same row — which silently double-creates products + chunks and
-    double-bills HF endpoint replicas. We claim the job by flipping
-    status pending|interrupted → processing in the FIRST line of work; if
-    the conditional UPDATE returns 0 rows, another caller already claimed it
-    and we 409 out without dispatching.
-    """
+    """Manually restart a job from its last checkpoint."""
     try:
         # Atomic claim — must run before any expensive work (file download,
         # checkpoint verification). The .eq("status", "pending|interrupted")
@@ -1642,10 +1362,6 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         # at status='processing' with no orchestrator running. Auto-recovery
         # cron then back-offs (waiting for stuck-threshold) instead of
         # immediately reclaiming. We flip the status atomically with the
-        # background_tasks.add_task at the bottom of the try block, so
-        # any failure in the download path leaves the job at its prior
-        # status ('failed' / 'interrupted') and the operator sees the
-        # actual error.
 
         # Re-trigger the processing pipeline; process_document_with_discovery resumes from the checkpoint.
 
@@ -1702,12 +1418,6 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 # `documents.file_path` is a DB column, so this is an invariant-7 fetch:
                 # guarded helper, every redirect hop re-validated, body capped while
                 # streaming at the same limit upload accepts.
-                #
-                # `http` is allowed here and nowhere else: these rows predate the storage
-                # migration and some carry plaintext URLs. Refusing them would turn a
-                # resumable job into a permanently unresumable one, which is a worse
-                # outcome than a plaintext fetch whose host has still been DNS-resolved
-                # and checked against every private range. New code uses https only.
                 from app.utils.ssrf_guard import MAX_PDF_BYTES, SSRFError, safe_fetch_bytes
 
                 try:
@@ -1897,22 +1607,7 @@ async def resume_job(
     request: Request,
     workspace_context = Depends(get_optional_workspace_context),
 ):
-    """
-    Resume a job from its last checkpoint (alias for restart).
-
-    Auth: requires a JWT. The caller's workspace must own the job — anyone
-    able to guess a job UUID could otherwise re-spawn the orchestrator and
-    double-bill HF/Anthropic. The auto-recovery cron path uses a separate
-    cron-secret header (see `x-cron-secret` accept logic below) to bypass
-    the JWT check for legitimate automated recovery.
-
-    The workspace dependency is OPTIONAL on purpose: the auto-recovery-cron
-    presents ONLY an `x-cron-secret` header and no bearer token. A hard
-    Depends(get_workspace_context) would 403 at HTTPBearer(auto_error=True)
-    before this body's cron check could run — which silently broke automated
-    recovery (the cron just logged the 403 and moved on). Optional + in-body
-    enforcement is the correct shape.
-    """
+    """Resume a job from its last checkpoint (alias for restart)."""
     # Cron bypass: if the call carries a valid x-cron-secret header, skip the
     # workspace ownership check. This is the only path the supabase
     # `auto-recovery-cron` edge function uses.
@@ -1969,25 +1664,8 @@ async def reprocess_document(
     background_tasks: BackgroundTasks,
     clear_intermediate: bool = True,
 ) -> Dict[str, Any]:
-    """
-    Full Stage 0→4.7 reprocess of an existing document without re-uploading
+    """Full Stage 0→4.7 reprocess of an existing document without re-uploading
     the PDF. Use this to validate pipeline changes against a known document.
-
-    Flow:
-      1. Find the latest background_jobs row for this document_id.
-      2. Resolve the PDF on disk (from /tmp/pdf_processor_{doc_id}/).
-      3. If `clear_intermediate=True` (default): delete derived data
-         (products, chunks, images, checkpoints, catalog_layout,
-         catalog_legends) so the new run starts from a clean slate.
-         The `documents` row itself is preserved.
-      4. Create a NEW background_jobs row (status=pending, progress=0).
-      5. Launch `process_document_with_discovery()` as a background task.
-      6. Return the new job_id + handoff URL for the monitor.
-
-    Query params:
-      clear_intermediate (bool, default True): whether to wipe derived data.
-        Set False for a "resume fresh" that just starts a new job against
-        existing intermediate state — useful if you want to test idempotency.
     """
     import uuid
 
@@ -2025,11 +1703,6 @@ async def reprocess_document(
         # embeddings, tile storage and document metadata. Issuing a reprocess against a
         # document mid-ingestion pulls the running job's outputs out from under it, and
         # the running job then carries on writing into the wreckage.
-        #
-        # `restart` — 400 lines up in this same file — already does exactly this, as a
-        # status-scoped compare-and-swap: `.in_('status', ['pending', 'interrupted'])`.
-        # This is that guard stated as a precondition, because the delete is not a single
-        # UPDATE that could carry one.
         if (prev_job.get("status") or "") in ("pending", "processing"):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -2196,10 +1869,6 @@ async def reprocess_document(
 # carry a job_id and NOT for this one: the gate resolves an id from the path or query
 # and raises 400 when there is none ("A list endpoint with no resource id would
 # otherwise return rows across all tenants"). Swapping it here would 400 every call.
-#
-# A list route needs a PREDICATE, not a resource lookup. The workspace comes from the
-# caller's context; the cron path has none and keeps its platform-wide view, which is
-# what auto-recovery needs.
 @router.get("/documents/jobs", responses={200: {"model": ListDataResponse}}, dependencies=[Depends(verify_internal_access)])
 async def list_jobs(
     request: Request,
@@ -2287,24 +1956,8 @@ async def delete_job(
         ),
     ),
 ):
-    """
-    Delete a job with two distinct semantics, decided by `job.status` (or
+    """Delete a job with two distinct semantics, decided by `job.status` (or
     overridden via the `preserve_outputs` query param).
-
-    ──────────────────────────────────────────────────────────────────────
-    `status='completed'` (or `preserve_outputs=true`) → PRESERVE_OUTPUTS
-    ──────────────────────────────────────────────────────────────────────
-    Removes the job tracking row and per-product status. KEEPS all the
-    catalog data the job produced: documents, chunks, products, images,
-    embeddings, storage files. Use case: "user removes a finished job from
-    'recent jobs' but the products are now in their catalog and must stay."
-
-    ──────────────────────────────────────────────────────────────────────
-    `status` ∈ {'cancelled', 'failed', 'stuck'} (or `preserve_outputs=false`) → FULL_WIPE
-    ──────────────────────────────────────────────────────────────────────
-    Wipes everything: job, document, chunks, products, images, embeddings,
-    associations, storage files, temp files. Use case: "this job's output
-    is bad/partial — get it out of the catalog entirely."
     """
     try:
         logger.info(f"🗑️ DELETE /documents/jobs/{job_id} - resolving deletion mode")
@@ -2444,9 +2097,6 @@ async def get_chunks(
         # receive embeddings received them anyway. That is payload bloat rather than a
         # leak (the gate above binds the document to its owner), but a control that does
         # nothing is worse than no control: it reads as if the choice were being honoured.
-        #
-        # `has_embedding` is computed either way, because "does this chunk have one" is
-        # the question `include_embeddings=false` callers are usually asking.
         for chunk in chunks:
             text_embedding = chunk.pop('text_embedding', None)
             chunk['has_embedding'] = text_embedding is not None
@@ -2977,16 +2627,6 @@ async def create_products_background(
         # sub-job was marked failed, and the parent had already been persisted
         # `completed` — so an ingestion whose product creation blew up reported a clean
         # success with zero products, and products are the point of the pipeline.
-        #
-        # Recorded in METADATA, not as a new status. `background_jobs_status_check`
-        # admits seven values and `completed_with_failures` is not one of them; adding
-        # it would need every reader — the edge runner, the admin UI, auto-recovery — to
-        # learn it, and audit #217 M7 is the record of what happens when they do not
-        # (writing 'running' made job-research runs invisible and mis-bucketed).
-        #
-        # Nor is the parent marked `failed`: the document WAS processed — chunks, images
-        # and embeddings all landed — and failing it would send auto-recovery to restart
-        # a job that mostly succeeded.
         try:
             parent = supabase_client.client.table('background_jobs')                 .select('metadata')                 .eq('id', job_id)                 .limit(1)                 .execute()
             parent_meta = ((parent.data or [{}])[0] or {}).get('metadata') or {}
@@ -3072,26 +2712,7 @@ async def process_document_with_discovery(
     test_single_product: bool = False,  # 🧪 TEST MODE: Process only first product
     extract_only_mode: bool = False  # 2026-05-23: skip discovery + downstream, run extract-only
 ):
-    """
-    Background task to process document with intelligent product discovery.
-
-    PRODUCT-CENTRIC ARCHITECTURE (v2):
-    Stage 0: Product Discovery (0-15%) - Analyze PDF with Claude/GPT, discover all products
-
-    Then FOR EACH PRODUCT (15-85%):
-      Stage 1: Extract product pages
-      Stage 2: Create text chunks for product
-      Stage 3: Process product images
-      Stage 4: Create product in database
-      Stage 5: Create relationships
-
-    Stage 6: Quality Enhancement (85-100%) - Final validation
-
-    Benefits:
-    - Lower memory usage (process one product at a time)
-    - Better progress tracking (per-product granularity)
-    - Easier error recovery (failed products don't block others)
-    - Clearer checkpointing (per-product state)
+    """Background task to process document with intelligent product discovery.
 
     Args:
         extract_categories: List of categories to extract (e.g., ['products'], ['certificates', 'logos']).
@@ -3106,17 +2727,6 @@ async def process_document_with_discovery(
     # id under service role (#35 M20-3). A mismatched tuple here does not corrupt one
     # row — it misroutes an ENTIRE ingestion: products written under the wrong
     # workspace, another tenant's document marked completed.
-    #
-    # Validated ONCE, first, before the credit preflight and before any file is touched.
-    # The finding also asks for the validated workspace to be threaded through every
-    # stage instead of the parameter being re-trusted; that half is a refactor of this
-    # 1,800-line function and is not attempted here. It is also the less important half:
-    # rethreading changes nothing about a tuple that has already been proven coherent,
-    # and this is what makes the parameter trustworthy in the first place.
-    #
-    # A failure marks the job failed rather than raising bare — a job that stops with
-    # `status='processing'` and no terminal event is the state the rest of the system
-    # handles worst, which is #35 M20-1 in this same file.
     try:
         from app.utils.tenancy import assert_job_tuple
 
@@ -3135,15 +2745,6 @@ async def process_document_with_discovery(
     # failed debit is money already spent and the logger can only record "UNBILLED". A
     # 0-credit account could therefore upload a large PDF and have the platform absorb the
     # entire multi-dollar job. (audit #286)
-    #
-    # This is the cheapest correction that actually bounds the loss: refuse to START when the
-    # account is empty. It deliberately does NOT try to predict the job's cost — a preflight
-    # that guesses either blocks paying customers or waves through the expensive jobs it was
-    # meant to stop. It answers one question: is this account funded at all?
-    #
-    # An unreadable balance PROCEEDS. A transient RPC failure must not stop paying customers
-    # from processing documents; the failure being removed is unbounded spend by an unfunded
-    # account, not one job on a flaky read.
     try:
         _min_credits = float(os.getenv("PDF_JOB_MIN_CREDITS", "10"))
         # Own client binding: the module-level name `supabase` is not bound until much later in
@@ -3944,11 +3545,6 @@ async def process_document_with_discovery(
                 )
                 # Merge metadata BEFORE complete_job so the reason is durable
                 # even if complete_job's own metadata writes happen first.
-                # CORRECTION (post-round-3): the in-scope variable name is
-                # `supabase`, not `supabase_client` — the latter is undefined
-                # inside this function and was NameError'ing every RPC call,
-                # which the outer try/except silently swallowed. Same fix
-                # applied to the stage_history RPC + fallback write below.
                 try:
                     supabase.client.rpc(
                         'merge_background_job_metadata',
@@ -4130,7 +3726,6 @@ async def process_document_with_discovery(
         # only process one product, so spending 20-100 minutes on a catalog-wide
         # pre-pass before that single product's Stage 3 is the wrong tradeoff
         # (job 051e1dda timed out here without ever reaching VALENOVA). Skip
-        # it; the missing compliance/PEI rollups can be backfilled by a full run.
         if test_single_product and _icon_pass_relevant:
             logger.info(
                 "🔖 Skipping catalog-wide icon pass — test_single_product=True "
@@ -4250,19 +3845,6 @@ async def process_document_with_discovery(
         ):
             # `physical_page_upper_bound` is the upper bound used by
             # stage_1_focused_extraction to validate `physical_page > bound`.
-            # For spread-layout catalogs (e.g. art-book layouts where each
-            # PDF sheet contains 2 physical pages side-by-side),
-            # `page_count` returns PDF sheet count (e.g. 71) while physical
-            # page numbers go up to e.g. 140. Using `page_count` as the
-            # bound silently drops every product whose pages live past the
-            # sheet count — i.e. the back half of any spread-layout
-            # catalog. Prefer `catalog.total_pages` (physical page count)
-            # when present, falling back to page_count only for non-spread
-            # layouts where they're equal.
-            #
-            # The `as_physical_page_bound` wrapper is a NewType-style guard
-            # that documents the intended meaning of the int and validates
-            # it's ≥1. See app/schemas/page_types.py for the rationale.
             from app.schemas.page_types import as_physical_page_bound
             _raw_bound = getattr(catalog, "total_pages", None) or page_count
             physical_page_bound = as_physical_page_bound(_raw_bound)
@@ -4617,12 +4199,6 @@ async def process_document_with_discovery(
         # render comes from `document_chunks` (silver). Running it earlier would mean
         # re-extracting text from the PDF, which is the layer violation the Medallion
         # rule exists to prevent.
-        #
-        # Awaited rather than fire-and-forget: `document_page_embeddings` rows are what
-        # the silent-zero probe reads, and a background task that loses its race with
-        # job completion would leave the document looking permanently unembedded.
-        # Failures are non-fatal — a catalog with no page vectors is a catalog with
-        # seven working channels, not a failed ingest.
         try:
             from app.services.embeddings.page_embedding_service import get_page_embedding_service
 
@@ -4814,7 +4390,6 @@ async def process_document_with_discovery(
         # re-discover and re-create every product from scratch, and products
         # that did succeed before the failure got duplicated. The 2026-05-23
         # audit flagged this. Gate on attempt count: only nuke when we're past
-        # the max-recovery threshold.
         try:
             from app.services.utilities.cleanup_service import CleanupService
             from app.config import get_settings as _gs
@@ -4943,51 +4518,7 @@ async def query_documents(
     rag_service: RAGService = Depends(get_rag_service),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    **🤖 CONSOLIDATED QUERY ENDPOINT - Text-Based RAG Query**
-
-    This endpoint replaces:
-    - `/api/documents/{id}/query` → Use with `document_ids` filter
-    - `/api/documents/{id}/summarize` → Use with summarization prompt
-
-    ## 🎯 Query Capabilities
-
-    ### Text Query (Implemented) ✅
-    - Pure text-based RAG with advanced retrieval
-    - Semantic search with reranking
-    - Best for: Factual questions, information retrieval, summarization
-
-    ## 📝 Examples
-
-    ### Text Query (Default)
-    ```bash
-    curl -X POST "/api/rag/query" \\
-      -H "Content-Type: application/json" \\
-      -d '{
-        "query": "What are the dimensions of the NOVA product?",
-        "top_k": 5
-      }'
-    ```
-
-    ### Document-Specific Query
-    ```bash
-    curl -X POST "/api/rag/query" \\
-      -H "Content-Type: application/json" \\
-      -d '{
-        "query": "Summarize this document",
-        "document_ids": ["doc-123"],
-        "top_k": 20
-      }'
-    ```
-
-    ## 🔄 Migration from Old Endpoints
-
-    **Old:** `POST /api/documents/{id}/query`
-    **New:** `POST /api/rag/query` with `document_ids` filter
-
-    **Old:** `POST /api/documents/{id}/summarize`
-    **New:** `POST /api/rag/query` with summarization prompt
-    """
+    """**🤖 CONSOLIDATED QUERY ENDPOINT - Text-Based RAG Query**"""
     start_time = datetime.utcnow()
 
     try:
@@ -5177,144 +4708,7 @@ async def search_documents(
     rag_service: RAGService = Depends(get_rag_service),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    **🔍 SEARCH ENDPOINT - Multi-Vector Search with AI Query Understanding**
-
-    ## 🎯 Supported Search Strategies
-
-    ### Multi-Vector Search (`strategy="multi_vector"`) - ⭐ DEFAULT & RECOMMENDED ✅
-    - 🎯 **ENHANCED**: 7-vector fusion search + JSONB metadata filtering
-    - **Embeddings Combined:**
-      - Text (15%) - Voyage AI 1024D semantic understanding
-      - Visual (15%) - SLIG 768D visual similarity
-      - Understanding (20%) - Voyage AI 1024D from Claude Opus vision analysis
-      - Color (12.5%) - SLIG 768D color palette matching
-      - Texture (12.5%) - SLIG 768D texture pattern matching
-      - Style (12.5%) - SLIG 768D design style matching
-      - Material (12.5%) - SLIG 768D material type matching
-    - **+ JSONB Metadata Filtering**: Supports `material_filters` for property-based filtering
-    - **+ Query Understanding**: ✅ **ENABLED BY DEFAULT** - Auto-extracts filters from natural language
-    - **Performance**: Fast (~250-350ms with query understanding, ~200-300ms without)
-    - **Best For:** ALL queries - comprehensive, accurate, fast
-    - **Example:** "waterproof ceramic tiles for outdoor patio, matte finish"
-
-    ### Material Property Search (`strategy="material"`) ✅
-    - JSONB-based filtering with AND/OR logic
-    - Requires `material_filters` in request body
-    - Best for: Filtering by specific material properties
-    - Uses direct database queries (no LLM required)
-
-    ### Image Similarity Search (`strategy="image"`) ✅
-    - Visual similarity using SLIG (SigLIP2) embeddings
-    - Requires `image_url` or `image_base64` in request body
-    - Best for: Finding visually similar products
-    - Uses VECS vector database with HNSW indexing
-
-
-
-    ## 📝 Examples
-
-    ### Multi-Vector Search (⭐ DEFAULT - Recommended for all queries)
-    ```bash
-    curl -X POST "/api/rag/search" \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "modern minimalist furniture", "workspace_id": "xxx", "top_k": 10}'
-    ```
-
-    ### Multi-Vector with Natural Language Filters
-    ```bash
-    curl -X POST "/api/rag/search" \\
-      -H "Content-Type: application/json" \\
-      -d '{"query": "waterproof ceramic tiles for outdoor patio, matte finish", "workspace_id": "xxx", "top_k": 10}'
-    # AI automatically extracts: material_type=ceramic, properties=waterproof, application=outdoor, finish=matte
-    ```
-
-    ### Material Property Search
-    ```bash
-    curl -X POST "/api/rag/search?strategy=material" \\
-      -H "Content-Type: application/json" \\
-      -d '{"workspace_id": "xxx", "material_filters": {"material_type": "fabric", "color": ["red", "blue"]}, "top_k": 10}'
-    ```
-
-    ### Image Similarity Search
-    ```bash
-    curl -X POST "/api/rag/search?strategy=image" \\
-      -H "Content-Type: application/json" \\
-      -d '{"workspace_id": "xxx", "image_url": "https://example.com/image.jpg", "top_k": 10}'
-    ```
-
-    ## 📊 Response Example
-    ```json
-    {
-      "query": "modern oak furniture",
-      "enhanced_query": "modern oak furniture",
-      "results": [
-        {
-          "id": "product_uuid_1",
-          "name": "Modern Oak Dining Table",
-          "description": "Contemporary oak furniture...",
-          "score": 0.92,
-          "final_score": 0.85,
-          "strategy_count": 4,
-          "strategies": ["semantic", "vector", "multi_vector", "hybrid"]
-        }
-      ],
-      "total_results": 10,
-      "search_type": "all",
-      "processing_time": 0.223,
-      "search_metadata": {
-        "strategies_executed": 4,
-        "strategies_successful": 4,
-        "strategies_failed": 0,
-        "strategy_breakdown": {
-          "semantic": {"count": 3, "success": true},
-          "vector": {"count": 2, "success": true},
-          "multi_vector": {"count": 4, "success": true},
-          "hybrid": {"count": 5, "success": true}
-        },
-        "parallel_execution": true,
-        "parallel_processing_time": 0.017
-      }
-    }
-    ```
-
-    ## ⚡ Performance Characteristics
-
-    | Strategy | Typical Time | Max Time | Notes |
-    |----------|-------------|----------|-------|
-    | semantic | 100-150ms | 300ms | Indexed, MMR diversity |
-    | vector | 50-100ms | 200ms | Fastest, pure similarity |
-    | multi_vector | 200-300ms | 500ms | 3 embeddings, sequential scan for 2048-dim |
-    | hybrid | 120-180ms | 350ms | Semantic + full-text search |
-    | material | 30-50ms | 100ms | JSONB indexed |
-    | image | 100-150ms | 300ms | CLIP indexed |
-    | **all (parallel)** | **200-300ms** | **500ms** | **3-4x faster than sequential** |
-
-    ## 🔄 Migration from Old Endpoints
-
-    **Old:** `POST /api/search/semantic`
-    **New:** `POST /api/rag/search?strategy=semantic`
-
-    **Old:** `POST /api/search/similarity`
-    **New:** `POST /api/rag/search?strategy=vector`
-
-    **Old:** `POST /api/unified-search`
-    **New:** `POST /api/rag/search` (same functionality, clearer naming)
-
-    ## ⚠️ Error Codes
-
-    - **400 Bad Request**: Invalid parameters (missing query, invalid strategy, etc.)
-    - **401 Unauthorized**: Missing or invalid authentication
-    - **404 Not Found**: Workspace not found
-    - **500 Internal Server Error**: Search processing failed
-    - **503 Service Unavailable**: RAG service not available
-
-    ## 🎯 Rate Limits
-
-    - **60 requests/minute** per user
-    - **1000 requests/hour** per workspace
-    - Parallel execution (`strategy="all"`) counts as 1 request
-    """
+    """**🔍 SEARCH ENDPOINT - Multi-Vector Search with AI Query Understanding**"""
     import time as _time
     start_time = datetime.utcnow()
     _t_total_start = _time.time()
@@ -5419,9 +4813,6 @@ async def search_documents(
         # alone and `material` is JSONB filtering; neither has anywhere to apply it, and
         # both used to accept it and drop it on the floor, so an aspect-biased image search
         # returned plain visual similarity while looking like it had worked.
-        #
-        # Checked here rather than inside a branch so a strategy added later cannot quietly
-        # inherit the silent drop — a new branch has to opt in by name (#277).
         _requested_aspect = getattr(request, 'aspect', None)
         if _requested_aspect and strategy != "multi_vector":
             raise HTTPException(
@@ -5627,16 +5018,7 @@ async def get_document_content(
     include_images: bool = Query(True, description="Include document images"),
     include_products: bool = Query(False, description="Include products created from document")
 ):
-    """
-    Get complete document content with all AI analysis results.
-
-    Returns comprehensive document data including:
-    - Document metadata
-    - All chunks with embeddings
-    - All images with AI analysis (SLIG embeddings + Claude Vision)
-    - All products created from the document
-    - Complete AI model usage statistics
-    """
+    """Get complete document content with all AI analysis results."""
     try:
         logger.info(f"📊 Fetching complete content for document {document_id}")
         supabase_client = get_supabase_client()
@@ -5772,8 +5154,6 @@ async def rag_health_check(
                 # "healthy". A health check that reports itself unhealthy because it cannot
                 # serialise its own healthy answer is worse than no health check: it was
                 # firing from 2026-04-07 to 2026-08-15 and read as a real outage every time.
-                # The vector store IS a service, so it gets a service entry rather than a
-                # loose descriptor.
                 "vector_store": {"status": "available", "type": "Direct Vector DB"},
             },
             timestamp=datetime.utcnow().isoformat()
@@ -5842,17 +5222,7 @@ async def get_workspace_statistics(
     workspace_id: str,
     supabase: SupabaseClient = Depends(get_supabase_client), current_user: dict = Depends(get_current_user)
 ):
-    """
-    Get comprehensive workspace statistics including VECS embedding counts.
-
-    Returns counts for:
-    - Products
-    - Chunks
-    - Images
-    - Text embeddings (from embeddings table)
-    - Image embeddings (from VECS)
-    - Total embeddings (text + image)
-    """
+    """Get comprehensive workspace statistics including VECS embedding counts."""
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
@@ -5921,16 +5291,7 @@ async def get_workspace_statistics(
 
 @router.get("/job/{job_id}/ai-tracking", responses={200: {"model": AITrackingResponse}}, dependencies=[Depends(verify_internal_access)])
 async def get_job_ai_tracking(job_id: str):
-    """
-    Get detailed AI model tracking information for a job.
-
-    Returns comprehensive metrics on:
-    - Which AI models were used (Anthropic Claude, SLIG, Voyage, OpenAI)
-    - Confidence scores and results
-    - Token usage and processing time
-    - Success/failure rates
-    - Per-stage breakdown
-    """
+    """Get detailed AI model tracking information for a job."""
     try:
         if job_id not in job_storage:
             raise HTTPException(
@@ -6086,16 +5447,7 @@ async def get_job_ai_tracking_by_model(job_id: str, model_name: str):
 
 @router.get("/admin/stuck-jobs/analyze/{job_id}", responses={200: {"model": StuckJobsResponse}}, dependencies=[Depends(verify_internal_access)])
 async def analyze_stuck_job(job_id: str):
-    """
-    Analyze a stuck job to determine root cause and get recommendations.
-
-    Returns detailed analysis including:
-    - Root cause identification
-    - Bottleneck stage
-    - Stage-by-stage timing analysis
-    - Recovery options
-    - Optimization recommendations
-    """
+    """Analyze a stuck job to determine root cause and get recommendations."""
     try:
         analysis = await stuck_job_analyzer.analyze_stuck_job(job_id)
         return JSONResponse(content=analysis)
@@ -6139,25 +5491,6 @@ async def get_stuck_job_statistics():
 EXPANDED_CHUNK_CHAR_BUDGET = 6000
 
 # Cosine floor for the Voyage-1024D text searches on this endpoint (chunks, entities).
-#
-# Deliberately NOT `request.similarity_threshold`, which defaults to 0.7: that knob was
-# tuned for the word-count scorer the chunk branch replaced (+0.15 per matched word,
-# 0..1). 0.7 is a different SCALE, not a stricter setting — as a cosine cutoff on
-# Voyage vectors it rejects near enough every real hit, which would swap a
-# wrong-results bug for a no-results one that looks exactly like an empty corpus.
-#
-# 0.4 is measured on kb_doc_chunks (a bull's-eye query lands ~0.50, unrelated text
-# <=0.33) and BORROWED on document_chunks / document_entities, which are empty. Same
-# model and the same text-vs-text comparison, so it is a reasonable transfer — but it
-# is not a verified one, and a floor is the one parameter whose failure mode is
-# invisible: too high and the endpoint returns nothing, which looks exactly like an
-# empty corpus.
-#
-# So rather than guess again later, this is (a) overridable without a redeploy and
-# (b) self-reporting. `search_metadata.similarity_floor` ships the candidate scores
-# and, critically, the HIGHEST score the floor rejected. One real query then answers
-# "is this value right?" — if the best rejected hit sits just under the floor, it is
-# too high; if nothing is ever rejected, it is doing no work.
 _SIMILARITY_FLOOR_DEFAULT = 0.4
 _SIMILARITY_FLOOR_ENV = "MIVAA_TEXT_SEARCH_SIMILARITY_FLOOR"
 
@@ -6200,16 +5533,7 @@ def summarize_similarity_floor(scores: List[float], floor: float, source: str) -
 
 
 class KnowledgeBaseSearchRequest(BaseModel):
-    """Request model for knowledge base search.
-
-    Every field is bounded (#29 M15-5). This route creates a Voyage vector per call and
-    fans out across several search types, so an unbounded `top_k` or a 10,000-element
-    filter list is paid work sized by the caller. Third instance of unbounded batch
-    input on a paid path, after #23 M10-2 and the rechunk loop below.
-
-    The bounds are generous on purpose — a cap that fires on real usage gets raised by
-    the next person who hits it, and then it is not a cap.
-    """
+    """Request model for knowledge base search."""
     query: str = Field(..., max_length=2_000, description="Search query")
     workspace_id: str = Field(..., description="Workspace ID to search within")
     search_types: List[str] = Field(
@@ -6314,12 +5638,7 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
     (delete+reinsert per doc). Internal/admin only — gated on x-cron-secret, since the
     /api/rag prefix is excluded from the JWT middleware. Called on-write (per doc) and by
     the one-time backfill (all=true, paged by limit/offset).
-
-    Deliberately NOT using `resolve_workspace_id`: this route self-guards below on the
-    cron secret or the service-role bearer and is not user-reachable, so `workspace_id`
-    is a backfill filter from a trusted internal caller, not a tenancy claim. Adding
-    `Depends(get_current_user)` here would 401 the cron path, which sends no bearer at
-    all."""
+    """
     _require_internal_kb_caller(http_request, "kb-docs/rechunk")
 
     sb = get_supabase_client()
@@ -6373,19 +5692,7 @@ class KBRetrievalEvalRequest(BaseModel):
 async def kb_retrieval_eval_run(request: KBRetrievalEvalRequest, http_request: Request):
     """Score the KB retriever against its golden set: did the RIGHT document enter the
     candidate set?
-
-    One Voyage call per question (`kb_query_vector`, the only way to build a KB query
-    vector), then `kb_retrieval_eval_score` in SQL for each mode. That function runs the
-    agent path's own RPC (`kb_hybrid_doc_chunks`, with the agent's access levels) and
-    records the rank of the first expected document among distinct documents. Both modes
-    land in one batch, so every run is an A/B of vector-only against hybrid;
-    `kb_retrieval_eval_summary` derives recall@5 and MRR, and the nightly
-    `kb.retrieval_recall` probe reads the same rows. No model judges a model.
-
-    Internal only — same gate as /kb-docs/rechunk: x-cron-secret or the service-role
-    bearer. Not user-reachable; `workspace_id` here is a filter from a trusted caller,
-    not a tenancy claim (deliberately NOT `resolve_workspace_id`, which would 401 the
-    cron path that sends no bearer)."""
+    """
     _require_internal_kb_caller(http_request, "kb-eval/run")
 
     modes = [m for m in (request.modes or []) if m in ("vector", "hybrid")] or ["vector", "hybrid"]
@@ -6462,16 +5769,7 @@ def _resolve_kb_access_scope(
     caller: str,
     query: str,
 ) -> Dict[str, Any]:
-    """Thin binding of the shared resolver to THIS file's corpus.
-
-    `per_doc_agent_gate=True` because both RPCs reached from here
-    (`kb_match_doc_chunks`, `kb_read_doc_section`) enforce category access_level AND
-    per-doc `allowed_agents` internally, which is what makes it correct for an agent to
-    read a `visibility='private'` doc — private means "not published to the public KB
-    website", not "hidden from agents". `/api/kb/search` runs `kb_match_docs`, which has
-    no such gate, so it passes False. Keeping that argument explicit at each corpus is
-    the point; there is no default that is right for both.
-    """
+    """Thin binding of the shared resolver to THIS file's corpus."""
     return resolve_kb_access_scope(
         supabase, workspace_id, caller, query, per_doc_agent_gate=True
     )
@@ -6484,35 +5782,7 @@ async def search_knowledge_base(
     supabase: SupabaseClient = Depends(get_supabase_client),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    🔍 Search existing knowledge base without uploading a PDF.
-
-    Uses the same **7-vector fusion search** as the main search endpoint, combining:
-    - Text (15%) - Voyage AI 1024D semantic understanding
-    - Visual (15%) - SLIG 768D visual similarity
-    - Understanding (20%) - Voyage AI 1024D from Claude Opus analysis
-    - Color (12.5%) - SLIG 768D color palette matching
-    - Texture (12.5%) - SLIG 768D texture pattern matching
-    - Style (12.5%) - SLIG 768D design style matching
-    - Material (12.5%) - SLIG 768D material type matching
-
-    Performs unified semantic search across:
-    - **Products** (with all metadata, embeddings, and material properties)
-    - **Document entities** (certificates, logos, specifications)
-    - **Chunks** (text content from PDFs with category tags)
-    - **Images** (visual content with SLIG embeddings)
-
-    Supports:
-    - Category filtering (product, certificate, logo, specification, general)
-    - Entity type filtering (certificate, logo, specification)
-    - Material property filtering via metadata
-
-    Example queries:
-    - "waterproof ceramic tiles with matte finish"
-    - "ISO 9001 certificates"
-    - "company logos"
-    - "installation specifications"
-    """
+    """🔍 Search existing knowledge base without uploading a PDF."""
     try:
         await authorize_rag_workspace(claims, request.workspace_id)
 
@@ -6623,15 +5893,6 @@ async def search_knowledge_base(
                 branch_status["products"] = f"failed: {str(e)[:200]}"
 
         # Search entities (certificates / logos / specifications) by vector similarity.
-        #
-        # What this replaced: `await vecs_service.search_similar(collection_name=
-        # "embeddings", ...)` — `vecs_service` was never instantiated in this function,
-        # `search_similar` is not a method of VecsService (only `search_similar_images`
-        # is), and no VECS collection named "embeddings" exists. So every call raised
-        # NameError, the `except` below logged "Entity search failed", and
-        # results["entities"] was ALWAYS []. The producer matched it: entity embeddings
-        # were generated, counted and thrown away (see DocumentEntityService.
-        # generate_entity_embeddings). Both halves reported success; neither worked.
         if "entities" in request.search_types:
             logger.info("   Searching entities...")
             try:
@@ -6692,13 +5953,6 @@ async def search_knowledge_base(
 
         # Search PDF-derived chunks (document_chunks) by vector similarity, then
         # expand each hit with its reading-order neighbours (issue #318).
-        #
-        # What this replaced: an UNORDERED `select * limit top_k*3` sample of the
-        # workspace, scored at +0.15 per query word found as a substring against a
-        # threshold defaulting to 0.7 — an arbitrary 30-row sample, a hit needing 5+
-        # matching words to survive, content cut at 500 chars, and no document_id /
-        # chunk_index in the result, so a retrieved chunk could not be read outward
-        # from. text_embedding was never touched despite the hnsw index existing.
         if "chunks" in request.search_types:
             logger.info("   Searching chunks...")
             try:
@@ -6845,8 +6099,6 @@ async def search_knowledge_base(
                 # user's own JWT for /api/rag/* paths. So the assertion arrived on an
                 # ordinary user token and was honoured unchecked. resolve_kb_caller
                 # honours a platform service credential (price-tools.ts calls MIVAA
-                # directly with MIVAA_API_KEY and asserts admin deliberately), lets any
-                # caller NARROW, and clamps a widening request to 'agent'.
                 caller = await resolve_kb_caller(
                     supabase, claims, request.caller, request.workspace_id
                 )
@@ -6879,7 +6131,6 @@ async def search_knowledge_base(
                         # flickering in/out with float noise. Measured separation is
                         # clean: the true match sits ~0.50 while the next-best
                         # unrelated docs sit ≤0.33, so 0.4 admits the real hit without
-                        # letting noise in. (Proper long-term fix: chunk long KB docs.)
                         "match_threshold": 0.4,
                         "match_count": request.top_k * 2,  # fetch extra, will post-filter
                         "allowed_access_levels": allowed_access_levels,
@@ -6889,7 +6140,6 @@ async def search_knowledge_base(
                         # allowed_agents, both applied above/below. So admin AND agent
                         # callers include private docs; only the public-website caller
                         # ('public') is restricted to visibility='public'. Without this,
-                        # every "private but agent-allowed" doc was invisible to the agent.
                         "include_private": kb_scope["include_private"],
                     }
                     # Per-agent allow-list: only agent callers filter by identity.
@@ -6953,7 +6203,6 @@ async def search_knowledge_base(
                                 # to a model, and a KB document is a PERSISTENT injection
                                 # primitive: written once, replayed into every future turn
                                 # that retrieves it. The delimiter goes on here so no
-                                # caller has to remember.
                                 "content": as_untrusted_data(
                                     ch.get("content"),
                                     source=f"knowledge base: {ch.get('document_title') or 'untitled'}",
@@ -7117,30 +6366,7 @@ async def read_document_section(
     supabase: SupabaseClient = Depends(get_supabase_client),
     claims: Dict[str, Any] = Depends(get_current_user),
 ):
-    """
-    📖 Read a contiguous run of sections from ONE document, in order.
-
-    The companion to `/search/knowledge-base`: search **locates** a section (it returns
-    an id + `chunk_index` per hit), this **reads outward** from it. Answers that
-    straddle a section boundary — a spec continued under the next heading, a table
-    whose caption sits in the previous chunk — are otherwise unreachable except by
-    guessing new keywords and hoping the missing part scores above threshold.
-
-    Two corpora, selected by `source`:
-
-    - **`kb`** (default) — authored `kb_docs`. Access is gated by
-      `_resolve_kb_access_scope` + `kb_read_doc_section`, the SAME predicate
-      `/search/knowledge-base` uses.
-    - **`pdf`** — `document_chunks` extracted from ingested PDFs, via
-      `read_document_chunk_span`. Scoped to the caller's workspace, and to the
-      `(document, product)` index namespace because `chunk_index` restarts at 0 for
-      each product inside a document.
-
-    The caller supplies the id either way, so an object it cannot read returns **404**
-    (not 403 — a 403 would confirm the id exists).
-
-    Cheap by construction: pure SQL, no embedding and no LLM call.
-    """
+    """📖 Read a contiguous run of sections from ONE document, in order."""
     try:
         await authorize_rag_workspace(claims, request.workspace_id)
 

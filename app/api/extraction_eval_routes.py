@@ -1,20 +1,4 @@
-"""Extraction evaluation — score what the pipeline extracted against golden cases.
-
-A golden case (`extraction_eval_cases`) says what a person read on one page for one
-product. A run compares that with what the platform holds for the product now
-(`flatten_product_fields`: scalar columns + gold `attributes`), writes one
-`extraction_eval_runs` row per case, and returns the micro-aggregated metrics.
-
-Endpoints — trusted-service only (x-cron-secret, service-role JWT, the mk_ key):
-  POST /api/internal/extraction-eval/run                  score cases → one batch
-  GET  /api/internal/extraction-eval/summary/{batch_id}   re-read a batch, aggregated
-  GET  /api/internal/extraction-eval/agreement/{case_id}  agreement across the last N runs
-
-The rules the numbers obey live in `app/evaluation/extraction_eval.py` and in
-docs/extraction-evaluation.md. In one line each: fixed denominator; a case that
-cannot be scored is a row with a failure class, never a missing row; counts are
-summed then derived, never averaged per case; agreement is read beside completeness.
-"""
+"""Extraction evaluation — score what the pipeline extracted against golden cases."""
 
 from __future__ import annotations
 

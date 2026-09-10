@@ -1,14 +1,4 @@
-"""
-Public Price Tracking API — /api/v1/prices/track/*
-
-External projects authenticate with an api_keys Bearer token, register
-tracked queries by product name, and control the refresh cadence. Our
-cron refreshes on their schedule; they poll the GET endpoints for the
-latest results + history.
-
-Deleting the api_key CASCADEs out every tracked query + price history
-tied to it (enforced at the DB level).
-"""
+"""Public Price Tracking API — /api/v1/prices/track/*"""
 
 import logging
 from datetime import datetime, timezone

@@ -87,14 +87,6 @@ def _build_generation_prompt(
 
 # Model configurations
 # Text-to-Image Models (for prompts without reference images)
-# The three `gemini_edge` entries below are ONE upstream (the generate-interior-gemini
-# edge function) reached with three different `model_tier` values, which is what selects
-# the model that actually runs: fast → gemini-3.1-flash-image, pro → gemini-3-pro-image,
-# grok → grok-aurora. They are separate roster rows because the GRID shows one tile per
-# row, and the whole point of the grid is seeing the same brief rendered by different
-# models. Before this, the roster was 1 Gemini tile + 3 Replicate tiles and every
-# Replicate model on the account 402s — so a "multi-model grid" was structurally a
-# single image next to three failures.
 TEXT_TO_IMAGE_MODELS = [
     {"id": "gemini-interior", "registry_id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
     {"id": "gemini-interior-pro", "registry_id": "gemini-3-pro-image", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "pro"},
@@ -165,20 +157,6 @@ IMAGE_TO_IMAGE_MODELS = [
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
      "input_schema": "stabledesign"},
     # SD-based img2img models
-    #
-    # `pointblack/stable-interiors-v2` was REMOVED 2026-08-22 as a proven duplicate of the
-    # youzu fork below. This was previously argued and correctly rejected as "a cost opinion,
-    # not evidence of breakage", so it was settled by measurement instead:
-    #
-    #   same model, different seed (noise floor)   17.44 - 23.29 mean abs pixel diff
-    #   pointblack vs youzu                        19.56 / 22.70   <- inside the noise floor
-    #   genuinely different models (control)       36.20 - 45.10   <- ~2x, so the metric
-    #                                                                 does discriminate
-    #
-    # Identical brief, identical source photo, both through their real adapter. The two
-    # differ no more than each differs from ITSELF between runs. Kept the youzu fork: 7,494
-    # lifetime runs vs pointblack's 395, and it advertises an improved diffusion model. Usage
-    # also predicts warm capacity, which is exactly what erayyavuz-interior-ai died of.
     {"id": "stable-interiors-v2-yz", "name": "Stable Interiors V2 (Fast)", "provider": "replicate", "model": "youzu/stable-interiors-v2",
      "version": "4836eb257a4fb8b87bac9eacbef9292ee8e1a497398ab96207067403a4be2daf",
      "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
@@ -423,9 +401,6 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                 # 11 image-to-image models out behind a semaphore of 3, so under that tier
                 # almost every tile 429s at once. The generic retry below backs off
                 # 1s/2s/4s, all shorter than the ~10s reset, so all three attempts burn
-                # inside one window and the tile is reported "failed" for a reason that is
-                # not a failure at all. Honour the server's own `retry_after` instead, and
-                # do not spend one of the real attempts on it.
                 if response.status_code == 429:
                     try:
                         retry_after = int(
@@ -515,24 +490,7 @@ def _registry_id(model: dict) -> str:
 
 
 def _drop_models_the_registry_says_are_down(models: List[dict]) -> tuple:
-    """
-    Filter the hardcoded roster through `public.generation_models`.
-
-    That table is the platform's declared source for "which generation models exist and
-    are usable", and the health check writes `status` back to it — but this roster never
-    consulted it, so the grid queued models the registry already knew were down. Measured
-    2026-08-22: every Replicate model 402s ("insufficient credit") and XAI_API_KEY is
-    unset in the edge environment, so 3 of 5 text-to-image tiles were guaranteed to fail
-    on every single run while the registry recorded exactly that.
-
-    Only `enabled AND status = 'active'` survives. Restoring a model is therefore a DB
-    flip, not a deploy — which is the whole point of having a registry.
-
-    FAILS OPEN: if the registry cannot be read we keep the full roster and log loudly. A
-    transient DB error should degrade the grid to noisy, never to nothing.
-
-    Returns (runnable, dropped_with_reason).
-    """
+    """Filter the hardcoded roster through `public.generation_models`."""
     wanted = {_registry_id(m) for m in models}
     if not wanted:
         return models, []
@@ -859,23 +817,6 @@ async def create_interior_design(
     """
     # #250 invariant #1 (BOLA): identity comes from the verified credential, never from
     # the request body — with the ONE exception the platform already models, below.
-    #
-    # This route is reached two ways, and they carry identity differently:
-    #   - an end-user Supabase token, whose `sub` IS the user  → overwrite the body
-    #   - the platform service key (`generate_3d` in agent-chat), whose `sub` is the
-    #     literal string "material-kai-platform" → the body is the ONLY identity present
-    #
-    # Overwriting unconditionally put "material-kai-platform" into `generation_3d.user_id`
-    # and Postgres rejected it — `invalid input syntax for type uuid` — so EVERY agent call
-    # to this endpoint returned 500 before a job row existed. That is why `generate_3d` has
-    # one tool-call log in the platform's lifetime and no job to show for it: the grid was
-    # not merely under-populated, it could not be created at all.
-    #
-    # `is_service_caller` is the platform's existing test for this and is forge-proof: the
-    # `service` claim is set only by `_validate_simple_api_key`, and a Supabase-signed user
-    # token cannot carry it. On that trusted channel the edge function has already bound the
-    # request to a verified user (agent-chat derives both ids from the caller's JWT), so the
-    # body is authoritative — but it is still validated as a UUID rather than trusted blindly.
     if is_service_caller(user):
         _uid = (request.user_id or "").strip()
         try:
@@ -910,14 +851,6 @@ async def create_interior_design(
         models_to_use = [m for m in models_to_use if m["id"] not in request.exclude_models]
 
     # Drop providers that cannot run in THIS environment before the job is sized.
-    #
-    # `process_generation_background` already fails every Replicate model instantly when
-    # the token is missing, but by then the job has been created claiming N models and the
-    # grid renders N tiles — so the user is told "Started generating 4 variations" and
-    # watches 3 of them go red on every single run. That is not a per-run failure worth a
-    # marker; it is a provider that is not configured, and the honest thing is to not
-    # promise the tile. The skip is RECORDED in models_errors (never silently swallowed —
-    # a shrinking model list with no explanation is the silent-zero shape) and logged.
     skip_reasons: dict = {}
     if not os.getenv("REPLICATE_API_TOKEN"):
         for m in models_to_use:
@@ -1021,16 +954,6 @@ async def create_interior_design(
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PBR material maps (audit #310 item 2)
-#
-# Lives here because this module already owns the generation-images upload path; the maps are a
-# generation output like any other. `ARPreviewModal` has had `normalMap` / `roughnessMap` /
-# `metalnessMap` wired the whole time and simply never received anything, so every material has
-# been rendering as a flat photograph on a 3D plane.
-#
-# Derivation is deterministic (see pbr_map_service) — no model, no per-image cost, no upstream
-# that can be down — so this endpoint charges no credits. If an ML SVBRDF replaces the service
-# later, THAT is when a credit gate belongs here, and the write contract below does not change.
-# ─────────────────────────────────────────────────────────────────────────────
 
 class PbrMapsRequest(BaseModel):
     product_id: str = Field(..., description="Product to derive maps for and write back to")

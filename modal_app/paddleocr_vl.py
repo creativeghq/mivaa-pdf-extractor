@@ -1,57 +1,4 @@
-"""
-Modal deployment: PaddleOCR-VL as the catalog pipeline's structural-pass host.
-
-PaddleOCR-VL is a **two-stage** document parser run **in one process** by the
-``paddleocr`` package:
-  1. PP-DocLayoutV3 (RT-DETR detector; multi-point boxes + reading order predicted
-     in one decoder pass) → per-region bounding boxes, element labels, and
-     reading order.
-  2. PaddleOCR-VL-0.9B (NaViT encoder + ERNIE-4.5-0.3B) → recognizes the content
-     inside each region (text, tables→markdown, formulas→LaTeX, charts).
-
-The layout model FOLLOWS ``PIPELINE_VERSION`` and is never named separately:
-``v1`` selects PP-DocLayoutV2, ``v1.5``/``v1.6`` select PP-DocLayoutV3 (PaddleX
-``PaddleOCR-VL-1.6.yaml``). Setting ``layout_detection_model_name`` here would
-pin a layout model to a VL generation it was not trained alongside.
-
-It replaced Surya-2 (2026-06-13) because the dedicated RT-DETR detector gives
-tighter figure/image boxes (→ cleaner product crops) and a dedicated reading
-order, and the VLM adds table/formula/chart recognition.
-
-This is NOT a vLLM ``/v1/chat/completions`` server — vLLM serving of
-PaddleOCR-VL needs nightly builds and only covers the VLM half. We run the full
-``PaddleOCRVL`` pipeline in-process (paddlepaddle-gpu, no vLLM) and expose a
-small custom contract the MIVAA PaddleOCRManager speaks:
-
-  GET  /health           → 200 once models are loaded + warmed (unauth probe)
-                           → {"status","model","pkg_version","pipeline_version"}
-                             — the version fields report what is ACTUALLY loaded,
-                             so "which model is in production?" is answerable
-                             without reading a cached Modal image layer.
-  POST /parse  (bearer)  → {"image_b64": "...", "mode": "page"|"block"}
-                           → {"regions":[{"bbox":[x0,y0,x1,y1] px,"label","content",
-                                          "order"}], "width", "height"}
-
-Lifecycle: scale-to-zero (``min_containers=0`` + ``scaledown_window``) so it
-costs $0 idle; first request cold-starts a GPU container; MIVAA health-probes
-``/health`` as its warmup.
-
-Cold-start reliability (2026-06-14): PaddleOCR-VL's native VLM has TWO
-cold-start failure modes we defend against here:
-  1. ``use_queues=True`` (the default) spawns a 3-thread queue pipeline whose
-     ``_worker_vlm`` thread deadlocks at startup. We force ``use_queues=False``
-     (the synchronous single-thread path) everywhere.
-  2. Even on the sync path, the first ``predict()`` of a cold container
-     INTERMITTENTLY wedges (a paddle/CUDA cold-init race — non-deterministic).
-     ``load()`` runs a bounded warmup as a health gate and RAISES on a wedge so
-     Modal recycles the container; a fresh one usually warms cleanly and then
-     serves the whole job warm.
-
-Deploy:
-    modal secret create paddleocr-api-key PADDLEOCR_API_KEY=<random-strong-key>
-    modal deploy modal_app/paddleocr_vl.py
-The printed URL is PADDLEOCR_MODAL_URL; the key is PADDLEOCR_MODAL_API_KEY.
-"""
+"""Modal deployment: PaddleOCR-VL as the catalog pipeline's structural-pass host."""
 
 import base64
 import io
@@ -81,11 +28,6 @@ PADDLE_VERSION = os.environ.get("PADDLEOCR_PADDLE_VERSION", "3.2.1")
 # weights live in a persistent volume, nothing here or in MIVAA could answer
 # "which version is in production?". Every other dependency in this image was
 # already pinned; the model was the one that floated.
-#   3.6.0 (2026-05-28) is the release that shipped PaddleOCR-VL-1.6.
-#   3.7.0 (2026-06-11) is newer but its headline change is PP-OCRv6, a different
-#   model family this pipeline does not use — no reason to take that risk on a
-#   deployment with the cold-start fragility documented above. Moving is now a
-#   deliberate one-line change, which is the point.
 PADDLEOCR_VERSION = os.environ.get("PADDLEOCR_PKG_VERSION", "3.6.0")
 
 # The PaddleOCR-VL model generation, stated EXPLICITLY rather than inherited from
@@ -173,16 +115,6 @@ class PaddleService:
         # producer/consumer pipeline whose VLM worker (_worker_vlm) deadlocks at
         # startup on this GPU/container (queue_cv/queue_vlm block forever) — the
         # root cause of the cold-start hang. The sync path has no worker thread.
-        #
-        # Constructed with all three kwargs EXPLICITLY and no fallback cascade.
-        # The old code tried three signatures in turn and, on the last branch,
-        # fell through to a bare ``PaddleOCRVL()`` — which is `use_queues=True`,
-        # i.e. the deadlock path this whole comment block exists to avoid, taken
-        # silently. That fallback was only there to tolerate an unknown package
-        # version; now that the version is pinned above, the signature is known,
-        # so a TypeError here means a real mismatch and must fail loudly (Modal
-        # recycles the container and the deploy is visibly broken) rather than
-        # quietly serving from a configuration we know hangs.
         self.pipeline = PaddleOCRVL(
             device="gpu",
             use_queues=False,
@@ -195,11 +127,6 @@ class PaddleService:
         # non-deterministic: same image+config sometimes warms in ~4s, sometimes
         # hangs forever). Pay the JIT here and use it as a health gate: run warmup
         # in a daemon thread with a tight budget; if it completes the container is
-        # good (/health will pass); if it WEDGES, raise so Modal recycles THIS
-        # container and starts a fresh one — a healthy container usually appears
-        # within a few recycles and then serves the whole job warm. Successful
-        # warmup is ~4s, so a 35s budget detects a wedge fast without
-        # false-positiving a merely-slow warm.
         import threading as _th, time as _t, tempfile
         from PIL import Image, ImageDraw
         WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "35"))

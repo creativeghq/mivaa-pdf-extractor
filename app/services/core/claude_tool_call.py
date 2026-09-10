@@ -52,18 +52,7 @@ _DEFAULT_CONFIDENCE = 0.9
 
 @dataclass(frozen=True)
 class ToolCallResult:
-    """The tool input, AND the token usage that produced it.
-
-    Usage is returned rather than dropped because the first caller migrated
-    (`agent_routes`) accumulates it into `agent_runs.input_tokens` / `output_tokens`.
-    A helper that returned only the parsed object would have quietly zeroed those
-    counters on every migrated site — a plausible zero that nothing raises on, which is
-    the exact shape this codebase keeps being audited for. Making it part of the return
-    type means the next migration cannot forget.
-
-    The cost itself is already logged by `tracked_claude_call_async`; these are for the
-    caller's own bookkeeping.
-    """
+    """The tool input, AND the token usage that produced it."""
 
     data: Dict[str, Any]
     input_tokens: int = 0
@@ -124,25 +113,7 @@ async def call_with_tool(
     #: prevent. `tools`/`tool_choice` are owned here and cannot be overridden.
     extra_kwargs: Optional[Dict[str, Any]] = None,
 ) -> ToolCallResult:
-    """Call Claude with `tool` forced, and return its validated input plus usage.
-
-    Goes through `tracked_claude_call_async` so the cost lands in `ai_usage_logs`
-    automatically (pipeline convention 10) — a hand-rolled httpx POST here would be
-    invisible to every cost view, which is the shape #30 measured.
-
-    `confidence_key` names a key in the tool input holding the model's OWN reported
-    confidence — the value hand-written `log_claude_call` sites record. It cannot be
-    passed at call time because it does not exist until the reply arrives, so the
-    helper reads it back out of the extracted input and hands it to the logger. Without
-    this, migrating those sites would silently replace a measured confidence with the
-    0.9 default, which is a worse bug than the one being fixed: an invisible cost is at
-    least absent, while a defaulted confidence is a plausible number nothing raises on.
-
-    `required` names keys the caller cannot proceed without. The tool schema should
-    already declare them, but a schema is a request and this is a check: a model that
-    omits one has not answered the question, and finding that out here beats finding it
-    out from a KeyError three frames down.
-    """
+    """Call Claude with `tool` forced, and return its validated input plus usage."""
     from app.services.core.claude_helper import tracked_claude_call_async
 
     response = await tracked_claude_call_async(

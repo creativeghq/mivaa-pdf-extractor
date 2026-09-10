@@ -151,16 +151,7 @@ class ProductMergeService:
         target: Dict[str, Any],
         sources: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """
-        Merge data from source products into target product.
-        
-        Strategy:
-        - Keep target name (primary identifier)
-        - Merge descriptions (combine unique information)
-        - Merge metadata (union of all metadata)
-        - Keep target embeddings
-        - Combine source chunks
-        """
+        """Merge data from source products into target product."""
         merged = target.copy()
         
         # Merge descriptions

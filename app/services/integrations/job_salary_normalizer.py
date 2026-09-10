@@ -1,19 +1,4 @@
-"""
-Job Salary Normalizer — convert salaries from any source to annualized USD.
-
-DataForSEO returns `{min_value, max_value, currency, type}` where `type` is one of
-`year` / `month` / `week` / `day` / `hour`. Perplexity returns whatever the page
-displayed (often integer year, sometimes monthly EUR for European listings).
-Firecrawl extraction is freeform.
-
-The normalized fields (`salary_annual_min_usd`, `salary_annual_max_usd`) on
-job_listings let the UI compare apples-to-apples across sources without losing
-the source-reported values.
-
-Conversion rates: a static lookup table is fine for sorting / display. We
-intentionally do NOT hit a live FX API on every refresh — staleness of a few
-percent doesn't matter for "is this listing in the salary band I want?"
-"""
+"""Job Salary Normalizer — convert salaries from any source to annualized USD."""
 
 from __future__ import annotations
 

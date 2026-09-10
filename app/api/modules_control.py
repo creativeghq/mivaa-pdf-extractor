@@ -1,15 +1,4 @@
-"""
-Module-system control endpoints.
-
-These are NOT per-module routes (those live under each module's own
-`routes.py` and mount at `/api/v1/modules/<slug>/*`). These are about the
-module system itself — currently just a cache invalidation hook called by
-the admin /admin/modules toggle UI to drop the in-process enabled-flag cache
-without waiting for the 5-minute TTL.
-
-Mounted at `/api/v1/modules/_invalidate` (prefix uses an underscore so it
-can't ever collide with a real module slug).
-"""
+"""Module-system control endpoints."""
 
 from __future__ import annotations
 

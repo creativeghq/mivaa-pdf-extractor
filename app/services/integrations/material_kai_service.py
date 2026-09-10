@@ -130,29 +130,10 @@ class MaterialKaiWorkflow(BaseModel):
 # MaterialKaiIntegrationError used to be RE-DECLARED here, shadowing the identically
 # named class imported from app.utils.exceptions at the top of this module. Two
 # distinct classes, one name — and the two halves of the system picked different ones:
-#
-#   * material_visual_search_service imports it from app.utils.exceptions and raises
-#     that class (3 raise sites).
-#   * main.py registered its @app.exception_handler against THIS module's copy.
-#
-# `except`/`exception_handler` match on class identity, not on name, so the handler
-# never fired for any of those raises — material-search failures fell through to the
-# generic 500 handler instead of the response the handler was written to produce.
-# Removing the local declaration leaves one class, imported from the canonical
-# module, and main.py's import now resolves to it.
 
 
 class MaterialKaiService:
-    """
-    Material Kai Vision Platform Integration Service.
-    
-    Provides comprehensive integration capabilities including:
-    - Document synchronization
-    - Workflow coordination
-    - Real-time communication
-    - Data exchange protocols
-    - Platform authentication
-    """
+    """Material Kai Vision Platform Integration Service."""
     
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         """Initialize Material Kai service with configuration."""
@@ -193,21 +174,7 @@ class MaterialKaiService:
             logger.info("Material Kai platform integration disabled (no platform URL or API key configured)")
     
     def _validated_platform_url(self, url: str) -> str:
-        """Return `url` if it is a safe bridge target, else "" (bridge stays off).
-
-        Fails CLOSED and at startup rather than per-request: a bridge that only
-        discovers its target is unsafe on the first credentialed call has already
-        sent the credential. Requirements:
-
-        * https only — the bearer token must not cross the wire in clear text
-        * no userinfo and no fragment — `https://user:pass@host` and `#frag` are
-          both signs the value came from somewhere it should not have
-        * host must resolve to a public address — the shared SSRF guard rejects
-          RFC1918, loopback, link-local and 169.254.169.254
-        * if MATERIAL_KAI_ALLOWED_HOSTS is set, the host must be one of them
-          exactly (no suffix matching: `evil-materialkai.com` must not pass a
-          `materialkai.com` allowlist)
-        """
+        """Return `url` if it is a safe bridge target, else "" (bridge stays off)."""
         if not url:
             return ""
 

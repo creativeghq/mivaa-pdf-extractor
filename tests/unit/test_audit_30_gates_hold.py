@@ -1,25 +1,4 @@
-"""Guards for the mivaa#30 audit fixes (M16-1 … M16-4).
-
-One file per audit, matching `test_audit_18_gates_hold.py`.
-
-Static, not runtime: CI installs pytest alone (`deploy.yml`) and these unit tests
-import nothing from `app`, so each case parses source instead. That constrains what
-can be checked — a guard here proves the SHAPE is gone, not that the replacement
-behaves.
-
-Every case below was watched to FAIL against the pre-fix source before being
-committed — with one deliberate exception, named so it is not mistaken for coverage:
-`test_the_rpc_verdict_is_still_read_correctly` passes both ways. It is a
-stays-as-it-is guard over the audit #217 H3 fix, which was already correct; its job is
-to fail on a future tidy-up, not on the pre-fix source.
-
-NOT covered here, deliberately:
-  * M16-5 (cost rollups silently no-op) and M16-6 (a successful LLM call logged with
-    zero tokens) are untouched by this batch, so there is nothing to hold. Filing a
-    green test over them would read as coverage that does not exist.
-  * M16-7 (`FALLBACK_CATEGORY` / `SECTION_ORDER` hardcoded in `field_registry`) is
-    latent until ingestion runs and is left with the ingestion work.
-"""
+"""Guards for the mivaa#30 audit fixes (M16-1 … M16-4)."""
 
 import ast
 import re

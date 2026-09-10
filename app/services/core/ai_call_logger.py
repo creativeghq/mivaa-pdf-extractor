@@ -41,16 +41,7 @@ _dead_letter_lock = threading.Lock()
 
 
 class AICallLogger:
-    """
-    AI Call Logger Service
-    
-    Tracks every AI call with:
-    - Cost and token usage
-    - Latency and performance
-    - Confidence scores (4-factor weighted)
-    - Fallback decisions
-    - Request/response data for debugging
-    """
+    """AI Call Logger Service"""
     
     def __init__(self):
         """Initialize AI Call Logger"""
@@ -84,11 +75,6 @@ class AICallLogger:
         if isinstance(result, dict) and result.get('success') is False:
             # Carry the RPC's own reason through instead of flattening everything to
             # 'debit_failed' (mivaa#17 M4-1). The reasons are not equivalent:
-            # `below_quantum` means the charge was smaller than the 0.01 a wallet can hold —
-            # true of 7,701 of the 8,567 usage rows ever written — while `debit_failed`
-            # means money was owed and refused. Logging the first at ERROR would raise a
-            # Sentry event per AI call and bury the second, which is exactly the argument
-            # `_record_missing_principal` below makes about `no_principal`.
             reason = result.get('unbilled_reason') or 'debit_failed'
             log = self.logger.warning if reason == 'below_quantum' else self.logger.error
             log(
@@ -100,29 +86,7 @@ class AICallLogger:
         return None
 
     def _record_missing_principal(self, task: str, model: str, cost: float) -> str:
-        """An AI call ran with nobody to bill. Record it on the row.
-
-        This is the M3-2 defect (#16): the debit was guarded by `if user_id:`,
-        and the UNBILLED markers only fire when the debit RAISES or FAILS. With
-        no user_id the branch was never entered, so nothing was recorded at all
-        — 51 call sites of the logged Claude wrappers, one of which passed a
-        user_id. "Unbilled revenue" therefore read as zero because the
-        recording path was unreachable, not because it was zero.
-
-        WARNING, not ERROR, and deliberately so. Sentry is wired with
-        `event_level=logging.ERROR` (main.py), so an ERROR here would raise one
-        Sentry event per unattributed call — roughly every AI call the
-        ingestion pipeline makes. An alert that fires on the common case is not
-        an alert, it is a thing that buries the uncommon ones. The measurement
-        the audit actually asked for is the `unbilled_reason` COLUMN, which is
-        aggregatable and silent:
-
-            select unbilled_reason, count(*), sum(cost)
-              from ai_call_logs where unbilled_reason is not null group by 1;
-
-        The genuinely exceptional cases — `debit_failed` and `debit_raised`,
-        where money was owed and not taken — keep their ERROR in `_debit`.
-        """
+        """An AI call ran with nobody to bill. Record it on the row."""
         self.logger.warning(
             "[ai_call_logger] UNBILLED (no principal) task=%s model=%s cost=$%.6f - "
             "the call ran with no user_id, so no debit was even attempted",
@@ -282,11 +246,6 @@ class AICallLogger:
                         # this path set it, so every call it mirrors was outside the probe's
                         # view — 510 Voyage and 596 Anthropic calls in one week, against 30
                         # Perplexity calls that were watched and duly caught at 401.
-                        #
-                        # The consequence is not theoretical: on 2026-08-22 the Anthropic
-                        # account hit zero and every agent, vision and classifier call began
-                        # returning 400. This probe said nothing and could not have. A human
-                        # noticed the agent replying with an error string.
                         "success": error_message is None,
                         "error": error_message,
                     },
@@ -436,16 +395,6 @@ class AICallLogger:
 
             # Extract response text. Blocks are searched in order of how much they
             # tell an operator reading the log, NOT by position:
-            #
-            #   - content[0] may be a `tool_use` block whose .text is None (forced
-            #     tool_choice paths) — fall back to the tool input so the
-            #     response_text[:500] slice below never hits None[:500]
-            #     ('NoneType' object is not subscriptable).
-            #   - With adaptive thinking enabled, content[0] is a `thinking` block,
-            #     whose .text AND .input are both None — and whose thinking text is
-            #     empty anyway under the default display:"omitted". Reading position 0
-            #     would log "" for every such call and quietly empty this column out
-            #     across the vision path (#393 Step 2).
             content = getattr(response, 'content', None)
             if content:
                 response_text = ""

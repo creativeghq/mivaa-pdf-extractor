@@ -1,15 +1,4 @@
-"""Guards for the mivaa#24 audit fixes (M11-1 … M11-6), plus the #26 M13-1 half.
-
-One file per audit, matching `test_audit_18_gates_hold.py`.
-
-Static, not runtime: CI installs pytest alone (`deploy.yml`) and these unit tests
-import nothing from `app`, so each case parses source instead. That constrains what
-can be checked — a guard here proves the SHAPE is gone, not that the replacement
-behaves.
-
-Every case below was watched to FAIL against the pre-fix source before being
-committed. A guard nobody has seen fire is a guard that might be asserting nothing.
-"""
+"""Guards for the mivaa#24 audit fixes (M11-1 … M11-6), plus the #26 M13-1 half."""
 
 import ast
 import re

@@ -1,58 +1,4 @@
-"""
-Modal deployment: SLIG (SigLIP2) as the pipeline's visual-embedding host.
-
-SLIG is the platform's visual encoder — it produces the 768D ``visual`` vector in
-the 7-embedding fusion search (``vecs.image_slig_embeddings``) and also serves
-zero-shot classification + image⇄text similarity. The model behind it is the
-custom HF repo ``basiliskan/slig``, which is a **verbatim duplication of
-``google/siglip2-base-patch16-512``** — a stock SigLIP2 base model with a
-**native 768D** output (NO SO400M, NO 1152→768 projection head, despite older
-docstrings; ``config.json`` is ``model_type: "siglip"`` with no ``auto_map``).
-
-It moved off **HuggingFace Inference Endpoints** (paid always-allocating GPU +
-flaky resume/scale/capacity lifecycle) onto **Modal**, mirroring the PaddleOCR-VL
-cutover. Embeddings stay **bit-for-bit identical** to the HF endpoint because we
-load the model the exact same way the HF custom ``handler.py`` did — stock
-``transformers`` ``AutoModel.from_pretrained`` + ``AutoProcessor`` (the processor
-reads the repo's own ``preprocessor_config.json``, so image preprocessing is
-identical), then ``get_image_features``/``get_text_features`` → L2-normalize.
-
-This exposes a small custom contract the MIVAA SLIG client speaks — the SAME
-``{inputs, parameters}`` request body and the SAME response shapes the HF endpoint
-used (see ``docs/slig-inference.md``), so the client's payload builders don't
-change:
-
-  GET  /health           → 200 once the model is loaded + warmed (unauth probe)
-  POST /infer  (bearer)  → {"inputs": <str|[str]|{image(s),text(s)}>,
-                            "parameters": {"mode": "...", "candidate_labels": [...]}}
-       mode ∈ {zero_shot, image_embedding, text_embedding, similarity, auto}
-       → image_embedding / text_embedding: [{"embedding": [768 floats]}, ...]
-       → zero_shot:  [{"label","score"}, ...]   (single) | [[...], ...] (batch)
-       → similarity: {"similarity_scores": [[...]], "image_count", "text_count"}
-
-Lifecycle: scale-to-zero (``min_containers=0`` + ``scaledown_window``) so it costs
-$0 idle; the first request after idle cold-starts a GPU container; MIVAA
-health-probes ``/health`` as its warmup. SigLIP2-base is small (~400M, 1.5 GB
-weights baked into the image), so a cold start is just model→GPU load (~5-15s),
-no network download.
-
-NOTE on the warm posture: unlike PaddleOCR-VL (batch-only PDF jobs), SLIG also
-serves REALTIME search queries. With ``min_containers=0`` the first query after
-idle eats the cold start — the MIVAA search path must warm-probe before the embed
-call and degrade gracefully (drop the visual vector, keep the other fusion
-vectors) on timeout. Set ``SLIG_MIN_CONTAINERS=1`` to keep one replica always warm
-if query latency matters more than $0 idle.
-
-Deploy:
-    modal deploy modal_app/slig.py
-The printed URL is SLIG_MODAL_URL. The bearer is SHARED with the PaddleOCR app —
-this app reuses the existing ``paddleocr-api-key`` Modal secret, so NO new secret
-is needed to deploy (the bearer can be shared across Modal apps; only the URL
-differs per app). On the MIVAA side, set ``SLIG_MODAL_API_KEY`` to the same value
-as ``PADDLEOCR_MODAL_API_KEY``. To give SLIG its own dedicated key later, create a
-``slig-api-key`` secret exposing ``SLIG_API_KEY``, add it to ``secrets=[...]``
-below, and it wins via the getenv precedence in ``web()``.
-"""
+"""Modal deployment: SLIG (SigLIP2) as the pipeline's visual-embedding host."""
 
 import base64
 import io
@@ -133,21 +79,7 @@ app = modal.App("slig")
 class SligService:
     @modal.enter()
     def load(self):
-        """Load SigLIP2-base once per container, force GPU, warm with a real pass.
-
-        The model loads as the HF ``handler.py`` did
-        (``AutoModel.from_pretrained``). The TOKENIZER/PROCESSOR, however, must
-        NOT go through ``AutoProcessor``: the repo ships a **Gemma** tokenizer
-        (siglip2's 256k-vocab tokenizer.json) but ``config.json`` declares
-        ``model_type: "siglip"``, so ``AutoProcessor`` mis-resolves the tokenizer
-        to the slow ``SiglipTokenizer``, which then looks for a sentencepiece
-        ``spiece.model`` ``vocab_file`` that doesn't exist → ``TypeError: expected
-        str … not NoneType`` and a container crash-loop. ``AutoTokenizer`` resolves
-        the Gemma tokenizer correctly, so we load tokenizer + image processor
-        separately. Same tokenizer/preprocessor files as the HF endpoint → same
-        embeddings (the parity check confirms). Slow image processor
-        (``use_fast=False``) matches the processor saved with the model.
-        """
+        """Load SigLIP2-base once per container, force GPU, warm with a real pass."""
         import torch
         from transformers import AutoImageProcessor, AutoModel, AutoTokenizer
 

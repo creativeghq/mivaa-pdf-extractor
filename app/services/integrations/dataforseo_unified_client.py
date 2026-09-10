@@ -1,36 +1,5 @@
-"""
-DataForSEO Unified Client — single async wrapper covering EVERY major endpoint
+"""DataForSEO Unified Client — single async wrapper covering EVERY major endpoint
 across all 13 product families:
-
-  1. SERP API           — Google + Bing + YouTube + Baidu + Yahoo + Naver + Seznam
-  2. AI Optimization    — LLM Mentions + LLM Responses (ChatGPT/Claude/Gemini/Perplexity)
-  3. Keywords Data      — Google Ads + Bing Ads + Trends + DataForSEO Trends + Clickstream
-  4. DataForSEO Labs    — Google + Amazon + App Store + Google Play
-  5. Backlinks          — summary, anchors, referring domains, competitors, intersection
-  6. OnPage             — full site crawler + lighthouse + duplicates + redirects
-  7. Content Analysis   — sentiment, phrase trends, citation mining
-  8. Domain Analytics   — technologies, whois
-  9. Merchant           — Google Shopping + Amazon Products
- 10. App Data           — Google Play + Apple App Store listings + reviews
- 11. Business Data      — GMB, Trustpilot, Tripadvisor, Pinterest, Reddit
- 12. Databases          — bulk dataset downloads (not exposed here)
- 13. Appendix           — utilities (status, locations)
-
-Cost discipline:
-  - All callers go through `_call()` which logs to ai_usage_logs via
-    `mention_cost_logger.log_dataforseo_*` with a per-call attribution.
-  - Live endpoints used wherever available (Labs is Live-only; SERP and
-    Merchant fall back to Task GET polling with a budget).
-  - Sandbox mode supported via DATAFORSEO_SANDBOX=1 env var (returns
-    dummy data, zero charge — useful in dev).
-
-Auth: HTTP Basic via DATAFORSEO_BASE64 (preferred) or
-DATAFORSEO_LOGIN:DATAFORSEO_PASSWORD. Same credential set used by
-the TypeScript dataforseo-client and the existing merchant service.
-
-This client is the foundation for the SEO agent toolkit. Every agent tool
-should go through it — no direct httpx calls to DataForSEO from anywhere
-else, so cost logging stays consistent.
 """
 
 from __future__ import annotations
@@ -167,17 +136,6 @@ class DataForSEOUnifiedClient:
 
         # audit #14 MV-3 — invariant 10: debit BEFORE the upstream call, and do not
         # perform the work when the debit fails.
-        #
-        # This is the LAST layer that could have gated DataForSEO spend, and five audits
-        # confirmed none of the others does: #352 A18 (agent-tool wrappers), the MIVAA
-        # route check, #361 EG-4 (seo-api), #365 AD-13 (the shared edge client). So the
-        # spend was ungated end to end while seo_site_crawl_start accepts max_pages up
-        # to 1000.
-        #
-        # `attribution` is Optional by signature, which is how unattributed paid calls
-        # became permissible. A call that names a payer is metered; one that does not is
-        # recorded as unbilled rather than waved through silently — the distinction
-        # ai_call_logger already draws, and the reason its UNBILLED markers exist.
         charged = self._charge_for_call(attribution, operation)
         if charged is None:
             return DataForSEOResult(
@@ -294,17 +252,7 @@ class DataForSEOUnifiedClient:
         attribution: Optional[CostAttribution],
         operation: str,
     ) -> Optional[int]:
-        """Debit the caller before the request goes out.
-
-        Returns the amount actually taken: `None` refuses the call, `0` proceeds
-        UNBILLED — an unattributed paid call is a real thing (cron sweeps, health probes)
-        and must be visible rather than silently free — and a positive number is a real
-        charge that `_refund_call` must give back if no billable work happened. See
-        invariant 10 and audit #14 MV-3.
-
-        NOT a bool: `0` is a legitimate "proceed", so a truthiness test at the call site
-        would refuse every unbilled cron call.
-        """
+        """Debit the caller before the request goes out."""
         user_id = getattr(attribution, "user_id", None) if attribution else None
         workspace_id = getattr(attribution, "workspace_id", None) if attribution else None
 
@@ -1278,10 +1226,6 @@ class DataForSEOUnifiedClient:
         # whole task fails, every OTHER category is lost with it. That is why perf_score,
         # a11y_score and bp_score were NULL on every stored audit while seo_score fell back
         # to the on-page score: one character silently disabled Lighthouse entirely.
-        #
-        # The ASYMMETRY is the trap: the request wants `best_practices`, the response keys
-        # the same category `best-practices`. Readers of the result are therefore correct to
-        # use the hyphen, and "fixing" them to match this line would break them.
         body = [{
             "url": url, "for_mobile": for_mobile,
             "categories": categories or ["performance", "accessibility", "best_practices", "seo"],

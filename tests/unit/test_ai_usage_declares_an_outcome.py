@@ -48,13 +48,6 @@ _ROOT = Path(__file__).resolve().parents[2]
 _APP = _ROOT / "app"
 
 # Reads are not writes. A file that only SELECTs from the table has no outcome to declare.
-#
-# TWO write shapes, and both must be recognised. Cost rows moved to `repeatable_insert`
-# (an upsert on a client-minted key) so a transient PostgREST disconnect can be retried
-# without duplicating the row — see `test_cost_rows_survive_a_disconnect`. When that
-# landed, this pattern matched one writer instead of six and
-# `test_the_scan_finds_the_writers_at_all` caught it, which is the only reason this guard
-# did not quietly go blind. Keep the old shape too: it is what a new writer will reach for.
 _INSERT_RE = re.compile(
     r'table\(\s*["\']ai_usage_logs["\']\s*\)\s*\.\s*insert'
     r'|repeatable_insert\(.{0,160}?["\']ai_usage_logs["\']',

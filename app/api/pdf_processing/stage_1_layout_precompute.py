@@ -1,32 +1,4 @@
-"""
-Stage 1: Document-level structural pass (PaddleOCR-VL, physical-page-aware).
-
-The pipeline's layout+OCR backbone. Iterates **physical pages**
-1..total_physical_pages — the same numbering products and chunks use
-throughout the rest of the pipeline. For each physical page:
-
-1. Look up `(pdf_idx, position)` from `PDFLayoutAnalysis.physical_to_pdf_map`.
-   `position` is one of `single` / `full` / `left` / `right`. For spread
-   layouts a single PDF sheet maps to 2 physical pages; we render only
-   the relevant half before sending to PaddleOCR.
-2. Render the half-page (or full sheet) to a PIL image at LAYOUT_RENDER_DPI.
-3. One PaddleOCR structural pass over that image → layout regions (label + bbox)
-   + OCR'd text + figure boxes, in a single /v1/chat/completions call.
-   PaddleOCR returns region boxes, text, and bucketing all internally.
-4. `regions_to_layout_elements()` maps the PaddleOCR regions onto the existing
-   `layout_elements` schema (region_type + pixel bbox + text_content).
-5. Persist to `document_layout_analysis` keyed on
-   `(document_id, physical_page_number)`, `processing_version='paddleocr-vl'` —
-   the same key/shape Stage 0 discovery, Stage 2 chunking, and Stage 3 crops
-   read later.
-
-This runs BEFORE discovery (structure-first): discovery reads PaddleOCR's
-reading-order text instead of raw page.get_text().
-
-Resume-safe: pages already in the cache are skipped (ocr_failed/page_failed
-rows are retried).
-Toggle: `LAYOUT_PRECOMPUTE_ENABLED` env var (defaults True).
-"""
+"""Stage 1: Document-level structural pass (PaddleOCR-VL, physical-page-aware)."""
 
 from __future__ import annotations
 
@@ -46,13 +18,6 @@ from PIL import Image
 STAGE_NAME = "stage_1_5_layout_precompute"
 
 # Cache statuses that mean "the OCR pass returned a verdict for this page".
-#
-# Every page gets a `document_layout_analysis` row regardless of outcome — failures
-# are written on purpose so the resume filter can retry them (_RETRY_CACHE_STATUSES).
-# So "a row exists" says nothing about whether PaddleOCR is alive, and the circuit
-# breaker must count THESE statuses rather than rows written. Deliberately the exact
-# complement of _RETRY_CACHE_STATUSES: a status is either evidence the endpoint
-# worked, or a marker to retry — never both, and never neither.
 _OCR_PRODUCTIVE_STATUSES = frozenset({"success", "paddleocr_no_text", "empty_page"})
 
 
@@ -168,24 +133,7 @@ def _render_physical_page(
 
 
 def _rendered_page_is_blank(image: "Image.Image") -> bool:
-    """True when the RENDER itself carries no ink — a genuinely empty page.
-
-    This is the discriminator between the two reasons PaddleOCR returns zero
-    regions, which were previously indistinguishable and both cached as
-    ``empty_page`` (a status the resume filter never retries):
-
-      • the page really is blank (separator sheets, trailing pages) — terminal,
-        retrying it forever would burn GPU-seconds on every run and never settle;
-      • the page has content and the VLM produced nothing — a hiccup that MUST be
-        retryable, or a dense spec page is permanently stored as blank with no
-        chunks, no crops and no discovery text.
-
-    A single-channel extrema check is enough and costs microseconds: a uniform
-    image (min == max) has exactly one tone across the whole page, which no page
-    carrying text or figures ever does. Deliberately conservative — anything with
-    any variation at all is treated as "has content", so the failure direction is
-    a wasted retry rather than silently-lost content.
-    """
+    """True when the RENDER itself carries no ink — a genuinely empty page."""
     try:
         lo, hi = image.convert("L").getextrema()
         return lo == hi
@@ -311,12 +259,11 @@ async def precompute_document_layout(
         return summary
 
     # 2. Resume-safe: skip pages already in cache EXCEPT for transient-failure
-    #    rows that should retry on next run. The audit fix #6 originally
-    #    excluded only `ocr_failed`; `page_failed` (outer-exception path,
-    #    written at line ~478 below) was documented as "will be retried" but
-    #    the resume-skip filter never excluded it, so any transient render /
-    #    structural-pass error permanently skipped that page. Both transient
-    #    markers must be excluded.
+    # rows that should retry on next run. The audit fix #6 originally
+    # excluded only `ocr_failed`; `page_failed` (outer-exception path,
+    # written at line ~478 below) was documented as "will be retried" but
+    # the resume-skip filter never excluded it, so any transient render /
+    # structural-pass error permanently skipped that page. Both transient
     _RETRY_CACHE_STATUSES = {"ocr_failed", "page_failed"}
     existing_pages: Set[int] = set()
     try:
@@ -427,8 +374,6 @@ async def precompute_document_layout(
     # size (caps concurrent renders → flat-ish memory) and matches Modal's
     # autoscale ceiling so PaddleOCR serves the fan-out. The circuit breaker is
     # re-checked per chunk: a misconfigured (401/403/404) endpoint, or N early
-    # failures with zero successes, aborts the whole job fast instead of grinding
-    # every page against a dead endpoint.
     import os as _os_s15
     PARALLELISM = max(1, int(_os_s15.environ.get("STAGE_1_5_CONCURRENCY", "6")))
     # `persisted` counts ROWS WRITTEN; `ocr_ok` counts pages the OCR pass actually
@@ -437,9 +382,6 @@ async def precompute_document_layout(
     # DELIBERATELY upserted with cache_status="ocr_failed" (so it can be retried),
     # so `persisted` is >= 1 from the first page even with the endpoint completely
     # down. The breaker's `persisted == 0` condition was therefore false always.
-    # With PaddleOCR dead that meant every page ran its full retry budget, the log
-    # read "Cached 140/140 pages", a `completed` event fired, and the job finished
-    # on zero VLM text — chunking and discovery silently degrading to PyMuPDF.
     _state = {"persisted": 0, "ocr_ok": 0, "http_failures": 0, "config_error": None}
     _state_lock = asyncio.Lock()
 
@@ -578,12 +520,6 @@ async def precompute_document_layout(
     # stuck-threshold (5 min) — without this flag the cron would re-dispatch
     # the job mid-stage and Stage 1.5 would start over from the resume point.
     # Budget: 30s/page (worst case with PaddleOCR retries), floor 300s.
-    #
-    # When a `tracker` is provided, we use its stack-based set_slow_operation
-    # which is nest-safe vs Stage 3's parallel per-product markers. Without a
-    # tracker (e.g. backfill scripts), fall back to a direct UPDATE — the
-    # collision risk only exists when Stage 3 is concurrent, which doesn't
-    # happen on the backfill path.
     _slow_op_key = f'stage_1_5_layout_precompute:{len(pages_to_process)}_pages'
     _slow_op_budget = max(300, len(pages_to_process) * 30)
     _stage_1_5_slow_op_set = False
@@ -624,7 +560,6 @@ async def precompute_document_layout(
     # resolution raises LayoutPrecomputeFatalError when the manager is
     # unavailable, leaving the marker set on a dead job. Nothing above this point
     # is slow (manager lookup and closure definitions), so the marker still covers
-    # every second of the actual page fan-out below.
     try:
         # STREAMING fan-out (not chunk-barriered). Bound concurrency with a
         # semaphore so exactly PARALLELISM pages are in flight AT ALL TIMES: as
@@ -730,8 +665,6 @@ async def precompute_document_layout(
     # total write failure — bad credentials, table gone, schema drift — used to
     # arrive here with persisted == 0 and emit `completed` anyway. Everything
     # downstream reads that table, so the job then ran green on no layout at all:
-    # the exact silent-zero shape the platform rules call out. Raise instead, the
-    # same way the manager-unavailable and circuit-breaker preconditions do.
     if pages_to_process and persisted == 0:
         _msg = (
             f"Stage 1.5 persisted 0 of {len(pages_to_process)} pages to "
@@ -781,21 +714,7 @@ def load_page_texts_from_cache(
     logger: Optional[logging.Logger] = None,
     zero_indexed: bool = False,
 ) -> Dict[int, str]:
-    """Canonical reader for the PaddleOCR-VL text cache → ``{page: reading-order text}``.
-
-    The single source of truth every text consumer should use (discovery,
-    chunking-fallback, Stage 4 embedding body text, spec-vision page resolution,
-    catalog layout classification) instead of re-implementing the
-    query→gate→join loop. Queries ``document_layout_analysis`` (scoped to
-    ``physical_pages`` when given), keeps only ``processing_version='paddleocr-vl'``
-    rows, and joins each row's regions via :func:`page_text_from_layout_regions`.
-    Pages with no text are omitted.
-
-    Keys are 1-based physical page numbers; pass ``zero_indexed=True`` to get
-    0-based PDF page indices (i.e. ``physical_page - 1``) for consumers that index
-    ``doc[idx]`` directly. Returns ``{}`` on any failure / missing ``document_id``
-    so callers fall back to the raw PDF text path — never raises.
-    """
+    """Canonical reader for the PaddleOCR-VL text cache → ``{page: reading-order text}``."""
     if not document_id:
         return {}
     try:
@@ -831,16 +750,7 @@ def build_page_text_from_layout_cache(
     supabase: Any,
     logger: logging.Logger,
 ) -> Optional[str]:
-    """Build discovery's page-marked text from the PaddleOCR structural cache.
-
-    Structure-first: the PaddleOCR pass runs before discovery and persists each
-    page's reading-order text into ``document_layout_analysis``. This joins that
-    text into the same ``--- # Page N ---`` page-marked string discovery expects
-    (cleaner + multilingual + layout-ordered vs. raw ``page.get_text()``).
-
-    Returns ``None`` when no PaddleOCR rows exist for the document, so the caller
-    falls back to the PyMuPDF text path (robustness, not a parallel pipeline).
-    """
+    """Build discovery's page-marked text from the PaddleOCR structural cache."""
     page_texts = load_page_texts_from_cache(supabase, document_id, logger=logger)
     if not page_texts:
         return None
@@ -876,20 +786,7 @@ async def get_layout_from_document_cache_with_status(
     supabase: Any,
     logger: logging.Logger,
 ) -> Dict[int, Dict[str, Any]]:
-    """Read cached merged regions WITH cache_status semantics (audit fix #24).
-
-    Returns `{physical_page: {regions: [...], cache_status: 'success'|
-    'paddleocr_no_text'|'empty_page'|'ocr_failed'|'page_failed'|None}}`.
-    cache_status=None means
-    the row exists but predates the 2026-05-01 migration that added the field.
-
-    The chunker uses this to decide:
-      - cache_status=='success' → use layout-aware chunking
-      - cache_status=='ocr_failed' → log + emit metric, fall back to text-based
-        (the failure will be retried by the next Stage 1.5 run because the
-         resume-skip query filters out ocr_failed rows)
-      - cache_status missing OR no row → cache miss, fall back to text-based
-    """
+    """Read cached merged regions WITH cache_status semantics (audit fix #24)."""
     if not document_id or not physical_pages:
         return {}
 

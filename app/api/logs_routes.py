@@ -1,20 +1,4 @@
-"""
-Logs API Routes
-
-Endpoints for fetching and managing system logs from the database.
-
-`POST /frontend` is deliberately the one route here that does NOT require auth: the
-browser logger (`src/services/logger.service.ts`) sends errors with `keepalive` and
-no Authorization header, and it swallows every failure — so requiring a token would
-switch frontend error reporting off silently, which is worse than the endpoint being
-open.
-
-What it may not do is TRUST the caller (audit #24 M11-4). It accepted a body-supplied
-`user_id`, an unconstrained `level` and unbounded fields, so any caller could write a
-forged CRITICAL entry attributed to somebody else, at any size, into a table whose
-only defence is a TTL. Attribution now comes from a bearer token when one is present
-and is absent otherwise; it is never taken from the body.
-"""
+"""Logs API Routes"""
 
 import logging
 import uuid
@@ -189,18 +173,7 @@ async def get_logs(
     source: Optional[str] = Query(None, description="Filter by source (frontend or backend)"),
     hours: Optional[int] = Query(24, description="Number of hours to look back (default: 24)")
 ):
-    """
-    Get system logs from the database.
-    
-    Supports filtering by:
-    - Log level
-    - Logger name
-    - Job ID
-    - Search term in message
-    - Time range (hours)
-    
-    Returns paginated results.
-    """
+    """Get system logs from the database."""
     try:
         supabase = get_supabase_client()
         

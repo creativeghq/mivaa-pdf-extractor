@@ -1,26 +1,4 @@
-"""Is this generated SQL a single read-only SELECT over the tables we loaded, and nothing else?
-
-Two layers stand between a model's SQL and the engine, and this is the first (the second
-is `loader.lock_down`, which makes DuckDB refuse files, extensions and configuration
-even if a query got past here). Both are needed because DuckDB can reach the filesystem
-and the network from INSIDE a plain SELECT:
-
-    SELECT * FROM read_csv('/etc/passwd')   -- parses as a SELECT
-    SELECT * FROM glob('/**')               -- so does this
-
-So beyond refusing writes and DDL, this refuses any table function, any table not
-loaded by us, and ANY FUNCTION IT DOES NOT KNOW — an allow-list, not a deny-list, which
-is what makes it hold for DuckDB extension functions that do not exist yet.
-
-`sqlglot` is imported INSIDE `validate_sql`, deliberately. This module is imported at
-application start through the tabular router, and on 2026-09-05 a deploy that skipped its
-pip install restarted the service into `ModuleNotFoundError: sqlglot` — every route on the
-API answered 502 for the sake of one optional feature. An optional dependency is resolved
-at the call that needs it, and reported there, never at boot.
-
-Loaded by path in the unit test when sqlglot is importable, and the shape is pinned
-statically when it is not (CI installs pytest alone).
-"""
+"""Is this generated SQL a single read-only SELECT over the tables we loaded, and nothing else?"""
 
 from __future__ import annotations
 

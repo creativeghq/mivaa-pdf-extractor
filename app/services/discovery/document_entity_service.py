@@ -1,26 +1,4 @@
-"""
-Document Entity Service
-
-Handles document entities (certificates, logos, specifications) as separate knowledge base.
-These entities are stored in document_entities table and linked to products via relationships.
-
-ARCHITECTURE:
-- Document entities are OPTIONAL (based on extract_categories parameter)
-- Can be extracted DURING or AFTER product processing
-- Stored separately from products in document_entities table
-- Linked to products via product_document_relationships table
-- Managed in "Docs" admin page
-
-SUPPORTED ENTITY TYPES:
-- certificates: ISO, CE, quality certifications, fire ratings
-- logos: company logos, brand marks, certification logos
-- specifications: technical specs, installation guides, maintenance instructions
-- marketing: marketing content, brochures (future)
-- bank_statement: bank statements (future)
-
-EXTENSIBILITY:
-This service is designed to support future document types through a plugin system.
-"""
+"""Document Entity Service"""
 
 import logging
 from typing import Dict, List, Any, Optional
@@ -376,19 +354,7 @@ class DocumentEntityService:
         document_id: str,
         workspace_id: str
     ) -> Dict[str, Any]:
-        """
-        Generate embeddings for all document entities.
-
-        Creates text embeddings for entity content to enable semantic search.
-        Embeddings are written to `document_entities.text_embedding` (halfvec(1024)),
-        which `search_document_entities_by_embedding` reads.
-
-        This used to claim the vectors went to "the embeddings table". There is no
-        such table in this database and the function contained no write at all: it
-        generated a Voyage vector per entity, checked it was non-empty, incremented
-        `embeddings_generated`, logged a green tick and discarded it. Every run paid
-        for embeddings and reported success while entity search stayed empty forever.
-        `embeddings_generated` now counts rows actually persisted.
+        """Generate embeddings for all document entities.
 
         Args:
             document_id: Document ID to generate embeddings for

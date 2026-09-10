@@ -118,16 +118,7 @@ def run_killable(
     timeout: float,
     label: str = "work",
 ) -> Any:
-    """Run `fn(*args)` in a subprocess; kill it if it exceeds `timeout`.
-
-    Returns whatever `fn` returned. Raises `KillableTimeout` if it ran too long (and the
-    process is dead by the time this raises), `KillableCrashed` if the child died without
-    answering, or a `RuntimeError` carrying the child's own exception text.
-
-    Synchronous by design. The caller is an async function and wraps this in
-    `run_in_executor` — that thread now blocks on a process it can kill, instead of being
-    the thing that cannot be stopped.
-    """
+    """Run `fn(*args)` in a subprocess; kill it if it exceeds `timeout`."""
     try:
         pickle.dumps(args)
     except Exception as e:
@@ -146,12 +137,6 @@ def run_killable(
         # Drain the queue BEFORE joining. A child putting a large payload blocks until
         # the parent reads it, so joining first deadlocks on exactly the big documents
         # this path exists for.
-        #
-        # Polled rather than one `out.get(timeout=timeout)`, so a child that DIES is
-        # noticed when it dies. A single blocking get waits out the full deadline and
-        # then reports a timeout — so an out-of-memory kill at two seconds would be
-        # reported five minutes later, under the wrong name, and retried as though the
-        # document were merely slow.
         deadline = time.monotonic() + timeout
         result = None
         while True:

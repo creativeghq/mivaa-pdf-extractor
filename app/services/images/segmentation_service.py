@@ -25,15 +25,7 @@ logger = logging.getLogger(__name__)
 
 
 class SegmentationService:
-    """Detects material zones in 3D renders via Anthropic Claude Opus.
-
-    Claude Opus is the only path, and quality on this task is excellent
-    (22 well-described zones on a bathroom render in ~40s with catalog-grade
-    material names). Do NOT add a second vision provider here without a
-    measured quality/cost case AND a health probe that fails loudly - the
-    last attempt silently 404'd on every call for months while quietly
-    falling through to Anthropic, so nothing ever looked broken.
-    """
+    """Detects material zones in 3D renders via Anthropic Claude Opus."""
 
     def __init__(self):
         import os
@@ -89,15 +81,12 @@ class SegmentationService:
             pass
         return "image/jpeg"  # safe fallback
 
-    #: Forced-tool schema (#32 + #33 item 2). This call was BOTH a raw Anthropic POST
-    #: (so an OPUS segmentation logged no cost anywhere) and a markdown-fence stripper
-    #: with a truncation-recovery parser underneath it. The recovery code is the tell:
-    #: it exists because the model ran out of max_tokens mid-array and someone had to
-    #: rebuild the JSON by walking brace depth. A forced tool removes the need to guess.
-    #:
-    #: Only `bbox` is required per zone — `_validate_zones` fills every other default,
-    #: and requiring them would push the model into inventing labels for a zone it is
-    #: unsure about.
+    # : Forced-tool schema (#32 + #33 item 2). This call was BOTH a raw Anthropic POST
+    # : (so an OPUS segmentation logged no cost anywhere) and a markdown-fence stripper
+    # : with a truncation-recovery parser underneath it. The recovery code is the tell:
+    # : it exists because the model ran out of max_tokens mid-array and someone had to
+    # : rebuild the JSON by walking brace depth. A forced tool removes the need to guess.
+    # :
     SEGMENTATION_TOOL = {
         "name": "emit_material_zones",
         "description": "Return the material zones detected in this image.",
@@ -216,7 +205,6 @@ class SegmentationService:
         # MORE that never arrived. Swallowing it would end the stream with a `done`
         # that says the list is whole — the caller would cache a truncated answer as
         # the permanent one for that image. The route turns it into an `error` event
-        # carrying the count that did make it.
         async for event in stream_with_tool(
             task="image_segmentation",
             model="claude-opus-5",

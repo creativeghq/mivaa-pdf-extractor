@@ -15,23 +15,7 @@ _LIKE_METACHARACTERS = ("\\", "%", "_", "*")
 
 
 def escape_like(term: str) -> str:
-    r"""Neutralise LIKE wildcards in a user-supplied search term.
-
-    Returns the term with ``\``, ``%``, ``_`` and ``*`` backslash-escaped,
-    ready to be wrapped in ``%...%`` by the caller. Postgres treats a
-    backslash as the default LIKE escape character, so ``\%`` matches a
-    literal percent sign.
-
-    Caveat on ``*``: PostgREST rewrites ``*`` to ``%`` in like/ilike patterns,
-    so an escaped ``\*`` reaches Postgres as ``\%`` and matches a literal
-    ``%`` rather than a literal ``*``. Closing the wildcard is worth the
-    mismatch — a bare ``*`` would otherwise match every row in the table.
-
-    NOT safe for building ``or=(...)`` / ``in.(...)`` filter strings:
-    PostgREST parses those as quoted values and consumes single backslashes,
-    and commas and parentheses are structural there. This is for plain
-    single-column ``.like()`` / ``.ilike()`` values only.
-    """
+    r"""Neutralise LIKE wildcards in a user-supplied search term."""
     if not term:
         return ""
     escaped = term

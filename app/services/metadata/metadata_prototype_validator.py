@@ -1,20 +1,4 @@
-"""
-Metadata Prototype Validation Service
-
-This service validates AI-extracted metadata against prototype values using Voyage AI embeddings (1024D).
-It standardizes free-text metadata to consistent, validated property values.
-
-Architecture:
-- Loads prototype embeddings from the material_metadata_fields registry (#347 phase 4.1)
-- Generates Voyage AI 1024D embeddings for extracted values
-- Compares using cosine similarity
-- Returns validated value if confidence > threshold
-
-Integration:
-- Runs AFTER DynamicMetadataExtractor
-- Runs BEFORE database storage
-- Non-breaking: falls back to original value if validation fails
-"""
+"""Metadata Prototype Validation Service"""
 
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -98,16 +82,7 @@ class MetadataPrototypeValidator:
         self._cache_loaded = False
     
     async def load_prototypes(self):
-        """Load the controlled vocabulary for every field that has one.
-
-        #347: this reads `dropdown_options` — the hand-curated allowed values an admin already
-        maintains for 51 fields — NOT `prototype_descriptions`, which no row has ever carried.
-        That column is why this validator did nothing: it demanded a second, parallel curation
-        nobody ever wrote, while the real curation sat in the next column over.
-
-        47 of those 51 fields are NOT canonicalizable, so facet canonicalization never sees
-        them. For those, this is the only thing between an extracted value and products.metadata.
-        """
+        """Load the controlled vocabulary for every field that has one."""
         if self._cache_loaded:
             return
 
@@ -316,24 +291,7 @@ class MetadataPrototypeValidator:
         return float(max(0.0, min(1.0, similarity)))
 
     def _flatten_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Flatten nested metadata structure.
-
-        DynamicMetadataExtractor returns:
-        {
-            "critical": {"material_category": "ceramic"},
-            "discovered": {
-                "material_properties": {"finish": "glossy"},
-                "performance": {"slip_resistance": "R11"}
-            }
-        }
-
-        This flattens to:
-        {
-            "material_category": "ceramic",
-            "finish": "glossy",
-            "slip_resistance": "R11"
-        }
-        """
+        """Flatten nested metadata structure."""
         flat = {}
 
         # Handle critical metadata

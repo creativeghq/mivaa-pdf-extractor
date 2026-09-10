@@ -1,26 +1,4 @@
-"""Turn image-similarity hits into rows a caller can actually use (#277).
-
-VECS answers an image search with `{image_id, similarity_score}` — a UUID and a number.
-That is the whole result. Two endpoints returned exactly that:
-
-  * `/api/search/by-<aspect>` — what the agent calls for "find a similar texture to this"
-  * `rag_service.image_similarity_search` — `strategy=image`
-
-Neither is *wrong*; the ranking is real. But a UUID cannot be shown to a user or described
-by an agent, so the answer was unusable, and the failure was invisible because the endpoint
-reported success with a populated `results` array. `/api/rag/search?strategy=multi_vector`
-never had this problem — it resolves to products and the route enriches them, keying on
-`result.get('id')`, which image rows do not carry.
-
-So: one enrichment, used by both, resolving each `image_id` to what it depicts —
-the image itself (caption, url, page, document) and the product it is associated with, if
-any. Batched: two queries for the whole result set, not two per row.
-
-TENANCY: `workspace_id` is required and filtered on, not decorative. These ids come back
-from a VECS collection whose metadata filter is the only thing scoping the search; re-scoping
-here means a caller cannot enrich — and thereby read the caption and URL of — an image id
-that belongs to someone else, whatever the vector store returned (invariant 1).
-"""
+"""Turn image-similarity hits into rows a caller can actually use (#277)."""
 
 from __future__ import annotations
 

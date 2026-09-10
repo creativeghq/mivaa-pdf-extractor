@@ -1,17 +1,4 @@
-"""
-SLIG (SigLIP2) Client
-
-Client for the `slig` Modal app (``modal_app/slig.py``) serving the model
-`basiliskan/slig` = google/siglip2-base-patch16-512 (**native 768D, no
-projection head**). Migrated off HuggingFace Inference Endpoints 2026-06-14
-(parity verified, cosine = 1.0). POSTs to the Modal ``/infer`` route with the
-same ``{inputs, parameters}`` contract the HF endpoint used.
-
-Supports 4 modes: zero_shot, image_embedding, text_embedding, similarity.
-
-Lifecycle (warmup / scale-to-zero) is Modal-managed and handled by the shared
-SLIGEndpointManager passed in from the endpoint registry.
-"""
+"""SLIG (SigLIP2) Client"""
 
 import httpx
 import logging
@@ -29,20 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class SLIGClient:
-    """
-    Client for SLIG (SigLIP2) Inference Endpoint.
-
-    Supports 4 modes:
-    - zero_shot: Classify image against candidate labels
-    - image_embedding: Extract 768D embedding from image
-    - text_embedding: Extract 768D embedding from text
-    - similarity: Calculate similarity between images and texts
-
-    Includes automatic endpoint lifecycle management:
-    - Auto-resume before inference (starts billing)
-    - Auto-pause after idle timeout (stops billing)
-    - 60s warmup after resume
-    """
+    """Client for SLIG (SigLIP2) Inference Endpoint."""
 
     def __init__(
         self,

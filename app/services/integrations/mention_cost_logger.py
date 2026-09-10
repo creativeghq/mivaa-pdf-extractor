@@ -1,26 +1,4 @@
-"""
-Mention Monitoring — cost logging + credit metering helpers.
-
-Single chokepoint for writing `ai_usage_logs` entries from the mention
-monitoring services. Every external API call (DataForSEO, Perplexity,
-Anthropic, OpenAI, Gemini) goes through `log_external_call()` so we get:
-
-  - Per-subject cost attribution (metadata.tracked_mention_id)
-  - Per-product cost attribution (product_id when internal-flow)
-  - Per-run cost attribution (metadata.refresh_run_id when refreshing)
-  - Module-level rollup via module_slug='mention-monitoring'
-
-Also exposes credit debit/refund helpers for the partner-billing layer
-(Layer B) — endpoints debit credits before doing work and refund on
-failure, mirroring how price-tracking handles partner usage.
-
-Why a dedicated module instead of using AICallLogger directly:
-  - AICallLogger.log_ai_call requires a confidence_score + breakdown that's
-    meaningful for catalog AI (vision, classification, extraction) but
-    awkward for mention discovery / classifier calls.
-  - We want a flat "log this external call with these costs" interface
-    that doesn't pretend to compute confidence.
-"""
+"""Mention Monitoring — cost logging + credit metering helpers."""
 
 from __future__ import annotations
 
@@ -52,18 +30,7 @@ MODULE_SLUG = "mention-monitoring"
 
 
 def _slug_for(attribution: Optional["CostAttribution"]) -> str:
-    """Which module's budget a DataForSEO call belongs to.
-
-    The two `log_dataforseo_*` helpers below are called by the SHARED
-    `dataforseo_unified_client`, which is a singleton used by both mention-monitoring and the SEO
-    agent toolkit. They lived in this module and hardcoded MODULE_SLUG, so every SEO DataForSEO
-    call was filed under 'mention-monitoring': `seo-toolkit` had 0 rows in ai_usage_logs over 30
-    days while the operator dashboard summed `seo_research_runs.cost_usd`, which is a hardcoded 0.
-    Real spend, attributed to the wrong module, invisible in both places it was looked for.
-
-    The caller sets `module_slug` on its attribution; anything that doesn't stays on the historical
-    default, so existing mention-monitoring rows keep their slug and remain comparable. (#286)
-    """
+    """Which module's budget a DataForSEO call belongs to."""
     return getattr(attribution, "module_slug", None) or MODULE_SLUG
 
 
@@ -100,17 +67,6 @@ class CostAttribution(_CoreCostAttribution):
 def log_external_call(**kwargs) -> None:
     """Insert one row into ai_usage_logs — delegates to the shared core, defaulting
     module_slug='mention-monitoring'. Signature unchanged for existing callers.
-
-    `module_slug` is a DEFAULT, not a constant: the two `log_dataforseo_*` helpers below are
-    reached from the SHARED unified client and pass the caller's own slug. Injecting it
-    unconditionally (`_core_log_external_call(module_slug=MODULE_SLUG, **kwargs)`) raised
-    `TypeError: got multiple values for keyword argument 'module_slug'` the moment one of them
-    did — a runtime failure inside a best-effort logger, i.e. swallowed, i.e. cost logging
-    silently stops. `setdefault` keeps every existing caller identical and lets an explicit one
-    win. (#286)
-
-    Per-row cost rollups (Layer C `recompute_mention_cost`) still sum these by
-    tracked_mention_id; product_id is set at the column level from attribution.
     """
     kwargs.setdefault("module_slug", MODULE_SLUG)
     _core_log_external_call(**kwargs)
@@ -260,13 +216,6 @@ def log_llm_probe_call(
     else:
         # Every other probe model is priced from `ai_model_pricing`, the platform's single
         # USD source, by the SAME resolver `haiku_token_cost` was already delegating to.
-        #
-        # This used to be an if/elif over three hardcoded rate pairs ending in
-        # `(0.0005, 0.0015)` — "conservative default for an unrecognised probe model".
-        # It was conservative for a cheap model and wrong by more than an order of
-        # magnitude for a frontier one, which is exactly what #349 A7 makes reachable:
-        # opting a subject into Opus would have booked Opus tokens at Haiku-ish rates and
-        # under-reported the spend everywhere it is read. A wrong price is a valid number.
         from app.config.ai_pricing import AIPricingConfig
         raw = float(AIPricingConfig.calculate_cost(
             model=model,

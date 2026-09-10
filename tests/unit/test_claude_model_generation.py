@@ -1,21 +1,4 @@
-"""No retired Claude model id reaches a call site.
-
-A superseded model id is the quietest possible defect. It is a valid string, it imports, and the
-provider either serves the old model — so you silently pay for and get worse output than you think
-— or 404s a path nothing exercises in CI. Neither shows up as a failure anyone can see.
-
-This one had spread. ``claude-opus-4-8`` was retired on the platform side, and 36 live call sites
-HERE kept passing it: the vision classifier, segmentation, OCR, product creation and enrichment,
-the embedding-to-text service and the whole RAG synthesis path. ``app/config.py`` had already moved
-its DEFAULTS to ``claude-opus-5``. The defaults were right; the code was not reading them.
-
-Current families: Claude 5 (``claude-opus-5``, ``claude-sonnet-5``, ``claude-fable-5``) and
-``claude-haiku-4-5`` — Haiku has no 5 yet, so it is NOT retired.
-
-Source-based on purpose: MIVAA's CI installs pytest and no app dependencies, so a test that
-imports the services under check would not run at all. The platform repo carries the twin of this
-file (``tests/unit/claudeModelGeneration.test.ts``); change one and change both.
-"""
+"""No retired Claude model id reaches a call site."""
 from __future__ import annotations
 
 import re

@@ -1,15 +1,4 @@
-"""Credit metering for paid MIVAA AI operations (pentest #250 H1).
-
-Endpoints that call a paid upstream (Replicate / Claude vision) must debit credits
-BEFORE the call (CLAUDE.md invariant #10) and refund if it fails. Prices are
-admin-editable in the `ai_model_pricing` table (model_key == service_name); the
-Python fallback lives in app/config/ai_pricing.py `EXTERNAL_SERVICE_PRICING`.
-
-Policy:
-  - insufficient balance  -> HTTPException(402) (do NOT do the work)
-  - billing-infra error   -> log + proceed (don't block real work on a credits outage)
-  - upstream failure       -> refund what was debited
-"""
+"""Credit metering for paid MIVAA AI operations (pentest #250 H1)."""
 
 from __future__ import annotations
 

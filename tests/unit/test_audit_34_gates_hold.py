@@ -1,23 +1,4 @@
-"""Guards for the mivaa#34 job-management fixes (M19-1, M19-2, M19-3).
-
-All three are LATENT — every ingestion table holds zero rows — which is exactly why
-they are worth pinning now: they become live on the first production ingestion, and a
-guard written before the data exists is a guard written without pressure.
-
-#34 is the most precisely-scoped issue in this series. It also CORRECTS earlier passes:
-seven routes reported as cross-tenant IDORs are not, because `require_rag_resource_access`
-resolves the owning workspace from the resource itself. Several cases below therefore pin
-things that are already RIGHT, so a later tidy-up cannot quietly undo them.
-
-10 of the 11 cases were watched to fail against the pre-fix tree. The one that passes
-both ways is `test_restart_still_uses_its_compare_and_swap` — a stays-as-it-is guard over
-the pattern M19-3 was fixed BY, named so it is not mistaken for coverage.
-
-One place the issue's own fix does not work, and the correction is recorded in the code:
-it says to swap all FOUR weakly-gated routes to `require_rag_resource_access`. That gate
-raises 400 when there is no resource id in the path or query, so on the LIST route it
-would reject every call. A list needs a predicate, not a resource lookup.
-"""
+"""Guards for the mivaa#34 job-management fixes (M19-1, M19-2, M19-3)."""
 
 import ast
 import re

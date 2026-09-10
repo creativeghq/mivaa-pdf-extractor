@@ -94,18 +94,7 @@ async def list_prompt_templates(
     include_inactive: bool = False,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    **📋 List Prompt Templates**
-    
-    List all customizable AI prompts for a workspace.
-    
-    ## Query Parameters
-    - **workspace_id** (required): Workspace UUID
-    - **stage** (optional): Filter by stage (metadata_extraction, discovery, classification, chunking)
-    - **category** (optional): Filter by category (products, certificates, logos, specifications)
-    - **industry** (optional): Filter by industry (construction, interior_design, general)
-    - **include_inactive** (optional): Include inactive templates (default: false)
-    """
+    """**📋 List Prompt Templates**"""
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, workspace_id)
     try:
@@ -128,22 +117,7 @@ async def create_prompt_template(
     request: CreatePromptTemplateRequest,
     current_user: dict = Depends(get_current_user)
 ):
-    """
-    **➕ Create Prompt Template**
-    
-    Create a new customizable AI prompt template.
-    
-    ## Stages
-    - **metadata_extraction**: Extract product metadata from PDFs
-    - **discovery**: Discover products in PDFs
-    - **classification**: Classify images
-    - **chunking**: Semantic text chunking
-    
-    ## Industries
-    - **general**: Default for all material types
-    - **construction**: Tiles, flooring, construction materials
-    - **interior_design**: Furniture, decor, design products
-    """
+    """**➕ Create Prompt Template**"""
     # Bind the caller-supplied workspace to the authenticated identity (invariant 1).
     workspace_id = await resolve_workspace_id(current_user, request.workspace_id)
     try:

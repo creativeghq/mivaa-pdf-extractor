@@ -93,15 +93,7 @@ def _router_symbol_sources(root: Path, tree: ast.AST) -> Dict[str, Path]:
 
 
 def routers_mounted_at(root: Path, prefix: str, main_py: Optional[Path] = None) -> List[Path]:
-    """Source files whose routers end up serving `prefix`.
-
-    A router reaches `prefix` two ways, and both count:
-      * `app.include_router(r, prefix="/api/rag")` — mounted there explicitly.
-      * `app.include_router(r)` where the router declares `APIRouter(prefix="/api/rag")`
-        itself. This is the case that matters most: rag_routes.py carries its own
-        prefix, so a guard keyed only on the include_router kwarg would miss the very
-        file every duplicate is a duplicate OF.
-    """
+    """Source files whose routers end up serving `prefix`."""
     main_py = main_py or (root / "app" / "main.py")
     tree = ast.parse(main_py.read_text(encoding="utf-8"))
     symbols = _router_symbol_sources(root, tree)

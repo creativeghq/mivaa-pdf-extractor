@@ -505,11 +505,6 @@ class TestShareOfVoiceDividesByAnsweredProbes:
     """Measured on production 2026-08-27: 213 of 636 stored probes are errors —
     every `gpt-4o-mini` call, all `HTTP 429`. `visibility_snapshot` computed
     `mentioned / len(rows)`, so those rows counted as probes that found nothing.
-
-    That reports a dead API key as `0.0` share of voice, which reads as "AI
-    assistants never mention us" and gets acted on as a content problem. It also
-    HALVES the true rate for every other model, because the failures sit in the
-    denominator of the blended figure.
     """
 
     def _rows(self, n, *, model, mentioned_every_other=False, error=None):

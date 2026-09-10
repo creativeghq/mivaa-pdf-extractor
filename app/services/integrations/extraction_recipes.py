@@ -1,27 +1,4 @@
-"""
-Self-healing recipe discovery for retailer price scrapes.
-
-Goal: every Firecrawl scrape against a retailer page is treated as
-training data. Once we've seen a domain enough times, future scrapes
-on URLs matching the same pattern try a cheap httpx + selectolax fetch
-first, falling back to Firecrawl on selector miss.
-
-The orchestration:
-  1. First time we ever scrape a URL on `flobali.gr`: record the URL pattern
-     + the price text Firecrawl returned. After ~3 successful scrapes on the
-     same pattern, derive CSS selectors heuristically (find the unique CSS
-     path to the text containing the extracted price).
-  2. On future scrapes: if the recipe has confidence >= 0.8 and selectors
-     are non-empty, run httpx + selectolax. Cross-check with Firecrawl in
-     "shadow mode" until we've seen 5+ matches in a row, then httpx-only.
-  3. Selector drift detection: any 3-mismatch streak disables the recipe
-     and flips back to Firecrawl. Manual re-validation re-enables.
-
-This file ships the data model + lookup/upsert helpers. The heuristic
-selector-derivation step lives in a separate worker (TODO) — for now the
-recipe table is populated only when an admin (or a future migration)
-hand-seeds it. The infra is wired so seeding immediately reduces cost.
-"""
+"""Self-healing recipe discovery for retailer price scrapes."""
 
 from __future__ import annotations
 

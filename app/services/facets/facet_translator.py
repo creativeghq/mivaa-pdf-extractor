@@ -1,26 +1,4 @@
-"""
-Pretranslate layer for the facet canonicalization pipeline.
-
-Sits between L1 (string normalize) and L2 (Voyage cosine cluster). When the
-upstream extractor produces a non-English value despite the L0 prompt rule, or
-when the ingest path has no LLM upstream (XML supplier feeds), this layer
-translates the value to lowercase English BEFORE it hits the canonicalizer.
-
-Why this matters: the resolve_facet_value RPC's defense-in-depth guard rejects
-any non-ASCII normalized value as canonical. Without pretranslate, those rejects
-would mean lost data. With pretranslate, the canonical row is always English
-even when the raw was Greek/Italian/German/etc.
-
-Cost discipline:
-  - ASCII-only values bypass Haiku entirely (no API call).
-  - Non-ASCII values are batched in ONE Haiku call per canonicalize_product
-    invocation regardless of count.
-  - Empty batch = no call at all.
-
-The translation is best-effort: if Haiku fails or returns junk, we fall back
-to the raw normalized value and let the RPC's non-ASCII guard reject it as
-'rejected_non_english'. That gets surfaced in facet_merge_log for follow-up.
-"""
+"""Pretranslate layer for the facet canonicalization pipeline."""
 
 from __future__ import annotations
 

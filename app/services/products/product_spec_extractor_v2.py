@@ -1,16 +1,5 @@
-"""
-Product Spec Extractor v2 — Layer 3 of the reusable PDF spec pipeline.
+"""Product Spec Extractor v2 — Layer 3 of the reusable PDF spec pipeline.
 
-Runs per product. For each product, extracts technical-characteristics and
-packing specifications from the PDF using a 3-tier hybrid strategy:
-
-  Tier A  PyMuPDF text-dict parser  (free, deterministic, exact values)
-  Tier B  Claude Opus Vision        (fallback when Tier A is below threshold)
-  Tier C  Catalog legend inheritance (fields still null after A+B inherit
-          from documents.metadata.catalog_legends values that applied
-          globally to the catalog)
-
-Why this shape
 --------------
 VALENOVA page 15 analysis revealed that ALL the packing values
 (pieces/box, m²/box, weight kg/lb, pallet info, thickness mm/inch) exist
@@ -102,11 +91,6 @@ def _parse_number(raw: str) -> Optional[float]:
 # is consistent across Harmony, Peronda, Aparici, Atlas Concorde, Marazzi,
 # Florim, and Coem — we exploit it to assign numeric values to fields
 # positionally when header-matching fails or headers span multiple lines.
-#
-# The `None` entries represent positions that don't always exist (e.g. some
-# catalogs skip pcs_per_sqft and go straight from pcs_per_box to m²/box).
-# Positional mapping honors the order but allows missing intermediates
-# when the actual value count matches a known truncated variant.
 CANONICAL_PACKING_ORDER: List[str] = [
     "pieces_per_m2",           # 1
     "pieces_per_sqft",         # 2
@@ -216,17 +200,6 @@ def _find_product_row(
 ) -> List[Dict[str, Any]]:
     """Find the horizontal row of spans that sits on the same line as the
     product name in a packing table.
-
-    Important: ceramic catalogs print the product name several times on a
-    spec page (hero title at top, SKU labels in the variant block, packing
-    table row label at bottom). We want the LAST occurrence — the packing
-    table row — and then every span within `y_tolerance` of that span's
-    center y.
-
-    Heuristic for "this is the packing row":
-      - The product name is a standalone token (not part of a SKU line
-        like "VALENOVA WHITE LT/11,8X11,8")
-      - There are numeric spans to the right of it on the same y
     """
     n_name = _normalize(product_name)
     if not n_name:
@@ -285,14 +258,6 @@ def _extract_values_positional(
 ) -> Dict[str, Any]:
     """Positional mapping: extract numeric + dimension values from the row,
     assign them to CANONICAL_PACKING_ORDER fields based on the count we see.
-
-    This is more robust than header matching because:
-      - Ceramic catalog column orders are conventional across brands
-      - Multi-line headers are hard to parse reliably via text dict
-      - Position-based mapping works even when header labels are missing
-
-    Handles merged spans like "2108.42 120X80X91" by splitting them into
-    two tokens first.
     """
     n_name = _normalize(product_name)
     out: Dict[str, Any] = {}
@@ -380,18 +345,6 @@ def _extract_values_positional(
     # exact X→column mapping without header coordinates, so instead we
     # rely on the fact that in the product row the bullet spans appear
     # left-to-right in the same order as the header columns.
-    #
-    # Heuristic: find each bullet's X position and compare against the
-    # X positions of the FIRST numeric value (which sits under the UNIT
-    # column). Every bullet to the LEFT of that first numeric is a tech-
-    # characteristics bullet, and we assign them by order:
-    #   position 1 → MATT bullet → finish="matte"
-    #   position 2 → GLOSS bullet → finish="gloss"
-    #   position 3 → SHADE VARIATION bullet
-    #   position 4 → SHOWER WALL → recommended_use includes "shower_wall"
-    #   position 5 → SHOWER FLOOR → recommended_use includes "shower_floor"
-    #   position 6 → FLOOR → recommended_use includes "floor"
-    #   position 7 → TRAFFIC
     BULLET_POSITIONS: List[Tuple[str, Any]] = [
         ("finish_matt", True),
         ("finish_gloss", True),
@@ -449,14 +402,6 @@ def _tier_a_pymupdf(
             spans = _extract_text_spans(doc, idx)
             if not spans:
                 # No positional text spans at all → image-only / scanned page.
-                # Tier A is STRUCTURALLY unable to read it: its packing-column
-                # mapping needs per-token bbox geometry that a rendered image
-                # doesn't expose, and the PaddleOCR cache carries reading-order
-                # text but not per-token spans, so there's no cache fallback here
-                # (unlike the plain-text consumers). This is NOT "no packing data"
-                # — it's "Tier A is blind on this page". Tier B (Claude Opus Vision
-                # over the rendered page, fed the correct pages by the cache-aware
-                # resolver) is what recovers these; it always runs when enabled.
                 image_only_pages.append(idx)
                 continue
             product_row = _find_product_row(spans, product_name)
@@ -700,19 +645,6 @@ async def extract_product_spec(
 
         # ── Tier B — Claude Opus Vision (complementary, not fallback) ────────
         # We ALWAYS run Tier B when enabled, because:
-        #   - Tier A only extracts the packing row + thickness + bullet flags
-        #   - Tier B uniquely provides: commercial.vision_variants (SKU
-        #     metadata per color), commercial.grout_details (per-color
-        #     grout recommendations), and any per-product performance
-        #     icons that happen to be text-labeled (R10, PEI III, etc.)
-        # Tier A fields take priority — _merge_specs never overwrites
-        # existing values — so there's no risk of regressing accurate
-        # Tier A numbers with Claude Opus approximations.
-        #
-        # The one cost optimization: when Tier A already hit the core
-        # packing threshold, we skip Tier B pages that Tier A found and
-        # only send the product's intro/photo pages to Claude Opus. This is
-        # handled inside _tier_b_opus_complementary below.
         if enable_tier_b:
             if tier_a_count >= TIER_A_SUFFICIENT_FIELDS:
                 logger.info(

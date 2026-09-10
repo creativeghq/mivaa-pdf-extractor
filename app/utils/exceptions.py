@@ -15,17 +15,7 @@ class MaterialKaiIntegrationError(Exception):
 
 
 class TenancyViolation(Exception):
-    """A tenancy check failed and the operation must not proceed (invariant 1).
-
-    Its own class so that the broad `except Exception` handlers wrapping most
-    pipeline stages can RE-RAISE it instead of absorbing it. A tenancy refusal
-    swallowed into a fallback path or a soft `{"success": false}` is worse
-    than the original bug: the operation looks merely unlucky, retries, and
-    nothing surfaces that a caller reached for another tenant's data.
-
-    Callers that map this to HTTP should return 404, not 403 — a 403 confirms
-    the id exists to someone probing for it.
-    """
+    """A tenancy check failed and the operation must not proceed (invariant 1)."""
     pass
 
 
@@ -170,16 +160,7 @@ class PDFExtractionError(PDFProcessingError):
 
 
 class PDFDownloadError(PDFProcessingError):
-    """
-    Exception raised when PDF download from URL fails.
-    
-    This includes:
-    - Network connectivity issues
-    - Invalid URLs
-    - HTTP errors (404, 403, etc.)
-    - Timeout errors
-    - File size limitations
-    """
+    """Exception raised when PDF download from URL fails."""
     
     def __init__(
         self, 

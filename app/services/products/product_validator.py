@@ -1,15 +1,4 @@
-"""
-Product Validation Service
-
-Validates extracted products against quality thresholds:
-- Minimum chunks/characters
-- Substantive content check
-- Distinguishing features validation
-- Associated assets verification
-- Semantic coherence scoring
-
-Prevents false positives and ensures high-quality product extraction.
-"""
+"""Product Validation Service"""
 
 from typing import Dict, Any, List, Optional
 import logging
@@ -21,16 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class ProductValidator:
-    """
-    Validates extracted products against quality criteria.
-    
-    Validation checks:
-    1. Minimum content requirements
-    2. Substantive content (not just headers/footers)
-    3. Distinguishing features present
-    4. Associated assets (images, specs)
-    5. Semantic coherence
-    """
+    """Validates extracted products against quality criteria."""
     
     # Validation thresholds
     MIN_CHUNKS = 2              # Minimum chunks per product

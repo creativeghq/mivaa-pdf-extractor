@@ -1,26 +1,4 @@
-"""
-KB document chunker (2026-07-06).
-
-Splits a kb_docs markdown article into section-level chunks for retrieval.
-Fixes the two problems of one-embedding-per-doc + truncation on large docs
-(authored, split_v2 reference sets, catalog extractions — source-agnostic).
-
-Guarantees (all asserted, so the backfill fails loudly rather than losing content):
-
-  1. COVERAGE — chunks cover the whole document with no gap: chunk[0].char_start == 0,
-     chunk[-1].char_end == len(content), and chunk[k+1].char_start <= chunk[k].char_end
-     for every adjacent pair. => reassembling (dropping overlap) reproduces the source.
-  2. BOUNDARY-AWARE — never split mid-word / mid-sentence. Splits land on the coarsest
-     available boundary: heading -> paragraph -> sentence -> word -> (hard char, last resort).
-  3. ATOMIC STRUCTURE — markdown tables and ``` code fences are never split internally.
-  4. OVERLAP — adjacent chunks share ~overlap chars of whole trailing sentences (boundary
-     clean), so context straddling a boundary is retrievable from either side.
-  5. HEADING CONTEXT — each chunk carries its section heading; the embedding text is
-     "{title} > {heading}\n\n{content}" (built by the service), while the raw chunk text
-     is stored/returned verbatim.
-
-Pure, deterministic (no randomness / IO) so re-runs and backfills are stable.
-"""
+"""KB document chunker (2026-07-06)."""
 
 from __future__ import annotations
 

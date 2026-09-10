@@ -1,39 +1,4 @@
-"""
-Product Discovery Service - Stage 0 Implementation
-
-ARCHITECTURE:
-1. **Products + Metadata** (ALWAYS extracted together - inseparable)
-   - Products are discovered with ALL metadata in one pass
-   - Metadata stored in product.metadata JSONB (dimensions, designer, factory, etc.)
-   - This is the PRIMARY service that always runs
-
-2. **Document Entities** (OPTIONAL - separate knowledge base)
-   - Certificates, Logos, Specifications = Document entities
-   - Stored in document_entities table with category system
-   - Connected to products via product_document_relationships
-   - Managed in "Docs" admin page
-   - Can be extracted DURING or AFTER product processing
-
-DISCOVERY PROCESS:
-- Stage 0A: Claude discovers PRODUCT NAMES + metadata INCLUDING page_range
-- Stage 0B: Page detection with PRIORITY:
-  1. USE Claude's page_range if provided (trust the vision model)
-  2. FALLBACK to text search only if Claude didn't provide page_range
-- This eliminates catalog vs PDF page number confusion
-- Subsequent stages create semantic chunks for RAG search
-
-KEY DESIGN DECISION:
-Claude CAN return page_range from visual analysis. We prioritize Claude's pages because:
-1. Vision model sees product names in images (not just extractable text)
-2. Text search fails when product names are embedded in images
-3. Text-search page detection is used only as fallback when Claude doesn't provide pages
-
-EXTENSIBILITY:
-This service is designed to support future extraction types:
-- Marketing content extraction
-- Bank statement extraction
-- Custom document type extraction
-"""
+"""Product Discovery Service - Stage 0 Implementation"""
 
 import logging
 import os
@@ -59,17 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 def _partition_by_registry(flat: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Split flattened extractor output into (registry-known fields, everything else).
-
-    `material_metadata_fields` decides what a field IS; a model emitting a new key does
-    not create one (audit #14 MV-15). Keys beginning with `_` are ours, not the model's,
-    and pass through.
-
-    If the registry is not loaded this returns everything as known rather than throwing
-    away data mid-pipeline — the caller's behaviour is then exactly what it was before
-    this function existed, which is the safe direction for a partition that only exists
-    to be tighter.
-    """
+    """Split flattened extractor output into (registry-known fields, everything else)."""
     # Degraded path: never throw data away because the registry has not loaded. The
     # caller then behaves exactly as it did before this partition existed, which is the
     # safe direction for a change that only exists to be tighter.
@@ -286,7 +241,6 @@ class ProductCatalog:
     # catalog-wide rather than to one product. The catalog-wide icon pass in
     # Stage 3 scans these pages for icon strips so a per-product rollup can
     # still pick up e.g. R9 slip ratings printed on a shared legend page
-    # (instead of only finding icons on individual product pages).
     supplementary_pages: List[int] = None
 
     # Processing info
@@ -295,19 +249,7 @@ class ProductCatalog:
     confidence_score: float = 0.0
 
     def __post_init__(self):
-        """Initialize empty lists if None + normalize JSON-roundtripped fields.
-
-        When this catalog is reloaded from `background_jobs.metadata.catalog_cache`
-        (Stage 0 resume optimization), it goes through JSON which:
-          1. Stringifies dict integer keys: `{1: ...}` → `{"1": ...}`
-          2. Converts tuples to lists: `(0, 'left')` → `[0, 'left']`
-
-        `get_physical_page_text` does `if physical_page not in layout.physical_to_pdf_map`
-        with int physical_page, so str-keyed maps yield empty text and the
-        chunker silently produces 0 chunks per product — the exact regression
-        seen on job f3467e48 / VALENOVA (8 pages extracted, 0 chunks).
-        Normalize on every construction so cache reloads behave like a fresh run.
-        """
+        """Initialize empty lists if None + normalize JSON-roundtripped fields."""
         if self.certificates is None:
             self.certificates = []
         if self.logos is None:
@@ -391,16 +333,7 @@ PRODUCT_DISCOVERY_TOOL = {
 
 
 def _tool_input_or_raise(response, where: str) -> Dict[str, Any]:
-    """Pull the forced tool_use payload out of a Claude response.
-
-    Audit #12: discovery used to ask for JSON in prose, strip ``` fences, then
-    json.loads with a regex "repair" behind it that deleted trailing commas and
-    guessed at missing separators. A repair that succeeds is indistinguishable
-    from a response that was correct, so a subtly mangled catalog parsed clean and
-    became pipeline state. With a forced tool_choice the shape is guaranteed by
-    the API and there is nothing left to repair — if no tool_use block comes back,
-    that is a broken contract, not something to salvage.
-    """
+    """Pull the forced tool_use payload out of a Claude response."""
     for block in (getattr(response, "content", None) or []):
         if getattr(block, "type", None) == "tool_use":
             payload = getattr(block, "input", None)
@@ -438,7 +371,6 @@ class ProductDiscoveryService:
         # option — a `gpt-vision` job either died on a confusing "OPENAI_API_KEY
         # not set" error or ran on Claude while recording `gpt-vision` as its
         # model, which is a provenance lie in the job metadata. Reject it plainly
-        # instead (audit #12, finding 4).
         if "gpt" in model.lower() or "openai" in model.lower():
             raise ValueError(
                 f"Model {model!r} is not supported: product discovery runs on "
@@ -457,20 +389,7 @@ class ProductDiscoveryService:
         enable_prompt_enhancement: bool = True,
         job_id: Optional[str] = None
     ) -> ProductCatalog:
-        """
-        Discover products from markdown text (web scraping, XML, or any text source).
-
-        This is the UNIFIED product discovery method that works with ANY markdown text source:
-        - Web scraping (Firecrawl markdown)
-        - XML imports (converted to markdown)
-        - Manual text input
-        - Future text sources
-
-        **ARCHITECTURE:**
-        - Reuses existing text-based discovery pipeline
-        - Reuses existing metadata extraction
-        - NO changes to PDF pipeline
-        - NO changes to XML pipeline
+        """Discover products from markdown text (web scraping, XML, or any text source).
 
         Args:
             markdown_text: Markdown-formatted text content to analyze
@@ -573,19 +492,7 @@ class ProductDiscoveryService:
         pdf_path: Optional[str] = None,
         tracker: Optional[Any] = None
     ) -> ProductCatalog:
-        """
-        TWO-STAGE DISCOVERY ARCHITECTURE for handling large catalogs (1000+ pages).
-
-        **Stage 0A: Index Scan (Quick Discovery)**
-        - Analyzes first 50-100 pages (TOC/Index) to identify product names and page ranges
-        - Uses minimal tokens (~50K characters)
-        - Fast and cost-effective
-
-        **Stage 0B: Focused Extraction (Deep Analysis)**
-        - Extracts ONLY the specific pages for each discovered product
-        - Performs detailed metadata extraction per product
-        - No token limits - can handle catalogs of ANY size
-        - Processes products in parallel for speed
+        """TWO-STAGE DISCOVERY ARCHITECTURE for handling large catalogs (1000+ pages).
 
         Args:
             pdf_content: Raw PDF bytes
@@ -892,18 +799,7 @@ class ProductDiscoveryService:
         job_id: Optional[str],
         max_pages: int = 10,
     ) -> Optional["ProductCatalog"]:
-        """
-        Vision fallback for catalogs with image-baked product names.
-
-        Renders the first `max_pages` physical pages to JPEG, sends them as
-        image content blocks to Claude with the discovery prompt, parses the
-        JSON response, and returns a minimal ProductCatalog with the
-        discovered products. Returns None on any failure — caller treats
-        this as best-effort.
-
-        Single-shot. Never retried. Capped at 10 pages so the bill is
-        bounded (~$0.10 worst case with Opus, ~$0.01 with Haiku 4.5).
-        """
+        """Vision fallback for catalogs with image-baked product names."""
         from app.utils.pdf_to_images import PDFToImagesConverter
 
         # Render first N pages. PDFToImagesConverter is sync; offload to
@@ -968,11 +864,6 @@ class ProductDiscoveryService:
             # the event loop for a whole round-trip, and the cost row was written by hand
             # afterwards — which also meant a call that RAISED recorded nothing, though
             # Anthropic bills a request it accepted.
-            #
-            # `confidence_score=0.0` is carried over deliberately, not defaulted. The
-            # note it replaces explains why: the real confidence is not knowable before
-            # the payload is parsed, and 0.9 would assert high confidence for a
-            # best-effort fallback path.
             from app.services.core.claude_helper import tracked_claude_call_async
 
             response = await tracked_claude_call_async(
@@ -1228,15 +1119,7 @@ class ProductDiscoveryService:
         prompt: str,
         job_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Use the configured Claude model for product discovery.
-
-        P0-5 cost control:
-          - First attempt uses the configured (Opus) model.
-          - On JSON-parse failure or transient API error, retry ONCE with
-            claude-haiku-4-5 (much cheaper, comparable structured-output
-            quality). After 2 attempts total, give up — yesterday we saw
-            22 retries with 22 × Opus billing for the same broken call.
-        """
+        """Use the configured Claude model for product discovery."""
         from app.config import get_settings as _get_settings_disc
         primary_model = _get_settings_disc().anthropic_model_validation
         # Haiku 4.5 is roughly 1/12th the price of Opus per token —
@@ -1250,12 +1133,6 @@ class ProductDiscoveryService:
                 # `async def` again, plus a hand-written cost row afterwards — so an
                 # attempt that RAISED was billed by Anthropic and recorded by nobody,
                 # which on a two-attempt retry path is the half most likely to fail.
-                #
-                # `confidence_score` is a CALLABLE here: the value logged was
-                # `result["confidence_score"]`, which the model reports inside its own
-                # reply and which therefore does not exist at call time. Passing the
-                # 0.9 default instead would have replaced a measured signal with an
-                # assumed one — an invisible cost traded for a quietly wrong number.
                 from app.services.core.claude_helper import tracked_claude_call_async
                 from app.services.core.claude_tool_call import extract_tool_input
 
@@ -1535,15 +1412,7 @@ class ProductDiscoveryService:
         tracker: Optional[Any] = None,
         workspace_id: Optional[str] = None
     ) -> ProductCatalog:
-        """
-        STAGE 0B: Deterministic page detection + detailed metadata extraction.
-
-        This is the core of the Two-Stage Discovery system:
-        1. DETERMINISTIC PAGE DETECTION: Use text search to find pages for each product
-           (Claude CAN return page_range - prioritized if available)
-        2. For each product, extract ONLY its detected pages from the PDF
-        3. Send focused text to AI for detailed metadata extraction
-        4. No token limits - can handle products with 50+ pages each
+        """STAGE 0B: Deterministic page detection + detailed metadata extraction.
 
         Args:
             catalog: Product catalog from Stage 0A (product names only, NO page_range)
@@ -1611,9 +1480,6 @@ class ProductDiscoveryService:
             # scanned pages whose PDF text layer is empty — but it can also be the
             # raw PyMuPDF text (or None) when the cache was absent and discover_products
             # rebuilt it. Parse it ONCE more in ORIGINAL case (1-based physical page →
-            # text) so per-product + supplementary extraction below can source from it
-            # and fall back to the spread-aware raw path (get_physical_page_text) ONLY
-            # on a per-page miss. Empty when pdf_text is None → pure raw fallback.
             pages_text_cache = self._parse_pdf_text_into_pages(
                 pdf_text, pdf_page_count, lowercase=False
             )
@@ -1628,7 +1494,6 @@ class ProductDiscoveryService:
             # pymupdf4llm.to_markdown(pages=<physical index>), but to_markdown indexes
             # by PDF SHEET, so on a spread catalog it pulled the wrong sheet's text /
             # went out of range (S0-1). analyze_pdf_layout is expensive, so memoize it
-            # and only compute on the first actual cache miss.
             _raw_layout: Dict[str, Any] = {"layout": None, "computed": False}
 
             def _raw_pages_text(page_idxs0: List[int]) -> Dict[int, str]:
@@ -1673,8 +1538,6 @@ class ProductDiscoveryService:
             # unnumbered front-matter (covers/intro spreads) the folio is shifted from
             # the physical page. We anchor the shift with the proper physical-page
             # function (_detect_product_pages_optimized, which locates each product's
-            # headline on its REAL physical page in the cache text), take the consensus
-            # offset, and apply it so every product's page_range is physical-correct.
             self._reconcile_folio_start_pages_to_physical(
                 catalog.products, pages_content, pdf_page_count, all_product_names
             )
@@ -1889,19 +1752,6 @@ class ProductDiscoveryService:
 
                     # ✅ MEMORY OPTIMIZATION: Extract text ONLY for this product's pages
                     # This keeps memory low (~500MB per product instead of 3-4GB for all pages)
-                    #
-                    # Structure-first: source each page's text from the PaddleOCR-VL
-                    # reading-order cache (pages_text_cache), regardless of the page's
-                    # TEXT/IMAGE/MIXED type. This replaces the previous type-branched
-                    # raw extraction — which (a) re-read the weak PDF text layer instead
-                    # of the cache and (b) hard-blanked IMAGE pages to "" on the
-                    # assumption "vision data already in metadata". That dropped the
-                    # spec/packing text the VLM had already OCR'd on image-only and
-                    # stylized pages. We fall back to the spread-aware raw path
-                    # (get_physical_page_text) ONLY for pages the cache genuinely missed
-                    # (e.g. cache absent / page_failed). An image-only page with no cache
-                    # text AND no text layer legitimately contributes "" (its content
-                    # reaches the product via the Stage 3 vision pass instead).
                     product_page_texts = {}
                     cache_miss_pages: List[int] = []
                     for page_idx in page_indices:
@@ -1954,13 +1804,6 @@ class ProductDiscoveryService:
                     # while the other two paths produced flat keys. The facet collector reads
                     # top-level keys only, so `finish` — whitelisted and canonicalizable — never
                     # became a filterable attribute for anything enriched down this branch.
-                    # audit #14 MV-15: the flattened extractor output was merged
-                    # top-level wholesale, so any key the MODEL chose to emit became a
-                    # product metadata field. `material_metadata_fields` is the registry
-                    # for what fields exist — six disagreeing copies of that answer is
-                    # what made products re-classify on every run. A key the registry
-                    # does not know is data worth keeping, but it is not a field: it
-                    # goes to `_discovered_extra` alongside the extractor's own unknowns.
                     _flat = flatten_extracted_metadata(extracted)
                     _known, _unregistered = _partition_by_registry(_flat)
 
@@ -2373,20 +2216,7 @@ class ProductDiscoveryService:
         products: List["ProductInfo"],
         total_pages: int
     ) -> None:
-        """
-        Calculate page_range for each product based on start_page.
-
-        Uses CONSERVATIVE approach that works for all catalog types:
-        - end_page = next product's start_page - 1 (no content-type assumptions)
-        - May include non-product pages between products (architect pages, etc.)
-        - NEVER cuts off actual product content
-        - Safe for catalogs with any structure between products
-
-        Logic:
-        1. Sort products by start_page
-        2. For each product, end_page = next product's start_page - 1
-        3. For the last product, extend to reasonable limit (start + 10 or end of PDF)
-        4. If start_page not available, leave page_range for fallback detection
+        """Calculate page_range for each product based on start_page.
 
         Args:
             products: List of ProductInfo objects with _start_page in metadata
@@ -2442,21 +2272,7 @@ class ProductDiscoveryService:
         total_pages: int,
         all_product_names: List[str],
     ) -> int:
-        """Correct the folio→physical page offset for start_page-derived ranges (S0-4).
-
-        Claude's ``_start_page`` is the printed FOLIO label read from the catalog
-        index. The rest of the pipeline (PaddleOCR Stage 1 cache, chunking, crops)
-        addresses PHYSICAL PDF pages. On catalogs with unnumbered front-matter the
-        two diverge by a constant offset, so folio-derived ``page_range`` values
-        point at the wrong physical pages.
-
-        We anchor the offset by locating each product's headline on its REAL
-        physical page via :meth:`_detect_product_pages_optimized` (which searches the
-        physical-page-keyed cache text), compute ``physical_headline - folio_start``
-        per product, take the consensus, and shift every product's ``page_range`` by
-        it. Returns the applied offset (0 = folio already == physical, no change —
-        the born-digital / no-front-matter common case).
-        """
+        """Correct the folio→physical page offset for start_page-derived ranges (S0-4)."""
         offsets: List[int] = []
         for product in products:
             folio_start = product.metadata.get("_start_page") if product.metadata else None

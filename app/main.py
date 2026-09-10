@@ -1128,19 +1128,6 @@ async def tenancy_violation_handler(request, exc: TenancyViolation):
 async def http_exception_handler(request, exc: HTTPException):
     """Handle HTTP exceptions with structured error responses."""
     # Capture 5xx in Sentry. NOT 4xx — any of them.
-    #
-    # This used to exempt only 401/403/404 and report every other 4xx as a warning
-    # event, on the theory that they were "unexpected client errors". In practice the
-    # commonest one is a caller omitting a required field: Sentry's top entry from that
-    # branch was `HTTP 400: document_id is required` on /api/rag/relevancies. A 400 is
-    # the server correctly rejecting bad input. Alerting on it means alerting whenever
-    # anyone calls the API wrong, which is not a signal about this service.
-    #
-    # It also put MIVAA at odds with the rule the platform already follows on the edge
-    # (CLAUDE.md, api-logger): "4xx are intentionally never reported (client errors, not
-    # bugs)". Two runtimes, one rule. A 4xx that IS a bug shows up as the 5xx it causes
-    # downstream, or as the response-status telemetry in api_usage_logs — neither of
-    # which pages anyone.
     try:
         import sentry_sdk
         if exc.status_code >= 500:
@@ -1216,96 +1203,7 @@ _ai_health_cache_ttl = 3600  # 1 hour
     description="Comprehensive health check for all system services including database, storage, and AI models. Use ?force_refresh=true to bypass cache."
 )
 async def health_check(force_refresh: bool = False) -> HealthResponse:
-    """
-    **🏥 UNIFIED HEALTH CHECK ENDPOINT - Single Entry Point for All Health Checks**
-
-    This endpoint replaces:
-    - `/api/pdf/health`
-    - `/api/documents/health`
-    - `/api/search/health`
-    - `/api/rag/health`
-    - `/api/images/health`
-    - `/api/products/health`
-    - `/api/embeddings/health`
-    - All other individual service health checks
-
-    ## 🎯 What It Checks
-
-    ### Database
-    - Supabase connection
-    - Query execution
-    - Table accessibility
-
-    ### Storage
-    - Supabase Storage availability
-    - Bucket accessibility
-    - Upload/download capability
-
-    ### AI API Services
-    - **Anthropic (Claude)** - Language model for discovery & validation
-    - **Voyage AI** - Primary text embeddings provider
-
-    ### HuggingFace Inference Endpoints
-    - **SLIG (SigLIP2)** - Visual embeddings endpoint (auto-pause/resume)
-    - **PaddleOCR-VL** - Structural pass: layout + OCR + figure boxes (auto-pause/resume)
-
-    ### Application Services
-    - **RAG Service** - Lazy-loaded; vision via Anthropic Claude Opus (memory optimized)
-    - **Database** - Supabase PostgreSQL with pgvector
-    - **Storage** - Supabase Storage for images and PDFs
-
-    ## 📊 Response Format
-
-    ```json
-    {
-      "status": "healthy" | "degraded" | "unhealthy",
-      "timestamp": "2025-11-02T10:30:00Z",
-      "version": "2.1.0",
-      "service": "MIVAA",
-      "services": {
-        "database": {
-          "status": "healthy",
-          "message": "Connected",
-          "latency_ms": 45
-        },
-        "storage": {
-          "status": "healthy",
-          "message": "Available"
-        },
-        "anthropic": {
-          "status": "healthy",
-          "message": "Claude Opus available"
-        },
-        "rag": {
-          "status": "healthy",
-          "message": "RAG service operational with Claude vision (Anthropic API)"
-        }
-      }
-    }
-    ```
-
-    ## 🔄 Migration from Old Endpoints
-
-    **Old:** Multiple health check calls
-    ```bash
-    curl /api/pdf/health
-    curl /api/documents/health
-    curl /api/search/health
-    # ... 10+ more endpoints
-    ```
-
-    **New:** Single health check call
-    ```bash
-    curl /health
-    ```
-
-    ## ⚡ Performance
-
-    - Single request instead of 10+
-    - Parallel health checks
-    - Fast response time (<500ms)
-    - Cached results (30 seconds)
-    """
+    """**🏥 UNIFIED HEALTH CHECK ENDPOINT - Single Entry Point for All Health Checks**"""
     settings = get_settings()
 
     # Initialize service status dictionary
@@ -1968,16 +1866,7 @@ app.include_router(rag_router)
 # now been removed from that package for one repeating reason: they were mounted into
 # rag_router's namespace and rag_router is included ABOVE this line, so FastAPI (first
 # registration wins) served the rag_routes handler and never theirs.
-#   upload_router  removed 2026-05-23 — duplicate of `/documents/upload`.
-#   query_router   removed 2026-08-09 — /query, /chat, /search. Unreachable, but they
-#                  still defined the published OpenAPI for /api/rag/search, which is
-#                  why the docs showed no `aspect` field (#277).
-#   management_router removed 2026-08-15 (#15 MV2-11) — 10 handlers, ALL ungated,
-#                  two of them destructive (DELETE a job, restart a job). Same
-#                  last-write-wins OpenAPI problem, now on a delete endpoint: the
-#                  published contract said no auth was required.
-# Adding a router here again re-creates the bug. Routes under /api/rag go in
-# rag_routes.py, next to the gates.
+# upload_router  removed 2026-05-23 — duplicate of `/documents/upload`.
 app.include_router(anthropic_router)
 app.include_router(products_router)
 app.include_router(document_entities_router) 

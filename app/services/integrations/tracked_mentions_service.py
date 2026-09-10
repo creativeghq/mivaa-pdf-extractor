@@ -1,25 +1,4 @@
-"""
-Tracked Mentions Service — CRUD + refresh orchestration.
-
-Mirror of `tracked_queries_service.py` for mention-monitoring. The chokepoint
-through which both flows (internal product/brand + external API consumers)
-run their refreshes.
-
-Pattern: same row schema, two routing modes.
-  - Internal:  api_key_id IS NULL, product_id NOT NULL OR brand_name NOT NULL
-  - External:  api_key_id NOT NULL, product_id NULL
-
-Single `refresh()` chokepoint runs:
-  1. Decompose subject → facets (cached on row).
-  2. Search across enabled sources in parallel.
-  3. Strip excluded URLs / promote pinned overrides.
-  4. Classify (Haiku batched + verdict cache).
-  5. Apply anomaly check (sentiment outlier vs trailing 7d).
-  6. Persist mention_history rows with refresh_run_id.
-  7. Update denormalized cache (mention_count, sentiment_avg, top_outlets).
-  8. Update volatility cadence via update_tracked_mention_cadence RPC.
-  9. Detect alerts and dispatch via the notifications module.
-"""
+"""Tracked Mentions Service — CRUD + refresh orchestration."""
 
 from __future__ import annotations
 
@@ -736,18 +715,7 @@ class TrackedMentionsService:
         errors: Dict[str, str],
         history_persisted: bool = True,
     ) -> None:
-        """Update the gold `current_*` cache for one tracked mention.
-
-        `history_persisted` is the whole point (#19 M6-3/M6-4). `sentiment_avg` and
-        `top_outlets` are computed from the IN-MEMORY rows, so a chunked insert that
-        failed part-way through would otherwise stamp a confident gold summary of silver
-        rows nobody can read back — and the counts beside them come from `_count_window`,
-        which reads the database, so the row would disagree with itself.
-
-        On a failed persist the derived values are left ALONE rather than overwritten:
-        the previous snapshot is still the best answer anyone has, and the failure is
-        recorded where an operator can find it instead of being papered over.
-        """
+        """Update the gold `current_*` cache for one tracked mention."""
         try:
             cur = self.get(tracked_mention_id) or {}
             total = (cur.get("total_credits_used") or 0) + (credits or 0)

@@ -1,25 +1,4 @@
-"""
-Guard for the VLM table path: layout cache content → product_tables → product metadata.
-
-This whole branch was dead from #248 (2026-07-04) to 2026-08-02: PaddleOCR-VL recognized
-every table to markdown and cached it on the layout element, nothing parsed it,
-`product_tables` was never written, and `TableMetadataExtractor` mined an always-empty
-table on every product — the `ops.silent_zero` shape, invisible to typecheck and to every
-integrity probe because zero rows is a valid row count.
-
-Turning it on exposed three latent bugs in the consumer, all of which produce a *wrong
-number that is still a valid number*:
-  1. `_find_column` matched keywords as substrings, so the single-letter height keyword
-     'l' hit `Pz/Scatola` and a 60x120 tile was recorded as 60x2.
-  2. Packaging keyword sets had no Italian/Spanish abbreviations ('Pz', 'Mq'), so
-     pieces-per-box and coverage never populated on the catalogs we actually ingest.
-  3. Spec tables are Property | Standard | Value; taking row[1] recorded 'ISO 10545-3'
-     as the water-absorption value.
-
-Each is pinned below. Loaded by path so the guard runs in CI with nothing installed but
-pytest — importing `app.services.*` as a package would pull in the Supabase client and
-the entire runtime dependency set.
-"""
+"""Guard for the VLM table path: layout cache content → product_tables → product metadata."""
 
 import importlib.util
 import sys

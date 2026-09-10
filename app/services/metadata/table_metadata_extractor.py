@@ -421,16 +421,7 @@ class TableMetadataExtractor:
         return any(kw in headers_text for kw in DIMENSION_KEYWORDS)
 
     def _find_column(self, headers: List[str], keywords: List[str]) -> Optional[int]:
-        """Find column index matching any of the keywords.
-
-        Short keywords are matched as whole TOKENS, not substrings. The naive
-        substring match this replaces made the single-letter keywords ('w', 'h',
-        'l', 'th') match almost anything: on a real catalog header row
-        ``Formato | Spessore | Pz/Scatola | Mq/Scatola | Kg/Scatola |
-        Scatole/Pallet`` the height keyword ``'l'`` hit ``Pz/Scatola`` and a
-        60x120 tile was recorded as 60x2. Multi-word and longer keywords keep
-        substring matching so 'pallet weight' and 'size' → 'sizes' still work.
-        """
+        """Find column index matching any of the keywords."""
         for idx, header in enumerate(headers):
             h = str(header).lower()
             tokens = {t for t in re.split(r'[^a-z0-9²]+', h) if t}

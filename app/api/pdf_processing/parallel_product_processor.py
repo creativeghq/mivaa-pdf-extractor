@@ -1,14 +1,4 @@
-"""
-Parallel Product Processor
-
-Processes multiple products concurrently to improve pipeline performance.
-Uses asyncio.Semaphore to limit concurrent processing and prevent resource exhaustion.
-
-Performance Improvements:
-- 2-3x faster than sequential processing for large catalogs
-- Preserves memory safety through controlled concurrency
-- Maintains proper progress tracking and error handling
-"""
+"""Parallel Product Processor"""
 
 import asyncio
 import logging
@@ -206,7 +196,6 @@ async def process_products_parallel(
                 # update_progress) run OUTSIDE the lock to avoid serializing
                 # parallel completions on a single Supabase call. The 2026-05-23
                 # audit flagged the original lock-across-DB-call as a throughput
-                # floor of ~4 × DB-latency per batch of 4 concurrent products.
                 _stats_snapshot: Optional[Dict[str, Any]] = None
                 _progress_snapshot: Optional[Dict[str, Any]] = None
                 async with update_lock:

@@ -1,15 +1,4 @@
-"""
-Backend module registry.
-
-Behavior:
-  * `discover_modules()` scans `app/modules/` for subdirectories (excluding `_core`),
-    imports each as a package, and collects its exported `definition: ModuleDefinition`.
-  * Any `ImportError` or missing definition is logged and skipped — a broken module
-    must NOT crash server startup.
-  * `is_module_enabled(slug)` reads the `public.modules` table to check the DB toggle.
-    Cached in-process for `_CACHE_TTL_SECONDS` to avoid hammering Supabase on every
-    request (explicit `invalidate_cache()` after admin toggles).
-"""
+"""Backend module registry."""
 
 from __future__ import annotations
 

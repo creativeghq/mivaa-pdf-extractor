@@ -1,26 +1,4 @@
-"""Guards for the mivaa#19 audit fixes (M6-1, M6-6, M6-7).
-
-One file per audit, matching `test_audit_18_gates_hold.py`.
-
-Static, not runtime: CI installs pytest alone (`deploy.yml`) and these unit tests
-import nothing from `app`, so each case parses source instead. That constrains what
-can be checked — a guard here proves the SHAPE is gone, not that the replacement
-behaves. It especially cannot check the DATA half of M6-1: whether the four
-`prompt_type='search'` rows still carry the `subcategory` they were backfilled with
-lives in the database, not in this repository. `test_the_subtype_filter_is_still_applied`
-is the closest a source test can get, and it says so.
-
-13 of the 19 cases were watched to FAIL against the pre-fix source. The other six are
-stays-as-they-are guards and pass both ways, named here so they are not mistaken for
-coverage: the four `test_each_method_still_reaches_its_llm_helper` cases (deleting the
-branch is only correct while the call survives), `test_the_subtype_filter_is_still_applied`
-(the WRONG repair for M6-1(b) would have been to drop the filter), and
-`test_every_wrapper_is_declared_required[search_result_enrichment]` (that one wrapper
-was already registered).
-
-NOT covered here, deliberately: M6-2 (the scheduled-refetch SSRF), M6-3, M6-4 and
-M6-5 are untouched by this batch.
-"""
+"""Guards for the mivaa#19 audit fixes (M6-1, M6-6, M6-7)."""
 
 import ast
 import re

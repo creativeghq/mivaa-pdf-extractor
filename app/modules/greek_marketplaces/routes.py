@@ -43,15 +43,11 @@ def _extract_bearer(request: Request) -> str:
 
 
 def _admin_user_id_from_request(request: Request) -> str:
-    """
-    Self-contained auth for module routes:
-      * Pull the Supabase JWT off the Authorization header.
-      * Ask Supabase (not our own middleware) to validate it — this works even
-        when SUPABASE_JWT_SECRET isn't configured locally.
-      * Verify the user has an admin / super_admin role in `user_profiles`.
-
-    Returns the authenticated user's id. Raises 401 on invalid token,
-    403 on non-admin users.
+    """Self-contained auth for module routes:
+    * Pull the Supabase JWT off the Authorization header.
+    * Ask Supabase (not our own middleware) to validate it — this works even
+    when SUPABASE_JWT_SECRET isn't configured locally.
+    * Verify the user has an admin / super_admin role in `user_profiles`.
     """
     token = _extract_bearer(request)
     supabase = get_supabase_client().client

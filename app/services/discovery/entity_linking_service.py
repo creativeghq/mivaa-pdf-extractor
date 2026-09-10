@@ -1,20 +1,4 @@
-"""
-Entity Linking Service
-
-Links images, chunks, and products using the SAME relationship tables as frontend.
-
-IMPORTANT: This service uses the SAME tables as entityRelationshipService.ts:
-- chunk_product_relationships (chunk_id, product_id, relevance_score)
-- chunk_image_relationships (chunk_id, image_id, relevance_score)
-- image_product_associations (product_id, image_id, overall_score)
-
-Relationships implemented:
-1. Product -> Image: Links products to images based on page proximity and visual similarity
-2. Chunk -> Image: Links chunks to images on the same page with spatial proximity
-3. Chunk -> Product: Links chunks to products based on page proximity and content similarity
-
-All relationships are stored with relevance scores (0.0-1.0).
-"""
+"""Entity Linking Service"""
 
 import logging
 from typing import List, Dict, Any, Optional, Set
@@ -35,21 +19,7 @@ LINKING_FAILED = -1
 
 
 class EntityLinkingService:
-    """
-    Service for linking entities (images, chunks, products) using relationship tables.
-
-    CRITICAL: Uses the SAME tables as frontend entityRelationshipService.ts to avoid duplicates.
-
-    Tables used:
-    - chunk_product_relationships
-    - chunk_image_relationships
-    - image_product_associations
-
-    Relevance Score Algorithms:
-    - Product -> Image: page_overlap(40%) + visual_similarity(40%) + detection_score(20%)
-    - Chunk -> Image: same_page(50%) + visual_text_similarity(30%) + spatial_proximity(20%)
-    - Chunk -> Product: page_proximity(40%) + embedding_similarity(30%) + mention_score(30%)
-    """
+    """Service for linking entities (images, chunks, products) using relationship tables."""
 
     def __init__(self, supabase=None):
         self.logger = logger
@@ -61,17 +31,7 @@ class EntityLinkingService:
         image_to_product_mapping: Dict[int, str],
         product_name_to_id: Dict[str, str]
     ) -> Dict[str, Any]:
-        """
-        Link images to products using relationship table with relevance scores.
-
-        Relevance Algorithm (for PyMuPDF fallback):
-        - page_overlap(40%): Same page = 0.4, adjacent = 0.2, else 0.0
-        - visual_similarity(40%): From AI detection (default 0.3)
-        - detection_score(20%): Confidence from discovery (default 0.2)
-
-        Vision-Guided Algorithm (95% accuracy):
-        - Uses atomic product name from vision AI (no guesswork)
-        - Relevance score = detection confidence (0.8-0.95)
+        """Link images to products using relationship table with relevance scores.
 
         Args:
             document_id: Document ID
@@ -318,21 +278,7 @@ class EntityLinkingService:
         document_id: str,
         product_db_id: Optional[str] = None,
     ) -> int:
-        """
-        Link images to chunks based on shared product page ranges.
-
-        Each chunk carries a product_pages list (actual PDF page numbers for its product).
-        Any image whose page_number falls within that list is considered related to the chunk.
-        relevance_score is set to 1.0 for all product-level page associations.
-
-        When `product_db_id` is provided, scope the operation to a single product —
-        intended to be called immediately after each product's Stage 3 completes so
-        that partial-success runs (some products fail, others succeed) still get
-        their chunk-image links written. The end-of-document call remains as a
-        safety net to catch anything missed. Audit incident: job acff9ebb 2026-05-03,
-        FOLD completed cleanly but the job was cancelled before reaching the
-        document-level finalize block, leaving 0 chunk_image_relationships for an
-        otherwise-successful product.
+        """Link images to chunks based on shared product page ranges.
 
         Args:
             document_id: Document ID
@@ -993,8 +939,6 @@ class EntityLinkingService:
                             # EMPTY. Writing a bare metadata['thickness'] here left
                             # that key untouched, so the regex still fired and the
                             # product ended up carrying two thickness values that
-                            # could disagree. Same shape + same location = the
-                            # lower-confidence layers correctly stand down.
                             material_props = current_metadata.get('material_properties')
                             if not isinstance(material_props, dict):
                                 material_props = {}
