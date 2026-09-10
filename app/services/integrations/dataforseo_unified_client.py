@@ -80,6 +80,11 @@ COUNTRY_TO_LOCATION: Dict[str, int] = {
     "DE": 2276, "FR": 2250, "IT": 2380, "ES": 2724, "PT": 2620, "NL": 2528,
     "BE": 2056, "AT": 2040, "CH": 2756, "PL": 2616, "CZ": 2203, "SK": 2703,
     "HU": 2348, "GR": 2300, "BG": 2100, "RO": 2642, "CY": 2196, "MT": 2470,
+    # VAT-registration codes that differ from ISO-3166. Our CRM stores the VAT code
+    # ("EL" for Greece, "UK" for the United Kingdom), and an unmapped code does not
+    # fail here — it falls through to the US default below, so a Greek supplier gets
+    # searched in Michigan and comes back "no listing" with nothing to explain why.
+    "EL": 2300,
     "DK": 2208, "SE": 2752, "NO": 2578, "FI": 2246, "IS": 2352, "EE": 2233,
     "LV": 2428, "LT": 2440, "TR": 2792, "RU": 2643, "UA": 2804, "BY": 2112,
     "BR": 2076, "MX": 2484, "AR": 2032, "CL": 2152, "CO": 2170, "PE": 2604,
