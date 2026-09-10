@@ -63,13 +63,13 @@ def collapse(body: str, max_lines: int = MAX_PROSE_LINES) -> tuple[list[str], li
             continue
         head.append(line.strip())
     if len(head) > max_lines:
-        window = head[:max_lines]
-        cut = -1
-        for index in range(len(window) - 1, -1, -1):
-            if window[index].rstrip().endswith((".", "!", "?", ":", ";", ")")):
-                cut = index
-                break
-        head = window[: cut + 1] if cut >= 0 else window
+        # Cut at the last sentence that ENDS inside the budget, mid-line if need be. Cutting only
+        # at line ends leaves the reader on "and called" with no predicate. `:` and `;` end a
+        # clause, not a thought, so they do not count as an ending.
+        text = "\n".join(head[:max_lines])
+        ends = list(re.finditer(r"[.!?](?=[\s\"'`)\]]|$)", text))
+        kept = text[: ends[-1].end()].rstrip() if ends else ""
+        head = kept.split("\n") if kept else head[:max_lines]
 
     while sections and not sections[0].strip():
         sections.pop(0)
@@ -148,14 +148,17 @@ def find_offenders(source: str) -> list[dict]:
             out.append({"kind": "docstring", "line": const.lineno, "prose": count, "node": const})
 
     for start, end, indent, lines in comment_runs(source):
-        body = "\n".join(re.sub(r"^#+ ?", "", line.strip()) for line in lines)
+        # `#:` is this codebase's "documents the next declaration" marker. Leaving the colon in
+        # makes a separator line read as prose, and prints it back as `# :`.
+        body = "\n".join(re.sub(r"^#+:? ?", "", line.strip()) for line in lines)
         if is_directive("\n".join(lines)):
             continue
         count = prose_lines(body)
         if count > MAX_PROSE_LINES:
+            marker = "#:" if lines[0].strip().startswith("#:") else "#"
             out.append(
                 {"kind": "comment", "line": start, "end": end, "indent": indent,
-                 "prose": count, "lines": lines, "body": body}
+                 "prose": count, "lines": lines, "body": body, "marker": marker}
             )
     return out
 

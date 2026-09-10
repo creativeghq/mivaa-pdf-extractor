@@ -78,6 +78,8 @@ class ErrorLoggingMiddleware(BaseHTTPMiddleware):
                     # single largest producer of retention-EXEMPT rows in system_logs - 3,835 of
                     # them, still climbing, and the commonest message is
                     # "GET /term.php - Status: 404": a vulnerability scanner probing for PHP.
+                    # Internet background noise was being preserved forever under a level that
+                    # exists to mean "look at this".
                     log = logger.warning if response.status_code >= 500 else logger.info
                     log(
                         f"[{correlation_id}] Request failed: {request.method} {request.url.path} "

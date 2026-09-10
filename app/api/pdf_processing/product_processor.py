@@ -100,6 +100,10 @@ async def process_single_product(
     prior_stages: set = set()
     prior_db_id: Optional[str] = None
     # Only two resume flags exist because only two stages are skippable here.
+    # `skip_extraction` and `skip_creation` were declared alongside these and never
+    # read: extraction is deliberately always redone (see the comment at the resume
+    # block below — Stage 3 needs the in-memory pages and re-extracting costs no AI
+    # calls), and product CREATION does not happen in this function at all.
     skip_chunking = False
     skip_images = False
     # What a completed-stage checkpoint claimed it wrote, so the DB row counts below
@@ -116,6 +120,9 @@ async def process_single_product(
         # Also peek at job stage_history for per-product checkpoint events
         # tied to THIS product_index (catches resumes where product_tracker
         # state was wiped on the previous restart).
+        # Audit fix #11: previously a transient Supabase 503 here would silently
+        # swallow the exception → prior_stages stays empty → all stages re-run
+        # → duplicate chunks/images.
         try:
             sb_resp = supabase.client.table('background_jobs') \
                 .select('stage_history') \
@@ -152,6 +159,7 @@ async def process_single_product(
         # because a stage might have been MID-INSERT when the worker died.
         # If chunks/images for this product already exist in DB, treat the
         # corresponding stage as done.
+        # `> 0` is not "done".
         try:
             if prior_db_id:
                 existing_chunks = supabase.client.table('document_chunks') \
@@ -718,11 +726,7 @@ async def process_single_product(
         extracted_metadata = extraction_result.get('metadata', {})
 
         # Pull chunk-level structured_metadata aggregated across all of this
-        # product's chunks. Sonnet 4.6 chunk classification writes per-chunk
-        # `metadata.structured_metadata.{dimensions, colors, materials,
-        # keyFeatures, productName, studioName}` but those values were never
-        # rolled up onto the product's metadata before — leaving
-        # `product.metadata.dimensions=[]` even when chunks clearly captured
+        # product's chunks.
         chunk_aggregated: Dict[str, Any] = {}
         try:
             chunk_resp = supabase.client.table('document_chunks') \
@@ -841,6 +845,8 @@ async def process_single_product(
         # (SPN-4, 2026-07-04). `layout_regions` has been ALWAYS [] here since the
         # 2026-06-14 cutover (stage_1_focused_extraction returns layout_regions=[]),
         # so the old `if layout_regions and product_db_id:` block never executed:
+        # no product_layout_regions rows were written and no per-product tables were
+        # extracted. Layout is owned by the PaddleOCR Stage 1 pass.
 
         await product_tracker.mark_stage_complete(
             product_id,

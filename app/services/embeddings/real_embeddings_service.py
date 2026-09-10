@@ -236,6 +236,8 @@ class RealEmbeddingsService:
                 # Provenance = the model that ACTUALLY produced the vector (S3-3).
                 # Was a hardcoded "voyage-4" that lied whenever Settings.voyage_model
                 # was set to a different version.
+                # The `voyage_enabled is False` arm used to stamp
+                # "text-embedding-3-small" here.
                 embeddings["metadata"]["model_versions"]["text"] = (
                     self._last_provider or self.voyage_model
                 )
@@ -937,7 +939,7 @@ class RealEmbeddingsService:
                 # VOYAGE_MODEL to anything else would have batch-indexed rows
                 # embedded by voyage-4 and queried with the new model -- both 1024D,
                 # so VECS accepts the mixed-space vector and ranks confident
-                # nonsense instead of raising. Latent only because the config
+                # nonsense instead of raising.
                 request_data = {
                     "model": self.voyage_model,
                     "input": processed_texts,  # Use processed texts (no empty strings)
@@ -966,6 +968,10 @@ class RealEmbeddingsService:
 
                     # Validate the response against what we asked for BEFORE any
                     # caller can zip it back onto its inputs. A batch is positional:
+                    # caller i gets embeddings[i]. A 100-text batch that came back
+                    # with 99 vectors, or came back out of order, silently attached
+                    # every chunk to its neighbour's embedding -- stored, indexed and
+                    # ranked with nothing raising.
                     items = data.get("data") or []
                     if len(items) != len(processed_texts):
                         raise ValueError(
@@ -1455,7 +1461,7 @@ class RealEmbeddingsService:
                         # misconfigured endpoint burned real money that appeared nowhere —
                         # the spend was invisible precisely when it was pure waste. The
                         # latency is the whole retry loop, which is what was actually
-                        # billed. action="fallback_failed" so this cannot be mistaken for
+                        # billed.
                         await self.ai_logger.log_time_based_call(
                             task="visual_embedding_generation",
                             model="slig-768d",

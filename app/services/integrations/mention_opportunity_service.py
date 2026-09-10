@@ -121,12 +121,7 @@ class MentionOpportunityService:
         limit_per_type: int = 5,
         use_llm_summary: bool = False,
         attribution: Optional[CostAttribution] = None,
-        # Who is asking (#21 M8-4). Required in persisted mode. Before this the service
-        # took no caller identity AT ALL, so the tenancy check could not be made here
-        # even in principle: `tracked_mentions`, `mention_history` and the AI-overview
-        # history were loaded by `tracked_mention_id` alone, and the
-        # `mention_ai_overview_checks` row was then written using the workspace_id and
-        # user_id copied OUT of that unscoped subject row — so a caller supplying
+        # Who is asking (#21 M8-4). Required in persisted mode.
         caller_user_id: Optional[str] = None,
         caller_is_admin: bool = False,
     ) -> Dict[str, Any]:
@@ -939,7 +934,7 @@ class MentionOpportunityService:
         # ten, and this is the copy a FAILED run falls back to: every seed erroring, or every
         # round returning no signal, leaves `blocks` at the default and the reader below then does
         # `blocks["videos"]` → KeyError. Swallowed by the caller's `except Exception`, so the
-        # entire SERP half of the opportunity report vanished behind one WARNING line. Live on
+        # entire SERP half of the opportunity report vanished behind one WARNING line.
         blocks: Dict[str, Any] = _empty_serp_blocks()
 
         for seed in seeds[:3]:

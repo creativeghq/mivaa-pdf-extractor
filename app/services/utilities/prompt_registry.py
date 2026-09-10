@@ -266,12 +266,7 @@ def render(template: str, **values: Any) -> str:
     return template
 
 
-# : Every prompt key this service loads with a literal (prompt_type, category, stage).
-# :
-# : No-fallback means a missing row stops the work cold — correct, but it must be discovered at
-# : deploy time, not at 2am halfway through a catalog. `check_required_prompts()` verifies these
-# : exist; /health reports the result (#347 phase 3P.6).
-# :
+#: Every prompt key this service loads with a literal (prompt_type, category, stage).
 REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("agent", "segmentation", None),
     ("classification", "chunk_scope", "chunking"),

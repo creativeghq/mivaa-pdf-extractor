@@ -220,9 +220,7 @@ class DataImportService:
                         # audit #17 M4-7: `_fetch_products_batch` returned [] on a DB failure
                         # and the loop treated an empty batch as skippable, so a job with
                         # total_products > 0 completed with zero processed and zero failed —
-                        # a clean, successful, entirely empty import. It now returns None for
-                        # "the read failed" and [] for "there is genuinely nothing here",
-                        # which is pipeline convention 1: an explicit failure marker, because
+                        # a clean, successful, entirely empty import.
                         raise RuntimeError(
                             f"Could not read products {batch_start}-{batch_end} for job "
                             f"{job_id}. Failing the job rather than completing it short."
@@ -541,9 +539,7 @@ class DataImportService:
         # The product dict here is ALREADY canonical — the edge-function
         # orchestrator resolved every field_mappings entry (raw XML tag →
         # canonical target) and stored the finished product_data in
-        # data_import_job_products. Re-applying field_mappings here was dead
-        # (its keys are raw XML tags, absent from the canonical dict) and a
-        # latent corruption vector when a raw tag happened to equal a canonical
+        # data_import_job_products.
         normalized = {
             k: v for k, v in product.items()
             if k != 'metadata' and k not in _SUPPLIER_RESERVED_METADATA_KEYS
@@ -660,9 +656,7 @@ class DataImportService:
             # audit #17 M4-5 / invariant 8. `**inner_meta` used to be spread LAST, over
             # everything above it — so a supplier feed carrying a `workspace_id`,
             # `import_job_id`, `unit` or `material_category` key silently rewrote the
-            # provenance and classification of the product being created. (The products row's
-            # own workspace_id column was never reachable this way; what a supplier could
-            # rewrite is this jsonb, which is what canonicalization, faceting and the admin UI
+            # provenance and classification of the product being created.
             supplier_meta = dict(inner_meta)
             rejected = [k for k in supplier_meta if k in _SUPPLIER_RESERVED_METADATA_KEYS]
             for k in rejected:
@@ -779,16 +773,14 @@ class DataImportService:
             # XML has no LLM upstream, so this path relies entirely on the
             # canonicalizer's L0.5 (Haiku pretranslate) + L2 (Voyage cosine).
             # Multilingual raw values from supplier feeds (Greek/Italian/German)
+            # auto-collapse to English canonicals here.
             try:
                 canonical = await canonicalize_product_attributes(
                     self.db, product_metadata, source=source,
                     product_id=existing_id if existing_id else None,
                     # audit #17 M4-8: was `self.workspace_id`, an instance field set only by a
                     # constructor argument that NEITHER call site passes — so it was None on
-                    # every import this platform has ever run. With workspace_id=None the
-                    # canonicalizer drops its tenancy predicate entirely: `_fetch_existing`
-                    # prefetches facet values across ALL workspaces, and
-                    # `resolve_facet_values_batch` writes any new canonical value with a NULL
+                    # every import this platform has ever run.
                     workspace_id=workspace_id,
                 )
                 product_record['attributes'] = canonical.attributes

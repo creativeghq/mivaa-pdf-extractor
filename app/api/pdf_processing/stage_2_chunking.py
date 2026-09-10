@@ -140,8 +140,7 @@ async def process_product_chunking(
     # cache is no longer written. The 2026-06-14 cutover moved layout to the doc-level
     # PaddleOCR structural pass (Stage 1, `document_layout_analysis`), read by Priority 1
     # above; the per-product writer in product_processor is permanently disabled
-    # (layout_regions=[]). Reading the table here only ever returned stale pre-cutover
-    # rows or nothing, so the branch + its get_layout_regions query are dropped to keep
+    # (layout_regions=[]).
 
     # Telemetry: record which chunking strategy actually fired for this product.
     # `pipeline_strategy_metrics` is the per-stage distribution log the 2026-05-01
@@ -426,8 +425,7 @@ async def _classify_and_update_chunks(
             # jsonb. Previously we only wrote metadata, leaving `chunk_type` column
             # stuck at the default 'unclassified' even when the classifier produced
             # a real verdict — admin UI / search filters / RPC indexes that key off
-            # the column never saw it. Audit incident: job acff9ebb 2026-05-03,
-            # 16/16 chunks had column='unclassified' while metadata.chunk_type was
+            # the column never saw it.
             supabase.client.table('document_chunks') \
                 .update({
                     'metadata': existing_meta,

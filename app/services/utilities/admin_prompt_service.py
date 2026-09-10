@@ -162,10 +162,7 @@ class AdminPromptService:
             if current:
                 # Create audit trail entry
                 # `prompt_template` is not a column on `prompts` — the text lives in
-                # `prompt_text`, which the update twelve lines below already uses. This
-                # is bracket access, so it RAISED rather than returning None, and it sat
-                # on the update-existing branch BEFORE both the audit entry and the
-                # update: editing a prompt through this path had never worked, and left
+                # `prompt_text`, which the update twelve lines below already uses.
                 await self._create_audit_entry(
                     prompt_id=current['id'],
                     old_prompt=current.get('prompt_text'),

@@ -263,7 +263,7 @@ async def precompute_document_layout(
     # excluded only `ocr_failed`; `page_failed` (outer-exception path,
     # written at line ~478 below) was documented as "will be retried" but
     # the resume-skip filter never excluded it, so any transient render /
-    # structural-pass error permanently skipped that page. Both transient
+    # structural-pass error permanently skipped that page.
     _RETRY_CACHE_STATUSES = {"ocr_failed", "page_failed"}
     existing_pages: Set[int] = set()
     try:
@@ -372,8 +372,7 @@ async def precompute_document_layout(
     # fitz is NOT thread-safe across one handle, so each task opens its OWN
     # lightweight handle for just its render. Concurrency is bounded by chunk
     # size (caps concurrent renders → flat-ish memory) and matches Modal's
-    # autoscale ceiling so PaddleOCR serves the fan-out. The circuit breaker is
-    # re-checked per chunk: a misconfigured (401/403/404) endpoint, or N early
+    # autoscale ceiling so PaddleOCR serves the fan-out.
     import os as _os_s15
     PARALLELISM = max(1, int(_os_s15.environ.get("STAGE_1_5_CONCURRENCY", "6")))
     # `persisted` counts ROWS WRITTEN; `ocr_ok` counts pages the OCR pass actually
@@ -558,8 +557,7 @@ async def precompute_document_layout(
     # there is no window in which the marker can leak. Audit #12: it used to run
     # ~190 lines earlier, before the PaddleOCR manager was resolved — and that
     # resolution raises LayoutPrecomputeFatalError when the manager is
-    # unavailable, leaving the marker set on a dead job. Nothing above this point
-    # is slow (manager lookup and closure definitions), so the marker still covers
+    # unavailable, leaving the marker set on a dead job.
     try:
         # STREAMING fan-out (not chunk-barriered). Bound concurrency with a
         # semaphore so exactly PARALLELISM pages are in flight AT ALL TIMES: as
@@ -663,8 +661,7 @@ async def precompute_document_layout(
     # Every `document_layout_analysis` upsert failure is swallowed per-page (it is
     # logged as a warning so one bad page cannot kill a 200-page catalog), so a
     # total write failure — bad credentials, table gone, schema drift — used to
-    # arrive here with persisted == 0 and emit `completed` anyway. Everything
-    # downstream reads that table, so the job then ran green on no layout at all:
+    # arrive here with persisted == 0 and emit `completed` anyway.
     if pages_to_process and persisted == 0:
         _msg = (
             f"Stage 1.5 persisted 0 of {len(pages_to_process)} pages to "

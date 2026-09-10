@@ -55,8 +55,8 @@ _PARSES = (
 #: Markdown-fence repair — the strongest single signal, counted separately.
 _FENCE = ("```json", '"```"', "```")
 
-# : The TRANSPORT, which is not a parser.
-# :
+#: The TRANSPORT, which is not a parser: it decodes Anthropic's own wire protocol, including the
+#: `input_json_delta` fragments a FORCED tool call's input arrives in.
 _TRANSPORT = {
     "app/services/core/claude_helper.py::tracked_claude_stream_async",
     # Its inner half. Both forward whatever the caller forces via `**extra`; neither decides

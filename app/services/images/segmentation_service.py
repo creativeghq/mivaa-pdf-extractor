@@ -81,12 +81,11 @@ class SegmentationService:
             pass
         return "image/jpeg"  # safe fallback
 
-    # : Forced-tool schema (#32 + #33 item 2). This call was BOTH a raw Anthropic POST
-    # : (so an OPUS segmentation logged no cost anywhere) and a markdown-fence stripper
-    # : with a truncation-recovery parser underneath it. The recovery code is the tell:
-    # : it exists because the model ran out of max_tokens mid-array and someone had to
-    # : rebuild the JSON by walking brace depth. A forced tool removes the need to guess.
-    # :
+    #: Forced-tool schema (#32 + #33 item 2). This call was BOTH a raw Anthropic POST
+    #: (so an OPUS segmentation logged no cost anywhere) and a markdown-fence stripper
+    #: with a truncation-recovery parser underneath it. The recovery code is the tell:
+    #: it exists because the model ran out of max_tokens mid-array and someone had to
+    #: rebuild the JSON by walking brace depth. A forced tool removes the need to guess.
     SEGMENTATION_TOOL = {
         "name": "emit_material_zones",
         "description": "Return the material zones detected in this image.",
@@ -204,7 +203,7 @@ class SegmentationService:
         # zones already yielded are real and complete, and the failure means there were
         # MORE that never arrived. Swallowing it would end the stream with a `done`
         # that says the list is whole — the caller would cache a truncated answer as
-        # the permanent one for that image. The route turns it into an `error` event
+        # the permanent one for that image.
         async for event in stream_with_tool(
             task="image_segmentation",
             model="claude-opus-5",

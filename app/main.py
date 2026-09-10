@@ -1867,6 +1867,7 @@ app.include_router(rag_router)
 # rag_router's namespace and rag_router is included ABOVE this line, so FastAPI (first
 # registration wins) served the rag_routes handler and never theirs.
 # upload_router  removed 2026-05-23 — duplicate of `/documents/upload`.
+# query_router   removed 2026-08-09 — /query, /chat, /search.
 app.include_router(anthropic_router)
 app.include_router(products_router)
 app.include_router(document_entities_router) 

@@ -49,8 +49,7 @@ _DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
 # Models where the Anthropic API now rejects the `temperature` parameter
 # (status: deprecated → invalid_request_error 400). Callers can keep passing
 # temperature; we silently drop it for these models so the call still succeeds.
-# : Models that ACCEPT sampling parameters (`temperature` / `top_p` / `top_k`).
-# :
+# Models that ACCEPT sampling parameters (`temperature` / `top_p` / `top_k`).
 _MODELS_WITH_TEMPERATURE = (
     "claude-haiku-4-5",
 )

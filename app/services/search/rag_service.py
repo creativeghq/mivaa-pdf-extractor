@@ -181,8 +181,7 @@ class RAGService:
                 # live catalog/KB text source. All ingestion goes through
                 # process_document_with_discovery → Stage 2 (process_product_chunking),
                 # which is cache-first off the PaddleOCR structural cache and ALWAYS
-                # passes page_chunks — so this branch is effectively unreached. It is
-                # kept only as a robustness fallback for any direct caller that indexes
+                # passes page_chunks — so this branch is effectively unreached.
                 try:
                     import pymupdf4llm
                     import tempfile
@@ -444,6 +443,10 @@ class RAGService:
 
                             # Use UPDATE per row, not UPSERT — UPSERT falls back to INSERT on
                             # missing IDs and trips the NOT NULL `content` constraint.
+                            # Provenance (2026-05-23): stamp embedding_model +
+                            # embedding_dimension + embedding_generated_at on every chunk
+                            # so Voyage→OpenAI drift is detectable on chunk rows the
+                            # same way it is on image rows.
                             from datetime import datetime as _dt
                             _emb_model = (
                                 getattr(self.embeddings_service, '_last_provider', None)

@@ -530,12 +530,7 @@ class JobDigestDispatcher:
         tracked_job_id: str,
         new_match_count: int,
     ) -> Dict[str, Any]:
-        """Called from JobResearchService.refresh() after each refresh completes.
-        Fires a single chat-post + bell notification if:
-        - the tracked_job has alert_on_burst=true
-        - new_match_count >= burst_threshold (default 10)
-        - last_burst_alert_at was at least 2 hours ago (or NULL)
-        """
+        """Called from JobResearchService.refresh() after each refresh completes."""
         if not self._module_active() or new_match_count <= 0:
             return {"skipped": True, "reason": "module disabled or no matches"}
 
@@ -755,6 +750,9 @@ class JobDigestDispatcher:
                         # WHOSE email this is, for the LOG ROW only.
                         **({"attribution_workspace_id": workspace_id} if workspace_id else {}),
                         # NO templateSlug: email-api's renderTemplateWithVariables()
+                        # escapeHtml's every {{var}}, so the template's {{body}} turned
+                        # our pre-built section HTML into literal <h2>…</h2> text in the
+                        # inbox.
                         "html": (
                             f'<!DOCTYPE html><html><body style="background:#0f0f0f;color:#e6e6e6;'
                             f'font-family:Helvetica,Arial,sans-serif;padding:24px;">'

@@ -380,8 +380,7 @@ async def _process_product_images(
             # bypassed the perceptual-hash dedup that embedded images get inside
             # pdf_processor. Overlapping / duplicate IMAGE-FIGURE regions on a page
             # would each get a full SLIG + Voyage + Opus embedding bundle → duplicate
-            # visual vectors in VECS + ~2x embedding spend. Run the SAME per-layer
-            # phash dedup over the region-crop set (all layer='region_crop', so they
+            # visual vectors in VECS + ~2x embedding spend.
             _pre = len(region_crops)
             try:
                 region_crops = get_pdf_processor()._deduplicate_images(region_crops, job_id=job_id)
@@ -506,8 +505,7 @@ async def _process_product_images(
     # SLIG + vision embedding bundle must record WHY on its document_images row
     # (or, for dropped images, in the stage result). Icon candidates ARE saved
     # (icon/spec path) — stamp the reason on each dict so save_single_image
-    # persists it under metadata.bundle_skipped_reason. remaining_non_material
-    # is dropped entirely (no document_images row), so it can't be stamped — we
+    # persists it under metadata.bundle_skipped_reason.
     for _icon_img in icon_candidates:
         _icon_img['bundle_skipped_reason'] = 'icon_candidate_spec_path'
     logger.info(
@@ -688,6 +686,9 @@ async def _run_phase_3_ocr_for_product(
     sb = get_supabase_client()
 
     # Map image_id → uploaded image dict so we can look up local paths.
+    # `save_images_and_generate_clips` mutates each uploaded dict in place
+    # to set `id` (image_processing_service.py:1335) — that DB id is the
+    # canonical join key.
     by_image_id = {img.get('id'): img for img in uploaded_regular if img.get('id')}
     if not by_image_id:
         return None
@@ -931,6 +932,10 @@ async def process_catalog_wide_icons(
         return pdf_idx + 1  # 1-based physical = 0-based pdf idx + 1
 
     # Extract images from every supplementary PDF page IN PARALLEL.
+    # Pre-2026-05-03 this was a sequential loop, and `process_pdf_from_bytes`
+    # auto-enabled multimodal OCR on every supplementary page even
+    # though the icon-classification step downstream runs its own OCR per icon
+    # candidate.
     catalog_icon_sem = asyncio.Semaphore(4)
     extracted_images_list: List[Dict[str, Any]] = []
 

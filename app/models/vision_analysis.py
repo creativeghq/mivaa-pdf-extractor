@@ -11,8 +11,13 @@ from pydantic import BaseModel, Field, ConfigDict
 SCHEMA_VERSION: int = 3
 
 
-# : Token budget for ONE vision_analysis call, shared by every path that makes one.
-# :
+#: Token budget for ONE vision_analysis call, shared by every path that makes one.
+#:
+#: Must cover adaptive thinking AND the emitted tool arguments. It was 1024 on the
+#: ingestion path and 4096 on the other three — 1024 is under the floor for a schema
+#: carrying three lists, and a truncated tool_use block is reported as a FAILED
+#: analysis rather than a short one, so an under-budgeted call was indistinguishable
+#: from a refusal.
 VISION_MAX_TOKENS: int = 8192
 
 #: Reasoning effort. `high` is the API default; named here so the tuning knob is

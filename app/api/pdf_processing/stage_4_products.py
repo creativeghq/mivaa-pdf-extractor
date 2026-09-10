@@ -60,7 +60,7 @@ _FINE_CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
 # above only knows the original 10 buckets, so an 11th category added in admin would fall
 # through to 'pcs'. Load the table's coarse key→unit map at runtime (cached per process,
 # fully guarded) so admin-added categories resolve their configured unit; the hardcoded
-# map stays as the fallback. NOTE: this is the COARSE bucket map — it deliberately does
+# map stays as the fallback.
 _DB_CATEGORY_UNITS: Optional[Dict[str, str]] = None
 
 
@@ -639,10 +639,7 @@ async def create_single_product(
         try:
             # Shared with the product-embedding backfill — keep the text
             # construction identical so backfilled vectors live in the same
-            # semantic space as inline-generated ones. Read page_range from the
-            # SAME source the backfill reads: the persisted `metadata` dict
-            # (== product_data['metadata'] below), NOT product.page_range — the two
-            # can differ when discovery pre-set metadata['page_range'] (line ~398
+            # semantic space as inline-generated ones.
             page_body_text = await build_product_page_body_text(
                 supabase,
                 document_id,
@@ -2321,6 +2318,8 @@ async def enrich_products_from_chunks_and_vision(
         # Used when a product has no explicit page_range on its metadata:
         # every image linked to the product via image_product_associations
         # gives us a concrete page number to target with the spec vision pass.
+        # Cheap — one query per document — and then in-memory lookups per
+        # product.
         try:
             # S4-5: scope to THIS document at the DB (filter on the inner-joined
             # document_images.document_id) instead of pulling every association row
@@ -2372,7 +2371,7 @@ async def enrich_products_from_chunks_and_vision(
             # one that produces output — earlier short-circuit logic silently
             # fell through to a noisy text-marker scan whenever the chunk
             # metadata fetch returned metadata as a string (Supabase JSONB
-            # deserialization is not always dict-typed). The union approach
+            # deserialization is not always dict-typed).
             page_set: set = set()
 
             # Helper: parse a value that might be int, str, list, or serialized.

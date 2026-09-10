@@ -87,9 +87,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # A liveness probe, and it had never once answered one. `/api/v1/ai-services`
             # is not excluded (correctly — those routes reach a model), so the middleware
             # 401'd its /health too, and `health-check`'s `checkPythonEndpoint` sends no
-            # Authorization header and tests `res.ok`. The AI Services row on the health
-            # dashboard has therefore read "unhealthy: HTTP 401" for as long as it has
-            # existed — a false RED, which is the silent-zero shape with the sign flipped:
+            # Authorization header and tests `res.ok`.
             "/api/v1/ai-services/health",
             "/api/system/metrics",
             "/api/packages/status",
@@ -140,6 +138,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             # /api/admin (logs, backfills, facets — all called by the admin UI and
             # edge functions) stays JWT-enforced. Both now carry their own
             # fail-closed X-Admin-Token guard (require_deploy_token in api/admin.py);
+            # the #250 follow-up is done.
             "/api/admin/pause-for-deploy",
             "/api/admin/resume-from-deploy",
         ]
@@ -267,7 +266,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         # and "/api/ragx" — a route nobody had written yet would have inherited
         # public access silently the day someone added it, which is invariant 5's
         # "never a bare prefix that swallows everything" as a matching-strategy bug
-        # rather than a bad entry. Subtree exclusion is still deliberate and intact
+        # rather than a bad entry.
         for excluded in self.exclude_paths:
             base = excluded.rstrip("/")
             if path == base or path.startswith(base + "/"):

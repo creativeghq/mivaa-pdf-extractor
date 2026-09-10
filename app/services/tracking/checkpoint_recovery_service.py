@@ -118,8 +118,7 @@ class CheckpointRecoveryService:
                     # those represent a single product within a multi-product
                     # job. An image-heavy product page legitimately produces
                     # 0 text chunks (CLIP/SLIG image embeddings are the value
-                    # there). Don't fail the whole job because of one such
-                    # product — the document-level COMPLETED stage check
+                    # there).
                     is_per_product_checkpoint = bool(
                         (metadata or {}).get('product_db_id')
                         or data.get('product_db_id')
@@ -241,7 +240,7 @@ class CheckpointRecoveryService:
                 # the exact crash window update_checkpoint_and_append_history
                 # exists to eliminate — and, worse, this function returned True
                 # afterwards even when BOTH paths had failed, so a caller could
-                # not tell a written checkpoint from a lost one. The RPC is
+                # not tell a written checkpoint from a lost one.
                 logger.error(
                     f"Atomic checkpoint+history write failed for {job_id} @ {stage.value}: {atomic_err}"
                 )

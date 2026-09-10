@@ -20,12 +20,10 @@ from app.utils.exceptions import TenancyViolation
 logger = logging.getLogger(__name__)
 
 
-# : M3-11 (#16). Stage 1 decides which chunks become product candidates and
-# : Stage 2 decides what data is written to the gold layer. Both used to be
-# : plain-text Claude responses mined with `re.search(r'(\{.*\}|\[.*\])')`, with
-# : heuristic fallbacks when the regex missed. Invariant 9 requires forced
-# : tool_choice for any classifier whose verdict drives a DB write: a supplier
-# : PDF is untrusted input, and injected text shaping free-form JSON stops
+#: M3-11 (#16). Stage 1 decides which chunks become product candidates and
+#: Stage 2 decides what data is written to the gold layer. Both used to be
+#: plain-text Claude responses mined with `re.search(r'(\{.*\}|\[.*\])')`, with
+#: heuristic fallbacks when the regex missed.
 STAGE1_CLASSIFICATION_TOOL = {
     "name": "record_chunk_classifications",
     "description": (

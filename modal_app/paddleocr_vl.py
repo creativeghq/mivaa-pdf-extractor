@@ -125,8 +125,7 @@ class PaddleService:
         # native VLM generation INTERMITTENTLY wedges on the first predict() of a
         # cold container (a paddle/CUDA cold-init race — confirmed
         # non-deterministic: same image+config sometimes warms in ~4s, sometimes
-        # hangs forever). Pay the JIT here and use it as a health gate: run warmup
-        # in a daemon thread with a tight budget; if it completes the container is
+        # hangs forever).
         import threading as _th, time as _t, tempfile
         from PIL import Image, ImageDraw
         WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "35"))

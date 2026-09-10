@@ -196,11 +196,9 @@ _TRANSIENT_SQLSTATE_CLASSES = frozenset({
 #: Individually transient, in classes that are otherwise permanent.
 _TRANSIENT_SQLSTATES = frozenset({"40001", "40P01", "55P03"})
 
-# : Gateway / rate-limit statuses. Supabase sits behind Cloudflare, which answers 522 when
-# : the origin times out; PostgREST surfaces that as an APIError whose `code` is the HTTP
-# : status rather than a SQLSTATE.
-# :
-# : The whole Cloudflare origin family (520–527, 530), not just the two that had been seen.
+#: Gateway / rate-limit statuses. Supabase sits behind Cloudflare, which answers 522 when
+#: the origin times out; PostgREST surfaces that as an APIError whose `code` is the HTTP
+#: status rather than a SQLSTATE.
 _TRANSIENT_HTTP_STATUS = frozenset({
     408, 425, 429, 502, 503, 504,
     520, 521, 522, 523, 524, 525, 526, 527, 530,

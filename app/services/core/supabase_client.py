@@ -798,9 +798,7 @@ class SupabaseClient:
     # save_pdf_processing_result removed 2026-05-23 — zero callers (verified
     # via grep). It also persisted a fake `https://example.com/{id}.pdf` URL
     # into `pdf_processing_results.file_url` when called without an explicit
-    # value, contradicting the "never persist file_url" rule. The
-    # pdf_processing_results table still exists but is now write-orphan; if
-    # ever needed, prefer reading from background_jobs + document_chunks +
+    # value, contradicting the "never persist file_url" rule.
 
     async def save_knowledge_base_entries(self, document_id: str, chunks: list, images: list) -> dict:
         """

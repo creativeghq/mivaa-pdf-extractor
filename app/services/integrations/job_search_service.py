@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # must go through this single gate. Previously the two paths used independent
 # semaphores (6 + 5) that ran concurrently within one refresh, so ~11 requests
 # hit Firecrawl at once and it returned 429 for a third of the boards (which
-# then failed with no retry). One global concurrency cap + a minimum spacing
+# then failed with no retry).
 _FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 _FIRECRAWL_MAX_CONCURRENCY = int(os.getenv("FIRECRAWL_MAX_CONCURRENCY", "3"))
 _FIRECRAWL_MIN_INTERVAL_S = float(os.getenv("FIRECRAWL_MIN_INTERVAL_S", "0.4"))
@@ -332,7 +332,7 @@ def _looks_hallucinated_url(url: str) -> bool:
 
 
 def _looks_like_category_title(title: Optional[str]) -> bool:
-    """Title-shape heuristic for aggregator/category pages. Catches:"""
+    """Title-shape heuristic for aggregator/category pages."""
     if not title:
         return False
     t = title.strip()
@@ -425,6 +425,7 @@ async def search_via_dataforseo_jobs(
     # 100+ char query that matches nothing. Use ONLY the user's primary
     # keyword (first in the list); rely on Google's own synonym matching for
     # nearby titles.
+    # FAN-OUT ACROSS ALL KEYWORDS (fix 2026-07-25).
     kw_list = [k.strip() for k in (keywords or []) if k and k.strip()]
     if not kw_list:
         return []
@@ -653,6 +654,10 @@ async def search_via_dataforseo_serp(
                         canonical = canonicalize_url(url)
                         host = domain_of(url)
                         # v0.4.1: NEVER set company from the host for google_serp hits.
+                        # The host is the aggregator (arc.dev, weworkremotely.com,
+                        # careers-cotiviti.icims.com); the actual employer must be
+                        # extracted from the title or description by the classifier
+                        # downstream.
                         out.append(JobHit(
                             url=url,
                             canonical_url=canonical,
@@ -1255,6 +1260,8 @@ async def search_via_perplexity(
     # fill a structured JSON array when it can't find enough real ones (e.g.
     # company='Acme Inc.', palindromic Glassdoor IDs, sequential WeWorkRemotely
     # IDs 12345/12346/12347). Three counter-measures applied:
+    # 1. Cap limit aggressively (5 not 15) — less pressure to invent
+    # 2.
     capped_limit = min(limit, 7)
     user_prompt = render(
         await load_prompt("extraction", "job_posting_search", stage="job_research"),
@@ -1270,6 +1277,8 @@ async def search_via_perplexity(
     # v0.4: load the operator-curated list from job_research_sites (editable in the
     # hidden admin page at /admin/knowledge-base/job-sources). Falls back to the
     # hardcoded constant if the DB read fails or returns nothing.
+    # Discovered/region-specific domains (extra_domains) go FIRST so they survive
+    # the 10-domain cap — otherwise a location search's local boards (e.g.
     base_domains = _load_perplexity_domains_from_db()
     domains: List[str] = []
     for d in list(extra_domains or []) + base_domains:

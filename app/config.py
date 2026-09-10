@@ -11,11 +11,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 
 
-# : The platform's own workspace. ONE literal (M3-14, #16): the same UUID was
-# : hardcoded in 11 places - two settings defaults, a FastAPI Query default, two
-# : module constants and a set of OpenAPI examples - any of which could drift
-# : from the configured value while every one of them still looked authoritative.
-# :
+#: The platform's own workspace. ONE literal (M3-14, #16): the same UUID was
+#: hardcoded in 11 places - two settings defaults, a FastAPI Query default, two
+#: module constants and a set of OpenAPI examples - any of which could drift
+#: from the configured value while every one of them still looked authoritative.
 PLATFORM_DEFAULT_WORKSPACE_ID = "ffafc28b-1b8b-4b0d-b226-9f9a6154004e"
 
 
@@ -94,7 +93,7 @@ class Settings(BaseSettings):
     # caches results in
     # `document_layout_analysis`. Stage 2 chunker reads from that cache so
     # layout-aware chunking actually has populated text_content (was the
-    # root cause of chunks=0 on stylized catalog pages). Set False to
+    # root cause of chunks=0 on stylized catalog pages).
     layout_precompute_enabled: bool = Field(
         default=True, env="LAYOUT_PRECOMPUTE_ENABLED",
         description="Run Stage 1.5 layout+text precompute and cache to document_layout_analysis"

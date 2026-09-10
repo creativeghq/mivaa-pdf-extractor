@@ -679,6 +679,10 @@ class JobResearchService:
                 ))
             if sources_enabled.get("perplexity", True):
                 # Fan out Perplexity across ALL keywords (fix 2026-07-25).
+                # search_via_perplexity ORs at most ~3-4 keywords per call (Sonar
+                # handles long OR-lists poorly), so a single primary call silently
+                # searched only keywords[:3] — every keyword after the third
+                # (Product AI Builder, Vibe Coder, …) was never queried.
                 model_primary = "sonar-pro" if (force_full_discovery or not tj.get("last_refreshed_at")) else "sonar"
                 _kw_chunks = [keywords[i:i + 3] for i in range(0, len(keywords), 3)] or [all_search_terms[:3]]
                 _kw_chunks = _kw_chunks[:6]  # generous ceiling: up to 18 keywords
@@ -904,7 +908,7 @@ class JobResearchService:
             if not hits:
                 # audit #17 M4-3. Failed sources are recorded as -1 above and skipped; a run
                 # where EVERY source raised therefore arrived here and completed as a clean,
-                # successful, zero-result refresh. Three things followed from that, all wrong:
+                # successful, zero-result refresh.
                 _attempted = [n for n in per_source_counts.values()]
                 _all_failed = bool(_attempted) and all(n == -1 for n in _attempted)
 
@@ -975,7 +979,7 @@ class JobResearchService:
             # Hays "SC Cleared Product Owner" listings. content_hash + canonical_url
             # both keyed on the URL, so both survived. Collapse on the role identity
             # itself: normalized (title + company), keeping the first occurrence
-            # (deduped is already source-priority-ordered). Only fires when both
+            # (deduped is already source-priority-ordered).
             def _norm_key(s: str) -> str:
                 return re.sub(r"[\s\-_/|]+", " ", (s or "").strip().lower()).strip()
             # Strip trailing location parenthetical(s) from the title so the SAME

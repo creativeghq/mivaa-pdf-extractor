@@ -664,8 +664,7 @@ class DynamicMetadataExtractor:
         # thing as "no categories": `_load_blocking` reads a falsy value as None, and None means
         # APPLIES TO EVERY CATEGORY. So one field seen once in a tile catalogue was registered
         # as a field of lighting, sanitary, kitchen and every other category at once — offered
-        # by their extraction prompts and accepted by their validators. That is a plausible
-        # mechanism for the original `cladding` divergence, and the reason a discovered field
+        # by their extraction prompts and accepted by their validators.
         observed_category = self._observed_category(extracted_data, category_hint)
         if observed_category is None:
             self.logger.warning(

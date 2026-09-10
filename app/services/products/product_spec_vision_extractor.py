@@ -53,8 +53,7 @@ def _build_spec_prompt(product_name: str) -> str:
 # Was `SPEC_PROMPT = _build_spec_prompt(...)`, evaluated at IMPORT time — which can neither
 # await nor reach the prompt store. A function instead, resolved when it is actually needed
 # (#347 phase 3P).
-# : The forced tool for spec extraction (#25 M12-2).
-# :
+# The forced tool for spec extraction (#25 M12-2).
 SPEC_VISION_TOOL = {
     "name": "emit_product_spec",
     "description": (

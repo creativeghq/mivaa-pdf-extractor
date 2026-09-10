@@ -228,7 +228,13 @@ class DataForSeoMerchantService:
     # ────────── Internals ──────────
 
     def _parse_response(self, data: Dict[str, Any], limit: int) -> tuple[List[MerchantHit], int]:
-        """DataForSEO Merchant /products/task_get/advanced response shape:"""
+        """DataForSEO Merchant /products/task_get/advanced response shape:
+        {
+        tasks: [{
+        result: [{
+        items: [
+        {
+        """
         tasks = data.get("tasks") or []
         if not tasks:
             return [], 0

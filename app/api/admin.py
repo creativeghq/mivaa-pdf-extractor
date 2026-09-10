@@ -1361,9 +1361,7 @@ async def reprocess_image_ocr(
             # extract_text_from_image NEVER raises — retry-exhaustion comes back as an
             # OCRResult with method='paddleocr_failed', text="" and blocks=[]. The
             # contract (ocr_service.py:222) is explicit that consumers must check the
-            # METHOD, not emptiness. This endpoint joined `r.text` across results
-            # without looking, so a total OCR failure was stored as empty text and then
-            # written with processing_status='ocr_complete' and can_reprocess=False —
+            # METHOD, not emptiness.
             _failed = [r for r in ocr_results if r.method == 'paddleocr_failed']
             if _failed or not ocr_results:
                 logger.error(

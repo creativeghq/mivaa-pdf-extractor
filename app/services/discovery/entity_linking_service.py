@@ -936,9 +936,7 @@ class EntityLinkingService:
                             # ONE home for thickness. Stages 4.5 (sibling) and 4.6
                             # (regex) write material_properties.thickness as
                             # {value, confidence, source} and only fill it when
-                            # EMPTY. Writing a bare metadata['thickness'] here left
-                            # that key untouched, so the regex still fired and the
-                            # product ended up carrying two thickness values that
+                            # EMPTY.
                             material_props = current_metadata.get('material_properties')
                             if not isinstance(material_props, dict):
                                 material_props = {}

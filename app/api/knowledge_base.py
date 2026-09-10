@@ -78,8 +78,7 @@ def _load_own_doc(
 # read `workspace_members.role` to decide admin-ness — correct, but it was the SECOND
 # implementation of "who is this caller really", next to rag_routes' body-supplied
 # `caller` field. Fixing MV2-12 by adding another private copy is what prompted this
-# extraction. The one implementation is `resolve_kb_caller` in
-# app/services/kb/kb_access.py, and it now also clamps the widening request that the
+# extraction.
 
 
 # ============================================================================

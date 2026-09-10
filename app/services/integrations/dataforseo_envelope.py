@@ -7,12 +7,8 @@ from typing import Any, Dict, Optional, Tuple
 #: DataForSEO's "everything worked" code, at both the envelope and task level.
 DFS_OK = 20000
 
-# : "Task Created" — the success code for the ASYNC endpoints (task_post). The task was
-# : accepted and is queued; the results arrive from task_get or a webhook.
-# :
-# : This module accepted only 20000, so every async submission was reported as a failure.
-# : `seo_trustpilot_search` came back "dataforseo task 20100: Task Created." — a success
-# : message delivered as an error, on a call that had worked and been paid for.
+#: "Task Created" — the success code for the ASYNC endpoints (task_post). The task was
+#: accepted and is queued; the results arrive from task_get or a webhook.
 DFS_TASK_CREATED = 20100
 
 #: Codes that mean the call succeeded.

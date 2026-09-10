@@ -575,6 +575,8 @@ class TrackedQueriesService:
         # Option 2: domain pinning. If the caller has saved preferred retailer
         # domains, Perplexity's search_domain_filter forces those to be probed.
         # verify_prices controls the Firecrawl verification pass (default True).
+        # First refresh = double-read verification pass to catch transient /
+        # A/B-tested prices. Subsequent refreshes single-read.
         is_first_refresh = not bool(tq.get("first_refresh_verified"))
 
         # Pull known retailer domains from history so Perplexity can prioritize
@@ -1291,7 +1293,13 @@ class TrackedQueriesService:
         return kept
 
     async def latest_results_split(self, tracking_id: str) -> Dict[str, List[Dict[str, Any]]]:
-        """Same as latest_results but returns two arrays:"""
+        """Same as latest_results but returns two arrays:
+        {
+        "results":         exact + variant + unverifiable rows (the tracked product),
+        "family_results":  family rows (similar products in the same series — inert),
+        }
+        Family rows never feed the chart/median/alerts.
+        """
         rows = await self.latest_results(tracking_id)
         primary: List[Dict[str, Any]] = []
         family: List[Dict[str, Any]] = []

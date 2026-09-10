@@ -153,8 +153,7 @@ class ImageDownloadService:
                         # absent header skipped the check and a malformed one fell
                         # through to `pass`, and BOTH then hit an unbounded
                         # response.read() that pulled the whole body into memory
-                        # before the 10MB limit was consulted. The cap that matters is
-                        # the streaming one below -- a hostile or broken server cannot
+                        # before the 10MB limit was consulted.
                         content_length = response.headers.get('Content-Length')
                         if content_length:
                             try:

@@ -222,6 +222,10 @@ class DocumentClassifier:
             
         except Exception as e:
             # No keyword-heuristic fallback. It used to return e.g.
+            # {"content_type": "product", "confidence": 0.5} from a substring match,
+            # which is indistinguishable at every call site from a real verdict at
+            # middling confidence — so a dead API key or a broken model silently
+            # reclassified an entire catalog by keyword.
             logger.error(f"❌ Fast classification failed: {str(e)}")
             return {
                 "content_type": "classification_failed",

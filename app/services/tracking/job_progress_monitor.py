@@ -285,6 +285,8 @@ class JobProgressMonitor:
                 # Suppress the "stuck" alert while the job is inside a KNOWN long
                 # operation it declared via current_slow_operation (Stage 1.5,
                 # discovery, Stage 3 set it with an expected_max_seconds budget).
+                # This is the same signal the auto-recovery cron honors — a 140-page
+                # Stage 1.5 legitimately sits in "initializing" for ~15-20 min.
                 if should_fire and isinstance(db_slow_op, dict) and db_slow_op.get("operation"):
                     try:
                         _started = db_slow_op.get("started_at")

@@ -109,6 +109,9 @@ class ProgressTracker:
     # Heartbeat monitoring
     # Note (2026-05-23 round-3 cleanup): the asyncio-based heartbeat loop
     # (start_heartbeat / stop_heartbeat / _heartbeat_task / _heartbeat_running)
+    # was deleted. JobHeartbeat (services/tracking/job_heartbeat.py) is now
+    # the sole liveness mechanism — runs in a thread so it survives blocked
+    # event loops.
     last_heartbeat: Optional[datetime] = None
     last_db_sync: Optional[datetime] = None
     MIN_SYNC_INTERVAL: float = 2.0  # Minimum seconds between database syncs (reduced from 5.0 for more responsive updates)
@@ -212,7 +215,7 @@ class ProgressTracker:
             # an Optional parameter — so any caller that omitted the name silently
             # skipped its own history entry. `start_processing()` was one: it moved the
             # job to DOWNLOADING through a bare `_sync_to_database()`, so the FIRST
-            # stage of every job emitted no `in_progress` at all. Pipeline convention 9
+            # stage of every job emitted no `in_progress` at all.
             effective_stage = stage or getattr(self.current_stage, 'value', None)
 
             # Remember the last stage that was real work, for the terminal event.
@@ -251,7 +254,7 @@ class ProgressTracker:
             # `background_jobs` update. A crash in the window left history and status
             # disagreeing, and a swallowed append let a job complete with no audit entry
             # explaining why — the append was best-effort for a record whose entire
-            # purpose is to be the reliable one. `update_job_progress_and_append_history`
+            # purpose is to be the reliable one.
             self._supabase.client.rpc(
                 'update_job_progress_and_append_history',
                 {
@@ -564,8 +567,7 @@ class ProgressTracker:
             # logged, and never assigned to anything — the ONE field of the four that
             # this function failed to reconcile was also the one field with no drift
             # signal, so `_sync_to_database()` on the very next line wrote the stale
-            # in-memory counter and nothing anywhere said so. That is the platform's
-            # dominant documented failure ("a number that should be non-zero sitting
+            # in-memory counter and nothing anywhere said so.
             if actual_embeddings != self.text_embeddings_generated:
                 logger.warning(
                     f"⚠️ Text embedding count mismatch: tracker={self.text_embeddings_generated}, "
@@ -972,8 +974,7 @@ class ProgressTracker:
                         # in-flight slow-op marker on terminal failure so a
                         # future cron tick that's reading current_slow_operation
                         # for any reason doesn't see a stale "fresh" timestamp
-                        # belonging to a dead job. complete_job already clears
-                        # this; fail_job was not, leaving the marker live on
+                        # belonging to a dead job.
                         'current_slow_operation': None,
                     })\
                     .eq('id', self.job_id)\

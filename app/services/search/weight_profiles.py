@@ -96,10 +96,12 @@ _BASE_PROFILES: Dict[str, Dict[str, float]] = {
     },
 }
 
-# : The 8th vector's share, per intent (#239). `page` is a voyage-multimodal-3
-# : embedding of the whole rendered catalog page — text and picture in one vector.
-# : It is weighted by how much an intent depends on what a page LOOKS like as a
-# : composed unit, and specifically on text the structural OCR pass never reads:
+#: The 8th vector's share, per intent (#239). `page` is a voyage-multimodal-3
+#: embedding of the whole rendered catalog page — text and picture in one vector.
+#: It is weighted by how much an intent depends on what a page LOOKS like as a
+#: composed unit, and specifically on text the structural OCR pass never reads:
+#: `Image`/`Figure`/`chart` regions are crop sources only, so a product name
+#: printed inside a photo is invisible to every other channel.
 PAGE_WEIGHTS: Dict[str, float] = {
     "product_name": 0.15,   # the gap this vector exists to close
     "specification": 0.10,  # spec values baked into diagram artwork

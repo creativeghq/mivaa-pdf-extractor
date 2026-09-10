@@ -76,6 +76,34 @@ class TestThePredicate:
         assert found[0]["kind"] == "comment"
         assert found[0]["prose"] == 9
 
+    def test_cuts_at_a_sentence_that_ends_not_at_a_colon(self):
+        body = (
+            "One. Two ends here.\nThree runs on and on\nand on and on\nand on and on\n"
+            "and on and on\nand on and on\nand on and on\nand finally stops.\n"
+        )
+        head, _ = BUDGET.collapse(body)
+        assert " ".join(head) == "One. Two ends here."
+
+    def test_keeps_the_budget_when_nothing_ends_inside_the_window(self):
+        body = "\n".join(["no terminator here"] * 9)
+        head, _ = BUDGET.collapse(body)
+        assert len(head) == BUDGET.MAX_PROSE_LINES
+
+    def test_reads_the_hash_colon_marker_so_its_separator_still_ends_a_paragraph(self):
+        source = "#: First para.\n#:\n#: Second para.\n" + "#: more.\n" * 6 + "x = 1\n"
+        found = BUDGET.find_offenders(source)
+        assert found and found[0]["marker"] == "#:"
+        head, _ = BUDGET.collapse(found[0]["body"])
+        assert head == ["First para."]
+
+    def test_blank_comments_leaves_code_but_removes_prose(self):
+        source = 'def f():\n    """A docstring naming get_workspace_context."""\n    # and a comment\n    return 1\n'
+        blanked = BUDGET.blank_comments(source)
+        assert "get_workspace_context" not in blanked
+        assert "and a comment" not in blanked
+        assert "return 1" in blanked
+        assert len(blanked) == len(source), "offsets must survive, or every span shifts"
+
     def test_a_trailing_comment_is_not_part_of_a_run(self):
         source = "x = 1  # note\n" + "".join(f"# line {i}\n" for i in range(3)) + "y = 2\n"
         runs = BUDGET.comment_runs(source)

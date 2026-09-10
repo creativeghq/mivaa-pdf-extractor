@@ -8,9 +8,13 @@ from app.services.metadata.field_registry import field_registry
 
 logger = logging.getLogger(__name__)
 
-# : Structural keys that are never facets under ANY registry: identifiers, prose, money, raw
-# : dimensions, pipeline bookkeeping.
-# :
+#: Structural keys that are never facets under ANY registry: identifiers, prose, money, raw
+#: dimensions, pipeline bookkeeping.
+#:
+#: This is NOT a mirror of the DB allowlist and must never be maintained as one. It exists only
+#: for the DEGRADED path in `collect_raw_attributes()`, which runs when the registry could not be
+#: loaded. There, refusing to answer would throw away the lossless raw map — so that path
+#: over-captures instead, and this list is the floor under the over-capture.
 NON_CANONICAL_FACETS: set[str] = {
     "brand", "factory", "factory_name", "factory_group_name",
     "designer", "manufacturer", "supplier",

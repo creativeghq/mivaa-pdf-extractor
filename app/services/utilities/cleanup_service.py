@@ -697,12 +697,7 @@ class CleanupService:
                 #    of zombie PDFs across months of completed jobs.
                 if document_id and delete_storage_files:
                     try:
-                        # ORDER MATTERS, and it used to be backwards. The bytes were
-                        # deleted first and the pointer columns nulled afterwards in a
-                        # second call wrapped in `except Exception: pass` — so a crash
-                        # or a swallowed failure between them left a live `documents`
-                        # row pointing at an object that no longer exists, which is
-                        # the inverse of the platform's storage-GC hazard and strictly
+                        # ORDER MATTERS, and it used to be backwards.
                         try:
                             supabase_client.client.table('documents')\
                                 .update({
@@ -728,8 +723,7 @@ class CleanupService:
                         # cleanup_document_storage() unqualified, which ALSO wiped
                         # `pdf-tiles/extracted/{document_id}` — while this same branch
                         # deliberately preserves `documents`, `document_chunks`,
-                        # `document_images` and `products`. Those preserved rows carry
-                        # `storage_bucket='pdf-tiles'` and a path under that very
+                        # `document_images` and `products`.
                         stats['storage_files_deleted'] = self.cleanup_document_storage(
                             document_id, supabase_client, document_row=document_row,
                             source_only=True,
@@ -765,10 +759,7 @@ class CleanupService:
                 self.logger.info(f"   Stats: {stats}")
                 return stats
 
-            # 1b. Resolve the canonical product_id list for this job. The real
-            # products.id (a UUID) is reachable via:
-            # - `products.source_job_id = job_id`           (XML import, scraping, PDF stage_4)
-            # - `products.source_document_id = document_id` (PDF, legacy rows)
+            # 1b. Resolve the canonical product_id list for this job.
             product_ids: List[str] = []
             try:
                 pid_set = set()
@@ -1001,8 +992,6 @@ class CleanupService:
                 self.logger.info("⏭️ Skipping storage file deletion (automatic cleanup mode)")
 
             # 9b. Delete XML import companion tables.
-            # XML jobs maintain three companion tables that the cleanup
-            # function ignored before 2026-05-01:
             try:
                 import_jobs_resp = supabase_client.client.table('data_import_jobs')\
                     .select('id')\
@@ -1048,6 +1037,11 @@ class CleanupService:
             # writes them and they no longer exist, so there is nothing to clean up.
 
             # 10. Delete job record.
+            # NOTE: deleting the document in step 9 CASCADEs to background_jobs
+            # (background_jobs.document_id is ON DELETE CASCADE), so the job row
+            # may already be gone — and the explicit delete below can even raise
+            # a transient "Server disconnected" right after a large cascade. We
+            # therefore define job_deleted as "is the row actually gone now?
             try:
                 supabase_client.client.table('background_jobs')\
                     .delete()\

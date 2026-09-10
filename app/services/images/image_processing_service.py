@@ -25,9 +25,8 @@ from app.config import get_settings
 logger = logging.getLogger(__name__)
 
 
-# : The forced tool for image classification. ONE definition, used by both the primary
-# : classifier and the low-confidence re-check (#20 M7-4).
-# :
+#: The forced tool for image classification. ONE definition, used by both the primary
+#: classifier and the low-confidence re-check (#20 M7-4).
 CLASSIFICATION_TOOL = {
     "name": "emit_classification",
     "description": "Emit the image classification verdict for the building-materials catalog filter.",
@@ -360,9 +359,7 @@ class ImageProcessingService:
                 # Forced tool call (#20 M7-4). This path is taken by the images the
                 # primary classifier was LEAST sure about — exactly the ones where an
                 # unvalidated verdict does the most damage — and it asked for JSON in
-                # the prompt and ran `json.loads` on the text reply. Invariant 9
-                # requires forced tool-calling for a classifier whose verdict drives a
-                # DB write, and this verdict decides whether an image is a product
+                # the prompt and ran `json.loads` on the text reply.
                 from app.services.core.claude_tool_call import (
                     ToolCallNotReturned,
                     call_with_tool,
@@ -617,6 +614,10 @@ class ImageProcessingService:
                     continue
 
                 # On classification failure, QUARANTINE instead of fail-open.
+                # The old behavior treated API errors as is_material=True so
+                # during any Anthropic outage every logo/header/border got
+                # full SLIG + Voyage embeddings and permanently polluted
+                # visual search.
                 if 'error' in classification or '_failed' in classification.get('model', '') or '_empty_response' in classification.get('model', ''):
                     logger.warning(f"   ⚠️ Classification uncertain for {img_data.get('filename')}: {classification.get('reason')}")
                     logger.warning("   → Quarantining (classification_pending) — persisted WITHOUT embeddings, eligible for re-classification")
@@ -844,6 +845,7 @@ class ImageProcessingService:
         4 specialized + understanding embedding)
         - icon_candidates         : icon extraction pipeline only
         (OCR + Claude → spec metadata, NO embeddings)
+        - remaining_non_material  : pure decoration / technical diagrams
 
         Args:
             material_images: Images the vision model classified as PRODUCT_IMAGE / MIXED
@@ -1229,8 +1231,7 @@ class ImageProcessingService:
                 # confusing way available: the cap truncates the tool_use block, the
                 # response arrives with no COMPLETE tool_use, and the handler below
                 # correctly reads that as "the model ignored the tool" and stamps
-                # `vision_analysis_failed`. So an under-budgeted call is indistinguishable
-                # from a refusal, and `detected_text` — a LIST of SKUs, IP ratings and
+                # `vision_analysis_failed`.
                 max_tokens=VISION_MAX_TOKENS,
                 messages=[{"role": "user", "content": content}],
                 system=self.material_analyzer_system_prompt or None,
@@ -1750,8 +1751,7 @@ class ImageProcessingService:
         # Record the terminal failure on the image row so it's visible in the DB,
         # not only in logs. embedding_metadata is a JSONB column.
         # S3-8 — this is the ORPHAN-DISCOVERY marker for an image that saved its
-        # document_images row but got ZERO vectors after all retries. Backfill /
-        # ops query for these with:
+        # document_images row but got ZERO vectors after all retries.
         failed_image_id = img_data.get('id')
         if failed_image_id:
             try:
@@ -2024,7 +2024,6 @@ class ImageProcessingService:
         # Check checkpoint - get number of images already processed.
         # S3-1: _get_embedding_checkpoint counts DOCUMENT-WIDE embedded images, so
         # it is only meaningful for the legacy document-wide call (product_id None).
-        # For a PER-PRODUCT call (product_id set — the Stage 3 path) it's the bug:
         checkpoint_index = 0
         if product_id is None:
             checkpoint_index = await self._get_embedding_checkpoint(document_id)

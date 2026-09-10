@@ -402,6 +402,11 @@ def _tier_a_pymupdf(
             spans = _extract_text_spans(doc, idx)
             if not spans:
                 # No positional text spans at all → image-only / scanned page.
+                # Tier A is STRUCTURALLY unable to read it: its packing-column
+                # mapping needs per-token bbox geometry that a rendered image
+                # doesn't expose, and the PaddleOCR cache carries reading-order
+                # text but not per-token spans, so there's no cache fallback here
+                # (unlike the plain-text consumers).
                 image_only_pages.append(idx)
                 continue
             product_row = _find_product_row(spans, product_name)
@@ -645,6 +650,10 @@ async def extract_product_spec(
 
         # ── Tier B — Claude Opus Vision (complementary, not fallback) ────────
         # We ALWAYS run Tier B when enabled, because:
+        # - Tier A only extracts the packing row + thickness + bullet flags
+        # - Tier B uniquely provides: commercial.vision_variants (SKU
+        # metadata per color), commercial.grout_details (per-color
+        # grout recommendations), and any per-product performance
         if enable_tier_b:
             if tier_a_count >= TIER_A_SUFFICIENT_FIELDS:
                 logger.info(

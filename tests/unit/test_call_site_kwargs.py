@@ -71,8 +71,7 @@ def test_no_call_passes_a_keyword_its_callee_cannot_accept():
             # of the _UNIVERSAL_ATTRS above). We cannot tell
             # statically WHICH `search_similar_images` a call resolves to — but if
             # a keyword is accepted by NONE of them, the call raises TypeError
-            # whichever one it is, and that verdict needs no guess. Requiring a
-            # unique definition was itself the hole: `search_similar_images` has
+            # whichever one it is, and that verdict needs no guess.
             if any(accepts_kwargs for _params, accepts_kwargs in defs):
                 continue
             if len(defs) != 1 and node.func.attr in _UNIVERSAL_ATTRS:

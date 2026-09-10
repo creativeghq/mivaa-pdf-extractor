@@ -261,7 +261,7 @@ async def process_stage_0_discovery(
         # done in the previous attempt. Re-running Claude Vision wastes ~$0.20
         # per resume on the same 71-page catalog. Cache the catalog JSON in
         # background_jobs.metadata.catalog_cache after first success and reuse
-        # it here. The cache key includes pdf file_size so a re-uploaded PDF
+        # it here.
         catalog = None
         # SHA-256 the file content so the cache key is content-addressed.
         # Previous key (file_size only) hit stale cache on a truncated re-export
@@ -874,10 +874,7 @@ async def process_stage_0_discovery(
 
                     # Audit fix #15 reader half: create_single_product surfaces
                     # `embedding_failed=True` when Voyage retries are exhausted
-                    # or the row landed with text_embedding_1024=NULL. Persist
-                    # a marker on the row's metadata so a backfill cron can
-                    # target these products — without this the flag is
-                    # discarded and the product is invisible to vector search
+                    # or the row landed with text_embedding_1024=NULL.
                     if product_creation_result.get('embedding_failed'):
                         logger.error(
                             f"   ❌ [{i}/{len(catalog.products)}] Product {product.name} "

@@ -499,6 +499,8 @@ async def check_if_critical(
 # #12. Neither execute_with_escalation nor execute_with_fallback had a single
 # caller anywhere in the repo, so the only reachable part of a 321-line engine was
 # this endpoint — reporting counters that could not be anything but zero, forever.
+# That is the platform's own silent-zero shape: a metric that looks healthy
+# because nothing is producing it.
 
 
 # ============================================================================

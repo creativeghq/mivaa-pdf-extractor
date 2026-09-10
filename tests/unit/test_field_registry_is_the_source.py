@@ -71,9 +71,13 @@ SYNC_ACCESSORS = {
     "category_prompt_block",
 }
 
-# : FUNCTIONS that read an accessor without loading it, each for a stated reason.
-# : SHRINK-ONLY — an entry is a promise that some caller further up did the load.
-# :
+#: FUNCTIONS that read an accessor without loading it, each for a stated reason.
+#: SHRINK-ONLY — an entry is a promise that some caller further up did the load.
+#:
+#: This is keyed by function, not by file. A file-level allowlist was tried first and it does
+#: not work: stage_4_products already awaits ensure_loaded in `_classify_product`, so a NEW
+#: function in that file reading the registry without loading it would inherit the pass. The
+#: mutation test caught exactly that.
 LOAD_EXEMPT = {
     "app/services/facets/facet_whitelist.py::is_canonicalizable":
         "pure delegation seam with no entry point of its own; its callers load",

@@ -764,6 +764,9 @@ class PerplexityPriceSearchService:
         # Cost calc honors the actual model used. Class #5: previously every
         # call was billed at SONAR_PRO rates even when model_override='sonar'
         # made the cheaper model do the work, overstating raw_cost_usd by ~3×.
+        # NOTE: the numbers move slightly. This file previously used $0.005/request for sonar-pro
+        # and half that for sonar, both BELOW Perplexity's published search-fee bands ($5-14 per
+        # 1000, and $6-14 for Pro).
         search_per_call, input_per_1k, output_per_1k = sonar_rates(model_name)
         cost_usd = (
             (input_tokens / 1000) * input_per_1k

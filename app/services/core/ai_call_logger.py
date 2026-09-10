@@ -75,6 +75,9 @@ class AICallLogger:
         if isinstance(result, dict) and result.get('success') is False:
             # Carry the RPC's own reason through instead of flattening everything to
             # 'debit_failed' (mivaa#17 M4-1). The reasons are not equivalent:
+            # `below_quantum` means the charge was smaller than the 0.01 a wallet can hold —
+            # true of 7,701 of the 8,567 usage rows ever written — while `debit_failed`
+            # means money was owed and refused.
             reason = result.get('unbilled_reason') or 'debit_failed'
             log = self.logger.warning if reason == 'below_quantum' else self.logger.error
             log(

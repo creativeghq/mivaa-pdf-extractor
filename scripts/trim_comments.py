@@ -114,7 +114,10 @@ def process(source: str) -> tuple[str, int, int]:
             head, sections = collapse(item["body"], MAX_PROSE_LINES)
             kept = head + sections
             indent = item["indent"]
-            replacement = "\n".join((indent + "# " + line) if line.strip() else (indent + "#") for line in kept)
+            marker = item.get("marker", "#")
+            replacement = "\n".join(
+                (indent + marker + " " + line) if line.strip() else (indent + marker) for line in kept
+            )
             if not kept:
                 replacement = ""
             edits.append((begin, end, replacement, len(item["lines"]) - len(kept)))

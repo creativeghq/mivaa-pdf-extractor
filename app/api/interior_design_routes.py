@@ -87,6 +87,10 @@ def _build_generation_prompt(
 
 # Model configurations
 # Text-to-Image Models (for prompts without reference images)
+# The three `gemini_edge` entries below are ONE upstream (the generate-interior-gemini
+# edge function) reached with three different `model_tier` values, which is what selects
+# the model that actually runs: fast → gemini-3.1-flash-image, pro → gemini-3-pro-image,
+# grok → grok-aurora.
 TEXT_TO_IMAGE_MODELS = [
     {"id": "gemini-interior", "registry_id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
     {"id": "gemini-interior-pro", "registry_id": "gemini-3-pro-image", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "pro"},
@@ -399,8 +403,7 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                 # 6 requests/minute with a burst of 1 whenever the balance is under $5
                 # (verified 2026-08-22 — the message says so verbatim), and the grid fans
                 # 11 image-to-image models out behind a semaphore of 3, so under that tier
-                # almost every tile 429s at once. The generic retry below backs off
-                # 1s/2s/4s, all shorter than the ~10s reset, so all three attempts burn
+                # almost every tile 429s at once.
                 if response.status_code == 429:
                     try:
                         retry_after = int(

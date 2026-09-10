@@ -43,10 +43,13 @@ pytestmark = pytest.mark.unit
 _ROOT = Path(__file__).resolve().parents[1].parent
 _APP = _ROOT / "app"
 
-# : Tables whose rows are money. A lost or doubled row here is a wrong number that
-# : every downstream cost view reports as fact.
-# :
-# : `ai_call_logs` belongs here even though the cost MIRROR lives in `ai_usage_logs`:
+#: Tables whose rows are money. A lost or doubled row here is a wrong number that
+#: every downstream cost view reports as fact.
+#:
+#: `ai_call_logs` belongs here even though the cost MIRROR lives in `ai_usage_logs`:
+#: `log_ai_call` writes the mirror only `if result.data`, so a dropped call row takes
+#: the cost row with it. Guarding one table and not the other leaves the busiest path
+#: in the platform exactly as exposed as it was.
 _LEDGER_TABLES = ("ai_usage_logs", "ai_call_logs")
 
 #: `sb.table("ai_usage_logs").insert(` — the shape that cannot be retried. Either quote

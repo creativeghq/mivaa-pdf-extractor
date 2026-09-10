@@ -135,7 +135,7 @@ class CreditsIntegrationService:
             # real cost, because a per-call AI charge is routinely smaller than the 0.01 a
             # wallet can hold. Sentry is wired at event_level=ERROR (main.py), so logging
             # that at ERROR would raise an event per AI call and bury the cases where money
-            # was actually owed and not taken. The aggregatable record is the
+            # was actually owed and not taken.
             log = self.logger.warning if reason == 'below_quantum' else self.logger.error
             log(
                 "⚠️ UNBILLED (%s) user=%s op=%s model=%s credits=%.4f: %s",

@@ -106,8 +106,7 @@ def debit_row(
         # A raised RPC is never "insufficient". `debit_credits` answers an empty balance
         # with a ROW (`success=false`, handled above); what lands here is the transport —
         # "Server disconnected" mid-POST on the first tick of the rank tracker (MIVAA-5KJ),
-        # a Cloudflare 52x, a timeout. The retry patch cannot repeat a debit (a second
-        # attempt could charge twice), so for a transient fault the outcome is UNKNOWN:
+        # a Cloudflare 52x, a timeout.
         if should_retry_exception(e):
             logger.warning(
                 "%s: credit debit outcome UNKNOWN for %s (%s credits) — transport failure "

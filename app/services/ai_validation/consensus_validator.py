@@ -168,6 +168,10 @@ class ConsensusValidator:
         else:
             # Below LOW_AGREEMENT the models do not agree on anything: this is not
             # a decision with low confidence, it is the absence of a decision.
+            # Returning success=True here (which is what used to happen, for ANY
+            # agreement score down to 0.0) meant a caller checking `success` got a
+            # green light from a vote nobody won -- needs_human_review was set, but
+            # a flag alongside success=True is advisory and gets ignored.
             logger.error(
                 f"❌ Consensus failed for '{task_type}': agreement "
                 f"{agreement_score:.2f} < {self.LOW_AGREEMENT} across "

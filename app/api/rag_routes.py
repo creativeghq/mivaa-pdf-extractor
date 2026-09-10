@@ -43,6 +43,10 @@ from app.dependencies import current_user_id, get_current_user, get_optional_wor
 from app.utils.untrusted_content import as_untrusted_data
 from app.utils.pdf_bounds import PdfBoundsError, assert_page_count
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
+# Importing it at the top triggers `app.api.documents.__init__` →
+# `management_routes` → `app.orchestration` → back into this (still partially
+# initialized) module, raising a circular-import ImportError on startup
+# (Sentry MIVAA-5HQ).
 
 logger = logging.getLogger(__name__)
 
@@ -1361,7 +1365,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         # write, so transient Storage 5xx or /tmp-full errors left the row
         # at status='processing' with no orchestrator running. Auto-recovery
         # cron then back-offs (waiting for stuck-threshold) instead of
-        # immediately reclaiming. We flip the status atomically with the
+        # immediately reclaiming.
 
         # Re-trigger the processing pipeline; process_document_with_discovery resumes from the checkpoint.
 
@@ -3545,6 +3549,10 @@ async def process_document_with_discovery(
                 )
                 # Merge metadata BEFORE complete_job so the reason is durable
                 # even if complete_job's own metadata writes happen first.
+                # CORRECTION (post-round-3): the in-scope variable name is
+                # `supabase`, not `supabase_client` — the latter is undefined
+                # inside this function and was NameError'ing every RPC call,
+                # which the outer try/except silently swallowed.
                 try:
                     supabase.client.rpc(
                         'merge_background_job_metadata',
@@ -3725,7 +3733,7 @@ async def process_document_with_discovery(
         # OCR + Anthropic icon extraction. In `test_single_product=True` runs we
         # only process one product, so spending 20-100 minutes on a catalog-wide
         # pre-pass before that single product's Stage 3 is the wrong tradeoff
-        # (job 051e1dda timed out here without ever reaching VALENOVA). Skip
+        # (job 051e1dda timed out here without ever reaching VALENOVA).
         if test_single_product and _icon_pass_relevant:
             logger.info(
                 "🔖 Skipping catalog-wide icon pass — test_single_product=True "
@@ -3845,6 +3853,10 @@ async def process_document_with_discovery(
         ):
             # `physical_page_upper_bound` is the upper bound used by
             # stage_1_focused_extraction to validate `physical_page > bound`.
+            # For spread-layout catalogs (e.g. art-book layouts where each
+            # PDF sheet contains 2 physical pages side-by-side),
+            # `page_count` returns PDF sheet count (e.g. 71) while physical
+            # page numbers go up to e.g. 140.
             from app.schemas.page_types import as_physical_page_bound
             _raw_bound = getattr(catalog, "total_pages", None) or page_count
             physical_page_bound = as_physical_page_bound(_raw_bound)
@@ -4389,7 +4401,7 @@ async def process_document_with_discovery(
         # on every exception, so the next auto-recovery dispatch had to
         # re-discover and re-create every product from scratch, and products
         # that did succeed before the failure got duplicated. The 2026-05-23
-        # audit flagged this. Gate on attempt count: only nuke when we're past
+        # audit flagged this.
         try:
             from app.services.utilities.cleanup_service import CleanupService
             from app.config import get_settings as _gs
@@ -6097,8 +6109,7 @@ async def search_knowledge_base(
                 # access levels + private docs, and PriceLookupDrawer sends exactly that
                 # from the FRONTEND — through mivaa-gateway, which forwards the end
                 # user's own JWT for /api/rag/* paths. So the assertion arrived on an
-                # ordinary user token and was honoured unchecked. resolve_kb_caller
-                # honours a platform service credential (price-tools.ts calls MIVAA
+                # ordinary user token and was honoured unchecked.
                 caller = await resolve_kb_caller(
                     supabase, claims, request.caller, request.workspace_id
                 )
@@ -6128,9 +6139,7 @@ async def search_knowledge_base(
                         # 0.4, not 0.5. A long KB doc (e.g. a 7k-char company
                         # overview) has ONE averaged embedding, so even a bull's-eye
                         # query ("Materials Hub") lands ~0.50 — right on a 0.5 cutoff,
-                        # flickering in/out with float noise. Measured separation is
-                        # clean: the true match sits ~0.50 while the next-best
-                        # unrelated docs sit ≤0.33, so 0.4 admits the real hit without
+                        # flickering in/out with float noise.
                         "match_threshold": 0.4,
                         "match_count": request.top_k * 2,  # fetch extra, will post-filter
                         "allowed_access_levels": allowed_access_levels,
@@ -6139,7 +6148,7 @@ async def search_knowledge_base(
                         # governed by category access_level (agent/public) + per-doc
                         # allowed_agents, both applied above/below. So admin AND agent
                         # callers include private docs; only the public-website caller
-                        # ('public') is restricted to visibility='public'. Without this,
+                        # ('public') is restricted to visibility='public'.
                         "include_private": kb_scope["include_private"],
                     }
                     # Per-agent allow-list: only agent callers filter by identity.
@@ -6202,7 +6211,7 @@ async def search_knowledge_base(
                                 # M15-1). Every consumer of this endpoint hands the text
                                 # to a model, and a KB document is a PERSISTENT injection
                                 # primitive: written once, replayed into every future turn
-                                # that retrieves it. The delimiter goes on here so no
+                                # that retrieves it.
                                 "content": as_untrusted_data(
                                     ch.get("content"),
                                     source=f"knowledge base: {ch.get('document_title') or 'untitled'}",

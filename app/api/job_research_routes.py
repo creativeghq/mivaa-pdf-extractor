@@ -677,9 +677,7 @@ async def cron_refresh(
             # Fail CLOSED on the cron path (#21 M8-2). This used to log
             # "metering fails open" and carry on: every owner would then be {}, every
             # charge would take the no-payer branch, and the whole due batch would run
-            # as free provider spend. Failing open is a defensible default for a USER
-            # request, where blocking a paying customer is the greater harm; cron is the
-            # highest-volume caller here, unattended, and nobody is waiting on it — so a
+            # as free provider spend.
             logger.error(f"job-cron: owner lookup failed — refusing to refresh unmetered: {e}")
             return {
                 "error": "owner_lookup_failed",

@@ -279,9 +279,7 @@ class UnifiedChunkingService:
         # Use layout-aware chunking if regions are provided AND any of them
         # actually carry `text_content`. Layout regions ship with bounding
         # boxes but not text — `text_content` only gets populated when an
-        # upstream OCR / PDF-text-by-bbox stage runs first. If we hand the
-        # layout-aware path regions with all-empty text_content, every
-        # region gets skipped (line ~819) and the page produces zero
+        # upstream OCR / PDF-text-by-bbox stage runs first.
         regions_have_text = bool(layout_regions) and any(
             (r.get('text_content') or '').strip()
             for r in layout_regions

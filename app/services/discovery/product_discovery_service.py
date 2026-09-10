@@ -240,7 +240,7 @@ class ProductCatalog:
     # certification / installation / care / sustainability pages that apply
     # catalog-wide rather than to one product. The catalog-wide icon pass in
     # Stage 3 scans these pages for icon strips so a per-product rollup can
-    # still pick up e.g. R9 slip ratings printed on a shared legend page
+    # still pick up e.g.
     supplementary_pages: List[int] = None
 
     # Processing info
@@ -370,7 +370,7 @@ class ProductDiscoveryService:
         # names it used to accept. That combination is worse than an unsupported
         # option — a `gpt-vision` job either died on a confusing "OPENAI_API_KEY
         # not set" error or ran on Claude while recording `gpt-vision` as its
-        # model, which is a provenance lie in the job metadata. Reject it plainly
+        # model, which is a provenance lie in the job metadata.
         if "gpt" in model.lower() or "openai" in model.lower():
             raise ValueError(
                 f"Model {model!r} is not supported: product discovery runs on "
@@ -1479,7 +1479,7 @@ class ProductDiscoveryService:
             # (build_page_text_from_layout_cache) — present even for image-only /
             # scanned pages whose PDF text layer is empty — but it can also be the
             # raw PyMuPDF text (or None) when the cache was absent and discover_products
-            # rebuilt it. Parse it ONCE more in ORIGINAL case (1-based physical page →
+            # rebuilt it.
             pages_text_cache = self._parse_pdf_text_into_pages(
                 pdf_text, pdf_page_count, lowercase=False
             )
@@ -1493,7 +1493,7 @@ class ProductDiscoveryService:
             # (1 PDF sheet = 2 physical pages). The old fallback called
             # pymupdf4llm.to_markdown(pages=<physical index>), but to_markdown indexes
             # by PDF SHEET, so on a spread catalog it pulled the wrong sheet's text /
-            # went out of range (S0-1). analyze_pdf_layout is expensive, so memoize it
+            # went out of range (S0-1).
             _raw_layout: Dict[str, Any] = {"layout": None, "computed": False}
 
             def _raw_pages_text(page_idxs0: List[int]) -> Dict[int, str]:
@@ -1536,8 +1536,7 @@ class ProductDiscoveryService:
             # the PRINTED FOLIO label from the index; the rest of the pipeline keys on
             # PHYSICAL pages (Stage 1 cache, chunking, crops). On catalogs with
             # unnumbered front-matter (covers/intro spreads) the folio is shifted from
-            # the physical page. We anchor the shift with the proper physical-page
-            # function (_detect_product_pages_optimized, which locates each product's
+            # the physical page.
             self._reconcile_folio_start_pages_to_physical(
                 catalog.products, pages_content, pdf_page_count, all_product_names
             )

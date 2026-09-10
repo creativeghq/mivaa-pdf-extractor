@@ -194,8 +194,7 @@ async def process_products_parallel(
                 # dict mutations + the snapshot we pass to the tracker — DB
                 # round-trips (update_database_stats with sync_to_db=True and
                 # update_progress) run OUTSIDE the lock to avoid serializing
-                # parallel completions on a single Supabase call. The 2026-05-23
-                # audit flagged the original lock-across-DB-call as a throughput
+                # parallel completions on a single Supabase call.
                 _stats_snapshot: Optional[Dict[str, Any]] = None
                 _progress_snapshot: Optional[Dict[str, Any]] = None
                 async with update_lock:

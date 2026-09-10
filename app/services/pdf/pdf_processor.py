@@ -920,10 +920,7 @@ class PDFProcessor:
 
         # Layer 2: region crops are now produced EXCLUSIVELY by the spread-aware
         # `region_crop_extractor.extract_region_crops_for_physical_pages` called
-        # once from Stage 3 (stage_3_images.process_product_images). The old
-        # per-sheet `_extract_region_crops` here was NOT spread-aware (it keyed
-        # the layout cache by PDF sheet index + 1 and rendered the full sheet),
-        # so for spread catalogs it missed the layout and dropped IMAGE/FIGURE
+        # once from Stage 3 (stage_3_images.process_product_images).
 
         # Layer 3: Full page render is already handled in PyMuPDF method
         # (it renders full page if no embedded images found)

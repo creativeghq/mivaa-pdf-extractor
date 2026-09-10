@@ -75,12 +75,12 @@ _USER_INFLUENCED = re.compile(
 
 # THERE IS NO ALLOWLIST ANY MORE.
 
-# : NOT matched, deliberately: a bare `url` identifier. Nearly every one in this tree is a
-# : module constant or an f-string over a configured base (ANTHROPIC_API, DATAFORSEO_*,
-# : `{self.platform_url}/...`) — 93 dynamic-URL fetches across 43 files, of which the
-# : overwhelming majority are vendor endpoints. Including `url` would drown the signal and
-# : the guard would be muted within a week, which is the failure mode this whole file
-# : exists to argue against. The named forms above (`image_url`, `query_image`,
+#: NOT matched, deliberately: a bare `url` identifier. Nearly every one in this tree is a
+#: module constant or an f-string over a configured base (ANTHROPIC_API, DATAFORSEO_*,
+#: `{self.platform_url}/...`) — 93 dynamic-URL fetches across 43 files, of which the
+#: overwhelming majority are vendor endpoints. Including `url` would drown the signal and
+#: the guard would be muted within a week, which is the failure mode this whole file
+#: exists to argue against.
 
 
 def _enclosing_function(tree: ast.AST, lineno: int):

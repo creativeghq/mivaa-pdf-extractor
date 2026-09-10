@@ -348,7 +348,7 @@ class VecsService:
         # used to derive the dimension from whatever arrived (`derived_dim = len(emb)`,
         # commented "768 legacy SLIG or 1024 Voyage"), which meant a 768D vector would
         # CREATE a 768D aspect collection in any fresh or partially-migrated environment
-        # and set the presence flags for it. That is the removed space quietly kept
+        # and set the presence flags for it.
         for aspect_name, emb in embeddings.items():
             if emb and len(emb) != self.ASPECT_DIMENSION:
                 logger.error(
@@ -390,6 +390,8 @@ class VecsService:
         # Phase 2: set flags ONLY for successful upserts, with provenance.
         # The flag column name is kept as `has_<aspect>_slig` for now to
         # avoid touching the 30+ frontend/SQL/script references in one PR;
+        # the column rename to `has_<aspect>_aspect` is queued as a follow-
+        # up after the v2 rollout settles.
         is_v2 = derived_dim == 1024
         for embedding_type in succeeded_types:
             extra: Dict[str, Any] = {}

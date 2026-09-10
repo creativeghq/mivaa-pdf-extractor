@@ -215,8 +215,7 @@ def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
     # shared token. A lone token was fast-promoting firehose RSS/board noise that
     # merely shared a word: "Product Sales Specialist", "Amazon Product
     # Researcher", "Wireless Technical Support Engineer" all share product/
-    # technical with "Product Manager" but are not the role. For a multi-word
-    # keyword we now require the whole phrase (contiguous) in the title; a
+    # technical with "Product Manager" but are not the role.
     if hit.source not in _UNTRUSTED_FAST_PROMOTE_SOURCES:
         title_norm = _normalize(hit.title or "")
         title_tokens = _tokens(hit.title or "")
