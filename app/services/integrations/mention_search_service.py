@@ -24,11 +24,16 @@ from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_dataforseo_news_call, log_perplexity_call,
     log_youtube_call,
 )
+# Perplexity now goes through the Agent API — `/chat/completions` retires 2026-09-27 (#400 W1c).
+from app.services.integrations.perplexity_agent_client import (
+    build_agent_body,
+    call_agent,
+    web_search_tool,
+)
 
 logger = logging.getLogger(__name__)
 
 
-PERPLEXITY_API = "https://api.perplexity.ai/chat/completions"
 from app.services.integrations import dataforseo_envelope
 
 DATAFORSEO_NEWS_API = "https://api.dataforseo.com/v3/serp/google/news/live/advanced"
@@ -463,74 +468,55 @@ class MentionSearchService:
             "and a 2-sentence summary. Skip retailer product pages and pure listings."
         )
 
-        # Build the request body. Perplexity Sonar supports geo-biasing via
-        # web_search_options.user_location.country (ISO-3166-1 alpha-2).
-        request_body: Dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "Return JSON only, no prose."},
-                {"role": "user", "content": question},
-            ],
-            "search_recency_filter": recency,
-        }
-        if country:
-            request_body["web_search_options"] = {
-                "user_location": {"country": country.upper()}
-            }
-        call_start = time.time()
-        try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.post(
-                    PERPLEXITY_API,
-                    headers={"Authorization": f"Bearer {self.perplexity_key}",
-                             "Content-Type": "application/json"},
-                    json={
-                        **request_body,
-                        "response_format": {
-                            "type": "json_schema",
-                            "json_schema": {
-                                "schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "mentions": {
-                                            "type": "array",
-                                            "items": {
-                                                "type": "object",
-                                                "properties": {
-                                                    "title": {"type": "string"},
-                                                    "url": {"type": "string"},
-                                                    "outlet": {"type": "string"},
-                                                    "published": {"type": "string"},
-                                                    "summary": {"type": "string"},
-                                                },
-                                                "required": ["title", "url"],
-                                            },
-                                        },
-                                    },
-                                    "required": ["mentions"],
-                                },
+        # Geo-biasing and recency both moved onto the web_search tool. Without that tool
+        # in `tools` nothing searches at all and the answer comes back ungrounded.
+        request_body = build_agent_body(
+            tier=model,
+            input_text=question,
+            instructions="Return JSON only, no prose.",
+            response_schema={
+                "type": "object",
+                "properties": {
+                    "mentions": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "url": {"type": "string"},
+                                "outlet": {"type": "string"},
+                                "published": {"type": "string"},
+                                "summary": {"type": "string"},
                             },
+                            "required": ["title", "url"],
                         },
                     },
-                )
-                resp.raise_for_status()
-                payload = resp.json()
-        except Exception as e:
-            logger.warning(f"perplexity_sonar: request failed: {e}")
+                },
+                "required": ["mentions"],
+            },
+            schema_name="mentions",
+            tools=[web_search_tool(recency=recency, country=country)],
+        )
+        call_start = time.time()
+        reply = await call_agent(api_key=self.perplexity_key, body=request_body, timeout_s=30.0)
+
+        in_tok = reply.input_tokens
+        out_tok = reply.output_tokens
+        latency_ms = reply.latency_ms or int((time.time() - call_start) * 1000)
+
+        # `reply.ok` is False for a transport error, a non-2xx AND a 200 carrying
+        # status="failed" — the last would otherwise log as a clean run with no mentions.
+        if not reply.ok:
+            logger.warning(f"perplexity_sonar: request failed: {reply.error}")
             log_perplexity_call(
                 attribution=attribution, model=model,
-                input_tokens=0, output_tokens=0, hits_returned=0,
-                latency_ms=int((time.time() - call_start) * 1000),
-                success=False, error_message=str(e),
+                input_tokens=in_tok, output_tokens=out_tok, hits_returned=0,
+                latency_ms=latency_ms,
+                success=False, error_message=reply.error,
             )
             return {"hits": [], "credits": 0}
 
-        usage = payload.get("usage") or {}
-        in_tok = int(usage.get("prompt_tokens") or 0)
-        out_tok = int(usage.get("completion_tokens") or 0)
-        latency_ms = int((time.time() - call_start) * 1000)
-
-        text = ((payload.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
+        text = reply.text
         try:
             import json as _json
             data = _json.loads(text)

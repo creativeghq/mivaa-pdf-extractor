@@ -150,10 +150,15 @@ class TestCitationsAreCaptured:
         src = _SERVICE.read_text(encoding="utf-8")
         pplx = src[src.index("async def _call_perplexity"):]
         pplx = pplx[:pplx.index("async def _extract")]
-        # Both shapes: `citations` is the legacy flat list, `search_results` current.
-        # Reading only one takes citations to zero on a version bump, with no error.
-        assert 'data.get("citations")' in pplx
-        assert 'data.get("search_results")' in pplx
+        # The probe hands back what the API stated, never a re-derivation from the prose.
+        assert "reply.citation_urls" in pplx
+        # Both Agent API shapes are read, in the one client that walks the envelope: the
+        # `search_results` item and the message `annotations`. Reading only one takes
+        # citations to zero on a version bump, with no error.
+        client = (_SERVICE.parent / "perplexity_agent_client.py").read_text(encoding="utf-8")
+        walk = client[client.index("def parse_agent_reply"):]
+        assert '"search_results"' in walk
+        assert '"annotations"' in walk
 
     def test_every_model_call_returns_the_citation_channel(self):
         """ModelReply, not a bare tuple - so the next field cannot shift an unpack."""

@@ -19,6 +19,12 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.services.integrations import job_cost_logger as costs
+from app.services.integrations.perplexity_agent_client import (
+    build_agent_body,
+    call_agent,
+    clean_domains,
+    web_search_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -987,7 +993,7 @@ def build_site_targeted_queries(
 # Source 2 — Perplexity Sonar with job-board domain filter + JSON schema
 # ────────────────────────────────────────────────────────────────────────────
 
-_PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
+# The Agent API. `/chat/completions` retires 2026-09-27 (#400 W1b).
 
 # Hardcoded fallback used only if the DB-side `job_research_sites` table is
 # unreachable or empty. The authoritative list lives in the DB and is editable
@@ -1277,30 +1283,22 @@ async def search_via_perplexity(
     # v0.4: load the operator-curated list from job_research_sites (editable in the
     # hidden admin page at /admin/knowledge-base/job-sources). Falls back to the
     # hardcoded constant if the DB read fails or returns nothing.
-    # Discovered/region-specific domains (extra_domains) go FIRST so they survive
-    # the 10-domain cap — otherwise a location search's local boards (e.g.
+    # Discovered/region-specific domains (extra_domains) go FIRST so they survive the
+    # cap — DOMAIN_FILTER_MAX, which the Agent API raised from 10 to 20 — otherwise a
+    # location search's local boards lose to the global defaults.
     base_domains = _load_perplexity_domains_from_db()
-    domains: List[str] = []
-    for d in list(extra_domains or []) + base_domains:
-        d = (d or "").strip().lower()
-        if d and d not in domains:
-            domains.append(d)
-    domains = domains[:10]  # Perplexity caps at 10
+    domains = clean_domains(list(extra_domains or []) + base_domains)
 
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are a job-search assistant. Return ONLY JSON matching the requested schema."},
-            {"role": "user", "content": user_prompt},
-        ],
-        "search_domain_filter": domains,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {"schema": _JOB_LISTING_SCHEMA},
-        },
-        "max_tokens": 3000,
-        "temperature": 0.0,
-    }
+    payload = build_agent_body(
+        tier=model,
+        input_text=user_prompt,
+        instructions="You are a job-search assistant. Return ONLY JSON matching the requested schema.",
+        max_output_tokens=3000,
+        temperature=0.0,
+        response_schema=_JOB_LISTING_SCHEMA,
+        schema_name="job_listings",
+        tools=[web_search_tool(domains=domains)],
+    )
 
     started = time.time()
     success = True
@@ -1308,21 +1306,16 @@ async def search_via_perplexity(
     hits: List[JobHit] = []
     in_tokens = 0
     out_tokens = 0
+    reply = await call_agent(api_key=api_key, body=payload, timeout_s=45.0)
+    in_tokens = reply.input_tokens
+    out_tokens = reply.output_tokens
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=10.0)) as client:
-            resp = await client.post(
-                _PERPLEXITY_URL,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        usage = data.get("usage") or {}
-        in_tokens = int(usage.get("prompt_tokens") or 0)
-        out_tokens = int(usage.get("completion_tokens") or 0)
+        # A failed Agent API run arrives as HTTP 200 with status="failed"; branching on
+        # `reply.ok` is what stops it being booked as a success that found no jobs.
+        if not reply.ok:
+            raise RuntimeError(reply.error or "perplexity call failed")
 
-        choice = (data.get("choices") or [{}])[0]
-        msg = (choice.get("message") or {}).get("content") or ""
+        msg = reply.text
         # Parse JSON; Perplexity sometimes wraps in code fences.
         import json
         try:

@@ -74,6 +74,64 @@ def country_to_location(code: Optional[str], default: int = 2840) -> int:
     return COUNTRY_TO_LOCATION.get(code.upper(), default)
 
 
+#: DataForSEO renamed every LLM Mentions endpoint on 2026-07-07 (Extended LLM Mentions API).
+#: No sunset is published for the old names, but `historical` and the two timeseries
+#: endpoints exist ONLY under the new ones. Declared here so a path appears once.
+LLM_MENTIONS_PATHS: Dict[str, str] = {
+    "search": "/ai_optimization/llm_mentions/search_mentions/live",
+    "top_pages": "/ai_optimization/llm_mentions/top_mentioned_pages/live",
+    "top_domains": "/ai_optimization/llm_mentions/top_mentioned_domains/live",
+    "target_metrics": "/ai_optimization/llm_mentions/target_metrics/live",
+    "multi_target_metrics": "/ai_optimization/llm_mentions/multi_target_metrics/live",
+    "historical": "/ai_optimization/llm_mentions/historical/live",
+    "timeseries_delta": "/ai_optimization/llm_mentions/timeseries_delta/live",
+    "timeseries_new_lost": "/ai_optimization/llm_mentions/timeseries_new_lost/live",
+}
+
+
+def _llm_mentions_body(
+    *,
+    keyword: Optional[str] = None,
+    domain: Optional[str] = None,
+    targets: Optional[List[Dict[str, str]]] = None,
+    language_code: str = "en",
+    country_code: Optional[str] = None,
+    platform: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    """One Extended LLM Mentions request body.
+
+    The rename was NOT just a path change: these endpoints key on a `target` array of
+    entity objects, each needing an explicit `search_filter`. Sending the old
+    `{keyword, language_code}` to a new path is refused, not silently accepted.
+    `location_code` is always stated because DataForSEO otherwise bills a US lookup and
+    returns nothing, which reads as "nobody mentions us" (main repo #400 W2).
+    """
+    entities: List[Dict[str, str]] = []
+    for entity in (targets or []):
+        merged = {"search_filter": "include", **entity}
+        entities.append(merged)
+    if domain:
+        entities.append({"domain": domain, "search_filter": "include"})
+    if keyword:
+        entities.append({"keyword": keyword, "search_filter": "include"})
+    if not entities:
+        raise ValueError("llm_mentions needs at least one keyword, domain or target entity")
+    if not any(e.get("search_filter") == "include" for e in entities):
+        raise ValueError("llm_mentions needs at least one entity with search_filter='include'")
+
+    body: Dict[str, Any] = {
+        "target": entities[:10],
+        "language_code": language_code,
+        "location_code": country_to_location(country_code),
+    }
+    if platform:
+        body["platform"] = platform
+    if limit:
+        body["limit"] = min(int(limit), 1000)
+    return body
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Client
 # ─────────────────────────────────────────────────────────────────────────────
@@ -533,40 +591,117 @@ class DataForSEOUnifiedClient:
                                 operation="ai.keyword_search_volume")
 
     async def ai_llm_mentions_search(
-        self, *, keyword: str, language_code: str = "en",
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None, limit: int = 100,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
-        body = [{"keyword": keyword, "language_code": language_code}]
-        return await self._call("/ai_optimization/llm_mentions/search/live", body,
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform, limit=limit,
+        )]
+        return await self._call(LLM_MENTIONS_PATHS["search"], body,
                                 attribution=attribution, log_kind="labs",
                                 operation=f"ai.llm_mentions.search:{keyword}")
 
     async def ai_llm_mentions_top_pages(
-        self, *, keyword: str, language_code: str = "en",
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None, limit: int = 100,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
-        body = [{"keyword": keyword, "language_code": language_code}]
-        return await self._call("/ai_optimization/llm_mentions/top_pages/live", body,
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform, limit=limit,
+        )]
+        return await self._call(LLM_MENTIONS_PATHS["top_pages"], body,
                                 attribution=attribution, log_kind="labs",
-                                operation=f"ai.llm_mentions.top_pages:{keyword}")
+                                operation=f"ai.llm_mentions.top_pages:{keyword or domain}")
 
     async def ai_llm_mentions_top_domains(
-        self, *, keyword: str, language_code: str = "en",
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None, limit: int = 100,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
-        body = [{"keyword": keyword, "language_code": language_code}]
-        return await self._call("/ai_optimization/llm_mentions/top_domains/live", body,
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform, limit=limit,
+        )]
+        return await self._call(LLM_MENTIONS_PATHS["top_domains"], body,
                                 attribution=attribution, log_kind="labs",
-                                operation=f"ai.llm_mentions.top_domains:{keyword}")
+                                operation=f"ai.llm_mentions.top_domains:{keyword or domain}")
 
     async def ai_llm_mentions_aggregated_metrics(
-        self, *, keyword: str, language_code: str = "en",
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
-        body = [{"keyword": keyword, "language_code": language_code}]
-        return await self._call("/ai_optimization/llm_mentions/aggregated_metrics/live", body,
+        """Target Metrics — the renamed `aggregated_metrics`. One target's share of voice."""
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform,
+        )]
+        return await self._call(LLM_MENTIONS_PATHS["target_metrics"], body,
                                 attribution=attribution, log_kind="labs",
-                                operation=f"ai.llm_mentions.aggregated:{keyword}")
+                                operation=f"ai.llm_mentions.target_metrics:{keyword or domain}")
+
+    async def ai_llm_mentions_multi_target_metrics(
+        self, *, targets: List[Dict[str, str]], language_code: str = "en",
+        country_code: Optional[str] = None, platform: Optional[str] = None,
+        attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        """Us against named competitors in one call. `targets` are `{domain|keyword: value}`."""
+        body = [_llm_mentions_body(
+            targets=targets, language_code=language_code,
+            country_code=country_code, platform=platform,
+        )]
+        return await self._call(LLM_MENTIONS_PATHS["multi_target_metrics"], body,
+                                attribution=attribution, log_kind="labs",
+                                operation=f"ai.llm_mentions.multi_target_metrics:{len(targets)}")
+
+    async def ai_llm_mentions_historical(
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None,
+        attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform,
+        )]
+        return await self._call(LLM_MENTIONS_PATHS["historical"], body,
+                                attribution=attribution, log_kind="labs",
+                                operation=f"ai.llm_mentions.historical:{keyword or domain}")
+
+    async def ai_llm_mentions_timeseries_delta(
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None,
+        attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform,
+        )]
+        return await self._call(LLM_MENTIONS_PATHS["timeseries_delta"], body,
+                                attribution=attribution, log_kind="labs",
+                                operation=f"ai.llm_mentions.timeseries_delta:{keyword or domain}")
+
+    async def ai_llm_mentions_timeseries_new_lost(
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None,
+        attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform,
+        )]
+        return await self._call(LLM_MENTIONS_PATHS["timeseries_new_lost"], body,
+                                attribution=attribution, log_kind="labs",
+                                operation=f"ai.llm_mentions.timeseries_new_lost:{keyword or domain}")
 
     async def ai_llm_response(
         self, *, model_family: str, prompt: str, model: Optional[str] = None,

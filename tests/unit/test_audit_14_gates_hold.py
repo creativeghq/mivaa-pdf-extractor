@@ -160,7 +160,7 @@ def test_an_edge_metered_call_is_charged_once():
 def test_perplexity_debits_before_it_searches():
     body = _strip_comments(_func(PPX, "_perplexity_call"))
     assert "_reserve_spend" in body, "the Perplexity search no longer reserves credits"
-    assert body.index("_reserve_spend") < body.index("client.post"), (
+    assert body.index("_reserve_spend") < body.index("call_agent("), (
         "credits are reserved after the provider call again"
     )
 
@@ -168,9 +168,16 @@ def test_perplexity_debits_before_it_searches():
 def test_every_paid_failure_path_still_records_the_call():
     """MV-5. Timeouts, request failures and non-200s all returned before _log_usage, so
     the one class of paid call you would most want in the cost table never appeared."""
+    # On the Agent API this is ONE branch, not three: `call_agent` never raises, so the
+    # timeout, the non-2xx and the HTTP-200 status="failed" all arrive as `reply.ok` False.
+    # Counting to three would now pass only by accident.
     body = _strip_comments(_func(PPX, "_perplexity_call"))
-    assert body.count("_log_failed_call") >= 3, (
+    assert "_log_failed_call" in body, (
         "a paid Perplexity failure path returns without recording the call"
+    )
+    failure = body[body.index("if not reply.ok:"):]
+    assert "_log_failed_call" in failure[:failure.index("return")], (
+        "the Perplexity failure branch returns before recording the call"
     )
     dfs = _strip_comments(_func(DFS, "_call"))
     parse_at = dfs.index("json parse")
@@ -258,8 +265,10 @@ def test_perplexity_gives_back_a_reservation_the_provider_never_earned():
         "call fails — with the account out of quota that charges the user for every "
         "401 forever"
     )
-    # timeout, request-failed, non-200: every return that hands the caller no result.
-    assert body.count("self._refund_spend(") >= 3, (
+    # One branch now covers every return that hands the caller no result, because
+    # `call_agent` folds transport failure, non-2xx and status="failed" into `reply.ok`.
+    failure = body[body.index("if not reply.ok:"):]
+    assert "self._refund_spend(" in failure[:failure.index("return")], (
         "a Perplexity failure path returns without refunding the reservation"
     )
 

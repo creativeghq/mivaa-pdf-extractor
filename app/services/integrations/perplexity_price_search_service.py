@@ -9,10 +9,16 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-import httpx
 from pydantic import BaseModel, Field
 
 from app.modules._core.provider_pricing import sonar_rates
+from app.services.integrations.perplexity_agent_client import (
+    TIER_SONAR,
+    TIER_SONAR_PRO,
+    build_agent_body,
+    call_agent,
+    web_search_tool,
+)
 from app.services.core.supabase_client import get_supabase_client, repeatable_insert
 from app.services.integrations.dataforseo_merchant_service import (
     get_dataforseo_merchant_service,
@@ -39,11 +45,10 @@ logger = logging.getLogger(__name__)
 # Constants
 # ────────────────────────────────────────────────────────────────────────────
 
-PERPLEXITY_BASE_URL = "https://api.perplexity.ai/chat/completions"
-# sonar-pro: designed for multi-step research with higher-quality citations
-# + deeper page reading. ~$3/M in, $15/M out, plus $5/1k searches at high
-# context. We use high-context because retail price pages need it.
-MODEL = "sonar-pro"
+# The deep tier: multi-step research with higher-quality citations and deeper page
+# reading. We use high search context because retail price pages need it. Both tiers now
+# run on the Agent API — `/chat/completions` retires 2026-09-27 (#400 W1a).
+MODEL = TIER_SONAR_PRO
 MAX_TOKENS = 3000
 HTTP_TIMEOUT_S = 90.0
 THROTTLE_HOURS = 6
@@ -302,7 +307,7 @@ class PerplexityPriceSearchService:
                 product_name, dimensions, country_code, limit,
                 preferred_retailer_domains, user_id, workspace_id,
                 known_retailer_domains=known_retailer_domains,
-                model_override="sonar" if use_cheap_sonar else None,
+                model_override=TIER_SONAR if use_cheap_sonar else None,
                 tracked_query_id=tracked_query_id,
                 product_id=product_id,
             )
@@ -668,30 +673,24 @@ class PerplexityPriceSearchService:
         schema = self._response_schema(limit)
         model_name = model_override or MODEL
 
-        body: Dict[str, Any] = {
-            "model": model_name,
-            "max_tokens": MAX_TOKENS,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "price_results", "schema": schema, "strict": True},
-            },
-            "web_search_options": {
-                "search_context_size": "high",
-            },
-        }
-        if country_code:
-            body["web_search_options"]["user_location"] = {"country": country_code.upper()}
         # Option 2: domain pinning — force Perplexity to ALSO probe these known retailers.
-        # Perplexity allows up to 10 domains in search_domain_filter. We cap at 10.
-        if preferred_retailer_domains:
-            cleaned = [d.strip().lower().removeprefix("www.") for d in preferred_retailer_domains if d and isinstance(d, str)]
-            cleaned = [d for d in cleaned if d][:10]
-            if cleaned:
-                body["web_search_options"]["search_domain_filter"] = cleaned
+        # The Agent API takes 20 where Sonar took 10; `clean_domains` applies the cap.
+        body = build_agent_body(
+            tier=model_name,
+            input_text=user_prompt,
+            instructions=system_prompt,
+            max_output_tokens=MAX_TOKENS,
+            response_schema=schema,
+            schema_name="price_results",
+            schema_strict=True,
+            tools=[
+                web_search_tool(
+                    domains=preferred_retailer_domains,
+                    country=country_code,
+                    context_size="high",
+                )
+            ],
+        )
 
         # audit #14 MV-3 — invariant 10. search_prices() called the provider before any
         # debit: credits were computed AFTER the response and logged, never charged, and
@@ -706,73 +705,48 @@ class PerplexityPriceSearchService:
             )
 
         start = datetime.now(timezone.utc)
-        try:
-            async with httpx.AsyncClient(timeout=HTTP_TIMEOUT_S) as client:
-                resp = await client.post(
-                    PERPLEXITY_BASE_URL,
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=body,
-                )
-        except httpx.TimeoutException as e:
-            # audit #14 MV-5: every one of these returned BEFORE _log_usage, so a
-            # timed-out or rejected paid call left no row at all — while Perplexity
-            # still bills for work it started.
-            await self._log_failed_call(
-                user_id, workspace_id, product_name, tracked_query_id, product_id,
-                latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
-                error=f"timeout: {e}",
-            )
-            self._refund_spend(user_id, workspace_id, reserved)
-            return PriceSearchResult(success=False, error=f"timeout: {e}")
-        except Exception as e:
-            await self._log_failed_call(
-                user_id, workspace_id, product_name, tracked_query_id, product_id,
-                latency_ms=int((datetime.now(timezone.utc) - start).total_seconds() * 1000),
-                error=f"request failed: {e}",
-            )
-            self._refund_spend(user_id, workspace_id, reserved)
-            return PriceSearchResult(success=False, error=f"request failed: {e}")
+        # audit #14 MV-5: every early return used to happen BEFORE _log_usage, so a
+        # timed-out or rejected paid call left no row at all — while Perplexity still
+        # bills for work it started. `call_agent` never raises, so there is one failure
+        # path and it always logs.
+        reply = await call_agent(api_key=self.api_key, body=body, timeout_s=HTTP_TIMEOUT_S)
+        latency_ms = reply.latency_ms or int(
+            (datetime.now(timezone.utc) - start).total_seconds() * 1000
+        )
 
-        latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
-
-        if resp.status_code != 200:
+        # A failed Agent API run arrives as HTTP 200 with status="failed"; `reply.ok`
+        # already folds that in, so this branch cannot book one as a success with 0 hits.
+        if not reply.ok:
             await self._log_failed_call(
                 user_id, workspace_id, product_name, tracked_query_id, product_id,
                 latency_ms=latency_ms,
-                error=f"perplexity HTTP {resp.status_code}",
+                error=reply.error or "perplexity call failed",
             )
             self._refund_spend(user_id, workspace_id, reserved)
             return PriceSearchResult(
                 success=False,
                 latency_ms=latency_ms,
-                error=f"perplexity HTTP {resp.status_code}: {resp.text[:400]}",
+                error=reply.error or "perplexity call failed",
             )
 
-        data = resp.json()
-        hits, summary, debug_reasoning = self._extract(data)
+        hits, summary, debug_reasoning = self._extract(reply.text)
 
-        usage = data.get("usage") or {}
-        input_tokens = int(usage.get("prompt_tokens", 0) or 0)
-        output_tokens = int(usage.get("completion_tokens", 0) or 0)
-        # Perplexity counts search requests as part of usage meta in newer
-        # responses; the API is still evolving so we fall back to a heuristic.
-        search_requests = int(usage.get("num_search_queries") or usage.get("search_queries") or 1)
+        input_tokens = reply.input_tokens
+        output_tokens = reply.output_tokens
+        search_requests = reply.search_invocations or 1
 
-        # Cost calc honors the actual model used. Class #5: previously every
-        # call was billed at SONAR_PRO rates even when model_override='sonar'
-        # made the cheaper model do the work, overstating raw_cost_usd by ~3×.
-        # NOTE: the numbers move slightly. This file previously used $0.005/request for sonar-pro
-        # and half that for sonar, both BELOW Perplexity's published search-fee bands ($5-14 per
-        # 1000, and $6-14 for Pro).
-        search_per_call, input_per_1k, output_per_1k = sonar_rates(model_name)
-        cost_usd = (
-            (input_tokens / 1000) * input_per_1k
-            + (output_tokens / 1000) * output_per_1k
-            + search_requests * search_per_call
-        )
+        # Perplexity now reports the real figure, tool fees included, so it is preferred
+        # over our own table: `sonar_rates` cannot model `tool_calls_cost`. The table stays
+        # as the fallback for a response that omits `usage.cost`.
+        if reply.reported_cost_usd is not None:
+            cost_usd = reply.reported_cost_usd
+        else:
+            search_per_call, input_per_1k, output_per_1k = sonar_rates(model_name)
+            cost_usd = (
+                (input_tokens / 1000) * input_per_1k
+                + (output_tokens / 1000) * output_per_1k
+                + search_requests * search_per_call
+            )
         platform_credits = int(round(cost_usd * 100))
 
         await self._log_usage(
@@ -789,6 +763,9 @@ class PerplexityPriceSearchService:
             model_name=model_name,
             tracked_query_id=tracked_query_id,
             product_id=product_id,
+            reported_input_cost_usd=reply.reported_input_cost_usd,
+            reported_output_cost_usd=reply.reported_output_cost_usd,
+            cost_source="provider" if reply.reported_cost_usd is not None else "rate_table",
         )
 
         return PriceSearchResult(
@@ -998,15 +975,17 @@ class PerplexityPriceSearchService:
         }
 
     def _extract(
-        self, response: Dict[str, Any]
+        self, content: str
     ) -> Tuple[List[PriceHit], Optional[str], Optional[str]]:
-        """Parse the Perplexity response into (hits, summary, debug_reasoning)."""
-        choices = response.get("choices") or []
-        if not choices:
+        """Parse the answer text into (hits, summary, debug_reasoning).
+
+        Takes the text rather than the envelope: the Agent API returns it as an
+        `output_text` block inside `output[]`, and the walk belongs in one place.
+        """
+        content = content or ""
+        if not content.strip():
             return [], None, None
-        msg = choices[0].get("message") or {}
-        content = msg.get("content") or ""
-        debug = content if content else None
+        debug = content
 
         # content is JSON per our response_format. Parse, fall back to text scan.
         payload: Dict[str, Any] = {}
@@ -1484,10 +1463,24 @@ class PerplexityPriceSearchService:
         tracked_query_id: Optional[str] = None,
         product_id: Optional[str] = None,
         error_message: Optional[str] = None,
+        reported_input_cost_usd: Optional[float] = None,
+        reported_output_cost_usd: Optional[float] = None,
+        cost_source: str = "rate_table",
     ) -> None:
         """Insert into ai_usage_logs."""
-        # Compute the true input/output costs at the actual model's rates.
+        # Perplexity's own split is preferred, so the two halves and `billed_cost_usd`
+        # describe the same call; the rate table stays the fallback.
         _, in_per_1k, out_per_1k = sonar_rates(model_name)
+        input_cost_usd = (
+            reported_input_cost_usd
+            if reported_input_cost_usd is not None
+            else (input_tokens / 1000) * in_per_1k
+        )
+        output_cost_usd = (
+            reported_output_cost_usd
+            if reported_output_cost_usd is not None
+            else (output_tokens / 1000) * out_per_1k
+        )
         try:
             metadata: Dict[str, Any] = {
                 "api_provider": "perplexity",
@@ -1496,6 +1489,7 @@ class PerplexityPriceSearchService:
                 "product_name": product_name,
                 "hits_count": hits_count,
                 "latency_ms": latency_ms,
+                "cost_source": cost_source,
             }
             if tracked_query_id:
                 metadata["tracked_query_id"] = tracked_query_id
@@ -1519,8 +1513,8 @@ class PerplexityPriceSearchService:
                     "product_id": product_id,
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
-                    "input_cost_usd": round((input_tokens / 1000) * in_per_1k, 6),
-                    "output_cost_usd": round((output_tokens / 1000) * out_per_1k, 6),
+                    "input_cost_usd": round(input_cost_usd, 6),
+                    "output_cost_usd": round(output_cost_usd, 6),
                     "billed_cost_usd": round(cost_usd, 6),
                     "credits_debited": platform_credits,
                     "metadata": metadata,

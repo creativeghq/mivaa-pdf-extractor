@@ -25,6 +25,11 @@ from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_llm_probe_call, log_haiku_call,
     recompute_lifetime_cost,
 )
+from app.services.integrations.perplexity_agent_client import (
+    build_agent_body,
+    call_agent,
+    web_search_tool,
+)
 from app.services.integrations.platform_secret_resolver import resolve_secret
 from app.services.utilities.prompt_registry import load_prompt, render
 
@@ -33,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models"
-PERPLEXITY_API = "https://api.perplexity.ai/chat/completions"
+# Perplexity goes through the Agent API (`perplexity_agent_client`); `/chat/completions`
+# retires 2026-09-27 (#400 W1d).
+
 # Chat completions ONLY. The 2026-08-23 removal of OpenAI was total (package, clients,
 # embeddings fallback); ChatGPT came back on 2026-09-05 as a chat provider for this probe
 # and nothing else — httpx, this one endpoint, this one file. tests/unit/
@@ -628,38 +635,26 @@ class LlmMentionProbeService:
 
         Re-deriving them from the prose via the extractor would be a second, worse
         copy of a list the API already returns — so the native array is read here and
-        the extractor's guesses are merged behind it.
+        the extractor's guesses are merged behind it. On the Agent API that list lives
+        inside `output[]`, and the web_search tool must be requested or there is none.
         """
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(
-                PERPLEXITY_API,
-                headers={"Authorization": f"Bearer {self.perplexity_key}",
-                         "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 800,
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
-            u = data.get("usage") or {}
-            # `citations` is the legacy flat list of URLs; `search_results` is the
-            # current shape ({title, url, date}). Both are read — a Sonar version bump
-            # that drops one would otherwise take citations to zero without an error.
-            native: List[str] = [c for c in (data.get("citations") or []) if isinstance(c, str)]
-            for sr in (data.get("search_results") or []):
-                if isinstance(sr, dict) and sr.get("url"):
-                    native.append(str(sr["url"]))
-            return ModelReply(
-                text.strip(),
-                int(u.get("prompt_tokens") or 0),
-                int(u.get("completion_tokens") or 0),
-                int((time.time() - start) * 1000),
-                None,
-                dedupe_urls(native),
-            )
+        body = build_agent_body(
+            tier=model,
+            input_text=prompt,
+            max_output_tokens=800,
+            tools=[web_search_tool()],
+        )
+        reply = await call_agent(api_key=self.perplexity_key, body=body, timeout_s=30.0)
+        if not reply.ok:
+            raise RuntimeError(reply.error or "perplexity call failed")
+        return ModelReply(
+            reply.text.strip(),
+            reply.input_tokens,
+            reply.output_tokens,
+            reply.latency_ms or int((time.time() - start) * 1000),
+            None,
+            dedupe_urls(reply.citation_urls),
+        )
 
     # ───── Internal: extraction (Haiku) ─────
 
