@@ -61,13 +61,14 @@ async def _resolve_image_base64(query_image: str) -> Tuple[Optional[str], Option
 
 
 async def analyze_query_image(query_image: str) -> Tuple[Optional[Any], Optional[str]]:
-    """`(VisionAnalysis, error)` — ONE Anthropic vision call, schema-locked via tool_use.
+    """`(VisionAnalysis, error)` — ONE Anthropic vision call, schema-locked on output.
 
-    Forced `tool_choice` with no JSON-parse fallback, matching the ingestion path: a repaired
-    or salvaged analysis would produce aspect text that never existed in the image.
+    A strict `output_config.format` with no JSON-parse fallback, matching the ingestion
+    path: a repaired or salvaged analysis would produce aspect text that never existed
+    in the image.
     """
     from app.models.vision_analysis import (
-        VisionAnalysis, VISION_ANALYSIS_TOOL, VISION_MAX_TOKENS,
+        VisionAnalysis, vision_analysis_output_config, VISION_MAX_TOKENS,
         vision_call_extra_kwargs,
     )
     from app.config import get_settings
@@ -80,15 +81,15 @@ async def analyze_query_image(query_image: str) -> Tuple[Optional[Any], Optional
     if err:
         return None, err
 
-    # Through the tracked helper, not a raw POST (#33 item 2). The forced tool_choice
-    # was already right; what a hand-rolled POST costs is the cost record — this call is
+    # Through the tracked helper, not a raw POST (#33 item 2). The schema lock was
+    # already right; what a hand-rolled POST costs is the cost record — this call is
     # OPUS vision, the most expensive model in the roster, and none of it reached
-    # `ai_usage_logs`. `call_with_tool` also raises `ToolCallNotReturned` where this
-    # returned a string, so a missing tool block is typed rather than stringly-compared.
+    # `ai_usage_logs`. `call_with_schema` also raises `ToolCallNotReturned` where this
+    # returned a string, so an unusable reply is typed rather than stringly-compared.
     try:
-        from app.services.core.claude_tool_call import call_with_tool
+        from app.services.core.claude_tool_call import call_with_schema
 
-        result = await call_with_tool(
+        result = await call_with_schema(
             task="aspect_query_vision_analysis",
             model=get_settings().anthropic_model_validation,
             max_tokens=VISION_MAX_TOKENS,
@@ -100,12 +101,12 @@ async def analyze_query_image(query_image: str) -> Tuple[Optional[Any], Optional
                         "type": "base64", "media_type": "image/jpeg", "data": image_b64,
                     }},
                     {"type": "text", "text": (
-                        "Use the emit_vision_analysis tool to return a "
-                        "structured catalog-grade material analysis for this image."
+                        "Return a structured catalog-grade material analysis "
+                        "for this image."
                     )},
                 ],
             }],
-            tool=VISION_ANALYSIS_TOOL,
+            output_config=vision_analysis_output_config(),
         )
         return VisionAnalysis(**result.data), None
     except Exception as e:

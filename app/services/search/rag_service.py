@@ -2305,7 +2305,7 @@ class RAGService:
         """
         try:
             from app.models.vision_analysis import (
-                VISION_ANALYSIS_TOOL, VISION_MAX_TOKENS, vision_call_extra_kwargs,
+                vision_analysis_output_config, VISION_MAX_TOKENS, vision_call_extra_kwargs,
             )
             from app.config import get_settings
 
@@ -2321,22 +2321,22 @@ class RAGService:
 
             analysis_text = await load_prompt("extraction", "rag_vision_analysis", stage="image_analysis")
 
-            # Through the shared forced-tool helper (#33 item 2). The tool_choice and
-            # the missing-block handling were already correct here; what a raw httpx POST
-            # cannot do is record what it cost — and this is an Opus VISION call that had
-            # no row in `ai_usage_logs` at all.
+            # Through the shared structured-output helper (#33 item 2, reshaped by
+            # #400 W5). The missing-block handling was already correct here; what a raw
+            # httpx POST cannot do is record what it cost — and this is an Opus VISION
+            # call that had no row in `ai_usage_logs` at all.
             from app.services.core.claude_tool_call import (
                 ToolCallNotReturned,
-                call_with_tool,
+                call_with_schema,
             )
 
             try:
-                call = await call_with_tool(
+                call = await call_with_schema(
                     task="rag_vision_analysis",
                     model=get_settings().anthropic_model_validation,
                     max_tokens=VISION_MAX_TOKENS,
                     extra_kwargs=vision_call_extra_kwargs(),
-                    tool=VISION_ANALYSIS_TOOL,
+                    output_config=vision_analysis_output_config(),
                     messages=[{
                         'role': 'user',
                         'content': [
@@ -2355,12 +2355,12 @@ class RAGService:
             except ToolCallNotReturned as e:
                 # Preserved contract: this method returns a soft dict its callers read as
                 # "analysis unavailable" rather than raising into the search path.
-                self.logger.warning(f"No tool_use in Anthropic response: {e}")
+                self.logger.warning(f"No usable vision_analysis in the reply: {e}")
                 return {
                     'quality_score': 0.5,
                     'confidence_score': 0.0,
                     'material_properties': {},
-                    'error': 'No tool_use block returned'
+                    'error': 'No structured vision_analysis returned'
                 }
             except Exception as e:
                 self.logger.warning(f"Anthropic vision analysis failed: {e}")

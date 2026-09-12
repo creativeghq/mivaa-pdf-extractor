@@ -158,6 +158,121 @@ async def call_with_tool(
     )
 
 
+def extract_structured_output(response: Any, label: str) -> Dict[str, Any]:
+    """The JSON object from a strict `output_config.format` reply, or raise.
+
+    Same contract as `extract_tool_input`, one rung over: a reply that does not parse is
+    the API contract breaking, NOT something to repair. There is deliberately no fence
+    strip and no first-`{...}` match here — that is the whole point of asking the server
+    to grammar-constrain the output, and a salvage parser would put back the ambiguity
+    between "broken reply" and "nothing found".
+    """
+    import json
+
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason == "refusal":
+        details = getattr(response, "stop_details", None)
+        category = getattr(details, "category", None) if details else None
+        raise ToolCallNotReturned(
+            f"{label} was refused by the model (category={category!r}) — a refusal is a "
+            "failed analysis, never a result to parse"
+        )
+    if stop_reason == "max_tokens":
+        raise ToolCallNotReturned(
+            f"{label} hit max_tokens before finishing its reply — the JSON ends mid-object"
+        )
+
+    text = "".join(
+        str(getattr(block, "text", ""))
+        for block in (getattr(response, "content", None) or [])
+        if getattr(block, "type", None) == "text"
+    ).strip()
+
+    if not text:
+        raise ToolCallNotReturned(f"{label} returned no text block to read JSON from")
+
+    try:
+        parsed = json.loads(text)
+    except Exception as e:
+        raise ToolCallNotReturned(
+            f"{label} returned text that is not JSON despite a strict output schema: {e}"
+        ) from e
+
+    if not isinstance(parsed, dict):
+        raise ToolCallNotReturned(
+            f"{label} returned {type(parsed).__name__}, not an object"
+        )
+    return parsed
+
+
+async def call_with_schema(
+    *,
+    task: str,
+    model: str,
+    messages: List[Dict[str, Any]],
+    output_config: Dict[str, Any],
+    max_tokens: int = 1024,
+    system: Optional[str] = None,
+    job_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    product_id: Optional[str] = None,
+    image_id: Optional[str] = None,
+    required: Optional[List[str]] = None,
+    extra_kwargs: Optional[Dict[str, Any]] = None,
+) -> ToolCallResult:
+    """`call_with_tool`, expressed as a strict output schema instead of a forced tool.
+
+    Identical guarantee and identical failure type. It exists because forced tool use
+    (`tool_choice` `any`/`tool`) returns a 400 on Fable 5.1, so a path shaped as a forced
+    tool cannot even be MEASURED against the newest model. `output_config.format` is the
+    documented equivalent for the case where the forced call only ever existed to get a
+    schema-valid object back, which is exactly what the vision path does.
+    """
+    from app.services.core.claude_helper import tracked_claude_call_async
+
+    label = (output_config.get("format") or {}).get("name") or task
+
+    merged = {**(extra_kwargs or {})}
+    caller_output_config = merged.pop("output_config", None) or {}
+    response = await tracked_claude_call_async(
+        task=task,
+        model=model,
+        confidence_score=_DEFAULT_CONFIDENCE,
+        max_tokens=max_tokens,
+        system=system,
+        messages=messages,
+        job_id=job_id,
+        user_id=user_id,
+        workspace_id=workspace_id,
+        product_id=product_id,
+        image_id=image_id,
+        extra_kwargs={
+            **merged,
+            # `effort` and the schema both live under output_config, so the caller's
+            # call-shape keys are merged rather than replaced — dropping either silently
+            # would change what the model does with no error.
+            "output_config": {**caller_output_config, **output_config},
+        },
+    )
+
+    data = extract_structured_output(response, label)
+
+    missing = [k for k in (required or []) if data.get(k) in (None, "")]
+    if missing:
+        raise ToolCallNotReturned(
+            f"{label} returned no value for {missing} — the reply is structurally valid "
+            "but does not answer the question"
+        )
+
+    usage = getattr(response, "usage", None)
+    return ToolCallResult(
+        data=data,
+        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+    )
+
+
 async def stream_with_tool(
     *,
     task: str,

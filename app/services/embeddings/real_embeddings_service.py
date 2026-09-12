@@ -154,13 +154,37 @@ class RealEmbeddingsService:
         # Log SLIG configuration
         self.logger.info("☁️ Visual Embeddings: SLIG on Modal (basiliskan/slig — siglip2-base-patch16-512, native 768D)")
 
-        # Voyage AI configuration
+        # Voyage AI configuration. Documents and queries run different models — both in the
+        # 4 series, which is ONE latent space, so a voyage-4 query ranks voyage-4-large rows
+        # correctly and no reindex is needed. `voyage_model` stays as the document model
+        # because every provenance stamp in this file reads it.
         self.voyage_api_key = settings.voyage_api_key
-        self.voyage_model = settings.voyage_model
+        self.voyage_document_model = settings.voyage_document_model
+        self.voyage_query_model = settings.voyage_query_model
+        self.voyage_model = self.voyage_document_model
         self.voyage_enabled = settings.voyage_enabled
 
         # Debug logging for Voyage AI configuration
-        self.logger.info(f"🔧 Voyage AI Config: enabled={self.voyage_enabled}, api_key={'SET' if self.voyage_api_key else 'NOT SET'}, model={self.voyage_model}")
+        self.logger.info(f"🔧 Voyage AI Config: enabled={self.voyage_enabled}, api_key={'SET' if self.voyage_api_key else 'NOT SET'}, document={self.voyage_document_model}, query={self.voyage_query_model}")
+
+    def voyage_model_for(self, input_type: Optional[str]) -> str:
+        """The model one call actually runs on.
+
+        Both defaults must start with `voyage-4`: the 4 series shares one space, and a
+        model outside it would be stored and ranked with nothing raising.
+        """
+        return self.voyage_query_model if input_type == "query" else self.voyage_document_model
+
+    @staticmethod
+    def _voyage_cost_usd(model: str, input_tokens: int) -> float:
+        """USD for one Voyage embedding call, resolved through the pricing config."""
+        from app.config.ai_pricing import AIPricingConfig
+
+        result = AIPricingConfig.calculate_cost(
+            model=model, input_tokens=int(input_tokens or 0), output_tokens=0,
+            include_markup=False,
+        )
+        return float(result["raw_cost_usd"])
 
     
     async def generate_all_embeddings(
@@ -935,13 +959,13 @@ class RealEmbeddingsService:
                     )
 
                 # Audit #12 finding 3: this said "voyage-4" unconditionally while the
-                # provenance stamp below wrote self.voyage_model, so setting
-                # VOYAGE_MODEL to anything else would have batch-indexed rows
-                # embedded by voyage-4 and queried with the new model -- both 1024D,
-                # so VECS accepts the mixed-space vector and ranks confident
-                # nonsense instead of raising.
+                # provenance stamp below read the configured model, so the two could name
+                # different models -- both 1024D, so VECS accepts the mixed-space vector
+                # and ranks confident nonsense instead of raising. The model is now
+                # resolved from input_type, and the provenance stamp reads the same value.
+                voyage_model = self.voyage_model_for(input_type)
                 request_data = {
-                    "model": self.voyage_model,
+                    "model": voyage_model,
                     "input": processed_texts,  # Use processed texts (no empty strings)
                     "truncation": truncation
                 }
@@ -1007,12 +1031,13 @@ class RealEmbeddingsService:
                     input_tokens = usage.get("total_tokens", 0)
 
                     # Voyage AI Pricing (as of Dec 2024)
-                    cost_per_million = 0.06  # voyage-4
-                    cost = (input_tokens / 1_000_000) * cost_per_million
+                    # Resolved, not restated: voyage-4-large is 2x voyage-4, so a literal
+                    # here halves the recorded cost of every document embedding.
+                    cost = self._voyage_cost_usd(voyage_model, input_tokens)
 
                     await self.ai_logger.log_ai_call(
                         task="batch_text_embedding_generation",
-                        model=f"{self.voyage_model}-{voyage_dimensions}d",
+                        model=f"{self.voyage_model_for(input_type)}-{voyage_dimensions}d",
                         input_tokens=input_tokens,
                         output_tokens=0,
                         cost=cost,
@@ -1039,7 +1064,7 @@ class RealEmbeddingsService:
                     # don't lie. Without this, the chunk provenance fix from
                     # 2026-05-23 round-3 was reading stale state from the LAST
                     # single-text call. Drift detection blind spot - fixed post-round-3.
-                    self._last_provider = self.voyage_model or "voyage-4"
+                    self._last_provider = self.voyage_model_for(input_type)
                     return embeddings
                 else:
                     error_body = response.text
@@ -1055,7 +1080,7 @@ class RealEmbeddingsService:
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="batch_text_embedding_generation",
-                    model=f"{self.voyage_model}-{voyage_dimensions}d",
+                    model=f"{self.voyage_model_for(input_type)}-{voyage_dimensions}d",
                     input_tokens=0,
                     output_tokens=0,
                     cost=0.0,
@@ -1137,8 +1162,9 @@ class RealEmbeddingsService:
                 # over 1000 chunks fires 1000 simultaneous HTTPS requests and the
                 # API rate-limits us. settings.voyage_concurrency caps it.
                 async with self._get_voyage_semaphore(), httpx.AsyncClient() as client:
+                    voyage_model = self.voyage_model_for(input_type)
                     request_data = {
-                        "model": self.voyage_model,
+                        "model": voyage_model,
                         "input": [text],  # Voyage AI handles truncation
                         "truncation": truncation
                     }
@@ -1205,12 +1231,11 @@ class RealEmbeddingsService:
                         input_tokens = usage.get("total_tokens", 0)
 
                         # voyage-4: $0.06 per 1M tokens (sole production embedder)
-                        cost_per_million = 0.06  # voyage-4
-                        cost = (input_tokens / 1_000_000) * cost_per_million
+                        cost = self._voyage_cost_usd(voyage_model, input_tokens)
 
                         await self.ai_logger.log_ai_call(
                             task="text_embedding_generation",
-                            model=f"{self.voyage_model}-{voyage_dimensions}d",
+                            model=f"{self.voyage_model_for(input_type)}-{voyage_dimensions}d",
                             input_tokens=input_tokens,
                             output_tokens=0,
                             cost=cost,
@@ -1233,7 +1258,7 @@ class RealEmbeddingsService:
                         )
 
                         self.logger.info(f"✅ Generated Voyage AI embedding ({voyage_dimensions}D, {input_type})")
-                        self._last_provider = self.voyage_model or "voyage-4"
+                        self._last_provider = self.voyage_model_for(input_type)
                         return embedding
                     else:
                         error_body = response.text
@@ -1249,7 +1274,7 @@ class RealEmbeddingsService:
                 voyage_dimensions = 1024 if dimensions == 1536 else dimensions
                 await self.ai_logger.log_ai_call(
                     task="text_embedding_generation",
-                    model=f"{self.voyage_model}-{voyage_dimensions}d",
+                    model=f"{self.voyage_model_for(input_type)}-{voyage_dimensions}d",
                     input_tokens=0,
                     output_tokens=0,
                     cost=0.0,

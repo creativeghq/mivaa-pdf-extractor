@@ -55,11 +55,32 @@ def _src(p: Path) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def _code(p: Path) -> str:
+    """Source with comments and docstrings blanked.
+
+    Required for any rule about what the code DOES: these files explain at length why
+    the vision call is no longer a forced tool, and a guard that greps raw source fires
+    on its own explanation.
+    """
+    import sys
+
+    sys.path.insert(0, str(_ROOT / "scripts"))
+    try:
+        from comment_budget import blank_comments
+        return blank_comments(_src(p))
+    finally:
+        sys.path.pop(0)
+
+
 def test_the_call_sites_still_exist() -> None:
     """If a path was renamed, this guard must be repointed, not deleted."""
     for p in _VISION_CALL_SITES:
-        assert "VISION_ANALYSIS_TOOL" in _src(p), (
-            f"{p.name} no longer references VISION_ANALYSIS_TOOL. If the vision call "
+        # The schema is ONE definition reached two ways: the tool (for anything still
+        # forcing a tool call) and `vision_analysis_output_config()`, which reads the
+        # tool's own input_schema. All four vision paths moved to the second in #400 W5.
+        src = _src(p)
+        assert "vision_analysis_output_config" in src or "VISION_ANALYSIS_TOOL" in src, (
+            f"{p.name} no longer references the shared vision schema. If the vision call "
             f"moved, update this list; do not drop the file from it."
         )
 
@@ -113,3 +134,56 @@ def test_the_shared_parameters_live_in_one_place() -> None:
         "the shared vision call parameters left vision_analysis.py. They belong beside "
         "the schema and serialiser they have to stay aligned with."
     )
+
+
+# -------------------------------------------------------------------------
+# #400 W5 -- the schema is asked for as a strict OUTPUT, not a forced tool
+# -------------------------------------------------------------------------
+
+@pytest.mark.parametrize("path", _VISION_CALL_SITES, ids=lambda p: p.name)
+def test_no_vision_path_forces_a_tool_call(path: Path) -> None:
+    """Forced tool use (`tool_choice` any/tool) returns 400 on Fable 5.1.
+
+    While any vision path was shaped that way, the newest model could not be tried in
+    the writer OR the checker slot — not "would perform worse", could not be MEASURED.
+    All four now ask for the same schema through `output_config.format`, which is the
+    documented equivalent for a forced call that only ever existed to get JSON back.
+    """
+    code = _code(path)
+    assert "tool_choice" not in code, (
+        f"{path.name} forces a tool call again. Every vision path has to accept the "
+        f"same models, and a forced tool excludes the newest one with a 400."
+    )
+    assert "vision_analysis_output_config()" in code, (
+        f"{path.name} no longer asks for the vision schema as a strict output"
+    )
+
+
+def test_the_output_schema_is_read_from_the_tool_not_restated() -> None:
+    """Two copies of this schema is the drift the single tool definition exists to stop."""
+    src = _src(_APP / "models" / "vision_analysis.py")
+    body = src[src.index("def vision_analysis_output_config"):]
+    assert 'VISION_ANALYSIS_TOOL["input_schema"]' in body, (
+        "vision_analysis_output_config restates the schema instead of reading the "
+        "tool's own input_schema — two copies cannot disagree loudly"
+    )
+    assert '"additionalProperties"' in body, (
+        "a strict output schema must close the object; VisionAnalysis is already "
+        "extra='forbid', so this only states what the model already promises"
+    )
+
+
+def test_a_refusal_is_a_failed_analysis_never_a_repair() -> None:
+    """`stop_reason: refusal` and unparseable JSON are the same kind of event here: the
+    contract broke. A salvage parser would put back the ambiguity between a broken
+    reply and a legitimate 'nothing found'."""
+    helper = _src(_APP / "services" / "core" / "claude_tool_call.py")
+    body = helper[helper.index("def extract_structured_output"):]
+    body = body[:body.index("async def call_with_schema")]
+    assert '"refusal"' in body, "a refusal is not detected — it would be parsed as text"
+    assert "ToolCallNotReturned" in body, "a broken reply no longer raises the typed error"
+    for salvage in ("```", "re.search", "strip('`')", 'find("{")'):
+        assert salvage not in body, (
+            f"a salvage parser ({salvage}) is back in the structured-output reader — "
+            "the whole point of a server-side grammar is that there is nothing to repair"
+        )

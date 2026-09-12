@@ -164,7 +164,8 @@ class AIPricingConfig:
         }
     }
 
-    # Voyage AI Embedding Pricing (per 1M tokens) — voyage-4 is sole production TEXT embedder.
+    # Voyage AI Embedding Pricing (per 1M tokens). The 4 series is the sole production TEXT
+    # embedder: voyage-4-large indexes, voyage-4 queries. One latent space, two prices.
     VOYAGE_PRICING = {
         "voyage-4": {
             "input": Decimal("0.06"),
@@ -172,7 +173,18 @@ class AIPricingConfig:
             "last_verified": "2026-04-19",
             "source": "https://docs.voyageai.com/docs/pricing",
             "dimensions": 1024,
-            "note": "Sole text embedding model — 1024D"
+            "note": "Query model — 1024D. Same latent space as voyage-4-large."
+        },
+        "voyage-4-large": {
+            "input": Decimal("0.12"),
+            "output": Decimal("0.00"),
+            "last_verified": "2026-09-12",
+            "source": "https://docs.voyageai.com/docs/pricing",
+            "dimensions": 1024,
+            "note": (
+                "Document/indexing model — 1024D, 2x voyage-4. Same 4-series latent space, "
+                "so mixing the two in one collection is correct and needs no reindex."
+            )
         },
         # Page embeddings (#239). These bill on TWO axes — tokens AND pixels — so the
         # `input` figure here covers only the text half. Anything embedding a page must

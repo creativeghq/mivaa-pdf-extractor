@@ -232,3 +232,75 @@ def test_failure_returns_nothing_rather_than_something_else():
             f"{name} must be able to return {expected} on provider failure; "
             f"found returns: {sorted(returns)}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# One latent space: both text defaults must be 4-series (#400 W3)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _field_default(source: str, field: str) -> str:
+    """The `default=` literal of a pydantic Field declaration, by AST."""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
+            continue
+        if node.target.id != field or not isinstance(node.value, ast.Call):
+            continue
+        for kw in node.value.keywords:
+            if kw.arg == "default" and isinstance(kw.value, ast.Constant):
+                return str(kw.value.value)
+    raise AssertionError(f"config.py declares no {field} with a literal default")
+
+
+def test_both_text_embedding_defaults_are_four_series():
+    """voyage-4-large indexes and voyage-4 queries — and that ONLY works because the 4
+    series is one shared latent space. Any other prefix is a different space at the same
+    1024D, so the wrong vector is stored, indexed and ranked with nothing raising."""
+    source = (_APP / "config.py").read_text(encoding="utf-8")
+    document = _field_default(source, "voyage_document_model")
+    query = _field_default(source, "voyage_query_model")
+    alias = _field_default(source, "voyage_model")
+
+    for label, value in (("document", document), ("query", query), ("alias", alias)):
+        assert value.startswith("voyage-4"), (
+            f"the {label} embedding model defaults to {value!r}. Only the voyage-4 series "
+            f"shares a latent space with the corpus; anything else needs a full re-embed, "
+            f"not a config change."
+        )
+    assert alias == document, (
+        "voyage_model is the back-compat alias for the document model and every provenance "
+        "stamp in real_embeddings_service reads it — letting the two differ makes those "
+        "stamps name a model that never ran"
+    )
+
+
+def test_the_two_models_are_priced_apart():
+    """voyage-4-large is 2x voyage-4. One price for both understates every document
+    embedding by half, which is a wrong number that nothing can raise on."""
+    pricing = (_APP / "config" / "ai_pricing.py").read_text(encoding="utf-8")
+    assert '"voyage-4-large"' in pricing, "voyage-4-large has no pricing entry"
+    service = (_APP / "services" / "embeddings" / "real_embeddings_service.py").read_text(
+        encoding="utf-8"
+    )
+    assert "cost_per_million = 0.06" not in service, (
+        "a literal Voyage price is back in the embeddings service; resolve it from "
+        "AIPricingConfig so the document model is not billed at the query model's rate"
+    )
+
+
+def test_the_model_is_chosen_by_input_type():
+    """A query embedded with the document model is not wrong — same space — but it is
+    billed at 2x and recorded under the wrong provenance."""
+    service = (_APP / "services" / "embeddings" / "real_embeddings_service.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(service)
+    node = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "voyage_model_for"
+    )
+    body = ast.unparse(node)
+    assert "voyage_query_model" in body and "voyage_document_model" in body
+    assert service.count('"model": self.voyage_model,') == 0, (
+        "a Voyage request still pins the document model regardless of input_type"
+    )

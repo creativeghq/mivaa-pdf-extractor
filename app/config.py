@@ -241,12 +241,10 @@ class Settings(BaseSettings):
     # ============================================================================
     # Voyage AI Settings (the ONLY text embedding provider)
     # ============================================================================
-    # API key set via GitHub Secrets: VOYAGE_API_KEY
-    voyage_api_key: str = Field(default="", env="VOYAGE_API_KEY")
-    voyage_model: str = Field(default="voyage-4", env="VOYAGE_MODEL")
-    voyage_embedding_dimension: int = Field(default=1024, env="VOYAGE_EMBEDDING_DIMENSION")
-    voyage_timeout: int = Field(default=30, env="VOYAGE_TIMEOUT")
-    voyage_enabled: bool = Field(default=True, env="VOYAGE_ENABLED")
+    # API key set via GitHub Secrets: VOYAGE_API_KEY.
+    # The fields themselves are declared once, further down under "Voyage AI Settings
+    # (Text Embeddings - Primary Provider)". A second copy here was strictly shadowed —
+    # pydantic keeps the last definition — so editing it changed nothing.
 
     # RAG Settings (model-agnostic - works with Claude 4.5 + Direct Vector DB)
 
@@ -574,10 +572,32 @@ class Settings(BaseSettings):
         env="VOYAGE_API_KEY",
         description="Voyage AI API key for text embeddings"
     )
-    voyage_model: str = Field(
+    voyage_document_model: str = Field(
+        default="voyage-4-large",
+        env="VOYAGE_DOCUMENT_MODEL",
+        description=(
+            "Voyage model for INDEXING (input_type='document'). voyage-4-large tops RTEB "
+            "and shares one latent space with the rest of the 4 series, so this is the one "
+            "embedding upgrade that needs no reindex: a voyage-4 query still ranks "
+            "voyage-4-large rows correctly. NEVER point this at a non-4 model — that IS a "
+            "space change, and a mixed collection is accepted silently at 1024D."
+        )
+    )
+    voyage_query_model: str = Field(
         default="voyage-4",
+        env="VOYAGE_QUERY_MODEL",
+        description=(
+            "Voyage model for SEARCHING (input_type='query'). Stays on the cheaper voyage-4: "
+            "queries are short, run on every search, and gain nothing from the large model."
+        )
+    )
+    voyage_model: str = Field(
+        default="voyage-4-large",
         env="VOYAGE_MODEL",
-        description="Voyage AI model for text embeddings"
+        description=(
+            "Back-compat alias for the DOCUMENT model — the provenance stamps across the "
+            "embeddings service read it. Set voyage_document_model instead."
+        )
     )
     voyage_embedding_dimension: int = Field(
         default=1024,

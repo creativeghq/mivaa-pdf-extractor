@@ -59,10 +59,13 @@ def test_no_tool_block_stamps_the_analysis_failed():
     that reads prose as distance is a guard that moves when someone writes a paragraph.
     """
     code = _strip_comments(_read())
-    at = code.index("if tool_input is None:")
+    # The call is a strict output schema rather than a forced tool since #400 W5, so the
+    # "no usable structured result" branch is the ToolCallNotReturned handler. Same
+    # invariant, same distinct error type, one rung over.
+    at = code.index("except ToolCallNotReturned as e:")
     window = code[at:at + 500]
     assert "_stamp_vision_analysis_outcome(image_id, failed=True)" in window, (
-        "a missing tool_use block no longer marks the analysis failed (#20 M7-3)"
+        "an unusable vision reply no longer marks the analysis failed (#20 M7-3)"
     )
     before_return = window.split("return None")[0]
     # The SHAPE, not the word: "text" appears in the log message explaining why the
@@ -75,11 +78,18 @@ def test_no_tool_block_stamps_the_analysis_failed():
         )
 
 
-def test_the_ingestion_vision_path_still_forces_its_tool():
-    """Every case above assumes the call is forced. If tool_choice goes, they are all
-    guarding a contract that is no longer being asked for."""
+def test_the_ingestion_vision_path_still_constrains_its_output():
+    """Every case above assumes the reply is schema-locked. If that goes, they are all
+    guarding a contract that is no longer being asked for.
+
+    Either mechanism satisfies it: a forced `tool_choice`, or the strict
+    `output_config.format` the vision path moved to in #400 W5 because Fable 5.1 returns
+    400 on forced tool use. What is NOT acceptable is asking for JSON in the prose.
+    """
     src = _strip_comments(_read())
-    assert "tool_choice" in src, "the vision path no longer forces a tool call"
+    assert "tool_choice" in src or "output_config=vision_analysis_output_config()" in src, (
+        "the vision path no longer constrains its output to the schema"
+    )
 
 
 # -------------------------------------------------------------------------

@@ -12,7 +12,7 @@ import httpx
 from app.models.vision_analysis import (
     SCHEMA_VERSION,
     VisionAnalysis,
-    VISION_ANALYSIS_TOOL,
+    vision_analysis_output_config,
     VISION_MAX_TOKENS,
     vision_call_extra_kwargs,
 )
@@ -131,10 +131,10 @@ async def _analyze_one(
     # rather than duplicating one (see .github/anthropic-bypass-baseline.json for the
     # files where the opposite is true).
     try:
-        from app.services.core.claude_tool_call import call_with_tool, ToolCallNotReturned
+        from app.services.core.claude_tool_call import call_with_schema, ToolCallNotReturned
 
         try:
-            result = await call_with_tool(
+            result = await call_with_schema(
                 task="understanding_backfill_vision",
                 model=get_settings().anthropic_model_validation,
                 max_tokens=VISION_MAX_TOKENS,
@@ -161,12 +161,12 @@ async def _analyze_one(
                         },
                     ],
                 }],
-                tool=VISION_ANALYSIS_TOOL,
+                output_config=vision_analysis_output_config(),
                 image_id=image_id,
             )
         except ToolCallNotReturned as e:
             logger.warning(
-                f"Anthropic backfill returned no usable tool_use block "
+                f"Anthropic backfill returned no usable vision_analysis "
                 f"(image_id={image_id or '<none>'}): {e}"
             )
             return None

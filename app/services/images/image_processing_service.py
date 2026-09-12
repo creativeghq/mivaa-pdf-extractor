@@ -1156,10 +1156,9 @@ class ImageProcessingService:
         product_id: Optional[str] = None,
         job_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Material analysis via Claude Opus + Anthropic tool_use."""
+        """Material analysis via Claude, with a strict output schema."""
         try:
             from app.services.core.ai_client_service import get_ai_client_service
-            from app.models.vision_analysis import VISION_ANALYSIS_TOOL
 
             if not self.material_analyzer_prompt:
                 return None
@@ -1221,55 +1220,45 @@ class ImageProcessingService:
                 model_override or _get_settings_validation().anthropic_model_validation
             )
 
-            # Force schema-locked output. tool_choice with `name` makes the model
-            # MUST emit a tool_use block matching VISION_ANALYSIS_TOOL.input_schema.
-            from app.services.core.claude_helper import tracked_claude_call_async
-            response = await tracked_claude_call_async(
-                task="image_material_analysis_tool_use",
-                model=model_to_use,
-                # Was 1024, which is too tight for this schema and fails in the most
-                # confusing way available: the cap truncates the tool_use block, the
-                # response arrives with no COMPLETE tool_use, and the handler below
-                # correctly reads that as "the model ignored the tool" and stamps
-                # `vision_analysis_failed`.
-                max_tokens=VISION_MAX_TOKENS,
-                messages=[{"role": "user", "content": content}],
-                system=self.material_analyzer_system_prompt or None,
-                job_id=job_id,
-                product_id=product_id,
-                image_id=image_id,
-                extra_kwargs={
-                    "tools": [VISION_ANALYSIS_TOOL],
-                    "tool_choice": {"type": "tool", "name": VISION_ANALYSIS_TOOL["name"]},
+            # Schema-locked output, as a strict output_config.format rather than a forced
+            # tool. Same guarantee; the difference is that Fable 5.1 returns 400 on
+            # `tool_choice` tool/any, so the forced shape made the newest model
+            # impossible to even try in the writer or the checker slot (#400 W5).
+            from app.services.core.claude_tool_call import (
+                ToolCallNotReturned,
+                call_with_schema,
+            )
+            from app.models.vision_analysis import vision_analysis_output_config
+            try:
+                result = await call_with_schema(
+                    task="image_material_analysis_structured",
+                    model=model_to_use,
+                    # Was 1024, which is too tight for this schema and fails in the most
+                    # confusing way available: the cap truncates the reply mid-object.
+                    max_tokens=VISION_MAX_TOKENS,
+                    messages=[{"role": "user", "content": content}],
+                    system=self.material_analyzer_system_prompt or None,
+                    job_id=job_id,
+                    product_id=product_id,
+                    image_id=image_id,
+                    output_config=vision_analysis_output_config(),
                     # Shared with the backfill, aspect-query and RAG paths, which is the
                     # point: they all write into one embedding collection, so a parameter
                     # that differs between them is a descriptive dialect that differs.
-                    **vision_call_extra_kwargs(),
-                },
-            )
-
-            # Find the tool_use block. With tool_choice={type:tool,name:...} the
-            # API guarantees exactly one tool_use block matching the schema —
-            # but defensive parsing in case Anthropic ever stops honoring that.
-            tool_input: Optional[Dict[str, Any]] = None
-            for block in response.content:
-                if getattr(block, 'type', None) == 'tool_use':
-                    candidate = getattr(block, 'input', None)
-                    if isinstance(candidate, dict):
-                        tool_input = candidate
-                        break
-
-            if tool_input is None:
-                # No tool_use block is a FAILURE, not a parsing problem (#20 M7-3).
+                    extra_kwargs=vision_call_extra_kwargs(),
+                )
+            except ToolCallNotReturned as e:
+                # A refusal or an unparseable reply is a FAILED ANALYSIS, never something
+                # to repair into a result (#20 M7-3).
                 logger.error(
-                    f"   ❌ Claude returned no tool_use block for {image_id} — marking "
-                    "vision analysis failed rather than parsing the text reply"
+                    f"   ❌ Claude returned no usable vision_analysis for {image_id} "
+                    f"({e}) — marking the analysis failed rather than parsing around it"
                 )
                 self._stamp_vision_analysis_outcome(image_id, failed=True)
                 return None
 
             validated = self._validate_vision_analysis(
-                tool_input, image_id, source=VisionProvider.CLAUDE_FALLBACK.value
+                result.data, image_id, source=VisionProvider.CLAUDE_FALLBACK.value
             )
             # Pydantic validation may have rejected the payload (returns None).
             # Stamp success/failure based on whether we got usable output.

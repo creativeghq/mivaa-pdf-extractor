@@ -164,6 +164,27 @@ VISION_ANALYSIS_TOOL: Dict[str, Any] = {
 }
 
 
+def vision_analysis_output_config() -> Dict[str, Any]:
+    """`output_config.format` — the structured-output twin of VISION_ANALYSIS_TOOL.
+
+    Same schema, same guarantee, no forced tool: Fable 5.1 returns 400 on `tool_choice`
+    `any`/`tool`, so the newest model could not be tried in the writer or checker slot
+    while the call was shaped as a forced tool. The schema is READ from the tool rather
+    than restated — two copies of this schema is exactly the drift the tool exists to stop.
+    """
+    schema = dict(VISION_ANALYSIS_TOOL["input_schema"])
+    # Strict JSON-schema output requires the object to be closed. `VisionAnalysis` is
+    # already `extra="forbid"`, so this states what the model already promises.
+    schema["additionalProperties"] = False
+    return {
+        "format": {
+            "type": "json_schema",
+            "name": VISION_ANALYSIS_TOOL["name"],
+            "schema": schema,
+        }
+    }
+
+
 def serialize_vision_analysis_to_text(va: VisionAnalysis) -> str:
     """Deterministic text serialisation of VisionAnalysis for Voyage."""
     parts: List[str] = []

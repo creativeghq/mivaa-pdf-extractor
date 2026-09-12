@@ -89,11 +89,16 @@ def test_batch_embedding_does_not_hardcode_the_model():
     """Both 1024D, different SPACE: a hardcoded model + a configured provenance
     stamp means indexed rows and query vectors can silently disagree."""
     src = _src(_EMBEDDINGS)
-    assert '"model": "voyage-4"' not in src, (
-        "the batch request hardcodes voyage-4 again while provenance stamps "
-        "self.voyage_model — set VOYAGE_MODEL and the two diverge silently"
-    )
-    assert '"model": self.voyage_model' in src
+    for literal in ('"model": "voyage-4"', '"model": "voyage-4-large"'):
+        assert literal not in src, (
+            f"the batch request hardcodes {literal} again while provenance reads the "
+            "configured model — the two then diverge silently"
+        )
+    # Documents and queries run different 4-series models (#400 W3), so the request is
+    # resolved from input_type rather than pinned; the provenance stamp reads the same
+    # resolver, which is what stops the request and the stamp naming different models.
+    assert '"model": voyage_model' in src
+    assert 'voyage_model = self.voyage_model_for(input_type)' in src
 
 
 def test_batch_embedding_response_is_validated_before_use():
