@@ -54,10 +54,14 @@ def test_sam_routes_never_posts_a_slug_as_a_version():
     assert '"version": "meta/sam-2"' not in src
     assert '"version": _ANYDOOR' not in src
     assert '"model": model_id' not in src
-    # Every create goes through the one helper, which resolves a community model's version on 404.
+    # Every create goes through the one helper, which resolves a slug to its version BEFORE
+    # posting (a failed create spends the account's create budget) and waits out one 429.
     assert src.count("_create_prediction(") >= 3
     assert "latest_version" in src
-    assert "resp.status_code == 404" in src
+    helper = src[src.index("async def _create_prediction"):src.index("async def _whole_image_mask_data_url")]
+    assert helper.index("_resolve_version(") < helper.index("client.post(")
+    assert "resp.status_code == 429" in helper
+    assert "retry_after" in helper
 
 
 def test_the_inpainted_image_is_uploaded_through_the_real_client():

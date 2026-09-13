@@ -320,21 +320,38 @@ _ANYDOOR_PRICING_KEY = "inpaint-anydoor"
 _VERSION_CACHE: Dict[str, str] = {}
 
 
+async def _resolve_version(client: httpx.AsyncClient, headers: Dict[str, str], model_ref: str) -> Optional[str]:
+    """A model's latest version id, cached per process. None when the API has no answer."""
+    if model_ref in _VERSION_CACHE:
+        return _VERSION_CACHE[model_ref]
+    meta = await client.get(f"https://api.replicate.com/v1/models/{model_ref}", headers=headers)
+    version = ((meta.json() if meta.status_code == 200 else {}).get("latest_version") or {}).get("id")
+    if version:
+        _VERSION_CACHE[model_ref] = version
+    return version
+
+
 async def _create_prediction(
     client: httpx.AsyncClient, headers: Dict[str, str], model_ref: str, inputs: Dict[str, Any],
 ) -> httpx.Response:
-    """POST a prediction. The model endpoint serves OFFICIAL models only; a community model
-    (meta/sam-2, ali-vilab/anydoor) answers 404 there, so its latest version is looked up once
-    per process and posted as `version` — probed live 2026-09-13."""
-    create_url, payload = replicate_create_request(_VERSION_CACHE.get(model_ref, model_ref), inputs)
-    resp = await client.post(create_url, headers=headers, json=payload)
-    if resp.status_code == 404 and "version" not in payload:
-        meta = await client.get(f"https://api.replicate.com/v1/models/{model_ref}", headers=headers)
-        version = ((meta.json() if meta.status_code == 200 else {}).get("latest_version") or {}).get("id")
+    """POST a prediction by VERSION whenever the model exposes one. The slug endpoint serves
+    official models only (meta/sam-2 and ali-vilab/anydoor answer 404), and a failed create still
+    spends the account's create budget — under $5 of credit that is ONE request per burst, so the
+    version is resolved with a GET first. One 429 is waited out for `retry_after`, because a mask
+    create followed by a fill create is the normal shape of "Replace Material". Probed live 2026-09-13."""
+    create_url, payload = replicate_create_request(model_ref, inputs)
+    if "version" not in payload:
+        version = await _resolve_version(client, headers, model_ref)
         if version:
-            _VERSION_CACHE[model_ref] = version
             create_url, payload = replicate_create_request(version, inputs)
-            resp = await client.post(create_url, headers=headers, json=payload)
+    resp = await client.post(create_url, headers=headers, json=payload)
+    if resp.status_code == 429:
+        try:
+            wait = int((resp.json() or {}).get("retry_after") or 10)
+        except Exception:
+            wait = 10
+        await asyncio.sleep(min(wait, 20) + 1)
+        resp = await client.post(create_url, headers=headers, json=payload)
     return resp
 
 
