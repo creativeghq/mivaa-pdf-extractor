@@ -108,7 +108,8 @@ async def generate_normal_map(
     except SSRFError as exc:
         raise HTTPException(status_code=400, detail=f"Invalid albedo_url: {exc}")
 
-    supabase = get_supabase_client()
+    # The wrapper exposes neither `.table` nor `.storage`; the real client is its `.client`.
+    supabase = get_supabase_client().client
 
     # The row must exist AND belong to the workspace the caller was authorized for. Without this a
     # member of workspace A could write a normal map onto workspace B's product by naming its id.

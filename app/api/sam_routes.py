@@ -83,13 +83,13 @@ async def _generate_sam2_mask(
     box_x2 = int((bbox.x + bbox.w) * img_w)
     box_y2 = int((bbox.y + bbox.h) * img_h)
 
-    create_url, payload = replicate_create_request("meta/sam-2", {
+    sam_input: Dict[str, Any] = {
         "input_image": image_url,
         "box_x1": box_x1,
         "box_y1": box_y1,
         "box_x2": box_x2,
         "box_y2": box_y2,
-    })
+    }
 
     headers = {
         "Authorization": f"Bearer {replicate_token}",
@@ -97,11 +97,7 @@ async def _generate_sam2_mask(
     }
 
     async with httpx.AsyncClient(timeout=120.0) as client:
-        create_resp = await client.post(
-            create_url,
-            headers=headers,
-            json=payload,
-        )
+        create_resp = await _create_prediction(client, headers, "meta/sam-2", sam_input)
         if create_resp.status_code not in (200, 201):
             logger.warning("SAM 2 prediction create failed: %s", create_resp.text)
             return None
@@ -321,6 +317,27 @@ _INPAINT_PRICING_KEYS = {
 _ANYDOOR_PRICING_KEY = "inpaint-anydoor"
 
 
+_VERSION_CACHE: Dict[str, str] = {}
+
+
+async def _create_prediction(
+    client: httpx.AsyncClient, headers: Dict[str, str], model_ref: str, inputs: Dict[str, Any],
+) -> httpx.Response:
+    """POST a prediction. The model endpoint serves OFFICIAL models only; a community model
+    (meta/sam-2, ali-vilab/anydoor) answers 404 there, so its latest version is looked up once
+    per process and posted as `version` — probed live 2026-09-13."""
+    create_url, payload = replicate_create_request(_VERSION_CACHE.get(model_ref, model_ref), inputs)
+    resp = await client.post(create_url, headers=headers, json=payload)
+    if resp.status_code == 404 and "version" not in payload:
+        meta = await client.get(f"https://api.replicate.com/v1/models/{model_ref}", headers=headers)
+        version = ((meta.json() if meta.status_code == 200 else {}).get("latest_version") or {}).get("id")
+        if version:
+            _VERSION_CACHE[model_ref] = version
+            create_url, payload = replicate_create_request(version, inputs)
+            resp = await client.post(create_url, headers=headers, json=payload)
+    return resp
+
+
 async def _whole_image_mask_data_url(image_url: str) -> str:
     """A white mask the size of the reference photo, as the data URL AnyDoor takes for `reference_image_mask`."""
     from PIL import Image
@@ -394,13 +411,14 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
         # images are required; the reference mask marks the object in the reference photo, and a
         # catalog swatch is all object, so it is the whole frame.
         reference_mask_data_url = await _whole_image_mask_data_url(request.reference_image_url)
-        create_url, payload = replicate_create_request(_ANYDOOR_MODEL, {
+        model_ref = _ANYDOOR_MODEL
+        inpaint_input: Dict[str, Any] = {
             "bg_image_path": request.image_url,
             "bg_mask_path": mask_data_url,
             "reference_image_path": request.reference_image_url,
             "reference_image_mask": reference_mask_data_url,
             "steps": 30,
-        })
+        }
         model_label = "anydoor"
         pricing_key = _ANYDOOR_PRICING_KEY
 
@@ -410,7 +428,7 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
         is_flux = request.model.startswith("flux")
 
         if is_flux:
-            inpaint_input: Dict[str, Any] = {
+            inpaint_input = {
                 "image": request.image_url,
                 "mask": mask_data_url,
                 "prompt": request.prompt,
@@ -424,7 +442,7 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
                 "num_inference_steps": 50,
                 "guidance_scale": 7.5,
             }
-        create_url, payload = replicate_create_request(model_id, inpaint_input)
+        model_ref = model_id
         model_label = request.model
         # Fall back on the same key the model_id lookup fell back to, so an unknown
         # request.model cannot silently bill at someone else's rate.
@@ -442,11 +460,7 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
                 "Content-Type": "application/json",
             }
 
-            create_resp = await client.post(
-                create_url,
-                headers=headers,
-                json=payload,
-            )
+            create_resp = await _create_prediction(client, headers, model_ref, inpaint_input)
             if create_resp.status_code not in (200, 201):
                 raise HTTPException(status_code=502, detail=f"Replicate API error: {create_resp.text}")
 
@@ -581,7 +595,9 @@ async def _upload_to_storage(client: httpx.AsyncClient, image_url: str, job_id: 
     ext = "png" if "png" in content_type else "jpg"
     path = f"product-crops/{job_id}/{int(datetime.utcnow().timestamp() * 1000)}.{ext}"
 
-    supabase = get_supabase_client()
+    # The wrapper has no `.storage`; the real client is its `.client`. Found live 2026-09-13, on
+    # the first inpaint that ever got this far.
+    supabase = get_supabase_client().client
     supabase.storage.from_("generation-images").upload(
         path,
         dl_resp.content,

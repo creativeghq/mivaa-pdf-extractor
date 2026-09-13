@@ -12,9 +12,10 @@ def replicate_create_request(model_ref: str, inputs: Dict[str, Any]) -> Tuple[st
     """Return (url, json body) for creating a prediction.
 
     A pinned VERSION (a 64-hex hash, bare or after ``owner/name:``) goes to ``/v1/predictions``
-    with ``{"version", "input"}``. A model SLUG goes to ``/v1/models/{slug}/predictions`` and runs
-    the latest version. A slug sent as ``version`` is refused with a 422 — which every inpaint and
-    SAM branch in sam_routes did until 2026-09-13, so none of them had ever run.
+    with ``{"version", "input"}``. A model SLUG goes to ``/v1/models/{slug}/predictions``, which
+    serves OFFICIAL models; a community model answers 404 there and the caller resolves its
+    latest version first (``sam_routes._create_prediction``). A slug sent as ``version`` is
+    refused with a 422 — which every inpaint and SAM branch did until 2026-09-13.
     """
     ref = model_ref.strip()
     version = ref.rsplit(":", 1)[1] if ":" in ref else ref

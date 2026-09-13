@@ -54,7 +54,17 @@ def test_sam_routes_never_posts_a_slug_as_a_version():
     assert '"version": "meta/sam-2"' not in src
     assert '"version": _ANYDOOR' not in src
     assert '"model": model_id' not in src
-    assert src.count("replicate_create_request(") >= 3
+    # Every create goes through the one helper, which resolves a community model's version on 404.
+    assert src.count("_create_prediction(") >= 3
+    assert "latest_version" in src
+    assert "resp.status_code == 404" in src
+
+
+def test_the_inpainted_image_is_uploaded_through_the_real_client():
+    src = _blank_comments(SAM_ROUTES.read_text(encoding="utf-8"))
+    upload = src[src.index("async def _upload_to_storage"):]
+    assert "get_supabase_client().client" in upload
+    assert "get_supabase_client()\n" not in upload.split("storage.from_")[0]
 
 
 def test_anydoor_is_called_with_the_names_its_schema_declares():
