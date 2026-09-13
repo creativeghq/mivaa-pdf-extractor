@@ -22,6 +22,7 @@ from app.utils.ssrf_guard import (
 from app.dependencies import get_current_user, resolve_workspace_id
 from app.utils.credit_metering import meter_operation as _meter, refund_operation as _refund
 from app.services.utilities.prompt_registry import load_prompt, render
+from app.services.utilities.replicate_requests import replicate_create_request
 
 logger = logging.getLogger(__name__)
 
@@ -82,16 +83,13 @@ async def _generate_sam2_mask(
     box_x2 = int((bbox.x + bbox.w) * img_w)
     box_y2 = int((bbox.y + bbox.h) * img_h)
 
-    payload = {
-        "version": "meta/sam-2",
-        "input": {
-            "input_image": image_url,
-            "box_x1": box_x1,
-            "box_y1": box_y1,
-            "box_x2": box_x2,
-            "box_y2": box_y2,
-        },
-    }
+    create_url, payload = replicate_create_request("meta/sam-2", {
+        "input_image": image_url,
+        "box_x1": box_x1,
+        "box_y1": box_y1,
+        "box_x2": box_x2,
+        "box_y2": box_y2,
+    })
 
     headers = {
         "Authorization": f"Bearer {replicate_token}",
@@ -100,7 +98,7 @@ async def _generate_sam2_mask(
 
     async with httpx.AsyncClient(timeout=120.0) as client:
         create_resp = await client.post(
-            "https://api.replicate.com/v1/predictions",
+            create_url,
             headers=headers,
             json=payload,
         )
@@ -312,7 +310,7 @@ _INPAINT_MODELS = {
     "sd-inpainting": "stability-ai/stable-diffusion-inpainting:95b7223104132402a9ae91cc677285bc5eb997834bd2349fa486f53910fd68b3",
 }
 
-_ANYDOOR_VERSION = "ali-vilab/anydoor"
+_ANYDOOR_MODEL = "ali-vilab/anydoor"
 
 # `ai_model_pricing.model_key` per inpaint model.
 _INPAINT_PRICING_KEYS = {
@@ -321,6 +319,18 @@ _INPAINT_PRICING_KEYS = {
     "sd-inpainting": "inpaint-sd-inpainting",
 }
 _ANYDOOR_PRICING_KEY = "inpaint-anydoor"
+
+
+async def _whole_image_mask_data_url(image_url: str) -> str:
+    """A white mask the size of the reference photo, as the data URL AnyDoor takes for `reference_image_mask`."""
+    from PIL import Image
+
+    fetched = await safe_fetch_bytes(image_url, max_bytes=MAX_IMAGE_BYTES)
+    with Image.open(io.BytesIO(fetched.content)) as im:
+        size = im.size
+    buf = io.BytesIO()
+    Image.new("L", size, 255).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 class InpaintRequest(BaseModel):
@@ -380,16 +390,17 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
 
     # ── AnyDoor path: reference-image inpainting ───────────────────────────
     if request.reference_image_url:
-        payload = {
-            "version": _ANYDOOR_VERSION,
-            "input": {
-                "bg_image": request.image_url,
-                "bg_mask": mask_data_url,
-                "ref_image": request.reference_image_url,
-                "num_steps": 30,
-                "guidance_scale": 3.5,
-            },
-        }
+        # Input names are the model's own (schema of version 542c9631…, read 2026-09-13). All four
+        # images are required; the reference mask marks the object in the reference photo, and a
+        # catalog swatch is all object, so it is the whole frame.
+        reference_mask_data_url = await _whole_image_mask_data_url(request.reference_image_url)
+        create_url, payload = replicate_create_request(_ANYDOOR_MODEL, {
+            "bg_image_path": request.image_url,
+            "bg_mask_path": mask_data_url,
+            "reference_image_path": request.reference_image_url,
+            "reference_image_mask": reference_mask_data_url,
+            "steps": 30,
+        })
         model_label = "anydoor"
         pricing_key = _ANYDOOR_PRICING_KEY
 
@@ -399,26 +410,21 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
         is_flux = request.model.startswith("flux")
 
         if is_flux:
-            payload = {
-                "model": model_id,
-                "input": {
-                    "image": request.image_url,
-                    "mask": mask_data_url,
-                    "prompt": request.prompt,
-                },
+            inpaint_input: Dict[str, Any] = {
+                "image": request.image_url,
+                "mask": mask_data_url,
+                "prompt": request.prompt,
             }
         else:
-            payload = {
-                "version": model_id,
-                "input": {
-                    "image": request.image_url,
-                    "mask": mask_data_url,
-                    "prompt": request.prompt,
-                    "negative_prompt": request.negative_prompt,
-                    "num_inference_steps": 50,
-                    "guidance_scale": 7.5,
-                },
+            inpaint_input = {
+                "image": request.image_url,
+                "mask": mask_data_url,
+                "prompt": request.prompt,
+                "negative_prompt": request.negative_prompt,
+                "num_inference_steps": 50,
+                "guidance_scale": 7.5,
             }
+        create_url, payload = replicate_create_request(model_id, inpaint_input)
         model_label = request.model
         # Fall back on the same key the model_id lookup fell back to, so an unknown
         # request.model cannot silently bill at someone else's rate.
@@ -437,7 +443,7 @@ async def inpaint_region(request: InpaintRequest, user: Dict[str, Any] = Depends
             }
 
             create_resp = await client.post(
-                "https://api.replicate.com/v1/predictions",
+                create_url,
                 headers=headers,
                 json=payload,
             )

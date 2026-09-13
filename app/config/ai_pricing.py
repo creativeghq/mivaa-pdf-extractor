@@ -503,13 +503,12 @@ class AIPricingConfig:
             "note": "Fast inpaint (Stable Diffusion), community tier"
         },
         "inpaint-anydoor": {
-            "cost_per_unit": Decimal("0.020"),
+            "cost_per_unit": Decimal("0.0067"),
             "unit": "inpaint",
-            "last_verified": None,
-            "source": "internal",
-            "note": "Reference-image inpaint (AnyDoor). Deliberately left at the rate it has "
-                    "always billed at — Replicate publishes no price, so this is unverified "
-                    "rather than guessed."
+            "last_verified": "2026-09-13",
+            "source": "https://replicate.com/ali-vilab/anydoor",
+            "note": "Reference-image inpaint (AnyDoor). Nvidia L40S, ~7 s per run, ~$0.0067 per run "
+                    "as published on the model page; billed per run."
         },
         "image-analyze": {
             "cost_per_unit": Decimal("0.013"),
