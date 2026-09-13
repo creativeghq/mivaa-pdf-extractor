@@ -310,18 +310,20 @@ def _sam_mask_urls(output: Any) -> List[str]:
 async def _mask_for_box(
     client: httpx.AsyncClient, mask_urls: List[str], box: Tuple[int, int, int, int], img_w: int, img_h: int,
 ) -> Optional[str]:
-    """The union of the masks that lie inside the zone's box, as a base64 PNG (white = replace).
-    A mask is inside when 80% of its pixels fall in the box. When no mask is, the one covering
-    most of the box is taken if at least half of it is inside; otherwise None, and the caller
-    falls back to the plain box. Every URL is Replicate's, so it goes through the guarded fetch."""
+    """The zone's mask as a base64 PNG (white = replace), built from what SAM 2 found. The
+    automatic generator returns OBJECTS far more reliably than a floor or a wall (probed
+    2026-09-13: 21 masks on a kitchen, none of them the floor), so: a mask that covers a quarter of
+    the box with 80% of itself inside is the surface and is kept; otherwise the surface is the box
+    minus every object that sits mostly in it — a chair on a floor stays a chair. None when nothing
+    was usable, and the caller falls back to the plain box. Every URL is Replicate's: guarded fetch."""
     from PIL import Image
     import numpy as np
 
     x1, y1, x2, y2 = box
     box_area = max(1, (x2 - x1) * (y2 - y1))
-    union = np.zeros((img_h, img_w), dtype=bool)
-    best_cover = 0.0
-    best: Optional[Any] = None
+    surface = np.zeros((img_h, img_w), dtype=bool)
+    occluders = np.zeros((img_h, img_w), dtype=bool)
+    seen = 0
     for url in mask_urls:
         try:
             dl = await safe_fetch_bytes(url, max_bytes=MAX_IMAGE_BYTES, timeout=60.0, client=client)
@@ -335,19 +337,24 @@ async def _mask_for_box(
         area = int(arr.sum())
         if area == 0:
             continue
+        seen += 1
         inside = int(arr[y1:y2, x1:x2].sum())
         frac_inside = inside / area
-        if frac_inside >= 0.8:
-            union |= arr
         cover = inside / box_area
-        if frac_inside >= 0.5 and cover > best_cover:
-            best_cover, best = cover, arr
-    if union.sum() < 0.2 * box_area:
-        if best is None:
-            return None
-        union = best
+        if frac_inside >= 0.8 and cover >= 0.25:
+            surface |= arr
+        elif frac_inside >= 0.3:
+            occluders |= arr
+    if seen == 0:
+        return None
+    if surface.sum() >= 0.2 * box_area:
+        result = surface
+    else:
+        result = np.zeros((img_h, img_w), dtype=bool)
+        result[y1:y2, x1:x2] = True
+        result &= ~occluders
     buf = io.BytesIO()
-    Image.fromarray((union * 255).astype("uint8"), mode="L").save(buf, format="PNG")
+    Image.fromarray((result * 255).astype("uint8"), mode="L").save(buf, format="PNG")
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
