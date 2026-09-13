@@ -64,6 +64,15 @@ def test_sam_routes_never_posts_a_slug_as_a_version():
     assert "retry_after" in helper
 
 
+def test_sam2_is_called_as_the_automatic_mask_generator_it_is():
+    src = _blank_comments(SAM_ROUTES.read_text(encoding="utf-8"))
+    assert '"image": image_url' in src
+    assert "input_image" not in src and "box_x1\"" not in src
+    # The box is applied HERE, to the masks the model returns, not sent to a prompt it does not have.
+    assert "individual_masks" in src
+    assert "_mask_for_box(" in src
+
+
 def test_the_inpainted_image_is_uploaded_through_the_real_client():
     src = _blank_comments(SAM_ROUTES.read_text(encoding="utf-8"))
     upload = src[src.index("async def _upload_to_storage"):]

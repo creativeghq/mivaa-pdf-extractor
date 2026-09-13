@@ -6,7 +6,7 @@ import logging
 import os
 import asyncio
 from datetime import datetime
-from typing import Literal, Optional
+from typing import List, Literal, Optional, Tuple
 
 import httpx
 from typing import Any, Dict
@@ -75,20 +75,19 @@ async def _generate_sam2_mask(
     replicate_token: str,
 ) -> Optional[str]:
     """
-    Call meta/sam-2 on Replicate to get a pixel-perfect mask PNG.
-    Returns base64-encoded PNG on success, None on failure.
+    Every mask meta/sam-2 finds in the image, reduced to the ones inside the zone's box, as a
+    base64 PNG. The Replicate model is the AUTOMATIC mask generator — it takes no box prompt
+    (schema read 2026-09-13: `image`, `points_per_side`, thresholds) — so the selection happens
+    here. Returns None on failure, and the caller falls back to the plain box.
     """
-    box_x1 = int(bbox.x * img_w)
-    box_y1 = int(bbox.y * img_h)
-    box_x2 = int((bbox.x + bbox.w) * img_w)
-    box_y2 = int((bbox.y + bbox.h) * img_h)
+    box_x1 = max(0, int(bbox.x * img_w))
+    box_y1 = max(0, int(bbox.y * img_h))
+    box_x2 = min(img_w, int((bbox.x + bbox.w) * img_w))
+    box_y2 = min(img_h, int((bbox.y + bbox.h) * img_h))
 
     sam_input: Dict[str, Any] = {
-        "input_image": image_url,
-        "box_x1": box_x1,
-        "box_y1": box_y1,
-        "box_x2": box_x2,
-        "box_y2": box_y2,
+        "image": image_url,
+        "points_per_side": 32,
     }
 
     headers = {
@@ -119,33 +118,14 @@ async def _generate_sam2_mask(
             status = result.get("status")
 
             if status == "succeeded":
-                output = result.get("output")
-                mask_url = output[0] if isinstance(output, list) else output
-                if not mask_url:
-                    logger.warning("SAM 2 returned no output URL")
+                mask_urls = _sam_mask_urls(result.get("output"))
+                if not mask_urls:
+                    logger.warning("SAM 2 returned no mask URLs")
                     return None
-
-                # Download the mask PNG.
-                # `mask_url` is whatever Replicate put in its response — not our own
-                # config, so invariant 7 applies to it exactly as it does to a body
-                # field. `follow_redirects=True` was doing the one thing the guard
-                # forbids: replicate.delivery genuinely redirects, so the fix is to
-                # re-validate each hop rather than to stop following.
-                try:
-                    dl = await safe_fetch_bytes(
-                        mask_url,
-                        max_bytes=MAX_IMAGE_BYTES,
-                        timeout=120.0,
-                        client=client,
-                    )
-                except SSRFError as _e:
-                    logger.warning("SAM 2 mask URL rejected: %s", _e)
-                    return None
-                if not dl.ok:
-                    logger.warning("Failed to download SAM 2 mask: %s", dl.status_code)
-                    return None
-
-                return base64.b64encode(dl.content).decode("utf-8")
+                chosen = await _mask_for_box(client, mask_urls, (box_x1, box_y1, box_x2, box_y2), img_w, img_h)
+                if chosen is None:
+                    logger.warning("SAM 2 found no mask inside the zone box")
+                return chosen
 
             elif status == "failed":
                 logger.warning("SAM 2 prediction failed: %s", result.get("error"))
@@ -315,6 +295,60 @@ _INPAINT_PRICING_KEYS = {
     "sd-inpainting": "inpaint-sd-inpainting",
 }
 _ANYDOOR_PRICING_KEY = "inpaint-anydoor"
+
+
+def _sam_mask_urls(output: Any) -> List[str]:
+    """The candidate masks in a meta/sam-2 result: its `individual_masks`; a bare list or one URL is taken as-is."""
+    if isinstance(output, dict):
+        masks = output.get("individual_masks") or []
+        return [u for u in masks if isinstance(u, str)][:48]
+    if isinstance(output, list):
+        return [u for u in output if isinstance(u, str)][:48]
+    return [output] if isinstance(output, str) else []
+
+
+async def _mask_for_box(
+    client: httpx.AsyncClient, mask_urls: List[str], box: Tuple[int, int, int, int], img_w: int, img_h: int,
+) -> Optional[str]:
+    """The union of the masks that lie inside the zone's box, as a base64 PNG (white = replace).
+    A mask is inside when 80% of its pixels fall in the box. When no mask is, the one covering
+    most of the box is taken if at least half of it is inside; otherwise None, and the caller
+    falls back to the plain box. Every URL is Replicate's, so it goes through the guarded fetch."""
+    from PIL import Image
+    import numpy as np
+
+    x1, y1, x2, y2 = box
+    box_area = max(1, (x2 - x1) * (y2 - y1))
+    union = np.zeros((img_h, img_w), dtype=bool)
+    best_cover = 0.0
+    best: Optional[Any] = None
+    for url in mask_urls:
+        try:
+            dl = await safe_fetch_bytes(url, max_bytes=MAX_IMAGE_BYTES, timeout=60.0, client=client)
+        except SSRFError as _e:
+            logger.warning("SAM 2 mask URL rejected: %s", _e)
+            continue
+        if not dl.ok:
+            continue
+        with Image.open(io.BytesIO(dl.content)) as im:
+            arr = np.array(im.convert("L").resize((img_w, img_h))) > 127
+        area = int(arr.sum())
+        if area == 0:
+            continue
+        inside = int(arr[y1:y2, x1:x2].sum())
+        frac_inside = inside / area
+        if frac_inside >= 0.8:
+            union |= arr
+        cover = inside / box_area
+        if frac_inside >= 0.5 and cover > best_cover:
+            best_cover, best = cover, arr
+    if union.sum() < 0.2 * box_area:
+        if best is None:
+            return None
+        union = best
+    buf = io.BytesIO()
+    Image.fromarray((union * 255).astype("uint8"), mode="L").save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 _VERSION_CACHE: Dict[str, str] = {}
