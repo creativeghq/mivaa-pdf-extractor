@@ -25,6 +25,10 @@ from app.services.integrations.perplexity_agent_client import (
     clean_domains,
     web_search_tool,
 )
+from app.services.integrations.provider_breaker import (
+    ProviderRefused,
+    is_credential_refusal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1391,6 +1395,11 @@ async def search_via_perplexity(
         success=success,
         error_message=err,
     )
+    # A credential the provider refuses is NOT "no jobs matched" (#416). This contract is a bare
+    # list with nowhere to carry a status, and the fan-out in job_research_service already books
+    # a raising source as failed (-1) and feeds `_all_failed` -- so say so by raising.
+    if not reply.ok and is_credential_refusal(reply.status, reply.http_status, reply.error):
+        raise ProviderRefused(reply.error or "the provider refused our credential")
     return hits
 
 

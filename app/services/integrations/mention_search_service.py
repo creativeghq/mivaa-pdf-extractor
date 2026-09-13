@@ -76,6 +76,20 @@ class MentionHit:
         return canonicalize_url(self.url)
 
 
+def source_failed(reason: str, *, status: str = "collector_failed", credits: int = 0) -> Dict[str, Any]:
+    """A source that COULD NOT ANSWER. Never an empty hit list on its own (rule 3).
+
+    A 401 that returns `{"hits": []}` is indistinguishable from a quiet week, which is how
+    Perplexity refused 198 calls a week for six weeks while the panel showed zero mentions.
+    """
+    return {"hits": [], "credits": credits, "status": status, "error": reason[:300]}
+
+
+def source_not_connected(reason: str) -> Dict[str, Any]:
+    """No credential / nothing configured. Distinct from "ran and found nothing"."""
+    return {"hits": [], "credits": 0, "status": "not_connected", "error": reason}
+
+
 @dataclass
 class MentionSearchResult:
     hits: List[MentionHit]
@@ -245,8 +259,15 @@ class MentionSearchService:
                 continue
             if not isinstance(result, dict):
                 continue
-            hits: List[MentionHit] = result.get("hits") or []
             credits_used += int(result.get("credits") or 0)
+            status = result.get("status")
+            if status and status != "ok":
+                # A source that could not answer is a STATED REASON, not a count of zero.
+                # `by_source` is deliberately left unset: a 0 there reads as "ran, found
+                # nothing", and `all_failed` below keys off exactly that difference.
+                errors[name] = str(result.get("error") or status)[:300]
+                continue
+            hits: List[MentionHit] = result.get("hits") or []
             by_source[name] = len(hits)
             all_hits.extend(hits)
 
@@ -318,7 +339,7 @@ class MentionSearchService:
         attribution: Optional[CostAttribution] = None,
     ) -> Dict[str, Any]:
         if not self.dataforseo_b64:
-            return {"hits": [], "credits": 0}
+            return source_not_connected("DataForSEO credentials are not configured.")
 
         # Multi-query fan-out: search the primary alias first, and if it
         # returns 0 results, try the next 1-2 distinctive aliases. Each
@@ -437,7 +458,7 @@ class MentionSearchService:
         attribution: Optional[CostAttribution] = None,
     ) -> Dict[str, Any]:
         if not self.perplexity_key:
-            return {"hits": [], "credits": 0}
+            return source_not_connected("PERPLEXITY_API_KEY is not configured.")
 
         # Cost: sonar (cheap) when stable; sonar-pro on first/forced
         model = "sonar-pro" if force_full_discovery else "sonar"
@@ -514,7 +535,7 @@ class MentionSearchService:
                 latency_ms=latency_ms,
                 success=False, error_message=reply.error,
             )
-            return {"hits": [], "credits": 0}
+            return source_failed(reply.error or "the provider refused the request")
 
         text = reply.text
         try:
@@ -533,7 +554,7 @@ class MentionSearchService:
                 latency_ms=latency_ms, success=False,
                 error_message=f"json_parse: {je}",
             )
-            return {"hits": [], "credits": 1}
+            return source_failed(f"the provider answered with unparseable JSON: {je}", credits=1)
 
         hits: List[MentionHit] = []
         for m in data.get("mentions") or []:
@@ -652,7 +673,7 @@ class MentionSearchService:
         attribution: Optional[CostAttribution] = None,
     ) -> Dict[str, Any]:
         if not self.youtube_key:
-            return {"hits": [], "credits": 0}
+            return source_not_connected("No YouTube API key is configured.")
         aliases = facets.all_aliases()
         query = aliases[0] if aliases else facets.label
         call_start = time.time()
@@ -678,7 +699,7 @@ class MentionSearchService:
                 latency_ms=int((time.time() - call_start) * 1000),
                 success=False, error_message=str(e),
             )
-            return {"hits": [], "credits": 0}
+            return source_failed(str(e))
 
         hits: List[MentionHit] = []
         for item in data.get("items") or []:

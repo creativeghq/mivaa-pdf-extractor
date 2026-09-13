@@ -286,17 +286,38 @@ def parse_agent_reply(
     return reply
 
 
+#: The credential this client spends. One name for both subsystems that share the key (#416).
+PROVIDER = "perplexity"
+
+
 async def call_agent(
     *,
     api_key: str,
     body: Dict[str, Any],
     timeout_s: float = 60.0,
+    workspace_id: Optional[str] = None,
+    use_breaker: bool = True,
 ) -> AgentReply:
-    """POST one request and return the parsed reply. Never raises for a bad answer."""
+    """POST one request and return the parsed reply. Never raises for a bad answer.
+
+    A credential the provider has refused five times running is not called again until the
+    half-open probe (#416): 198 calls a week for six weeks were paid for and refused, and both
+    callers rendered the result as zero. `status="credential_refused"` carries the provider's own
+    last message so the collector can say WHY it has no data instead of reporting none.
+    """
     import httpx
 
     if not api_key:
         return AgentReply(ok=False, status="no_key", error="PERPLEXITY_API_KEY not configured")
+
+    if use_breaker:
+        from app.services.integrations.breaker_store import breaker_verdict
+
+        verdict = breaker_verdict(PROVIDER, workspace_id)
+        if verdict.refused:
+            return AgentReply(
+                ok=False, status="credential_refused", http_status=None, error=verdict.reason
+            )
 
     start = time.time()
     try:
@@ -333,4 +354,14 @@ async def call_agent(
     if not reply.ok and reply.http_status and reply.http_status >= 300:
         detail = (data.get("error") or {}).get("message") if isinstance(data.get("error"), dict) else None
         reply.error = f"perplexity HTTP {resp.status_code}: {detail or str(data)[:300]}"
+    if use_breaker:
+        from app.services.integrations.breaker_store import record_outcome
+
+        record_outcome(
+            PROVIDER,
+            ok=reply.ok,
+            http_status=reply.http_status,
+            error=reply.error,
+            workspace_id=workspace_id,
+        )
     return reply
