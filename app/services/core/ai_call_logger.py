@@ -181,12 +181,22 @@ class AICallLogger:
                 "unbilled_reason": unbilled_reason,
             }
 
-            # Insert into database
-            result = repeatable_insert(
-                self.supabase.client, "ai_call_logs", log_entry
-            ).execute()
-            
-            if result.data:
+            # The audit row and the COST row are two different writes and only the
+            # second one is money. Until 2026-09-15 a timeout on this one raised
+            # straight past the mirror below, so the ai_usage_logs row was never
+            # attempted and never buffered — 32 calls' spend left no trace anywhere
+            # and every cost view read a smaller, perfectly plausible number.
+            audit_ok = False
+            audit_err: Optional[Exception] = None
+            try:
+                result = repeatable_insert(
+                    self.supabase.client, "ai_call_logs", log_entry
+                ).execute()
+                audit_ok = bool(result.data)
+            except Exception as e:
+                audit_err = e
+
+            if audit_ok:
                 # Record idempotency key only AFTER confirmed success, so a
                 # genuinely failed insert still retries via the decorator.
                 _recent_log_keys[idem_key] = None
@@ -198,91 +208,94 @@ class AICallLogger:
                     f"confidence={confidence_score:.2f} | action={action} | "
                     f"cost=${cost:.4f} | latency={latency_ms}ms"
                 )
-
-                # Mirror to ai_usage_logs (dashboard-facing table).
-                # Audit fix #35: previously a single failed insert silently lost
-                # the cost row. Now: 2 attempts, bump to ERROR on persistent
-                # failure so operator sees cost-tracking gap.
-                cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens)
-                # `calculate_cost` is TOKEN-based and returns $0 for GPU/time-based
-                # endpoints (SLIG, PaddleOCR) which have 0 tokens. Those callers
-                # (`log_time_based_call`) already computed the GPU-seconds cost and
-                # pass it as `cost` — honor it when the token math is $0, otherwise
-                # the mirror would silently bill $0 for every GPU call.
-                _markup = float(cost_data.get("markup_multiplier", 1.5)) or 1.5
-                _computed_billed = float(cost_data.get("billed_cost_usd", 0) or 0)
-                _billed = _computed_billed if _computed_billed > 0 else float(cost or 0)
-                _computed_raw = float(cost_data.get("raw_cost_usd", 0) or 0)
-                _raw = _computed_raw if _computed_raw > 0 else (
-                    _billed / _markup if _markup else _billed
-                )
-                usage_entry = {
-                    # Minted HERE, not inside `repeatable_insert`, because this row can be
-                    # buffered and replayed by `_flush_dead_letter_rows`. The id has to be
-                    # the same on every attempt or the replay of a write that DID commit
-                    # books the spend twice — which is the failure the PostgREST retry patch
-                    # refuses to risk, and this buffer was taking it by hand.
-                    "id": str(uuid.uuid4()),
-                    "user_id": user_id,
-                    "workspace_id": workspace_id,
-                    "operation_type": task,
-                    "model_name": model,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "input_cost_usd": float(cost_data.get("input_cost_usd", 0)),
-                    "output_cost_usd": float(cost_data.get("output_cost_usd", 0)),
-                    "raw_cost_usd": _raw,
-                    "markup_multiplier": _markup,
-                    "billed_cost_usd": _billed,
-                    "job_id": job_id,
-                    "module_slug": module_slug,
-                    "product_id": product_id,
-                    "image_id": image_id,
-                    "metadata": {
-                        "action": action,
-                        "confidence_score": round(confidence_score, 2),
-                        "latency_ms": latency_ms,
-                        "fallback_reason": fallback_reason,
-                        # DECLARE THE OUTCOME. `ops.silent_zero_provider` judges a provider
-                        # only on rows carrying this key, and correctly so: a row that never
-                        # claimed to succeed is not evidence that it failed. But nothing on
-                        # this path set it, so every call it mirrors was outside the probe's
-                        # view — 510 Voyage and 596 Anthropic calls in one week, against 30
-                        # Perplexity calls that were watched and duly caught at 401.
-                        "success": error_message is None,
-                        "error": error_message,
-                    },
-                }
-                mirror_attempt = 0
-                last_mirror_err = None
-                while mirror_attempt < 2:
-                    try:
-                        repeatable_insert(
-                            self.supabase.client, "ai_usage_logs", usage_entry
-                        ).execute()
-                        last_mirror_err = None
-                        break
-                    except Exception as usage_err:
-                        last_mirror_err = usage_err
-                        mirror_attempt += 1
-                if last_mirror_err is not None:
-                    # Buffer for retry instead of permanently dropping the
-                    # billing row — flushed by _flush_dead_letter_rows on the
-                    # next successful log call.
-                    with _dead_letter_lock:
-                        _dead_letter_usage_rows.append(usage_entry)
-                    self.logger.error(
-                        f"❌ ai_usage_logs mirror failed 2x for "
-                        f"{task}/{model} cost=${cost:.4f}: {last_mirror_err}. "
-                        f"Row buffered for retry ({len(_dead_letter_usage_rows)} pending)."
-                    )
-                else:
-                    self._flush_dead_letter_rows()
-
-                return True
             else:
-                self.logger.error("❌ Failed to log AI call: No data returned")
-                return False
+                self.logger.warning(
+                    "ai_call_logs insert failed (%s) — continuing to the ai_usage_logs "
+                    "mirror so the cost row is still written or buffered",
+                    audit_err or "no data returned",
+                )
+
+            # Mirror to ai_usage_logs (dashboard-facing table).
+            # Audit fix #35: previously a single failed insert silently lost
+            # the cost row. Now: 2 attempts, bump to ERROR on persistent
+            # failure so operator sees cost-tracking gap.
+            cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens)
+            # `calculate_cost` is TOKEN-based and returns $0 for GPU/time-based
+            # endpoints (SLIG, PaddleOCR) which have 0 tokens. Those callers
+            # (`log_time_based_call`) already computed the GPU-seconds cost and
+            # pass it as `cost` — honor it when the token math is $0, otherwise
+            # the mirror would silently bill $0 for every GPU call.
+            _markup = float(cost_data.get("markup_multiplier", 1.5)) or 1.5
+            _computed_billed = float(cost_data.get("billed_cost_usd", 0) or 0)
+            _billed = _computed_billed if _computed_billed > 0 else float(cost or 0)
+            _computed_raw = float(cost_data.get("raw_cost_usd", 0) or 0)
+            _raw = _computed_raw if _computed_raw > 0 else (
+                _billed / _markup if _markup else _billed
+            )
+            usage_entry = {
+                # Minted HERE, not inside `repeatable_insert`, because this row can be
+                # buffered and replayed by `_flush_dead_letter_rows`. The id has to be
+                # the same on every attempt or the replay of a write that DID commit
+                # books the spend twice — which is the failure the PostgREST retry patch
+                # refuses to risk, and this buffer was taking it by hand.
+                "id": str(uuid.uuid4()),
+                "user_id": user_id,
+                "workspace_id": workspace_id,
+                "operation_type": task,
+                "model_name": model,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "input_cost_usd": float(cost_data.get("input_cost_usd", 0)),
+                "output_cost_usd": float(cost_data.get("output_cost_usd", 0)),
+                "raw_cost_usd": _raw,
+                "markup_multiplier": _markup,
+                "billed_cost_usd": _billed,
+                "job_id": job_id,
+                "module_slug": module_slug,
+                "product_id": product_id,
+                "image_id": image_id,
+                "metadata": {
+                    "action": action,
+                    "confidence_score": round(confidence_score, 2),
+                    "latency_ms": latency_ms,
+                    "fallback_reason": fallback_reason,
+                    # DECLARE THE OUTCOME. `ops.silent_zero_provider` judges a provider
+                    # only on rows carrying this key, and correctly so: a row that never
+                    # claimed to succeed is not evidence that it failed. But nothing on
+                    # this path set it, so every call it mirrors was outside the probe's
+                    # view — 510 Voyage and 596 Anthropic calls in one week, against 30
+                    # Perplexity calls that were watched and duly caught at 401.
+                    "success": error_message is None,
+                    "error": error_message,
+                },
+            }
+            mirror_attempt = 0
+            last_mirror_err = None
+            while mirror_attempt < 2:
+                try:
+                    repeatable_insert(
+                        self.supabase.client, "ai_usage_logs", usage_entry
+                    ).execute()
+                    last_mirror_err = None
+                    break
+                except Exception as usage_err:
+                    last_mirror_err = usage_err
+                    mirror_attempt += 1
+            if last_mirror_err is not None:
+                # Buffer for retry instead of permanently dropping the
+                # billing row — flushed by _flush_dead_letter_rows on the
+                # next successful log call.
+                with _dead_letter_lock:
+                    _dead_letter_usage_rows.append(usage_entry)
+                self.logger.error(
+                    f"❌ ai_usage_logs mirror failed 2x for "
+                    f"{task}/{model} cost=${cost:.4f}: {last_mirror_err}. "
+                    f"Row buffered for retry ({len(_dead_letter_usage_rows)} pending)."
+                )
+            else:
+                self._flush_dead_letter_rows()
+
+            return audit_ok
 
         except Exception as e:
             self.logger.error(f"❌ Failed to log AI call: {e}")
