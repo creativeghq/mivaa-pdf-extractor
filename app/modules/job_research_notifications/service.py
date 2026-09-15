@@ -362,12 +362,14 @@ class JobDigestDispatcher:
             salary,
             _html_escape((l.get("employment_type") or "")),
         ]))
+        # No colours: the brand shell owns ink, accent and rules, and a hardcoded #fff here
+        # was white-on-white the moment the digest stopped shipping its own dark document.
         return (
-            f'<div style="margin:0 0 14px 0;padding:10px 12px;background:#1a1a1a;border-radius:6px;">'
-            f'<a href="{_html_escape(l["url"])}" style="color:#d4a3bf;text-decoration:none;font-size:15px;font-weight:500;">'
+            f'<div style="margin:0 0 10px 0;padding:10px 12px;border:1px solid #e5e3e8;border-radius:4px;">'
+            f'<a href="{_html_escape(l["url"])}" style="text-decoration:none;font-size:15px;font-weight:600;">'
             f'{_html_escape(l.get("title") or "(no title)")}</a><br>'
-            f'<span style="color:#bbb;font-size:13px;">{_html_escape(l.get("company") or "")}</span><br>'
-            f'<span style="color:#888;font-size:12px;">{where}</span>'
+            f'<span style="font-size:13px;">{_html_escape(l.get("company") or "")}</span><br>'
+            f'<span style="font-size:12px;color:#6b6875;">{where}</span>'
             f'</div>'
         )
 
@@ -382,10 +384,9 @@ class JobDigestDispatcher:
         for heading, listings in groups:
             if show_headlines and heading:
                 parts.append(
-                    f'<h2 style="font-weight:400;font-size:16px;margin:24px 0 8px 0;color:#fff;'
-                    f'border-bottom:1px solid #333;padding-bottom:6px;">'
+                    f'<h2 style="border-bottom:1px solid #e5e3e8;padding-bottom:6px;">'
                     f'{_html_escape(heading)} '
-                    f'<span style="color:#888;font-size:13px;">({len(listings)})</span></h2>'
+                    f'<span style="color:#6b6875;font-size:13px;font-weight:400;">({len(listings)})</span></h2>'
                 )
             parts.append('<div style="display:block;">')
             for l in listings:
@@ -394,14 +395,14 @@ class JobDigestDispatcher:
         manual = self._manual_boards()
         if manual:
             parts.append(
-                '<div style="margin-top:18px;padding-top:12px;border-top:1px solid #333;">'
-                '<div style="color:#bbb;font-size:13px;margin-bottom:6px;">'
+                '<div style="margin-top:18px;padding-top:12px;border-top:1px solid #e5e3e8;">'
+                '<div style="font-size:13px;margin-bottom:6px;">'
                 '🔎 Browse these manually — great remote boards our scraper can\'t read:</div>'
             )
             for b in manual:
                 parts.append(
                     f'<div style="margin:3px 0;">'
-                    f'<a href="{_html_escape(b["url"])}" style="color:#d4a3bf;text-decoration:none;font-size:14px;">'
+                    f'<a href="{_html_escape(b["url"])}" style="font-size:14px;">'
                     f'{_html_escape(b["name"])}</a></div>'
                 )
             parts.append('</div>')
@@ -410,12 +411,12 @@ class JobDigestDispatcher:
         empty = self._pretty_empty_sources(self._empty_sources([s["tracked_job"]["id"] for s in sections]))
         if empty:
             parts.append(
-                '<div style="margin-top:18px;padding-top:12px;border-top:1px solid #333;">'
-                f'<div style="color:#bbb;font-size:13px;margin-bottom:6px;">Returned nothing this run '
+                '<div style="margin-top:18px;padding-top:12px;border-top:1px solid #e5e3e8;">'
+                f'<div style="font-size:13px;margin-bottom:6px;">Returned nothing this run '
                 f'({len(empty)}) — worth a manual look:</div>'
             )
             for u in empty:
-                parts.append(f'<div style="margin:3px 0;color:#888;font-size:12px;">{_html_escape(u)}</div>')
+                parts.append(f'<div style="margin:3px 0;color:#6b6875;font-size:12px;">{_html_escape(u)}</div>')
             parts.append('</div>')
         return "".join(parts)
 
@@ -749,19 +750,16 @@ class JobDigestDispatcher:
                         "subject": title,
                         # WHOSE email this is, for the LOG ROW only.
                         **({"attribution_workspace_id": workspace_id} if workspace_id else {}),
-                        # NO templateSlug: email-api's renderTemplateWithVariables()
-                        # escapeHtml's every {{var}}, so the template's {{body}} turned
-                        # our pre-built section HTML into literal <h2>…</h2> text in the
-                        # inbox.
+                        # A FRAGMENT, not a document: email-api wraps every send in the
+                        # operator's brand shell and passes a complete <html> through
+                        # untouched, so styling it here opts this digest out of the brand.
+                        # Still no templateSlug: renderTemplateWithVariables() escapes every
+                        # {{var}}, turning the template's {{body}} into literal text.
                         "html": (
-                            f'<!DOCTYPE html><html><body style="background:#0f0f0f;color:#e6e6e6;'
-                            f'font-family:Helvetica,Arial,sans-serif;padding:24px;">'
-                            f'<h1 style="font-weight:300;font-size:22px;color:#fff;">{_html_escape(title)}</h1>'
-                            f'<p style="color:#9a9a9a;font-size:14px;">Hi {_html_escape(to_name)}, here are today\'s findings.</p>'
+                            f'<h1>{_html_escape(title)}</h1>'
+                            f'<p>Hi {_html_escape(to_name)}, here are today\'s findings.</p>'
                             f'{body_html}'
-                            f'<p style="margin-top:32px;font-size:12px;color:#777;">'
-                            f'<a href="{_html_escape(action_url)}" style="color:#a76b8b;">Open Job Sources →</a>'
-                            f'</p></body></html>'
+                            f'<p><a class="mk-btn" href="{_html_escape(action_url)}">Open Job Sources</a></p>'
                         ),
                     },
                 )

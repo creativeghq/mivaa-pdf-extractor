@@ -704,31 +704,32 @@ def _send_invite_email(
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
     message_block = (
-        f'<p style="margin:16px 0;padding:12px;background:#f5f5f5;border-left:3px solid #999;font-style:italic;">{esc(message)}</p>'
+        f'<blockquote>{esc(message)}</blockquote>'
         if message else ""
     )
-    html = f"""<!doctype html>
-<html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:560px;margin:32px auto;padding:24px;color:#222;">
-  <h2 style="margin:0 0 16px;font-weight:300;">You've been invited</h2>
-  <p style="margin:0 0 12px;"><strong>{esc(inviter_name)}</strong> invited you to view the project <strong>"{esc(project_name)}"</strong>.</p>
-  {message_block}
-  <p style="margin:24px 0;">
-    <a href="{esc(invite_url)}" style="display:inline-block;padding:12px 24px;background:#8a3a6b;color:#fff;text-decoration:none;border-radius:9999px;font-weight:500;">View project</a>
-  </p>
-  <p style="margin:24px 0 0;font-size:13px;color:#666;">No password needed — just confirm your email on the next screen. Link expires in 90 days.</p>
-</body></html>"""
+    # A FRAGMENT: email-api wraps every send in the brand shell, and a complete <html>
+    # document is passed through untouched.
+    html = f"""<h1>You've been invited</h1>
+<p><strong>{esc(inviter_name)}</strong> invited you to view the project <strong>"{esc(project_name)}"</strong>.</p>
+{message_block}
+<p><a class="mk-btn" href="{esc(invite_url)}">View project</a></p>
+<p>No password needed — just confirm your email on the next screen. Link expires in 90 days.</p>"""
 
     supabase_url = os.environ["SUPABASE_URL"].rstrip("/")
     service_role = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     with httpx.Client(timeout=10.0) as client:
         client.post(
-            f"{supabase_url}/functions/v1/email-api?action=send",
+            f"{supabase_url}/functions/v1/email-api/send",
             headers={
                 "Authorization": f"Bearer {service_role}",
                 "apikey": service_role,
                 "Content-Type": "application/json",
             },
             json={
+                # The action goes in the BODY (and the path). A query string is ignored:
+                # `?action=send` resolved to action="email-api" and returned 500 "Invalid
+                # endpoint" on every project invite, unchecked.
+                "action": "send",
                 "to": to,
                 "subject": f'{inviter_name} invited you to view "{project_name}"',
                 "html": html,
