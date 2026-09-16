@@ -5590,6 +5590,15 @@ class KnowledgeBaseSearchRequest(BaseModel):
         default=None,
         description="Restrict to pricing sub-type: price_list | discount_rule | contract_terms | promotion"
     )
+    product_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Restrict to documents attached to this product via kb_doc_attachments — "
+            "its datasheets, certificates and test reports. Answers 'what does the fire "
+            "certificate for THIS product say' instead of searching the whole corpus. "
+            "Narrows the same gated candidate set; it can never widen it."
+        )
+    )
     expand_neighbors: int = Field(
         default=1, ge=0, le=3,
         description=(
@@ -6161,6 +6170,8 @@ async def search_knowledge_base(
                         rpc_args["match_category_slug"] = request.category_slug
                     if request.price_doc_type:
                         rpc_args["match_price_doc_type"] = request.price_doc_type
+                    if request.product_id:
+                        rpc_args["match_product_id"] = request.product_id
                     # Cross-workspace shared KB: tenant callers (agent/admin — NOT the
                     # public-website caller) also pull the operator root workspace's
                     # published + non-private docs. The RPC forces published+non-private on
