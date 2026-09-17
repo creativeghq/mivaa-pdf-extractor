@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, HttpUrl
 
 from app.models.extraction import PriceExtraction
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations.market_price_resolver import resolve_from_hits
 from app.services.integrations.firecrawl_client import get_firecrawl_client
 from app.services.integrations.perplexity_price_search_service import (
     get_perplexity_price_search_service,
@@ -245,6 +246,7 @@ class PriceLookupResponse(BaseModel):
 
     # Claude-mode fields
     results: Optional[List[PriceHit]] = None
+    market: Optional[Dict[str, Any]] = None
     query: Optional[str] = None
     summary: Optional[str] = None  # Claude's 2-3 sentence summary (closest retailer, anomalies, etc.)
     debug_reasoning: Optional[str] = None  # populated when results is empty
@@ -422,6 +424,7 @@ async def _claude_mode(
         source="claude_web_search",
         query=body.search_query,
         results=result.hits,
+        market=resolve_from_hits(get_supabase_client().client, result.hits),
         summary=result.summary,
         credits_used=result.credits_used,
         latency_ms=result.latency_ms,

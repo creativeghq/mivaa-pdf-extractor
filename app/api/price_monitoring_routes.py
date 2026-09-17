@@ -28,6 +28,7 @@ from app.services.integrations.product_identity_service import (
     normalize_model_token,
 )
 from app.services.integrations.tracked_queries_service import get_tracked_queries_service
+from app.services.integrations.market_price_resolver import record_demand, resolve_from_hits
 from app.services.integrations.cron_billing import charge_cron
 from app.services.integrations.price_cost_logger import (
     PRICE_OP_CREDIT_COST, debit_credits, refund_credits,
@@ -252,6 +253,8 @@ class MarketCheckRequest(BaseModel):
     dimensions: Optional[str] = Field(default=None)
     manufacturer: Optional[str] = Field(default=None)
     verify_prices: bool = Field(default=True)
+    surface: str = Field(default="internal")
+    record_demand: bool = Field(default=True)
 
 
 class MarketStats(BaseModel):
@@ -261,6 +264,13 @@ class MarketStats(BaseModel):
     max: Optional[float] = None
     median: Optional[float] = None
     currency: Optional[str] = None
+    in_stock_count: int = 0
+    status: str = "no_data"
+    chosen_price: Optional[float] = None
+    chosen_basis: Optional[str] = None
+    chosen_retailer: Optional[str] = None
+    chosen_url: Optional[str] = None
+    confidence: str = "none"
 
 
 class MarketCheckResponse(BaseModel):
@@ -702,49 +712,33 @@ async def list_url_only_for_product(
 # ============================================================================
 
 
-def _compute_market_stats(hits: List[PriceHit]) -> MarketStats:
-    priced = [h for h in hits if h.price is not None]
-    if not priced:
-        return MarketStats(count=len(hits), verified_count=0)
+def _compute_market_stats(sb, hits: List[PriceHit]) -> MarketStats:
+    """Shape the SQL resolver's answer. The derivation itself lives in SQL.
 
-    stat_hits = [
-        h for h in priced
-        if (h.match_kind is None or h.match_kind == "exact")
-        and (h.availability != "out_of_stock")
-    ]
-    if not stat_hits:
-        return MarketStats(
-            count=len(priced),
-            verified_count=sum(1 for h in priced if h.verified),
-        )
+    Args:
+        sb: A supabase client.
+        hits: The retailer hits to derive from.
 
-    values = sorted(float(h.price) for h in stat_hits)
-
-    if len(values) >= 4:
-        provisional_median = (
-            values[len(values) // 2]
-            if len(values) % 2
-            else (values[len(values) // 2 - 1] + values[len(values) // 2]) / 2
-        )
-        lo_bound = provisional_median / 3.0
-        hi_bound = provisional_median * 3.0
-        trimmed = [v for v in values if lo_bound <= v <= hi_bound]
-        if trimmed:
-            values = trimmed
-
-    n = len(values)
-    median = values[n // 2] if n % 2 else (values[n // 2 - 1] + values[n // 2]) / 2
-    currencies = [h.currency for h in stat_hits if h.currency]
-    currency = max(set(currencies), key=currencies.count) if currencies else None
-    verified = sum(1 for h in priced if h.verified)
+    Returns:
+        MarketStats carrying the band and the chosen price.
+    """
+    r = resolve_from_hits(sb, hits)
     return MarketStats(
-        count=len(priced),
-        verified_count=verified,
-        min=values[0],
-        max=values[-1],
-        median=median,
-        currency=currency,
+        count=int(r.get("sample_size") or 0),
+        verified_count=int(r.get("verified_count") or 0),
+        min=r.get("min"),
+        max=r.get("max"),
+        median=r.get("median"),
+        currency=r.get("currency"),
+        in_stock_count=int(r.get("in_stock_count") or 0),
+        status=r.get("status") or "no_data",
+        chosen_price=r.get("chosen_price"),
+        chosen_basis=r.get("chosen_basis"),
+        chosen_retailer=r.get("chosen_retailer"),
+        chosen_url=r.get("chosen_url"),
+        confidence=r.get("confidence") or "none",
     )
+
 
 
 @router.post(
@@ -830,6 +824,13 @@ async def market_check(
                             product_title=r.get("product_title"),
                         ))
                     if cached_hits:
+                        if body.record_demand:
+                            record_demand(
+                                sb, tracked_query_id=tq["id"], product_id=product_id,
+                                workspace_id=workspace.workspace_id if workspace else None,
+                                user_id=current_user_id(user), surface=body.surface,
+                                served_from="cache",
+                            )
                         return MarketCheckResponse(
                             success=True,
                             product_id=product_id,
@@ -837,7 +838,7 @@ async def market_check(
                             country_code=country_code,
                             results=cached_hits,
                             total_results=len(cached_hits),
-                            stats=_compute_market_stats(cached_hits),
+                            stats=_compute_market_stats(sb, cached_hits),
                             summary=None,
                             credits_used=0,
                             latency_ms=0,
@@ -906,6 +907,13 @@ async def market_check(
             error=result.error or "market scan failed",
         )
 
+    if body.record_demand:
+        record_demand(
+            sb, product_id=product_id,
+            workspace_id=workspace.workspace_id if workspace else None,
+            user_id=current_user_id(user), surface=body.surface,
+            served_from="fresh" if result.hits else "no_data",
+        )
     return MarketCheckResponse(
         success=True,
         product_id=product_id,
@@ -913,7 +921,7 @@ async def market_check(
         country_code=country_code,
         results=result.hits,
         total_results=len(result.hits),
-        stats=_compute_market_stats(result.hits),
+        stats=_compute_market_stats(sb, result.hits),
         summary=result.summary,
         credits_used=paid.charged,
         latency_ms=result.latency_ms,

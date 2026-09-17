@@ -1333,22 +1333,43 @@ class TrackedQueriesService:
         return self._apply_exclusion_filter(tracking_id, rows)
 
     async def due_for_refresh(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Used by the cron-refresh admin escape-hatch endpoint. Returns
-        INTERNAL-flow active queries whose `next_check_at` is in the past
-        (volatility-based cadence — set by the SQL helper after each refresh).
+        """Subjects due for a paid re-scan, most-wanted first.
+
+        Ordering is demand-driven: `get_price_refresh_queue` ranks by how often
+        the price was actually asked for, then by volatility, and states a
+        `reason` per row.
+
+        Args:
+            limit: Maximum rows to return.
+
+        Returns:
+            Rows carrying `id`, `workspace_id`, `user_id`, `reason`, `priority`.
         """
-        now_iso = datetime.now(timezone.utc).isoformat()
-        candidates = (
-            self.supabase.client.table("tracked_queries")
-            .select("id, workspace_id, user_id, last_refreshed_at, refresh_interval_hours, next_check_at")
-            .eq("is_active", True)
-            .is_("api_key_id", "null")
-            .or_(f"next_check_at.is.null,next_check_at.lt.{now_iso}")
-            .order("next_check_at", desc=False)
-            .limit(max(1, min(limit, 500)))
-            .execute()
-        )
-        return candidates.data or []
+        try:
+            res = self.supabase.client.rpc(
+                "get_price_refresh_queue", {"p_limit": max(1, min(limit, 500))}
+            ).execute()
+            rows = res.data or []
+        except Exception as e:
+            logger.error(f"get_price_refresh_queue failed: {e}")
+            return []
+        return [
+            {
+                "id": r.get("tracked_query_id"),
+                "workspace_id": r.get("workspace_id"),
+                "user_id": r.get("user_id"),
+                "api_key_id": r.get("api_key_id"),
+                "reason": r.get("reason"),
+                "priority": r.get("priority"),
+                "requests_24h": r.get("requests_24h"),
+                "requests_7d": r.get("requests_7d"),
+                "refresh_interval_hours": r.get("interval_hours"),
+                "last_refreshed_at": r.get("last_refreshed_at"),
+                "next_check_at": r.get("next_check_at"),
+            }
+            for r in rows
+        ]
+
 
 
 _service: Optional[TrackedQueriesService] = None
