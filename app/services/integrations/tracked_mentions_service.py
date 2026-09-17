@@ -368,6 +368,7 @@ class TrackedMentionsService:
             self._stamp_refresh(
                 tracked_mention_id, run_id=run_id, credits=result.credits_used,
                 hits_count=0, sentiment_avg=None, top_outlets=[], errors=result.errors,
+                velocity_pct=self._compute_velocity(tracked_mention_id, current_count=0),
             )
             # Distinguish "ran clean and found nothing" from "every source errored"
             # — when ALL enabled sources failed, return a non-success status so the
@@ -495,21 +496,14 @@ class TrackedMentionsService:
         top_outlets = sorted(outlet_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
 
         # Update denormalized cache + cadence
-        velocity_pct = self._compute_velocity(tracked_mention_id, current_count=len(rows_to_insert))
         self._stamp_refresh(
             tracked_mention_id, run_id=run_id, credits=result.credits_used,
             hits_count=len(rows_to_insert), sentiment_avg=sentiment_avg,
             top_outlets=[{"domain": d, "count": c} for d, c in top_outlets],
             errors=result.errors,
+            velocity_pct=self._compute_velocity(tracked_mention_id, current_count=len(rows_to_insert)),
             history_persisted=history_persisted or not rows_to_insert,
         )
-        try:
-            self.supabase.client.rpc("update_tracked_mention_cadence", {
-                "p_tracked_mention_id": tracked_mention_id,
-                "p_velocity_pct_change": float(velocity_pct or 0.0),
-            }).execute()
-        except Exception as e:
-            logger.warning(f"update_tracked_mention_cadence failed: {e}")
 
         # Alerts (best-effort) — only fire when the underlying rows actually
         # reached the DB. Otherwise the bell would point at orphan data the
@@ -713,9 +707,20 @@ class TrackedMentionsService:
         sentiment_avg: Optional[float],
         top_outlets: List[Dict[str, Any]],
         errors: Dict[str, str],
+        velocity_pct: Optional[float],
         history_persisted: bool = True,
     ) -> None:
-        """Update the gold `current_*` cache for one tracked mention."""
+        """Record that a refresh happened AND when the next one is due.
+
+        Those are one fact. Advancing the cadence used to sit after the caller's happy path,
+        so the no-hits return stamped the refresh and skipped it — leaving `next_check_at`
+        frozen and the subject due on every tick. The backoff exists FOR quiet subjects and
+        the quiet branch was the one that never reached it: one brand with zero mentions was
+        refreshed 24x a day against its own computed 48-hour cadence.
+
+        Args:
+            velocity_pct: Percent change in mention volume; drives the next interval.
+        """
         try:
             cur = self.get(tracked_mention_id) or {}
             total = (cur.get("total_credits_used") or 0) + (credits or 0)
@@ -748,6 +753,33 @@ class TrackedMentionsService:
             ).execute()
         except Exception as e:
             logger.warning(f"stamp_refresh failed: {e}")
+
+        # Outside the try above on purpose: a failed cache write must not also cost the
+        # subject its cadence, since one left due is billed on every tick from then on.
+        try:
+            self.supabase.client.rpc("update_tracked_mention_cadence", {
+                "p_tracked_mention_id": tracked_mention_id,
+                "p_velocity_pct_change": float(velocity_pct or 0.0),
+            }).execute()
+        except Exception as e:
+            logger.error(
+                "update_tracked_mention_cadence failed for %s: %s — applying the stored "
+                "interval so the subject is not left permanently due",
+                tracked_mention_id, e,
+            )
+            self._set_next_check_fallback(tracked_mention_id)
+
+    def _set_next_check_fallback(self, tracked_mention_id: str) -> None:
+        """Push next_check_at out by the stored interval when the cadence RPC is unavailable."""
+        try:
+            cur = self.get(tracked_mention_id) or {}
+            hours = max(int(cur.get("refresh_interval_hours") or HEALTHY_CADENCE_HOURS), 1)
+            nxt = datetime.now(timezone.utc) + timedelta(hours=hours)
+            self.supabase.client.table("tracked_mentions").update(
+                {"next_check_at": nxt.isoformat()}
+            ).eq("id", tracked_mention_id).execute()
+        except Exception as e:
+            logger.error(f"next_check_at fallback failed for {tracked_mention_id}: {e}")
 
     def _count_window(self, tracked_mention_id: str, *, days: int) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
