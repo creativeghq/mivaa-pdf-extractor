@@ -106,3 +106,31 @@ def test_nothing_to_derive_is_no_data():
     mod = _load_resolver()
     out = mod.resolve_from_hits(object(), [])
     assert out["status"] == "no_data"
+
+
+def test_basis_is_passed_to_sql_and_an_unknown_one_falls_back():
+    mod = _load_resolver()
+    seen = {}
+
+    class Spy:
+        def rpc(self, name, args):
+            seen["name"] = name
+            seen["basis"] = args.get("p_basis")
+            return self
+
+        def execute(self):
+            class R:
+                data = dict(mod.EMPTY)
+            return R()
+
+    mod.resolve_from_hits(Spy(), [{"price": 10}], "highest")
+    assert seen["name"] == "resolve_market_price_from_hits"
+    assert seen["basis"] == "highest", "the basis must reach SQL; picking it in Python is a second derivation"
+
+    mod.resolve_from_hits(Spy(), [{"price": 10}], "lowset")
+    assert seen["basis"] == "verified_in_stock", "a typo must not silently become a different figure"
+
+
+def test_every_offered_basis_is_one_sql_accepts():
+    mod = _load_resolver()
+    assert set(mod.BASES) == {"verified_in_stock", "median", "lowest", "highest"}

@@ -254,6 +254,7 @@ class MarketCheckRequest(BaseModel):
     manufacturer: Optional[str] = Field(default=None)
     verify_prices: bool = Field(default=True)
     surface: str = Field(default="internal")
+    basis: str = Field(default="verified_in_stock")
     record_demand: bool = Field(default=True)
 
 
@@ -261,7 +262,11 @@ class MarketStats(BaseModel):
     count: int
     verified_count: int
     min: Optional[float] = None
+    min_retailer: Optional[str] = None
+    min_url: Optional[str] = None
     max: Optional[float] = None
+    max_retailer: Optional[str] = None
+    max_url: Optional[str] = None
     median: Optional[float] = None
     currency: Optional[str] = None
     in_stock_count: int = 0
@@ -712,7 +717,7 @@ async def list_url_only_for_product(
 # ============================================================================
 
 
-def _compute_market_stats(sb, hits: List[PriceHit]) -> MarketStats:
+def _compute_market_stats(sb, hits: List[PriceHit], basis: str = "verified_in_stock") -> MarketStats:
     """Shape the SQL resolver's answer. The derivation itself lives in SQL.
 
     Args:
@@ -722,12 +727,16 @@ def _compute_market_stats(sb, hits: List[PriceHit]) -> MarketStats:
     Returns:
         MarketStats carrying the band and the chosen price.
     """
-    r = resolve_from_hits(sb, hits)
+    r = resolve_from_hits(sb, hits, basis)
     return MarketStats(
         count=int(r.get("sample_size") or 0),
         verified_count=int(r.get("verified_count") or 0),
         min=r.get("min"),
+        min_retailer=r.get("min_retailer"),
+        min_url=r.get("min_url"),
         max=r.get("max"),
+        max_retailer=r.get("max_retailer"),
+        max_url=r.get("max_url"),
         median=r.get("median"),
         currency=r.get("currency"),
         in_stock_count=int(r.get("in_stock_count") or 0),
@@ -838,7 +847,7 @@ async def market_check(
                             country_code=country_code,
                             results=cached_hits,
                             total_results=len(cached_hits),
-                            stats=_compute_market_stats(sb, cached_hits),
+                            stats=_compute_market_stats(sb, cached_hits, body.basis),
                             summary=None,
                             credits_used=0,
                             latency_ms=0,
@@ -921,7 +930,7 @@ async def market_check(
         country_code=country_code,
         results=result.hits,
         total_results=len(result.hits),
-        stats=_compute_market_stats(sb, result.hits),
+        stats=_compute_market_stats(sb, result.hits, body.basis),
         summary=result.summary,
         credits_used=paid.charged,
         latency_ms=result.latency_ms,

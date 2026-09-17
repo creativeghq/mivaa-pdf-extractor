@@ -216,6 +216,15 @@ class PriceLookupRequest(BaseModel):
         ),
     )
 
+    basis: str = Field(
+        default="verified_in_stock",
+        description=(
+            "Search mode only: which figure `market.chosen_price` carries - "
+            "verified_in_stock (default), median, lowest or highest. The full band "
+            "(median, min, max, each with its retailer) is returned either way."
+        ),
+    )
+
     # Shared
     product_name: Optional[str] = Field(
         default=None,
@@ -424,7 +433,7 @@ async def _claude_mode(
         source="claude_web_search",
         query=body.search_query,
         results=result.hits,
-        market=resolve_from_hits(get_supabase_client().client, result.hits),
+        market=resolve_from_hits(get_supabase_client().client, result.hits, body.basis),
         summary=result.summary,
         credits_used=result.credits_used,
         latency_ms=result.latency_ms,

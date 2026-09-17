@@ -9,6 +9,8 @@ from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
+BASES = ("verified_in_stock", "median", "lowest", "highest")
+
 EMPTY: Dict[str, Any] = {
     "status": "no_data",
     "chosen_price": None,
@@ -63,22 +65,27 @@ def hits_to_payload(hits: Iterable[Any]) -> List[Dict[str, Any]]:
     return out
 
 
-def resolve_from_hits(sb, hits: Iterable[Any]) -> Dict[str, Any]:
+def resolve_from_hits(sb, hits: Iterable[Any], basis: str = "verified_in_stock") -> Dict[str, Any]:
     """Derive the market answer for a set of hits via the SQL resolver.
 
     Args:
         sb: A supabase client.
         hits: PriceHit models or mappings.
+        basis: Which figure is the headline - verified_in_stock, median, lowest or highest.
+            An unrecognised value falls back to the default rather than raising.
 
     Returns:
         The resolver dict. Status is `no_data` when there was nothing to derive from and
-        `collector_failed` when the derivation could not be run.
+        `collector_failed` when the derivation could not be run. The full band is always present.
     """
+    b = (basis or "verified_in_stock").strip().lower()
+    if b not in BASES:
+        b = "verified_in_stock"
     payload = hits_to_payload(hits)
     if not payload:
         return dict(EMPTY)
     try:
-        res = sb.rpc("resolve_market_price_from_hits", {"p_hits": payload}).execute()
+        res = sb.rpc("resolve_market_price_from_hits", {"p_hits": payload, "p_basis": b}).execute()
         if isinstance(res.data, dict):
             return res.data
         logger.warning("resolve_market_price_from_hits returned %r", type(res.data))
