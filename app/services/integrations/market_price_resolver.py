@@ -52,7 +52,9 @@ def hits_to_payload(hits: Iterable[Any]) -> List[Dict[str, Any]]:
         if price is None:
             continue
         out.append({
-            "price": float(price),
+            # As TEXT: the SQL side reads h->>'price' and casts to numeric, so a string
+            # round-trips exactly. float() rounds money in binary before it ever gets there.
+            "price": str(price),
             "currency": get("currency"),
             "availability": get("availability"),
             "verified": bool(get("verified") or False),

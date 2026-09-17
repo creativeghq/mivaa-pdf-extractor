@@ -81,7 +81,7 @@ def test_hits_to_payload_drops_unpriced_and_keeps_the_decision_inputs():
     ])
     assert len(out) == 1
     row = out[0]
-    assert row["price"] == 42.0
+    assert row["price"] == "42", "money crosses as text so numeric precision survives"
     assert row["verified"] is True
     assert row["availability"] == "in_stock"
     for key in ("match_kind", "is_anomaly", "product_url", "retailer_name"):
@@ -129,6 +129,15 @@ def test_basis_is_passed_to_sql_and_an_unknown_one_falls_back():
 
     mod.resolve_from_hits(Spy(), [{"price": 10}], "lowset")
     assert seen["basis"] == "verified_in_stock", "a typo must not silently become a different figure"
+
+
+def test_money_is_not_rounded_through_a_binary_float():
+    mod = _load_resolver()
+    from decimal import Decimal
+    out = mod.hits_to_payload([{"price": Decimal("9007199254740993.01")}])
+    assert out[0]["price"] == "9007199254740993.01", (
+        "float() loses the cents before Postgres ever casts to numeric"
+    )
 
 
 def test_every_offered_basis_is_one_sql_accepts():
