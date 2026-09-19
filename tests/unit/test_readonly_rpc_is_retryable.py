@@ -36,6 +36,7 @@ Source/stdlib based: imports no app package and touches no DB, so it runs in MIV
 
 import ast
 import importlib.util
+import re
 import sys
 from pathlib import Path
 
@@ -287,3 +288,49 @@ def test_read_rpc_validates_before_calling():
                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
                    and n.func.attr == "rpc")
     assert validate_line < rpc_line
+
+
+# ── 6. A cron's QUEUE read is never left on POST ────────────────────────────────────
+
+_QUEUE_RPC = re.compile(r"^(get|fetch)_.*(_due|_due_for_\w+|_queue)$")
+
+
+def _direct_rpc_calls():
+    """(path, lineno, rpc_name) for every `<client>.rpc("name", ...)` in app/.
+
+    `read_rpc` builds its call through `sb.rpc(..., get=True)`, so the one inside
+    supabase_client.py is the helper itself and is skipped by name, not by path.
+    """
+    found = []
+    for path in sorted(_APP.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (isinstance(fn, ast.Attribute) and fn.attr == "rpc"):
+                continue
+            if not node.args or not isinstance(node.args[0], ast.Constant):
+                continue
+            found.append((path, node.lineno, node.args[0].value))
+    return found
+
+
+def test_a_cron_queue_read_goes_over_get():
+    """The RPC that decides what a tick works on must be retryable.
+
+    `get_price_refresh_queue` went over POST, where the retry patch cannot tell a read from
+    a credit debit and refuses to repeat it — so the idle-keepalive drop skipped the whole
+    refresh round while pg_cron recorded `succeeded` (MIVAA-5KT, MIVAA-5KV). Matched on the
+    naming convention, not a list. Postgres has the final say either way: PostgREST answers
+    405 to GET on a VOLATILE function, so a write cannot sneak through here.
+    """
+    on_post = [
+        f"{path.relative_to(_ROOT)}:{lineno} {name}"
+        for path, lineno, name in _direct_rpc_calls()
+        if _QUEUE_RPC.match(name or "")
+    ]
+    assert not on_post, (
+        "Cron queue read(s) still on POST — wrap them in `read_rpc(sb, name, params)`:"
+        + _NL + _NL.join(on_post)
+    )

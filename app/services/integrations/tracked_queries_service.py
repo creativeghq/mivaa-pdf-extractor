@@ -133,7 +133,7 @@ def _map_source_label(hit_source: str) -> str:
         return "idealo"
     return "perplexity_web_search"
 
-from app.services.core.supabase_client import get_supabase_client
+from app.services.core.supabase_client import get_supabase_client, read_rpc
 from app.modules.price_monitoring_notifications.service import (
     get_price_alert_dispatcher,
 )
@@ -1346,8 +1346,15 @@ class TrackedQueriesService:
             Rows carrying `id`, `workspace_id`, `user_id`, `reason`, `priority`.
         """
         try:
-            res = self.supabase.client.rpc(
-                "get_price_refresh_queue", {"p_limit": max(1, min(limit, 500))}
+            # GET, not POST: this is the tick's FIRST PostgREST call, and the pooled
+            # keep-alive has been idle for an hour, so it is the one that meets "Server
+            # disconnected". Over POST the retry patch cannot tell a read from a credit
+            # debit and refuses to repeat it, so the whole refresh round is skipped while
+            # pg_cron records `succeeded`.
+            res = read_rpc(
+                self.supabase.client,
+                "get_price_refresh_queue",
+                {"p_limit": max(1, min(limit, 500))},
             ).execute()
             rows = res.data or []
         except Exception as e:
