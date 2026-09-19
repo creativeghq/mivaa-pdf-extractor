@@ -4,7 +4,6 @@ import logging
 import unicodedata
 from typing import Dict, Any, Optional, Tuple
 
-from app.utils.text_similarity import calculate_string_similarity
 
 logger = logging.getLogger(__name__)
 
@@ -16,105 +15,44 @@ from app.services.metadata.field_registry import field_registry  # noqa: E402
 
 
 # ============================================================================
-# STANDARDIZED METADATA SCHEMA
+# FIELD NAME NORMALIZATION
 # ============================================================================
 
-STANDARD_SCHEMA = {
-    "commercial": {
-        "grout_mapei": ["recommended_grout_mapei", "grout_product_mapei", "supplier_mapei", "grout_supplier_mapei"],
-        "grout_kerakoll": ["recommended_grout_kerakoll", "grout_product_kerakoll", "supplier_kerakoll", "grout_supplier_kerakoll"],
-        "grout_isomat": ["recommended_grout_isomat", "grout_product_isomat", "supplier_isomat", "grout_supplier_isomat"],
-        "grout_technica": ["recommended_grout_technica", "grout_product_technica", "supplier_technica", "grout_supplier_technica"],
-        "grout_suppliers": ["recommended_grout_brands", "grout_brands"],
-        "grout_color_codes": ["grout_color_codes_mapei", "grout_color_codes_kerakoll", "grout_color_codes_isomat", "grout_color_codes_technica"],
-        "sku_codes": ["sku_variants", "sku_list"],
-        "product_codes": ["product_code", "product_code_prefix", "reference_code", "format_code"],
-    },
-    "design": {
-        "designers": ["designer", "designer_members", "designer_name"],
-        "studio": ["design_studio", "designer_studio", "design_studio_name"],
-        "studio_founded": ["studio_founded_year", "design_year_founded", "design_studio_founded"],
-        "collection": ["collection_name", "collection_series"],
-        "philosophy": ["design_philosophy", "design_concept"],
-        "inspiration": ["design_inspiration", "inspiration_source"],
-    },
-    "packaging": {
-        "pieces_per_box": ["pieces_per_unit", "pcs_per_box"],
-        "boxes_per_pallet": ["boxes_per_pallet_count"],
-        "weight_kg": ["weight_per_box", "weight_per_box_kg", "box_weight_kg"],
-        "weight_lb": ["weight_per_box_lb", "box_weight_lb"],
-        "coverage_m2": ["sqm_per_box", "square_meters_per_box", "area_per_box"],
-        "coverage_sqft": ["sqft_per_box", "square_feet_per_box", "area_per_box_sqft"],
-    },
-    "material_properties": {
-        "finish": ["surface_finish", "finish_type"],
-        "body_type": ["body", "tile_body", "body_composition"],
-        "composition": ["material_composition", "material_type"],
-        "texture": ["surface_texture", "texture_type"],
-    },
-    "appearance": {
-        "colors": ["color_variants", "colors_available", "available_colors"],
-        "shade_variation": ["shade_var", "variation"],
-        "visual_effect": ["visual_effects", "effect"],
-    },
-    "application": {
-        "recommended_use": ["use", "application_type", "recommended_application"],
-        "installation": ["installation_method", "installation_type"],
-        "traffic_level": ["traffic", "traffic_rating"],
-    },
-}
+
+def _normalize_key(name: Any) -> str:
+    """Fold a key to registry spelling: accent-stripped, lowercased, one underscore per run."""
+    s = unicodedata.normalize('NFD', str(name)).encode('ascii', 'ignore').decode('ascii')
+    s = ''.join(ch if ch.isalnum() else '_' for ch in s.lower())
+    return '_'.join(part for part in s.split('_') if part)
 
 
-# ============================================================================
-# SEMANTIC SIMILARITY FUNCTIONS
-# ============================================================================
+def find_standard_field(field_name: str, category: str = None, threshold: float = None) -> Optional[str]:
+    """Map an UNKNOWN extracted key onto the registry field it is a spelling of, or None.
 
-def calculate_similarity(str1: str, str2: str) -> float:
-    """Calculate similarity between two strings (0.0 to 1.0)."""
-    return calculate_string_similarity(str1, str2, case_sensitive=False)
+    A key the registry already knows returns None, meaning leave it alone: `finish`,
+    `finish_type` and `surface_finish` are three distinct fields, and the alias table this
+    replaced folded them together and mapped `weight_per_box_kg` onto `weight_kg`. Matching
+    is deterministic spelling, never similarity, so `U-Value (W/m2K)` reaches the registered
+    field instead of registering a second row for a fact that already has one.
 
-
-def find_standard_field(field_name: str, category: str, threshold: float = 0.6) -> Optional[str]:
-    """
-    Find the standard field name for a given field using semantic similarity.
-    
     Args:
-        field_name: The field name to normalize (e.g., "recommended_grout_mapei")
-        category: The metadata category (e.g., "commercial")
-        threshold: Minimum similarity score to consider a match (default: 0.6)
-    
+        field_name: the key as extracted.
+        category: accepted for call compatibility; the registry is the authority, not a
+            per-category alias table.
+        threshold: accepted and ignored — fuzzy matching is what merged distinct fields.
+
     Returns:
-        Standard field name if found, None otherwise
+        The registry field name to rename to, or None to keep the key unchanged.
     """
-    if category not in STANDARD_SCHEMA:
+    if not field_name or not field_registry.is_loaded():
         return None
-    
-    best_match = None
-    best_score = 0.0
-    
-    for standard_field, variations in STANDARD_SCHEMA[category].items():
-        # Check exact match with standard field
-        if field_name == standard_field:
-            return standard_field
-        
-        # Check exact match with known variations
-        if field_name in variations:
-            return standard_field
-        
-        # Check semantic similarity with standard field
-        score = calculate_similarity(field_name, standard_field)
-        if score > best_score and score >= threshold:
-            best_score = score
-            best_match = standard_field
-        
-        # Check semantic similarity with variations
-        for variation in variations:
-            score = calculate_similarity(field_name, variation)
-            if score > best_score and score >= threshold:
-                best_score = score
-                best_match = standard_field
-    
-    return best_match
+    raw = str(field_name)
+    if field_registry.spec_for(raw) is not None:
+        return None
+    folded = _normalize_key(raw)
+    if folded and folded != raw and field_registry.spec_for(folded) is not None:
+        return folded
+    return None
 
 
 # ============================================================================
