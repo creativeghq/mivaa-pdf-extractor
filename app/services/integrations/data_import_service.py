@@ -28,13 +28,17 @@ from app.services.facets import canonicalize_product_attributes
 from app.services.products.material_quota import material_quota_remaining_async
 import sentry_sdk
 from app.utils.text_fold import fold_model_token
+from app.services.products.category_units import load_category_units, resolve_default_unit
 
-# Category → default unit mapping (mirrors material_categories.default_unit)
-_CATEGORY_DEFAULT_UNITS = {
-    'tiles': 'sqm', 'wood': 'sqm', 'paint_wall_decor': 'sqm',
-    'decor': 'pcs', 'furniture': 'pcs', 'general_materials': 'pcs',
-    'heating': 'pcs', 'sanitary': 'pcs', 'kitchen': 'pcs', 'lighting': 'pcs',
-}
+_CATEGORY_UNITS = None
+_VOCAB_TO_CATEGORY = None
+
+
+def _default_unit_for(material_category, supabase=None):
+    global _CATEGORY_UNITS, _VOCAB_TO_CATEGORY
+    if _CATEGORY_UNITS is None and supabase is not None:
+        _CATEGORY_UNITS, _VOCAB_TO_CATEGORY = load_category_units(supabase)
+    return resolve_default_unit(material_category, _CATEGORY_UNITS, _VOCAB_TO_CATEGORY)
 
 logger = logging.getLogger(__name__)
 
@@ -675,7 +679,7 @@ class DataImportService:
                 "workspace_id": workspace_id,
                 # Content fields — same schema as PDF/scraping
                 "material_category": mat_cat,
-                "unit": _CATEGORY_DEFAULT_UNITS.get(mat_cat, 'pcs') if mat_cat else 'pcs',
+                "unit": _default_unit_for(mat_cat, self.supabase),
                 "factory_name": product_data.get('factory_name'),
                 "factory_group_name": product_data.get('factory_group_name'),
                 "color": product_data.get('color'),

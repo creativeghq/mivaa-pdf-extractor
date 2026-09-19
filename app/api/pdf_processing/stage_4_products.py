@@ -18,92 +18,19 @@ from app.services.facets import canonicalize_product_attributes
 from app.services.metadata.field_validation import validate_metadata_against_registry
 from app.services.metadata.field_registry import field_registry
 from app.services.utilities.prompt_registry import load_prompt, prefetch, render
+from app.services.products.category_units import load_category_units, resolve_default_unit
 
-# ── Category → default unit mapping (mirrors material_categories.default_unit) ─
-_CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
-    # Coarse buckets
-    'tiles': 'sqm',
-    'wood': 'sqm',
-    'decor': 'pcs',
-    'furniture': 'pcs',
-    'general_materials': 'pcs',
-    'paint_wall_decor': 'sqm',
-    'heating': 'pcs',
-    'sanitary': 'pcs',
-    'kitchen': 'pcs',
-    'lighting': 'pcs',
-}
-
-# Fine-grained vocab → unit mapping. Mirrors MATERIAL_CATEGORY_VOCAB.
-_FINE_CATEGORY_DEFAULT_UNITS: Dict[str, str] = {
-    # Tiles → sqm
-    'floor_tile': 'sqm', 'wall_tile': 'sqm', 'bathroom_tile': 'sqm',
-    'shower_tile': 'sqm', 'porcelain_tile': 'sqm', 'ceramic_tile': 'sqm',
-    # Wood / flooring → sqm
-    'wood_flooring': 'sqm', 'laminate': 'sqm', 'vinyl_flooring': 'sqm',
-    'carpet': 'sqm', 'hardwood': 'sqm', 'engineered_wood': 'sqm',
-    'parquet': 'sqm',
-    # Paint / wall decor → sqm (paintable surface) or pcs (panel/wallpaper roll)
-    'wall_paint': 'sqm', 'wallpaper': 'sqm', 'decorative_plaster': 'sqm',
-    'wall_panel': 'pcs', 'wall_coating': 'sqm',
-    # General materials (slabs/sheets) → sqm; specific stones in linear/sqm
-    'countertop': 'sqm', 'kitchen_worktop': 'sqm', 'stone_slab': 'sqm',
-    'metal_panel': 'sqm', 'glass_panel': 'sqm', 'concrete': 'sqm',
-    'terrazzo': 'sqm', 'quartz': 'sqm',
-    # Furniture / decor / sanitary / kitchen / heating / lighting → pcs
-    # (everything not enumerated above defaults to 'pcs' via the fallback)
-}
-
-
-# #227 — the coarse "upload categories" are admin-managed in the `material_categories`
-# table (each row carries its own default_unit). The hardcoded _CATEGORY_DEFAULT_UNITS
-# above only knows the original 10 buckets, so an 11th category added in admin would fall
-# through to 'pcs'. Load the table's coarse key→unit map at runtime (cached per process,
-# fully guarded) so admin-added categories resolve their configured unit; the hardcoded
-# map stays as the fallback.
-_DB_CATEGORY_UNITS: Optional[Dict[str, str]] = None
-
-
-def _load_db_category_units(supabase: Any) -> Dict[str, str]:
-    global _DB_CATEGORY_UNITS
-    if _DB_CATEGORY_UNITS is not None:
-        return _DB_CATEGORY_UNITS
-    units: Dict[str, str] = {}
-    try:
-        resp = supabase.client.table('material_categories') \
-            .select('category_key, default_unit').eq('is_active', True).execute()
-        for row in (resp.data or []):
-            key = (row.get('category_key') or '').lower().strip()
-            unit = row.get('default_unit')
-            if key and unit:
-                units[key] = unit
-    except Exception:
-        units = {}
-    _DB_CATEGORY_UNITS = units
-    return _DB_CATEGORY_UNITS
+# ── Category → default unit ──────────────────────────────────────────────────
+_CATEGORY_UNITS: Optional[Dict[str, str]] = None
+_VOCAB_TO_CATEGORY: Optional[Dict[str, str]] = None
 
 
 def _resolve_default_unit(material_category: Optional[str], supabase: Any = None) -> str:
-    """Resolve default unit from material category."""
-    if not material_category:
-        return 'pcs'
-    cat = material_category.lower().strip()
-    # 1. Fine-grained vocab match — most specific wins
-    if cat in _FINE_CATEGORY_DEFAULT_UNITS:
-        return _FINE_CATEGORY_DEFAULT_UNITS[cat]
-    # 2. Admin-managed coarse buckets (authoritative for the upload taxonomy)
-    if supabase is not None:
-        db_units = _load_db_category_units(supabase)
-        if cat in db_units:
-            return db_units[cat]
-    # 3. Hardcoded coarse bucket exact match (fallback)
-    if cat in _CATEGORY_DEFAULT_UNITS:
-        return _CATEGORY_DEFAULT_UNITS[cat]
-    # 4. Fuzzy match against coarse buckets
-    for key, unit in _CATEGORY_DEFAULT_UNITS.items():
-        if key in cat or cat in key:
-            return unit
-    return 'pcs'
+    """Resolve the selling unit for a category key or a vocabulary value."""
+    global _CATEGORY_UNITS, _VOCAB_TO_CATEGORY
+    if _CATEGORY_UNITS is None and supabase is not None:
+        _CATEGORY_UNITS, _VOCAB_TO_CATEGORY = load_category_units(supabase)
+    return resolve_default_unit(material_category, _CATEGORY_UNITS, _VOCAB_TO_CATEGORY)
 
 
 # ── Factory field keys (canonical set) ───────────────────────────────────────

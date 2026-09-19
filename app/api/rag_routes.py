@@ -584,10 +584,11 @@ async def upload_document(
         description="Categories to extract: 'products', 'certificates', 'logos', 'specifications', 'all', 'extract_only'. Comma-separated."
     ),
 
-    # Material category (tiles, wood, heating, etc.)
     material_category: Optional[str] = Form(
         None,
-        description="Material category: 'tiles', 'wood', 'decor', 'furniture', 'general_materials', 'paint_wall_decor', 'heating', 'sanitary', 'kitchen', 'lighting', etc."
+        description="Material category key, or any controlled_vocab value or alias of one. "
+                    "The list is public.material_categories -- do not hardcode it against this "
+                    "description, which went stale twice."
     ),
 
     # NEW: URL-based upload
