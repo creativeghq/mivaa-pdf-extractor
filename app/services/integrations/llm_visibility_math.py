@@ -7,6 +7,9 @@ from urllib.parse import urlparse
 
 __all__ = [
     "citation_domain",
+    "anthropic_search_tool_type",
+    "anthropic_citation_urls",
+    "gemini_citation_urls",
     "domain_is_ours",
     "dedupe_urls",
     "sentiment_rollup",
@@ -40,6 +43,74 @@ def citation_domain(url: str) -> str:
     if not host or " " in host or "." not in host:
         return ""
     return host[4:] if host.startswith("www.") else host
+
+
+#: Web search tool versions. The dynamic-filtering variant is rejected by models
+#: older than Opus 4.6 / Sonnet 4.6, and the basic one is what they take instead.
+_SEARCH_TOOL_DYNAMIC = "web_search_20260209"
+_SEARCH_TOOL_BASIC = "web_search_20250305"
+_DYNAMIC_SEARCH_PREFIXES = (
+    "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+    "claude-sonnet-5", "claude-sonnet-4-6",
+)
+
+
+def anthropic_search_tool_type(model: str) -> str:
+    """The `web_search` tool version `model` accepts. A model sent the wrong one is a
+    400, so the probe would record a provider error rather than an answer."""
+    m = (model or "").strip().lower()
+    return _SEARCH_TOOL_DYNAMIC if m.startswith(_DYNAMIC_SEARCH_PREFIXES) else _SEARCH_TOOL_BASIC
+
+
+def anthropic_citation_urls(blocks: Any) -> List[str]:
+    """Sources behind a Claude answer, from the Messages API content blocks.
+
+    Read from two places because they answer different questions: a
+    `web_search_tool_result` is every page the model READ, and a `citations` entry on
+    a text block is a page it actually LEANED ON. A failed search returns the same
+    block type with `content` as an error OBJECT rather than a list, so an
+    unconditional iteration silently walks the error's keys instead.
+    """
+    urls: List[str] = []
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        kind = block.get("type")
+        if kind == "web_search_tool_result":
+            results = block.get("content")
+            if not isinstance(results, list):
+                continue
+            for r in results:
+                if isinstance(r, dict) and r.get("url"):
+                    urls.append(str(r["url"]))
+        elif kind == "text":
+            for c in block.get("citations") or []:
+                if isinstance(c, dict) and c.get("url"):
+                    urls.append(str(c["url"]))
+    return urls
+
+
+def gemini_citation_urls(candidate: Any) -> List[str]:
+    """Sources behind a grounded Gemini answer.
+
+    `groundingChunks[].web.uri` is a Google REDIRECT, not the publisher — storing it
+    makes every citation read as vertexaisearch.cloud.google.com and no answer can
+    ever cite the subject's own domain. The publisher is in `.title`, which grounding
+    returns as a bare host; the redirect is kept only when it is not.
+    """
+    if not isinstance(candidate, dict):
+        return []
+    meta = candidate.get("groundingMetadata")
+    if not isinstance(meta, dict):
+        return []
+    urls: List[str] = []
+    for chunk in meta.get("groundingChunks") or []:
+        web = chunk.get("web") if isinstance(chunk, dict) else None
+        if not isinstance(web, dict):
+            continue
+        host = citation_domain(str(web.get("title") or ""))
+        urls.append(f"https://{host}" if host else str(web.get("uri") or ""))
+    return urls
 
 
 def domain_is_ours(cited_url: str, homepage_domain: Optional[str]) -> bool:

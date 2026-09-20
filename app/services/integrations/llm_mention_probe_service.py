@@ -14,7 +14,8 @@ import httpx
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.llm_probe_templates import build_probes
 from app.services.integrations.llm_visibility_math import (
-    citation_rollup, dedupe_urls, domain_is_ours,
+    anthropic_citation_urls, anthropic_search_tool_type,
+    citation_rollup, dedupe_urls, domain_is_ours, gemini_citation_urls,
     sentiment_rollup, share_of_voice_from_rows, trend_from_rows,
     visibility_rollup,
 )
@@ -59,6 +60,10 @@ OPUS = "claude-opus-5"
 GEMINI_PRO = "gemini-3.1-pro"
 SONAR_PRO = "sonar-pro"
 GPT = "gpt-5"
+
+#: Searches one probe may run. A buyer asking once does not read ten pages,
+#: and each search is billed as input tokens on the next turn.
+WEB_SEARCHES_PER_PROBE = 3
 
 CHEAP_TIER = "cheap"
 FRONTIER_TIER = "frontier"
@@ -543,7 +548,9 @@ class LlmMentionProbeService:
             return ModelReply("", 0, 0, int((time.time() - start) * 1000), str(e)[:200], [])
 
     async def _call_anthropic(self, prompt: str, *, model: str, start: float) -> ModelReply:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        """Claude, browsing. The probe asks what a buyer is ANSWERED today, so a reply
+        from training memory measures the wrong thing and can carry no source at all."""
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 ANTHROPIC_API,
                 headers={
@@ -553,8 +560,10 @@ class LlmMentionProbeService:
                 },
                 json={
                     "model": model,
-                    "max_tokens": 800,
+                    "max_tokens": 1500,
                     "messages": [{"role": "user", "content": prompt}],
+                    "tools": [{"type": anthropic_search_tool_type(model),
+                               "name": "web_search", "max_uses": WEB_SEARCHES_PER_PROBE}],
                 },
             )
             resp.raise_for_status()
@@ -562,15 +571,13 @@ class LlmMentionProbeService:
             blocks = data.get("content") or []
             text = "\n".join([b.get("text", "") for b in blocks if b.get("type") == "text"]).strip()
             usage = data.get("usage") or {}
-            # No native citation channel — anything cited is inline in the prose and
-            # comes back through the record_mention tool call instead.
             return ModelReply(
                 text,
                 int(usage.get("input_tokens") or 0),
                 int(usage.get("output_tokens") or 0),
                 int((time.time() - start) * 1000),
                 None,
-                [],
+                dedupe_urls(anthropic_citation_urls(blocks)),
             )
 
     async def _call_openai(self, prompt: str, *, model: str, start: float) -> ModelReply:
@@ -604,13 +611,14 @@ class LlmMentionProbeService:
 
     async def _call_gemini(self, prompt: str, *, model: str, start: float) -> ModelReply:
         url = f"{GEMINI_API}/{model}:generateContent?key={self.gemini_key}"
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             resp = await client.post(
                 url,
                 headers={"Content-Type": "application/json"},
                 json={
                     "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                    "generationConfig": {"maxOutputTokens": 800},
+                    "generationConfig": {"maxOutputTokens": 1500},
+                    "tools": [{"google_search": {}}],
                 },
             )
             resp.raise_for_status()
@@ -619,15 +627,13 @@ class LlmMentionProbeService:
             parts = ((cands[0] or {}).get("content") or {}).get("parts") if cands else []
             text = "".join(p.get("text", "") for p in (parts or []))
             u = data.get("usageMetadata") or {}
-            # Grounding is off for these probes, so `groundingMetadata` is absent and
-            # there is nothing native to read — same as Anthropic/OpenAI above.
             return ModelReply(
                 text.strip(),
                 int(u.get("promptTokenCount") or 0),
                 int(u.get("candidatesTokenCount") or 0),
                 int((time.time() - start) * 1000),
                 None,
-                [],
+                dedupe_urls(gemini_citation_urls(cands[0] if cands else {})),
             )
 
     async def _call_perplexity(self, prompt: str, *, model: str, start: float) -> ModelReply:
