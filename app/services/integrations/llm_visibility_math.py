@@ -45,21 +45,45 @@ def citation_domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-#: Web search tool versions. The dynamic-filtering variant is rejected by models
-#: older than Opus 4.6 / Sonnet 4.6, and the basic one is what they take instead.
+#: Web search tool versions. Dynamic filtering is rejected by anything older than the
+#: 4.6 generation, and the basic variant is what those take instead.
 _SEARCH_TOOL_DYNAMIC = "web_search_20260209"
 _SEARCH_TOOL_BASIC = "web_search_20250305"
-_DYNAMIC_SEARCH_PREFIXES = (
-    "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
-    "claude-sonnet-5", "claude-sonnet-4-6",
-)
+
+#: Families that took dynamic filtering from 4.6 on. Haiku is absent deliberately:
+#: 4.5 does not accept it, and a later Haiku has to be checked before it is assumed.
+_DYNAMIC_SEARCH_FAMILIES = frozenset({"opus", "sonnet", "fable", "mythos"})
+_DYNAMIC_SEARCH_MIN = (4, 6)
+
+
+def _model_generation(model: str) -> Tuple[Optional[str], Tuple[int, int]]:
+    """(family, (major, minor)) from a Claude id. `claude-haiku-4-5-20251001` is
+    (haiku, (4, 5)) — the trailing date is not a version part."""
+    parts = (model or "").strip().lower().split("-")
+    if len(parts) < 3 or parts[0] != "claude":
+        return None, (0, 0)
+    family = parts[1]
+    nums: List[int] = []
+    for p in parts[2:]:
+        if not p.isdigit() or len(p) > 2:
+            break
+        nums.append(int(p))
+    if not nums:
+        return family, (0, 0)
+    return family, (nums[0], nums[1] if len(nums) > 1 else 0)
 
 
 def anthropic_search_tool_type(model: str) -> str:
-    """The `web_search` tool version `model` accepts. A model sent the wrong one is a
-    400, so the probe would record a provider error rather than an answer."""
-    m = (model or "").strip().lower()
-    return _SEARCH_TOOL_DYNAMIC if m.startswith(_DYNAMIC_SEARCH_PREFIXES) else _SEARCH_TOOL_BASIC
+    """The `web_search` tool version `model` accepts.
+
+    Derived from the generation rather than a list of ids: a list goes stale the day a
+    model ships, and the failure is a 400 recorded as a provider error rather than an
+    answer. An id we cannot parse gets the basic variant, which every model accepts.
+    """
+    family, version = _model_generation(model)
+    if family in _DYNAMIC_SEARCH_FAMILIES and version >= _DYNAMIC_SEARCH_MIN:
+        return _SEARCH_TOOL_DYNAMIC
+    return _SEARCH_TOOL_BASIC
 
 
 def anthropic_citation_urls(blocks: Any) -> List[str]:

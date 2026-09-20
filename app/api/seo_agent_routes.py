@@ -69,6 +69,9 @@ _ALLOWED_METHODS = {
     "ai_llm_mentions_multi_target_metrics", "ai_llm_mentions_historical",
     "ai_llm_mentions_timeseries_delta", "ai_llm_mentions_timeseries_new_lost",
     "ai_llm_response", "ai_llm_models",
+    "ai_llm_mentions_top_brands", "ai_llm_mentions_top_brand_categories",
+    "ai_llm_mentions_locations_and_languages",
+    "ai_llm_scraper", "ai_keyword_locations_and_languages",
     # Keywords Data
     "kw_google_ads_search_volume", "kw_google_ads_keywords_for_site",
     "kw_google_ads_keywords_for_keywords", "kw_google_ads_traffic_by_keywords",

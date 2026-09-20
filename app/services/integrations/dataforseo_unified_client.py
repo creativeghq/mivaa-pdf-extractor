@@ -77,6 +77,9 @@ def country_to_location(code: Optional[str], default: int = 2840) -> int:
 #: DataForSEO renamed every LLM Mentions endpoint on 2026-07-07 (Extended LLM Mentions API).
 #: No sunset is published for the old names, but `historical` and the two timeseries
 #: endpoints exist ONLY under the new ones. Declared here so a path appears once.
+#: DataForSEO refuses a longer user_prompt. The cap is theirs, not ours.
+PROMPT_MAX_CHARS = 500
+
 LLM_MENTIONS_PATHS: Dict[str, str] = {
     "search": "/ai_optimization/llm_mentions/search_mentions/live",
     "top_pages": "/ai_optimization/llm_mentions/top_mentioned_pages/live",
@@ -86,7 +89,29 @@ LLM_MENTIONS_PATHS: Dict[str, str] = {
     "historical": "/ai_optimization/llm_mentions/historical/live",
     "timeseries_delta": "/ai_optimization/llm_mentions/timeseries_delta/live",
     "timeseries_new_lost": "/ai_optimization/llm_mentions/timeseries_new_lost/live",
+    "top_brands": "/ai_optimization/llm_mentions/top_mentioned_brands/live",
+    "top_brand_categories": "/ai_optimization/llm_mentions/top_mentioned_brand_categories/live",
+    "locations_and_languages": "/ai_optimization/llm_mentions/locations_and_languages",
 }
+
+#: The five endpoints that also publish a cheaper `_lite` tier. Lite drops the
+#: per-row detail and keeps the counts, so it is the right call for a leaderboard
+#: and the wrong one when something needs the rows behind a number.
+LLM_MENTIONS_LITE: Dict[str, str] = {
+    "target_metrics": "/ai_optimization/llm_mentions/target_metrics_lite/live",
+    "top_pages": "/ai_optimization/llm_mentions/top_mentioned_pages_lite/live",
+    "top_domains": "/ai_optimization/llm_mentions/top_mentioned_domains_lite/live",
+    "top_brands": "/ai_optimization/llm_mentions/top_mentioned_brands_lite/live",
+    "top_brand_categories": "/ai_optimization/llm_mentions/top_mentioned_brand_categories_lite/live",
+}
+
+
+def llm_mentions_path(key: str, *, lite: bool = False) -> str:
+    """The path for one LLM Mentions endpoint. `lite` falls back to the full tier
+    rather than raising - not every endpoint has a lite twin."""
+    if lite and key in LLM_MENTIONS_LITE:
+        return LLM_MENTIONS_LITE[key]
+    return LLM_MENTIONS_PATHS[key]
 
 
 def _llm_mentions_body(
@@ -705,10 +730,32 @@ class DataForSEOUnifiedClient:
 
     async def ai_llm_response(
         self, *, model_family: str, prompt: str, model: Optional[str] = None,
+        web_search: bool = True, country_code: Optional[str] = None,
+        system_message: Optional[str] = None, max_output_tokens: int = 1500,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
-        """model_family: chat_gpt | claude | gemini | perplexity"""
-        body = [{"prompt": prompt, "model_name": model} if model else {"prompt": prompt}]
+        """model_family: chat_gpt | claude | gemini | perplexity
+
+        The field is `user_prompt`. Sending `prompt` returns 40501 Invalid Field on
+        every call, which is what this method did from the day it shipped until
+        2026-09-20 - verified against the sandbox, which validates the request shape
+        without a balance. `web_search` is what makes `annotations` non-null, so
+        without it there are no citations to read at all.
+        """
+        payload: Dict[str, Any] = {
+            "user_prompt": prompt[:PROMPT_MAX_CHARS],
+            "max_output_tokens": max_output_tokens,
+            "web_search": web_search,
+        }
+        if model:
+            payload["model_name"] = model
+        if system_message:
+            payload["system_message"] = system_message
+        # Stated, never defaulted: with no country DataForSEO bills a US lookup and
+        # returns a US answer, which reads as a real verdict for the wrong market.
+        if web_search and country_code:
+            payload["web_search_country_iso_code"] = country_code.upper()
+        body = [payload]
         path_map = {
             "chat_gpt": "/ai_optimization/chat_gpt/llm_responses/live",
             "claude": "/ai_optimization/claude/llm_responses/live",
@@ -720,6 +767,80 @@ class DataForSEOUnifiedClient:
             return DataForSEOResult(ok=False, error=f"unknown model_family: {model_family}")
         return await self._call(path, body, attribution=attribution, log_kind="labs",
                                 operation=f"ai.{model_family}.llm_response")
+
+    async def ai_llm_mentions_top_brands(
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None, limit: int = 100, lite: bool = False,
+        attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        """Which BRANDS the engines name for this subject - the competitive set as a
+        corpus of millions of answers saw it, rather than as one probe run saw it."""
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform, limit=limit,
+        )]
+        return await self._call(llm_mentions_path("top_brands", lite=lite), body,
+                                attribution=attribution, log_kind="labs",
+                                operation=f"ai.llm_mentions.top_brands:{keyword or domain}")
+
+    async def ai_llm_mentions_top_brand_categories(
+        self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        language_code: str = "en", country_code: Optional[str] = None,
+        platform: Optional[str] = None, limit: int = 100, lite: bool = False,
+        attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        body = [_llm_mentions_body(
+            keyword=keyword, domain=domain, language_code=language_code,
+            country_code=country_code, platform=platform, limit=limit,
+        )]
+        return await self._call(llm_mentions_path("top_brand_categories", lite=lite), body,
+                                attribution=attribution, log_kind="labs",
+                                operation=f"ai.llm_mentions.top_brand_categories:{keyword or domain}")
+
+    async def ai_llm_mentions_locations_and_languages(
+        self, *, attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        """Where the mentions corpus actually holds data. Coverage differs by platform
+        - ChatGPT is United States only - so a Greek question is answered for the
+        wrong country unless this is read first."""
+        return await self._call(LLM_MENTIONS_PATHS["locations_and_languages"], method="GET",
+                                attribution=attribution, log_kind="labs",
+                                operation="ai.llm_mentions.locations_and_languages")
+
+    async def ai_llm_scraper(
+        self, *, model_family: str, keyword: str, language_code: str = "en",
+        country_code: Optional[str] = None, html: bool = False,
+        attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        """The CONSUMER surface, scraped, rather than the vendor API. An API answer has
+        no personalisation, no memory and a different retrieval stack, so it is a proxy
+        for what a buyer is shown. chat_gpt and gemini only."""
+        path_map = {
+            "chat_gpt": "/ai_optimization/chat_gpt/llm_scraper/live",
+            "gemini": "/ai_optimization/gemini/llm_scraper/live",
+        }
+        base = path_map.get(model_family.lower())
+        if not base:
+            return DataForSEOResult(
+                ok=False,
+                error=f"llm_scraper has no {model_family} endpoint (chat_gpt, gemini only)")
+        variant = "html" if html else "advanced"
+        body = [{
+            "keyword": keyword[:PROMPT_MAX_CHARS],
+            "language_code": language_code,
+            "location_code": country_to_location(country_code),
+        }]
+        return await self._call(f"{base}/{variant}", body,
+                                attribution=attribution, log_kind="labs",
+                                operation=f"ai.{model_family}.llm_scraper")
+
+    async def ai_keyword_locations_and_languages(
+        self, *, attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        return await self._call("/ai_optimization/ai_keyword_data/locations_and_languages",
+                                method="GET", attribution=attribution, log_kind="labs",
+                                operation="ai.keyword_data.locations_and_languages")
 
     async def ai_llm_models(
         self, *, model_family: str, attribution: Optional[CostAttribution] = None,

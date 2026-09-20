@@ -38,6 +38,21 @@ class TestAnthropicSearchToolType:
 
     def test_an_unknown_model_falls_back_to_the_variant_every_model_accepts(self):
         assert anthropic_search_tool_type("some-future-model") == "web_search_20250305"
+        assert anthropic_search_tool_type("") == "web_search_20250305"
+
+    def test_the_cutoff_is_the_generation_not_a_list_of_ids(self):
+        # A list of ids goes stale the day a model ships and the failure is a 400.
+        assert anthropic_search_tool_type("claude-opus-4-6") == "web_search_20260209"
+        assert anthropic_search_tool_type("claude-opus-4-5") == "web_search_20250305"
+        assert anthropic_search_tool_type("claude-sonnet-4-6") == "web_search_20260209"
+        assert anthropic_search_tool_type("claude-fable-5-1") == "web_search_20260209"
+
+    def test_a_model_newer_than_this_code_still_gets_the_newer_variant(self):
+        assert anthropic_search_tool_type("claude-opus-9") == "web_search_20260209"
+
+    def test_the_trailing_date_is_not_read_as_a_version(self):
+        # claude-haiku-4-5-20251001 is 4.5, not 4.5.20251001.
+        assert anthropic_search_tool_type("claude-haiku-4-5-20251001") == "web_search_20250305"
 
 
 class TestAnthropicCitations:

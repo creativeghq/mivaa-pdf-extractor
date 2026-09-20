@@ -31,6 +31,12 @@ from app.services.integrations.perplexity_agent_client import (
     call_agent,
     web_search_tool,
 )
+from app.services.integrations.dataforseo_unified_client import (
+    DataForSEOUnifiedClient, PROMPT_MAX_CHARS,
+)
+from app.services.integrations.dataforseo_ai_parsing import (
+    response_text, response_urls, response_usage,
+)
 from app.services.integrations.platform_secret_resolver import resolve_secret
 from app.services.utilities.prompt_registry import load_prompt, render
 
@@ -65,13 +71,30 @@ GPT = "gpt-5"
 #: and each search is billed as input tokens on the next turn.
 WEB_SEARCHES_PER_PROBE = 3
 
+#: Answered through DataForSEO rather than the vendor API. The prefix is part of the
+#: model id ON PURPOSE: the same engine reached two ways is two different surfaces -
+#: different retrieval stack, different country targeting - so they must never merge
+#: into one rate. This is also why there is no automatic fallback from a dead vendor
+#: key to this route; a silent substitution would change which surface answered while
+#: the row still said "ChatGPT".
+DFS_PREFIX = "dfs:"
+DFS_CHAT_GPT = f"{DFS_PREFIX}chat_gpt"
+DFS_GEMINI = f"{DFS_PREFIX}gemini"
+DFS_PERPLEXITY = f"{DFS_PREFIX}perplexity"
+DFS_CLAUDE = f"{DFS_PREFIX}claude"
+
 CHEAP_TIER = "cheap"
 FRONTIER_TIER = "frontier"
+DATAFORSEO_TIER = "dataforseo"
 
 #: Which models each tier asks for. What actually runs is this ∩ the configured keys.
 TIER_MODELS: Dict[str, List[str]] = {
     CHEAP_TIER: [HAIKU, GPT_MINI, GEMINI_FLASH, SONAR],
     FRONTIER_TIER: [OPUS, GPT, GEMINI_PRO, SONAR_PRO],
+    # One vendor, four engines, and a stated country. The tier exists because three of
+    # the four direct providers were unfunded on 2026-09-20 and a probe that cannot run
+    # reports nothing rather than a zero.
+    DATAFORSEO_TIER: [DFS_CHAT_GPT, DFS_CLAUDE, DFS_GEMINI, DFS_PERPLEXITY],
 }
 
 # Token-cost in USD per 1K tokens (input, output) — for ai_usage_logs
@@ -219,6 +242,10 @@ class LlmMentionProbeService:
             "key_sources": sources,
         }
 
+    @property
+    def dataforseo_key(self) -> str:
+        return resolve_secret("DATAFORSEO_BASE64").value or ""
+
     def _key_for(self, model: str) -> str:
         """The credential a model needs. One place, so a new model cannot be added to a
         tier and then silently skipped because nothing knew which key it wanted."""
@@ -228,6 +255,8 @@ class LlmMentionProbeService:
             return self.openai_key
         if model in (GEMINI_FLASH, GEMINI_PRO):
             return self.gemini_key
+        if model.startswith(DFS_PREFIX):
+            return self.dataforseo_key
         if model in (SONAR, SONAR_PRO):
             return self.perplexity_key
         return ""
@@ -540,6 +569,8 @@ class LlmMentionProbeService:
                 return await self._call_gemini(prompt, model=model, start=start)
             if model in (SONAR, SONAR_PRO):
                 return await self._call_perplexity(prompt, model=model, start=start)
+            if model.startswith(DFS_PREFIX):
+                return await self._call_dataforseo(prompt, model=model, start=start)
             return ModelReply("", 0, 0, 0, f"unsupported model {model}", [])
         except httpx.HTTPStatusError as e:
             return ModelReply("", 0, 0, int((time.time() - start) * 1000),
@@ -660,6 +691,47 @@ class LlmMentionProbeService:
             reply.latency_ms or int((time.time() - start) * 1000),
             None,
             dedupe_urls(reply.citation_urls),
+        )
+
+    async def _call_dataforseo(
+        self, prompt: str, *, model: str, start: float,
+        country_code: Optional[str] = None,
+    ) -> ModelReply:
+        """One engine, answered through DataForSEO, with the country stated.
+
+        Two things the vendor APIs do not give us: a single funded account for all
+        four engines, and `web_search_country_iso_code`, without which the answer is
+        a US one. Sources arrive as span-bound annotations rather than a flat list.
+        """
+        family = model[len(DFS_PREFIX):]
+        client = DataForSEOUnifiedClient()
+        result = await client.ai_llm_response(
+            model_family=family,
+            prompt=prompt,
+            web_search=True,
+            country_code=country_code,
+        )
+        latency = int((time.time() - start) * 1000)
+        if not result.ok:
+            return ModelReply("", 0, 0, latency, (result.error or "dataforseo call failed")[:200], [])
+        row = (result.items or [{}])[0]
+        usage = response_usage(row)
+        text = response_text(row)
+        if not text:
+            # A 20000 with no text is a refusal or an empty generation, not an answer
+            # that named nobody - the difference decides whether the probe is retried.
+            return ModelReply("", usage["input_tokens"], usage["output_tokens"], latency,
+                              "dataforseo returned no answer text", [])
+        if len(prompt) > PROMPT_MAX_CHARS:
+            logger.warning(
+                "[probe] %s: prompt truncated to %d chars by DataForSEO", model, PROMPT_MAX_CHARS)
+        return ModelReply(
+            text,
+            usage["input_tokens"],
+            usage["output_tokens"],
+            latency,
+            None,
+            response_urls(row),
         )
 
     # ───── Internal: extraction (Haiku) ─────
