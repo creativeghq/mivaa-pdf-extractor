@@ -154,7 +154,7 @@ class TrackRequest(BaseModel):
     recency_days: int = 30
     homepage_domain: Optional[str] = None
     probe_tier: Optional[str] = Field(
-        None, pattern="^(cheap|frontier)$",
+        None, pattern="^(cheap|frontier|dataforseo)$",
         description="Which model tier the LLM probe uses. Defaults to cheap.",
     )
     alert_channels: Optional[List[str]] = None
@@ -177,7 +177,7 @@ class UpdateRequest(BaseModel):
     refresh_interval_hours: Optional[int] = None
     recency_days: Optional[int] = None
     homepage_domain: Optional[str] = None
-    probe_tier: Optional[str] = Field(None, pattern="^(cheap|frontier)$")
+    probe_tier: Optional[str] = Field(None, pattern="^(cheap|frontier|dataforseo)$")
     alert_channels: Optional[List[str]] = None
     alert_on_spike: Optional[bool] = None
     alert_on_negative_sentiment: Optional[bool] = None

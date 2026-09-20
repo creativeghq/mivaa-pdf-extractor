@@ -204,3 +204,56 @@ class TestTheRouteIsExplicit:
         src = _blank_comments(_source(_PROBE))
         body = src.split("async def _call_dataforseo")[1].split("    # ")[0]
         assert "dataforseo returned no answer text" in body
+
+
+class TestTheFlattenedItemsTrap:
+    #: What DataForSEO actually returns. The client's _call() hoists any result with an
+    #: `items` key, so reading result.items[0] hands the parser a MESSAGE item and the
+    #: answer comes back empty on a perfectly good response.
+    RAW = {
+        "tasks": [{"status_code": 20000, "result": [{
+            "model_name": "gpt-4.1-mini", "input_tokens": 9, "output_tokens": 120,
+            "money_spent": 0.0018, "web_search": True,
+            "items": [{"type": "message", "sections": [
+                {"type": "text", "text": "Kerablock supplies tiles.", "annotations": [
+                    {"url": "https://kerablock.gr/", "title": "kerablock.gr"}]},
+            ]}],
+        }]}],
+    }
+
+    def test_the_result_object_is_read_from_raw(self):
+        r = _p.first_ai_result(self.RAW)
+        assert r["model_name"] == "gpt-4.1-mini"
+        assert _p.response_text(r) == "Kerablock supplies tiles."
+        assert _p.response_urls(r) == ["https://kerablock.gr/"]
+        assert _p.response_usage(r)["output_tokens"] == 120
+
+    def test_parsing_the_flattened_item_instead_loses_the_answer(self):
+        # Pins WHY the code reads raw: this is what result.items[0] hands you.
+        flattened = self.RAW["tasks"][0]["result"][0]["items"][0]
+        assert _p.response_text(flattened) == ""
+        assert _p.response_usage(flattened)["output_tokens"] == 0
+
+    def test_the_probe_reads_raw_not_items(self):
+        src = _blank_comments(_source(_PROBE))
+        assert "first_ai_result(result.raw)" in src
+        assert "(result.items or [{}])[0]" not in src
+
+    def test_an_envelope_with_no_result_does_not_raise(self):
+        for bad in (None, {}, {"tasks": []}, {"tasks": [{}]}, {"tasks": [{"result": None}]}):
+            assert _p.first_ai_result(bad) == {}
+
+
+class TestTheCountryReachesTheCall:
+    def test_probe_takes_a_country_and_hands_it_down(self):
+        src = _blank_comments(_source(_PROBE))
+        assert "country_code: Optional[str] = None,\n        tier: str = CHEAP_TIER," in src
+        assert "country_code=country_code)" in src
+
+    def test_the_tier_is_storable_not_just_declared(self):
+        # Declared in the enum and refused by the CHECK is the vocabulary-wider-than-
+        # the-constraint trap: it passes validation and dies as a raw 23514.
+        routes = _source(_APP / "api" / "mention_monitoring_routes.py")
+        service = _source(_APP / "services" / "integrations" / "tracked_mentions_service.py")
+        assert 'pattern="^(cheap|frontier|dataforseo)$"' in routes
+        assert '"cheap", "frontier", "dataforseo"' in service

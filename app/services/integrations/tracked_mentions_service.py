@@ -85,7 +85,7 @@ class TrackedMentionsService:
             # Narrowed rather than passed through: the CHECK constraint rejects anything
             # else, and a rejected insert fails the whole enrolment for a field nobody
             # asked about.
-            "probe_tier": probe_tier if probe_tier in ("cheap", "frontier") else "cheap",
+            "probe_tier": probe_tier if probe_tier in ("cheap", "frontier", "dataforseo") else "cheap",
             "alert_channels": alert_channels or ["bell"],
             "alert_on_spike": bool(alert_on_spike),
             "alert_on_negative_sentiment": bool(alert_on_negative_sentiment),

@@ -14,7 +14,7 @@ import httpx
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.llm_probe_templates import build_probes
 from app.services.integrations.llm_visibility_math import (
-    anthropic_citation_urls, anthropic_search_tool_type,
+    anthropic_citation_urls, anthropic_search_failure, anthropic_search_tool_type,
     citation_rollup, dedupe_urls, domain_is_ours, gemini_citation_urls,
     sentiment_rollup, share_of_voice_from_rows, trend_from_rows,
     visibility_rollup,
@@ -35,7 +35,7 @@ from app.services.integrations.dataforseo_unified_client import (
     DataForSEOUnifiedClient, PROMPT_MAX_CHARS,
 )
 from app.services.integrations.dataforseo_ai_parsing import (
-    response_text, response_urls, response_usage,
+    first_ai_result, response_text, response_urls, response_usage,
 )
 from app.services.integrations.platform_secret_resolver import resolve_secret
 from app.services.utilities.prompt_registry import load_prompt, render
@@ -279,6 +279,7 @@ class LlmMentionProbeService:
         templates: Optional[List[Dict[str, str]]] = None,
         attribution: Optional[CostAttribution] = None,
         homepage_domain: Optional[str] = None,
+        country_code: Optional[str] = None,
         tier: str = CHEAP_TIER,
         custom_probes: Any = None,
         include_default_probes: bool = True,
@@ -317,7 +318,8 @@ class LlmMentionProbeService:
         for p in probes:
             for model in models_to_use:
                 try:
-                    reply = await self._call_model(model=model, prompt=p["prompt"])
+                    reply = await self._call_model(
+                        model=model, prompt=p["prompt"], country_code=country_code)
                 except Exception as e:
                     reply = ModelReply("", 0, 0, 0, str(e), [])
 
@@ -558,7 +560,9 @@ class LlmMentionProbeService:
 
     # ───── Internal: model calls ─────
 
-    async def _call_model(self, *, model: str, prompt: str) -> ModelReply:
+    async def _call_model(
+        self, *, model: str, prompt: str, country_code: Optional[str] = None,
+    ) -> ModelReply:
         start = time.time()
         try:
             if model in (HAIKU, OPUS):
@@ -570,7 +574,8 @@ class LlmMentionProbeService:
             if model in (SONAR, SONAR_PRO):
                 return await self._call_perplexity(prompt, model=model, start=start)
             if model.startswith(DFS_PREFIX):
-                return await self._call_dataforseo(prompt, model=model, start=start)
+                return await self._call_dataforseo(
+                    prompt, model=model, start=start, country_code=country_code)
             return ModelReply("", 0, 0, 0, f"unsupported model {model}", [])
         except httpx.HTTPStatusError as e:
             return ModelReply("", 0, 0, int((time.time() - start) * 1000),
@@ -607,7 +612,7 @@ class LlmMentionProbeService:
                 int(usage.get("input_tokens") or 0),
                 int(usage.get("output_tokens") or 0),
                 int((time.time() - start) * 1000),
-                None,
+                anthropic_search_failure(blocks),
                 dedupe_urls(anthropic_citation_urls(blocks)),
             )
 
@@ -714,7 +719,7 @@ class LlmMentionProbeService:
         latency = int((time.time() - start) * 1000)
         if not result.ok:
             return ModelReply("", 0, 0, latency, (result.error or "dataforseo call failed")[:200], [])
-        row = (result.items or [{}])[0]
+        row = first_ai_result(result.raw)
         usage = response_usage(row)
         text = response_text(row)
         if not text:

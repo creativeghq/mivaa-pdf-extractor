@@ -9,6 +9,7 @@ __all__ = [
     "citation_domain",
     "anthropic_search_tool_type",
     "anthropic_citation_urls",
+    "anthropic_search_failure",
     "gemini_citation_urls",
     "domain_is_ours",
     "dedupe_urls",
@@ -112,6 +113,30 @@ def anthropic_citation_urls(blocks: Any) -> List[str]:
                 if isinstance(c, dict) and c.get("url"):
                     urls.append(str(c["url"]))
     return urls
+
+
+def anthropic_search_failure(blocks: Any) -> Optional[str]:
+    """The reason the web search produced nothing, or None when it worked.
+
+    A `web_search_tool_result` whose `content` is an error OBJECT rather than a list is
+    a search that did not happen. The model still answers - from memory - so the call
+    looks successful and the probe records "answered, no sources", which is precisely
+    the unknown-rendered-as-zero shape. Only reported when NO search succeeded:
+    `max_uses_exceeded` after two good searches is a stop, not a failure.
+    """
+    errors: List[str] = []
+    succeeded = False
+    for block in blocks or []:
+        if not isinstance(block, dict) or block.get("type") != "web_search_tool_result":
+            continue
+        content = block.get("content")
+        if isinstance(content, list):
+            succeeded = True
+        elif isinstance(content, dict):
+            errors.append(str(content.get("error_code") or content.get("type") or "unknown"))
+    if succeeded or not errors:
+        return None
+    return f"web_search failed: {', '.join(sorted(set(errors)))}"
 
 
 def gemini_citation_urls(candidate: Any) -> List[str]:

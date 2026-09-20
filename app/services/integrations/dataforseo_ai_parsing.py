@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 __all__ = [
+    "first_ai_result",
     "response_text",
     "response_annotations",
     "response_urls",
@@ -13,6 +14,24 @@ __all__ = [
     "mentions_rows",
     "scraper_text",
 ]
+
+
+def first_ai_result(raw: Any) -> Dict[str, Any]:
+    """The AI result object out of a raw DataForSEO envelope.
+
+    Read from `raw`, never from the client's flattened `items`: `_call` hoists any
+    result carrying an `items` key, so the AI endpoints - whose result object IS
+    `{model_name, input_tokens, items: [...]}` - arrive flattened to their message
+    items with the tokens and the model name gone. Parsing that yields an empty answer
+    on a perfectly good response.
+    """
+    tasks = (raw or {}).get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return {}
+    results = (tasks[0] or {}).get("result")
+    if not isinstance(results, list) or not results:
+        return {}
+    return results[0] if isinstance(results[0], dict) else {}
 
 
 def _sections(result: Any) -> List[Dict[str, Any]]:

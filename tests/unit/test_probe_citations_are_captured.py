@@ -112,3 +112,43 @@ class TestGeminiCitations:
     def test_an_ungrounded_answer_cites_nothing(self):
         assert gemini_citation_urls({"content": {"parts": [{"text": "hi"}]}}) == []
         assert gemini_citation_urls(None) == []
+
+
+anthropic_search_failure = _vm.anthropic_search_failure
+
+
+class TestAFailedSearchIsNotASourcelessAnswer:
+    OK_BLOCK = {"type": "web_search_tool_result", "content": [
+        {"type": "web_search_result", "url": "https://a.gr/x"}]}
+    ERR_BLOCK = {"type": "web_search_tool_result", "content": {
+        "type": "web_search_tool_result_error", "error_code": "unavailable"}}
+
+    def test_a_search_that_never_ran_is_reported(self):
+        # The model still answers, from memory, so the call looks successful and the
+        # probe would record "answered, no sources" — unknown rendered as zero.
+        assert anthropic_search_failure([self.ERR_BLOCK]) == "web_search failed: unavailable"
+
+    def test_a_stop_after_a_good_search_is_not_a_failure(self):
+        # max_uses_exceeded with results already read is a stop, not a failure; the
+        # citations from those searches are real and must not be thrown away.
+        blocks = [self.OK_BLOCK,
+                  {"type": "web_search_tool_result",
+                   "content": {"error_code": "max_uses_exceeded"}}]
+        assert anthropic_search_failure(blocks) is None
+
+    def test_a_clean_search_reports_nothing(self):
+        assert anthropic_search_failure([self.OK_BLOCK]) is None
+
+    def test_an_answer_that_never_searched_is_not_a_search_failure(self):
+        assert anthropic_search_failure([{"type": "text", "text": "hi"}]) is None
+        assert anthropic_search_failure([]) is None
+        assert anthropic_search_failure(None) is None
+
+    def test_the_probe_records_it_rather_than_discarding_it(self):
+        import re
+        from pathlib import Path
+        src = (Path(__file__).resolve().parents[2] / "app" / "services" / "integrations"
+               / "llm_mention_probe_service.py").read_text(encoding="utf-8")
+        body = src.split("async def _call_anthropic")[1].split("async def")[0]
+        assert "anthropic_search_failure(blocks)" in body
+        assert not re.search(r"\n\s+None,\n\s+dedupe_urls\(anthropic_citation_urls", body)
