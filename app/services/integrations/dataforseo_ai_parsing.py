@@ -13,6 +13,9 @@ __all__ = [
     "response_fan_out_queries",
     "mentions_rows",
     "scraper_text",
+    "scraper_source_urls",
+    "scraper_brands",
+    "scraper_check_url",
 ]
 
 
@@ -133,11 +136,81 @@ def mentions_rows(result: Any) -> List[Dict[str, Any]]:
 
 
 def scraper_text(result: Any) -> Optional[str]:
-    """The answer text from an LLM Scraper result. Scraped HTML has no `sections`, so
-    the message body is read from `items[].text` instead."""
+    """The answer as the consumer surface rendered it.
+
+    The scraper speaks `markdown`, not `text`, and not the `sections` that
+    llm_responses uses — three shapes for "the answer" across one vendor. The
+    top-level field is the whole reply; the per-item ones are its blocks, joined
+    only when the top level is absent.
+    """
+    r = result or {}
+    top = str(r.get("markdown") or "").strip()
+    if top:
+        return top
     parts: List[str] = []
-    for item in (result or {}).get("items") or []:
-        if isinstance(item, dict) and item.get("text"):
-            parts.append(str(item["text"]))
+    for item in r.get("items") or []:
+        if isinstance(item, dict) and item.get("markdown"):
+            parts.append(str(item["markdown"]))
     joined = "\n".join(parts).strip()
     return joined or None
+
+
+def scraper_source_urls(result: Any) -> List[str]:
+    """Cited URLs from a scraped answer — the links the consumer surface actually shows.
+
+    Deduped on the URL MINUS its tracking query: every ChatGPT source carries
+    `?utm_source=chatgpt.com`, so a raw dedupe keeps the same page twice when one copy
+    happens to arrive without it.
+    """
+    seen: set = set()
+    out: List[str] = []
+    for src in _scraper_sources(result):
+        url = str(src.get("url") or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        key = url.split("?")[0].rstrip("/").lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(url)
+    return out
+
+
+def scraper_brands(result: Any) -> List[str]:
+    """Brands the scraper itself identified in the answer.
+
+    Ground truth rather than an LLM re-reading the prose: DataForSEO marks the entity
+    while it has the rendered page, including the ones a text pass would miss.
+    """
+    out: List[str] = []
+    seen: set = set()
+    for item in [(result or {}), *((result or {}).get("items") or [])]:
+        if not isinstance(item, dict):
+            continue
+        for b in item.get("brand_entities") or []:
+            if not isinstance(b, dict):
+                continue
+            name = str(b.get("title") or "").strip()
+            if name and name.lower() not in seen:
+                seen.add(name.lower())
+                out.append(name)
+    return out
+
+
+def scraper_check_url(result: Any) -> Optional[str]:
+    """The link that reproduces this answer on the consumer surface."""
+    v = (result or {}).get("check_url")
+    return str(v) if v else None
+
+
+def _scraper_sources(result: Any) -> List[Dict[str, Any]]:
+    """Sources live top-level AND on each item; the item ones are a subset but not
+    always, so both are read and the caller dedupes."""
+    out: List[Dict[str, Any]] = []
+    for holder in [(result or {}), *((result or {}).get("items") or [])]:
+        if not isinstance(holder, dict):
+            continue
+        for src in holder.get("sources") or []:
+            if isinstance(src, dict):
+                out.append(src)
+    return out

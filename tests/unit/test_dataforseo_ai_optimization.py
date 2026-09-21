@@ -255,5 +255,81 @@ class TestTheCountryReachesTheCall:
         # the-constraint trap: it passes validation and dies as a raw 23514.
         routes = _source(_APP / "api" / "mention_monitoring_routes.py")
         service = _source(_APP / "services" / "integrations" / "tracked_mentions_service.py")
-        assert 'pattern="^(cheap|frontier|dataforseo)$"' in routes
-        assert '"cheap", "frontier", "dataforseo"' in service
+        assert 'pattern="^(cheap|frontier|dataforseo|scraper)$"' in routes
+        assert '"cheap", "frontier", "dataforseo", "scraper"' in service
+
+
+class TestTheScrapedConsumerSurface:
+    #: The real shape, from the sandbox on 2026-09-21. Three different spellings of
+    #: "the answer" across one vendor: sections (llm_responses), markdown (scraper).
+    SCRAPED = {
+        "keyword": "best tile suppliers in Thessaloniki",
+        "check_url": "https://chatgpt.com/?prompt=x&hints=search",
+        "markdown": "Kerablock and Tilehub both supply Thessaloniki.",
+        "sources": [
+            {"type": "chat_gpt_source", "title": "Kerablock", "domain": "kerablock.gr",
+             "url": "https://kerablock.gr/tiles?utm_source=chatgpt.com"},
+            {"type": "chat_gpt_source", "title": "Kerablock", "domain": "kerablock.gr",
+             "url": "https://kerablock.gr/tiles"},
+            {"type": "chat_gpt_source", "title": "Tilehub", "domain": "tilehub.gr",
+             "url": "https://tilehub.gr/"},
+        ],
+        "brand_entities": [
+            {"type": "chat_gpt_brand_entity", "title": "Kerablock", "category": "company"},
+            {"type": "chat_gpt_brand_entity", "title": "Tilehub", "category": "company"},
+        ],
+        "items": [{"type": "chat_gpt_text", "markdown": "Kerablock and Tilehub both supply Thessaloniki.",
+                   "sources": [], "brand_entities": []}],
+    }
+
+    def test_the_answer_is_markdown_not_text(self):
+        # scraper_text originally read items[].text. The field is `markdown`, so every
+        # scraped answer would have come back empty and recorded as a failed probe.
+        assert _p.scraper_text(self.SCRAPED) == "Kerablock and Tilehub both supply Thessaloniki."
+        assert _p.scraper_text({"items": [{"markdown": "block one"}]}) == "block one"
+        assert _p.scraper_text({}) is None
+
+    def test_a_tracking_parameter_does_not_duplicate_a_source(self):
+        # Every ChatGPT source carries ?utm_source=chatgpt.com; a raw dedupe keeps the
+        # same page twice the moment one copy arrives without it.
+        urls = _p.scraper_source_urls(self.SCRAPED)
+        assert len(urls) == 2
+        assert urls[0].startswith("https://kerablock.gr/tiles")
+        assert "https://tilehub.gr/" in urls
+
+    def test_brands_come_from_the_scraper_not_a_re_read(self):
+        assert _p.scraper_brands(self.SCRAPED) == ["Kerablock", "Tilehub"]
+        assert _p.scraper_brands({}) == []
+
+    def test_the_check_url_is_kept_so_an_answer_can_be_reproduced(self):
+        assert _p.scraper_check_url(self.SCRAPED).startswith("https://chatgpt.com/")
+        assert _p.scraper_check_url({}) is None
+
+    def test_nothing_raises_on_a_shape_it_does_not_know(self):
+        for bad in (None, {}, {"sources": None}, {"items": ["str"]}, {"brand_entities": [1]}):
+            assert _p.scraper_source_urls(bad) == []
+            assert _p.scraper_brands(bad) == []
+
+
+class TestTheScrapeRouteIsItsOwnSurface:
+    def test_scraped_engines_are_their_own_model_ids(self):
+        src = _blank_comments(_source(_PROBE))
+        assert 'SCRAPE_PREFIX = "scrape:"' in src
+        assert "SCRAPER_TIER: [SCRAPE_CHAT_GPT, SCRAPE_GEMINI]" in src
+
+    def test_only_the_two_scrapeable_surfaces_are_offered(self):
+        # llm_scraper has no claude or perplexity endpoint; listing one would be a
+        # tier entry the client refuses.
+        src = _blank_comments(_source(_PROBE))
+        tier = src.split("SCRAPER_TIER: [")[1].split("]")[0]
+        assert "CLAUDE" not in tier and "PERPLEXITY" not in tier
+
+    def test_it_bills_no_tokens_because_nothing_was_generated(self):
+        src = _blank_comments(_source(_PROBE))
+        body = src.split("async def _call_llm_scraper")[1].split("    # ")[0]
+        assert "ModelReply(text, 0, 0, latency, None, scraper_source_urls(row))" in body
+
+    def test_it_reads_raw_like_the_other_dataforseo_route(self):
+        src = _blank_comments(_source(_PROBE))
+        body = src.split("async def _call_llm_scraper")[1].split("    # ")[0]
+        assert "first_ai_result(result.raw)" in body

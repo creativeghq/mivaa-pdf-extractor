@@ -36,6 +36,7 @@ from app.services.integrations.dataforseo_unified_client import (
 )
 from app.services.integrations.dataforseo_ai_parsing import (
     first_ai_result, response_text, response_urls, response_usage,
+    scraper_source_urls, scraper_text,
 )
 from app.services.integrations.platform_secret_resolver import resolve_secret
 from app.services.utilities.prompt_registry import load_prompt, render
@@ -83,9 +84,17 @@ DFS_GEMINI = f"{DFS_PREFIX}gemini"
 DFS_PERPLEXITY = f"{DFS_PREFIX}perplexity"
 DFS_CLAUDE = f"{DFS_PREFIX}claude"
 
+#: SCRAPED from the consumer surface — chatgpt.com and gemini.google.com as a buyer
+#: sees them, personalisation and retrieval stack included. A vendor API answer is a
+#: proxy for this; keeping them as separate model ids is the same rule as `dfs:`.
+SCRAPE_PREFIX = "scrape:"
+SCRAPE_CHAT_GPT = f"{SCRAPE_PREFIX}chat_gpt"
+SCRAPE_GEMINI = f"{SCRAPE_PREFIX}gemini"
+
 CHEAP_TIER = "cheap"
 FRONTIER_TIER = "frontier"
 DATAFORSEO_TIER = "dataforseo"
+SCRAPER_TIER = "scraper"
 
 #: Which models each tier asks for. What actually runs is this ∩ the configured keys.
 TIER_MODELS: Dict[str, List[str]] = {
@@ -95,6 +104,8 @@ TIER_MODELS: Dict[str, List[str]] = {
     # the four direct providers were unfunded on 2026-09-20 and a probe that cannot run
     # reports nothing rather than a zero.
     DATAFORSEO_TIER: [DFS_CHAT_GPT, DFS_CLAUDE, DFS_GEMINI, DFS_PERPLEXITY],
+    # Only two surfaces are scrapeable; Claude and Perplexity have no equivalent.
+    SCRAPER_TIER: [SCRAPE_CHAT_GPT, SCRAPE_GEMINI],
 }
 
 # Token-cost in USD per 1K tokens (input, output) — for ai_usage_logs
@@ -255,7 +266,7 @@ class LlmMentionProbeService:
             return self.openai_key
         if model in (GEMINI_FLASH, GEMINI_PRO):
             return self.gemini_key
-        if model.startswith(DFS_PREFIX):
+        if model.startswith((DFS_PREFIX, SCRAPE_PREFIX)):
             return self.dataforseo_key
         if model in (SONAR, SONAR_PRO):
             return self.perplexity_key
@@ -573,6 +584,9 @@ class LlmMentionProbeService:
                 return await self._call_gemini(prompt, model=model, start=start)
             if model in (SONAR, SONAR_PRO):
                 return await self._call_perplexity(prompt, model=model, start=start)
+            if model.startswith(SCRAPE_PREFIX):
+                return await self._call_llm_scraper(
+                    prompt, model=model, start=start, country_code=country_code)
             if model.startswith(DFS_PREFIX):
                 return await self._call_dataforseo(
                     prompt, model=model, start=start, country_code=country_code)
@@ -738,6 +752,34 @@ class LlmMentionProbeService:
             None,
             response_urls(row),
         )
+
+    async def _call_llm_scraper(
+        self, prompt: str, *, model: str, start: float,
+        country_code: Optional[str] = None, language_code: str = "en",
+    ) -> ModelReply:
+        """The answer a buyer is actually shown, scraped from the consumer surface.
+
+        Everything else here asks a vendor API, which has no personalisation, no memory
+        and a different retrieval stack — a proxy for what a person sees. This is the
+        thing itself, so its sources are the ones that really appeared on the page.
+        """
+        family = model[len(SCRAPE_PREFIX):]
+        client = DataForSEOUnifiedClient()
+        result = await client.ai_llm_scraper(
+            model_family=family,
+            keyword=prompt,
+            language_code=language_code,
+            country_code=country_code,
+        )
+        latency = int((time.time() - start) * 1000)
+        if not result.ok:
+            return ModelReply("", 0, 0, latency, (result.error or "scraper call failed")[:200], [])
+        row = first_ai_result(result.raw)
+        text = scraper_text(row)
+        if not text:
+            return ModelReply("", 0, 0, latency, "scraper returned no answer text", [])
+        # No token counts: nothing was generated for us, a rendered page was read.
+        return ModelReply(text, 0, 0, latency, None, scraper_source_urls(row))
 
     # ───── Internal: extraction (Haiku) ─────
 
