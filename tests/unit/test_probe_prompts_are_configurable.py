@@ -122,3 +122,6 @@ class TestTheWiringIsReal:
         helper = src[src.index("def _probe_overrides"):]
         helper = helper[: helper.index("\n@router")]
         assert "custom_probes" in helper and "include_default_probes" in helper
+        assert '"country_code"' in helper and "country_codes" in helper, (
+            "the subject's market must reach the probe, or DataForSEO answers for the US"
+        )

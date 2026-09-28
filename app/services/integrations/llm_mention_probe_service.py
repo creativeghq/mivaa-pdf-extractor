@@ -165,6 +165,7 @@ class ModelReply(NamedTuple):
     latency_ms: int
     error: Optional[str]
     citations: List[str]
+    cost_usd: float = 0.0
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -334,7 +335,7 @@ class LlmMentionProbeService:
                 except Exception as e:
                     reply = ModelReply("", 0, 0, 0, str(e), [])
 
-                cost = self._cost(model, reply.input_tokens, reply.output_tokens)
+                cost = reply.cost_usd or self._cost(model, reply.input_tokens, reply.output_tokens)
                 total_cost += cost
 
                 # Layer A: log every probe call with attribution
@@ -751,6 +752,7 @@ class LlmMentionProbeService:
             latency,
             None,
             response_urls(row),
+            float(result.cost_usd or 0.0),
         )
 
     async def _call_llm_scraper(
@@ -779,7 +781,7 @@ class LlmMentionProbeService:
         if not text:
             return ModelReply("", 0, 0, latency, "scraper returned no answer text", [])
         # No token counts: nothing was generated for us, a rendered page was read.
-        return ModelReply(text, 0, 0, latency, None, scraper_source_urls(row))
+        return ModelReply(text, 0, 0, latency, None, scraper_source_urls(row), float(result.cost_usd or 0.0))
 
     # ───── Internal: extraction (Haiku) ─────
 

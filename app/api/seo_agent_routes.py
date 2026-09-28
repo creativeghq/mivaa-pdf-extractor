@@ -58,6 +58,7 @@ _ALLOWED_METHODS = {
     "serp_google_organic", "serp_google_maps", "serp_google_local_finder",
     "serp_google_news", "serp_google_images", "serp_google_jobs",
     "serp_google_autocomplete", "serp_google_finance", "serp_google_ai_summary",
+    "serp_google_locations",
     # SERP — other engines
     "serp_bing_organic", "serp_youtube_organic",
     "serp_youtube_video_info", "serp_youtube_video_subtitles", "serp_youtube_video_comments",

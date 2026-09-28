@@ -1087,10 +1087,13 @@ def _probe_overrides(row: dict) -> dict:
     `.get('source_config', {}).get(...)` chains is exactly how one path keeps
     asking the stock questions while the UI says the custom ones are saved.
     """
+    countries = [c for c in ((row or {}).get("country_codes") or []) if isinstance(c, str) and c.strip()]
+    country_code = countries[0].strip().upper() if countries else None
     cfg = (row or {}).get("source_config") or {}
     if not isinstance(cfg, dict):
-        return {"custom_probes": None, "include_default_probes": True}
+        return {"custom_probes": None, "include_default_probes": True, "country_code": country_code}
     return {
+        "country_code": country_code,
         "custom_probes": cfg.get("custom_probes"),
         # Explicit opt-out only. Absent means keep the stock questions, so an
         # existing subject cannot silently lose its baseline measurement.

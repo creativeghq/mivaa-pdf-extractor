@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from app.services.integrations import dataforseo_envelope
+from app.services.integrations import dataforseo_serp_targeting as serp_targeting
 from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_dataforseo_labs_call, log_dataforseo_serp_call,
 )
@@ -433,21 +434,34 @@ class DataForSEOUnifiedClient:
 
     async def serp_google_organic(
         self, *, keyword: str, country_code: Optional[str] = None, language_code: str = "en",
-        depth: int = 30, paa_depth: int = 1, attribution: Optional[CostAttribution] = None,
+        depth: int = 30, paa_depth: int = 1, device: Optional[str] = None,
+        location_code: Optional[int] = None, attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
         """Google organic SERP (live/advanced) — full block surface (PAA + AI Overview
         + featured snippet + related searches + organic + videos + news + KG +
         paid + shopping)."""
-        body = [{
-            "keyword": keyword,
-            "location_code": country_to_location(country_code),
-            "language_code": language_code,
-            "depth": depth,
-            "people_also_ask_click_depth": paa_depth,
-        }]
-        return await self._call("/serp/google/organic/live/advanced", body,
+        try:
+            task = serp_targeting.organic_task(
+                keyword=keyword, country_location=country_to_location(country_code),
+                language_code=language_code, depth=depth, paa_depth=paa_depth,
+                device=device, location_code=location_code,
+            )
+        except ValueError as e:
+            return DataForSEOResult(ok=False, error=str(e), status_code=400)
+        return await self._call("/serp/google/organic/live/advanced", [task],
                                 attribution=attribution, log_kind="serp",
                                 operation=f"serp.google.organic:{keyword}")
+
+    async def serp_google_locations(
+        self, *, country_code: str, attribution: Optional[CostAttribution] = None,
+    ) -> DataForSEOResult:
+        """Every location Google SERPs can be fetched for inside one country. Free upstream."""
+        try:
+            path = serp_targeting.locations_path(country_code)
+        except ValueError as e:
+            return DataForSEOResult(ok=False, error=str(e), status_code=400)
+        return await self._call(path, method="GET", attribution=attribution, log_kind="serp",
+                                operation=f"serp.google.locations:{country_code.upper()}")
 
     async def serp_google_maps(
         self, *, keyword: str, country_code: Optional[str] = None, language_code: str = "en",
