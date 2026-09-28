@@ -327,7 +327,7 @@ class TestTheScrapeRouteIsItsOwnSurface:
     def test_it_bills_no_tokens_because_nothing_was_generated(self):
         src = _blank_comments(_source(_PROBE))
         body = src.split("async def _call_llm_scraper")[1].split("    # ")[0]
-        assert "ModelReply(text, 0, 0, latency, None, scraper_source_urls(row))" in body
+        assert "ModelReply(text, 0, 0, latency, None, scraper_source_urls(row)" in body
 
     def test_it_reads_raw_like_the_other_dataforseo_route(self):
         src = _blank_comments(_source(_PROBE))
