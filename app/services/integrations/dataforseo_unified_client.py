@@ -124,6 +124,7 @@ def _llm_mentions_body(
     country_code: Optional[str] = None,
     platform: Optional[str] = None,
     limit: Optional[int] = None,
+    order_by: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """One Extended LLM Mentions request body.
 
@@ -155,6 +156,8 @@ def _llm_mentions_body(
         body["platform"] = platform
     if limit:
         body["limit"] = min(int(limit), 1000)
+    if order_by:
+        body["order_by"] = [str(o) for o in order_by][:3]
     return body
 
 
@@ -633,15 +636,16 @@ class DataForSEOUnifiedClient:
         self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
         language_code: str = "en", country_code: Optional[str] = None,
         platform: Optional[str] = None, limit: int = 100,
+        order_by: Optional[List[str]] = None,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
         body = [_llm_mentions_body(
             keyword=keyword, domain=domain, language_code=language_code,
-            country_code=country_code, platform=platform, limit=limit,
+            country_code=country_code, platform=platform, limit=limit, order_by=order_by,
         )]
         return await self._call(LLM_MENTIONS_PATHS["search"], body,
                                 attribution=attribution, log_kind="labs",
-                                operation=f"ai.llm_mentions.search:{keyword}")
+                                operation=f"ai.llm_mentions.search:{keyword or domain}")
 
     async def ai_llm_mentions_top_pages(
         self, *, keyword: Optional[str] = None, domain: Optional[str] = None,

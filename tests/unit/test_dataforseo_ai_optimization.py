@@ -333,3 +333,16 @@ class TestTheScrapeRouteIsItsOwnSurface:
         src = _blank_comments(_source(_PROBE))
         body = src.split("async def _call_llm_scraper")[1].split("    # ")[0]
         assert "first_ai_result(result.raw)" in body
+
+
+class TestTheCitedQuestionsSearch:
+    def test_search_hands_its_order_to_the_body(self):
+        src = _blank_comments(_source(_CLIENT))
+        body = src.split("async def ai_llm_mentions_search")[1].split("async def ")[0]
+        assert "order_by: Optional[List[str]] = None," in body
+        assert "order_by=order_by" in body
+
+    def test_the_body_states_the_order(self):
+        src = _blank_comments(_source(_CLIENT))
+        builder = src.split("def _llm_mentions_body")[1].split("\ndef ")[0]
+        assert 'body["order_by"]' in builder
