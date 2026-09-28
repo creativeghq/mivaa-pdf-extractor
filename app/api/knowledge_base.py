@@ -531,6 +531,79 @@ async def create_kb_document_from_pdf(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+KB_PDF_MAX_BYTES = 25 * 1024 * 1024
+KB_PDF_MAX_PAGES = 300
+
+
+class ExtractPdfTextResponse(BaseModel):
+    markdown: str
+    page_count: int
+    pages_read: int
+    truncated: bool
+
+
+def _pdf_to_markdown(pdf_bytes: bytes) -> ExtractPdfTextResponse:
+    import os
+    import tempfile
+
+    import fitz  # PyMuPDF
+    import pymupdf4llm
+
+    # Opened from a real path: pymupdf4llm reads doc.name on pages with drawn boxes, None for a stream.
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(pdf_bytes)
+        doc = fitz.open(path)
+        try:
+            page_count = doc.page_count
+            pages = list(range(min(page_count, KB_PDF_MAX_PAGES)))
+            # hdr_info=False: header detection hangs on some PDFs (see app/core/extractor.py).
+            markdown = pymupdf4llm.to_markdown(doc, pages=pages, hdr_info=False) if pages else ""
+        finally:
+            doc.close()
+    finally:
+        os.unlink(path)
+    return ExtractPdfTextResponse(
+        markdown=markdown,
+        page_count=page_count,
+        pages_read=len(pages),
+        truncated=page_count > len(pages),
+    )
+
+
+@router.post(
+    "/documents/extract-pdf",
+    response_model=ExtractPdfTextResponse,
+    summary="Extract PDF text as markdown",
+    description="Returns the PDF's text as markdown (tables kept as tables) for the KB editor. Writes nothing."
+)
+async def extract_kb_pdf_text(
+    file: UploadFile = File(...),
+    ctx: WorkspaceContext = Depends(get_workspace_context),
+) -> ExtractPdfTextResponse:
+    import asyncio
+
+    pdf_bytes = await file.read(KB_PDF_MAX_BYTES + 1)
+    if len(pdf_bytes) > KB_PDF_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="PDF is larger than 25 MB")
+    if not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="File is not a PDF")
+
+    try:
+        result = await asyncio.to_thread(_pdf_to_markdown, pdf_bytes)
+    except Exception as e:
+        logger.warning(f"KB PDF extraction failed for workspace {ctx.workspace_id}: {e}")
+        raise HTTPException(status_code=422, detail="Could not read this PDF")
+
+    if not result.markdown.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="No text found in this PDF — it is probably a scan. Paste the prices in by hand.",
+        )
+    return result
+
+
 # ============================================================================
 # Category Endpoints
 # ============================================================================
