@@ -253,7 +253,7 @@ class AIPricingConfig:
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour (Modal)
+            "hourly_rate_usd": Decimal("1.10"),  # Modal A10G list, $0.000306/s
             "gpu_type": "nvidia-a10g",
             "last_verified": "2026-06-14",
             "source": "Modal (app: slig)",
@@ -266,7 +266,7 @@ class AIPricingConfig:
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour (Modal)
+            "hourly_rate_usd": Decimal("1.10"),  # Modal A10G list, $0.000306/s
             "gpu_type": "nvidia-a10g",
             "last_verified": "2026-06-14",
             "source": "Modal (app: slig)",
@@ -283,7 +283,7 @@ class AIPricingConfig:
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour (Modal A10G)
+            "hourly_rate_usd": Decimal("1.10"),  # Modal A10G list, $0.000306/s
             "gpu_type": "nvidia-a10g",
             "last_verified": "2026-06-13",
             "source": "Modal",
