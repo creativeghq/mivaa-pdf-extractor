@@ -283,8 +283,8 @@ class AIPricingConfig:
             "input": Decimal("0.00"),
             "output": Decimal("0.00"),
             "billing_type": "time_based",
-            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour / model (self-hosted)  # GPU container (Modal L4)
-            "gpu_type": "nvidia-l4",
+            "hourly_rate_usd": Decimal("1.00"),  # flat $1 / GPU-hour (Modal A10G)
+            "gpu_type": "nvidia-a10g",
             "last_verified": "2026-06-13",
             "source": "Modal",
             "full_name": "PaddleOCR-VL Structural Pass (PaddlePaddle/PaddleOCR-VL)",

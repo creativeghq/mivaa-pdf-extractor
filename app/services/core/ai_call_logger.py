@@ -457,7 +457,7 @@ class AICallLogger:
     
     # All GPU-endpoint billing goes through `log_time_based_call`
     # (per-GPU-second pricing), which is the only correct path for SLIG
-    # (HuggingFace) / PaddleOCR (Modal structural pass) / future GPU
+    # (Modal) / PaddleOCR (Modal structural pass) / future GPU
     # endpoints. Token-based cost math gave $0.00 for these and was a
     # latent billing bug.
 
@@ -547,7 +547,7 @@ class AICallLogger:
         image_id: Optional[str] = None,
     ) -> bool:
         """
-        Log a time-based (GPU endpoint) call: SLIG (HuggingFace), PaddleOCR (Modal structural pass).
+        Log a time-based (GPU endpoint) call: SLIG (Modal), PaddleOCR (Modal structural pass).
 
         Cost is computed from latency × hourly_rate (no token math, since
         these endpoints bill per GPU-second). Uses ai_pricing.calculate_cost

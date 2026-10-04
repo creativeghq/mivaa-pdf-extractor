@@ -77,16 +77,15 @@ pair at **https://modal.com/settings/tokens** (or `modal token new`, then read
 
 ## CI auto-deploy (no manual `modal deploy` needed)
 
-The MIVAA workflow (`.github/workflows/deploy.yml`) has a **`deploy-modal`** job
-that runs **in parallel** with the server deploy and fires `modal deploy
-modal_app/paddleocr_vl.py` **only when `modal_app/**` changed** on the push (a
-`dorny/paths-filter` gate). So editing `paddleocr_vl.py` and pushing to `main`
-redeploys the Modal endpoint automatically.
+`.github/workflows/deploy-modal.yml` runs `modal deploy` for both apps on a push
+to `main`/`production` that touches `modal_app/**` (an `on.push.paths` filter).
+It is separate from `deploy.yml`, which ignores `modal_app/**`, so a Modal-only
+change never restarts the server.
 
 - It authenticates with `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` (set B above). If
   those secrets are missing, the step fails fast with a pointer to the token page.
-- To force a redeploy with no `modal_app/**` change: run the workflow via
-  **Actions → Run workflow → `force_modal_deploy: true`** (`workflow_dispatch`).
+- To force a redeploy with no `modal_app/**` change: **Actions → Modal Deployment
+  → Run workflow** (`workflow_dispatch`; `deployment_reason` is optional).
 - The endpoint's own bearer (the `paddleocr-api-key` Modal secret) is referenced by
   the app at deploy time and **never travels through CI**.
 
@@ -247,8 +246,7 @@ Modal prints `https://<workspace>--slig-sligservice-web.modal.run` — that's
 `slig-api-key` secret exposing `SLIG_API_KEY`, add it to `secrets=[...]` in
 `slig.py`, and it takes precedence.
 
-CI auto-deploys via the existing `deploy-modal` job (the `dorny/paths-filter` gate
-fires on any `modal_app/**` change, so editing `slig.py` and pushing redeploys it
+CI auto-deploys via `deploy-modal.yml` (any `modal_app/**` change redeploys it
 alongside PaddleOCR). MIVAA wiring (`SLIG_MODAL_URL` / `SLIG_MODAL_API_KEY` env,
 provider switch) lands in the platform-integration phase — this folder is the
 standalone module only.
