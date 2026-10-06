@@ -87,18 +87,62 @@ def resolve_default_unit(
     return default
 
 
-def load_category_units(supabase: Any) -> Tuple[Dict[str, str], Dict[str, str]]:
-    """Read the category registry. Returns (category_key -> unit, vocab value -> category_key).
+def resolve_category_id(
+    material_category: Optional[str],
+    category_ids: Optional[Dict[str, str]] = None,
+    vocab_to_category: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Resolve a coarse key OR a fine vocabulary value onto `material_categories.id`.
 
-    Fails soft to two empty maps: an unavailable registry means `resolve_default_unit` falls
-    back to its default rather than to a stale copy of the table.
+    Args:
+        material_category: category key, controlled_vocab value or alias.
+        category_ids: category_key -> id, from material_categories.
+        vocab_to_category: controlled_vocab value / alias -> category_key.
+
+    Returns:
+        The category id, or None when nothing resolves. None is the honest answer and the
+        caller leaves products.category_id unset; guessing by substring is what
+        resolve_default_unit deliberately stopped doing.
+    """
+    if not material_category:
+        return None
+    cat = str(material_category).lower().strip()
+    if not cat:
+        return None
+
+    ids = category_ids or {}
+    if cat in ids:
+        return ids[cat]
+
+    owner = (vocab_to_category or {}).get(cat)
+    if owner and owner in ids:
+        return ids[owner]
+
+    return None
+
+
+def load_category_units(supabase: Any) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """(category_key -> unit, vocab value -> category_key). See `load_category_registry`."""
+    units, vocab, _ids = load_category_registry(supabase)
+    return units, vocab
+
+
+def load_category_registry(
+    supabase: Any,
+) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """Read the category registry once.
+
+    Returns (category_key -> unit, vocab value -> category_key, category_key -> id). Fails
+    soft to three empty maps: an unavailable registry means the resolvers fall back to their
+    defaults rather than to a stale copy of the table.
     """
     units: Dict[str, str] = {}
     vocab: Dict[str, str] = {}
+    ids: Dict[str, str] = {}
     try:
         client = getattr(supabase, 'client', supabase)
         resp = client.table('material_categories') \
-            .select('category_key, default_unit, controlled_vocab, vocab_aliases') \
+            .select('id, category_key, default_unit, controlled_vocab, vocab_aliases') \
             .eq('is_active', True).execute()
         for row in (resp.data or []):
             key = (row.get('category_key') or '').lower().strip()
@@ -107,10 +151,12 @@ def load_category_units(supabase: Any) -> Tuple[Dict[str, str], Dict[str, str]]:
             unit = row.get('default_unit')
             if unit:
                 units[key] = unit
+            if row.get('id'):
+                ids[key] = row['id']
             for term in (row.get('controlled_vocab') or []) + (row.get('vocab_aliases') or []):
                 t = str(term or '').lower().strip()
                 if t:
                     vocab.setdefault(t, key)
     except Exception:
-        return {}, {}
-    return units, vocab
+        return {}, {}, {}
+    return units, vocab, ids

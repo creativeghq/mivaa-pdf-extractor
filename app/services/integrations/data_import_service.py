@@ -28,17 +28,30 @@ from app.services.facets import canonicalize_product_attributes
 from app.services.products.material_quota import material_quota_remaining_async
 import sentry_sdk
 from app.utils.text_fold import fold_model_token
-from app.services.products.category_units import load_category_units, resolve_default_unit
+from app.services.products.category_units import (
+    load_category_registry, resolve_category_id, resolve_default_unit,
+)
+from app.utils.price_parsing import parse_price
 
 _CATEGORY_UNITS = None
 _VOCAB_TO_CATEGORY = None
+_CATEGORY_IDS = None
+
+
+def _load_registry(supabase=None):
+    global _CATEGORY_UNITS, _VOCAB_TO_CATEGORY, _CATEGORY_IDS
+    if _CATEGORY_UNITS is None and supabase is not None:
+        _CATEGORY_UNITS, _VOCAB_TO_CATEGORY, _CATEGORY_IDS = load_category_registry(supabase)
 
 
 def _default_unit_for(material_category, supabase=None):
-    global _CATEGORY_UNITS, _VOCAB_TO_CATEGORY
-    if _CATEGORY_UNITS is None and supabase is not None:
-        _CATEGORY_UNITS, _VOCAB_TO_CATEGORY = load_category_units(supabase)
+    _load_registry(supabase)
     return resolve_default_unit(material_category, _CATEGORY_UNITS, _VOCAB_TO_CATEGORY)
+
+
+def _category_id_for(material_category, supabase=None):
+    _load_registry(supabase)
+    return resolve_category_id(material_category, _CATEGORY_IDS, _VOCAB_TO_CATEGORY)
 
 logger = logging.getLogger(__name__)
 
@@ -693,6 +706,17 @@ class DataImportService:
             if factory_obj:
                 product_metadata['factory'] = factory_obj
 
+            # Every public surface reads the image off `metadata` (imageFromMetadata);
+            # _link_images_to_product writes document_images, which none of them query.
+            # pdf-tiles is public-read, so the URL is stable and safe to persist.
+            _hero = next(
+                (i.get('storage_url') for i in (product_data.get('downloaded_images') or [])
+                 if i.get('success') and i.get('storage_url')),
+                None,
+            )
+            if _hero:
+                product_metadata['image_url'] = _hero
+
             # Build product record for database
             product_record = {
                 "name": product_name,
@@ -718,6 +742,23 @@ class DataImportService:
                 "created_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat()
             }
+
+            # Columns a marketplace feed reads directly. `category_id` was never set at all,
+            # so <category> came out empty on every imported product and both Skroutz and
+            # BestPrice drop a product missing it.
+            _cat_id = _category_id_for(mat_cat, self.supabase)
+            if _cat_id:
+                product_record['category_id'] = _cat_id
+            for _col, _src in (('mpn', 'mpn'), ('barcode', 'barcode')):
+                _v = product_data.get(_src)
+                if _v and str(_v).strip():
+                    product_record[_col] = str(_v).strip()
+            _weight = product_data.get('weight')
+            if _weight is not None and str(_weight).strip():
+                try:
+                    product_record['net_mass_kg'] = float(str(_weight).replace(',', '.').strip())
+                except (TypeError, ValueError):
+                    logger.warning(f"   WARN unparseable weight '{_weight}' for {product_name}")
 
             # Add source tracking fields
             product_record['source_type'] = source
@@ -839,6 +880,13 @@ class DataImportService:
                     self._material_quota_remaining -= 1
                 logger.info(f"✅ Created product {product_id}: {product_name}")
 
+            # The product feed and the storefront both read FROM product_prices, so a product
+            # with no row there is invisible to both however complete it is. The price was
+            # already captured into metadata and stopped there.
+            await self._upsert_import_price(
+                workspace_id, product_id, product_data, product_metadata.get('unit'), product_name,
+            )
+
             # Generate text_embedding_1024 for product-level vector search
             try:
                 emb_parts = [product_name or '']
@@ -903,6 +951,43 @@ class DataImportService:
         except Exception as e:
             logger.error(f"❌ Failed to create product {product_data.get('name')}: {e}")
             raise
+
+    async def _upsert_import_price(
+        self,
+        workspace_id: str,
+        product_id: str,
+        product_data: Dict[str, Any],
+        unit: Optional[str],
+        product_name: str,
+    ) -> None:
+        """Write the supplier's price onto product_prices.
+
+        Upserts on (workspace_id, product_id, variant_key) so a re-import updates in place.
+        `storefront_published` is deliberately NOT set: publishing to a public shop and a
+        marketplace is a decision, not a side effect of an import.
+        """
+        raw = product_data.get('price')
+        if raw is None or str(raw).strip() == '':
+            return
+        amount, currency = parse_price(str(raw))
+        if amount is None or amount <= 0:
+            logger.warning(f"   WARN unparseable price '{raw}' for {product_name} — no price row")
+            return
+        try:
+            await self.db.table('product_prices').upsert(
+                {
+                    'workspace_id': workspace_id,
+                    'product_id': product_id,
+                    'variant_key': None,
+                    'list_price': float(amount),
+                    'currency': currency or 'EUR',
+                    'unit': unit,
+                    'notes': 'From supplier import',
+                },
+                on_conflict='workspace_id,product_id,variant_key',
+            ).execute()
+        except Exception as price_err:
+            logger.warning(f"   WARN price write failed for {product_name}: {price_err}")
 
     async def _link_images_to_product(
         self,
