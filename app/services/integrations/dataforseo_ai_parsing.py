@@ -96,10 +96,12 @@ def response_annotations(result: Any) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for section in _sections(result):
         for a in section.get("annotations") or []:
-            if not isinstance(a, dict) or not a.get("url"):
+            if not isinstance(a, dict) or not (a.get("direct_url") or a.get("url")):
                 continue
             out.append({
-                "url": str(a["url"]),
+                # Gemini's `url` is a vertexaisearch.cloud.google.com redirect that hides the
+                # site; `direct_url` is the page itself, and the only one a domain test can read.
+                "url": str(a.get("direct_url") or a["url"]),
                 "title": a.get("title"),
                 "text": a.get("text"),
                 "start_index": a.get("start_index"),

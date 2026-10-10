@@ -159,6 +159,14 @@ class TestAnnotationParsing:
         assert _p.response_urls(self.RESULT) == ["https://a.gr/x", "https://b.gr/y"]
         assert len(_p.response_annotations(self.RESULT)) == 3
 
+    def test_a_gemini_redirect_is_read_as_the_site_it_hides(self):
+        # Shape captured live 2026-10-10: `url` is Google's redirect, `direct_url` the page.
+        gem = {"items": [{"type": "message", "sections": [{"type": "text", "text": "Try Materials Hub.", "annotations": [
+            {"title": "materialshub.gr", "direct_url": "https://materialshub.gr/plakakia",
+             "url": "https://vertexaisearch.cloud.google.com/grounding-api-redirect/AUZIYQ"},
+            {"title": "b.gr", "url": "https://b.gr/y"}]}]}]}
+        assert _p.response_urls(gem) == ["https://materialshub.gr/plakakia", "https://b.gr/y"]
+
     def test_an_answer_with_web_search_off_yields_no_citations(self):
         off = {"items": [{"type": "message", "sections": [
             {"type": "text", "text": "From memory.", "annotations": None}]}]}
