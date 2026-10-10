@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 _BASE = "https://api.dataforseo.com/v3"
 _SANDBOX_BASE = "https://sandbox.dataforseo.com/v3"
 _HTTP_TIMEOUT = 30.0
+_FREE_REFUSALS = frozenset({402, 429})
+_FREE_REFUSAL_RETRIES = 3
 
 #: Credits charged per DataForSEO request. One flat unit: the provider bills per task
 #: and every path here issues exactly one, so a per-endpoint table would be a second
@@ -250,6 +252,25 @@ class DataForSEOUnifiedClient:
             return DataForSEOResult(ok=False, error=f"network: {e}", latency_ms=elapsed)
 
         elapsed = int((time.time() - start) * 1000)
+        # A funded account still has ~1 in 5 calls refused with 402 (measured 2026-10-10), and a
+        # refusal costs nothing, so 402/429 get up to three more tries. 5xx keeps its single retry.
+        attempt = 0
+        while resp.status_code in _FREE_REFUSALS and attempt < _FREE_REFUSAL_RETRIES:
+            attempt += 1
+            await asyncio.sleep(1.5 * attempt)
+            try:
+                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                    if method == "GET":
+                        resp = await client.get(url, headers=headers)
+                    else:
+                        resp = await client.post(url, headers=headers, json=body or [])
+            except httpx.RequestError as e:
+                elapsed = int((time.time() - start) * 1000)
+                self._log_cost(log_kind, attribution, operation, items=0, latency_ms=elapsed, success=False, error=str(e))
+                self._refund_call(attribution, operation, charged)
+                return DataForSEOResult(ok=False, error=f"retry network: {e}", latency_ms=elapsed)
+            elapsed = int((time.time() - start) * 1000)
+
         if resp.status_code >= 500:
             # 1 retry for 5xx. audit #14 MV-6: this used to issue client.post()
             # unconditionally, so retrying a GET silently turned it into a POST against
