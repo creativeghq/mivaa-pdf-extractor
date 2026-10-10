@@ -30,6 +30,7 @@ _HTTP_TIMEOUT = 30.0
 _FREE_REFUSALS = frozenset({402, 429})
 _FREE_REFUSAL_RETRIES = 3
 _LLM_MODEL_CACHE: Dict[str, Optional[str]] = {}
+_LLM_COUNTRY_FAMILIES = frozenset({"chat_gpt", "perplexity"})
 
 #: Credits charged per DataForSEO request. One flat unit: the provider bills per task
 #: and every path here issues exactly one, so a per-endpoint table would be a second
@@ -795,8 +796,9 @@ class DataForSEOUnifiedClient:
         if system_message:
             payload["system_message"] = system_message
         # Stated, never defaulted: with no country DataForSEO bills a US lookup and
-        # returns a US answer, which reads as a real verdict for the wrong market.
-        if web_search and country_code:
+        # returns a US answer. Claude and Gemini REJECT the field (40501, verified live
+        # 2026-10-10), so for them the market has to be named in the question itself.
+        if web_search and country_code and family in _LLM_COUNTRY_FAMILIES:
             payload["web_search_country_iso_code"] = country_code.upper()
         body = [payload]
         path_map = {

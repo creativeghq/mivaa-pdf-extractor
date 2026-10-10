@@ -149,7 +149,14 @@ def test_an_llm_response_always_names_a_model(monkeypatch):
     asyncio.run(c.ai_llm_response(model_family="chat_gpt", prompt="who sells tiles?", country_code="gr"))
     assert sent["body"][0]["model_name"] == "gpt-5-mini"
     assert sent["body"][0]["web_search_country_iso_code"] == "GR"
+    assert sent["body"][0]["max_output_tokens"] >= 1024  # 400 is refused as an invalid field
     assert parsing["LLM_MODEL_PREFERENCE"]
+
+    # Claude and Gemini refuse the country field outright, so it must not be sent to them.
+    for family in ("claude", "gemini"):
+        asyncio.run(c.ai_llm_response(model_family=family, prompt="who sells tiles?", country_code="GR"))
+        assert "web_search_country_iso_code" not in sent["body"][0], family
+        assert sent["body"][0]["model_name"] == "gpt-5-mini"  # stubbed list, cached per family
 
 
 def test_the_model_pick_prefers_a_listed_search_model():
