@@ -914,7 +914,8 @@ class LlmMentionProbeService:
             "mentioned": mentioned,
             "position": position,
             "sentiment": sentiment,
-            "competitors_mentioned": list(facets.competitor_brands)[:5],
+            # Only rivals the answer actually names — the configured list is not a finding.
+            "competitors_mentioned": [c for c in facets.competitor_brands if normalize_text(c) in nt][:5],
             "context_snippet": None,
             # Bare URL scrape. Cruder than the tool call but not a guess — a link that
             # is literally in the text is a link the answer cited.

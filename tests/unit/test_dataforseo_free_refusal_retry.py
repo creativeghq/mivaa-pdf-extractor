@@ -29,7 +29,8 @@ def _by_path(name, file):
 def _load_client():
     """Load the client by path: the package __init__ pulls in supabase, absent in CI."""
     saved = {k: sys.modules.get(k) for k in ("app", "app.services", _PKG, f"{_PKG}.dataforseo_envelope",
-                                              f"{_PKG}.dataforseo_serp_targeting", f"{_PKG}.mention_cost_logger")}
+                                              f"{_PKG}.dataforseo_serp_targeting", f"{_PKG}.mention_cost_logger",
+                                              f"{_PKG}.dataforseo_ai_parsing")}
     try:
         for name in ("app", "app.services", _PKG):
             pkg = types.ModuleType(name)
@@ -38,6 +39,7 @@ def _load_client():
         sys.modules[_PKG].dataforseo_envelope = _by_path(f"{_PKG}.dataforseo_envelope", _INT / "dataforseo_envelope.py")
         sys.modules[_PKG].dataforseo_serp_targeting = _by_path(
             f"{_PKG}.dataforseo_serp_targeting", _INT / "dataforseo_serp_targeting.py")
+        _by_path(f"{_PKG}.dataforseo_ai_parsing", _INT / "dataforseo_ai_parsing.py")
         logger = types.ModuleType(f"{_PKG}.mention_cost_logger")
         logger.CostAttribution = object
         logger.log_dataforseo_labs_call = logger.log_dataforseo_serp_call = lambda *a, **k: None
@@ -123,3 +125,39 @@ def test_a_402_that_persists_fails_and_refunds(monkeypatch):
     r = asyncio.run(c._call("/x", [{}]))
     assert not r.ok and r.status_code == 402
     assert calls["http"] == 4 and calls["charged"] == 1 and calls["refunded"] == 1
+
+
+def test_an_llm_response_always_names_a_model(monkeypatch):
+    """`model_name` is REQUIRED: without it every engine answered 40501 (2026-10-10)."""
+    parsing = client_mod.pick_llm_model.__globals__
+    c = client_mod.DataForSEOUnifiedClient(sandbox=False)
+    sent = {}
+
+    async def _models(**kw):
+        return client_mod.DataForSEOResult(ok=True, items=[
+            {"model_name": "o3-mini", "web_search_supported": False},
+            {"model_name": "gpt-5-mini", "web_search_supported": True},
+        ])
+
+    async def _call(path, body, **kw):
+        sent["path"], sent["body"] = path, body
+        return client_mod.DataForSEOResult(ok=True)
+
+    monkeypatch.setattr(client_mod, "_LLM_MODEL_CACHE", {})
+    monkeypatch.setattr(c, "ai_llm_models", _models)
+    monkeypatch.setattr(c, "_call", _call)
+    asyncio.run(c.ai_llm_response(model_family="chat_gpt", prompt="who sells tiles?", country_code="gr"))
+    assert sent["body"][0]["model_name"] == "gpt-5-mini"
+    assert sent["body"][0]["web_search_country_iso_code"] == "GR"
+    assert parsing["LLM_MODEL_PREFERENCE"]
+
+
+def test_the_model_pick_prefers_a_listed_search_model():
+    pick = client_mod.pick_llm_model
+    listed = [{"model_name": "sonar-pro", "web_search_supported": True},
+              {"model_name": "sonar", "web_search_supported": True}]
+    assert pick("perplexity", listed) == "sonar"
+    assert pick("perplexity", [{"model_name": "sonar", "web_search_supported": False},
+                               {"model_name": "x-search", "web_search_supported": True}]) == "x-search"
+    assert pick("claude", None) == "claude-haiku-5-5"
+    assert pick("nope", None) is None

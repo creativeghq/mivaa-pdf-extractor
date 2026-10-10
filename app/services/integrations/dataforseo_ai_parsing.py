@@ -16,7 +16,36 @@ __all__ = [
     "scraper_source_urls",
     "scraper_brands",
     "scraper_check_url",
+    "LLM_MODEL_PREFERENCE",
+    "pick_llm_model",
 ]
+
+#: LLM Responses REQUIRES `model_name` (40501 without it). Small, current, web-search
+#: models first: the probe asks who gets named, which needs search, not depth.
+LLM_MODEL_PREFERENCE: Dict[str, List[str]] = {
+    "chat_gpt": ["gpt-5.4-mini", "gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini"],
+    "claude": ["claude-haiku-5-5", "claude-haiku-4-5", "claude-sonnet-5"],
+    "gemini": ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"],
+    "perplexity": ["sonar", "sonar-pro"],
+}
+
+
+def pick_llm_model(family: str, models_result: Any) -> Optional[str]:
+    """The model to name for `family`, from the live `/llm_responses/models` result.
+
+    A preferred model that is listed wins; otherwise the first listed model that
+    supports web search; with no usable list, the first preference (the call then
+    fails loudly if it is gone, rather than silently asking a model without search).
+    """
+    prefs = LLM_MODEL_PREFERENCE.get(family.lower(), [])
+    rows = [r for r in (models_result or []) if isinstance(r, dict) and r.get("model_name")]
+    searchable = [str(r["model_name"]) for r in rows if r.get("web_search_supported")]
+    for name in prefs:
+        if name in searchable:
+            return name
+    if searchable:
+        return searchable[0]
+    return prefs[0] if prefs else None
 
 
 def first_ai_result(raw: Any) -> Dict[str, Any]:

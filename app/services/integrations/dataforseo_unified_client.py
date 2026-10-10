@@ -16,6 +16,7 @@ import httpx
 
 from app.services.integrations import dataforseo_envelope
 from app.services.integrations import dataforseo_serp_targeting as serp_targeting
+from app.services.integrations.dataforseo_ai_parsing import pick_llm_model
 from app.services.integrations.mention_cost_logger import (
     CostAttribution, log_dataforseo_labs_call, log_dataforseo_serp_call,
 )
@@ -28,6 +29,7 @@ _SANDBOX_BASE = "https://sandbox.dataforseo.com/v3"
 _HTTP_TIMEOUT = 30.0
 _FREE_REFUSALS = frozenset({402, 429})
 _FREE_REFUSAL_RETRIES = 3
+_LLM_MODEL_CACHE: Dict[str, Optional[str]] = {}
 
 #: Credits charged per DataForSEO request. One flat unit: the provider bills per task
 #: and every path here issues exactly one, so a per-endpoint table would be a second
@@ -786,6 +788,8 @@ class DataForSEOUnifiedClient:
             "max_output_tokens": max_output_tokens,
             "web_search": web_search,
         }
+        family = model_family.lower()
+        model = model or await self._resolve_llm_model(family)
         if model:
             payload["model_name"] = model
         if system_message:
@@ -880,6 +884,15 @@ class DataForSEOUnifiedClient:
         return await self._call("/ai_optimization/ai_keyword_data/locations_and_languages",
                                 method="GET", attribution=attribution, log_kind="labs",
                                 operation="ai.keyword_data.locations_and_languages")
+
+    async def _resolve_llm_model(self, family: str) -> Optional[str]:
+        """Name a live web-search model for `family`; the list is read once per process."""
+        if family not in _LLM_MODEL_CACHE:
+            listed = await self.ai_llm_models(model_family=family)
+            if not listed.ok:
+                return pick_llm_model(family, None)
+            _LLM_MODEL_CACHE[family] = pick_llm_model(family, listed.items)
+        return _LLM_MODEL_CACHE[family]
 
     async def ai_llm_models(
         self, *, model_family: str, attribution: Optional[CostAttribution] = None,
