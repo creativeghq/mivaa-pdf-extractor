@@ -125,3 +125,11 @@ class TestTheWiringIsReal:
         assert '"country_code"' in helper and "country_codes" in helper, (
             "the subject's market must reach the probe, or DataForSEO answers for the US"
         )
+        assert '"language_code"' in helper and "language_codes" in helper, (
+            "the subject's language must reach the probe, or the scraped answer is the English one"
+        )
+
+    def test_the_language_reaches_the_scraped_answer(self):
+        svc = (_ROUTES.parent.parent / "services" / "integrations" / "llm_mention_probe_service.py").read_text(encoding="utf-8")
+        assert "language_code=language_code)" in svc
+        assert 'language_code=language_code or "en")' in svc

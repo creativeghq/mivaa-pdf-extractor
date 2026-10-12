@@ -1089,11 +1089,15 @@ def _probe_overrides(row: dict) -> dict:
     """
     countries = [c for c in ((row or {}).get("country_codes") or []) if isinstance(c, str) and c.strip()]
     country_code = countries[0].strip().upper() if countries else None
+    languages = [c for c in ((row or {}).get("language_codes") or []) if isinstance(c, str) and c.strip()]
+    language_code = languages[0].strip().lower() if languages else None
     cfg = (row or {}).get("source_config") or {}
     if not isinstance(cfg, dict):
-        return {"custom_probes": None, "include_default_probes": True, "country_code": country_code}
+        return {"custom_probes": None, "include_default_probes": True,
+                "country_code": country_code, "language_code": language_code}
     return {
         "country_code": country_code,
+        "language_code": language_code,
         "custom_probes": cfg.get("custom_probes"),
         # Explicit opt-out only. Absent means keep the stock questions, so an
         # existing subject cannot silently lose its baseline measurement.

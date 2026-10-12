@@ -292,6 +292,7 @@ class LlmMentionProbeService:
         attribution: Optional[CostAttribution] = None,
         homepage_domain: Optional[str] = None,
         country_code: Optional[str] = None,
+        language_code: Optional[str] = None,
         tier: str = CHEAP_TIER,
         custom_probes: Any = None,
         include_default_probes: bool = True,
@@ -331,7 +332,8 @@ class LlmMentionProbeService:
             for model in models_to_use:
                 try:
                     reply = await self._call_model(
-                        model=model, prompt=p["prompt"], country_code=country_code)
+                        model=model, prompt=p["prompt"], country_code=country_code,
+                        language_code=language_code)
                 except Exception as e:
                     reply = ModelReply("", 0, 0, 0, str(e), [])
 
@@ -574,6 +576,7 @@ class LlmMentionProbeService:
 
     async def _call_model(
         self, *, model: str, prompt: str, country_code: Optional[str] = None,
+        language_code: Optional[str] = None,
     ) -> ModelReply:
         start = time.time()
         try:
@@ -587,7 +590,8 @@ class LlmMentionProbeService:
                 return await self._call_perplexity(prompt, model=model, start=start)
             if model.startswith(SCRAPE_PREFIX):
                 return await self._call_llm_scraper(
-                    prompt, model=model, start=start, country_code=country_code)
+                    prompt, model=model, start=start, country_code=country_code,
+                    language_code=language_code or "en")
             if model.startswith(DFS_PREFIX):
                 return await self._call_dataforseo(
                     prompt, model=model, start=start, country_code=country_code)
