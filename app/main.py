@@ -1834,6 +1834,7 @@ from app.api.internal_routes import router as internal_router
 from app.api.extraction_eval_routes import router as extraction_eval_router  # noqa: E402 — router block, like its neighbours
 from app.api.tabular_routes import router as tabular_router  # noqa: E402
 from app.api.catalog_routes import router as catalog_internal_router
+from app.api.text_routes import router as text_internal_router  # noqa: E402
 from app.api.prompt_templates import router as prompt_templates_router
 from app.api.user_feedback import router as user_feedback_router
 from app.api.interior_design_routes import router as interior_design_router
@@ -1888,6 +1889,7 @@ app.include_router(internal_router)  # NEW: Internal modular endpoints for PDF p
 app.include_router(extraction_eval_router)  # Golden-case scoring of what the pipeline extracted (docs/extraction-evaluation.md)
 app.include_router(tabular_router)  # A question about a spreadsheet attachment: validated read-only SQL over a locked DuckDB
 app.include_router(catalog_internal_router)  # NEW: Catalog rasterization helper (PDF page → PNG) for presentation_catalogs
+app.include_router(text_internal_router)  # Grammar matches from the local LanguageTool server
 app.include_router(prompt_templates_router)  # NEW: Customizable AI prompt templates for different industries
 app.include_router(user_feedback_router)  # NEW: User feedback with AI sentiment analysis (aspect-based, trends)
 app.include_router(interior_design_router)  # NEW: Interior design generation with streaming progress
