@@ -2344,7 +2344,7 @@ async def get_embeddings(
                         continue
                     if embedding_type and embedding_type != type_alias and embedding_type not in ('visual', 'slig'):
                         continue
-                    prov_model = img.get(f'{type_alias}_aspect_embedding_model') or 'voyage-3'
+                    prov_model = img.get(f'{type_alias}_aspect_embedding_model')
                     prov_schema = img.get(f'{type_alias}_aspect_schema_version')
                     embeddings.append({
                         'id': f"{img['id']}_{type_alias}",

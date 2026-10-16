@@ -14,6 +14,7 @@ import time
 import gc
 
 # Import utilities
+from app.config import get_settings
 from app.utils.circuit_breaker import CircuitBreaker
 
 # Import services
@@ -451,7 +452,7 @@ class RAGService:
                             _emb_model = (
                                 getattr(self.embeddings_service, '_last_provider', None)
                                 or getattr(self.embeddings_service, 'voyage_model', None)
-                                or 'voyage-3.5'
+                                or get_settings().voyage_document_model
                             )
                             _emb_now = _dt.utcnow().isoformat()
                             if updates:
@@ -489,7 +490,7 @@ class RAGService:
                                     _emb_model = (
                                         getattr(self.embeddings_service, '_last_provider', None)
                                         or getattr(self.embeddings_service, 'voyage_model', None)
-                                        or 'voyage-3.5'
+                                        or get_settings().voyage_document_model
                                     )
                                     self.supabase_client.client.table('document_chunks')\
                                         .update({

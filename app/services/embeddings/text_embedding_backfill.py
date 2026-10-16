@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from app.config import get_settings
 from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 
@@ -188,7 +189,7 @@ async def backfill_chunk_text_embeddings(
         emb_model = (
             getattr(embeddings_svc, "_last_provider", None)
             or getattr(embeddings_svc, "voyage_model", None)
-            or "voyage-3.5"
+            or get_settings().voyage_document_model
         )
         emb_now = datetime.utcnow().isoformat()
         for row, vector in zip(batch, vectors or []):

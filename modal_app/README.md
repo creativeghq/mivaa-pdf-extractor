@@ -4,7 +4,7 @@ This folder deploys **PaddleOCR-VL** (`PaddlePaddle/PaddleOCR-VL-1.6`, 0.9B) to
 **Modal** as the catalog pipeline's **layout + OCR backbone**. It's a **two-stage**
 document parser run **in one container** by the `paddleocr[doc-parser]` package:
 
-1. **PP-DocLayoutV2** (RT-DETR detector + pointer network) → per-region bounding
+1. **PP-DocLayoutV3** (RT-DETR detector, reading order predicted in the decoder) → per-region bounding
    boxes, element labels, and reading order.
 2. **PaddleOCR-VL-0.9B** (NaViT encoder + ERNIE-4.5-0.3B) → recognizes the content
    inside each region (text, tables→markdown, formulas→LaTeX, charts).

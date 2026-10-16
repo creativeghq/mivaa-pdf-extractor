@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from supabase import Client
 
+from app.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -429,7 +431,7 @@ class DocumentEntityService:
                             # index it never wrote to.
                             self.supabase.client.table('document_entities').update({
                                 'text_embedding': text_embedding,
-                                'embedding_model': 'voyage-3.5',
+                                'embedding_model': get_settings().voyage_document_model,
                                 'embedding_generated_at': datetime.utcnow().isoformat(),
                             }).eq('id', entity_id).eq(
                                 'workspace_id', workspace_id

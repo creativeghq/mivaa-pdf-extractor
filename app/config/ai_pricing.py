@@ -260,7 +260,7 @@ class AIPricingConfig:
             "full_name": "SigLIP2-base-patch16-512 (SLIG)",
             "service": "slig",
             "dimensions": 768,
-            "note": "Visual embeddings: general, color, texture, style, material. Migrated off HuggingFace 2026-06-14 (native 768D, no projection head)."
+            "note": "One visual embedding per image + the pre-OCR image filter + text-to-visual queries. Aspects are Voyage, not SLIG. On Modal since 2026-06-14 (native 768D, no projection head)."
         },
         "siglip2-base-patch16-512": {
             "input": Decimal("0.00"),

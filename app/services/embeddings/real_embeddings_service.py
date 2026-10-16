@@ -437,7 +437,7 @@ class RealEmbeddingsService:
                     # Report the model that ACTUALLY produced the vector, not the
                     # configured default - they differ whenever settings change
                     # between a row being written and being read.
-                    "model": self._last_provider or self.voyage_model or "voyage-3.5",
+                    "model": self._last_provider or self.voyage_model,
                 }
             return {"success": False, "error": "Text embedding generation returned None"}
         except Exception as e:
@@ -632,7 +632,7 @@ class RealEmbeddingsService:
             # 2026-05-23 audit caught this drift-detection blind spot.
             return {
                 "embedding": embedding,
-                "embedding_model": self._last_provider or self.voyage_model or "voyage-3.5",
+                "embedding_model": self._last_provider or self.voyage_model,
                 "schema_version": SCHEMA_VERSION,
             }
 
@@ -1323,7 +1323,7 @@ class RealEmbeddingsService:
         """
         Generate visual embedding using SLIG cloud endpoint exclusively.
 
-        Uses SLIG (SigLIP2) via HuggingFace Cloud Endpoint for all visual embeddings (768D).
+        Uses SLIG (SigLIP2 base) on Modal for all visual embeddings (768D).
         No local model loading - cloud-only architecture.
 
         Args:
@@ -1360,11 +1360,11 @@ class RealEmbeddingsService:
         image_id: Optional[str] = None,
     ) -> tuple[Optional[List[float]], Optional[any]]:
         """
-        Generate visual embedding using Google SigLIP ViT-SO400M.
+        Generate visual embedding using SLIG (SigLIP2 base, 768D).
 
-        Uses cloud SLIG endpoint (HuggingFace) — no local model loading.
+        Uses the SLIG endpoint on Modal — no local model loading.
 
-        NOTE: Requires SLIG_ENDPOINT_URL and SLIG_ENDPOINT_TOKEN to be configured.
+        NOTE: Requires SLIG_MODAL_URL and SLIG_MODAL_API_KEY to be configured.
 
         Args:
             image_url: URL of image

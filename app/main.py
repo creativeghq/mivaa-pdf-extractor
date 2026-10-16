@@ -824,7 +824,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 - **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
 
 ### AI Models
-1. **Voyage AI**: voyage-4 (1024D text embeddings), GPT-4o-mini (query understanding)
+1. **Voyage AI**: voyage-4-large index / voyage-4 query (1024D), voyage-multimodal-3.5 pages; GPT-4o-mini (query understanding)
 2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus (deep enrichment)
 3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), PaddleOCR-VL (structural pass: layout + OCR + figure boxes) — vision is on Anthropic Claude.
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each

@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import ValidationError
 
+from app.config import get_settings
 from app.models.vision_analysis import (
     SCHEMA_VERSION,
     VisionAnalysis,
@@ -264,7 +265,7 @@ async def backfill_aspect_embeddings(
                     "workspace_id": row.get("workspace_id"),
                     "page_number": row.get("page_number") or 1,
                 },
-                embedding_model="voyage-3",
+                embedding_model=get_settings().voyage_document_model,
                 schema_version=SCHEMA_VERSION,
             )
             successes = sum(1 for v in results.values() if v)
@@ -381,7 +382,7 @@ async def rerun_aspect_embeddings_for_image(
                 "workspace_id": row.get("workspace_id"),
                 "page_number": row.get("page_number") or 1,
             },
-            embedding_model="voyage-3",
+            embedding_model=get_settings().voyage_document_model,
             schema_version=SCHEMA_VERSION,
         )
 

@@ -1169,7 +1169,7 @@ async def material_search_health_check(
 # method were rewired the request parsing would fail.
 #
 # Rewritten 2026-05-05 to use the v2 aspect architecture:
-#   - Voyage `voyage-3` 1024D queries (matches the aspect collection space)
+#   - Voyage 4-series 1024D queries (matches the aspect collection space)
 #   - Optional query_image path runs Claude Opus vision_analysis on the
 #     image, then the per-aspect serializer to build a query string Voyage-
 #     embeds — exactly mirrors the ingestion pipeline so the query embedding

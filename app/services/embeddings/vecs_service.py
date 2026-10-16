@@ -318,7 +318,7 @@ class VecsService:
                 serializers).
             metadata: Metadata to store with each embedding
             embedding_model: Provenance — which model produced these vectors
-                (e.g. 'voyage-3' for v2, 'slig-similarity-guided' for legacy).
+                (e.g. 'voyage-4-large').
                 Persisted to document_images.<aspect>_aspect_embedding_model
                 so admin tooling can detect drift across the catalog.
             schema_version: VisionAnalysis schema version that fed these

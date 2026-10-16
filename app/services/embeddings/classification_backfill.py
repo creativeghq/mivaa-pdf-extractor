@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from app.config import get_settings
 from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.embeddings.understanding_backfill import (
@@ -164,7 +165,7 @@ async def _embed_confirmed_material(
                 image_id=image_id,
                 embeddings=specialized,
                 metadata=vec_meta,
-                embedding_model=meta_versions.get("specialized_aspect") or "voyage-3",
+                embedding_model=meta_versions.get("specialized_aspect") or get_settings().voyage_document_model,
                 schema_version=meta_schemas.get("specialized_aspect"),
             )
         except Exception as e:

@@ -16,6 +16,7 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
     except ValueError:
         return default
     return value if value >= minimum else default
+from app.config import get_settings
 from app.services.core.supabase_client import get_supabase_client
 from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.tracking.xml_import_stages import XmlImportStage, get_xml_import_progress
@@ -1269,7 +1270,7 @@ class DataImportService:
                     from datetime import datetime as _dt
                     await self.db.table('document_chunks').update({
                         'text_embedding': emb_vec,
-                        'embedding_model': emb_result.get('model') or 'voyage-3.5',
+                        'embedding_model': emb_result.get('model') or get_settings().voyage_document_model,
                         'embedding_dimension': len(emb_vec),
                         'embedding_generated_at': _dt.utcnow().isoformat(),
                         'has_text_embedding': True,

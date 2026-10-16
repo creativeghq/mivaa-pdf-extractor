@@ -1616,7 +1616,7 @@ class ImageProcessingService:
                     vec = embeddings.get(f"{aspect}_aspect_1024")
                     if vec:
                         specialized_embeddings[aspect] = vec
-                        aspect_emb_model = aspect_emb_model or meta_versions.get('specialized_aspect') or 'voyage-3'
+                        aspect_emb_model = aspect_emb_model or meta_versions.get('specialized_aspect') or get_settings().voyage_document_model
                         aspect_schema_version = aspect_schema_version or meta_schemas.get('specialized_aspect')
 
                 # Save understanding embedding to VECS if present (1024D from Voyage AI).

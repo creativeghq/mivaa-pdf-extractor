@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime  # several handlers import this locally; one error path did not
 import logging
 
+from app.config import get_settings
 from app.services.images.image_processing_service import ImageProcessingService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
@@ -1169,7 +1170,7 @@ async def regenerate_image_embeddings(
                     vec = embeddings.get(f"{aspect}_aspect_1024")
                     if vec:
                         specialized_embeddings[aspect] = vec
-                        aspect_emb_model = aspect_emb_model or meta_versions.get('specialized_aspect') or 'voyage-3'
+                        aspect_emb_model = aspect_emb_model or meta_versions.get('specialized_aspect') or get_settings().voyage_document_model
                         aspect_schema_version = aspect_schema_version or meta_schemas.get('specialized_aspect')
 
                 if specialized_embeddings:
@@ -1628,7 +1629,7 @@ async def regenerate_text_embeddings(
                     from datetime import datetime as _dt
                     supabase.client.table('document_chunks').update({
                         'text_embedding': emb_vec,
-                        'embedding_model': emb_result.get('model') or 'voyage-3.5',
+                        'embedding_model': emb_result.get('model') or get_settings().voyage_document_model,
                         'embedding_dimension': len(emb_vec),
                         'embedding_generated_at': _dt.utcnow().isoformat(),
                         'has_text_embedding': True,
