@@ -59,10 +59,8 @@ async def rechunk_doc(
         kwargs["overlap"] = overlap
     chunks = chunk_document(content, title=title, **kwargs)  # coverage-invariant asserted inside
 
-    # Replace: drop the doc's existing chunks (FK-scoped) before inserting the new set.
-    supabase.client.table("kb_doc_chunks").delete().eq("kb_doc_id", doc_id).execute()
-
     if not chunks:
+        supabase.client.table("kb_doc_chunks").delete().eq("kb_doc_id", doc_id).execute()
         return {"doc_id": doc_id, "chunks": 0, "embedded": 0, "failed": 0, "content_len": len(content)}
 
     if embeddings_service is None:
@@ -74,6 +72,15 @@ async def rechunk_doc(
     embeddings = await embeddings_service.generate_contextualized_embeddings(
         texts, workspace_id=workspace_id,
     )
+    failed = sum(1 for e in embeddings if not e)
+    if failed:
+        # Embed before replacing: the doc's existing rows stay searchable until a full set exists.
+        logger.warning("rechunk_doc %s: %d/%d chunks failed to embed; kept existing chunks",
+                       doc_id, failed, len(chunks))
+        return {"doc_id": doc_id, "error": "embedding_failed", "chunks": 0,
+                "embedded": 0, "failed": failed, "content_len": len(content)}
+
+    supabase.client.table("kb_doc_chunks").delete().eq("kb_doc_id", doc_id).execute()
 
     rows = []
     for ch, emb in zip(chunks, embeddings):
@@ -87,7 +94,7 @@ async def rechunk_doc(
             "char_start": ch.char_start,
             "char_end": ch.char_end,
             "token_count": len(ch.content) // 4,  # rough
-            "text_embedding": vec,                 # None for a failed embedding (content still stored)
+            "text_embedding": vec,
             "embedding_model": model if vec else None,
             "schema_version": 1,
         })
@@ -95,9 +102,6 @@ async def rechunk_doc(
     for i in range(0, len(rows), _INSERT_BATCH):
         supabase.client.table("kb_doc_chunks").insert(rows[i : i + _INSERT_BATCH]).execute()
 
-    failed = sum(1 for e in embeddings if not e)
-    if failed:
-        logger.warning("rechunk_doc %s: %d/%d chunks failed to embed", doc_id, failed, len(chunks))
     return {
         "doc_id": doc_id,
         "chunks": len(chunks),

@@ -99,3 +99,20 @@ def test_the_chunk_model_default_is_voyage_context_4():
             assert default == "voyage-context-4"
             return
     raise AssertionError("config.py declares no voyage_chunk_model")
+
+
+def test_kb_rechunk_embeds_before_it_deletes_the_existing_chunks():
+    tree = ast.parse((_APP / "services/kb/kb_chunk_service.py").read_text(encoding="utf-8"))
+    fn = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == "rechunk_doc")
+    embed_line = next(n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
+                      and isinstance(n.func, ast.Attribute) and n.func.attr == "generate_contextualized_embeddings")
+    empty_branch = {n.lineno for i in ast.walk(fn) if isinstance(i, ast.If) and ast.unparse(i.test) == "not chunks"
+                    for n in ast.walk(i) if hasattr(n, "lineno")}
+    deletes = [n.lineno for n in ast.walk(fn) if isinstance(n, ast.Call)
+               and isinstance(n.func, ast.Attribute) and n.func.attr == "delete"]
+    assert deletes
+    for line in deletes:
+        assert line in empty_branch or line > embed_line, (
+            f"kb_doc_chunks deleted on line {line} before the embed on line {embed_line}: "
+            "a failed embed would leave the document with no searchable chunks"
+        )
