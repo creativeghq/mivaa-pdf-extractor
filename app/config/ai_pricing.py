@@ -186,6 +186,14 @@ class AIPricingConfig:
                 "so mixing the two in one collection is correct and needs no reindex."
             )
         },
+        "voyage-context-4": {
+            "input": Decimal("0.12"),
+            "output": Decimal("0.00"),
+            "last_verified": "2026-10-16",
+            "source": "https://docs.voyageai.com/docs/pricing",
+            "dimensions": 1024,
+            "note": "Contextualized chunk model for KB sections and PDF chunks; 4-series space.",
+        },
         # Page embeddings (#239). These bill on TWO axes — tokens AND pixels — so the
         # `input` figure here covers only the text half. Anything embedding a page must
         # go through calculate_multimodal_embedding_cost(), or it under-reports by the

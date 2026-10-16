@@ -591,6 +591,15 @@ class Settings(BaseSettings):
             "queries are short, run on every search, and gain nothing from the large model."
         )
     )
+    voyage_chunk_model: str = Field(
+        default="voyage-context-4",
+        env="VOYAGE_CHUNK_MODEL",
+        description=(
+            "Model for the ordered chunks of ONE document (KB sections, PDF chunks): each chunk "
+            "is embedded with the rest of its document in view. Same latent space as the 4 "
+            "series (measured 2026-10-16), so voyage-4 queries rank it; KB eval MRR 0.840 -> 0.945."
+        )
+    )
     voyage_model: str = Field(
         default="voyage-4-large",
         env="VOYAGE_MODEL",

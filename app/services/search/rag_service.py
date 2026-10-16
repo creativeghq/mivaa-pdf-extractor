@@ -416,14 +416,9 @@ class RAGService:
                             self.embeddings_service._last_provider = None
                         except Exception:
                             pass
-                        # Use batch embedding generation (Voyage AI or OpenAI)
-                        embedding_vectors = await self.embeddings_service.generate_batch_embeddings(
-                            texts=batch_texts,
-                            dimensions=1024,  # matches DB schema vector(1024)
-                            input_type="document",
-                            # Whose document this is. Read off the metadata at the top of this
-                            # method and used for every other write here; the embedding cost was
-                            # the one thing that left without it.
+                        # One document's chunks, in order: each is embedded with the batch in view.
+                        embedding_vectors = await self.embeddings_service.generate_contextualized_embeddings(
+                            batch_texts,
                             workspace_id=None if workspace_id == 'default' else workspace_id,
                         )
 

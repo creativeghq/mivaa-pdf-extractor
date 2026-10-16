@@ -68,6 +68,7 @@ def _is_valid_vision_analysis_schema(vision_analysis: Any) -> bool:
     return any(k in vision_analysis for k in expected_any)
 
 from app.services.core.ai_call_logger import AICallLogger
+from app.services.embeddings import contextual_chunks
 from app.models.vision_analysis import (
     VisionAnalysis,
     SCHEMA_VERSION,
@@ -162,6 +163,7 @@ class RealEmbeddingsService:
         self.voyage_document_model = settings.voyage_document_model
         self.voyage_query_model = settings.voyage_query_model
         self.voyage_model = self.voyage_document_model
+        self.voyage_chunk_model = settings.voyage_chunk_model
         self.voyage_enabled = settings.voyage_enabled
 
         # Debug logging for Voyage AI configuration
@@ -1114,6 +1116,102 @@ class RealEmbeddingsService:
             f"fallback embedder - returning {len(texts)} empty results"
         )
         return [None] * len(texts)
+
+    async def generate_contextualized_embeddings(
+        self,
+        texts: List[str],
+        workspace_id: Optional[str] = None,
+        job_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> List[Optional[List[float]]]:
+        """
+        Embed the ORDERED chunks of one document, each with its document in view.
+
+        Uses `voyage_chunk_model` (voyage-context-4), which shares the 4-series space,
+        so the vectors sit beside voyage-4-large rows and are queried with voyage-4.
+        A document longer than one window is split into consecutive windows.
+
+        Returns:
+            One vector per input text, or None for every text in a window that failed.
+        """
+        if not texts:
+            return []
+        voyage_enabled = getattr(self.config, "voyage_enabled", True) if self.config else True
+        if not (self.voyage_api_key and voyage_enabled):
+            self.logger.error(
+                f"Voyage AI unavailable - returning {len(texts)} empty contextualized results"
+            )
+            return [None] * len(texts)
+
+        model = self.voyage_chunk_model
+        prepared = contextual_chunks.prepare(texts)
+        requests = contextual_chunks.plan_requests(prepared)
+
+        if self._voyage_client is None:
+            self._voyage_client = httpx.AsyncClient(
+                timeout=60.0,
+                limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+            )
+
+        vectors: List[Optional[List[float]]] = [None] * len(texts)
+        for req in requests:
+            start_time = time.time()
+            try:
+                response = await self._voyage_client.post(
+                    "https://api.voyageai.com/v1/contextualizedembeddings",
+                    headers={
+                        "Authorization": f"Bearer {self.voyage_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "inputs": [[prepared[i] for i in w] for w in req],
+                        "input_type": "document",
+                        "output_dimension": 1024,
+                    },
+                    timeout=120.0,
+                )
+                if response.status_code != 200:
+                    raise Exception(f"Voyage AI API error: {response.status_code} - {response.text[:300]}")
+                data = response.json()
+                for i, emb in contextual_chunks.assign_vectors(req, data):
+                    vectors[i] = emb
+                input_tokens = (data.get("usage") or {}).get("total_tokens", 0)
+                await self.ai_logger.log_ai_call(
+                    task="contextualized_chunk_embedding_generation",
+                    model=f"{model}-1024d",
+                    input_tokens=input_tokens,
+                    output_tokens=0,
+                    cost=self._voyage_cost_usd(model, input_tokens),
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    confidence_score=0.95,
+                    confidence_breakdown={"batch_size": sum(len(w) for w in req)},
+                    action="use_ai_result",
+                    job_id=job_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                )
+            except Exception as e:
+                self.logger.error(f"Voyage contextualized embedding failed: {e}")
+                await self.ai_logger.log_ai_call(
+                    task="contextualized_chunk_embedding_generation",
+                    model=f"{model}-1024d",
+                    input_tokens=0,
+                    output_tokens=0,
+                    cost=0.0,
+                    latency_ms=int((time.time() - start_time) * 1000),
+                    confidence_score=0.0,
+                    confidence_breakdown={"batch_size": sum(len(w) for w in req)},
+                    action="fallback_failed",
+                    job_id=job_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    fallback_reason="no fallback provider for text embeddings",
+                    error_message=str(e),
+                )
+        if any(v is not None for v in vectors):
+            self._last_provider = model
+        return vectors
 
     async def _generate_text_embedding(
         self,

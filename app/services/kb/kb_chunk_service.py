@@ -1,8 +1,8 @@
 """
 KB rechunk service (2026-07-06).
 
-Chunk a kb_doc into sections, embed each (batched Voyage, input_type=document with
-heading context), and replace the doc's rows in kb_doc_chunks. Idempotent: safe to
+Chunk a kb_doc into sections, embed them together (voyage-context-4, each chunk with
+its document in view), and replace the doc's rows in kb_doc_chunks. Idempotent: safe to
 re-run — it deletes the doc's existing chunks first, so edits/backfills converge.
 
 Called on-write (after a doc's embedding is (re)generated) and by the backfill endpoint.
@@ -17,7 +17,6 @@ from app.services.kb.kb_chunker import chunk_document, embedding_text
 
 logger = logging.getLogger(__name__)
 
-_EMBED_BATCH = 100        # Voyage batch size per API call
 _INSERT_BATCH = 200       # rows per PostgREST insert
 
 
@@ -69,17 +68,12 @@ async def rechunk_doc(
     if embeddings_service is None:
         from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
         embeddings_service = RealEmbeddingsService()
-    model = getattr(embeddings_service, "voyage_model", None) or "voyage-4"
+    model = embeddings_service.voyage_chunk_model
 
     texts = [embedding_text(title, ch) for ch in chunks]
-    embeddings: list = []
-    for i in range(0, len(texts), _EMBED_BATCH):
-        batch = await embeddings_service.generate_batch_embeddings(
-            texts[i : i + _EMBED_BATCH], input_type="document",
-            # Already selected on the doc row above and written onto every chunk below.
-            workspace_id=workspace_id,
-        )
-        embeddings.extend(batch or [None] * len(texts[i : i + _EMBED_BATCH]))
+    embeddings = await embeddings_service.generate_contextualized_embeddings(
+        texts, workspace_id=workspace_id,
+    )
 
     rows = []
     for ch, emb in zip(chunks, embeddings):
