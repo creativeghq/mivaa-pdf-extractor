@@ -255,8 +255,11 @@ class TestTheFlattenedItemsTrap:
 class TestTheCountryReachesTheCall:
     def test_probe_takes_a_country_and_hands_it_down(self):
         src = _blank_comments(_source(_PROBE))
-        assert "country_code: Optional[str] = None,\n        tier: str = CHEAP_TIER," in src
-        assert "country_code=country_code)" in src
+        run = src.split("tier: str = CHEAP_TIER,")[0].rsplit("def ", 1)[1]
+        assert "country_code: Optional[str] = None," in run
+        assert "language_code: Optional[str] = None," in run
+        assert "country_code=country_code" in src
+        assert "language_code=language_code" in src
 
     def test_the_tier_is_storable_not_just_declared(self):
         # Declared in the enum and refused by the CHECK is the vocabulary-wider-than-
