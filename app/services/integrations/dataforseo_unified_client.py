@@ -120,6 +120,9 @@ def llm_mentions_path(key: str, *, lite: bool = False) -> str:
     return LLM_MENTIONS_PATHS[key]
 
 
+LLM_KEYWORD_SCOPES = ("any", "question", "answer", "brand_entities", "fan_out_queries")
+
+
 def _llm_mentions_body(
     *,
     keyword: Optional[str] = None,
@@ -130,6 +133,7 @@ def _llm_mentions_body(
     platform: Optional[str] = None,
     limit: Optional[int] = None,
     order_by: Optional[List[str]] = None,
+    keyword_scope: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """One Extended LLM Mentions request body.
 
@@ -146,7 +150,13 @@ def _llm_mentions_body(
     if domain:
         entities.append({"domain": domain, "search_filter": "include"})
     if keyword:
-        entities.append({"keyword": keyword, "search_filter": "include"})
+        kw_entity: Dict[str, Any] = {"keyword": keyword, "search_filter": "include"}
+        # The default scope is the whole answer with words allowed WITHIN the phrase, so a
+        # two-word brand name matches any answer containing both words (a Bugatti review).
+        scope = [x for x in (keyword_scope or []) if x in LLM_KEYWORD_SCOPES]
+        if scope:
+            kw_entity["search_scope"] = scope
+        entities.append(kw_entity)
     if not entities:
         raise ValueError("llm_mentions needs at least one keyword, domain or target entity")
     if not any(e.get("search_filter") == "include" for e in entities):
@@ -673,6 +683,7 @@ class DataForSEOUnifiedClient:
 
     async def ai_llm_mentions_top_pages(
         self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        keyword_scope: Optional[List[str]] = None,
         language_code: str = "en", country_code: Optional[str] = None,
         platform: Optional[str] = None, limit: int = 100,
         attribution: Optional[CostAttribution] = None,
@@ -680,6 +691,7 @@ class DataForSEOUnifiedClient:
         body = [_llm_mentions_body(
             keyword=keyword, domain=domain, language_code=language_code,
             country_code=country_code, platform=platform, limit=limit,
+            keyword_scope=keyword_scope,
         )]
         return await self._call(LLM_MENTIONS_PATHS["top_pages"], body,
                                 attribution=attribution, log_kind="labs",
@@ -687,6 +699,7 @@ class DataForSEOUnifiedClient:
 
     async def ai_llm_mentions_top_domains(
         self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        keyword_scope: Optional[List[str]] = None,
         language_code: str = "en", country_code: Optional[str] = None,
         platform: Optional[str] = None, limit: int = 100,
         attribution: Optional[CostAttribution] = None,
@@ -694,6 +707,7 @@ class DataForSEOUnifiedClient:
         body = [_llm_mentions_body(
             keyword=keyword, domain=domain, language_code=language_code,
             country_code=country_code, platform=platform, limit=limit,
+            keyword_scope=keyword_scope,
         )]
         return await self._call(LLM_MENTIONS_PATHS["top_domains"], body,
                                 attribution=attribution, log_kind="labs",
@@ -815,6 +829,7 @@ class DataForSEOUnifiedClient:
 
     async def ai_llm_mentions_top_brands(
         self, *, keyword: Optional[str] = None, domain: Optional[str] = None,
+        keyword_scope: Optional[List[str]] = None,
         language_code: str = "en", country_code: Optional[str] = None,
         platform: Optional[str] = None, limit: int = 100, lite: bool = False,
         attribution: Optional[CostAttribution] = None,
@@ -824,6 +839,7 @@ class DataForSEOUnifiedClient:
         body = [_llm_mentions_body(
             keyword=keyword, domain=domain, language_code=language_code,
             country_code=country_code, platform=platform, limit=limit,
+            keyword_scope=keyword_scope,
         )]
         return await self._call(llm_mentions_path("top_brands", lite=lite), body,
                                 attribution=attribution, log_kind="labs",

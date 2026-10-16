@@ -354,3 +354,19 @@ class TestTheCitedQuestionsSearch:
         src = _blank_comments(_source(_CLIENT))
         builder = src.split("def _llm_mentions_body")[1].split("\ndef ")[0]
         assert 'body["order_by"]' in builder
+
+
+class TestTheMarketKeywordScope:
+    def test_the_three_market_reads_take_a_keyword_scope(self):
+        src = _blank_comments(_source(_CLIENT))
+        for name in ("top_pages", "top_domains", "top_brands"):
+            body = src.split(f"async def ai_llm_mentions_{name}(")[1].split("async def ")[0]
+            assert "keyword_scope: Optional[List[str]] = None," in body, name
+            assert "keyword_scope=keyword_scope" in body, name
+
+    def test_the_scope_lands_on_the_keyword_entity_and_is_allowlisted(self):
+        src = _blank_comments(_source(_CLIENT))
+        builder = src.split("def _llm_mentions_body")[1].split("\ndef ")[0]
+        assert 'kw_entity["search_scope"] = scope' in builder
+        assert "in LLM_KEYWORD_SCOPES" in builder
+        assert '"brand_entities"' in src.split("LLM_KEYWORD_SCOPES =")[1].split("\n")[0]
