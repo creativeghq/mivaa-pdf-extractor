@@ -283,6 +283,7 @@ def test_icon_metadata_is_schema_constrained_async_and_cheap():
 
 @pytest.fixture
 def legend(monkeypatch):
+    pytest.importorskip("fitz")
     _stub(monkeypatch, "sentry_sdk", capture_exception=lambda *a, **k: None)
     _stub(monkeypatch, "app.services.core.anthropic_error_reporter", report_anthropic_failure=lambda *a, **k: None)
     _stub(monkeypatch, "app.services.utilities.prompt_registry", load_prompt=None)
@@ -327,6 +328,7 @@ def test_region_crop_cache_read_failure_raises():
 
 
 def test_layout_analyzer_regroups_cache_text_onto_sheets(monkeypatch):
+    pytest.importorskip("fitz")
     _stub(monkeypatch, "sentry_sdk")
     layout = types.SimpleNamespace(physical_to_pdf_map={1: (0, "single"), 2: (1, "left"), 3: (1, "right")})
     _stub(monkeypatch, "app.utils.pdf_to_images", analyze_pdf_layout=lambda p: layout)
@@ -347,6 +349,7 @@ def test_table_spans_are_expanded():
 
 
 def test_boundary_detector_consumes_the_vector_and_fails_without_one(monkeypatch):
+    pytest.importorskip("numpy")
     _stub(monkeypatch, "app.services.embeddings.real_embeddings_service", RealEmbeddingsService=object)
     _stub(monkeypatch, "app.services.core.ai_call_logger", AICallLogger=object)
     mod = _load_path(_BOUNDARY, "_boundary_494")
