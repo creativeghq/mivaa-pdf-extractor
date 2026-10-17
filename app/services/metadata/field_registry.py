@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 import unicodedata
 from dataclasses import dataclass, field as dc_field

@@ -17,7 +17,6 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 import asyncio
-import aiohttp
 import sentry_sdk
 from pydantic import BaseModel, Field, model_validator
 
@@ -895,7 +894,6 @@ async def upload_document(
 
         # Create document record
         try:
-            from datetime import datetime
 
             # Validate workspace exists before creating document
             workspace_check = supabase_client.client.table('workspaces')\
