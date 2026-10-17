@@ -8,6 +8,7 @@ Includes metadata consolidation from AI text extraction, visual analysis, and fa
 import asyncio
 import json
 import logging
+import re
 import os
 import httpx
 import sentry_sdk
@@ -112,9 +113,21 @@ def _route_column_fields(metadata: Dict[str, Any], category: Optional[str] = Non
             value = str(value)
         if not isinstance(value, str) or _is_empty_value(value):
             continue
-        columns[column] = value.strip()
+        clean = _COLUMN_FORM.get(column, str.strip)(value)
+        if clean is None:
+            continue  # stays in metadata as printed; the column's CHECK would refuse the whole product
+        columns[column] = clean
         metadata.pop(raw_key, None)
     return columns
+
+
+def _iso_country(value: str) -> Optional[str]:
+    code = value.strip().upper()
+    return code if re.fullmatch(r"[A-Z]{2}", code) else None
+
+
+#: Columns with a CHECK on their form (`products_country_of_origin_check`: ISO 3166-1 alpha-2).
+_COLUMN_FORM = {'country_of_origin': _iso_country}
 
 
 def _confidence_score(raw: Any) -> Optional[float]:

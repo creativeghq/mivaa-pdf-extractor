@@ -72,6 +72,7 @@ FIELDS = [
     _field("width_mm", field_type="number", aliases=["width", "width_cm*10"]),
     _field("sku", destination="column"),
     _field("mpn", destination="column", aliases=["product_code"]),
+    _field("country_of_origin", destination="column"),
 ]
 CATEGORIES = [
     {"category_key": k, "controlled_vocab": [], "vocab_aliases": [], "is_fallback": k == "tiles",
@@ -235,7 +236,7 @@ def test_a_labelled_or_roman_grade_matches_a_numeric_option():
 
 _STAGE4_FNS = ("_is_empty_value", "_category_of", "_flatten_for_canonicalization",
                "_route_column_fields", "_extract_fields_from_chunk_text", "_registry_key",
-               "_merge_enriched_fields_into_metadata")
+               "_merge_enriched_fields_into_metadata", "_iso_country")
 
 
 @pytest.fixture
@@ -246,8 +247,10 @@ def stage4(env):
     keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in _STAGE4_FNS]
     keep += [n for n in tree.body if isinstance(n, ast.AnnAssign)
              and getattr(n.target, "id", None) == "_COLUMN_FOR_FIELD"]
+    keep += [n for n in tree.body if isinstance(n, ast.Assign)
+             and any(getattr(t, "id", None) == "_COLUMN_FORM" for t in n.targets)]
     from typing import Any, Dict, List, Optional
-    ns = {"field_registry": env.registry, "scale_value": env.normalizer.scale_value, "_re": re,
+    ns = {"field_registry": env.registry, "scale_value": env.normalizer.scale_value, "_re": re, "re": re,
           "Any": Any, "Dict": Dict, "List": List, "Optional": Optional}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "stage_4_products", "exec"), ns)
     return types.SimpleNamespace(**{k: ns[k] for k in (*_STAGE4_FNS, "_COLUMN_FOR_FIELD")})
@@ -260,6 +263,14 @@ def test_product_code_reaches_mpn_through_the_registry_alias(stage4):
     assert "product_code" not in meta
     meta = {"product_code": "A-1", "mpn": "M-9"}
     assert stage4._route_column_fields(meta) == {"mpn": "M-9"}
+
+
+def test_a_country_name_stays_in_metadata_instead_of_failing_the_column_check(stage4):
+    meta = {"country_of_origin": "it "}
+    assert stage4._route_column_fields(meta) == {"country_of_origin": "IT"}
+    meta = {"country_of_origin": "Germany"}
+    assert stage4._route_column_fields(meta) == {}
+    assert meta["country_of_origin"] == "Germany"
 
 
 def test_flatten_places_aliases_under_their_field_converted_and_category_scoped(stage4):
