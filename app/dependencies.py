@@ -11,6 +11,7 @@ Security Note: Authentication dependencies enforce JWT validation and workspace 
 
 from typing import Optional, Dict, Any
 import os
+import uuid
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -213,6 +214,15 @@ async def get_current_user(
                 detail="Invalid authentication credentials",
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        # The edge authenticates a kai_ key, debits it, then calls as MIVAA's service identity + X-Acting-User.
+        acting = (request.headers.get("X-Acting-User") or "").strip()
+        if acting and is_service_caller(claims):
+            try:
+                acting_id = str(uuid.UUID(acting))
+            except ValueError:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="X-Acting-User must be a user id")
+            return {"sub": acting_id, "user_id": acting_id, "role": "authenticated", "acting_via": "service", "permissions": []}
 
         return claims
 
