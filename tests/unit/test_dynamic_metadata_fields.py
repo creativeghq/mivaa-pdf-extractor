@@ -283,8 +283,9 @@ def test_all_field_names_is_public_and_sorted(env):
 
 # ── Comment 4: extraction reply shape ────────────────────────────────────────────────────────
 
-def _entry(key, value, section=None, entries=()):
-    row = {"key": key, "value": value, "entries": list(entries), "confidence": 0.9, "source": None}
+def _entry(key, value="", section=None, entries=(), values=()):
+    row = {"key": key, "value": value, "values": list(values), "entries": list(entries),
+           "confidence": 0.9, "source": ""}
     if section:
         row["section"] = section
     return row
@@ -293,19 +294,26 @@ def _entry(key, value, section=None, entries=()):
 def test_the_schema_reply_becomes_the_nested_shape(env):
     m = env.extractor_mod
     reply = {
-        "critical": {k: {"value": None, "entries": [], "confidence": 0, "source": None}
+        "critical": {k: {"value": "", "values": [], "entries": [], "confidence": 0, "source": ""}
                      for k in m._RESERVED_KEYS},
-        "discovered": [_entry("colour", ["white", "sand"], "appearance"),
-                       _entry("sku_codes", None, "commercial",
-                              [{"name": "WHITE", "value": "39656"}])],
-        "unknown": [_entry("lumens", 800)],
+        "discovered": [_entry("colour", section="appearance", values=["white", " sand ", ""]),
+                       _entry("sku_codes", section="commercial",
+                              entries=[{"name": "WHITE", "value": "39656"}])],
+        "unknown": [_entry("lumens", "800")],
     }
     reply["critical"]["factory_name"]["value"] = "Harmony"
+    reply["critical"]["factory_name"]["entries"] = [{"name": "Maker", "value": "Harmony"}]
     out = m._reply_to_sections(reply)
     assert out["critical"] == {"factory_name": {"value": "Harmony", "confidence": 0}}
     assert out["discovered"]["appearance"]["colour"]["value"] == ["white", "sand"]
     assert out["discovered"]["commercial"]["sku_codes"]["value"] == {"WHITE": "39656"}
-    assert out["unknown"] == {"lumens": {"value": 800, "confidence": 0.9}}
+    assert out["unknown"] == {"lumens": {"value": "800", "confidence": 0.9}}
+
+
+def test_the_metadata_schema_has_no_unions(env):
+    schema = env.extractor_mod._extraction_output_config()["format"]["schema"]
+    # Strict output refuses a schema with more than 16 union-typed parameters (400).
+    assert "anyOf" not in repr(schema) and "'type': [" not in repr(schema)
 
 
 @pytest.mark.parametrize("reply", [None, [], {"critical": {}}, {"critical": [], "discovered": [],

@@ -182,6 +182,7 @@ from app.services.chunking.unified_chunking_service import UnifiedChunkingServic
 # Import worker for process isolation
 from app.services.pdf.pdf_worker import execute_pdf_extraction_job
 from app.killable import KillableCrashed, KillableTimeout, run_killable
+from app.utils.cross_loop_lock import CrossLoopLock
 
 # PageConverter removed - using simple PDF page numbers instead
 
@@ -245,7 +246,7 @@ class PDFProcessor:
 
         # Thread-safe SLIG client initialization lock
         self._slig_client_for_ocr = None
-        self._slig_client_lock = asyncio.Lock()
+        self._slig_client_lock = CrossLoopLock()
 
         self.logger.info("PDFProcessor initialized with config: %s (max_workers=%d)", self.config, max_workers)
 

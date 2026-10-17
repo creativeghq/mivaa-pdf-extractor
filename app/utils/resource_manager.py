@@ -7,7 +7,7 @@ Ensures resources are only cleaned up when processing is COMPLETE, not based on 
 
 import os
 import logging
-import asyncio
+from app.utils.cross_loop_lock import CrossLoopLock
 from typing import Dict, Optional, Set
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -50,7 +50,7 @@ class ResourceManager:
     
     def __init__(self):
         self.resources: Dict[str, Resource] = {}
-        self._lock = asyncio.Lock()
+        self._lock = CrossLoopLock()
         logger.info("🔧 ResourceManager initialized (event-based cleanup)")
     
     async def register_resource(

@@ -1,5 +1,6 @@
 """Background Agent API Routes"""
 
+import json
 import logging
 import os
 from datetime import datetime, timezone
@@ -284,19 +285,21 @@ TAGGER_FACETS = ("material_type", "color", "finish", "application", "tags")
 #: drives a database write, parsed from free-form text. With the tool forced the model
 #: cannot return prose, so there is nothing to repair, and an absent tool block is a
 #: typed retryable error instead of a swallowed exception that skipped the product.
-ENRICHMENT_TOOL = {
-    "name": "emit_product_enrichment",
-    "description": "Return the enriched description, keywords and material category.",
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "description": {"type": "string", "description": "Product description."},
-            "keywords": {"type": "array", "items": {"type": "string"}},
-            "material_category": {"type": "string"},
+def _enrichment_tool(category_vocab: List[str]) -> Dict[str, Any]:
+    """`material_category` is constrained to the registry's controlled vocabulary."""
+    return {
+        "name": "emit_product_enrichment",
+        "description": "Return the enriched description, keywords and material category.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "Product description."},
+                "keywords": {"type": "array", "items": {"type": "string"}},
+                "material_category": {"type": "string", "enum": category_vocab},
+            },
+            "required": ["description"],
         },
-        "required": ["description"],
-    },
-}
+    }
 
 TAGGER_TOOL = {
     "name": "emit_material_tags",
@@ -319,6 +322,29 @@ TAGGER_TOOL = {
 #: answered here rather than in the query.
 SCAN_MULTIPLIER = 5
 MAX_SCAN = 500
+
+
+def _product_record(product: Dict[str, Any], **extra: Any) -> str:
+    """The product as a fenced DATA block (invariant 9): catalogue text is never instructions."""
+    from app.utils.untrusted_content import as_untrusted_data
+
+    record = {
+        "name": product.get("name"),
+        "category": product.get("category"),
+        "description": product.get("description"),
+        **extra,
+    }
+    return as_untrusted_data(json.dumps(record, ensure_ascii=False, default=str), source="product record")
+
+
+async def _category_vocab() -> List[str]:
+    from app.services.metadata.field_registry import field_registry
+
+    await field_registry.ensure_loaded()
+    vocab = sorted(field_registry.all_controlled_vocab())
+    if not vocab:
+        raise RuntimeError("material_categories has no controlled_vocab; cannot constrain material_category")
+    return vocab
 
 
 def _allowlisted(data: Dict[str, Any], keys: tuple) -> Dict[str, Any]:
@@ -412,11 +438,10 @@ async def handle_product_enrichment(
 
     _log(supabase, req.run_id, "info", f"Found {len(products)} products to enrich")
 
-    system = req.system_prompt or (
-        "You are a material product specialist. "
-        "For each product, return JSON: {\"description\":\"...\",\"keywords\":[...],\"material_category\":\"...\"}. "
-        "No markdown, no prose."
-    )
+    from app.services.utilities.prompt_registry import load_prompt
+
+    system = req.system_prompt or await load_prompt("agent", "product-enrichment", field="system_prompt")
+    enrichment_tool = _enrichment_tool(await _category_vocab())
 
     enriched = 0
     degraded = 0
@@ -434,12 +459,9 @@ async def handle_product_enrichment(
                 model=req.model or "claude-haiku-4-5",
                 max_tokens=512,
                 system=system,
-                messages=[{"role": "user", "content":
-                    f"Name: {product['name']}\n"
-                    f"Category: {product.get('category','unknown')}\n"
-                    f"Description: {product.get('description','(none)')}\n"
-                    f"Material: {attributes.get('material_type','unknown')}"}],
-                tool=ENRICHMENT_TOOL,
+                messages=[{"role": "user", "content": _product_record(
+                    product, material=attributes.get("material_type"))}],
+                tool=enrichment_tool,
                 job_id=req.run_id,
                 workspace_id=workspace_id,
                 product_id=product["id"],
@@ -522,11 +544,9 @@ async def handle_material_tagger(
         return {"output": {"tagged": 0, "message": "No products to tag"},
                 "input_tokens": 0, "output_tokens": 0}
 
-    system = req.system_prompt or (
-        "You are a material classification expert. "
-        "Return JSON: {\"material_type\":\"...\",\"color\":\"...\",\"finish\":\"...\",\"application\":\"...\",\"tags\":[...]}. "
-        "Only include applicable fields. No markdown."
-    )
+    from app.services.utilities.prompt_registry import load_prompt
+
+    system = req.system_prompt or await load_prompt("agent", "material-tagger", field="system_prompt")
 
     tagged = 0
     degraded = 0
@@ -543,10 +563,7 @@ async def handle_material_tagger(
                 model=req.model or "claude-haiku-4-5",
                 max_tokens=256,
                 system=system,
-                messages=[{"role": "user", "content":
-                    f"Name: {product['name']}\n"
-                    f"Category: {product.get('category','unknown')}\n"
-                    f"Description: {product.get('description','(none)')}"}],
+                messages=[{"role": "user", "content": _product_record(product)}],
                 tool=TAGGER_TOOL,
                 job_id=req.run_id,
                 workspace_id=workspace_id,

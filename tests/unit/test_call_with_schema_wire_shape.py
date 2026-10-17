@@ -51,3 +51,18 @@ def test_format_name_is_a_label_never_sent(monkeypatch):
     assert sent_config["effort"] == "low"
     assert labels == ["emit_vision_analysis"]
     assert config["format"]["name"] == "emit_vision_analysis", "caller's config must not be mutated"
+
+
+def test_unsupported_constraints_are_stripped_but_field_names_survive():
+    ctc = _load()
+    schema = {"type": "object", "additionalProperties": False, "properties": {
+        "minimum": {"type": "number", "minimum": 0, "maximum": 9},
+        "codes": {"type": "array", "items": {"type": "string", "maxLength": 9},
+                  "minItems": 2, "maxItems": 5},
+        "tags": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    }}
+    out = ctc.api_compatible_schema(schema)
+    assert out["properties"]["minimum"] == {"type": "number"}
+    assert out["properties"]["codes"] == {"type": "array", "items": {"type": "string", "maxLength": 9}}
+    assert out["properties"]["tags"]["minItems"] == 1
+    assert schema["properties"]["minimum"]["minimum"] == 0, "input must not be mutated"

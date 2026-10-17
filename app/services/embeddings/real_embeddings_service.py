@@ -36,6 +36,7 @@ Understanding Embedding Strategy:
 - Claude is the sole vision producer.
 """
 
+from app.utils.cross_loop_lock import CrossLoopSemaphore
 import logging
 import asyncio
 import os
@@ -86,23 +87,22 @@ MIVAA_GATEWAY_URL = os.getenv("MIVAA_GATEWAY_URL", "http://localhost:3000")
 class RealEmbeddingsService:
     """Generates embedding types using AI models."""
 
-    # Process-wide semaphores; created lazily on first use so the event loop
-    # is bound to the running loop, not module import time.
-    _slig_semaphore: Optional[asyncio.Semaphore] = None
-    _voyage_semaphore: Optional[asyncio.Semaphore] = None
+    # Process-wide, shared by jobs that each run their own event loop.
+    _slig_semaphore: Optional[CrossLoopSemaphore] = None
+    _voyage_semaphore: Optional[CrossLoopSemaphore] = None
 
     @classmethod
-    def _get_slig_semaphore(cls) -> asyncio.Semaphore:
+    def _get_slig_semaphore(cls) -> CrossLoopSemaphore:
         if cls._slig_semaphore is None:
             from app.config import get_settings as _gs
-            cls._slig_semaphore = asyncio.Semaphore(_gs().slig_concurrency)
+            cls._slig_semaphore = CrossLoopSemaphore(_gs().slig_concurrency)
         return cls._slig_semaphore
 
     @classmethod
-    def _get_voyage_semaphore(cls) -> asyncio.Semaphore:
+    def _get_voyage_semaphore(cls) -> CrossLoopSemaphore:
         if cls._voyage_semaphore is None:
             from app.config import get_settings as _gs
-            cls._voyage_semaphore = asyncio.Semaphore(_gs().voyage_concurrency)
+            cls._voyage_semaphore = CrossLoopSemaphore(_gs().voyage_concurrency)
         return cls._voyage_semaphore
 
     def __init__(self, supabase_client=None, config=None):

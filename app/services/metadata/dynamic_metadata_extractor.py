@@ -149,26 +149,26 @@ def _fence_pdf_text(text: str) -> str:
     return f"{_FENCE_OPEN}\n{body}\n{_FENCE_CLOSE}"
 
 
-_SCALAR = [{"type": "string"}, {"type": "number"}, {"type": "boolean"}]
+# No unions anywhere: strict output allows 16 union-typed parameters per schema and a
+# nullable-scalar entry spent four. Every value is a string ("" = not stated) and the
+# registry validator types it (number / boolean / dropdown) downstream.
+_STRING = {"type": "string"}
 _ENTRY_PROPERTIES: Dict[str, Any] = {
-    "value": {"anyOf": _SCALAR + [{"type": "null"},
-                                  {"type": "array", "items": {"anyOf": _SCALAR}}]},
+    "value": _STRING,
+    "values": {"type": "array", "items": _STRING},
     "entries": {
         "type": "array",
         "items": {
             "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "value": {"anyOf": [{"type": "string"}, {"type": "number"}, {"type": "null"}]},
-            },
+            "properties": {"name": _STRING, "value": _STRING},
             "required": ["name", "value"],
             "additionalProperties": False,
         },
     },
     "confidence": {"type": "number"},
-    "source": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+    "source": _STRING,
 }
-_ENTRY_REQUIRED = ["value", "entries", "confidence", "source"]
+_ENTRY_REQUIRED = ["value", "values", "entries", "confidence", "source"]
 
 
 def _attribute_schema(*extra: str) -> Dict[str, Any]:
@@ -199,16 +199,27 @@ def _extraction_output_config() -> Dict[str, Any]:
     return {"format": {"type": "json_schema", "name": "emit_product_metadata", "schema": schema}}
 
 
-def _entry_value(entry: Dict[str, Any]) -> Any:
+def _text(value: Any) -> Optional[str]:
+    text = "" if value is None else str(value).strip()
+    return text or None
+
+
+def _entry_value(entry: Dict[str, Any], scalar: bool = False) -> Any:
+    if scalar:  # the critical fields are single values whatever else the reply filled
+        listed = [v for v in (_text(x) for x in (entry.get("values") or [])) if v is not None]
+        return _text(entry.get("value")) or (listed[0] if listed else None)
     rows = entry.get("entries") or []
     if rows:
-        return {str(r.get("name")): r.get("value") for r in rows
+        return {str(r.get("name")).strip(): _text(r.get("value")) for r in rows
                 if isinstance(r, dict) and str(r.get("name") or "").strip()}
-    return entry.get("value")
+    values = [v for v in (_text(x) for x in (entry.get("values") or [])) if v is not None]
+    if values:
+        return values
+    return _text(entry.get("value"))
 
 
-def _envelope(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    value = _entry_value(entry)
+def _envelope(entry: Dict[str, Any], scalar: bool = False) -> Optional[Dict[str, Any]]:
+    value = _entry_value(entry, scalar)
     if value is None or value == "" or value == [] or value == {}:
         return None
     out: Dict[str, Any] = {"value": value, "confidence": entry.get("confidence")}
@@ -231,7 +242,7 @@ def _reply_to_sections(reply: Any) -> Dict[str, Any]:
 
     critical: Dict[str, Any] = {}
     for key, entry in critical_in.items():
-        env = _envelope(entry) if isinstance(entry, dict) else None
+        env = _envelope(entry, scalar=True) if isinstance(entry, dict) else None
         if env is not None:
             critical[key] = env
 

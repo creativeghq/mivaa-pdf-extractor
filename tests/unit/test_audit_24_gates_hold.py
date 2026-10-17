@@ -289,3 +289,20 @@ def test_the_render_is_bounded_before_get_pixmap_allocates():
         "catalog_routes grew a local copy of the limits again — that is the drift the "
         "consolidation exists to prevent"
     )
+
+
+@pytest.mark.parametrize("handler,category", [
+    ("handle_product_enrichment", "product-enrichment"),
+    ("handle_material_tagger", "material-tagger"),
+])
+def test_the_agent_persona_comes_from_its_prompt_row(handler: str, category: str):
+    """The override, else the `agent` row's system_prompt (what the edge reads) - never code."""
+    src = _strip_comments(_source_of(_read(AGENTS), handler))
+    assert f'load_prompt("agent", "{category}", field="system_prompt")' in src
+    assert "_product_record(" in src, "the product must reach the model as a fenced DATA block"
+
+
+def test_the_product_record_is_fenced_and_the_category_is_an_enum():
+    src = _read(AGENTS)
+    assert "as_untrusted_data(" in _source_of(src, "_product_record")
+    assert '"enum": category_vocab' in _source_of(src, "_enrichment_tool")

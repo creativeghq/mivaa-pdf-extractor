@@ -919,6 +919,16 @@ class DataImportService:
         the backfill can still retry them. It never fails the product."""
         from app.services.images.image_processing_service import ImageProcessingService
 
+        blocked = await self._embed_credit_block(workspace_id)
+        if blocked:
+            logger.warning("   inline image embedding skipped for product %s: %s", product_id, blocked)
+            await self._mark_images(linked, {
+                'status': 'skipped_no_credits',
+                'reason': blocked,
+                'skipped_at': datetime.utcnow().isoformat(),
+            })
+            return
+
         try:
             result = await ImageProcessingService(workspace_id=workspace_id).embed_product_images(
                 product_id=product_id,
@@ -930,17 +940,11 @@ class DataImportService:
         except Exception as e:
             logger.error("   image embedding failed for product %s: %s", product_id, e)
             sentry_sdk.capture_exception(e)
-            for img in linked:
-                try:
-                    await self.db.table('document_images').update({
-                        'embedding_metadata': {
-                            'status': 'failed',
-                            'error': f"{type(e).__name__}: {e}"[:1000],
-                            'failed_at': datetime.utcnow().isoformat(),
-                        },
-                    }).eq('id', img['id']).execute()
-                except Exception as mark_err:
-                    logger.warning("   could not mark image %s failed: %s", img['id'], mark_err)
+            await self._mark_images(linked, {
+                'status': 'failed',
+                'error': f"{type(e).__name__}: {e}"[:1000],
+                'failed_at': datetime.utcnow().isoformat(),
+            })
             return
         failed = result.get('failed_images') or []
         if failed:
@@ -948,6 +952,53 @@ class DataImportService:
                 "   %d of %d images for product %s got no vectors: %s",
                 len(failed), len(linked), product_id, failed[:3],
             )
+
+    async def _mark_images(self, linked: List[Dict[str, Any]], marker: Dict[str, Any]) -> None:
+        for img in linked:
+            try:
+                await self.db.table('document_images').update({'embedding_metadata': marker}) \
+                    .eq('id', img['id']).execute()
+            except Exception as mark_err:
+                logger.warning("   could not mark image %s %s: %s", img['id'], marker.get('status'), mark_err)
+
+    async def _billing_user(self, workspace_id: str) -> Optional[str]:
+        """The job's user, else the workspace's first active owner (edge `resolveBillingUser`)."""
+        cache_key = (workspace_id, self._bg_job_id)
+        cache = self.__dict__.setdefault('_billing_users', {})
+        if cache_key in cache:
+            return cache[cache_key]
+        user_id = None
+        if self._bg_job_id:
+            job = await self.db.table('background_jobs').select('user_id') \
+                .eq('id', self._bg_job_id).limit(1).execute()
+            user_id = ((job.data or [{}])[0] or {}).get('user_id')
+        if not user_id:
+            owner = await self.db.table('workspace_members').select('user_id') \
+                .eq('workspace_id', workspace_id).eq('status', 'active').eq('role', 'owner') \
+                .order('joined_at').limit(1).execute()
+            user_id = ((owner.data or [{}])[0] or {}).get('user_id')
+        cache[cache_key] = str(user_id) if user_id else None
+        return cache[cache_key]
+
+    async def _embed_credit_block(self, workspace_id: str) -> Optional[str]:
+        """Why paid inline embedding must not run now (invariant 10), or None. Fails closed."""
+        from app.services.integrations.credits_integration_service import get_credits_service
+
+        floor = float(os.getenv('XML_IMPORT_EMBED_MIN_CREDITS', '1'))
+        try:
+            user_id = await self._billing_user(workspace_id)
+        except Exception as e:  # noqa: BLE001
+            return f"billing user unresolved: {e}"[:300]
+        if not user_id:
+            return "no billing user for workspace"
+        available = await get_credits_service().get_available_credits(
+            user_id=user_id, workspace_id=workspace_id,
+        )
+        if available is None:
+            return "credit balance unavailable"
+        if available < floor:
+            return f"{available:.2f} credits available, {floor:.2f} required"
+        return None
 
     async def _queue_text_processing(
         self,

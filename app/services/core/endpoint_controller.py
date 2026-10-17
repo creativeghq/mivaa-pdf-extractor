@@ -2,9 +2,11 @@
 
 import asyncio
 import logging
+import threading
 from typing import Any, Dict, Optional
 
 from app.services.core.adaptive_concurrency import AdaptiveConcurrency
+from app.utils.cross_loop_lock import CrossLoopLock
 
 logger = logging.getLogger(__name__)
 
@@ -34,14 +36,13 @@ class EndpointController:
 
         # Track warm state per endpoint so warm_all is idempotent.
         self._warmed: Dict[str, bool] = {k: False for k in VALID_ENDPOINT_KEYS}
-        self._warm_lock = asyncio.Lock()
+        self._warm_lock = CrossLoopLock()
 
         # Audit fix #19: active-job tracking for scale-to-zero coordination.
         # Each register_job_start increments; register_job_done decrements.
         # scale_all_to_zero queries DB-side for current 'processing' jobs as
         # the source of truth (in-memory count would be lost across worker
         # restarts), but in-memory is the fast path.
-        import threading
         self._active_jobs: set = set()
         self._active_jobs_lock = threading.Lock()
 
@@ -152,7 +153,8 @@ class EndpointController:
         Returns:
             Dict[endpoint_name, success_bool] — quick at-a-glance result.
         """
-        async with self._warm_lock:
+        await self._warm_lock.acquire()
+        try:
             from app.services.embeddings.endpoint_registry import endpoint_registry
 
             warm_specs = [
@@ -177,6 +179,8 @@ class EndpointController:
             )
 
             return outcome
+        finally:
+            self._warm_lock.release()
 
     async def _warm_one(self, key: str, manager: Any, job_id: str) -> bool:
         """Resume + warmup a single endpoint."""

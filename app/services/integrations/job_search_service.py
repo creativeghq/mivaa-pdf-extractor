@@ -3,6 +3,7 @@ and Firecrawl careers-page scraping.
 """
 
 from __future__ import annotations
+from app.utils.cross_loop_lock import CrossLoopSemaphore
 
 import asyncio
 import hashlib
@@ -42,14 +43,14 @@ logger = logging.getLogger(__name__)
 _FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 _FIRECRAWL_MAX_CONCURRENCY = int(os.getenv("FIRECRAWL_MAX_CONCURRENCY", "3"))
 _FIRECRAWL_MIN_INTERVAL_S = float(os.getenv("FIRECRAWL_MIN_INTERVAL_S", "0.4"))
-_firecrawl_sem: Optional[asyncio.Semaphore] = None
+_firecrawl_sem: Optional[CrossLoopSemaphore] = None
 _firecrawl_last_call = [0.0]  # mutable holder for last-request monotonic time
 
 
-def _get_firecrawl_sem() -> asyncio.Semaphore:
+def _get_firecrawl_sem() -> CrossLoopSemaphore:
     global _firecrawl_sem
     if _firecrawl_sem is None:
-        _firecrawl_sem = asyncio.Semaphore(_FIRECRAWL_MAX_CONCURRENCY)
+        _firecrawl_sem = CrossLoopSemaphore(_FIRECRAWL_MAX_CONCURRENCY)
     return _firecrawl_sem
 
 

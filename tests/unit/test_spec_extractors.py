@@ -191,8 +191,7 @@ def test_per_category_confidence_is_kept(mods):
     ex._db_prompt = "system"
 
     async def _reply(*_a, **_k):
-        return {"slipSafetyRatings": {"rValue": ["R10"], "dcofRange": None, "confidence": 0.8},
-                "thermalProperties": None}
+        return {"rows": [{"field": "rValue", "text": "R10", "numbers": [], "confidence": 0.8}]}
 
     ex._extract_with_claude = _reply
     res = asyncio.run(ex.extract("R10 tile", "NOVA"))
@@ -204,5 +203,33 @@ def test_per_category_confidence_is_kept(mods):
 def test_the_property_schema_is_closed_and_strict(mods):
     schema = mods.emp._properties_output_config()["format"]["schema"]
     assert schema["additionalProperties"] is False
-    slip = schema["properties"]["slipSafetyRatings"]["anyOf"][0]
-    assert slip["additionalProperties"] is False and "confidence" in slip["required"]
+    row = schema["properties"]["rows"]["items"]
+    assert row["additionalProperties"] is False and set(row["required"]) == set(row["properties"])
+    # Strict output refuses >16 union parameters and an over-large grammar (both 400s).
+    assert "anyOf" not in repr(schema) and "'type': [" not in repr(schema)
+    assert len(repr(schema)) < 2000
+
+
+def test_property_rows_decode_to_functional_metadata(mods):
+    ex = mods.emp.EnhancedMaterialPropertyExtractor(workspace_id="ws")
+    ex._db_prompt = "system"
+
+    def row(_group, field, text="", numbers=(), conf=0.7):
+        return {"field": field, "text": text, "numbers": list(numbers), "confidence": conf}
+
+    async def _reply(*_a, **_k):
+        return {"rows": [
+            row("mechanicalPropertiesExtended", "breakingStrength", numbers=[1300]),
+            row("mechanicalPropertiesExtended", "peiRating", numbers=[4], conf=0.9),
+            row("waterMoistureResistance", "frostResistance", "yes", conf=0.6),
+            row("waterMoistureResistance", "moldMildewResistant", ""),
+            row("slipSafetyRatings", "rValue", "R10"),
+            row("slipSafetyRatings", "rValue", "R11"),
+        ]}
+
+    ex._extract_with_claude = _reply
+    res = asyncio.run(ex.extract("tile", "NOVA"))
+    assert res.properties["mechanicalPropertiesExtended"] == {"breakingStrength": 1300, "peiRating": [4]}
+    assert res.properties["waterMoistureResistance"] == {"frostResistance": True}
+    assert res.properties["slipSafetyRatings"] == {"rValue": ["R10", "R11"]}
+    assert res.category_confidence["mechanicalPropertiesExtended"] == 0.9

@@ -33,12 +33,15 @@ class DuplicateDetectionService:
     }
 
     # Factory metadata keys to check (in order of priority)
+    #: `factory` is the nested maker object; its `factory_name` is read, never its repr.
     FACTORY_KEYS = [
+        'factory_name',
         'factory',
         'manufacturer',
-        'factory_group',
         'brand',
-        'company'
+        'company',
+        'factory_group_name',
+        'factory_group',
     ]
 
     def __init__(self, supabase_client: SupabaseClient):
@@ -248,9 +251,10 @@ class DuplicateDetectionService:
         # Check each factory key in priority order
         for key in self.FACTORY_KEYS:
             value = metadata.get(key)
-            if value:
-                # Normalize factory name (lowercase, strip whitespace)
-                return str(value).lower().strip()
+            if isinstance(value, dict):
+                value = value.get('factory_name')
+            if isinstance(value, str) and value.strip():
+                return value.lower().strip()
 
         return None
 

@@ -422,3 +422,91 @@ def test_a_field_outside_the_category_is_flagged():
         categories={"floor_tile": "tiles"}, category="floor_tile",
     )
     assert ok.suspect == {}
+
+
+# ── 7. Registry-declared value parsers (`validation_rules.parse` / `into`) ──────────────────
+
+PN = Spec("number", validation_rules={"parse": "pressure_pn", "min": 0, "max": 100}, name="pressure_rating_pn")
+REBAR = Spec("number", validation_rules={"parse": "diameter"}, name="rebar_diameter_mm")
+FLUSH = Spec("text", name="flush_volume_l", validation_rules={
+    "parse": "pair", "into": ["flush_volume_full_l", "flush_volume_reduced_l"]})
+JOINT = Spec("number", name="joint_width_mm", validation_rules={
+    "parse": "range", "into": ["joint_width_min_mm", "joint_width_max_mm"], "min": 0, "max": 50})
+ACOUSTIC = Spec("number", name="acoustic_rating_db", validation_rules={
+    "parse": "acoustic", "into": ["acoustic_c_db", "acoustic_ctr_db"], "min": 0, "max": 100})
+
+
+@pytest.mark.parametrize("value,expected", [("PN16", 16), ("PN 10", 10), ("pn 6", 6), ("16 bar", 16), (25, 25)])
+def test_pressure_ratings_parse_to_a_number(value, expected):
+    verdict = fv.validate_value(PN, value)
+    assert verdict.status == fv.OK
+    assert verdict.value == expected
+
+
+@pytest.mark.parametrize("value", ["Ø12", "12mm", "Φ12", "ø 12 mm", "12"])
+def test_rebar_diameters_parse_to_a_number(value):
+    verdict = fv.validate_value(REBAR, value)
+    assert verdict.status == fv.OK and verdict.value == 12
+
+
+def test_a_parsed_value_keeps_the_written_form():
+    assert fv.validate_value(PN, "PN16").normalized_from == "PN16"
+
+
+def test_a_value_the_parser_cannot_read_is_still_flagged_and_kept():
+    verdict = fv.validate_value(PN, "high")
+    assert verdict.status == fv.NOT_A_NUMBER and verdict.value == "high"
+
+
+def test_a_parsed_value_out_of_range_is_kept_as_written():
+    verdict = fv.validate_value(PN, "PN400")
+    assert verdict.status == fv.OUT_OF_RANGE and verdict.value == "PN400"
+    assert not verdict.derived
+
+
+@pytest.mark.parametrize("value,full,reduced", [
+    ("4.5/3", 4.5, 3), ("4,5 / 3 L", 4.5, 3), ("6/3l", 6, 3), ("6", 6, None),
+])
+def test_dual_flush_splits_into_full_and_reduced(value, full, reduced):
+    verdict = fv.validate_value(FLUSH, value)
+    assert verdict.status == fv.OK
+    assert verdict.value == value, "the printed form stays on flush_volume_l"
+    expected = {"flush_volume_full_l": full}
+    if reduced is not None:
+        expected["flush_volume_reduced_l"] = reduced
+    assert verdict.derived == expected
+
+
+@pytest.mark.parametrize("value,low,high", [("2-5 mm", 2, 5), ("2 to 5mm", 2, 5), ("3", 3, 3), (3, 3, 3)])
+def test_a_joint_width_range_splits_into_min_and_max(value, low, high):
+    verdict = fv.validate_value(JOINT, value)
+    assert verdict.status == fv.OK
+    assert verdict.value == low
+    assert verdict.derived == {"joint_width_min_mm": low, "joint_width_max_mm": high}
+
+
+@pytest.mark.parametrize("value", ["42 (-1;-5)", "Rw 42 (C;Ctr) = (-1;-5)", "Rw (C;Ctr) = 42 (−1;−5) dB"])
+def test_acoustic_rating_splits_out_the_spectrum_terms(value):
+    verdict = fv.validate_value(ACOUSTIC, value)
+    assert verdict.status == fv.OK and verdict.value == 42
+    assert verdict.derived == {"acoustic_c_db": -1, "acoustic_ctr_db": -5}
+
+
+def test_a_plain_acoustic_rating_derives_nothing():
+    verdict = fv.validate_value(ACOUSTIC, "42 dB")
+    assert verdict.value == 42 and not verdict.derived
+
+
+@pytest.mark.parametrize("rules", [{"parse": "nope"}, {"into": ["a"]}, {"parse": "range", "into": "a"}])
+def test_a_malformed_parse_rule_is_reported(rules):
+    assert fv.validate_value(Spec("number", validation_rules=rules), "3").status == fv.BAD_RULE
+
+
+def test_derived_parts_land_beside_the_source_and_never_overwrite():
+    metadata = {"water_performance": {"flush_volume_l": "4.5/3", "flush_volume_reduced_l": 2.5}}
+    out, _ = _run_with_registry(metadata, {"flush_volume_l": FLUSH})
+    block = out["water_performance"]
+    assert block["flush_volume_full_l"] == 4.5
+    assert block["flush_volume_reduced_l"] == 2.5, "an extracted value beats a derived one"
+    assert out["_extraction_metadata"]["water_performance.flush_volume_full_l"] == {
+        "derived_from": "water_performance.flush_volume_l"}

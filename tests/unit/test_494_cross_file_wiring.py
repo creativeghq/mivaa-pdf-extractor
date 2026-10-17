@@ -90,3 +90,22 @@ def test_imported_images_are_embedded_inline_and_failures_are_marked():
     embed = _func(IMPORT, "_embed_linked_images")
     assert "embed_product_images(" in embed
     assert "'status': 'failed'" in embed
+
+
+def test_inline_image_embedding_checks_credits_before_the_paid_call():
+    """Invariant 10: the balance is read BEFORE Claude/Voyage run, and a refusal is a marker."""
+    embed = _func(IMPORT, "_embed_linked_images")
+    assert embed.index("_embed_credit_block(") < embed.index("embed_product_images(")
+    assert "'skipped_no_credits'" in embed
+    block = _func(IMPORT, "_embed_credit_block")
+    assert "get_available_credits(" in block
+    assert block.count("return None") == 1, "only a sufficient balance may let the call run"
+
+
+def test_the_upload_category_fills_an_uncategorised_product_before_it_is_resolved():
+    body = _func(STAGE4, "create_single_product")
+    classify = body.index("await _classify_product(")
+    hint = body.index("_upload_category_hint(supabase, document_id)")
+    resolve = body.index("_resolve_category_id(metadata.get('material_category')")
+    assert classify < hint < resolve
+    assert '"general_materials"' in body[hint:resolve]

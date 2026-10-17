@@ -15,19 +15,22 @@ Usage:
 
 import asyncio
 import logging
+import threading
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 
 logger = logging.getLogger(__name__)
 
 
 class AdaptiveConcurrency:
-    """Backpressure controller using a condition-variable gate.
+    """Backpressure controller: `_in_flight` against a resizable `_limit`.
 
-    We do not use `asyncio.Semaphore` because its counter is not runtime-resizable.
-    Instead we track `_in_flight` against `_limit` and wake waiters on release
-    or limit-change.
+    Shared by every job, and each job runs its own event loop in its own thread, so the
+    gate is a thread lock plus a short async poll. Any asyncio primitive here is bound to
+    the first loop that waits on it and raises in every other job.
     """
+
+    _POLL_SECONDS = 0.05
 
     def __init__(
         self,
@@ -54,16 +57,14 @@ class AdaptiveConcurrency:
         self._in_flight = 0
         self._consecutive_failures = 0
         self._consecutive_successes = 0
-        # Lazy-init the Condition on first async use.
-        self._cond: Optional[asyncio.Condition] = None
+        self._guard = threading.Lock()
 
-    def _get_cond(self) -> asyncio.Condition:
-        """Return the Condition, creating it lazily inside the caller's
-        running event loop on first use.
-        """
-        if self._cond is None:
-            self._cond = asyncio.Condition()
-        return self._cond
+    def _try_take(self) -> bool:
+        with self._guard:
+            if self._in_flight < self._limit:
+                self._in_flight += 1
+                return True
+            return False
 
     @property
     def limit(self) -> int:
@@ -82,17 +83,13 @@ class AdaptiveConcurrency:
         Blocks (cooperatively) until `in_flight < limit`. Releases on exit even
         if the protected code raises.
         """
-        cond = self._get_cond()
-        async with cond:
-            while self._in_flight >= self._limit:
-                await cond.wait()
-            self._in_flight += 1
+        while not self._try_take():
+            await asyncio.sleep(self._POLL_SECONDS)
         try:
             yield
         finally:
-            async with cond:
+            with self._guard:
                 self._in_flight -= 1
-                cond.notify_all()
 
     def record_success(self) -> None:
         """Signal that an in-flight call succeeded.
@@ -100,8 +97,6 @@ class AdaptiveConcurrency:
         After `success_threshold` consecutive successes we grow the limit by 1
         (additive increase), capped at `maximum`.
         """
-        # This method is sync so that callers inside `try/except` blocks don't
-        # need to await. Internal condition interaction is fire-and-forget.
         self._consecutive_successes += 1
         self._consecutive_failures = 0
 
@@ -116,12 +111,6 @@ class AdaptiveConcurrency:
                 "🐰 %s adaptive concurrency: %d → %d (after %d consecutive successes)",
                 self._name, old, self._limit, self._success_threshold,
             )
-            # Wake one waiter so the new slot is used immediately.
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(self._notify_one())
-            except RuntimeError:
-                pass  # No running loop — limit change still took effect.
 
     def record_failure(self) -> None:
         """Signal that an in-flight call failed with a backpressure-relevant error."""
@@ -159,12 +148,6 @@ class AdaptiveConcurrency:
                 "(endpoint dead/unconfigured)",
                 self._name, old, self._limit,
             )
-
-    async def _notify_one(self) -> None:
-        """Wake one waiter after a limit increase."""
-        cond = self._get_cond()
-        async with cond:
-            cond.notify(1)
 
     def stats(self) -> dict:
         """Snapshot of current state for logging / progress reports."""

@@ -62,31 +62,15 @@ _TRANSLATE_TOOL = {
 }
 
 
-def _build_user_prompt(items: List[Tuple[str, str]]) -> str:
+async def _build_user_prompt(items: List[Tuple[str, str]]) -> str:
+    """The DB prompt with the items fenced as catalogue DATA (invariant 9)."""
+    from app.services.utilities.prompt_registry import load_prompt, render
+    from app.utils.untrusted_content import as_untrusted_data
+
+    template = await load_prompt("extraction", "facet_translation", stage="canonicalization")
     rendered = "\n".join(f"  - facet_key={fk!r} raw={rv!r}" for fk, rv in items)
-    return (
-        "Translate the following product attribute values to canonical lowercase English.\n"
-        "Each item is a (facet_key, raw_value) pair from a product catalog ingest.\n\n"
-        "Rules:\n"
-        "  1. Return one entry per input, in the same order.\n"
-        "  2. Use established English catalog vocabulary (e.g. 'white', 'warm white',\n"
-        "     'matte', 'metal', 'oak', 'porcelain', 'walnut', 'wall hung', 'basin faucet').\n"
-        "  3. If the raw value is already English, return its lowercase form.\n"
-        "  4. PRESERVE VERBATIM (no translation): brand names, model numbers, SKUs,\n"
-        "     socket codes (E27, GU10, G9, G13, G5, G4, G53), IP ratings (IP20, IP44,\n"
-        "     IP65, IP67), wattages ('60W'), voltages ('230V'), CRI/Ra ratings,\n"
-        "     dimensions, color temperatures ('2700K', '4000K'), certifications.\n"
-        "  5. For colors, use simple English names ('white', not 'snow white' unless\n"
-        "     that's the actual catalog distinction).\n"
-        "  6. For materials, use the standard catalog term ('metal' not 'metallic',\n"
-        "     'wood' not 'wooden', 'glass' not 'glazed').\n"
-        "  7. For finishes, use single-word forms ('matte', 'glossy', 'satin',\n"
-        "     'brushed', 'polished').\n"
-        "  8. Never invent. If you cannot confidently translate, return the raw\n"
-        "     value verbatim and let downstream handle it.\n\n"
-        f"Items ({len(items)}):\n{rendered}\n\n"
-        "Call submit_translations with the full list."
-    )
+    return render(template, item_count=len(items),
+                  items=as_untrusted_data(rendered, source="catalogue attribute values"))
 
 
 async def translate_facet_values(
@@ -140,11 +124,12 @@ async def translate_facet_values_with_status(
     started = time.time()
     try:
         from app.services.core.claude_tool_call import call_with_tool
+        user_prompt = await _build_user_prompt(needs_translation)
         result = await call_with_tool(
             task="facet_translation",
             model=_MODEL,
             max_tokens=min(4096, 60 + 40 * len(needs_translation)),
-            messages=[{"role": "user", "content": _build_user_prompt(needs_translation)}],
+            messages=[{"role": "user", "content": user_prompt}],
             tool=_TRANSLATE_TOOL,
         )
         raw_translations = result.data.get("translations") or []

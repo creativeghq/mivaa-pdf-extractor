@@ -46,6 +46,7 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.cross_loop_lock import CrossLoopLock
 
 logger = logging.getLogger(__name__)
 
@@ -117,19 +118,25 @@ class PromptStoreUnavailable(PromptError):
 
 
 _CACHE: Dict[str, Tuple[str, float]] = {}
-_LOCK = asyncio.Lock()
+_LOCK = CrossLoopLock()
+
+
+#: Agent rows keep the runtime persona in `system_prompt` (the edge reads that column too).
+PROMPT_FIELDS = ("prompt_text", "system_prompt")
 
 
 def _key(prompt_type: str, category: str, stage: Optional[str],
-         workspace_id: Optional[str], subcategory: Optional[str]) -> str:
-    return "|".join([prompt_type, category, stage or "-", workspace_id or "-", subcategory or "-"])
+         workspace_id: Optional[str], subcategory: Optional[str],
+         field: str = "prompt_text") -> str:
+    parts = [prompt_type, category, stage or "-", workspace_id or "-", subcategory or "-"]
+    return "|".join(parts if field == "prompt_text" else parts + [field])
 
 
 def _select(client: Any, prompt_type: str, category: str, stage: Optional[str],
             workspace_id: str, subcategory: Optional[str], is_custom: Optional[bool]):
     query = (
         client.table("prompts")
-        .select("prompt_text, version, name, is_custom")
+        .select("prompt_text, system_prompt, version, name, is_custom")
         .eq("prompt_type", prompt_type)
         .eq("category", category)
         .eq("workspace_id", workspace_id)
@@ -145,7 +152,8 @@ def _select(client: Any, prompt_type: str, category: str, stage: Optional[str],
 
 
 def _resolve_blocking(prompt_type: str, category: str, stage: Optional[str],
-                      workspace_id: Optional[str], subcategory: Optional[str]) -> str:
+                      workspace_id: Optional[str], subcategory: Optional[str],
+                      field: str = "prompt_text") -> str:
     client = get_supabase_client().client
     ws = workspace_id or GLOBAL_WORKSPACE
 
@@ -164,10 +172,10 @@ def _resolve_blocking(prompt_type: str, category: str, stage: Optional[str],
         for target_ws, target_cat, custom, label in attempts:
             result = _select(client, prompt_type, target_cat, stage, target_ws, subcategory, custom)
             rows = result.data or []
-            if rows and (rows[0].get("prompt_text") or "").strip():
+            if rows and (rows[0].get(field) or "").strip():
                 logger.info("Prompt %s/%s/%s resolved via %s (v%s)",
                             prompt_type, stage or "-", target_cat, label, rows[0].get("version"))
-                return rows[0]["prompt_text"]
+                return rows[0][field]
     except Exception as exc:  # noqa: BLE001 — re-raised as a typed error below
         # NOT swallowed into "not found". A reachability failure and a missing row need
         # different reactions, and conflating them is what let an outage look like a
@@ -177,8 +185,8 @@ def _resolve_blocking(prompt_type: str, category: str, stage: Optional[str],
         ) from exc
 
     raise PromptNotConfigured(
-        f"No active prompt for prompt_type='{prompt_type}', stage='{stage or '-'}', "
-        f"category='{category}' (workspace {ws}). Add it in /admin/ai-configs. "
+        f"No active prompt with a non-empty {field} for prompt_type='{prompt_type}', "
+        f"stage='{stage or '-'}', category='{category}' (workspace {ws}). Add it in /admin/ai-configs. "
         f"There is no hardcoded fallback by design — see app/services/utilities/prompt_registry.py."
     )
 
@@ -191,14 +199,17 @@ async def load_prompt(
     workspace_id: Optional[str] = None,
     subcategory: Optional[str] = None,
     use_cache: bool = True,
+    field: str = "prompt_text",
 ) -> str:
-    """Return the prompt text, or raise. Never returns a default.
+    """Return the prompt text (or `field`), or raise. Never returns a default.
 
     Raises:
         PromptNotConfigured: no active row matches.
         PromptStoreUnavailable: the prompts table could not be read.
     """
-    cache_key = _key(prompt_type, category, stage, workspace_id, subcategory)
+    if field not in PROMPT_FIELDS:
+        raise ValueError(f"field must be one of {PROMPT_FIELDS}, got {field!r}")
+    cache_key = _key(prompt_type, category, stage, workspace_id, subcategory, field)
     if use_cache:
         hit = _CACHE.get(cache_key)
         if hit and (time.monotonic() - hit[1]) < CACHE_TTL_SECONDS:
@@ -210,7 +221,7 @@ async def load_prompt(
             if hit and (time.monotonic() - hit[1]) < CACHE_TTL_SECONDS:
                 return hit[0]
         text = await asyncio.to_thread(
-            _resolve_blocking, prompt_type, category, stage, workspace_id, subcategory
+            _resolve_blocking, prompt_type, category, stage, workspace_id, subcategory, field
         )
         _CACHE[cache_key] = (text, time.monotonic())
         return text
@@ -269,6 +280,8 @@ def render(template: str, **values: Any) -> str:
 #: Every prompt key this service loads with a literal (prompt_type, category, stage).
 REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("agent", "segmentation", None),
+    ("agent", "product-enrichment", None),
+    ("agent", "material-tagger", None),
     ("classification", "chunk_scope", "chunking"),
     # Added by phase 4.1/4.3 after this list was written. The guard test found the drift
     # on its first run, which is the point of deriving it from the call sites.
@@ -280,6 +293,7 @@ REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("extraction", "anthropic_image_analysis", "image_analysis"),
     ("extraction", "catalog_knowledge", "discovery"),
     ("extraction", "consensus_extraction", "validation"),
+    ("extraction", "facet_translation", "canonicalization"),
     ("extraction", "fast_product_classifier_system", "discovery"),
     ("extraction", "icon_metadata", "image_analysis"),
     ("extraction", "legend_care", "discovery"),

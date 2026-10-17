@@ -47,6 +47,33 @@ def _resolve_category_id(material_category: Optional[str], supabase: Any) -> Opt
     return ids.get(key) if key else None
 
 
+_UPLOAD_CATEGORY: Dict[str, Optional[str]] = {}
+
+
+def _coarse_category(value: Any) -> Optional[str]:
+    return field_registry.resolve_category(value) if isinstance(value, str) and value.strip() else None
+
+
+def _upload_category_hint(supabase: Any, document_id: str) -> Optional[str]:
+    """The category the operator declared on upload, when it is a specific one.
+
+    It fills a product the extractor left uncategorised or put in `general_materials`; a
+    specific category the extractor found wins, because one catalogue can span several.
+    """
+    key = str(document_id)
+    if key in _UPLOAD_CATEGORY:
+        return _UPLOAD_CATEGORY[key]
+    try:
+        rows = supabase.client.table("documents").select("metadata").eq("id", key).limit(1).execute()
+    except Exception as e:  # noqa: BLE001 — no hint is the old behaviour; not cached, so it retries
+        logging.getLogger(__name__).warning(f"upload category hint unreadable for {key}: {e}")
+        return None
+    raw = (((rows.data or [{}])[0] or {}).get("metadata") or {}).get("material_category")
+    coarse = _coarse_category(raw)
+    _UPLOAD_CATEGORY[key] = coarse if coarse and coarse != "general_materials" else None
+    return _UPLOAD_CATEGORY[key]
+
+
 #: Registry keys with `destination='column'` that have a real products column. Order matters:
 #: the first key carrying a value wins its column. An alias (`product_code`) resolves to its field.
 _COLUMN_FOR_FIELD: Dict[str, str] = {
@@ -637,6 +664,12 @@ async def create_single_product(
                 logger.info(f"   🏷️ Auto-classified zone_intent: {classified['zone_intent']}")
         except Exception as cls_err:
             logger.warning(f"   ⚠️ Auto-classification skipped: {cls_err}")
+
+    upload_category = _upload_category_hint(supabase, document_id)
+    if upload_category and _coarse_category(metadata.get("material_category")) in (None, "general_materials"):
+        logger.info(f"   🏷️ material_category {metadata.get('material_category')!r} -> upload's {upload_category!r}")
+        metadata["material_category"] = upload_category
+        metadata["_material_category_source"] = "upload"
 
     # Extract description from multiple sources if product.description is empty
     description = product.description or ''

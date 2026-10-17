@@ -198,11 +198,14 @@ def test_no_loader_falls_back_to_code():
             if "prompt" not in body.lower():
                 continue
             for node in ast.walk(fn):
-                # `something_prompt or SOME_CONSTANT`
+                # `something_prompt or SOME_CONSTANT` / `req.system_prompt or ("You are ...")`
                 if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
                     rendered = ast.unparse(node)
                     if "prompt" in rendered.lower() and any(
-                        isinstance(v, ast.Name) and v.id.isupper() for v in node.values
+                        (isinstance(v, ast.Name) and v.id.isupper())
+                        or (isinstance(v, (ast.Constant, ast.JoinedStr))
+                            and len(ast.unparse(v).split()) >= 6)
+                        for v in node.values
                     ):
                         offenders.append(
                             f"{path.relative_to(_ROOT).as_posix()}::{fn.name} -> {rendered[:70]}")

@@ -91,7 +91,7 @@ SUSPECT = frozenset({
 
 #: The closed set of keys `material_metadata_fields.validation_rules` may carry. Adding one means
 #: teaching `_apply_rules` to enforce it — an unknown key yields BAD_RULE rather than passing.
-ALLOWED_RULE_KEYS = frozenset({"min", "max", "unit", "pattern", "max_length"})
+ALLOWED_RULE_KEYS = frozenset({"min", "max", "unit", "pattern", "max_length", "parse", "into"})
 
 #: Values that mean "the extractor found nothing here". Not a validation failure.
 _EMPTY = {"", "n/a", "na", "none", "null", "-", "—", "unknown", "not specified"}
@@ -101,6 +101,7 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 #: for the numeric check ("12 mm", "1.5kg"). A value with a LEADING unit ("mm 12") does not
 #: match and is reported — that is a genuinely malformed answer, not a formatting quirk.
 _LEADING_NUMBER_RE = re.compile(r"^\s*([+-]?\d+(?:[.,]\d+)?)\s*([a-zA-Z%°/²³]*)\s*$")
+_BARE_NUMBER_RE = re.compile(r"^\s*[+-]?\d+(?:[.,]\d+)?\s*$")
 
 _TRUE_TOKENS = {"true", "yes", "y", "1", "present", "included"}
 _FALSE_TOKENS = {"false", "no", "n", "0", "absent", "not included"}
@@ -159,6 +160,93 @@ def _coerce_number(value: Any) -> Tuple[Optional[float], Optional[str]]:
         return None, None
 
 
+_NUM = r"(\d+(?:[.,]\d+)?)"
+_SIGNED = r"([+\-\u2212\u2013]?\s*\d+(?:[.,]\d+)?)"
+_LITRES = r"(?:l|lt|ltr|litres?|liters?)?"
+_PN_RE = re.compile(rf"^\s*(?:PN\s*{_NUM}|{_NUM}\s*bar)\s*$", re.IGNORECASE)
+_DIAMETER_RE = re.compile(rf"^\s*(?:[\u00d8\u00f8\u03a6\u03c6\u2300]|dia\.?|d)?\s*{_NUM}\s*(?:mm)?\s*$", re.IGNORECASE)
+_PAIR_RE = re.compile(rf"^\s*{_NUM}\s*{_LITRES}\s*(?:/\s*{_NUM}\s*{_LITRES})?\s*$", re.IGNORECASE)
+_RANGE_RE = re.compile(
+    rf"^\s*{_NUM}\s*(?:mm)?\s*(?:(?:-|\u2013|\u2014|to|\u00f7|~)\s*{_NUM}\s*(?:mm)?)?\s*$", re.IGNORECASE,
+)
+_C_CTR = r"(?:\(\s*C\s*[;,]\s*Ctr\s*\)\s*=?\s*)?"
+_ACOUSTIC_RE = re.compile(
+    rf"^\s*(?:R'?w\s*)?{_C_CTR}=?\s*{_NUM}\s*(?:dB)?\s*{_C_CTR}"
+    rf"(?:\(\s*{_SIGNED}\s*[;,]\s*{_SIGNED}\s*\))?\s*(?:dB)?\s*$",
+    re.IGNORECASE,
+)
+
+#: (primary, parts). `primary` None keeps the value as written; `parts` line up with `into`.
+_Parsed = Tuple[Optional[float], Tuple[Optional[float], ...]]
+
+
+def _num(token: Optional[str]) -> Optional[float]:
+    if token is None:
+        return None
+    return float(token.replace("\u2212", "-").replace("\u2013", "-").replace(" ", "").replace(",", "."))
+
+
+def _parse_pressure_pn(text: str) -> Optional[_Parsed]:
+    m = _PN_RE.match(text)
+    return (_num(m.group(1) or m.group(2)), ()) if m else None
+
+
+def _parse_diameter(text: str) -> Optional[_Parsed]:
+    m = _DIAMETER_RE.match(text)
+    return (_num(m.group(1)), ()) if m else None
+
+
+def _parse_pair(text: str) -> Optional[_Parsed]:
+    m = _PAIR_RE.match(text)
+    return (None, (_num(m.group(1)), _num(m.group(2)))) if m else None
+
+
+def _parse_range(text: str) -> Optional[_Parsed]:
+    m = _RANGE_RE.match(text)
+    if not m:
+        return None
+    low = _num(m.group(1))
+    high = _num(m.group(2)) if m.group(2) else low
+    return (low, (low, high))
+
+
+def _parse_acoustic(text: str) -> Optional[_Parsed]:
+    m = _ACOUSTIC_RE.match(text)
+    return (_num(m.group(1)), (_num(m.group(2)), _num(m.group(3)))) if m else None
+
+
+#: The closed set of `validation_rules.parse` names. `into` names the registry fields that
+#: receive `parts`, so which field a part lands in is data, not code.
+PARSERS: Dict[str, Callable[[str], Optional[_Parsed]]] = {
+    "pressure_pn": _parse_pressure_pn,
+    "diameter": _parse_diameter,
+    "pair": _parse_pair,
+    "range": _parse_range,
+    "acoustic": _parse_acoustic,
+}
+
+
+def _as_number(number: float) -> Any:
+    return int(number) if float(number).is_integer() else number
+
+
+def _parse_by_rule(spec: "FieldSpec", value: Any) -> Optional[Tuple[Optional[float], Dict[str, Any]]]:
+    """Run the field's declared parser. None when there is none or the value does not fit it."""
+    rules = spec.validation_rules
+    if not isinstance(rules, dict) or isinstance(value, bool):
+        return None
+    parser = PARSERS.get(str(rules.get("parse") or ""))
+    into = rules.get("into") or []
+    if parser is None or not isinstance(into, list):
+        return None
+    parsed = parser(str(value))
+    if parsed is None:
+        return None
+    primary, parts = parsed
+    derived = {str(k): _as_number(v) for k, v in zip(into, parts) if v is not None}
+    return primary, derived
+
+
 def _coerce_boolean(value: Any) -> Optional[bool]:
     if isinstance(value, bool):
         return value
@@ -178,6 +266,8 @@ class Verdict:
     detail: str = ""
     #: Set only when the value was rewritten to an option's canonical spelling.
     normalized_from: Optional[str] = None
+    #: Sibling fields a `parse` rule split out of this value, keyed by registry field name.
+    derived: Optional[Dict[str, Any]] = None
 
     @property
     def is_suspect(self) -> bool:
@@ -251,6 +341,13 @@ def _apply_rules(
         except (TypeError, ValueError):
             return Verdict(BAD_RULE, value, f"min/max are not numeric: min={low!r} max={high!r}")
 
+    parse, into = rules.get("parse"), rules.get("into")
+    if parse is not None and parse not in PARSERS:
+        return Verdict(BAD_RULE, value, f"unknown parse {parse!r}; known: {', '.join(sorted(PARSERS))}")
+    if into is not None and (parse is None or not isinstance(into, list)
+                             or not all(isinstance(k, str) and k for k in into)):
+        return Verdict(BAD_RULE, value, f"into must be a list of field names beside a parse rule: {into!r}")
+
     pattern = rules.get("pattern")
     if pattern:
         try:
@@ -302,11 +399,28 @@ def validate_value(spec: "FieldSpec", value: Any) -> Verdict:
             return Verdict(OK, hit, normalized_from=text)
         return Verdict(OK, hit)
 
+    parsed = _parse_by_rule(spec, value)
+    derived = parsed[1] if parsed else None
+
+    if spec.field_type == "number" and parsed and parsed[0] is not None:
+        number = parsed[0]
+        objection = _apply_rules(spec, value, number, text)
+        if objection:
+            return objection
+        clean = _as_number(number)
+        moved = not isinstance(value, (int, float)) or clean != value
+        return Verdict(OK, clean, normalized_from=text if moved else None, derived=derived or None)
+
     if spec.field_type == "number":
         number, _unit = _coerce_number(value)
         if number is None:
             return Verdict(NOT_A_NUMBER, value, f"{text!r} does not parse as a number")
-        return _apply_rules(spec, value, number, text) or Verdict(OK, value)
+        objection = _apply_rules(spec, value, number, text)
+        if objection:
+            return objection
+        if isinstance(value, str) and _BARE_NUMBER_RE.match(value):
+            return Verdict(OK, _as_number(number), normalized_from=text)
+        return Verdict(OK, value)
 
     if spec.field_type == "boolean":
         as_bool = _coerce_boolean(value)
@@ -315,7 +429,7 @@ def validate_value(spec: "FieldSpec", value: Any) -> Verdict:
         return Verdict(OK, as_bool, normalized_from=text if not isinstance(value, bool) else None)
 
     # text: only the explicit rules apply.
-    return _apply_rules(spec, value, None, text) or Verdict(OK, value)
+    return _apply_rules(spec, value, None, text) or Verdict(OK, value, derived=derived or None)
 
 
 def _validate_one(spec: "FieldSpec", value: Any) -> Tuple[Any, Verdict]:
@@ -384,6 +498,14 @@ async def validate_metadata_against_registry(
                 kept, verdict = _validate_one(spec, value)
             holder[key] = kept
             report.checked += 1
+            for target, part in (verdict.derived or {}).items():
+                if _is_empty(holder.get(target)):
+                    holder[target] = part
+                    if stamp:
+                        target_path = f"{container}.{target}" if container else target
+                        extraction_meta[target_path] = {
+                            **(extraction_meta.get(target_path) or {}), "derived_from": path,
+                        }
 
             if verdict.normalized_from is not None:
                 report.normalized[path] = verdict.normalized_from

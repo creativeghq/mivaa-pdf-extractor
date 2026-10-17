@@ -33,6 +33,7 @@ from dataclasses import dataclass, field as dc_field
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.cross_loop_lock import CrossLoopLock
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +224,7 @@ class FieldRegistry:
 
     def __init__(self) -> None:
         self._cache: Optional[_Cache] = None
-        self._lock = asyncio.Lock()
+        self._lock = CrossLoopLock()
 
     # ── Loading ──────────────────────────────────────────────────────────────
 

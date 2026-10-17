@@ -240,6 +240,36 @@ def extract_structured_output(response: Any, label: str) -> Dict[str, Any]:
     return parsed
 
 
+_UNSUPPORTED_SCHEMA_KEYS = frozenset({
+    "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "maxItems",
+})
+_SUBSCHEMA_MAPS = ("properties", "$defs", "definitions", "patternProperties")
+
+
+def api_compatible_schema(node: Any) -> Any:
+    """A copy of `node` without the constraints strict output rejects with a 400.
+
+    Ranges are not lost: callers validate the parsed object (pydantic `ge`/`le`, registry
+    min/max rules) and an out-of-range value fails there. Keys inside `properties` are field
+    NAMES, so a field called `minimum` survives.
+    """
+    if isinstance(node, list):
+        return [api_compatible_schema(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+    out: Dict[str, Any] = {}
+    for key, value in node.items():
+        if key in _UNSUPPORTED_SCHEMA_KEYS:
+            continue
+        if key == "minItems" and isinstance(value, int) and value > 1:
+            continue
+        if key in _SUBSCHEMA_MAPS and isinstance(value, dict):
+            out[key] = {name: api_compatible_schema(sub) for name, sub in value.items()}
+        else:
+            out[key] = api_compatible_schema(value)
+    return out
+
+
 async def call_with_schema(
     *,
     task: str,
@@ -269,6 +299,8 @@ async def call_with_schema(
     fmt = dict(output_config.get("format") or {})
     # `name` is our log label only: the Messages API 400s on it ("Extra inputs are not permitted").
     label = fmt.pop("name", None) or task
+    if "schema" in fmt:
+        fmt["schema"] = api_compatible_schema(fmt["schema"])
     output_config = {**output_config, "format": fmt} if fmt else output_config
 
     merged = {**(extra_kwargs or {})}

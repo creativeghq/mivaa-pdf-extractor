@@ -879,7 +879,7 @@ class ProductDiscoveryService:
                 pdf_text="",  # vision mode — pages travel as image blocks
                 total_pages=total_pages,
                 categories=categories,
-                agent_prompt=agent_prompt or "Identify all distinct products visible in these catalog pages.",
+                agent_prompt=agent_prompt,
                 workspace_id=workspace_id,
                 enable_prompt_enhancement=enable_prompt_enhancement,
             )
