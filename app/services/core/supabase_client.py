@@ -224,7 +224,9 @@ class SupabaseClient:
                 write=30.0,  # Write timeout
                 pool=5.0  # Pool timeout
             ),
-            http2=True,
+            # HTTP/1.1: measured 2026-10-17, 3000 requests x16 threads -> HTTP/2 146 RemoteProtocolError
+            # ("Server disconnected": the gateway GOAWAYs in-flight streams), HTTP/1.1 none, and faster.
+            http2=False,
             follow_redirects=True
         )
     def initialize(self, settings: Settings) -> None:
@@ -251,11 +253,6 @@ class SupabaseClient:
             # blocks startup on a deployment that is actually configured
             # correctly. The key that matters is asserted below.
 
-            # Create httpx client with connection pooling.
-            # keepalive_expiry=30s makes the client recycle idle connections
-            # BEFORE PostgREST's gateway closes them, which is the root cause of
-            # the transient "Server disconnected" errors (the central retry in
-            # _install_postgrest_retry_once is the safety net for the residual).
             self._httpx_client = self._create_httpx_client()
             logger.info("✅ Created httpx client with connection pooling (max_connections=50, max_keepalive=20)")
 
@@ -379,7 +376,7 @@ class SupabaseClient:
                 "max_keepalive": 20,
                 "keepalive_expiry_seconds": 30.0,
                 "pool_timeout_seconds": 5.0,
-                "http2_enabled": True,
+                "http2_enabled": False,
                 "pool_utilization_percent": 0,
                 "note": "httpx does not expose active connection count"
             }

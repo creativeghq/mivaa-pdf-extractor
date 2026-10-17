@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import os
+import uuid
 import httpx
 import sentry_sdk
 from typing import Dict, Any, List, Optional
@@ -24,7 +25,7 @@ from app.services.products.category_units import (
     CategoryRegistryUnavailable, get_category_registry, resolve_default_unit,
 )
 from app.utils.postgrest_filters import escape_like
-from app.utils.text_fold import fold_identity
+from app.utils.text_fold import fold_identity, fold_model_token
 
 
 def _resolve_default_unit(material_category: Optional[str], supabase: Any) -> str:
@@ -181,6 +182,29 @@ def _find_workspace_duplicate(
                 fold_identity(meta.get('factory_name')) == folded_factory:
             return row
     return None
+
+
+def _reuse_existing_product(supabase: Any, workspace_id: str, document_id: str,
+                            existing: Dict[str, Any], name: str, logger: logging.Logger) -> Dict[str, Any]:
+    """Record that `document_id` also carries an existing product, and return it."""
+    existing_meta = dict(existing.get('metadata') or {})
+    also_in = [d for d in (existing_meta.get('also_in_documents') or []) if d]
+    if str(document_id) not in [str(d) for d in also_in] and \
+            str(existing.get('source_document_id')) != str(document_id):
+        also_in.append(str(document_id))
+        existing_meta['also_in_documents'] = also_in
+        supabase.client.table('products').update({'metadata': existing_meta}) \
+            .eq('id', existing['id']).eq('workspace_id', workspace_id).execute()
+    logger.info(
+        f"   ♻️ '{name}' already exists in this workspace as {existing['id']} "
+        f"(from document {existing.get('source_document_id')}) — reusing, not inserting"
+    )
+    return {
+        'product_id': existing['id'],
+        'embedding_failed': False,
+        'deduplicated': True,
+        'duplicate_of_document': existing.get('source_document_id'),
+    }
 
 
 def _category_of(metadata: Dict[str, Any]) -> Optional[str]:
@@ -627,23 +651,7 @@ async def create_single_product(
         metadata.get('factory_name'), column_values.get('sku'),
     )
     if duplicate:
-        existing_meta = dict(duplicate.get('metadata') or {})
-        also_in = [d for d in (existing_meta.get('also_in_documents') or []) if d]
-        if str(document_id) not in [str(d) for d in also_in]:
-            also_in.append(str(document_id))
-            existing_meta['also_in_documents'] = also_in
-            supabase.client.table('products').update({'metadata': existing_meta}) \
-                .eq('id', duplicate['id']).eq('workspace_id', workspace_id).execute()
-        logger.info(
-            f"   ♻️ '{product.name}' already exists in this workspace as {duplicate['id']} "
-            f"(from document {duplicate.get('source_document_id')}) — reusing, not inserting"
-        )
-        return {
-            'product_id': duplicate['id'],
-            'embedding_failed': False,
-            'deduplicated': True,
-            'duplicate_of_document': duplicate.get('source_document_id'),
-        }
+        return _reuse_existing_product(supabase, workspace_id, document_id, duplicate, product.name, logger)
 
     # ── Auto-classify material_category + zone_intent if missing / not in vocab ──
     raw_cat = metadata.get("material_category")
@@ -827,7 +835,34 @@ async def create_single_product(
             # Network glitch — log and proceed (DB constraint will catch it).
             logger.warning(f"   ⚠️ FK pre-check failed (network?), proceeding: {fk_err}")
 
-    result = supabase.client.table('products').insert(product_data).execute()
+    # Identity under the unique index the XML import uses, so two concurrent uploads of one
+    # product cannot both insert: a SKU, or a name WITH its maker (an unbranded name is not one).
+    from app.services.integrations.data_import_service import import_identity_for
+    _sku = column_values.get('sku')
+    identity = import_identity_for(
+        _factory_name or None, fold_model_token(_sku) if _sku else None, product.name,
+        allow_name_identity=bool(_factory_name),
+    )
+    if identity:
+        product_data['import_identity'] = identity
+    # Client-minted id + ignore-duplicates makes the insert safe to repeat after a lost reply.
+    product_data['id'] = str(uuid.uuid4())
+    try:
+        result = supabase.client.table('products') \
+            .upsert(product_data, on_conflict='id', ignore_duplicates=True).execute()
+        if not result.data:
+            result = supabase.client.table('products').select('id') \
+                .eq('id', product_data['id']).limit(1).execute()
+    except Exception as insert_err:
+        if not (identity and '23505' in str(insert_err) and 'import_identity' in str(insert_err)):
+            raise
+        existing = supabase.client.table('products') \
+            .select('id, name, source_document_id, metadata') \
+            .eq('workspace_id', workspace_id).eq('import_identity', identity).limit(1).execute()
+        if not existing.data:
+            raise
+        return _reuse_existing_product(supabase, workspace_id, document_id, existing.data[0],
+                                       product.name, logger)
 
     if result.data and len(result.data) > 0:
         product_id = result.data[0]['id']

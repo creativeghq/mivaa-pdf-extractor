@@ -180,7 +180,7 @@ def test_create_routes_columns_sets_identity_and_draft():
         assert needle in body, needle
     dedup = body.index("_find_workspace_duplicate(")
     assert dedup < body.index("_classify_product("), "dedup must run before the paid classifier"
-    assert dedup < body.index(".insert(product_data)")
+    assert dedup < body.index(".upsert(product_data")
 
 
 def test_confidence_score_is_a_fraction_or_unknown():

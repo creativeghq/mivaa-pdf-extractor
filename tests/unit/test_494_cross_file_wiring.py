@@ -109,3 +109,15 @@ def test_the_upload_category_fills_an_uncategorised_product_before_it_is_resolve
     resolve = body.index("_resolve_category_id(metadata.get('material_category')")
     assert classify < hint < resolve
     assert '"general_materials"' in body[hint:resolve]
+
+
+def test_a_pdf_product_insert_is_identity_keyed_and_safe_to_repeat():
+    body = _func(STAGE4, "create_single_product")
+    identity = body.index("import_identity_for(")
+    insert = body.index(".upsert(product_data, on_conflict='id', ignore_duplicates=True)")
+    assert identity < insert
+    assert "product_data['id'] = str(uuid.uuid4())" in body[identity:insert]
+    assert "allow_name_identity=bool(_factory_name)" in body
+    assert ".insert(product_data)" not in body
+    race = body[insert:]
+    assert "'23505'" in race and "_reuse_existing_product(" in race
