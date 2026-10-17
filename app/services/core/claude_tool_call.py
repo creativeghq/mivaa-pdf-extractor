@@ -266,7 +266,10 @@ async def call_with_schema(
     """
     from app.services.core.claude_helper import tracked_claude_call_async
 
-    label = (output_config.get("format") or {}).get("name") or task
+    fmt = dict(output_config.get("format") or {})
+    # `name` is our log label only: the Messages API 400s on it ("Extra inputs are not permitted").
+    label = fmt.pop("name", None) or task
+    output_config = {**output_config, "format": fmt} if fmt else output_config
 
     merged = {**(extra_kwargs or {})}
     caller_output_config = merged.pop("output_config", None) or {}

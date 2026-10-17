@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Query, status, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 import asyncio
+import httpx
 import sentry_sdk
 from pydantic import BaseModel, Field, model_validator
 
@@ -958,7 +959,9 @@ async def upload_document(
             }
             # documents + processed_documents + background_jobs in ONE transaction: three
             # commits left a document stuck at 'processing' when the second or third failed.
-            supabase_client.client.rpc('create_document_upload_job', {
+            # A dropped connection can lose the reply of a committed call; the RPC replays
+            # on the same ids, so retry instead of 500-ing over a job nobody will run.
+            _rpc_args = {
                 "p_document_id": document_id,
                 "p_job_id": job_id,
                 "p_workspace_id": workspace_id,
@@ -970,7 +973,16 @@ async def upload_document(
                 "p_storage_object_path": storage_object_path,
                 "p_document_metadata": document_metadata,
                 "p_job_metadata": job_metadata,
-            }).execute()
+            }
+            for _attempt in range(3):
+                try:
+                    supabase_client.client.rpc('create_document_upload_job', _rpc_args).execute()
+                    break
+                except httpx.TransportError as _te:
+                    if _attempt == 2:
+                        raise
+                    logger.warning(f"create_document_upload_job transport error, replaying: {_te}")
+                    await asyncio.sleep(0.5 * (_attempt + 1))
             logger.info(f"✅ Created document {document_id} + job {job_id}")
         except HTTPException:
             raise
@@ -2921,10 +2933,10 @@ async def process_document_with_discovery(
                 document_id=document_id,
                 filename=filename,
                 status="processing",
-                progress=12,
+                progress=1,
                 metadata=job_storage[job_id]["metadata"]
             )
-        logger.info(f"📊 Job {job_id} progress: 12% - Starting endpoint warm-up")
+        logger.info(f"📊 Job {job_id} progress: 1% - Starting endpoint warm-up")
 
         settings = get_settings()
         endpoint_managers = {}
@@ -3077,10 +3089,10 @@ async def process_document_with_discovery(
                 document_id=document_id,
                 filename=filename,
                 status="processing",
-                progress=18,
+                progress=2,
                 metadata=job_storage[job_id]["metadata"]
             )
-        logger.info(f"📊 Job {job_id} progress: 18% - Warm-up complete, {len(endpoint_managers)} endpoints ready")
+        logger.info(f"📊 Job {job_id} progress: 2% - Warm-up complete, {len(endpoint_managers)} endpoints ready")
 
         # ============================================================================
         # REGISTER WARMED-UP MANAGERS WITH SINGLETON REGISTRY
