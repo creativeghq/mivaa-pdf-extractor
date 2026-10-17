@@ -12,7 +12,6 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
-from app.config import get_settings
 from app.dependencies import verify_internal_access
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field

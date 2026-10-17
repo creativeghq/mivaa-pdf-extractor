@@ -5740,7 +5740,6 @@ async def kb_retrieval_eval_run(request: KBRetrievalEvalRequest, http_request: R
     cases = q.order("key").execute().data or []
 
     batch_id = request.batch_id or str(uuid4())
-    from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
     embedding_model = get_settings().voyage_query_model
 
     results: List[Dict[str, Any]] = []
