@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
-import os
 import re
 import time
 from typing import Dict, List, Tuple
@@ -94,22 +94,27 @@ async def translate_facet_values(
     *,
     timeout_seconds: float = 30.0,
 ) -> Dict[Tuple[str, str], str]:
-    """
-    Batched non-English → English translation.
+    """Batched non-English -> English translation; see `translate_facet_values_with_status`."""
+    translations, _degraded = await translate_facet_values_with_status(
+        items, timeout_seconds=timeout_seconds)
+    return translations
 
-    Args:
-      items: list of (facet_key, raw_value) pairs.
 
-    Returns:
-      Dict keyed by the input pair → translated English string. ASCII-only inputs
-      get mapped to themselves (lowercased) without an API call. Failures leave
-      the input absent from the dict — caller should treat that as "no translation"
-      and use the raw value (where the RPC's non-ASCII guard will catch it).
+async def translate_facet_values_with_status(
+    items: List[Tuple[str, str]],
+    *,
+    timeout_seconds: float = 30.0,
+) -> Tuple[Dict[Tuple[str, str], str], bool]:
+    """Batched non-English -> English translation, and whether it DEGRADED.
+
+    Returns (translations, degraded). ASCII inputs map to themselves (lowercased) with no
+    API call. `degraded` is True when a value that needed translating did not get one —
+    no key, a failed call, or a missing/unusable entry — because the RPC then rejects it
+    and the facet silently disappears from the product.
     """
     if not items:
-        return {}
+        return {}, False
 
-    # Partition: ASCII shortcuts vs needs-Haiku
     out: Dict[Tuple[str, str], str] = {}
     needs_translation: List[Tuple[str, str]] = []
     for fk, rv in items:
@@ -121,22 +126,18 @@ async def translate_facet_values(
             needs_translation.append((fk, rv))
 
     if not needs_translation:
-        return out
+        return out, False
 
-    api_key = os.getenv("ANTHROPIC_API_KEY") or ""
+    from app.services.integrations.platform_secret_resolver import resolve_secret
+
+    api_key = (await asyncio.to_thread(resolve_secret, "ANTHROPIC_API_KEY")).value or ""
     if not api_key:
-        logger.info("facet-translator: ANTHROPIC_API_KEY missing — non-English values will be rejected by RPC guard")
-        return out
+        logger.warning(
+            "facet-translator: ANTHROPIC_API_KEY unresolved — %d non-English value(s) left "
+            "untranslated (degraded)", len(needs_translation))
+        return out, True
 
-    # Through the tracked helper, not a raw POST (#33 item 2). This call already forced
-    # `tool_choice` — the shape was right — but a hand-rolled httpx POST is invisible to
-    # `ai_usage_logs`, so its spend appeared in no cost view and a failure after
-    # Anthropic had accepted and billed the request left no record at all.
-    #
-    # `call_with_tool` does the tool-block extraction too, so the hand-written
-    # find-the-block loop goes with it.
     started = time.time()
-    raw_translations: List[dict] = []
     try:
         from app.services.core.claude_tool_call import call_with_tool
         result = await call_with_tool(
@@ -150,11 +151,10 @@ async def translate_facet_values(
     except Exception as e:
         logger.warning(
             f"facet-translator Haiku call failed after {int((time.time()-started)*1000)}ms: {e}. "
-            f"Non-English values will fall through to RPC guard."
+            f"{len(needs_translation)} value(s) left untranslated (degraded)."
         )
-        return out
+        return out, True
 
-    # Index by (facet_key, raw) so we tolerate the model returning items out of order
     by_key: Dict[Tuple[str, str], str] = {}
     for entry in raw_translations:
         fk = entry.get("facet_key")
@@ -162,9 +162,12 @@ async def translate_facet_values(
         en = entry.get("english")
         if isinstance(fk, str) and isinstance(rv, str) and isinstance(en, str) and en.strip():
             translated = en.strip().lower()
-            # Sanity: if Haiku returned a non-ASCII translation, drop it (RPC guard would reject anyway).
             if is_ascii_english(translated):
                 by_key[(fk, rv)] = translated
 
     out.update(by_key)
-    return out
+    missing = [pair for pair in needs_translation if pair not in by_key]
+    if missing:
+        logger.warning("facet-translator: %d of %d value(s) came back untranslated (degraded)",
+                       len(missing), len(needs_translation))
+    return out, bool(missing)

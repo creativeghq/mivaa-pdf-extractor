@@ -5,9 +5,22 @@ lived here and in the import service, and both stopped at the original ten categ
 category added in admin silently sold in `pcs`. Unit spelling follows src/lib/units.ts,
 where `m2` is canonical and `sqm` is only a tolerated alias on read.
 """
+import threading
+import time
 from typing import Any, Dict, Optional, Tuple
 
 DEFAULT_UNIT = 'pcs'
+
+#: How long a SUCCESSFUL registry read is reused. A failed read is never cached.
+REGISTRY_TTL_SECONDS = 300
+
+
+class CategoryRegistryUnavailable(RuntimeError):
+    """`material_categories` could not be read, or returned nothing.
+
+    Raised instead of answering with empty maps: an empty map resolves every product to
+    `pcs` and no category, which is a wrong unit stated as fact.
+    """
 
 #: A vocabulary value whose unit differs from its own category's default. Everything else
 #: takes the category default straight from the table, so this stays short by construction:
@@ -132,9 +145,10 @@ def load_category_registry(
 ) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
     """Read the category registry once.
 
-    Returns (category_key -> unit, vocab value -> category_key, category_key -> id). Fails
-    soft to three empty maps: an unavailable registry means the resolvers fall back to their
-    defaults rather than to a stale copy of the table.
+    Returns (category_key -> unit, vocab value -> category_key, category_key -> id).
+
+    Raises:
+        CategoryRegistryUnavailable: the read failed or returned no active category.
     """
     units: Dict[str, str] = {}
     vocab: Dict[str, str] = {}
@@ -144,19 +158,50 @@ def load_category_registry(
         resp = client.table('material_categories') \
             .select('id, category_key, default_unit, controlled_vocab, vocab_aliases') \
             .eq('is_active', True).execute()
-        for row in (resp.data or []):
-            key = (row.get('category_key') or '').lower().strip()
-            if not key:
-                continue
-            unit = row.get('default_unit')
-            if unit:
-                units[key] = unit
-            if row.get('id'):
-                ids[key] = row['id']
-            for term in (row.get('controlled_vocab') or []) + (row.get('vocab_aliases') or []):
-                t = str(term or '').lower().strip()
-                if t:
-                    vocab.setdefault(t, key)
-    except Exception:
-        return {}, {}, {}
+        rows = resp.data or []
+    except Exception as e:
+        raise CategoryRegistryUnavailable(f"material_categories read failed: {e}") from e
+    if not rows:
+        raise CategoryRegistryUnavailable("material_categories returned no active rows")
+    for row in rows:
+        key = (row.get('category_key') or '').lower().strip()
+        if not key:
+            continue
+        unit = row.get('default_unit')
+        if unit:
+            units[key] = unit
+        if row.get('id'):
+            ids[key] = row['id']
+        for term in (row.get('controlled_vocab') or []) + (row.get('vocab_aliases') or []):
+            t = str(term or '').lower().strip()
+            if t:
+                vocab.setdefault(t, key)
     return units, vocab, ids
+
+
+_CACHE: Optional[Tuple[float, Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]]] = None
+_CACHE_LOCK = threading.Lock()
+
+
+def get_category_registry(
+    supabase: Any,
+) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+    """`load_category_registry`, reused for REGISTRY_TTL_SECONDS after a successful read.
+
+    A failure raises and leaves nothing cached, so the next call retries.
+    """
+    global _CACHE
+    with _CACHE_LOCK:
+        hit = _CACHE
+    if hit is not None and (time.monotonic() - hit[0]) < REGISTRY_TTL_SECONDS:
+        return hit[1]
+    maps = load_category_registry(supabase)
+    with _CACHE_LOCK:
+        _CACHE = (time.monotonic(), maps)
+    return maps
+
+
+def invalidate_category_registry() -> None:
+    global _CACHE
+    with _CACHE_LOCK:
+        _CACHE = None

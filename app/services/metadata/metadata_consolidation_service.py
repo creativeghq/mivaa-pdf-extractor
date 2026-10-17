@@ -76,7 +76,7 @@ class MetadataConsolidationService:
                             if key == "color":
                                 # Don't add to main "color" field (will be handled in AI text section)
                                 # Just store as visual_color_detected if no AI text color exists
-                                if "colors" not in consolidated:
+                                if "color" not in consolidated:
                                     # No AI text colors, use visual color as fallback
                                     consolidated["visual_color_detected"] = value
                                     extraction_metadata["visual_color_detected"] = {
@@ -101,15 +101,19 @@ class MetadataConsolidationService:
                     if value is not None and value != "":
                         # Special handling for color/colors field
                         if key in ["color", "colors"]:
-                            # Normalize to "colors" array
-                            if isinstance(value, list):
-                                consolidated["colors"] = value
-                            elif isinstance(value, str):
-                                consolidated["colors"] = [value]
-                            else:
-                                consolidated["colors"] = value
+                            # One canonical `color`: the registry canonicalizes `color`, so a
+                            # `colors` key would never reach the colour facet.
+                            incoming = value if isinstance(value, list) else [value]
+                            ai_owned = extraction_metadata.get("color", {}).get("source") == "ai_text_extraction"
+                            current = consolidated.get("color") if ai_owned else None
+                            merged = list(current) if isinstance(current, list) else (
+                                [current] if current not in (None, "") else [])
+                            for item in incoming:
+                                if item not in (None, "") and item not in merged:
+                                    merged.append(item)
+                            consolidated["color"] = merged
 
-                            extraction_metadata["colors"] = {
+                            extraction_metadata["color"] = {
                                 "source": "ai_text_extraction",
                                 "confidence": 0.95
                             }
@@ -137,10 +141,10 @@ class MetadataConsolidationService:
             consolidated['_consolidation_timestamp'] = datetime.utcnow().isoformat()
 
             # Log color consolidation details
-            if "colors" in consolidated or "visual_color_detected" in consolidated:
+            if "color" in consolidated or "visual_color_detected" in consolidated:
                 colors_info = []
-                if "colors" in consolidated:
-                    colors_info.append(f"colors={consolidated['colors']}")
+                if "color" in consolidated:
+                    colors_info.append(f"color={consolidated['color']}")
                 if "visual_color_detected" in consolidated:
                     colors_info.append(f"visual_detected={consolidated['visual_color_detected']}")
                 logger.info(f"🎨 Color consolidation: {', '.join(colors_info)}")

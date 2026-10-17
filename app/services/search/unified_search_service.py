@@ -25,7 +25,14 @@ class UnifiedSearchService:
     """
 
     def __init__(self, supabase_client=None):
-        """`supabase_client` feeds query-term canonicalisation (resolve_query_term)."""
+        """`supabase_client` (the facade, not `.client`) feeds resolve_query_term.
+
+        Defaults to the shared client: built with none, every alias lookup failed on
+        `None.client` and the raw term reached the filter unresolved.
+        """
+        if supabase_client is None:
+            from app.services.core.supabase_client import get_supabase_client
+            supabase_client = get_supabase_client()
         self.supabase = supabase_client
         self.logger = logger
         # Diagnostics for query understanding (used by callers for observability)
@@ -311,7 +318,7 @@ class UnifiedSearchService:
                         if c:
                             parsed_data[parsed_key] = c
             except Exception as canon_err:
-                self.logger.debug(f"Query-side canonicalization skipped: {canon_err}")
+                self.logger.warning(f"Query-side canonicalization skipped: {canon_err}")
 
             filters = {}
             for key, value in parsed_data.items():

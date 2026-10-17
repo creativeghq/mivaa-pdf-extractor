@@ -135,14 +135,17 @@ async def resolve_workspace_id(
         # Trusted channel: the edge function already bound this to a verified user.
         return requested or claims.get("workspace_id")
 
-    token_workspace = validated_workspace_id or (claims or {}).get("workspace_id")
-
-    # Nothing asked for, or asked for exactly what has already been established.
-    if requested is None or requested == str(token_workspace):
-        return token_workspace
-
     user_id = (claims or {}).get("sub")
-    if user_id and await is_member(str(user_id), requested):
-        return requested
 
-    raise WorkspaceAccessDenied(user_id, requested)
+    # Only a middleware-validated workspace skips the check; a claims workspace can be a
+    # default the caller is not a member of.
+    if validated_workspace_id and (requested is None or requested == str(validated_workspace_id)):
+        return validated_workspace_id
+
+    candidate = requested or (claims or {}).get("workspace_id")
+    if candidate is None:
+        return None
+    if user_id and await is_member(str(user_id), str(candidate)):
+        return str(candidate)
+
+    raise WorkspaceAccessDenied(user_id, candidate)

@@ -102,6 +102,11 @@ class RecanonicalizeRequest(BaseModel):
         description="Only replay products flagged degraded by a failed canonicalization run. "
                     "Use for outage recovery; the default also re-sweeps rules-stale products.",
     )
+    force: bool = Field(
+        False,
+        description="Also replay products already at the target version, re-resolving every "
+                    "raw value instead of reusing stored canonicals.",
+    )
 
 
 @router.post("/recanonicalize", dependencies=[Depends(require_admin)])
@@ -131,6 +136,7 @@ async def recanonicalize(req: RecanonicalizeRequest):
             batch_size=req.batch_size,
             workspace_id=req.workspace_id,
             degraded_only=req.degraded_only,
+            force=req.force,
         )
     except Exception as e:
         logger.exception("recanonicalize sweep failed")

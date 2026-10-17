@@ -249,9 +249,9 @@ def facets_from_catalog(product_row: Optional[Dict[str, Any]]) -> Optional[Query
         variants["finish"] = str(mp["finish"])
     # Single-value color/size only when unambiguous — multi-color products
     # leave variants empty so the classifier doesn't false-mismatch.
-    available_colors = meta.get("available_colors") or []
-    if isinstance(available_colors, list) and len(available_colors) == 1:
-        variants["color"] = str(available_colors[0])
+    colors = meta.get("color") or []
+    if isinstance(colors, list) and len(colors) == 1:
+        variants["color"] = str(colors[0])
     dims = meta.get("dimensions") or []
     if isinstance(dims, list) and dims:
         first = dims[0] if isinstance(dims[0], dict) else None
@@ -260,7 +260,7 @@ def facets_from_catalog(product_row: Optional[Dict[str, Any]]) -> Optional[Query
     # Forward-compat flat keys
     for k in ("color", "size"):
         v = meta.get(k)
-        if v and k not in variants:
+        if v and k not in variants and not isinstance(v, list):
             variants[k] = str(v)
 
     required_tokens: List[str] = []

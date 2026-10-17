@@ -143,7 +143,7 @@ def test_spec_value_is_the_measurement_not_the_standard(extractor):
     headers, rows = grid[0], grid[1:]
     specs = extractor._parse_specifications_table(headers, {"headers": headers, "rows": rows})
 
-    assert specs["performance"]["water_absorption"] == "< 0,5%"
+    assert specs["performance"]["water_absorption_pct"] == "< 0,5%"
     assert specs["performance"]["slip_resistance"] == "R10"
     assert specs["performance"]["frost_resistance"] == "Conforme"
 
@@ -154,7 +154,9 @@ def test_split_axis_english_table_still_works(extractor):
     rows = [["30", "60", "8", "10"]]
     dims = extractor._parse_dimensions_table(headers, {"headers": headers, "rows": rows})
 
-    assert dims == [{"width": 30.0, "height": 60.0, "thickness": 8.0, "unit": "cm"}]
+    # No unit in the header or the cells: the unit is unknown, never assumed to be cm.
+    assert dims == [{"width": 30.0, "height": 60.0, "thickness": 8.0,
+                     "unit": None, "thickness_unit": None}]
     pkg = extractor._parse_packaging_table(headers, {"headers": headers, "rows": rows})
     assert pkg["pieces_per_box"] == 10.0
 
@@ -172,3 +174,21 @@ def test_one_table_yields_both_dimensions_and_packaging(extractor):
     headers = grid[0]
     assert extractor._looks_like_dimensions(headers)
     assert extractor._looks_like_packaging(headers, {"headers": headers, "rows": grid[1:]})
+
+
+def test_each_axis_keeps_its_own_unit(extractor):
+    """A cm size with a separate mm thickness column: thickness is 9 mm, not 9 cm."""
+    headers = ["Size", "Thickness (mm)"]
+    rows = [["60x120 cm", "9"]]
+    dims = extractor._parse_dimensions_table(headers, {"headers": headers, "rows": rows})
+    assert dims[0]["unit"] == "cm"
+    assert dims[0]["thickness"] == 9.0
+    assert dims[0]["thickness_unit"] == "mm"
+
+
+def test_a_cm_thickness_is_converted_not_relabelled(extractor):
+    """"30x60x0.8cm" is 8 mm thick; labelling the raw 0.8 as mm was a 10x error."""
+    parsed = extractor._parse_size_string("30x60x0.8cm")
+    assert parsed["thickness"] == 0.8 and parsed["thickness_unit"] == "cm"
+    assert table_metadata_extractor._to_mm(parsed["thickness"], parsed["thickness_unit"]) == 8.0
+    assert extractor._parse_size_string("60x60")["unit"] is None

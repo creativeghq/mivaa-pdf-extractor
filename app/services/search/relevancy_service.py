@@ -50,7 +50,7 @@ class RelevancyService:
             try:
                 # Get product metadata (page ranges)
                 product_result = self.supabase_client.client.table('products')\
-                    .select('id, name, metadata')\
+                    .select('id, name, metadata, workspace_id')\
                     .eq('id', product_id)\
                     .execute()
 
@@ -70,41 +70,8 @@ class RelevancyService:
                     logger.warning(f"   ⚠️ Product {product_name} has no page_range in metadata")
                     products_without_pages += 1
 
-                    # FALLBACK: Try to link ALL images from this document to this product
-                    # This ensures products get linked even without page range metadata
-                    logger.info(f"   🔄 Fallback: Linking all document images to product {product_name}")
-                    images_result = self.supabase_client.client.table('document_images')\
-                        .select('id, page_number')\
-                        .eq('document_id', document_id)\
-                        .execute()
-
-                    images = images_result.data if images_result.data else []
-                    logger.info(f"   Found {len(images)} images to link (fallback mode)")
-
-                    for image in images:
-                        try:
-                            relationship = {
-                                'product_id': product_id,
-                                'image_id': image['id'],
-                                'spatial_score': 0.0,
-                                'caption_score': 0.0,
-                                'clip_score': 0.0,
-                                'overall_score': 0.7,  # Lower score for fallback matching
-                                'confidence': 0.7,
-                                'reasoning': 'document_association',  # replaces relationship_type
-                                'metadata': {'fallback': True}
-                            }
-
-                            self.supabase_client.client.table('image_product_associations')\
-                                .insert(relationship)\
-                                .execute()
-
-                            relationships_created += 1
-                            logger.debug(f"   ✅ Linked image {image['id']} to product {product_name} (fallback)")
-
-                        except Exception as e:
-                            logger.warning(f"   ⚠️ Failed to create fallback relationship: {e}")
-
+                    # No pages, no evidence: linking every image of the document would
+                    # attach other products' pictures to this one.
                     products_processed += 1
                     continue
 
@@ -131,6 +98,7 @@ class RelevancyService:
                     for image in images:
                         try:
                             relationship = {
+                                'workspace_id': product.get('workspace_id'),
                                 'product_id': product_id,
                                 'image_id': image['id'],
                                 'spatial_score': 1.0,  # High score for page-based matching
@@ -143,7 +111,7 @@ class RelevancyService:
                             }
 
                             self.supabase_client.client.table('image_product_associations')\
-                                .insert(relationship)\
+                                .upsert(relationship, on_conflict='image_id,product_id')\
                                 .execute()
 
                             relationships_created += 1

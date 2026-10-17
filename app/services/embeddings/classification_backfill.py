@@ -20,6 +20,13 @@ from app.services.embeddings.vecs_service import get_vecs_service
 
 logger = logging.getLogger(__name__)
 
+#: PostgREST `or=` members equal to `not is_quarantined(row)`. NULL-safe: a bare
+#: `neq.true` would drop every row that has no classification marker at all.
+NOT_QUARANTINED_FILTER = (
+    "metadata->ai_classification->>classification_pending.is.null,"
+    "metadata->ai_classification->>classification_pending.neq.true"
+)
+
 
 def is_quarantined(row: Dict[str, Any]) -> bool:
     """True when the row carries the classification_pending quarantine marker.
@@ -109,7 +116,10 @@ async def _embed_confirmed_material(
     """
     image_id = row["id"]
 
-    va = await _analyze_one(image_bytes, anthropic_api_key, image_id=image_id)
+    va = await _analyze_one(
+        image_bytes, anthropic_api_key,
+        image_id=image_id, workspace_id=row.get("workspace_id"),
+    )
     if va is not None:
         await _persist_vision_analysis(image_id, va)
     else:
@@ -145,12 +155,11 @@ async def _embed_confirmed_material(
     visual_embedding = embeddings.get("visual_768")
     if visual_embedding:
         try:
-            await vecs_svc.upsert_image_embedding(
+            visual_ok = bool(await vecs_svc.upsert_image_embedding(
                 image_id=image_id,
                 siglip_embedding=visual_embedding,
                 metadata=vec_meta,
-            )
-            visual_ok = True
+            ))
         except Exception as e:
             logger.error(f"❌ Visual VECS upsert failed for {image_id}: {e}")
 

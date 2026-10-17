@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field as dc_field
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
@@ -77,13 +78,15 @@ NOT_A_BOOLEAN = "not_a_boolean"
 PATTERN_MISMATCH = "pattern_mismatch"
 TOO_LONG = "too_long"
 BAD_RULE = "bad_rule"
+OUT_OF_CATEGORY = "out_of_category"
+AMBIGUOUS_OPTION = "ambiguous_option"
 
 #: Every status that means "this value is suspect". BAD_RULE is in here deliberately: a rule the
 #: evaluator cannot understand is a defect in the registry, and staying quiet about it would
 #: reproduce the failure this module exists to fix, one level up.
 SUSPECT = frozenset({
     OUT_OF_ENUM, OUT_OF_RANGE, NOT_A_NUMBER, NOT_A_BOOLEAN,
-    PATTERN_MISMATCH, TOO_LONG, BAD_RULE,
+    PATTERN_MISMATCH, TOO_LONG, BAD_RULE, OUT_OF_CATEGORY, AMBIGUOUS_OPTION,
 })
 
 #: The closed set of keys `material_metadata_fields.validation_rules` may carry. Adding one means
@@ -110,7 +113,22 @@ def _enum_key(value: Any) -> str:
     to a SPACE. That would leave `"R 11"` and `"R11"` different keys, and catalogues write slip
     and IP ratings both ways. Here both reduce to `r11`.
     """
-    return _NON_ALNUM_RE.sub("", str(value).strip().lower())
+    folded = unicodedata.normalize("NFKD", str(value).strip().lower())
+    return _NON_ALNUM_RE.sub("", folded)
+
+
+_ROMAN = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "vi": 6, "vii": 7, "viii": 8, "ix": 9, "x": 10}
+_LABELLED_GRADE_RE = re.compile(r"^\s*[A-Za-z]{2,}[\s.:-]*(\d{1,2}|[ivxIVX]{1,4})\s*$")
+
+
+def _grade_key(value: Any) -> Optional[str]:
+    """`PEI 4`, `PEI IV` and `4` as `4`: a scale label and a roman numeral are spelling."""
+    text = str(value).strip()
+    match = _LABELLED_GRADE_RE.match(text)
+    token = match.group(1) if match else text
+    if token.isdigit():
+        return str(int(token))
+    return str(_ROMAN[token.lower()]) if token.lower() in _ROMAN else None
 
 
 def _is_empty(value: Any) -> bool:
@@ -257,8 +275,23 @@ def validate_value(spec: "FieldSpec", value: Any) -> Verdict:
     text = str(value).strip()
 
     if spec.field_type == "dropdown" and spec.dropdown_options:
-        wanted = {_enum_key(o): o for o in spec.dropdown_options if str(o).strip()}
-        hit = wanted.get(_enum_key(value))
+        options = [o for o in spec.dropdown_options if str(o).strip()]
+        exact = [o for o in options if str(o).strip().lower() == text.lower()]
+        if exact:
+            hit = exact[0]
+        else:
+            # `B` and `B+` fold to the same key; a value that only matches after folding
+            # must not be assigned to whichever option happened to come last.
+            folded = [o for o in options if _enum_key(o) == _enum_key(value)]
+            if len(folded) > 1:
+                return Verdict(
+                    AMBIGUOUS_OPTION, value,
+                    f"matches several options after folding: {', '.join(str(o) for o in folded)}",
+                )
+            hit = folded[0] if folded else None
+            if hit is None and _grade_key(value) is not None:
+                graded = [o for o in options if _grade_key(o) == _grade_key(value)]
+                hit = graded[0] if len(graded) == 1 else None
         if hit is None:
             return Verdict(
                 OUT_OF_ENUM, value,
@@ -310,14 +343,20 @@ async def validate_metadata_against_registry(
     metadata: Dict[str, Any],
     *,
     stamp: bool = True,
+    category: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], ValidationReport]:
-    """Validate an extracted metadata dict against the field registry."""
+    """Validate an extracted metadata dict against the field registry.
+
+    `category` (else `metadata['material_category']`) scopes the check: a registered field
+    whose `applies_to_categories` excludes the product's category is flagged, not dropped.
+    """
     from app.services.metadata.field_registry import field_registry
 
     await field_registry.ensure_loaded()
 
     report = ValidationReport()
     extraction_meta = dict(metadata.get("_extraction_metadata") or {})
+    category_key = field_registry.resolve_category(category or metadata.get("material_category"))
 
     def visit(container: Optional[str], holder: Dict[str, Any], lookup: Callable) -> None:
         for key, value in list(holder.items()):
@@ -337,7 +376,12 @@ async def validate_metadata_against_registry(
             if _is_empty(value):
                 continue
 
-            kept, verdict = _validate_one(spec, value)
+            if category_key and not spec.applies_to(category_key):
+                kept, verdict = value, Verdict(
+                    OUT_OF_CATEGORY, value, f"field does not apply to category {category_key}",
+                )
+            else:
+                kept, verdict = _validate_one(spec, value)
             holder[key] = kept
             report.checked += 1
 

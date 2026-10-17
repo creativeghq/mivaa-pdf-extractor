@@ -754,7 +754,7 @@ class ProductCreationService:
             colors.extend(matches)
 
         if colors:
-            metadata['colors'] = list(set(colors))  # Remove duplicates
+            metadata['color'] = list(set(colors))
 
         # Extract collection name
         collection_matches = re.findall(r'(?:collection|COLLECTION)\s+([A-Z][a-z]+)', content)
@@ -769,7 +769,7 @@ class ProductCreationService:
         for pattern in material_patterns:
             matches = re.findall(pattern, content, re.IGNORECASE)
             if matches:
-                metadata['material_type'] = matches[0].lower()
+                metadata['material'] = matches[0].lower()
                 break
 
         return metadata
@@ -1954,7 +1954,7 @@ class ProductCreationService:
             if enrichment_data.get('materials'):
                 metadata['materials'] = enrichment_data['materials']
             if enrichment_data.get('colors'):
-                metadata['colors'] = enrichment_data['colors']
+                metadata['color'] = enrichment_data['colors']
 
             # Aggregate all available sizes from related chunks
             available_sizes = self._aggregate_dimensions_from_chunks(document_id, product_name)

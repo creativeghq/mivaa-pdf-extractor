@@ -79,6 +79,7 @@ _GATE_MARKERS = (
     "cron-secret",
     "_extract_bearer",           # bearer + supabase.auth.get_user
     "require_rag_resource_access",  # /api/rag/* — decorator-level dependency
+    "require_rag_resource_capability",  # the same, plus a workspace capability
     "require_trusted_service",      # /api/internal/* — service-to-service, parameter-level
     "require_deploy_token",         # /api/admin/*-for-deploy
     "api_key",

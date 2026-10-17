@@ -34,8 +34,13 @@ async def _fetch_stale_images(
 
     Stale = (no embedding) OR (schema_version < current SCHEMA_VERSION) OR
     (embedding_model does not start with 'voyage' — a non-Voyage vector).
+    The predicate runs in SQL BEFORE the limit; filtering a fixed page in Python
+    meant stale rows past the first `limit` ids were never reached.
     """
-    from app.services.embeddings.classification_backfill import is_quarantined
+    from app.services.embeddings.classification_backfill import (
+        NOT_QUARANTINED_FILTER,
+        is_quarantined,
+    )
 
     client = get_supabase_client().client
     query = (
@@ -44,6 +49,12 @@ async def _fetch_stale_images(
             "id, image_url, has_understanding_embedding, "
             "understanding_embedding_model, understanding_schema_version, "
             "document_id, workspace_id, page_number, metadata"
+        )
+        .or_(
+            f"and(or({NOT_QUARANTINED_FILTER}),or("
+            "has_understanding_embedding.is.null,has_understanding_embedding.is.false,"
+            f"understanding_schema_version.is.null,understanding_schema_version.lt.{int(SCHEMA_VERSION)},"
+            "understanding_embedding_model.is.null,understanding_embedding_model.not.like.voyage*))"
         )
         .order("id")
         .limit(limit)
@@ -114,6 +125,7 @@ async def _analyze_one(
     image_bytes: bytes,
     anthropic_api_key: str,
     image_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ) -> Optional[VisionAnalysis]:
     """Run Claude Opus + tool use to produce a schema-conformant VisionAnalysis.
 
@@ -163,6 +175,7 @@ async def _analyze_one(
                 }],
                 output_config=vision_analysis_output_config(),
                 image_id=image_id,
+                workspace_id=workspace_id,
             )
         except ToolCallNotReturned as e:
             logger.warning(
@@ -203,10 +216,9 @@ async def _persist_vision_analysis(image_id: str, va: VisionAnalysis) -> bool:
         client = get_supabase_client().client
         await asyncio.to_thread(
             lambda: client.table("document_images")
-            .update({
-                "vision_analysis": va.model_dump(),
-                "understanding_schema_version": SCHEMA_VERSION,
-            })
+            # No understanding_schema_version here: the vector upsert stamps it, so a
+            # failed embed leaves the row stale and the next run retries it.
+            .update({"vision_analysis": va.model_dump()})
             .eq("id", image_id)
             .execute()
         )
@@ -227,7 +239,8 @@ async def _trigger_product_rollup_recompute(image_ids: List[str]) -> int:
     if not image_ids:
         return 0
     try:
-        client = get_supabase_client().client
+        supabase = get_supabase_client()
+        client = supabase.client
         # Find every product associated with any of these images via
         # image_product_associations.
         # `image_product_associations` has no `document_id` (#26 M13-2), so this read
@@ -275,9 +288,10 @@ async def _trigger_product_rollup_recompute(image_ids: List[str]) -> int:
         for doc_id, pids in per_doc_products.items():
             for pid in pids:
                 try:
-                    await enrich_products_from_chunks_and_vision(
+                    # The facade, not `.client`: the enricher reads `supabase.client`.
+                    stats = await enrich_products_from_chunks_and_vision(
                         document_id=doc_id,
-                        supabase=client,
+                        supabase=supabase,
                         logger=logger,
                         target_product_id=pid,
                         # Only the rollup matters here — skip the heavy spec
@@ -287,7 +301,18 @@ async def _trigger_product_rollup_recompute(image_ids: List[str]) -> int:
                         enable_layout_analyzer=False,
                         enable_legend_extractor=False,
                     )
-                    rerolled += 1
+                    if (
+                        isinstance(stats, dict)
+                        and not stats.get("error")
+                        and not stats.get("per_product_failures")
+                        and stats.get("products_checked")
+                    ):
+                        rerolled += 1
+                    else:
+                        logger.warning(
+                            f"Rollup recompute did not complete for product {pid}: "
+                            f"{(stats or {}).get('error') or 'no product enriched'}"
+                        )
                 except Exception as inner:
                     logger.warning(f"Rollup recompute failed for product {pid}: {inner}")
         return rerolled
@@ -341,13 +366,23 @@ async def backfill_understanding_embeddings(
             if not image_bytes:
                 return "skipped"
 
-            va = await _analyze_one(image_bytes, anthropic_api_key, image_id=row.get("id"))
+            va = await _analyze_one(
+                image_bytes, anthropic_api_key,
+                image_id=row.get("id"), workspace_id=row.get("workspace_id"),
+            )
             if va is None:
+                return "failed"
+
+            # The analysis is persisted BEFORE the vector and its presence flag: a
+            # flag over a vector whose source text is not on the row cannot be rebuilt.
+            if not await _persist_vision_analysis(row["id"], va):
                 return "failed"
 
             ue_result = await embeddings_svc.generate_understanding_embedding(
                 vision_analysis=va,
                 job_id=None,
+                workspace_id=row.get("workspace_id"),
+                image_id=row.get("id"),
             )
             if not ue_result or not ue_result.get("embedding"):
                 return "failed"
@@ -365,10 +400,6 @@ async def backfill_understanding_embeddings(
             )
             if not ok:
                 return "failed"
-
-            # Persist the fresh VA back to document_images so Stage 4.7
-            # rollup reads the same data as Voyage embedded.
-            await _persist_vision_analysis(row["id"], va)
             return "reembedded"
 
         outcomes_with_ids = await asyncio.gather(

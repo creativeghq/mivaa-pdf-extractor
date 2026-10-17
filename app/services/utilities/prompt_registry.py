@@ -317,6 +317,7 @@ REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("extraction", "rag_advanced_answer", "rag"),
     ("extraction", "rag_document_answer", "rag"),
     ("extraction", "product_name_scope", "entity_creation"),
+    ("extraction", "products", "entity_creation"),
     ("extraction", "product_spec_vision", "image_analysis"),
     ("extraction", "rag_vision_analysis", "image_analysis"),
     ("extraction", "sentiment", None),

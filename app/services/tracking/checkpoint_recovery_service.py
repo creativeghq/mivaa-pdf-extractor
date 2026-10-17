@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 from enum import Enum
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.tracking.job_recovery_service import MIVAA_PDF_JOB_TYPES
 from app.utils.timestamp_utils import normalize_timestamp
 from app.utils.query_metrics import track_query_performance
 
@@ -50,6 +51,45 @@ class RestartOutcome(str, Enum):
         """Only a real error warrants killing the job. NO_CHECKPOINT has already
         failed the row itself inside auto_restart_stuck_job."""
         return self is RestartOutcome.ERROR
+
+
+def _is_resumable_stage(stage: Any) -> bool:
+    try:
+        ProcessingStage(stage)
+        return True
+    except ValueError:
+        return False
+
+
+def select_resumable_checkpoint(
+    job_id: str,
+    last_checkpoint: Optional[Dict[str, Any]],
+    history: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Pick the checkpoint a resume starts from: `last_checkpoint` first, else the newest
+    history entry whose stage is a ProcessingStage. Never a progress or terminal event."""
+    stage = (last_checkpoint or {}).get("stage")
+    if not _is_resumable_stage(stage):
+        stage = next(
+            (e.get("stage") for e in reversed(history or []) if _is_resumable_stage(e.get("stage"))),
+            None,
+        )
+    if stage is None:
+        return None
+    entry = next(
+        (e for e in reversed(history or []) if e.get("stage") == stage and e.get("status") != "in_progress"),
+        None,
+    ) or next((e for e in reversed(history or []) if e.get("stage") == stage), None) or {}
+    created_at = entry.get("completed_at") or entry.get("started_at")
+    if (last_checkpoint or {}).get("stage") == stage:
+        created_at = last_checkpoint.get("created_at") or created_at
+    return {
+        "job_id": job_id,
+        "stage": stage,
+        "checkpoint_data": entry.get("data") or {},
+        "metadata": entry.get("metadata") or (last_checkpoint or {}).get("metadata") or {},
+        "created_at": created_at,
+    }
 
 
 class CheckpointRecoveryService:
@@ -254,27 +294,22 @@ class CheckpointRecoveryService:
             return False
     
     async def get_last_checkpoint(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Return the most recent stage_history entry, normalized to the
-        legacy checkpoint shape `{job_id, stage, checkpoint_data, metadata,
-        created_at}` so callers don't change."""
+        """The last RESUMABLE checkpoint, in the shape `{job_id, stage, checkpoint_data,
+        metadata, created_at}`, or None.
+
+        `last_checkpoint` is the column the atomic checkpoint write maintains, so it wins.
+        `stage_history[-1]` is usually a progress or terminal event whose stage is not a
+        ProcessingStage, so the history is only searched backwards for a resumable one.
+        """
         try:
             row = self.supabase_client.client.table(self.jobs_table) \
-                .select("stage_history") \
+                .select("last_checkpoint, stage_history") \
                 .eq("id", job_id).single().execute()
-            history = (row.data or {}).get("stage_history") or []
-            if not history:
-                logger.info(f"📍 No stage_history for {job_id}")
-                return None
-            last = history[-1]
-            checkpoint = {
-                "job_id": job_id,
-                "stage": last.get("stage"),
-                "checkpoint_data": last.get("data") or {},
-                "metadata": last.get("metadata") or {},
-                "created_at": last.get("completed_at") or last.get("started_at"),
-            }
-            logger.info(f"📍 Last checkpoint for {job_id}: {checkpoint['stage']}")
-            return checkpoint
+            return select_resumable_checkpoint(
+                job_id,
+                (row.data or {}).get("last_checkpoint"),
+                (row.data or {}).get("stage_history") or [],
+            )
         except Exception as e:
             logger.error(f"❌ Failed to get checkpoint for {job_id}: {e}")
             return None
@@ -379,6 +414,7 @@ class CheckpointRecoveryService:
             result = self.supabase_client.client.table(self.jobs_table)\
                 .select("*")\
                 .eq("status", "processing")\
+                .in_("job_type", list(MIVAA_PDF_JOB_TYPES))\
                 .lt("updated_at", cutoff_time)\
                 .or_(f"last_heartbeat.is.null,last_heartbeat.lt.{heartbeat_cutoff}")\
                 .execute()
@@ -453,14 +489,16 @@ class CheckpointRecoveryService:
                 )
                 return RestartOutcome.NO_CHECKPOINT
             
-            # Atomic claim: flip processing -> pending only if the row is still
-            # exactly as observed. A losing racer matches zero rows and bails out
-            # before writing any restart metadata. Metadata is merged rather than
-            # replaced so existing progress counters survive.
+            # Atomic claim: processing -> interrupted only if the row is still exactly
+            # as observed. 'interrupted' (not 'pending', which nothing dispatches) is what
+            # detect_stuck_pdf_jobs, the startup resume and /resume all pick up.
+            now_iso = datetime.utcnow().isoformat()
             claim = self.supabase_client.client.table(self.jobs_table)\
                 .update({
-                    "status": "pending",
-                    "updated_at": datetime.utcnow().isoformat()
+                    "status": "interrupted",
+                    "interrupted_at": now_iso,
+                    "last_heartbeat": None,
+                    "updated_at": now_iso,
                 })\
                 .eq("id", job_id)\
                 .eq("status", "processing")

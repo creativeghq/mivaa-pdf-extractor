@@ -2070,7 +2070,7 @@ async def document_extraction_status(
             "performance.slip_resistance",
             "performance.pei_rating",
             "compliance.certifications",
-            "application.recommended_use",
+            "application.application",
         ]
 
         def _get_nested(md: Dict[str, Any], path: str) -> Any:

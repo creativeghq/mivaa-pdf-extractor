@@ -439,8 +439,29 @@ async def process_single_product(
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.CHUNKING,
-            {"chunks_created": chunks_created, "text_embeddings_generated": embeddings_generated, "layout_aware": True}
+            {
+                "chunks_created": chunks_created,
+                "text_embeddings_generated": embeddings_generated,
+                "layout_aware": True,
+                "chunking_status": chunk_result.get('chunking_status', 'ok'),
+                "failed_pages": chunk_result.get('failed_pages', []),
+            }
         )
+        if chunk_result.get('chunking_status') == 'partial':
+            logger_instance.error(
+                f"   ❌ Chunking PARTIAL for {product.name}: pages "
+                f"{chunk_result.get('failed_pages', [])} could not be read"
+            )
+            try:
+                # The merge is shallow (`||`), so each product writes its own key.
+                supabase.client.rpc('merge_background_job_metadata', {
+                    'p_job_id': job_id,
+                    'p_metadata': {
+                        f'chunking_failed_pages_product_{product_index}': chunk_result.get('failed_pages', []),
+                    },
+                }).execute()
+            except Exception as _cp_err:
+                logger_instance.error(f"   ❌ Could not record chunking failed pages: {_cp_err}")
         result.chunks_created = chunks_created
 
         # Update tracker with text embeddings count
@@ -647,8 +668,17 @@ async def process_single_product(
                 "icon_candidates_processed": vector_stats.get('icon_candidates_processed', 0),
                 "icon_metadata_extracted": vector_stats.get('icon_metadata_extracted', 0),
                 "icon_extraction_failed": vector_stats.get('icon_extraction_failed', 0),
+                "vectors_generated_not_saved": vector_stats.get('vectors_generated_not_saved', 0),
+                "region_crop_status": image_result.get('region_crop_status'),
+                "spread_images_side_unresolved": image_result.get('spread_images_side_unresolved', 0),
             }
         )
+        if (image_result.get('region_crop_status') or {}).get('status') == 'failed':
+            logger_instance.error(
+                f"   ❌ Region crops FAILED for {product.name}: "
+                f"{image_result['region_crop_status'].get('error_type')}: "
+                f"{image_result['region_crop_status'].get('error')}"
+            )
         result.images_processed = images_processed
         result.clip_embeddings_generated = clip_embeddings
         logger_instance.info(f"✅ Processed {images_processed} images for {product.name}")
@@ -764,7 +794,7 @@ async def process_single_product(
             if agg_dimensions:
                 chunk_aggregated['dimensions'] = sorted(agg_dimensions)
             if agg_colors:
-                chunk_aggregated['available_colors'] = sorted(agg_colors)
+                chunk_aggregated['color'] = sorted(agg_colors)
             if agg_materials:
                 chunk_aggregated.setdefault('material_properties', {})
                 chunk_aggregated['material_properties']['materials_mentioned'] = sorted(agg_materials)
@@ -825,22 +855,24 @@ async def process_single_product(
                             merged_metadata[key] = value
                         # else: chunk-aggregated value loses to non-empty extracted/existing
 
+                from app.api.pdf_processing.stage_4_products import recanonicalize_product
+                facet_columns = await recanonicalize_product(
+                    supabase, product_db_id, merged_metadata, workspace_id,
+                    'pdf_stage_4_merge', logger_instance,
+                )
                 supabase.client.table('products')\
-                    .update({'metadata': merged_metadata})\
+                    .update({'metadata': merged_metadata, **facet_columns})\
                     .eq('id', product_db_id)\
+                    .eq('workspace_id', workspace_id)\
                     .execute()
                 logger_instance.info(f"✅ Merged and updated product metadata in DB: {product_db_id} ({len(merged_metadata)} fields)")
             except Exception as e:
-                # SPN-8: make the impact explicit rather than success-masking. The
-                # product row already exists (created upstream) and keeps its
-                # pre-merge metadata — this is a LOST enrichment merge, not a total
-                # product failure. Logged at ERROR with the product id so operators
-                # can re-run enrichment for exactly this product if needed.
+                # The stage did not do its work, so it must not be checkpointed as done:
+                # a resume would then skip it forever. Failing the product keeps it retryable.
                 logger_instance.error(
-                    f"❌ [SPN-8] Product metadata MERGE dropped for {product_db_id} "
-                    f"(product retains pre-merge metadata; enrichment lost, not a "
-                    f"product failure): {e}"
+                    f"❌ Product metadata merge failed for {product_db_id}: {e}"
                 )
+                raise RuntimeError(f"metadata merge failed for {product.name}: {e}") from e
 
         # 4b. Layout-region storage + per-product table extraction — REMOVED
         # (SPN-4, 2026-07-04). `layout_regions` has been ALWAYS [] here since the
@@ -937,12 +969,20 @@ async def process_single_product(
             )
             chunk_image_links = 0
 
-        relationships_created = linking_result.get('relationships_created', 0) + chunk_image_links
+        relationships_created = linking_result.get('relationships_created', 0) + max(chunk_image_links, 0)
         await product_tracker.mark_stage_complete(
             product_id,
             ProductStage.RELATIONSHIPS,
-            {"relationships_created": relationships_created}
+            {
+                "relationships_created": relationships_created,
+                "link_step_status": linking_result.get('step_status', {}),
+                "link_failed_steps": linking_result.get('link_failed_steps', []),
+            }
         )
+        if linking_result.get('link_failed_steps'):
+            logger_instance.error(
+                f"   ❌ Linking steps failed for {product.name}: {linking_result['link_failed_steps']}"
+            )
         result.relationships_created = relationships_created
         logger_instance.info(f"✅ Created {relationships_created} relationships")
 

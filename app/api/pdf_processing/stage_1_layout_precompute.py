@@ -581,7 +581,7 @@ async def precompute_document_layout(
                     _abort.set()
                 elif (
                     _state["http_failures"] >= CIRCUIT_BREAKER_THRESHOLD
-                    and _state["persisted"] == 0
+                    and _state["ocr_ok"] == 0
                 ):
                     _abort.set()
 

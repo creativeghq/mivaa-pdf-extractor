@@ -1,6 +1,7 @@
 """Metadata Normalization Service"""
 
 import logging
+import re
 import unicodedata
 from typing import Dict, Any, Optional, Tuple
 
@@ -19,40 +20,73 @@ from app.services.metadata.field_registry import field_registry  # noqa: E402
 # ============================================================================
 
 
-def _normalize_key(name: Any) -> str:
-    """Fold a key to registry spelling: accent-stripped, lowercased, one underscore per run."""
-    s = unicodedata.normalize('NFD', str(name)).encode('ascii', 'ignore').decode('ascii')
-    s = ''.join(ch if ch.isalnum() else '_' for ch in s.lower())
-    return '_'.join(part for part in s.split('_') if part)
+def resolve_standard_field(field_name: str, product_category: Optional[str] = None) -> Optional[Tuple[str, float]]:
+    """(registry field, factor) to rename an extracted key to, or None to keep it.
+
+    A key the registry knows for this category is left alone. Matching is deterministic
+    (exact name, then `material_metadata_fields.aliases`, over case/accent/unit/plural
+    spellings), never similarity. `factor` != 1 means the value must be converted.
+    """
+    if not field_name or not field_registry.is_loaded:
+        return None
+    raw = str(field_name)
+    spec = field_registry.spec_for(raw)
+    if spec is not None:
+        category = field_registry.resolve_category(product_category) if product_category else None
+        if category is None or spec.applies_to(category):
+            return None
+    hit = field_registry.resolve_field(raw, product_category)
+    return hit if hit and hit[0] != raw else None
 
 
-def find_standard_field(field_name: str, category: str = None, threshold: float = None) -> Optional[str]:
-    """Map an UNKNOWN extracted key onto the registry field it is a spelling of, or None.
-
-    A key the registry already knows returns None, meaning leave it alone: `finish`,
-    `finish_type` and `surface_finish` are three distinct fields, and the alias table this
-    replaced folded them together and mapped `weight_per_box_kg` onto `weight_kg`. Matching
-    is deterministic spelling, never similarity, so `U-Value (W/m2K)` reaches the registered
-    field instead of registering a second row for a fact that already has one.
+def find_standard_field(field_name: str, category: str = None, threshold: float = None,
+                        *, product_category: Optional[str] = None) -> Optional[str]:
+    """The registry field name an extracted key renames to when no unit conversion is needed.
 
     Args:
         field_name: the key as extracted.
-        category: accepted for call compatibility; the registry is the authority, not a
-            per-category alias table.
+        category: the metadata section; accepted for call compatibility.
         threshold: accepted and ignored — fuzzy matching is what merged distinct fields.
+        product_category: the product's category, which decides a category-scoped alias.
 
     Returns:
         The registry field name to rename to, or None to keep the key unchanged.
     """
-    if not field_name or not field_registry.is_loaded():
+    hit = resolve_standard_field(field_name, product_category)
+    return hit[0] if hit and hit[1] == 1.0 else None
+
+
+_NUMERIC_TEXT_RE = re.compile(r"^\s*([+-]?\d+(?:[.,]\d+)?)\s*[a-zA-Z%°²³/.]*\s*$")
+
+
+def scale_value(value: Any, factor: float) -> Any:
+    """`value` x `factor`, or None when it is not a number (the caller keeps the raw key)."""
+    if isinstance(value, dict) and "value" in value:
+        inner = scale_value(value.get("value"), factor)
+        return None if inner is None else {**value, "value": inner}
+    if isinstance(value, bool):
         return None
-    raw = str(field_name)
-    if field_registry.spec_for(raw) is not None:
-        return None
-    folded = _normalize_key(raw)
-    if folded and folded != raw and field_registry.spec_for(folded) is not None:
-        return folded
-    return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        match = _NUMERIC_TEXT_RE.match(str(value or ""))
+        if not match:
+            return None
+        number = float(match.group(1).replace(",", "."))
+    result = round(number * factor, 4)
+    return int(result) if result.is_integer() else result
+
+
+_GROUT_BRAND_KEY_RE = re.compile(r"^grout_([a-z]+)$")
+
+
+def _grout_entry(value: Any) -> Any:
+    if isinstance(value, dict):
+        if "product" in value and "value" in value:
+            return f"{value['value']} {value['product']}"
+        if "value" in value:
+            return value["value"]
+    return value
 
 
 # ============================================================================
@@ -116,6 +150,15 @@ def filter_codes_by_product(codes: Any, product_name: str) -> Any:
         # else: belongs to a different product — drop it
 
     return filtered
+
+
+def _is_empty_leaf(value: Any) -> bool:
+    """Empty after unwrapping a `{"value": ...}` envelope."""
+    if isinstance(value, dict) and "value" in value:
+        value = value.get("value")
+    if isinstance(value, (list, dict)):
+        return len(value) == 0
+    return is_not_found_value(value)
 
 
 def is_not_found_value(value: Any) -> bool:
@@ -212,8 +255,6 @@ MATERIAL_CATEGORY_MAPPING = {
     "wood": "wood_flooring",
     "hardwood": "hardwood",
     "laminate": "laminate",
-    "mdf": "wood_flooring",
-    "plywood": "wood_flooring",
     "engineered wood": "engineered_wood",
     "parquet": "parquet",
     "vinyl": "vinyl_flooring",
@@ -235,7 +276,6 @@ MATERIAL_CATEGORY_MAPPING = {
     "paint": "wall_paint",
     "wall paint": "wall_paint",
     "wallpaper": "wallpaper",
-    "plaster": "decorative_plaster",
     "wall panel": "wall_panel",
     # Furniture
     "sofa": "sofa",
@@ -283,7 +323,6 @@ MATERIAL_CATEGORY_MAPPING = {
     # Other
     "glass": "glass_panel",
     "metal": "metal_panel",
-    "composite": "countertop",
     "resin": "countertop",
     "fabric": "fabric_swatch",
     "leather": "leather_swatch",
@@ -323,15 +362,18 @@ def normalize_material_category(category: str) -> Tuple[str, Optional[str]]:
         return (None, None)
 
     normalized = category.lower().strip()
-
-    # An alias, or a value that is already a controlled-vocab slug.
+    slug = "_".join(normalized.replace("-", " ").split())
     base_category = MATERIAL_CATEGORY_MAPPING.get(normalized) or normalized
 
     # audit #17 M4-9. The registry decides what a category is; this function only spells
-    # things. The old code kept any snake_case string unchanged and Title-cased everything
-    # else, so "Ceramic Composite Panel" became a category by virtue of having been typed.
+    # things. A value already in the controlled vocab is kept BEFORE any alias is applied,
+    # so `mdf` stays a panel board instead of being rewritten to wood flooring.
     if field_registry.is_loaded:
         vocab = field_registry.all_controlled_vocab()
+        if normalized in vocab:
+            base_category = normalized
+        elif slug in vocab:
+            base_category = slug
         if base_category not in vocab:
             logging.getLogger(__name__).warning(
                 "normalize_material_category: '%s' resolved to '%s', which is not in "
@@ -402,20 +444,6 @@ def normalize_field_value(value: Any, field_name: str, metadata_dict: dict = Non
             return [val] if isinstance(val, str) else val
         return value
     
-    # Handle grout supplier normalization (object → string)
-    if field_name in ["grout_mapei", "grout_kerakoll"]:
-        if isinstance(value, dict):
-            if "product" in value and "value" in value:
-                return f"{value['value']} {value['product']}"
-            elif "value" in value:
-                return value["value"]
-        return value
-    
-    # Handle array normalization (array → first element for single values)
-    if field_name in ["grout_suppliers"] and isinstance(value, list) and len(value) == 2:
-        # Keep as array for multiple suppliers
-        return value
-    
     # Extract value from confidence objects
     if isinstance(value, dict) and "value" in value:
         return value["value"]
@@ -427,13 +455,15 @@ def normalize_field_value(value: Any, field_name: str, metadata_dict: dict = Non
 # MAIN NORMALIZATION FUNCTION
 # ============================================================================
 
-def normalize_metadata(metadata: Dict[str, Any], product_name: Optional[str] = None) -> Dict[str, Any]:
+def normalize_metadata(metadata: Dict[str, Any], product_name: Optional[str] = None,
+                       product_category: Optional[str] = None) -> Dict[str, Any]:
     """
     Normalize metadata to standardized schema.
 
     Args:
         metadata: Raw metadata dictionary with inconsistent field names
         product_name: Current product name — used to filter cross-product SKU contamination
+        product_category: the product's category; decides category-scoped aliases
 
     Returns:
         Normalized metadata with standardized field names
@@ -451,34 +481,39 @@ def normalize_metadata(metadata: Dict[str, Any], product_name: Optional[str] = N
             continue
 
         normalized_fields = {}
-        processed_fields = set()
 
-        # Step 1: Normalize known fields
+        # Step 1: rename spellings/aliases onto the registry key. When two keys land on one
+        # field, the first non-empty value wins regardless of which spelling came first.
         for field_name, field_value in fields.items():
-            if field_name in processed_fields:
+            hit = resolve_standard_field(field_name, product_category)
+            standard_field, value = field_name, field_value
+            if hit:
+                target, factor = hit
+                if factor != 1.0:
+                    converted = scale_value(field_value, factor)
+                    if converted is not None:
+                        standard_field = target
+                        value = normalize_field_value(converted, target, normalized_fields)
+                else:
+                    standard_field = target
+                    value = normalize_field_value(field_value, target, normalized_fields)
+
+            brand = _GROUT_BRAND_KEY_RE.match(str(field_name).lower())
+            if standard_field == "grout_color_codes" and brand and field_name != standard_field:
+                codes = normalized_fields.get("grout_color_codes")
+                codes = dict(codes) if isinstance(codes, dict) else {}
+                entry = _grout_entry(field_value)
+                if not _is_empty_leaf(entry):
+                    codes.setdefault(brand.group(1), entry)
+                normalized_fields["grout_color_codes"] = codes
                 continue
 
-            # Find standard field name
-            standard_field = find_standard_field(field_name, category)
-
-            if standard_field:
-                # Normalize the value (pass normalized_fields to allow composition extraction)
-                normalized_value = normalize_field_value(field_value, standard_field, normalized_fields)
-
-                # Merge if standard field already exists
-                if standard_field in normalized_fields:
-                    # Handle merging logic (e.g., combine arrays, prefer non-null values)
-                    existing = normalized_fields[standard_field]
-                    if normalized_value and not existing:
-                        normalized_fields[standard_field] = normalized_value
-                else:
-                    normalized_fields[standard_field] = normalized_value
-
-                processed_fields.add(field_name)
+            if standard_field in normalized_fields:
+                existing = normalized_fields[standard_field]
+                if _is_empty_leaf(existing) and not _is_empty_leaf(value):
+                    normalized_fields[standard_field] = value
             else:
-                # Keep unknown fields as-is
-                normalized_fields[field_name] = field_value
-                processed_fields.add(field_name)
+                normalized_fields[standard_field] = value
 
         # Step 2: Handle special cases (individual SKU/color fields → objects)
         normalized_fields = consolidate_individual_fields(normalized_fields, category, product_name)
@@ -486,6 +521,9 @@ def normalize_metadata(metadata: Dict[str, Any], product_name: Optional[str] = N
         normalized[category] = normalized_fields
 
     return normalized
+
+
+_CODE_LIST_KEY_RE = re.compile(r"^(product|format|reference)_code")
 
 
 def consolidate_individual_fields(fields: Dict[str, Any], category: str, product_name: Optional[str] = None) -> Dict[str, Any]:
@@ -524,7 +562,7 @@ def consolidate_individual_fields(fields: Dict[str, Any], category: str, product
                 sku_codes[k] = v
 
         # Consolidate grout color codes
-        elif field_name.startswith("grout_color_") and "code" in field_name:
+        elif field_name != "grout_color_codes" and field_name.startswith("grout_color_") and "code" in field_name:
             # Extract color (e.g., "grout_color_code_white_mapei" → "white")
             parts = field_name.replace("grout_color_", "").replace("_code", "").replace("_mapei", "").replace("_kerakoll", "")
             color = parts.split("_")[0] if "_" in parts else parts
@@ -533,7 +571,7 @@ def consolidate_individual_fields(fields: Dict[str, Any], category: str, product
                 grout_colors[color] = value
 
         # Consolidate product codes
-        elif field_name.startswith("product_code") or field_name.startswith("format_code") or field_name.startswith("reference_code"):
+        elif _CODE_LIST_KEY_RE.match(field_name):
             value = field_value.get("value") if isinstance(field_value, dict) else field_value
             if value and value not in product_codes:
                 product_codes.append(value)
@@ -554,7 +592,8 @@ def consolidate_individual_fields(fields: Dict[str, Any], category: str, product
     if sku_codes:
         consolidated["sku_codes"] = sku_codes
     if grout_colors:
-        consolidated["grout_color_codes"] = grout_colors
+        existing = consolidated.get("grout_color_codes")
+        consolidated["grout_color_codes"] = {**existing, **grout_colors} if isinstance(existing, dict) else grout_colors
     if product_codes:
         consolidated["product_codes"] = product_codes if len(product_codes) > 1 else product_codes[0]
 
@@ -574,7 +613,7 @@ def get_normalization_report(original: Dict[str, Any], normalized: Dict[str, Any
             "fields_normalized": 15,
             "fields_consolidated": 8,
             "changes": [
-                {"from": "recommended_grout_mapei", "to": "grout_mapei", "category": "commercial"},
+                {"from": "colour", "to": "color", "category": "appearance"},
                 ...
             ]
         }

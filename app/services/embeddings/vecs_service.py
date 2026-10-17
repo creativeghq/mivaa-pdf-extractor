@@ -1,5 +1,6 @@
 """VECS Service for managing vector embeddings with Supabase."""
 
+import asyncio
 import os
 import logging
 from typing import List, Dict, Any, Optional, Tuple
@@ -229,7 +230,7 @@ class VecsService:
             True if successful, False otherwise
         """
         try:
-            collection = self.get_or_create_collection(
+            collection = await asyncio.to_thread(self.get_or_create_collection,
                 name="image_slig_embeddings",
                 dimension=768
             )
@@ -242,12 +243,12 @@ class VecsService:
                 return False
 
             # Upsert single record
-            collection.upsert(
+            await asyncio.to_thread(collection.upsert,
                 records=[(image_id, siglip_embedding, meta)]
             )
 
             # Update canonical presence flag on document_images
-            self._set_image_flag(image_id, 'has_slig_embedding')
+            await asyncio.to_thread(self._set_image_flag, image_id, 'has_slig_embedding')
 
             logger.debug(f"✅ Upserted SigLIP embedding for image {image_id}")
             return True
@@ -270,7 +271,7 @@ class VecsService:
             Number of successfully upserted records
         """
         try:
-            collection = self.get_or_create_collection(
+            collection = await asyncio.to_thread(self.get_or_create_collection,
                 name="image_slig_embeddings",
                 dimension=768
             )
@@ -285,13 +286,13 @@ class VecsService:
                 return 0
 
             # Batch upsert
-            collection.upsert(records=records)
+            await asyncio.to_thread(collection.upsert, records=records)
 
             # Update canonical presence flags on document_images
             for record in records:
                 image_id = record[0] if record else None
                 if image_id:
-                    self._set_image_flag(image_id, 'has_slig_embedding')
+                    await asyncio.to_thread(self._set_image_flag, image_id, 'has_slig_embedding')
 
             logger.info(f"✅ Batch upserted {len(records)} SigLIP embeddings")
             return len(records)
@@ -371,11 +372,11 @@ class VecsService:
         for embedding_type, collection_name in collection_mapping.items():
             if embedding_type in embeddings and embeddings[embedding_type]:
                 try:
-                    collection = self.get_or_create_collection(
+                    collection = await asyncio.to_thread(self.get_or_create_collection,
                         name=collection_name,
                         dimension=derived_dim,
                     )
-                    collection.upsert(records=[(image_id, embeddings[embedding_type], metadata)])
+                    await asyncio.to_thread(collection.upsert, records=[(image_id, embeddings[embedding_type], metadata)])
                     results[collection_name] = True
                     succeeded_types.append(embedding_type)
                     logger.debug(
@@ -401,7 +402,7 @@ class VecsService:
                 if schema_version is not None:
                     extra[f"{embedding_type}_aspect_schema_version"] = schema_version
             try:
-                self._set_image_flag(
+                await asyncio.to_thread(self._set_image_flag,
                     image_id,
                     f'has_{embedding_type}_slig',
                     extra_columns=extra or None,
@@ -457,7 +458,7 @@ class VecsService:
             True if successful, False otherwise
         """
         try:
-            collection = self.get_or_create_collection(
+            collection = await asyncio.to_thread(self.get_or_create_collection,
                 name="image_understanding_embeddings",
                 dimension=1024
             )
@@ -472,14 +473,14 @@ class VecsService:
                 logger.error(f"Refusing understanding upsert for image {image_id}: metadata missing workspace_id (tenant-attribution invariant)")
                 return False
 
-            collection.upsert(
+            await asyncio.to_thread(collection.upsert,
                 records=[(image_id, embedding, meta)]
             )
 
             # Update canonical presence flag + provenance on document_images.
             # Provenance fields mirror the VECS metadata for fast filtering
             # without joining VECS at admin-dashboard time.
-            self._set_image_flag(
+            await asyncio.to_thread(self._set_image_flag,
                 image_id,
                 'has_understanding_embedding',
                 extra_columns={
@@ -535,7 +536,6 @@ class VecsService:
                 filters = {"document_id": {"$eq": document_id}}
 
             # Run in thread pool for true async parallelism
-            import asyncio
             results = await asyncio.to_thread(
                 collection.query,
                 data=query_embedding,
@@ -568,7 +568,7 @@ class VecsService:
 
         except Exception as e:
             logger.error(f"❌ Understanding embedding search failed: {e}")
-            return []
+            raise RuntimeError(f"understanding embedding search failed: {e}") from e
 
     # ── Page embeddings (#239) — the 8th fusion vector ──────────────────────────
     #
@@ -625,11 +625,11 @@ class VecsService:
                 )
                 return False
 
-            collection = self.get_or_create_collection(
+            collection = await asyncio.to_thread(self.get_or_create_collection,
                 name=self.PAGE_COLLECTION,
                 dimension=self.PAGE_DIMENSION,
             )
-            collection.upsert(
+            await asyncio.to_thread(collection.upsert,
                 records=[(self.page_vector_id(document_id, page_number), embedding, meta)]
             )
             logger.debug(f"✅ Upserted page embedding for {document_id} p{page_number}")
@@ -688,7 +688,6 @@ class VecsService:
                 dimension=self.PAGE_DIMENSION,
             )
 
-            import asyncio
             results = await asyncio.to_thread(
                 collection.query,
                 data=query_embedding,
@@ -727,7 +726,7 @@ class VecsService:
 
         except Exception as e:
             logger.error(f"❌ Page embedding search failed: {e}")
-            return []
+            raise RuntimeError(f"page embedding search failed: {e}") from e
 
     async def delete_page_embeddings(
         self,
@@ -745,10 +744,10 @@ class VecsService:
             if page_numbers is None:
                 # No page list: find them by filter, then delete by key. The query is a
                 # lookup, not the delete itself, so the orphaning bug above can't recur.
-                collection = self.get_or_create_collection(
+                collection = await asyncio.to_thread(self.get_or_create_collection,
                     name=self.PAGE_COLLECTION, dimension=self.PAGE_DIMENSION,
                 )
-                found = collection.query(
+                found = await asyncio.to_thread(collection.query,
                     data=[0.0] * self.PAGE_DIMENSION,
                     limit=1000,  # vecs caps query limit at 1000 (>1000 raises)
                     filters={"document_id": {"$eq": str(document_id)}},
@@ -762,10 +761,10 @@ class VecsService:
             if not ids:
                 return 0
 
-            collection = self.get_or_create_collection(
+            collection = await asyncio.to_thread(self.get_or_create_collection,
                 name=self.PAGE_COLLECTION, dimension=self.PAGE_DIMENSION,
             )
-            collection.delete(ids=ids)
+            await asyncio.to_thread(collection.delete, ids=ids)
             logger.info(f"✅ Deleted {len(ids)} page embeddings for document {document_id}")
             return len(ids)
 
@@ -802,7 +801,6 @@ class VecsService:
             )
 
             # Query collection - Run in thread pool for true async parallelism
-            import asyncio
             results = await asyncio.to_thread(
                 collection.query,
                 data=query_embedding,
@@ -839,7 +837,7 @@ class VecsService:
 
         except Exception as e:
             logger.error(f"❌ Image similarity search failed: {e}")
-            return []
+            raise RuntimeError(f"visual embedding search failed: {e}") from e
 
     async def count_embeddings(
         self,
@@ -973,7 +971,6 @@ class VecsService:
             # include_value=True is required to get the distance back; without
             # it the unpack below would ValueError because vecs returns a
             # 2-tuple instead of a 3-tuple.
-            import asyncio
             results = await asyncio.to_thread(
                 collection.query,
                 data=query_embedding,
@@ -1012,7 +1009,7 @@ class VecsService:
             # Dim mismatches surface here. Log as ERROR — silently returning []
             # would hide the configuration bug from operators.
             logger.error(f"❌ Specialized search ({embedding_type}) failed: {e}")
-            return []
+            raise RuntimeError(f"{embedding_type} aspect search failed: {e}") from e
 
     async def search_all_collections(
         self,
@@ -1040,7 +1037,6 @@ class VecsService:
             - results: List of combined results with all similarity scores
             - collection_stats: Stats per collection
         """
-        import asyncio
 
         # Use visual embedding for specialized if not provided
         if specialized_query_embeddings is None:
@@ -1220,11 +1216,11 @@ class VecsService:
         but failures are logged so we can spot real problems.
         """
         try:
-            collection = self.get_or_create_collection(
+            collection = await asyncio.to_thread(self.get_or_create_collection,
                 name="image_slig_embeddings",
                 dimension=768
             )
-            collection.delete(ids=[image_id])
+            await asyncio.to_thread(collection.delete, ids=[image_id])
 
             # Aspect collections are 1024D Voyage post-Phase-10 (was 768D
             # SLIG-blend pre-2026-05-04). The vecs library looks up
@@ -1239,12 +1235,12 @@ class VecsService:
                 ("image_material_embeddings", 1024),
             ]:
                 try:
-                    col = self.get_or_create_collection(name=col_name, dimension=dim)
-                    col.delete(ids=[image_id])
+                    col = await asyncio.to_thread(self.get_or_create_collection, name=col_name, dimension=dim)
+                    await asyncio.to_thread(col.delete, ids=[image_id])
                 except Exception as col_err:
                     logger.warning(f"Specialized delete from {col_name} for {image_id} failed: {col_err}")
 
-            self._clear_image_flags(image_id, [
+            await asyncio.to_thread(self._clear_image_flags, image_id, [
                 'has_slig_embedding',
                 'has_understanding_embedding',
                 'has_color_slig',
@@ -1271,14 +1267,14 @@ class VecsService:
             Number of embeddings deleted from the primary collection
         """
         try:
-            collection = self.get_or_create_collection(
+            collection = await asyncio.to_thread(self.get_or_create_collection,
                 name="image_slig_embeddings",
                 dimension=768
             )
 
             # Query to get all image IDs for this document
             # Note: vecs doesn't support delete by filter, so we need to query first
-            results = collection.query(
+            results = await asyncio.to_thread(collection.query,
                 data=[0.0] * 768,  # Dummy query
                 limit=1000,  # vecs caps query limit at 1000 (>1000 raises)
                 filters={"document_id": {"$eq": document_id}},
@@ -1296,7 +1292,7 @@ class VecsService:
             await self.delete_page_embeddings(document_id)
 
             if image_ids:
-                collection.delete(ids=image_ids)
+                await asyncio.to_thread(collection.delete, ids=image_ids)
 
                 # Aspect collections are 1024D Voyage post-Phase-10. See
                 # delete_image_embedding above for the same comment.
@@ -1308,8 +1304,8 @@ class VecsService:
                     ("image_material_embeddings", 1024),
                 ]:
                     try:
-                        col = self.get_or_create_collection(name=col_name, dimension=dim)
-                        col.delete(ids=image_ids)
+                        col = await asyncio.to_thread(self.get_or_create_collection, name=col_name, dimension=dim)
+                        await asyncio.to_thread(col.delete, ids=image_ids)
                     except Exception as col_err:
                         logger.warning(f"Specialized delete from {col_name} for document {document_id} failed: {col_err}")
 
@@ -1359,8 +1355,8 @@ class VecsService:
             ("image_material_embeddings", 1024),
         ]:
             try:
-                col = self.get_or_create_collection(name=col_name, dimension=dim)
-                col.delete(ids=ids)
+                col = await asyncio.to_thread(self.get_or_create_collection, name=col_name, dimension=dim)
+                await asyncio.to_thread(col.delete, ids=ids)
             except Exception as col_err:
                 logger.warning(f"Bulk vecs delete from {col_name} failed: {col_err}")
 

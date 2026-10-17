@@ -69,12 +69,21 @@ class ToolCallNotReturned(RuntimeError):
     """
 
 
+def _structured_output_spec(kind: str, name: str, required: Optional[List[str]]) -> Dict[str, Any]:
+    """What `ai_call_logger.claude_reply_failure` checks the billed reply against."""
+    return {"structured_output": {"kind": kind, "name": name, "required": list(required or [])}}
+
+
 def extract_tool_input(response: Any, tool_name: str) -> Dict[str, Any]:
     """The tool input from a forced tool call, or raise.
 
     Never returns a default. `tool_choice` was forced, so an absent block means the
     contract broke, and guessing would be worse than admitting it.
     """
+    if getattr(response, "stop_reason", None) == "refusal":
+        raise ToolCallNotReturned(
+            f"{tool_name!r} was refused by the model — a refusal is a failed call"
+        )
     for block in (getattr(response, "content", None) or []):
         if getattr(block, "type", None) == "tool_use":
             if getattr(block, "name", tool_name) != tool_name:
@@ -89,6 +98,31 @@ def extract_tool_input(response: Any, tool_name: str) -> Dict[str, Any]:
     raise ToolCallNotReturned(
         f"no tool_use block for {tool_name!r} despite a forced tool_choice"
     )
+
+
+def claude_reply_failure(response: Any, request_data: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Why a billed Claude reply is unusable, or None when it is a result.
+
+    `request_data["structured_output"]` (set by the entry points below) names the contract
+    the reply must meet. It is checked with the extractor the caller uses, so the log
+    row and the caller cannot disagree about whether the call worked.
+    """
+    if getattr(response, "stop_reason", None) == "refusal":
+        return "refusal: the model declined to answer"
+    spec = request_data.get("structured_output") if isinstance(request_data, dict) else None
+    if not isinstance(spec, dict):
+        return None
+    try:
+        if spec.get("kind") == "schema":
+            data = extract_structured_output(response, spec.get("name") or "structured output")
+        else:
+            data = extract_tool_input(response, spec.get("name") or "")
+    except ToolCallNotReturned as e:
+        return f"invalid structured output: {e}"[:500]
+    missing = [k for k in (spec.get("required") or []) if data.get(k) in (None, "")]
+    if missing:
+        return f"invalid structured output: no value for {missing}"
+    return None
 
 
 async def call_with_tool(
@@ -132,6 +166,7 @@ async def call_with_tool(
         workspace_id=workspace_id,
         product_id=product_id,
         image_id=image_id,
+        request_data=_structured_output_spec("tool", tool["name"], required),
         extra_kwargs={
             **(extra_kwargs or {}),
             # Last, deliberately: the forced tool is this helper's whole contract and a
@@ -247,6 +282,7 @@ async def call_with_schema(
         workspace_id=workspace_id,
         product_id=product_id,
         image_id=image_id,
+        request_data=_structured_output_spec("schema", label, required),
         extra_kwargs={
             **merged,
             # `effort` and the schema both live under output_config, so the caller's
@@ -329,6 +365,7 @@ async def stream_with_tool(
         workspace_id=workspace_id,
         product_id=product_id,
         image_id=image_id,
+        request_data=_structured_output_spec("tool", tool["name"], required),
         extra_kwargs={
             **(extra_kwargs or {}),
             # Last, deliberately — same reason as `call_with_tool`: a caller must not

@@ -164,11 +164,19 @@ class TableMetadataExtractor:
             if result["dimensions"]:
                 result["available_sizes"] = self._dimensions_to_sizes(result["dimensions"])
 
-                # Extract thickness if found
-                thickness_values = [d.get("thickness") for d in result["dimensions"] if d.get("thickness")]
-                if thickness_values:
-                    # Use most common thickness
-                    result["thickness"] = f"{max(set(thickness_values), key=thickness_values.count)} mm"
+                thickness_mm = [
+                    _to_mm(d["thickness"], d.get("thickness_unit"))
+                    for d in result["dimensions"] if d.get("thickness")
+                ]
+                known = [t for t in thickness_mm if t is not None]
+                if known:
+                    most_common = max(set(known), key=known.count)
+                    result["thickness_mm"] = most_common
+                    result["thickness"] = f"{_fmt(most_common)} mm"
+                elif any(d.get("thickness") for d in result["dimensions"]):
+                    # Unit unknown: keep the number, claim no unit.
+                    raw = [d["thickness"] for d in result["dimensions"] if d.get("thickness")]
+                    result["thickness"] = max(set(raw), key=raw.count)
 
             self.logger.info(f"   Extracted from tables: {len(result['available_sizes'])} sizes, "
                            f"{len(result['packaging'])} packaging fields, "
@@ -197,6 +205,9 @@ class TableMetadataExtractor:
         height_col = self._find_column(headers_lower, ['height', 'h', 'length', 'l', 'alto'])
         thickness_col = self._find_column(headers_lower, ['thickness', 'th', 'espesor', 'spessore'])
 
+        def header_unit(col):
+            return _unit_in(headers_lower[col]) if col is not None and col < len(headers_lower) else None
+
         # Get rows from table_data
         rows = table_data.get('rows', []) or table_data.get('data', [])
         if not rows and isinstance(table_data, list):
@@ -221,15 +232,23 @@ class TableMetadataExtractor:
                 # overwrite a value the size string already resolved. A size
                 # column ("60x120 cm") is unambiguous; a same-named dimension
                 # column is a fallback for tables that split the axes out.
+                axis_units = []
                 if width_col is not None and width_col < len(row) and not dim.get("width"):
                     dim["width"] = self._extract_number(row[width_col])
+                    axis_units.append(_unit_in(row[width_col]) or header_unit(width_col))
                 if height_col is not None and height_col < len(row) and not dim.get("height"):
                     dim["height"] = self._extract_number(row[height_col])
+                    axis_units.append(_unit_in(row[height_col]) or header_unit(height_col))
                 if thickness_col is not None and thickness_col < len(row) and not dim.get("thickness"):
                     dim["thickness"] = self._extract_number(row[thickness_col])
+                    dim["thickness_unit"] = _unit_in(row[thickness_col]) or header_unit(thickness_col)
 
                 if dim.get("width") or dim.get("height"):
-                    dim.setdefault("unit", "cm")
+                    if "unit" not in dim:
+                        known = {u for u in axis_units if u}
+                        dim["unit"] = known.pop() if len(known) == 1 else None
+                    if dim.get("thickness") and "thickness_unit" not in dim:
+                        dim["thickness_unit"] = dim["unit"]
                     dimensions.append(dim)
 
             # Handle dict rows
@@ -243,13 +262,21 @@ class TableMetadataExtractor:
                             dim.update(parsed)
                     elif any(s in key_lower for s in ['width', 'ancho']):
                         dim["width"] = self._extract_number(value)
+                        dim.setdefault("_axis_units", []).append(_unit_in(value) or _unit_in(key_lower))
                     elif any(s in key_lower for s in ['height', 'length', 'alto']):
                         dim["height"] = self._extract_number(value)
+                        dim.setdefault("_axis_units", []).append(_unit_in(value) or _unit_in(key_lower))
                     elif any(s in key_lower for s in ['thickness', 'espesor']):
                         dim["thickness"] = self._extract_number(value)
+                        dim["thickness_unit"] = _unit_in(value) or _unit_in(key_lower)
 
+                axis_units = dim.pop("_axis_units", [])
                 if dim.get("width") or dim.get("height"):
-                    dim.setdefault("unit", "cm")
+                    if "unit" not in dim:
+                        known = {u for u in axis_units if u}
+                        dim["unit"] = known.pop() if len(known) == 1 else None
+                    if dim.get("thickness") and "thickness_unit" not in dim:
+                        dim["thickness_unit"] = dim["unit"]
                     dimensions.append(dim)
 
         return dimensions
@@ -325,7 +352,7 @@ class TableMetadataExtractor:
                 'antideslizante', 'deslizamiento', 'scivolamento', 'scivolosita',
                 'glissance', 'rutschhemmung',
             ],
-            "water_absorption": [
+            "water_absorption_pct": [
                 'water absorption', 'absorcion', 'absorción', 'assorbimento',
                 'assorbimento acqua', 'absorption',
             ],
@@ -391,12 +418,12 @@ class TableMetadataExtractor:
             if dim_match:
                 width = float(dim_match.group(1).replace(',', '.'))
                 height = float(dim_match.group(2).replace(',', '.'))
-                unit = dim_match.group(3) or 'cm'
+                unit = dim_match.group(3).lower() if dim_match.group(3) else None
                 result["dimensions"].append({
                     "width": width,
                     "height": height,
                     "unit": unit,
-                    "format": f"{width}x{height} {unit}"
+                    "format": f"{_fmt(width)}x{_fmt(height)}" + (f" {unit}" if unit else ""),
                 })
 
             # Look for packaging patterns
@@ -446,16 +473,18 @@ class TableMetadataExtractor:
             width = float(match.group(1).replace(',', '.'))
             height = float(match.group(2).replace(',', '.'))
             thickness = float(match.group(3).replace(',', '.')) if match.group(3) else None
-            unit = match.group(4) or 'cm'
+            # One unit written after WxH[xT] covers every axis it follows; none means unknown.
+            unit = match.group(4).lower() if match.group(4) else None
 
             result = {
                 "width": width,
                 "height": height,
                 "unit": unit,
-                "format": f"{int(width) if width == int(width) else width}x{int(height) if height == int(height) else height} {unit}"
+                "format": f"{_fmt(width)}x{_fmt(height)}" + (f" {unit}" if unit else ""),
             }
             if thickness:
                 result["thickness"] = thickness
+                result["thickness_unit"] = unit
             return result
 
         return None
@@ -483,9 +512,34 @@ class TableMetadataExtractor:
             elif dim.get("width") and dim.get("height"):
                 w = dim["width"]
                 h = dim["height"]
-                unit = dim.get("unit", "cm")
-                sizes.add(f"{int(w) if w == int(w) else w}x{int(h) if h == int(h) else h} {unit}")
+                unit = dim.get("unit")
+                sizes.add(f"{_fmt(w)}x{_fmt(h)}" + (f" {unit}" if unit else ""))
         return sorted(list(sizes))
+
+
+_UNIT_RE = re.compile(r'(?<![a-z])(mm|cm|m|in|inch|inches)(?![a-z0-9²])|(")', re.IGNORECASE)
+_MM_PER = {"mm": 1.0, "cm": 10.0, "m": 1000.0, "in": 25.4}
+
+
+def _unit_in(text: Any) -> Optional[str]:
+    """The length unit written in a cell or header ('9 mm', 'Width (cm)'), else None."""
+    if text is None or isinstance(text, (int, float)):
+        return None
+    m = _UNIT_RE.search(str(text))
+    if not m:
+        return None
+    unit = (m.group(1) or "in").lower()
+    return "in" if unit in ("inch", "inches", '"') else unit
+
+
+def _to_mm(value: Any, unit: Optional[str]) -> Optional[float]:
+    if value is None or unit not in _MM_PER:
+        return None
+    return round(float(value) * _MM_PER[unit], 3)
+
+
+def _fmt(n: float) -> str:
+    return str(int(n)) if float(n) == int(n) else str(n)
 
 
 async def enrich_product_from_tables(

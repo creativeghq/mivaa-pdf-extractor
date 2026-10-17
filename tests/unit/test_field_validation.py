@@ -65,11 +65,16 @@ fv = _load_module()
 class Spec:
     """Stand-in for FieldSpec carrying only what the validator reads."""
 
-    def __init__(self, field_type="text", dropdown_options=(), validation_rules=None, name="f"):
+    def __init__(self, field_type="text", dropdown_options=(), validation_rules=None, name="f",
+                 categories=None):
         self.name = name
         self.field_type = field_type
         self.dropdown_options = dropdown_options
         self.validation_rules = validation_rules
+        self.categories = categories
+
+    def applies_to(self, category_key):
+        return self.categories is None or category_key in self.categories
 
 
 # ── The module stays dependency-free ─────────────────────────────────────────────────────────
@@ -112,6 +117,30 @@ def test_enum_records_the_original_when_it_rewrites_the_spelling():
     assert verdict.status == fv.OK
     assert verdict.value == "R11"
     assert verdict.normalized_from == "r 11", "the original spelling must survive the rewrite"
+
+
+RCD = Spec("dropdown", ("A", "AC", "B", "B+", "F"), name="rcd_type")
+
+
+@pytest.mark.parametrize("value,expected", [("B", "B"), ("b", "B"), ("B+", "B+"), ("b+", "B+")])
+def test_an_exact_option_wins_before_folding(value, expected):
+    """`B` and `B+` fold to the same key; the exact match must decide, not dict order."""
+    verdict = fv.validate_value(RCD, value)
+    assert verdict.status == fv.OK
+    assert verdict.value == expected
+
+
+def test_a_value_matching_two_options_only_after_folding_fails_closed():
+    verdict = fv.validate_value(RCD, "b +")
+    assert verdict.status == fv.AMBIGUOUS_OPTION
+    assert verdict.value == "b +", "kept, flagged"
+
+
+def test_superscripts_fold_to_digits():
+    unit = Spec("dropdown", ("per m2", "per piece"), name="price_unit")
+    verdict = fv.validate_value(unit, "per m²")
+    assert verdict.status == fv.OK
+    assert verdict.value == "per m2"
 
 
 @pytest.mark.parametrize("value", ["PEI 7", "PEI VI", "R99", "excellent", "5"])
@@ -253,8 +282,9 @@ def test_no_verdict_ever_returns_an_empty_value():
         (Spec("number", validation_rules={"maximum": 1}), 5),
         (Spec("text", validation_rules={"max_length": 2}), "abcdef"),
         (Spec("text", validation_rules={"pattern": "^z"}), "abc"),
+        (RCD, "b +"),
     ]
-    seen = set()
+    seen = {fv.OUT_OF_CATEGORY}  # whole-dict only; pinned by test_a_field_outside_the_category_is_flagged
     for spec, value in cases:
         verdict = fv.validate_value(spec, value)
         seen.add(verdict.status)
@@ -284,7 +314,7 @@ def test_empty_values_are_not_failures():
 
 # ── 6. The whole-dict pass, including the silent-zero counter ────────────────────────────────
 
-def _run_with_registry(metadata, specs):
+def _run_with_registry(metadata, specs, categories=None, **kwargs):
     """Drive the async entry point with a stubbed registry module.
 
     The stub is injected into sys.modules because the real one is imported lazily INSIDE the
@@ -307,9 +337,13 @@ def _run_with_registry(metadata, specs):
             def spec_for(key):
                 return specs.get(key)
 
+            @staticmethod
+            def resolve_category(value):
+                return (categories or {}).get(str(value or "").strip().lower())
+
         stub.field_registry = _Registry()
         sys.modules["app.services.metadata.field_registry"] = stub
-        return asyncio.run(fv.validate_metadata_against_registry(metadata))
+        return asyncio.run(fv.validate_metadata_against_registry(metadata, **kwargs))
     finally:
         for name, mod in saved.items():
             if mod is None:
@@ -370,3 +404,21 @@ def test_existing_extraction_provenance_is_merged_not_replaced():
     assert entry["source"] == "chunk_regex", "existing provenance must survive"
     assert entry["confidence"] == 0.9
     assert entry["validation"]["status"] == fv.OUT_OF_ENUM
+
+
+def test_a_field_outside_the_category_is_flagged():
+    """A tile-only enum on a lighting product is flagged against the product's category."""
+    tiles_only = Spec("dropdown", ("R9", "R10"), name="slip_resistance", categories={"tiles"})
+    out, report = _run_with_registry(
+        {"material_category": "pendant_light", "slip_resistance": "R10"},
+        {"slip_resistance": tiles_only},
+        categories={"pendant_light": "lighting"},
+    )
+    assert report.suspect == {"slip_resistance": fv.OUT_OF_CATEGORY}
+    assert out["slip_resistance"] == "R10", "kept, flagged"
+
+    _out, ok = _run_with_registry(
+        {"slip_resistance": "R10"}, {"slip_resistance": tiles_only},
+        categories={"floor_tile": "tiles"}, category="floor_tile",
+    )
+    assert ok.suspect == {}

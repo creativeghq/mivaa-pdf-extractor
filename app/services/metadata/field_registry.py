@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
+import unicodedata
 from dataclasses import dataclass, field as dc_field
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -40,6 +42,96 @@ logger = logging.getLogger(__name__)
 CACHE_TTL_SECONDS = 300
 
 # `FALLBACK_CATEGORY` and `SECTION_ORDER` used to be module constants here (#30 M16-7).
+
+
+#: Unit spellings folded onto the suffix the registry uses. Spelling only: `width` is never
+#: resolved to `width_mm`, because the unit of a bare key is unknown.
+_UNIT_SUFFIXES = (
+    (("millimetres", "millimeters", "millimetre", "millimeter"), "mm"),
+    (("centimetres", "centimeters", "centimetre", "centimeter"), "cm"),
+    (("kilograms", "kilogram", "kgs"), "kg"),
+    (("percentage", "percent", "perc"), "pct"),
+    (("kilowatts", "kilowatt"), "kw"),
+    (("watts", "watt"), "w"),
+    (("volts", "volt"), "v"),
+    (("litres", "liters", "litre", "liter", "ltr"), "l"),
+    (("degrees_c", "deg_c", "celsius"), "c"),
+    (("kelvin",), "k"),
+    (("decibels", "decibel"), "db"),
+)
+
+
+def fold_field_key(name: Any) -> str:
+    """Registry spelling of an extracted key: NFKD, marks stripped, lowercase, one `_` per run.
+
+    Unicode letters survive (a Greek key stays Greek), so an alias in any script can match.
+    `²`/`³` fold to `2`/`3` through NFKD.
+    """
+    s = unicodedata.normalize("NFKD", str(name or ""))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch)).lower()
+    s = "".join(ch if ch.isalnum() else "_" for ch in s)
+    return "_".join(part for part in s.split("_") if part)
+
+
+def _unit_folded(key: str) -> str:
+    for spellings, unit in _UNIT_SUFFIXES:
+        for spelling in spellings:
+            if key.endswith("_" + spelling):
+                return key[: -len(spelling)] + unit
+    return key
+
+
+def _plural_variants(key: str) -> List[str]:
+    head, _, last = key.rpartition("_")
+    prefix = head + "_" if head else ""
+    out: List[str] = []
+    if last.endswith("ies") and len(last) > 3:
+        out.append(prefix + last[:-3] + "y")
+    if last.endswith("es") and len(last) > 3:
+        out.append(prefix + last[:-2])
+    if last.endswith("s") and len(last) > 2:
+        out.append(prefix + last[:-1])
+    if not last.endswith("s"):
+        out.append(prefix + last + "s")
+    return out
+
+
+def field_key_candidates(name: Any) -> List[str]:
+    """Spellings to try, most literal first: as written, folded, unit-folded, singular/plural."""
+    raw = str(name or "").strip()
+    seen: List[str] = []
+
+    def add(k: str) -> None:
+        if k and k not in seen:
+            seen.append(k)
+
+    add(raw)
+    add(raw.lower())
+    folded = fold_field_key(raw)
+    add(folded)
+    unit = _unit_folded(folded)
+    add(unit)
+    for base in (folded, unit):
+        for variant in _plural_variants(base):
+            add(variant)
+    return seen
+
+
+def _parse_aliases(raw: Any) -> List[tuple]:
+    """`aliases` rows as (name, factor); `lead_time_weeks*7` converts weeks to days."""
+    out: List[tuple] = []
+    for item in raw or ():
+        text = str(item or "").strip().lower()
+        if not text:
+            continue
+        name, _, factor = text.partition("*")
+        try:
+            value = float(factor) if factor else 1.0
+        except ValueError:
+            logger.error("material_metadata_fields alias %r has a bad factor; ignored", item)
+            continue
+        out.append((name.strip(), value))
+    return out
 
 
 class FieldRegistryNotLoaded(RuntimeError):
@@ -71,9 +163,20 @@ class FieldSpec:
     #: is reported, not ignored. `field_type` + `dropdown_options` already cover enum membership
     #: and numeric-ness, so most fields need nothing here.
     validation_rules: Optional[Dict[str, Any]] = None
+    #: Retired spellings, lowercased. A `name*factor` row is stored as name + alias_factors.
+    aliases: Sequence[str] = ()
+    sensitivity: str = "public"
+    #: {category_key: 'identity'|'descriptive'} overriding `role` in that category.
+    role_by_category: Optional[Dict[str, str]] = None
+    alias_factors: Optional[Dict[str, float]] = None
 
     def applies_to(self, category_key: str) -> bool:
         return self.categories is None or category_key in self.categories
+
+    def role_in(self, category_key: Optional[str]) -> str:
+        if category_key and self.role_by_category:
+            return self.role_by_category.get(category_key) or self.role
+        return self.role
 
     def describe(self, category_key: str) -> str:
         """The description to show for THIS category.
@@ -98,6 +201,9 @@ class CategorySpec:
     extraction_tips: Sequence[str] = ()
     skip_fields: Sequence[str] = ()
     controlled_vocab: Sequence[str] = ()
+    vocab_aliases: Sequence[str] = ()
+    is_active: bool = True
+    sort_order: Optional[int] = None
 
 
 @dataclass
@@ -109,6 +215,8 @@ class _Cache:
     #: The category an unrecognised upload category routes to. Never a literal.
     fallback_category: str = ""
     loaded_at: float = 0.0
+    #: lowercased alias -> [(field_name, factor)], every field that claims it.
+    alias_index: Dict[str, List[tuple]] = dc_field(default_factory=dict)
 
 
 class FieldRegistry:
@@ -146,7 +254,8 @@ class FieldRegistry:
             client.table("material_metadata_fields")
             .select("field_name, display_name, description, section, applies_to_categories, "
                     "role, destination, canonicalize, field_type, dropdown_options, "
-                    "extraction_hints, description_by_category, validation_rules")
+                    "extraction_hints, description_by_category, validation_rules, aliases, "
+                    "sensitivity, role_by_category")
             .eq("status", "active")
             .execute()
         ).data or []
@@ -154,7 +263,7 @@ class FieldRegistry:
         category_rows = (
             client.table("material_categories")
             .select("category_key, display_name, extraction_tips, skip_fields, "
-                    "controlled_vocab, is_fallback")
+                    "controlled_vocab, vocab_aliases, is_fallback, is_active, sort_order")
             .execute()
         ).data or []
 
@@ -213,9 +322,18 @@ class FieldRegistry:
                 extraction_hint=r.get("extraction_hints") or "",
                 description_by_category=r.get("description_by_category") or None,
                 validation_rules=r.get("validation_rules") or None,
+                aliases=tuple(name for name, _f in _parse_aliases(r.get("aliases"))),
+                alias_factors={n: f for n, f in _parse_aliases(r.get("aliases")) if f != 1.0} or None,
+                sensitivity=r.get("sensitivity") or "public",
+                role_by_category=r.get("role_by_category") or None,
             )
             for r in field_rows
         }
+        alias_index: Dict[str, List[tuple]] = {}
+        for spec in fields.values():
+            for alias in spec.aliases:
+                factor = (spec.alias_factors or {}).get(alias, 1.0)
+                alias_index.setdefault(alias, []).append((spec.name, factor))
         categories = {
             r["category_key"]: CategorySpec(
                 key=r["category_key"],
@@ -223,6 +341,9 @@ class FieldRegistry:
                 extraction_tips=tuple(r.get("extraction_tips") or ()),
                 skip_fields=tuple(r.get("skip_fields") or ()),
                 controlled_vocab=tuple(r.get("controlled_vocab") or ()),
+                vocab_aliases=tuple(r.get("vocab_aliases") or ()),
+                is_active=r.get("is_active") is not False,
+                sort_order=r.get("sort_order"),
             )
             for r in category_rows
         }
@@ -235,6 +356,7 @@ class FieldRegistry:
             },
             fallback_category=fallback,
             loaded_at=time.monotonic(),
+            alias_index=alias_index,
         )
         logger.info(
             "📋 Field registry loaded: %d fields (%d identity, %d canonicalizable, "
@@ -275,21 +397,71 @@ class FieldRegistry:
             return None
         return self._require().fields.get(key)
 
+    def all_field_names(self) -> List[str]:
+        """Every active field name, sorted."""
+        return sorted(self._require().fields)
+
+    def is_registered(self, key: str) -> bool:
+        """True only when the registry has a row for exactly this key."""
+        return self.spec_for(key) is not None
+
+    def resolve_field(self, key: Any, category_key: Optional[str] = None) -> Optional[tuple]:
+        """(field_name, factor) an extracted key names, or None. Multiply the value by `factor`.
+
+        Order: a field of that name in the category, an alias in the category, a field of that
+        name anywhere, an alias exactly one field claims. So `grade` stays `grade` on insulation
+        and becomes `wood_grade` on wood. Spellings come from `field_key_candidates`.
+        """
+        cache = self._require()
+        if not key or str(key).startswith("_"):
+            return None
+        category = self.resolve_category(category_key) if category_key else None
+        candidates = field_key_candidates(key)
+        if category:
+            for cand in candidates:
+                spec = cache.fields.get(cand)
+                if spec and spec.applies_to(category):
+                    return cand, 1.0
+            for cand in candidates:
+                hits = {h for h in cache.alias_index.get(cand, ())
+                        if cache.fields[h[0]].applies_to(category)}
+                if len(hits) == 1:
+                    return next(iter(hits))
+        for cand in candidates:
+            if cand in cache.fields:
+                return cand, 1.0
+        for cand in candidates:
+            hits = set(cache.alias_index.get(cand, ()))
+            if len(hits) == 1:
+                return next(iter(hits))
+        return None
+
+    def resolve_field_key(self, key: Any, category_key: Optional[str] = None) -> Optional[str]:
+        """The field name, only when the value needs no unit conversion; else None.
+
+        A caller that renames without converting must never turn `lead_time_weeks` into
+        `lead_time_days`, so a scaled alias is invisible here. Use `resolve_field` for those.
+        """
+        hit = self.resolve_field(key, category_key)
+        return hit[0] if hit and hit[1] == 1.0 else None
+
     def destination_of(self, key: str) -> str:
         """'column' means this value has a real home and must NOT be written to attributes jsonb."""
         spec = self._require().fields.get(key)
         return spec.destination if spec else "metadata"
 
-    def is_identity(self, key: str) -> bool:
+    def is_identity(self, key: str, category_key: Optional[str] = None) -> bool:
         """True when two units differing only in this field are stocked and sold separately."""
         spec = self._require().fields.get(key)
-        return bool(spec and spec.role == "identity")
+        category = (self.resolve_category(category_key) or category_key) if category_key else None
+        return bool(spec and spec.role_in(category) == "identity")
 
     def identity_fields(self, category_key: Optional[str] = None) -> List[str]:
         cache = self._require()
+        category = (self.resolve_category(category_key) or category_key) if category_key else None
         return sorted(
             f.name for f in cache.fields.values()
-            if f.role == "identity" and (category_key is None or f.applies_to(category_key))
+            if (category is None or f.applies_to(category)) and f.role_in(category) == "identity"
         )
 
     def fields_for_category(self, category_key: str) -> List[FieldSpec]:
@@ -305,12 +477,35 @@ class FieldRegistry:
 
     def _resolve_category(self, category_key: str) -> str:
         cache = self._require()
-        key = (category_key or "").lower().strip()
-        if key in cache.categories:
+        key = self.resolve_category(category_key)
+        if key:
             return key
         logger.warning("Unknown upload category '%s' — falling back to '%s'",
                        category_key, cache.fallback_category)
         return cache.fallback_category
+
+    def resolve_category(self, value: Any) -> Optional[str]:
+        """Coarse category key for a key, a controlled-vocab value or a vocab alias, else None.
+
+        The twin of SQL `resolve_material_category_key`: lower/trim, then exact key, then
+        controlled_vocab, then vocab_aliases, active rows only, lowest sort_order first.
+        """
+        cache = self._require()
+        needle = str(value or "").strip().lower()
+        if not needle:
+            return None
+        active = sorted(
+            (c for c in cache.categories.values() if c.is_active),
+            key=lambda c: (c.sort_order is None, c.sort_order or 0, c.key),
+        )
+        for cat in active:
+            if cat.key.lower() == needle:
+                return cat.key
+        for terms in ("controlled_vocab", "vocab_aliases"):
+            for cat in active:
+                if any(needle == str(v).strip().lower() for v in getattr(cat, terms)):
+                    return cat.key
+        return None
 
     def category(self, category_key: str) -> CategorySpec:
         return self._require().categories[self._resolve_category(category_key)]
@@ -419,7 +614,7 @@ class FieldRegistry:
         if not vocab:
             return ""
         return (
-            "ALLOWED material_subtype VALUES for this category (use one of these exactly, or "
+            "ALLOWED material_category VALUES for this category (use one of these exactly, or "
             f"omit the field if none fits): {', '.join(vocab)}"
         )
 
@@ -441,3 +636,14 @@ field_registry = FieldRegistry()
 async def ensure_loaded(*, force: bool = False) -> None:
     """Convenience wrapper — call at the entry point of any path that reads the registry."""
     await field_registry.ensure_loaded(force=force)
+
+
+def invalidate_registry_cache() -> None:
+    """Mark the cache stale after a registry write; the next `ensure_loaded()` re-reads.
+
+    The loaded rows keep answering until then, so a sync reader never meets an unloaded
+    registry mid-run.
+    """
+    cache = field_registry._cache
+    if cache is not None:
+        cache.loaded_at = float("-inf")

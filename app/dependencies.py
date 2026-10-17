@@ -230,43 +230,101 @@ async def get_workspace_context(
     request: Request,
     user: Dict[str, Any] = Depends(get_current_user)
 ) -> WorkspaceContext:
-    """
-    Extract and validate workspace context from authenticated user.
+    """The workspace this request acts in, membership-verified.
 
-    Args:
-        request: FastAPI request object
-        user: Authenticated user information (JWT claims)
-
-    Returns:
-        WorkspaceContext with validated workspace information
-
-    Raises:
-        HTTPException: If workspace context is invalid or missing
+    `X-Workspace-Id` (the app's active workspace) wins when the caller is an active
+    member of it, and is refused with 404 when they are not. Without it, the token's
+    workspace (app_metadata, else the caller's sole active membership) is used.
     """
     try:
         jwt_middleware = _get_jwt_middleware()
-
-        # Extract workspace context
         workspace_context = await jwt_middleware._extract_workspace_context(user)
+        requested = (request.headers.get("X-Workspace-Id") or "").strip()
+
+        if requested:
+            if workspace_context and str(workspace_context.workspace_id) == requested:
+                return workspace_context
+            user_id = str(user.get("sub") or "")
+            if is_service_caller(user) or (
+                user_id and await jwt_middleware._validate_workspace_access(user_id, requested)
+            ):
+                return WorkspaceContext(
+                    workspace_id=requested,
+                    user_id=user_id,
+                    role=workspace_context.role if workspace_context else "member",
+                    permissions=list(user.get("permissions") or []),
+                )
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
 
         if not workspace_context:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid or missing workspace context"
+                detail="Invalid or missing workspace context; send X-Workspace-Id",
             )
-
         return workspace_context
 
     except HTTPException:
-        raise  # already a clean client-facing status (e.g. the 403 above)
+        raise
     except Exception as e:
-        # #250 J3: don't leak internal exception text (DB/JWT internals) to the
-        # client — log it server-side, return a generic 403.
         import logging
         logging.getLogger(__name__).warning("Workspace validation failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing workspace context",
+        )
+
+
+async def require_workspace_capability(
+    user_id: Optional[str],
+    workspace_id: Optional[str],
+    capability: str,
+) -> None:
+    """Refuse unless `user_id` holds `capability` in `workspace_id` (fails closed).
+
+    Membership alone is not enough: a `client` or `warehouse` login is a member too
+    (invariant 1, #493). `has_workspace_capability()` reads `auth.uid()`, which the
+    service-role client does not carry, so the same rule is evaluated here.
+    """
+    from app.utils.tenancy import capability_is_held
+
+    if not user_id or not workspace_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    try:
+        sb = _get_supabase_client().client
+        member = (
+            sb.table("workspace_members").select("role")
+            .eq("user_id", str(user_id)).eq("workspace_id", str(workspace_id))
+            .eq("status", "active").limit(1).execute()
+        )
+        rows = member.data or []
+        if not rows:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+        operator = (
+            sb.table("workspace_members").select("workspace_id, workspaces!inner(is_root)")
+            .eq("user_id", str(user_id)).eq("status", "active")
+            .in_("role", ["owner", "admin"]).eq("workspaces.is_root", True)
+            .limit(1).execute()
+        )
+        matrix = sb.rpc("workspace_role_capability_matrix", {}).execute()
+        held = capability_is_held(
+            member_role=rows[0].get("role"),
+            capability=capability,
+            matrix_rows=matrix.data or [],
+            is_platform_operator=bool(operator.data),
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("Capability check %s failed: %s", capability, e)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Could not verify permissions; refusing the operation.",
+        )
+    if not held:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"This action requires the '{capability}' capability in this workspace.",
         )
 
 

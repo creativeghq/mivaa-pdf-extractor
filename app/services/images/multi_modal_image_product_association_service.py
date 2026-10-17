@@ -17,8 +17,33 @@ import math
 import re
 
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.text_fold import fold_identity
 
 logger = logging.getLogger(__name__)
+
+
+def _name_core(name: str) -> str:
+    """A product name without its attribution ("MAISON by ONSET" -> "maison")."""
+    folded = fold_identity(name)
+    return folded.split(" by ")[0].strip()
+
+
+def product_evidence(image: Dict[str, Any], product: Dict[str, Any]) -> Optional[str]:
+    """What on the image itself points at THIS product, or None.
+
+    'vision_region': the image was cropped from a region vision attributed to the product.
+    'caption_name': the image's caption names the product. Sharing a page is not evidence.
+    """
+    core = _name_core(product.get("name") or "")
+    if len(core) < 3:
+        return None
+    detected = _name_core(image.get("product_name") or "")
+    if len(detected) >= 3 and (detected == core or core in detected or detected in core):
+        return "vision_region"
+    caption = fold_identity(image.get("caption") or image.get("alt_text") or "")
+    if caption and re.search(r"(?<![\w])" + re.escape(core) + r"(?![\w])", caption):
+        return "caption_name"
+    return None
 
 @dataclass
 class AssociationWeights:
@@ -129,22 +154,40 @@ class MultiModalImageProductAssociationService:
             # Evaluate all image-product combinations
             all_associations = []
             total_evaluated = 0
+            ambiguous_unlinked = 0
+            evaluation_errors = 0
 
             for image in images:
+                on_page: List[ImageProductAssociation] = []
                 for product in products:
                     total_evaluated += 1
-                    
                     try:
                         association = await self._evaluate_association(image, product, options)
-
-                        # Spatial is a GATE, not just the heaviest weight.
-                        if association.spatial_score <= 0.0:
-                            continue
-
-                        if association.overall_score >= options.overall_threshold:
-                            all_associations.append(association)
                     except Exception as e:
+                        evaluation_errors += 1
                         self.logger.warning(f"⚠️ Error evaluating association between image {image['id']} and product {product['id']}: {e}")
+                        continue
+                    # Spatial is a GATE, not just the heaviest weight.
+                    if association.spatial_score <= 0.0:
+                        continue
+                    on_page.append(association)
+
+                # One product on the image's page: the page is the evidence. Several: the
+                # image must name one of them, or it stays unlinked rather than linked to all.
+                if len(on_page) > 1:
+                    by_id = {p['id']: p for p in products}
+                    evidenced = []
+                    for assoc in on_page:
+                        kind = product_evidence(image, by_id.get(assoc.product_id) or {})
+                        if kind:
+                            assoc.metadata["product_evidence"] = kind
+                            evidenced.append(assoc)
+                    if not evidenced:
+                        ambiguous_unlinked += 1
+                    on_page = evidenced
+                for association in on_page:
+                    if association.overall_score >= options.overall_threshold:
+                        all_associations.append(association)
 
             # Sort by overall score and apply limits
             all_associations.sort(key=lambda x: x.overall_score, reverse=True)
@@ -166,6 +209,8 @@ class MultiModalImageProductAssociationService:
             return {
                 "associations_created": associations_created,
                 "total_evaluated": total_evaluated,
+                "ambiguous_unlinked": ambiguous_unlinked,
+                "evaluation_errors": evaluation_errors,
                 "average_confidence": average_confidence,
                 "associations": [self._association_to_dict(assoc) for assoc in final_associations]
             }

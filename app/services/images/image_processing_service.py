@@ -3,6 +3,8 @@
 import os
 import base64
 import asyncio
+import shutil
+import tempfile
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 from asyncio import Semaphore
@@ -514,6 +516,7 @@ class ImageProcessingService:
                 '_empty_response' in primary_result.get('model', '') or
                 '_api_error' in primary_result.get('model', '') or
                 '_failed' in primary_result.get('model', '') or
+                '_no_tool_use' in primary_result.get('model', '') or
                 '_503_fallback' in primary_result.get('model', '')
             )
 
@@ -618,7 +621,13 @@ class ImageProcessingService:
                 # during any Anthropic outage every logo/header/border got
                 # full SLIG + Voyage embeddings and permanently polluted
                 # visual search.
-                if 'error' in classification or '_failed' in classification.get('model', '') or '_empty_response' in classification.get('model', ''):
+                _cls_model = classification.get('model', '')
+                if (
+                    'error' in classification
+                    or '_failed' in _cls_model
+                    or '_empty_response' in _cls_model
+                    or '_no_tool_use' in _cls_model
+                ):
                     logger.warning(f"   ⚠️ Classification uncertain for {img_data.get('filename')}: {classification.get('reason')}")
                     logger.warning("   → Quarantining (classification_pending) — persisted WITHOUT embeddings, eligible for re-classification")
                     img_data['ai_classification'] = {
@@ -919,64 +928,38 @@ class ImageProcessingService:
     # Material analysis (vision_analysis JSON) — feeds understanding emb #
     # ------------------------------------------------------------------ #
 
-    # Top-level fields the Material Image Analyzer prompt is expected to
-    # return. We treat the analysis as valid if AT LEAST `_MIN_REQUIRED_FIELDS`
-    # of these are present and non-null. This is intentionally tolerant —
-    # the goal is to catch outright garbage, not to enforce perfect schema
-    # compliance from a vision model.
-    _EXPECTED_VISION_ANALYSIS_FIELDS = (
-        'material_type',
-        'material_subtype',
-        'color_palette',
-        'primary_color_hex',
-        'texture',
-        'pattern',
-        'finish',
-        'design_style',
-        'applications',
-        'physical_properties',
-        'quality_assessment',
-        'confidence',
-    )
-    _MIN_REQUIRED_VISION_FIELDS = 4  # at least this many non-null keys
-
     # `_parse_vision_analysis_json` was deleted here (#20 M7-3).
-
 
     @classmethod
     def _validate_vision_analysis(
         cls, vision_analysis: Any, image_id: str, source: str
     ) -> Optional[Dict[str, Any]]:
-        """
-        Validate that a parsed vision_analysis dict looks usable.
+        """The analysis validated against the current `VisionAnalysis` schema, or None.
 
-        Returns the dict on success, None on validation failure. Logs the
-        reason loudly so partial / malformed responses are visible to ops.
+        The schema the model was constrained to IS the contract: a null `finish` or an
+        empty `applications` is a valid answer, not a partial one.
         """
+        from pydantic import ValidationError
+        from app.models.vision_analysis import VisionAnalysis
+
         if not isinstance(vision_analysis, dict) or not vision_analysis:
             logger.warning(
                 f"   ⚠️ {source}: vision_analysis for {image_id} is not a non-empty dict — "
                 f"got {type(vision_analysis).__name__}"
             )
             return None
-
-        present_fields = [
-            f for f in cls._EXPECTED_VISION_ANALYSIS_FIELDS
-            if vision_analysis.get(f) not in (None, "", [], {})
-        ]
-        if len(present_fields) < cls._MIN_REQUIRED_VISION_FIELDS:
+        try:
+            model = VisionAnalysis.model_validate(vision_analysis)
+        except ValidationError as e:
             logger.warning(
-                f"   ⚠️ {source}: vision_analysis for {image_id} has only "
-                f"{len(present_fields)}/{cls._MIN_REQUIRED_VISION_FIELDS} required "
-                f"fields populated (got: {present_fields}). Marking invalid."
+                f"   ⚠️ {source}: vision_analysis for {image_id} does not match the "
+                f"VisionAnalysis schema ({e.error_count()} error(s)): {str(e)[:300]}"
             )
             return None
-
-        logger.info(
-            f"   🔬 {source}: vision_analysis valid for {image_id} "
-            f"({len(present_fields)}/{len(cls._EXPECTED_VISION_ANALYSIS_FIELDS)} fields populated)"
-        )
-        return vision_analysis
+        if not model.material_type.strip():
+            logger.warning(f"   ⚠️ {source}: vision_analysis for {image_id} has an empty material_type")
+            return None
+        return model.model_dump()
 
 
     def _stamp_vision_analysis_outcome(
@@ -1187,7 +1170,8 @@ class ImageProcessingService:
             # (issue #393 Step 1). Memoised in the OCR service, so the Phase 3 pass
             # that writes `document_images.ocr_*` later in Stage 3 reuses this result
             # rather than OCR'ing the file a second time.
-            ocr_block = self._ocr_context_for_vision(
+            ocr_block = await asyncio.to_thread(
+                self._ocr_context_for_vision,
                 vision_input_path=vision_input_path,
                 image_id=image_id,
                 job_id=job_id,
@@ -1623,6 +1607,8 @@ class ImageProcessingService:
                 # Pass embedding_model + schema_version so the row is provenance-tagged
                 # — the admin UI uses these to detect Voyage→OpenAI fallback drift.
                 understanding_embedding = embeddings.get('understanding_1024')
+                understanding_saved = False
+                aspects_saved: List[str] = []
                 if understanding_embedding:
                     try:
                         meta_versions = embedding_result.get('metadata', {}).get('model_versions', {})
@@ -1638,9 +1624,10 @@ class ImageProcessingService:
                             embedding_model=meta_versions.get('understanding') or get_settings().voyage_document_model,
                             schema_version=meta_schemas.get('understanding'),
                         )
+                        understanding_saved = True
                         logger.debug(f"   ✅ Saved understanding embedding (1024D) to VECS for {image_id}")
                     except Exception as understanding_error:
-                        logger.warning(f"   ⚠️ Failed to save understanding embedding to VECS: {understanding_error}")
+                        logger.error(f"   ❌ Failed to save understanding embedding to VECS: {understanding_error}")
 
                 if specialized_embeddings:
                     # Save to VECS collections — single source of truth.
@@ -1659,70 +1646,47 @@ class ImageProcessingService:
                             embedding_model=aspect_emb_model,
                             schema_version=aspect_schema_version,
                         )
+                        aspects_saved = list(specialized_embeddings.keys())
                     except Exception as aspect_error:
-                        logger.warning(f"   ⚠️ Failed to save aspect embeddings to VECS: {aspect_error}")
-
-                    # ✨ Stage 3.5 - Convert visual embeddings to text metadata
-                    try:
-                        from app.services.metadata.visual_metadata_service import VisualMetadataService
-
-                        logger.info(f"   🎨 Stage 3.5: Converting visual embeddings to text metadata for {image_id}")
-                        visual_metadata_service = VisualMetadataService(workspace_id=workspace_id)
-
-                        # v2 keys only — color_aspect_1024 etc. (1024D Voyage).
-                        embeddings_for_conversion: Dict[str, List[float]] = {}
-                        for aspect in ('color', 'texture', 'material', 'style'):
-                            key = f"{aspect}_aspect_1024"
-                            if embeddings.get(key):
-                                embeddings_for_conversion[key] = embeddings[key]
-
-                        if embeddings_for_conversion:
-                            visual_metadata_result = await visual_metadata_service.process_image_visual_metadata(
-                                image_id=image_id,
-                                embeddings=embeddings_for_conversion
-                            )
-
-                            if visual_metadata_result.get('success'):
-                                logger.info(f"   ✅ Visual metadata extracted and saved for {image_id}")
-                            else:
-                                logger.warning(f"   ⚠️ Visual metadata extraction failed: {visual_metadata_result.get('error')}")
-                        else:
-                            logger.debug("   ℹ️ No aspect embeddings available for visual metadata extraction")
-
-                    except Exception as visual_meta_error:
-                        logger.warning(f"   ⚠️ Visual metadata extraction failed (non-critical): {visual_meta_error}")
+                        logger.error(f"   ❌ Failed to save aspect embeddings to VECS: {aspect_error}")
 
                 # Per-image vector inventory — what actually got into VECS for this
                 # image. Used by save_images_and_generate_clips to aggregate job-level
                 # stats and surface them in the admin UI.
+                # Counted from CONFIRMED writes only; a vector that failed to save is not
+                # in VECS and must not be reported as if it were.
                 per_image_stats = {
                     'image_id': image_id,
                     'visual_slig': bool(visual_embedding),
-                    'color_slig': 'color' in specialized_embeddings,
-                    'texture_slig': 'texture' in specialized_embeddings,
-                    'style_slig': 'style' in specialized_embeddings,
-                    'material_slig': 'material' in specialized_embeddings,
-                    'understanding': bool(understanding_embedding),
+                    'color_slig': 'color' in aspects_saved,
+                    'texture_slig': 'texture' in aspects_saved,
+                    'style_slig': 'style' in aspects_saved,
+                    'material_slig': 'material' in aspects_saved,
+                    'understanding': understanding_saved,
+                    'vectors_generated_not_saved': (
+                        len(specialized_embeddings) - len(aspects_saved)
+                        + (1 if understanding_embedding and not understanding_saved else 0)
+                    ),
                     'vision_analysis_source': vision_analysis_source,
                 }
 
                 total_embeddings = (
                     (1 if visual_embedding else 0)
-                    + len(specialized_embeddings)
-                    + (1 if understanding_embedding else 0)
+                    + len(aspects_saved)
+                    + (1 if understanding_saved else 0)
                 )
                 # ZERO vectors is a failure, not a success with nothing in it.
                 if total_embeddings == 0:
                     raise RuntimeError(
                         f"no_vectors_generated: image {image_id} produced 0 embeddings "
-                        f"(visual={bool(visual_embedding)}, specialized={len(specialized_embeddings)}, "
-                        f"understanding={bool(understanding_embedding)})"
+                        f"(visual={bool(visual_embedding)}, specialized_saved={len(aspects_saved)}, "
+                        f"understanding_saved={understanding_saved})"
                     )
 
                 logger.info(
                     f"   ✅ Image {image_id}: saved {total_embeddings} embeddings "
                     f"(visual={per_image_stats['visual_slig']}, "
-                    f"specialized={len(specialized_embeddings)}/4, "
+                    f"specialized={len(aspects_saved)}/4, "
                     f"understanding={per_image_stats['understanding']}, "
                     f"vision_analysis={vision_analysis_source})"
                 )
@@ -1785,6 +1749,8 @@ class ImageProcessingService:
         workspace_id: str,
         idx: int,
         total: int,
+        material_category: Optional[str] = None,
+        job_id: Optional[str] = None,
     ) -> Tuple[bool, bool, Optional[str], Dict[str, Any]]:
         """Process a single icon-candidate image.
 
@@ -1843,11 +1809,27 @@ class ImageProcessingService:
                     image=image_path,
                     workspace_id=workspace_id,
                     use_ai=True,
+                    category=material_category,
+                    job_id=job_id,
                 )
             except Exception as ocr_err:
-                logger.warning(
-                    f"   ⚠️ Icon OCR/AI extraction failed for {image_id}: {ocr_err}"
-                )
+                # IconMetadataExtractionFailed or any other error: a failed extraction,
+                # stamped on the row so it never reads as "this icon carries nothing".
+                logger.error(f"   ❌ Icon OCR/AI extraction failed for {image_id}: {ocr_err}")
+                try:
+                    _row = self.supabase_client.client.table('document_images') \
+                        .select('metadata').eq('id', image_id).single().execute()
+                    _meta = (_row.data or {}).get('metadata') or {}
+                    if not isinstance(_meta, dict):
+                        _meta = {}
+                    _meta['icon_extraction'] = {
+                        'status': 'failed', 'error': str(ocr_err)[:300],
+                        'error_type': type(ocr_err).__name__,
+                    }
+                    self.supabase_client.client.table('document_images') \
+                        .update({'metadata': _meta}).eq('id', image_id).execute()
+                except Exception as _mark_err:
+                    logger.error(f"   ❌ Could not stamp icon_extraction failure on {image_id}: {_mark_err}")
                 return (True, False, f'Icon extraction failed: {ocr_err}', per_image_stats)
 
             if not icon_metadata_items:
@@ -1925,11 +1907,99 @@ class ImageProcessingService:
 
         assert_document_in_workspace(self.supabase_client, document_id, workspace_id)
 
+    def _assert_product_in_workspace(self, product_id: Optional[str], workspace_id: str) -> None:
+        """Raise unless `product_id` belongs to `workspace_id` — the anchor when there is no document."""
+        from app.utils.exceptions import TenancyViolation
+
+        if not product_id or not workspace_id:
+            raise TenancyViolation(
+                f"both ids are required (product_id={product_id!r}, workspace_id={workspace_id!r})"
+            )
+        try:
+            row = (
+                self.supabase_client.client.table('products')
+                .select('workspace_id').eq('id', product_id).maybe_single().execute()
+            )
+        except Exception as e:
+            raise TenancyViolation(
+                f"could not verify product {product_id} against workspace {workspace_id}: {e}"
+            ) from e
+        owner = ((row.data if row else None) or {}).get('workspace_id')
+        if str(owner) != str(workspace_id):
+            raise TenancyViolation(
+                f"product {product_id} belongs to workspace {owner!r}, not {workspace_id!r}"
+            )
+
+    def _mark_embedding_failed(self, image_id: Optional[str], error: str) -> None:
+        if not image_id:
+            return
+        try:
+            self.supabase_client.client.table('document_images').update({
+                'embedding_metadata': {
+                    'status': 'failed',
+                    'error': (error or 'unknown')[:1000],
+                    'failed_at': datetime.utcnow().isoformat(),
+                }
+            }).eq('id', image_id).execute()
+        except Exception as e:
+            logger.warning("Could not persist embedding_metadata for %s: %s", image_id, e)
+
+    async def embed_product_images(
+        self,
+        product_id: str,
+        workspace_id: str,
+        images: List[Dict[str, Any]],
+        material_category: Optional[str] = None,
+        job_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Vision analysis + every image vector for product-scoped rows (XML / manual: no document).
+
+        `images` are existing `document_images` rows as `{'id', 'storage_path'}` in `pdf-tiles`.
+        An image whose bytes cannot be read is in `failed_images` and marked on its row.
+        """
+        self._assert_product_in_workspace(product_id, workspace_id)
+        tmp_dir = tempfile.mkdtemp(prefix='mivaa_product_images_')
+        staged: List[Dict[str, Any]] = []
+        staging_failures: List[Dict[str, Any]] = []
+        try:
+            for img in images:
+                image_id = img.get('id')
+                try:
+                    data = await asyncio.to_thread(
+                        self.supabase_client.client.storage.from_('pdf-tiles').download,
+                        img['storage_path'],
+                    )
+                    if not data:
+                        raise ValueError('empty object')
+                    path = os.path.join(tmp_dir, f"{image_id}.img")
+                    with open(path, 'wb') as fh:
+                        fh.write(data)
+                    staged.append({'id': image_id, 'path': path})
+                except Exception as e:
+                    error = f"staging_failed: {e}"[:500]
+                    staging_failures.append({'image_id': image_id, 'error': error})
+                    self._mark_embedding_failed(image_id, error)
+            if staged:
+                result = await self.save_images_and_generate_clips(
+                    material_images=staged,
+                    document_id=None,
+                    workspace_id=workspace_id,
+                    material_category=material_category,
+                    job_id=job_id,
+                    product_id=product_id,
+                )
+            else:
+                result = {'images_saved': 0, 'clip_embeddings_generated': 0,
+                          'failed_images': [], 'vector_stats': {}}
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        result['failed_images'] = list(result.get('failed_images') or []) + staging_failures
+        return result
 
     async def save_images_and_generate_clips(
         self,
         material_images: List[Dict[str, Any]],
-        document_id: str,
+        document_id: Optional[str],
         workspace_id: str,
         batch_size: int = 20,
         max_retries: int = 3,
@@ -1944,7 +2014,7 @@ class ImageProcessingService:
 
         Args:
             material_images: List of regular material image data (full Stage 3 pipeline)
-            document_id: Document ID
+            document_id: Document ID, or None for product-scoped images (then product_id is required)
             workspace_id: Workspace ID
             batch_size: Number of images to process per batch (default: 20)
             max_retries: Maximum retry attempts per image (default: 3)
@@ -1974,8 +2044,12 @@ class ImageProcessingService:
                 }
             }
         """
-        # The document and the workspace must actually be related (#20 M7-5).
-        self._assert_document_in_workspace(document_id, workspace_id)
+        # The document and the workspace must actually be related (#20 M7-5). With no
+        # document (product-scoped images) the product is the anchor instead.
+        if document_id is None:
+            self._assert_product_in_workspace(product_id, workspace_id)
+        else:
+            self._assert_document_in_workspace(document_id, workspace_id)
 
         icon_candidates = icon_candidates or []
 
@@ -2098,6 +2172,10 @@ class ImageProcessingService:
             ):
                 if per_image_stats.get(vec_key):
                     vector_stats[vec_key] += 1
+            vector_stats['vectors_generated_not_saved'] = (
+                vector_stats.get('vectors_generated_not_saved', 0)
+                + int(per_image_stats.get('vectors_generated_not_saved') or 0)
+            )
 
             # Aggregate vision_analysis provenance counts. The source value is
             # always one of VisionProvider's string values (the orchestrator
@@ -2192,6 +2270,8 @@ class ImageProcessingService:
                             workspace_id=workspace_id,
                             idx=icon_idx,
                             total=icon_total,
+                            material_category=material_category,
+                            job_id=job_id,
                         )
                     )
 

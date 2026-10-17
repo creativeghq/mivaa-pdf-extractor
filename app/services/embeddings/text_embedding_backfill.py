@@ -18,9 +18,11 @@ async def _fetch_products_missing_embedding(
     limit: int,
     workspace_id: Optional[str],
     product_ids: Optional[List[str]],
+    after_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Products with no text embedding. Explicit product_ids override the
-    NULL filter so the admin UI can force a re-embed of specific rows.
+    """Products with no text embedding, one id-ordered page after `after_id`.
+    Explicit product_ids override the NULL filter so the admin UI can force a
+    re-embed of specific rows.
     """
     client = get_supabase_client().client
     query = (
@@ -29,6 +31,8 @@ async def _fetch_products_missing_embedding(
         .order("id")
         .limit(limit)
     )
+    if after_id:
+        query = query.gt("id", after_id)
     if product_ids:
         query = query.in_("id", product_ids)
     else:
@@ -43,12 +47,18 @@ async def _fetch_chunks_missing_embedding(
     limit: int,
     workspace_id: Optional[str],
 ) -> List[Dict[str, Any]]:
-    """Chunks whose text embedding never landed (flag false or NULL)."""
+    """Chunks whose text embedding never landed (flag false or NULL).
+
+    Empty content is excluded in SQL, before the limit: filtered afterwards, those
+    rows sat at the head of every page and the backfill never got past them.
+    """
     client = get_supabase_client().client
     query = (
         client.table("document_chunks")
-        .select("id, content")
+        .select("id, content, workspace_id")
         .or_("has_text_embedding.is.null,has_text_embedding.eq.false")
+        .not_.is_("content", "null")
+        .neq("content", "")
         .order("id")
         .limit(limit)
     )
@@ -74,19 +84,32 @@ async def backfill_product_text_embeddings(
     )
 
     supabase = get_supabase_client()
-    rows = await _fetch_products_missing_embedding(
-        limit=max_products, workspace_id=workspace_id, product_ids=product_ids,
-    )
+    # Cursor paging: a product that cannot be embedded (no text) stays NULL, so a
+    # fixed first page would hand the same rows to every run. Pages advance past
+    # them, and only paid attempts count against `max_products`.
+    rows: List[Dict[str, Any]] = []
+    cursor: Optional[str] = None
+    for _page in range(10):
+        page = await _fetch_products_missing_embedding(
+            limit=max_products, workspace_id=workspace_id, product_ids=product_ids,
+            after_id=cursor,
+        )
+        rows.extend(page)
+        if len(page) < max_products or product_ids:
+            break
+        cursor = page[-1]["id"]
     if not rows:
-        return {"scanned": 0, "embedded": 0, "failed": 0}
+        return {"scanned": 0, "embedded": 0, "failed": 0, "skipped_no_text": 0}
 
     logger.info(f"🔄 Product embedding backfill: {len(rows)} product(s) missing text_embedding_1024")
 
     known_spec_fields = await _fetch_known_spec_fields(supabase, logger)
     embeddings_svc = RealEmbeddingsService()
 
-    embedded = failed = 0
+    embedded = failed = skipped_no_text = attempted = 0
     for row in rows:
+        if attempted >= max_products:
+            break
         try:
             metadata = row.get("metadata") or {}
             meta_dict = metadata if isinstance(metadata, dict) else {}
@@ -108,10 +131,16 @@ async def backfill_product_text_embeddings(
                 page_body_text=page_body_text,
             )
             if not embedding_text.strip():
-                failed += 1
+                skipped_no_text += 1
                 continue
 
-            emb_result = await embeddings_svc.generate_text_embedding(embedding_text)
+            attempted += 1
+            emb_result = await embeddings_svc.generate_text_embedding(
+                embedding_text,
+                input_type="document",
+                workspace_id=row.get("workspace_id"),
+                product_id=row.get("id"),
+            )
             text_emb = emb_result.get("embedding") if emb_result.get("success") else None
             if not text_emb or len(text_emb) != 1024:
                 logger.warning(
@@ -146,7 +175,10 @@ async def backfill_product_text_embeddings(
             logger.error(f"❌ Product embedding backfill failed for {row.get('id')}: {e}")
             failed += 1
 
-    return {"scanned": len(rows), "embedded": embedded, "failed": failed}
+    return {
+        "scanned": len(rows), "embedded": embedded, "failed": failed,
+        "skipped_no_text": skipped_no_text,
+    }
 
 
 async def backfill_chunk_text_embeddings(
@@ -165,6 +197,7 @@ async def backfill_chunk_text_embeddings(
         return {"scanned": 0, "embedded": 0, "failed": 0}
 
     logger.info(f"🔄 Chunk embedding backfill: {len(rows)} chunk(s) missing text_embedding")
+    rows.sort(key=lambda r: str(r.get("workspace_id") or ""))
 
     embeddings_svc = RealEmbeddingsService()
     embedded = failed = 0
@@ -172,6 +205,7 @@ async def backfill_chunk_text_embeddings(
     for batch_start in range(0, len(rows), batch_size):
         batch = rows[batch_start:batch_start + batch_size]
         texts = [r["content"] for r in batch]
+        batch_workspaces = {r.get("workspace_id") for r in batch}
         try:
             try:
                 embeddings_svc._last_provider = None
@@ -179,7 +213,10 @@ async def backfill_chunk_text_embeddings(
                 pass
             vectors = await embeddings_svc.generate_batch_embeddings(
                 texts=texts, dimensions=1024, input_type="document",
-                workspace_id=workspace_id,
+                workspace_id=(
+                    workspace_id
+                    or (next(iter(batch_workspaces)) if len(batch_workspaces) == 1 else None)
+                ),
             )
         except Exception as batch_err:
             logger.error(f"❌ Chunk backfill batch embedding failed: {batch_err}")

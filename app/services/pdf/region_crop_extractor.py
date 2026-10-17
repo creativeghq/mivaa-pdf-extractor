@@ -27,6 +27,10 @@ def _crop_region_types() -> tuple:
 
 CROP_REGION_TYPES = _crop_region_types()
 
+
+class RegionCropCacheReadFailed(RuntimeError):
+    """The layout cache could not be read, so whether regions exist is unknown."""
+
 # Degenerate-crop guard: skip crops smaller than this in either dimension (px).
 # Render DPI / clip math is owned entirely by `_render_physical_page` (Stage 1.5),
 # which renders at LAYOUT_RENDER_DPI=250 — the same grid the cached pixel bboxes
@@ -234,17 +238,11 @@ async def _load_layout_regions_for_physical_pages(
             .execute()
         )
     except Exception as exc:
-        # S3-6: a cache READ FAILURE (transient DB error) is NOT the same as "this
-        # page had no IMAGE/FIGURE regions" — but both returned {} silently, so a
-        # product could end up with zero region crops and no signal. Log at WARNING
-        # so operators can tell "crops were attempted and the read failed" from
-        # "genuinely no crop regions" (still best-effort: returns {} either way).
-        logger.warning(
-            f"   ⚠️ Region-crop layout cache READ FAILED for document {document_id} "
-            f"pages {sorted(set(int(p) for p in physical_pages))[:10]} — product(s) may "
-            f"get zero region crops this run: {exc}"
-        )
-        return {}
+        # S3-6: a cache READ FAILURE is not "this page had no IMAGE/FIGURE regions".
+        raise RegionCropCacheReadFailed(
+            f"layout cache read failed for document {document_id} pages "
+            f"{sorted(set(int(p) for p in physical_pages))[:10]}: {exc}"
+        ) from exc
 
     rows = response.data or []
     by_page: Dict[int, List[Dict[str, Any]]] = {}

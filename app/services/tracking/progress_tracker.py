@@ -12,6 +12,10 @@ from app.utils.retry_helper import async_retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
+
+class JobStatePersistenceError(RuntimeError):
+    """A terminal job state (completed / failed) could not be written."""
+
 # Import Sentry for crash alerts
 try:
     import sentry_sdk
@@ -767,24 +771,25 @@ class ProgressTracker:
             'warnings_count': len(self.warnings),
         })
 
+        persistence_error: Optional[Exception] = None
         try:
+            final_metadata = {
+                'pages_completed': self.pages_completed,
+                'pages_failed': self.pages_failed,
+                'pages_skipped': self.pages_skipped,
+                'database_records_created': self.database_records_created,
+                'knowledge_base_entries': self.knowledge_base_entries,
+                'images_extracted': self.images_extracted,
+                'chunks_created': self.chunks_created,
+                'products_created': self.products_created,
+                'errors_count': len(self.errors),
+                'warnings_count': len(self.warnings),
+                'vision_analysis_coverage': vision_coverage,
+                'result': result
+            }
             update_payload = {
                 'status': JobStatus.COMPLETED.value,
                 'progress': 100,
-                'metadata': {
-                    'pages_completed': self.pages_completed,
-                    'pages_failed': self.pages_failed,
-                    'pages_skipped': self.pages_skipped,
-                    'database_records_created': self.database_records_created,
-                    'knowledge_base_entries': self.knowledge_base_entries,
-                    'images_extracted': self.images_extracted,
-                    'chunks_created': self.chunks_created,
-                    'products_created': self.products_created,
-                    'errors_count': len(self.errors),
-                    'warnings_count': len(self.warnings),
-                    'vision_analysis_coverage': vision_coverage,
-                    'result': result
-                },
                 'completed_at': datetime.utcnow().isoformat(),
                 'updated_at': datetime.utcnow().isoformat(),
                 # Clear in-flight slow-op flag so the next job sees a clean slate.
@@ -793,12 +798,8 @@ class ProgressTracker:
             if total_ai_cost_usd is not None:
                 update_payload['total_ai_cost_usd'] = total_ai_cost_usd
 
-            # Update background_jobs table
             if self._db_sync_enabled and self._supabase:
-                self._supabase.client.table('background_jobs')\
-                    .update(update_payload)\
-                    .eq('id', self.job_id)\
-                    .execute()
+                self._write_terminal_state(final_metadata, update_payload)
 
                 # Sweep orphaned per-product rows BEFORE recomputing failure_summary.
                 # Audit incident 2026-05-03 (job acff9ebb): if recovery rebuilt the
@@ -874,6 +875,7 @@ class ProgressTracker:
 
         except Exception as e:
             logger.error(f"❌ Failed to mark job as complete: {e}")
+            persistence_error = e
 
         # Audit fix #19: deregister BEFORE scale-to-zero so the active-job
         # check sees this job as done. Other jobs (if any) keep endpoints up.
@@ -885,6 +887,11 @@ class ProgressTracker:
             pass
 
         await _scale_endpoints_to_zero_safe(reason=f"job_completed_{self.job_id}")
+
+        if persistence_error is not None:
+            raise JobStatePersistenceError(
+                f"job {self.job_id} finished but its completed state was not written: {persistence_error}"
+            ) from persistence_error
 
     async def fail_job(self, error: Exception):
         """
@@ -954,31 +961,26 @@ class ProgressTracker:
             'warnings_count': len(self.warnings),
         })
 
+        persistence_error: Optional[Exception] = None
         try:
-            # Update background_jobs table
             if self._db_sync_enabled and self._supabase:
-                self._supabase.client.table('background_jobs')\
-                    .update({
+                self._write_terminal_state(
+                    {
+                        'pages_completed': self.pages_completed,
+                        'pages_failed': self.pages_failed,
+                        'errors': self.errors,
+                        'warnings': self.warnings
+                    },
+                    {
                         'status': JobStatus.FAILED.value,
                         'progress': int(self.calculate_progress_percentage()),
                         'error': error_message,
-                        'metadata': {
-                            'pages_completed': self.pages_completed,
-                            'pages_failed': self.pages_failed,
-                            'errors': self.errors,
-                            'warnings': self.warnings
-                        },
                         'failed_at': datetime.utcnow().isoformat(),
                         'updated_at': datetime.utcnow().isoformat(),
-                        # Audit fix (this PR): mirror complete_job — clear the
-                        # in-flight slow-op marker on terminal failure so a
-                        # future cron tick that's reading current_slow_operation
-                        # for any reason doesn't see a stale "fresh" timestamp
-                        # belonging to a dead job.
+                        # A dead job must not leave a "fresh" slow-op marker behind.
                         'current_slow_operation': None,
-                    })\
-                    .eq('id', self.job_id)\
-                    .execute()
+                    },
+                )
 
                 # Sweep orphan per-product rows + mirror processed_documents
                 # (same rationale as complete_job — see that handler for context).
@@ -1039,6 +1041,7 @@ class ProgressTracker:
 
         except Exception as e:
             logger.error(f"❌ Failed to mark job as failed: {e}")
+            persistence_error = e
 
         # Release the temp PDF resource registered at upload time. When
         # fail_job is called from a path OTHER than the orchestrator's
@@ -1073,6 +1076,23 @@ class ProgressTracker:
             pass
 
         await _scale_endpoints_to_zero_safe(reason=f"job_failed_{self.job_id}")
+
+        if persistence_error is not None:
+            raise JobStatePersistenceError(
+                f"job {self.job_id} failed and its failed state was not written: {persistence_error}"
+            ) from persistence_error
+
+    def _write_terminal_state(self, metadata: Dict[str, Any], columns: Dict[str, Any]) -> None:
+        """MERGE `metadata` (upload parameters and completion_reason survive), then set
+        the terminal columns. Metadata first, so a terminal status never lacks it."""
+        self._supabase.client.rpc(
+            'merge_background_job_metadata',
+            {'p_job_id': self.job_id, 'p_metadata': metadata},
+        ).execute()
+        self._supabase.client.table('background_jobs')\
+            .update(columns)\
+            .eq('id', self.job_id)\
+            .execute()
 
     # Note (2026-05-23): start_heartbeat / stop_heartbeat removed. The
     # JobHeartbeat thread (services/tracking/job_heartbeat.py) is now the

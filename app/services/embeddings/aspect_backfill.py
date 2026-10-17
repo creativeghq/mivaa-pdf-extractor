@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import ValidationError
 
@@ -27,6 +27,30 @@ logger = logging.getLogger(__name__)
 # All four aspects — used to drive the stale-row query.
 ASPECT_NAMES = ("color", "texture", "style", "material")
 
+#: Written to `<aspect>_aspect_embedding_model` when the image's VisionAnalysis has no
+#: text for that aspect. It is a decided outcome at that schema version, not a gap.
+ABSENT_ASPECT_MODEL = "absent"
+
+
+def _aspect_stale_filter(aspect: str) -> str:
+    """PostgREST predicate equal to `_is_aspect_stale`, so staleness is filtered in SQL."""
+    flag = f"has_{aspect}_slig"
+    model = f"{aspect}_aspect_embedding_model"
+    sv = f"{aspect}_aspect_schema_version"
+    return (
+        f"or(and(or({flag}.is.null,{flag}.is.false),or({model}.is.null,{model}.neq.{ABSENT_ASPECT_MODEL})),"
+        f"{sv}.is.null,{sv}.lt.{int(SCHEMA_VERSION)},{model}.is.null,"
+        f"and({model}.not.like.voyage*,{model}.neq.{ABSENT_ASPECT_MODEL}))"
+    )
+
+
+def stale_aspect_rows_filter() -> str:
+    """Any aspect stale AND the row not quarantined — one `or=` tree, applied before LIMIT."""
+    from app.services.embeddings.classification_backfill import NOT_QUARANTINED_FILTER
+
+    any_stale = ",".join(_aspect_stale_filter(a) for a in ASPECT_NAMES)
+    return f"and(or({NOT_QUARANTINED_FILTER}),or({any_stale}))"
+
 
 def _is_aspect_stale(row: Dict[str, Any], aspect: str) -> bool:
     """True if `row`'s aspect-N collection should be re-embedded.
@@ -38,12 +62,14 @@ def _is_aspect_stale(row: Dict[str, Any], aspect: str) -> bool:
          (or by an earlier provider that has since been replaced).
     """
     flag = f"has_{aspect}_slig"
-    if not row.get(flag):
-        return True
     sv = row.get(f"{aspect}_aspect_schema_version")
     if sv is None or sv < SCHEMA_VERSION:
         return True
     em = row.get(f"{aspect}_aspect_embedding_model") or ""
+    if em == ABSENT_ASPECT_MODEL:
+        return False
+    if not row.get(flag):
+        return True
     if not em.startswith("voyage"):
         return True
     return False
@@ -118,6 +144,7 @@ async def _fetch_stale_aspect_images(
             "style_aspect_embedding_model, style_aspect_schema_version, "
             "material_aspect_embedding_model, material_aspect_schema_version"
         )
+        .or_(stale_aspect_rows_filter())
         .order("id")
         .limit(limit)
     )
@@ -140,16 +167,36 @@ async def _fetch_stale_aspect_images(
     return stale
 
 
+async def _mark_absent_aspects(row: Dict[str, Any], aspects: List[str]) -> bool:
+    """Record that these aspects have no source text at the current schema version."""
+    if not aspects:
+        return True
+    update: Dict[str, Any] = {}
+    for aspect in aspects:
+        update[f"has_{aspect}_slig"] = False
+        update[f"{aspect}_aspect_embedding_model"] = ABSENT_ASPECT_MODEL
+        update[f"{aspect}_aspect_schema_version"] = SCHEMA_VERSION
+    try:
+        client = get_supabase_client().client
+        await asyncio.to_thread(
+            client.table("document_images").update(update).eq("id", row["id"]).execute
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"⚠️ Could not mark aspects {aspects} absent for image {row.get('id')}: {e}")
+        return False
+
+
 async def _generate_aspects_for_row(
     row: Dict[str, Any],
     embeddings_svc: RealEmbeddingsService,
-) -> Optional[Dict[str, List[float]]]:
-    """Build the aspect text strings, embed each via Voyage 1024D, return dict.
+) -> Optional[Tuple[Dict[str, List[float]], List[str]]]:
+    """Embed each aspect's text via Voyage 1024D.
 
-    Returns None when the row's vision_analysis is unusable. Per-aspect
-    skip — if a particular aspect's source fields are empty (e.g. no
-    colors[]) that aspect is omitted from the returned dict but the others
-    still get embedded.
+    Returns None when the row's vision_analysis is unusable, else
+    `(embeddings, absent_aspects)`: an aspect whose source fields are empty is
+    ABSENT (recorded, never retried at this schema version), which is a different
+    outcome from an aspect whose embed call failed (left stale for a retry).
     """
     va = _coerce_vision_analysis(row.get("vision_analysis"), image_id=row.get("id"))
     if va is None:
@@ -163,8 +210,12 @@ async def _generate_aspects_for_row(
     }
 
     embeddings: Dict[str, List[float]] = {}
+    absent: List[str] = []
     for aspect, text in aspect_texts.items():
         if not text:
+            absent.append(aspect)
+            continue
+        if not _is_aspect_stale(row, aspect):
             continue
         try:
             # No fallback embedder exists, so a wrong-space vector cannot land
@@ -173,6 +224,8 @@ async def _generate_aspects_for_row(
             vec = await embeddings_svc._generate_text_embedding(
                 text=text,
                 input_type="document",
+                workspace_id=row.get("workspace_id"),
+                image_id=row.get("id"),
             )
             if vec and len(vec) == 1024:
                 embeddings[aspect] = vec
@@ -182,7 +235,7 @@ async def _generate_aspects_for_row(
                 )
         except Exception as e:
             logger.error(f"❌ Aspect '{aspect}' embed failed for image {row.get('id')}: {e}")
-    return embeddings or None
+    return embeddings, absent
 
 
 async def backfill_aspect_embeddings(
@@ -225,6 +278,7 @@ async def backfill_aspect_embeddings(
             "scanned": 0,
             "reembedded": 0,
             "skipped": 0,
+            "absent": 0,
             "failed": 0,
             "partial": 0,
             "schema_version": SCHEMA_VERSION,
@@ -240,19 +294,26 @@ async def backfill_aspect_embeddings(
     skipped = 0
     failed = 0
     partial = 0
+    absent = 0
 
     for batch_start in range(0, len(rows), batch_size):
         batch = rows[batch_start:batch_start + batch_size]
 
         async def _process(row: Dict[str, Any]) -> str:
-            aspect_embeddings = await _generate_aspects_for_row(row, embeddings_svc)
-            if not aspect_embeddings:
-                # Either VA missing/unparseable OR every aspect string empty.
-                # The understanding-backfill path can repopulate VA from Opus
-                # if needed — operator chains the two endpoints when that
-                # happens. We don't fan out to Anthropic here on purpose
-                # (cost discipline).
+            generated = await _generate_aspects_for_row(row, embeddings_svc)
+            if generated is None:
+                # VA missing/unparseable. The understanding backfill repopulates it
+                # from Opus; this path never fans out to Anthropic (cost discipline).
                 return "skipped"
+            aspect_embeddings, absent_aspects = generated
+            if not await _mark_absent_aspects(row, absent_aspects):
+                return "failed"
+            if not aspect_embeddings:
+                stale_with_text = [
+                    a for a in ASPECT_NAMES
+                    if a not in absent_aspects and _is_aspect_stale(row, a)
+                ]
+                return "failed" if stale_with_text else "absent"
 
             # Aspect upsert. embedding_model + schema_version are persisted
             # on document_images so subsequent staleness checks see this row
@@ -290,6 +351,8 @@ async def backfill_aspect_embeddings(
                 partial += 1
             elif o == "skipped":
                 skipped += 1
+            elif o == "absent":
+                absent += 1
             elif o == "failed":
                 failed += 1
 
@@ -299,6 +362,7 @@ async def backfill_aspect_embeddings(
         "reembedded": reembedded,
         "partial": partial,
         "skipped": skipped,
+        "absent": absent,
         "failed": failed,
         "schema_version": SCHEMA_VERSION,
     }
@@ -363,6 +427,8 @@ async def rerun_aspect_embeddings_for_image(
             vec = await embeddings_svc._generate_text_embedding(
                 text=text,
                 input_type="document",
+                workspace_id=row.get("workspace_id"),
+                image_id=image_id,
             )
             if vec and len(vec) == 1024:
                 aspect_embeddings[aspect] = vec
@@ -370,6 +436,11 @@ async def rerun_aspect_embeddings_for_image(
                 aspect_errors[aspect] = f"wrong_dim_or_empty (len={len(vec) if vec else 0})"
         except Exception as e:
             aspect_errors[aspect] = f"embed_failed: {e}"
+
+    empty_aspects = [
+        a for a, t in aspect_source_texts.items() if not t and a not in aspect_errors
+    ]
+    await _mark_absent_aspects(row, empty_aspects)
 
     upsert_results: Dict[str, bool] = {}
     if aspect_embeddings:

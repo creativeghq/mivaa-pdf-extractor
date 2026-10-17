@@ -187,6 +187,7 @@ async def process_product_chunking(
     # to surface as the same chunks_created: 0 return.
     extraction_failed = False
     extraction_error: Optional[str] = None
+    failed_pages: List[int] = []
     chunkable_pages_sorted = sorted(chunkable_pages)
     logger.info(f"   📄 Extracting text from {len(chunkable_pages_sorted)} chunkable physical pages: {chunkable_pages_sorted}")
     try:
@@ -222,7 +223,6 @@ async def process_product_chunking(
             )
 
             total_chars = 0
-            failed_pages: list = []
             for phys_page in chunkable_pages_sorted:
                 page_text = page_text_from_layout_regions(
                     layout_regions_by_page.get(phys_page) or []
@@ -301,8 +301,11 @@ async def process_product_chunking(
             # The caller cannot otherwise tell these two apart, and they need opposite
             # handling: 'failed' must not be checkpointed as a completed stage (it is
             # retryable), while a genuine text-free product is legitimately done.
-            'chunking_status': 'failed' if extraction_failed else 'no_text',
-            'error': extraction_error,
+            'chunking_status': 'failed' if (extraction_failed or failed_pages) else 'no_text',
+            'error': extraction_error or (
+                f"text extraction failed on pages {failed_pages}" if failed_pages else None
+            ),
+            'failed_pages': failed_pages,
         }
 
     # Create chunks with product-specific metadata
@@ -368,8 +371,13 @@ async def process_product_chunking(
         'chunks_created': chunks_created,
         'chunk_ids': chunk_ids,
         'embeddings_generated': chunk_result.get('embeddings_generated', 0),
-        'pages_chunked': len(chunkable_pages),
+        'pages_chunked': len(chunkable_pages) - len(failed_pages),
         'pages_excluded': 0,
+        'chunking_status': 'partial' if (failed_pages or extraction_failed) else 'ok',
+        'failed_pages': failed_pages,
+        'error': extraction_error or (
+            f"text extraction failed on pages {failed_pages}" if failed_pages else None
+        ),
     }
 
 

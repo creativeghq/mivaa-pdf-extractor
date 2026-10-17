@@ -280,7 +280,7 @@ def test_every_writer_to_the_association_table_carries_a_workspace():
     offenders = []
     for path in sorted(APP.rglob("*.py")):
         src = _strip_comments(_read(path))
-        for m in re.finditer(r"table\('image_product_associations'\)\.(insert|upsert)\(", src):
+        for m in re.finditer(r"table\('image_product_associations'\)[\s\\]*\.(insert|upsert)\(", src):
             # The payload is either inline or a name bound just above; look both ways.
             window = src[max(0, m.start() - 1500):m.end() + 400]
             if "workspace_id" not in window:

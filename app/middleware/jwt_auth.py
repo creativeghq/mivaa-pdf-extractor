@@ -428,13 +428,11 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             email = claims.get("email")
             role = claims.get("role", "authenticated")
 
-            # Get workspace_id from app_metadata or user_metadata
-            app_metadata = claims.get("app_metadata", {})
-            user_metadata = claims.get("user_metadata", {})
+            # Never user_metadata: the user writes it from the browser.
+            app_metadata = claims.get("app_metadata") or {}
             workspace_id = (
-                app_metadata.get("workspace_id") or
-                user_metadata.get("workspace_id") or
-                self.settings.material_kai_workspace_id  # Default workspace
+                app_metadata.get("workspace_id")
+                or self.settings.material_kai_workspace_id
             )
 
             # Transform Supabase claims to MIVAA format
@@ -489,10 +487,8 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             email = getattr(user, "email", None)
             role = getattr(user, "role", None) or "authenticated"
             app_metadata = getattr(user, "app_metadata", None) or {}
-            user_metadata = getattr(user, "user_metadata", None) or {}
             workspace_id = (
                 app_metadata.get("workspace_id")
-                or user_metadata.get("workspace_id")
                 or self.settings.material_kai_workspace_id
             )
             logger.info(f"✅ Supabase JWT validated via API for user: {user_id}")
@@ -695,8 +691,13 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             is_test_user = self._is_test_user(claims)
 
             if not is_test_user and not await self._validate_workspace_access(user_id, workspace_id):
-                logger.warning(f"User {user_id} does not have access to workspace {workspace_id}")
-                return None
+                # The claim is a default, not a choice; a user with exactly one
+                # active membership has an unambiguous workspace.
+                memberships = await self._active_workspace_ids(user_id)
+                if len(memberships) != 1:
+                    logger.warning(f"User {user_id} does not have access to workspace {workspace_id}")
+                    return None
+                workspace_id = memberships[0]
             elif is_test_user:
                 logger.info(f"Bypassing workspace validation for test user in {self.settings.environment} environment")
             
@@ -750,6 +751,20 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             logger.error(f"Workspace access validation error: {str(e)}")
             return False
     
+    async def _active_workspace_ids(self, user_id: str) -> List[str]:
+        """Every workspace `user_id` is an ACTIVE member of. Empty on any error."""
+        try:
+            self._ensure_supabase_client()
+            if self.supabase is None or not user_id:
+                return []
+            response = self.supabase.table("workspace_members").select("workspace_id").eq(
+                "user_id", user_id
+            ).eq("status", "active").execute()
+            return sorted({str(r["workspace_id"]) for r in (response.data or []) if r.get("workspace_id")})
+        except Exception as e:
+            logger.error(f"Active membership lookup failed: {str(e)}")
+            return []
+
     def _unauthorized_response(self, message: str) -> JSONResponse:
         """Return standardized unauthorized response."""
         return JSONResponse(

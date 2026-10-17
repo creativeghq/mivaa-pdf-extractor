@@ -10,6 +10,10 @@ from app.services.core.ai_call_logger import AICallLogger
 logger = logging.getLogger(__name__)
 
 
+class BoundaryEmbeddingFailed(RuntimeError):
+    """A chunk could not be embedded, so no boundary verdict can be computed."""
+
+
 class BoundaryDetector:
     """
     Detects product boundaries in document content.
@@ -72,11 +76,7 @@ class BoundaryDetector:
             current_chunk = chunks[i]
             next_chunk = chunks[i + 1]
             
-            # Calculate similarity
-            if embeddings[i] is not None and embeddings[i + 1] is not None:
-                similarity = self._cosine_similarity(embeddings[i], embeddings[i + 1])
-            else:
-                similarity = 0.5  # Default if embeddings failed
+            similarity = self._cosine_similarity(embeddings[i], embeddings[i + 1])
             
             # Check for structural markers
             has_marker = self._has_boundary_marker(next_chunk.get("content", ""))
@@ -122,36 +122,29 @@ class BoundaryDetector:
         self,
         texts: List[str],
         job_id: Optional[str],
-    ) -> List[Optional[np.ndarray]]:
+    ) -> List[np.ndarray]:
+        """One Voyage vector per text; raises BoundaryEmbeddingFailed if any is missing.
+
+        A boundary verdict computed without its similarity signal is not a result.
         """
-        Get embeddings for a batch of texts.
-        
-        Args:
-            texts: List of text strings
-            job_id: Optional job ID
-            
-        Returns:
-            List of embedding arrays (or None if failed)
-        """
-        embeddings = []
-        
-        for text in texts:
+        embeddings: List[np.ndarray] = []
+        for idx, text in enumerate(texts):
             try:
-                result = await self.embeddings_service.generate_embedding(
-                    text=text,
-                    embedding_type="text",
+                result = await self.embeddings_service.generate_text_embedding(
+                    query=text or " ",
+                    job_id=job_id,
                 )
-                
-                if result.get("success") and result.get("embedding"):
-                    embeddings.append(np.array(result["embedding"]))
-                else:
-                    embeddings.append(None)
             except Exception as e:
-                logger.error(f"❌ Failed to get embedding: {str(e)}")
-                embeddings.append(None)
-        
+                raise BoundaryEmbeddingFailed(f"embedding for chunk {idx} failed: {e}") from e
+            vector = result.get("embedding") if isinstance(result, dict) else None
+            if not (isinstance(result, dict) and result.get("success") and vector):
+                raise BoundaryEmbeddingFailed(
+                    f"embedding for chunk {idx} returned no vector: "
+                    f"{(result or {}).get('error') if isinstance(result, dict) else result!r}"
+                )
+            embeddings.append(np.array(vector, dtype=float))
         return embeddings
-    
+
     def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
         """
         Calculate cosine similarity between two vectors.

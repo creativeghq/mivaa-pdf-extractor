@@ -9,13 +9,12 @@
   `CATALOG_LEGEND_VISION_MODEL=claude-opus-5` for tough catalogs.
 - Per-page cost: ~$0.002-0.005 Haiku. A typical catalog has 4-8 legend
   pages → ~$0.02-0.04 total.
-- Idempotent: checks `documents.metadata.catalog_legends.extracted_at`
-  and the per-page kb_doc records before re-creating anything.
+- Idempotent: checks `documents.metadata.catalog_legends.extracted_at`,
+  which is set only when every legend page succeeded.
 - Wired into job progress + Sentry per the project-wide template.
 """
 
 import base64
-import json
 import logging
 import os
 from datetime import datetime
@@ -31,11 +30,8 @@ from app.utils.tenancy import assert_document_in_workspace
 
 logger = logging.getLogger(__name__)
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
-LEGEND_VISION_MODEL = os.getenv(
-    "CATALOG_LEGEND_VISION_MODEL",
-    "claude-haiku-4-5",
-)
+def _legend_model() -> str:
+    return os.getenv("CATALOG_LEGEND_VISION_MODEL", "claude-haiku-4-5")
 
 PAGE_RENDER_DPI = 220
 MAX_IMAGE_BYTES = 4_000_000
@@ -78,6 +74,114 @@ async def _legend_prompt(legend_type: str) -> str:
     return await load_prompt("extraction", CATEGORY_BY_TYPE[legend_type], stage="discovery")
 
 
+#: Icon categories a legend may name. `certification` is what lets an icon page feed
+#: catalogue-wide certifications at all.
+LEGEND_ICON_CATEGORIES = [
+    "slip_resistance", "pei_rating", "water_absorption_class", "fire_rating",
+    "frost_resistance", "v_rating", "traffic_rating", "finish", "thickness_mm",
+    "dimensions", "application", "certification", "ip_rating",
+    "electrical_class", "energy_class", "other",
+]
+
+_STR = {"type": "string"}
+_STR_LIST = {"type": "array", "items": _STR}
+_NULLABLE_STR = {"anyOf": [_STR, {"type": "null"}]}
+_NULLABLE_NUM = {"anyOf": [{"type": "number"}, {"type": "null"}]}
+_CERT_LIST = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"name": _STR, "applies_globally": {"type": "boolean"}},
+        "required": ["name", "applies_globally"],
+    },
+}
+
+_TYPE_PROPERTIES: Dict[str, Dict[str, Any]] = {
+    "icons": {
+        "icons": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "category": {"type": "string", "enum": LEGEND_ICON_CATEGORIES},
+                    "code": _STR,
+                    "description": _STR,
+                    "standard": _NULLABLE_STR,
+                },
+                "required": ["category", "code", "description", "standard"],
+            },
+        },
+        "applies_globally": {"type": "boolean"},
+    },
+    "regulation": {
+        "standards": _STR_LIST,
+        "test_methods": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "characteristic": _STR,
+                    "standard": _STR,
+                    "unit": _NULLABLE_STR,
+                    "value_or_range": _NULLABLE_STR,
+                },
+                "required": ["characteristic", "standard", "unit", "value_or_range"],
+            },
+        },
+        "applies_globally": {"type": "boolean"},
+    },
+    "certification": {"certifications": _CERT_LIST},
+    "installation": {
+        "method": _NULLABLE_STR,
+        "recommended_joint_width_mm": _NULLABLE_NUM,
+        "adhesive_type": _NULLABLE_STR,
+        "key_points": _STR_LIST,
+    },
+    "care": {
+        "recommended_ph": _NULLABLE_STR,
+        "cleaning_products": _STR_LIST,
+        "key_points": _STR_LIST,
+    },
+    "sustainability": {
+        "commitments": _STR_LIST,
+        "certifications": _CERT_LIST,
+        "recycled_content_pct": _NULLABLE_NUM,
+    },
+}
+
+
+def _legend_output_config(legend_type: str) -> Dict[str, Any]:
+    properties = {"title": _STR, "content_markdown": _STR, **_TYPE_PROPERTIES[legend_type]}
+    return {
+        "format": {
+            "type": "json_schema",
+            "name": f"legend_{legend_type}",
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": properties,
+                "required": list(properties),
+            },
+        }
+    }
+
+
+def _global_certifications(legend_type: str, result: Dict[str, Any]) -> List[str]:
+    """Certifications a legend page says apply to EVERY product in the catalogue."""
+    out: List[str] = []
+    for cert in result.get("certifications") or []:
+        if isinstance(cert, dict) and cert.get("applies_globally") is True and cert.get("name"):
+            out.append(str(cert["name"]))
+    if legend_type == "icons" and result.get("applies_globally") is True:
+        for icon in result.get("icons") or []:
+            if isinstance(icon, dict) and icon.get("category") == "certification" and icon.get("code"):
+                out.append(str(icon["code"]))
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Low-level helpers
 # ──────────────────────────────────────────────────────────────────────────
@@ -112,31 +216,23 @@ def _detect_media_type(image_bytes: bytes) -> str:
     return "image/png"
 
 
-def _call_claude(
+async def _call_claude(
     image_bytes: bytes,
     prompt: str,
+    legend_type: str,
     *,
     job_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
-) -> Optional[Dict[str, Any]]:
-    """Single vision call, returns parsed JSON or None on failure.
-
-    `job_id` is forwarded so the catalog-wide legend Claude spend lands
-    on the right job's cost rollup. Catalog legends are document-scoped,
-    not product-scoped — `product_id` would be ambiguous.
-    """
-    if not ANTHROPIC_API_KEY:
-        logger.error("catalog_legend_extractor_v2: ANTHROPIC_API_KEY not set")
-        return None
+) -> Dict[str, Any]:
+    """One schema-constrained vision call. Raises on any failure; never returns a guess."""
+    from app.services.core.claude_tool_call import call_with_schema
 
     media_type = _detect_media_type(image_bytes)
     b64 = base64.b64encode(image_bytes).decode("utf-8")
-
     try:
-        from app.services.core.claude_helper import tracked_claude_call
-        resp = tracked_claude_call(
+        call = await call_with_schema(
             task="catalog_legend_extraction",
-            model=LEGEND_VISION_MODEL,
+            model=_legend_model(),
             max_tokens=3500,
             messages=[{
                 "role": "user",
@@ -145,28 +241,14 @@ def _call_claude(
                     {"type": "text", "text": prompt},
                 ],
             }],
+            output_config=_legend_output_config(legend_type),
             job_id=job_id,
             workspace_id=workspace_id,
         )
     except Exception as e:
         report_anthropic_failure(e, service="catalog_legend_extractor_v2")
-        logger.warning(f"catalog_legend_extractor_v2: Claude call failed: {e}")
-        return None
-
-    text = (resp.content[0].text if resp.content else "").strip()
-    # Strip markdown fences if present
-    if text.startswith("```"):
-        parts = text.split("```", 2)
-        if len(parts) >= 2:
-            text = parts[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.warning(f"catalog_legend_extractor_v2: JSON parse failed: {e}; raw[:200]={text[:200]!r}")
-        return None
+        raise
+    return call.data
 
 
 def _dedupe_norm(items: List[str]) -> List[str]:
@@ -265,23 +347,18 @@ async def extract_catalog_legends(
             )
             return {**stats, "skipped_idempotent": True, "existing_legends": existing_legends}
 
-    # Fallback: if Layer 1 didn't run, scan the last 12 pages as candidates.
-    # Not as accurate but keeps this service usable in isolation.
-    if not any(legend_pages_by_type.values()):
-        logger.info(
-            f"[{job_id or '-'}] catalog_legend_extractor_v2: no Layer 1 classification, "
-            f"falling back to last-12-pages scan"
-        )
+    # No Layer 1 result: classify now. A page of unknown type is never sent through
+    # every legend prompt in the hope one sticks.
+    if not layout.get("analyzed_at"):
         try:
-            tmp_doc = fitz.open(pdf_path)
-            total = tmp_doc.page_count
-            tmp_doc.close()
-            candidates = list(range(max(0, total - 12), total))
-            # Try each candidate with each prompt — expensive but functional
-            legend_pages_by_type = {"unknown": candidates}
+            from app.services.discovery.catalog_layout_analyzer import analyze_catalog_layout
+            layout = await analyze_catalog_layout(document_id, pdf_path, supabase, job_id=job_id)
+            legend_pages_by_type = layout.get("legend_pages") or {}
+            doc_md["catalog_layout"] = layout
         except Exception as e:
-            logger.error(f"[{job_id or '-'}] fallback scan failed: {e}")
+            logger.error(f"[{job_id or '-'}] catalog_legend_extractor_v2: layout analysis failed: {e}")
             sentry_sdk.capture_exception(e)
+            stats["errors"].append(f"layout: {e}")
             return stats
 
     await _progress(10, f"processing legend pages {legend_pages_by_type}")
@@ -298,17 +375,14 @@ async def extract_catalog_legends(
     ) or 1
     processed = 0
 
+    failed_pages: List[Dict[str, Any]] = []
     for legend_type, page_indices in legend_pages_by_type.items():
         if not page_indices or not isinstance(page_indices, list):
             continue
-
-        prompt = (await _legend_prompt(legend_type)
-                  if legend_type in CATEGORY_BY_TYPE else None)
-        if prompt is None and legend_type != "unknown":
-            logger.warning(
-                f"[{job_id or '-'}] no prompt defined for legend type '{legend_type}'"
-            )
+        if legend_type not in CATEGORY_BY_TYPE:
+            logger.warning(f"[{job_id or '-'}] no prompt defined for legend type '{legend_type}'")
             continue
+        prompt = await _legend_prompt(legend_type)
 
         for page_idx in page_indices:
             processed += 1
@@ -316,74 +390,36 @@ async def extract_catalog_legends(
 
             try:
                 image_bytes = _render_and_shrink(pdf_path, page_idx)
+                result = await _call_claude(
+                    image_bytes, prompt, legend_type, job_id=job_id, workspace_id=workspace_id,
+                )
             except Exception as e:
-                logger.warning(
-                    f"[{job_id or '-'}] render page {page_idx} failed: {e}"
-                )
-                stats["errors"].append(f"render_{page_idx}: {e}")
+                logger.warning(f"[{job_id or '-'}] legend page {page_idx} ({legend_type}) failed: {e}")
+                stats["errors"].append(f"page_{page_idx}: {e}")
+                failed_pages.append({"page_index": page_idx, "legend_type": legend_type, "error": str(e)[:300]})
                 continue
 
-            # For unknown-type fallback pages, try every prompt and use the
-            # one that returns the most populated result.
-            if legend_type == "unknown":
-                best_result = None
-                best_type = None
-                best_score = 0
-                for t in CATEGORY_BY_TYPE:
-                    p = await _legend_prompt(t)
-                    r = _call_claude(
-                        image_bytes, p, job_id=job_id, workspace_id=workspace_id,
-                    )
-                    if r and isinstance(r, dict):
-                        score = sum(1 for v in r.values() if v not in (None, [], "", {}))
-                        if score > best_score:
-                            best_result = r
-                            best_type = t
-                            best_score = score
-                if best_result and best_type and best_score >= 3:
-                    result = best_result
-                    resolved_type = best_type
-                else:
-                    result = None
-                    resolved_type = None
-            else:
-                result = _call_claude(
-                    image_bytes, prompt, job_id=job_id, workspace_id=workspace_id,
-                )
-                resolved_type = legend_type
-
-            if not result or not resolved_type:
-                await _progress(pct, f"page {page_idx}: no usable legend data")
-                continue
-
-            extracted_legends.setdefault(resolved_type, []).append({
+            extracted_legends.setdefault(legend_type, []).append({
                 "source_page_index": page_idx,
                 **result,
             })
             stats["legends_extracted"] += 1
-
-            # Collect catalog-wide certifications from any legend that
-            # reports them — cert page, regulation page, sustainability page
-            # all may mention relevant marks.
-            certs_here = result.get("certifications") or []
-            if isinstance(certs_here, list):
-                all_certifications.extend(c for c in certs_here if isinstance(c, str))
-            # icons pages with applies_globally=true contribute their icon codes
-            if result.get("applies_globally") and resolved_type == "icons":
-                for icon in (result.get("icons") or []):
-                    if isinstance(icon, dict) and icon.get("category") == "certification" and icon.get("code"):
-                        all_certifications.append(icon["code"])
-
-            await _progress(pct, f"page {page_idx}: extracted {resolved_type}")
+            all_certifications.extend(_global_certifications(legend_type, result))
+            await _progress(pct, f"page {page_idx}: extracted {legend_type}")
 
     all_certifications = _dedupe_norm(all_certifications)
+    stats["failed_pages"] = failed_pages
     stats["certifications_propagated"] = all_certifications
 
     # ── Persist the structured legend values on the document row ──────
     try:
+        now = datetime.utcnow().isoformat()
         doc_md["catalog_legends"] = {
-            "extracted_at": datetime.utcnow().isoformat(),
-            "extraction_model": LEGEND_VISION_MODEL,
+            # Only a run in which every page succeeded may stop the next run.
+            "extracted_at": None if failed_pages else now,
+            "attempted_at": now,
+            "failed_pages": failed_pages,
+            "extraction_model": _legend_model(),
             "by_type": extracted_legends,
             "global_certifications": all_certifications,
         }
@@ -493,7 +529,7 @@ async def extract_catalog_legends(
                             "source_document_id": document_id,
                             "source_page_index": entry.get("source_page_index"),
                             "extraction_method": "claude_vision",
-                            "extraction_model": LEGEND_VISION_MODEL,
+                            "extraction_model": _legend_model(),
                             "generated_at": datetime.utcnow().isoformat(),
                         },
                     },

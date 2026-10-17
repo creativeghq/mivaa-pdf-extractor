@@ -6,7 +6,10 @@ from datetime import datetime
 import uuid
 
 from app.services.core.supabase_client import get_supabase_client
-from app.services.images.multi_modal_image_product_association_service import MultiModalImageProductAssociationService
+from app.services.images.multi_modal_image_product_association_service import (
+    MultiModalImageProductAssociationService,
+    product_evidence,
+)
 from app.services.metadata.table_metadata_extractor import TableMetadataExtractor
 
 logger = logging.getLogger(__name__)
@@ -69,9 +72,17 @@ class EntityLinkingService:
 
             # Get all products with page ranges
             products_response = self.supabase.client.table('products')\
-                .select('id, name, metadata')\
+                .select('id, name, metadata, workspace_id')\
                 .eq('source_document_id', document_id)\
                 .execute()
+
+            workspace_ids = {p.get('workspace_id') for p in (products_response.data or []) if p.get('workspace_id')}
+            if len(workspace_ids) != 1:
+                raise ValueError(
+                    f"document {document_id} resolves to {len(workspace_ids)} workspaces — "
+                    "refusing to bind its images to any of them"
+                )
+            workspace_id = workspace_ids.pop()
 
             product_page_ranges = {}
             for product in products_response.data:
@@ -163,6 +174,7 @@ class EntityLinkingService:
                     # Use image_product_associations schema
                     relationships.append({
                         'id': str(uuid.uuid4()),
+                        'workspace_id': workspace_id,
                         'image_id': image_id,
                         'product_id': product_id,
                         'spatial_score': 0.0,
@@ -180,9 +192,9 @@ class EntityLinkingService:
 
             # Batch insert all relationships (using SAME table as frontend)
             if relationships:
-                self.supabase.client.table('image_product_associations')\
-                    .insert(relationships)\
-                    .execute()
+                self.supabase.client.table('image_product_associations').upsert(
+                    relationships, on_conflict='image_id,product_id'
+                ).execute()
                 self.logger.info(f"Created {len(relationships)} product-image relationship entries")
 
             # Calculate average vision confidence
@@ -215,7 +227,9 @@ class EntityLinkingService:
         except Exception as e:
             self.logger.error(f"Failed to link images to products: {e}")
             return {
-                'linked_count': 0,
+                'status': 'failed',
+                'error': str(e)[:300],
+                'linked_count': LINKING_FAILED,
                 'total_images': 0,
                 'vision_guided_links': 0,
                 'fallback_links': 0,
@@ -712,7 +726,7 @@ class EntityLinkingService:
         product_id: str,
         document_id: str,
         logger: logging.Logger,
-    ) -> bool:
+    ) -> Optional[Dict[str, Any]]:
         """The two ids must describe the same thing before either is written against.
 
         `link_product_entities` took `product_id` and `document_id` independently, read
@@ -724,7 +738,7 @@ class EntityLinkingService:
         try:
             res = (
                 self.supabase.client.table('products')
-                .select('id, source_document_id, workspace_id')
+                .select('id, source_document_id, workspace_id, metadata')
                 .eq('id', product_id)
                 .maybe_single()
                 .execute()
@@ -732,20 +746,29 @@ class EntityLinkingService:
             product = getattr(res, 'data', None)
             if not product:
                 logger.warning(f"   ⚠️ Refusing to link: product {product_id} not found")
-                return False
+                return None
 
             source_doc = product.get('source_document_id')
             if source_doc and str(source_doc) != str(document_id):
-                logger.error(
-                    f"   ⛔ Refusing to link product {product_id} against document "
-                    f"{document_id}: the product came from {source_doc}"
+                # A product re-found in a later upload of the same workspace (stage 4's
+                # workspace dedup) records that document; anything else is refused.
+                also_in = [str(d) for d in ((product.get('metadata') or {}).get('also_in_documents') or [])]
+                doc = (
+                    self.supabase.client.table('documents')
+                    .select('workspace_id').eq('id', document_id).maybe_single().execute()
                 )
-                return False
-            return True
+                doc_ws = (getattr(doc, 'data', None) or {}).get('workspace_id')
+                if str(document_id) not in also_in or str(doc_ws) != str(product.get('workspace_id')):
+                    logger.error(
+                        f"   ⛔ Refusing to link product {product_id} against document "
+                        f"{document_id}: the product came from {source_doc}"
+                    )
+                    return None
+            return product
         except Exception as e:
             # A check that cannot run is not a check that passed.
             logger.error(f"   ⛔ Could not verify product/document pairing: {e}")
-            return False
+            return None
 
     async def link_product_entities(
         self,
@@ -754,15 +777,15 @@ class EntityLinkingService:
         document_id: str,
         physical_pages: Set[int],  # Using physical_pages (1-based)
         logger: logging.Logger
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         """
         Link entities for a single product (product-centric pipeline).
 
         IMPORTANT: Uses PHYSICAL PAGE NUMBERS (1-based) throughout.
 
-        Creates relationships for:
-        1. Product -> Images (on product pages)
-        2. Product -> Chunks (on product pages or mentioning product)
+        Each step (images, chunks, table metadata, multimodal) runs in its own try and
+        reports its own status in `step_status`; a failed step's count is LINKING_FAILED,
+        so one failure neither hides the others nor reads as "nothing to link".
 
         Args:
             product_id: Database ID of the product
@@ -772,116 +795,183 @@ class EntityLinkingService:
             logger: Logger instance
 
         Returns:
-            Statistics of relationships created
+            Statistics of relationships created, plus `step_status` per step
         """
-        stats = {
+        stats: Dict[str, Any] = {
             'image_product_links': 0,
             'chunk_product_links': 0,
             'tables_linked': 0,
-            'relationships_created': 0
+            'relationships_created': 0,
+            'step_status': {},
         }
 
         # Two ids each individually valid is not a pairing (audit #14 MV-12).
-        if not await self._assert_product_belongs_to_document(product_id, document_id, logger):
+        product_row = await self._assert_product_belongs_to_document(product_id, document_id, logger)
+        if not product_row:
+            stats['step_status'] = {'pairing': 'refused'}
             return stats
+        workspace_id = product_row.get('workspace_id')
+
+        logger.info(f"Linking entities for product: {product_name}")
+        stats['image_product_links'], stats['step_status']['images'] = await self._link_images_for_product(
+            product_id, product_name, document_id, physical_pages, workspace_id, logger,
+        )
+        stats['chunk_product_links'], stats['step_status']['chunks'] = await self._link_chunks_for_product(
+            product_id, product_name, document_id, physical_pages, logger,
+        )
+        stats['tables_linked'], stats['step_status']['table_metadata'] = await self._apply_table_metadata(
+            product_id, logger,
+        )
 
         try:
-            logger.info(f"Linking entities for product: {product_name}")
-
-            # 1. Link images to this product (images on product pages)
-            images_response = self.supabase.client.table('document_images')\
-                .select('id, page_number')\
-                .eq('document_id', document_id)\
-                .execute()
-
-            logger.info(f"   Found {len(images_response.data) if images_response.data else 0} total images in document")
-            logger.info(f"   Physical pages (1-based): {sorted(physical_pages)}")
-
-            image_relationships = []
-            for img in images_response.data:
-                img_page = img.get('page_number')
-                logger.debug(f"   Checking image {img['id'][:8]}... on page {img_page}")
-                if img_page in physical_pages:
-                    # Image is on a product page - high relevance
-                    relevance = 0.8
-                    # Use image_product_associations schema
-                    image_relationships.append({
-                        'id': str(uuid.uuid4()),
-                        'product_id': product_id,
-                        'image_id': img['id'],
-                        'spatial_score': 0.0,
-                        'caption_score': 0.0,
-                        'clip_score': 0.0,
-                        'overall_score': relevance,
-                        'confidence': relevance,
-                        'reasoning': 'page_proximity',
-                        'metadata': {'page_number': img_page},
-                        'created_at': datetime.utcnow().isoformat()
-                    })
-                    logger.debug(f"   Image {img['id'][:8]}... on page {img_page} -> Product (relevance: {relevance})")
-
-            if image_relationships:
-                self.supabase.client.table('image_product_associations')\
-                    .upsert(image_relationships, on_conflict='product_id,image_id')\
-                    .execute()
-                stats['image_product_links'] = len(image_relationships)
-                logger.info(f"   Linked {len(image_relationships)} images to product")
+            multimodal_result = await self._enhance_image_associations_multimodal(
+                document_id=document_id,
+                logger=logger
+            )
+            if multimodal_result.get('error'):
+                stats['multimodal_associations'] = LINKING_FAILED
+                stats['step_status']['multimodal'] = 'failed'
             else:
-                logger.warning(f"   No images found on physical pages {sorted(physical_pages)}")
+                stats['multimodal_associations'] = multimodal_result.get('associations_created', 0)
+                stats['multimodal_ambiguous_unlinked'] = multimodal_result.get('ambiguous_unlinked', 0)
+                stats['step_status']['multimodal'] = 'ok'
+        except Exception as e:
+            logger.error(f"   ❌ Multimodal association step failed: {e}")
+            stats['multimodal_associations'] = LINKING_FAILED
+            stats['step_status']['multimodal'] = 'failed'
 
-            # 2. Link chunks to this product (chunks on product pages or mentioning product)
-            chunks_response = self.supabase.client.table('document_chunks')\
-                .select('id, content, metadata')\
-                .eq('document_id', document_id)\
+        stats['relationships_created'] = (
+            max(stats['image_product_links'], 0) + max(stats['chunk_product_links'], 0)
+        )
+        stats['link_failed_steps'] = sorted(
+            step for step, status in stats['step_status'].items() if status == 'failed'
+        )
+        logger.info(
+            f"   Total relationships created: {stats['relationships_created']} "
+            f"(+ {stats['tables_linked']} tables); steps: {stats['step_status']}"
+        )
+        return stats
+
+    async def _link_images_for_product(
+        self,
+        product_id: str,
+        product_name: str,
+        document_id: str,
+        physical_pages: Set[int],
+        workspace_id: Optional[str],
+        logger: logging.Logger,
+    ) -> tuple:
+        """(links written, status). A page shared with a sibling product needs evidence."""
+        try:
+            if not workspace_id:
+                raise ValueError(f"product {product_id} has no workspace_id")
+            images = (
+                self.supabase.client.table('document_images')
+                .select('id, page_number, product_name, caption, alt_text')
+                .eq('document_id', document_id)
                 .execute()
+            ).data or []
+            siblings = (
+                self.supabase.client.table('products')
+                .select('id, metadata')
+                .eq('source_document_id', document_id)
+                .neq('id', product_id)
+                .execute()
+            ).data or []
+            shared_pages: Set[int] = set()
+            for sibling in siblings:
+                for page in ((sibling.get('metadata') or {}).get('page_range') or []):
+                    if isinstance(page, (int, float)) and not isinstance(page, bool):
+                        shared_pages.add(int(page))
 
-            logger.info(f"   Found {len(chunks_response.data) if chunks_response.data else 0} total chunks in document")
+            rows = []
+            ambiguous = 0
+            for img in images:
+                img_page = img.get('page_number')
+                if img_page not in physical_pages:
+                    continue
+                evidence = None
+                if img_page in shared_pages:
+                    evidence = product_evidence(img, {'name': product_name})
+                    if not evidence:
+                        ambiguous += 1
+                        continue
+                relevance = 0.8
+                rows.append({
+                    'id': str(uuid.uuid4()),
+                    'workspace_id': workspace_id,
+                    'product_id': product_id,
+                    'image_id': img['id'],
+                    'spatial_score': 0.0,
+                    'caption_score': 0.0,
+                    'clip_score': 0.0,
+                    'overall_score': relevance,
+                    'confidence': relevance,
+                    'reasoning': 'page_proximity' if not evidence else f'shared_page_{evidence}',
+                    'metadata': {'page_number': img_page, 'product_evidence': evidence},
+                    'created_at': datetime.utcnow().isoformat()
+                })
 
-            chunk_relationships = []
-            for chunk in chunks_response.data:
-                # Get chunk metadata
+            if rows:
+                self.supabase.client.table('image_product_associations').upsert(
+                    rows, on_conflict='image_id,product_id'
+                ).execute()
+                logger.info(f"   Linked {len(rows)} images to product")
+            if ambiguous:
+                logger.info(
+                    f"   {ambiguous} image(s) on pages shared with another product left unlinked: "
+                    f"nothing on them names '{product_name}'"
+                )
+            return len(rows), 'ok'
+        except Exception as e:
+            logger.error(f"   ❌ Image linking failed for product {product_id}: {e}")
+            return LINKING_FAILED, 'failed'
+
+    async def _link_chunks_for_product(
+        self,
+        product_id: str,
+        product_name: str,
+        document_id: str,
+        physical_pages: Set[int],
+        logger: logging.Logger,
+    ) -> tuple:
+        """(links written, status) for chunks on the product's pages or naming it."""
+        try:
+            chunks = (
+                self.supabase.client.table('document_chunks')
+                .select('id, content, metadata')
+                .eq('document_id', document_id)
+                .execute()
+            ).data or []
+
+            rows = []
+            for chunk in chunks:
                 chunk_metadata = chunk.get('metadata', {})
                 if not isinstance(chunk_metadata, dict):
-                    logger.warning(f"Skipping chunk {chunk['id']} - metadata is not a dict")
                     continue
-
-                # Get sequential page number and product_pages array
                 chunk_page_number = chunk_metadata.get('page_number')
                 product_pages_array = chunk_metadata.get('product_pages', [])
-
                 if chunk_page_number is None:
-                    logger.warning(f"Skipping chunk {chunk['id']} - missing page_number")
+                    continue
+                try:
+                    chunk_page_number = int(chunk_page_number)
+                except (ValueError, TypeError):
                     continue
 
-                # Ensure page_number is an integer
-                if not isinstance(chunk_page_number, int):
-                    try:
-                        chunk_page_number = int(chunk_page_number)
-                    except (ValueError, TypeError):
-                        logger.warning(f"Skipping chunk {chunk['id']} - invalid page_number: {chunk_page_number}")
-                        continue
-
-                # Map sequential page number to original PDF page number
-                # product_pages is a document-level array: [24, 25, 26, ...]
-                # page_number is 1-based sequential: 1, 2, 3, ...
-                # So: original_page = product_pages[page_number - 1]
+                # product_pages is a document-level array; page_number is 1-based sequential.
                 if product_pages_array and isinstance(product_pages_array, list) and chunk_page_number <= len(product_pages_array):
                     chunk_original_page = product_pages_array[chunk_page_number - 1]
                 else:
-                    # Fallback: use sequential page number if mapping not available
                     chunk_original_page = chunk_page_number
 
-                # Calculate relevance using existing algorithm
                 relevance = self._calculate_chunk_product_relevance(
                     chunk_original_page=chunk_original_page,
                     chunk_content=chunk.get('content', '').lower(),
-                    product_page_range=list(physical_pages),  # Using physical_pages
+                    product_page_range=list(physical_pages),
                     product_name=product_name.lower()
                 )
-
-                # Only create relationship if relevance is above threshold
                 if relevance >= 0.3:
-                    chunk_relationships.append({
+                    rows.append({
                         'id': str(uuid.uuid4()),
                         'chunk_id': chunk['id'],
                         'product_id': product_id,
@@ -889,120 +979,85 @@ class EntityLinkingService:
                         'relevance_score': relevance,
                         'created_at': datetime.utcnow().isoformat()
                     })
-                    logger.debug(f"   Chunk {chunk['id'][:8]}... -> Product (page {chunk_original_page}, relevance: {relevance:.2f})")
 
-            if chunk_relationships:
+            if rows:
                 self.supabase.client.table('chunk_product_relationships')\
-                    .upsert(chunk_relationships, on_conflict='chunk_id,product_id')\
+                    .upsert(rows, on_conflict='chunk_id,product_id')\
                     .execute()
-                stats['chunk_product_links'] = len(chunk_relationships)
-                logger.info(f"   Linked {len(chunk_relationships)} chunks to product")
+                logger.info(f"   Linked {len(rows)} chunks to product")
             else:
                 logger.warning(f"   No chunks found matching product '{product_name}' on physical pages {sorted(physical_pages)}")
+            return len(rows), 'ok'
+        except Exception as e:
+            logger.error(f"   ❌ Chunk linking failed for product {product_id}: {e}")
+            return LINKING_FAILED, 'failed'
 
-            # 3. Count tables linked to this product (already linked via product_id foreign key)
+    async def _apply_table_metadata(self, product_id: str, logger: logging.Logger) -> tuple:
+        """(tables linked, status). Table values go to registry keys at top level."""
+        try:
             tables_response = self.supabase.client.table('product_tables')\
                 .select('id', count='exact')\
                 .eq('product_id', product_id)\
                 .execute()
-
             tables_count = tables_response.count if tables_response.count is not None else 0
-            stats['tables_linked'] = tables_count
-            if tables_count > 0:
-                logger.info(f"   Found {tables_count} tables linked to product")
+            if tables_count == 0:
+                return 0, 'no_tables'
+            logger.info(f"   Found {tables_count} tables linked to product")
 
-                # Extract structured metadata from tables
-                try:
-                    table_extractor = TableMetadataExtractor(self.supabase)
-                    table_metadata = await table_extractor.extract_metadata_from_tables(product_id)
+            table_metadata = await TableMetadataExtractor(self.supabase).extract_metadata_from_tables(product_id)
+            if not table_metadata:
+                return tables_count, 'ok'
 
-                    if table_metadata:
-                        # Update product with extracted table metadata
-                        # Fetch current product metadata
-                        product_response = self.supabase.client.table('products')\
-                            .select('metadata')\
-                            .eq('id', product_id)\
-                            .single()\
-                            .execute()
+            product_response = self.supabase.client.table('products')\
+                .select('metadata, workspace_id')\
+                .eq('id', product_id)\
+                .single()\
+                .execute()
+            row = product_response.data or {}
+            current_metadata = dict(row.get('metadata') or {})
 
-                        current_metadata = product_response.data.get('metadata', {}) if product_response.data else {}
-                        if current_metadata is None:
-                            current_metadata = {}
+            if table_metadata.get('available_sizes'):
+                current_metadata['available_sizes'] = table_metadata['available_sizes']
+            if table_metadata.get('thickness'):
+                material_props = current_metadata.get('material_properties')
+                if not isinstance(material_props, dict):
+                    material_props = {}
+                material_props['thickness'] = {
+                    'value': table_metadata['thickness'],
+                    'confidence': 0.95,
+                    'source': 'product_table',
+                }
+                current_metadata['material_properties'] = material_props
+            # Merge, don't replace: these containers are shared with other writers.
+            for container in ('packaging', 'performance', 'specifications'):
+                incoming = table_metadata.get(container)
+                if not incoming:
+                    continue
+                existing = current_metadata.get(container)
+                merged = dict(existing) if isinstance(existing, dict) else {}
+                merged.update(incoming)
+                current_metadata[container] = merged
+            if table_metadata.get('dimensions'):
+                current_metadata['dimensions_from_tables'] = table_metadata['dimensions']
+            current_metadata['_table_metadata_sources'] = table_metadata.get('_table_sources', [])
 
-                        # Merge table metadata into product metadata
-                        if table_metadata.get('available_sizes'):
-                            current_metadata['available_sizes'] = table_metadata['available_sizes']
-                        if table_metadata.get('thickness'):
-                            # ONE home for thickness. Stages 4.5 (sibling) and 4.6
-                            # (regex) write material_properties.thickness as
-                            # {value, confidence, source} and only fill it when
-                            # EMPTY.
-                            material_props = current_metadata.get('material_properties')
-                            if not isinstance(material_props, dict):
-                                material_props = {}
-                            material_props['thickness'] = {
-                                'value': table_metadata['thickness'],
-                                'confidence': 0.95,
-                                'source': 'product_table',
-                            }
-                            current_metadata['material_properties'] = material_props
-                        # Merge, don't replace. `packaging` is a shared container —
-                        # stage_4_products also fills packaging.pieces_per_box /
-                        # patterns_count from chunk regex. A wholesale assignment
-                        # here dropped whichever keys the table did not happen to
-                        # carry. The table is the higher-confidence source, so its
-                        # keys win on collision.
-                        for container in ('packaging', 'performance', 'specifications'):
-                            incoming = table_metadata.get(container)
-                            if not incoming:
-                                continue
-                            existing = current_metadata.get(container)
-                            merged = dict(existing) if isinstance(existing, dict) else {}
-                            merged.update(incoming)
-                            current_metadata[container] = merged
-                        if table_metadata.get('dimensions'):
-                            current_metadata['dimensions_from_tables'] = table_metadata['dimensions']
-
-                        # Store table sources for traceability
-                        current_metadata['_table_metadata_sources'] = table_metadata.get('_table_sources', [])
-
-                        # Update product metadata
-                        self.supabase.client.table('products')\
-                            .update({'metadata': current_metadata})\
-                            .eq('id', product_id)\
-                            .execute()
-
-                        logger.info(f"   Updated product with table metadata: {len(table_metadata.get('available_sizes', []))} sizes, "
-                                   f"{len(table_metadata.get('packaging', {}))} packaging fields")
-                        stats['table_metadata_extracted'] = True
-                except Exception as e:
-                    logger.warning(f"   Table metadata extraction failed: {e}")
-                    stats['table_metadata_extracted'] = False
-            else:
-                logger.debug("   No tables found for product")
-
-            # Enhance image associations with multi-modal analysis (SLIG embeddings)
-            multimodal_result = await self._enhance_image_associations_multimodal(
-                document_id=document_id,
-                logger=logger
+            from app.api.pdf_processing.stage_4_products import recanonicalize_product
+            facet_columns = await recanonicalize_product(
+                self.supabase, product_id, current_metadata, row.get('workspace_id'),
+                'pdf_stage_5_tables', logger,
             )
-            stats['multimodal_associations'] = multimodal_result.get('associations_created', 0)
-
-            stats['relationships_created'] = stats['image_product_links'] + stats['chunk_product_links']
-            logger.info(f"   Total relationships created: {stats['relationships_created']} (+ {stats['tables_linked']} tables)")
-
-            return stats
-
+            self.supabase.client.table('products')\
+                .update({'metadata': current_metadata, **facet_columns})\
+                .eq('id', product_id)\
+                .execute()
+            logger.info(
+                f"   Updated product with table metadata: {len(table_metadata.get('available_sizes', []))} sizes, "
+                f"{len(table_metadata.get('packaging', {}))} packaging fields"
+            )
+            return tables_count, 'ok'
         except Exception as e:
-            logger.error(f"Failed to link product entities: {e}")
-            import traceback
-            logger.error(f"   Traceback: {traceback.format_exc()}")
-            return {
-                'image_product_links': 0,
-                'chunk_product_links': 0,
-                'tables_linked': 0,
-                'relationships_created': 0
-            }
+            logger.error(f"   ❌ Table metadata step failed for product {product_id}: {e}")
+            return LINKING_FAILED, 'failed'
 
     async def _enhance_image_associations_multimodal(
         self,
@@ -1030,7 +1085,5 @@ class EntityLinkingService:
 
             return result
         except Exception as e:
-            logger.warning(f"   Multi-modal enhancement failed: {e}")
-            import traceback
-            logger.debug(f"   Traceback: {traceback.format_exc()}")
-            return {'associations_created': 0, 'error': str(e)}
+            logger.error(f"   ❌ Multi-modal enhancement failed: {e}")
+            return {'associations_created': LINKING_FAILED, 'error': str(e)}

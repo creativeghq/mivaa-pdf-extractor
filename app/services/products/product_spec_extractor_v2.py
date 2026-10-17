@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 import sentry_sdk
+from app.services.metadata.field_registry import field_registry
 from app.services.utilities.prompt_registry import prefetch
 
 logger = logging.getLogger(__name__)
@@ -96,17 +97,17 @@ CANONICAL_PACKING_ORDER: List[str] = [
     "pieces_per_sqft",         # 2
     "pieces_per_box",          # 3
     "m2_per_box",              # 4
-    "sqft_per_box",            # 5
+    "box_area_sqft",           # 5
     "weight_per_box_kg",       # 6
-    "weight_per_box_lb",       # 7
+    "box_weight_lb",           # 7
     "boxes_per_pallet",        # 8
     "m2_per_pallet",           # 9
-    "sqft_per_pallet",         # 10
+    "pallet_area_sqft",        # 10
     "weight_per_pallet_kg",    # 11
-    "weight_per_pallet_lb",    # 12
+    "pallet_weight_lb",        # 12
     "pallet_dimensions_cm",    # 13 (e.g. "120X80X91")
     "thickness_mm",            # 14
-    "thickness_inch",          # 15
+    "thickness_in",            # 15
 ]
 
 # Alternate column orders seen in the wild — we pick whichever matches the
@@ -122,23 +123,23 @@ KNOWN_COLUMN_ORDERS: Dict[int, List[str]] = {
         "pieces_per_m2", "pieces_per_box", "m2_per_box",
         "weight_per_box_kg", "boxes_per_pallet", "m2_per_pallet",
         "weight_per_pallet_kg", "pallet_dimensions_cm",
-        "thickness_mm", "thickness_inch",
+        "thickness_mm", "thickness_in",
         # fallback two extras if present
-        "sqft_per_box", "sqft_per_pallet",
+        "box_area_sqft", "pallet_area_sqft",
     ],
     # 10 cols: metric no lb, no sqft
     10: [
         "pieces_per_box", "m2_per_box", "weight_per_box_kg",
         "boxes_per_pallet", "m2_per_pallet", "weight_per_pallet_kg",
-        "pallet_dimensions_cm", "thickness_mm", "thickness_inch",
-        "sqft_per_box",
+        "pallet_dimensions_cm", "thickness_mm", "thickness_in",
+        "box_area_sqft",
     ],
     # 8 cols: minimal — pcs/box, m²/box, kg/box, boxes/pallet,
-    #         m²/pallet, kg/pallet, thickness_mm, thickness_inch
+    #         m²/pallet, kg/pallet, thickness_mm, thickness_in
     8: [
         "pieces_per_box", "m2_per_box", "weight_per_box_kg",
         "boxes_per_pallet", "m2_per_pallet", "weight_per_pallet_kg",
-        "thickness_mm", "thickness_inch",
+        "thickness_mm", "thickness_in",
     ],
 }
 
@@ -252,9 +253,63 @@ def _find_product_row(
     return row
 
 
+#: Header label -> flag field, matched against a header COLUMN's stacked text. Order
+#: matters: the shower columns must claim their text before the plain floor column does.
+_FLAG_HEADERS: List[Tuple[str, "re.Pattern[str]"]] = [
+    ("recommended_use_shower_wall", re.compile(r"SHOWER.*WALL|WALL.*SHOWER")),
+    ("recommended_use_shower_floor", re.compile(r"SHOWER.*FLOOR|FLOOR.*SHOWER")),
+    ("finish_matt", re.compile(r"\bMATT?E?\b")),
+    ("finish_gloss", re.compile(r"GLOSS")),
+    ("shade_variation_flag", re.compile(r"SHADE")),
+    ("traffic_flag", re.compile(r"TRAFFIC")),
+    ("recommended_use_floor", re.compile(r"\bFLOOR\b")),
+]
+
+
+def _flag_columns(
+    page_spans: List[Dict[str, Any]],
+    row_cy: float,
+    max_height: float = 300.0,
+    x_gap: float = 12.0,
+) -> List[Tuple[float, float, str]]:
+    """Header columns above the row that name a flag: (x0, x1, field).
+
+    Header labels are often stacked over two lines ("SHOWER" / "WALL"), so spans above
+    the row are grouped into columns by horizontal overlap before they are read.
+    """
+    above = [
+        sp for sp in page_spans
+        if row_cy - max_height < sp["cy"] < row_cy - 3
+        and _parse_number(sp["text"]) is None
+        and not _is_bullet_glyph(sp["text"].strip())
+    ]
+    columns: List[Dict[str, Any]] = []
+    for sp in sorted(above, key=lambda x: (x["cx"], x["cy"])):
+        for col in columns:
+            if sp["x0"] <= col["x1"] + x_gap and sp["x1"] >= col["x0"] - x_gap \
+                    and abs(sp["cx"] - col["cx"]) <= max(col["x1"] - col["x0"], 20):
+                col["spans"].append(sp)
+                col["x0"], col["x1"] = min(col["x0"], sp["x0"]), max(col["x1"], sp["x1"])
+                break
+        else:
+            columns.append({"x0": sp["x0"], "x1": sp["x1"], "cx": sp["cx"], "spans": [sp]})
+
+    out: List[Tuple[float, float, str]] = []
+    claimed: set = set()
+    for col in columns:
+        text = " ".join(s["text"] for s in sorted(col["spans"], key=lambda x: x["cy"])).upper()
+        for field, pattern in _FLAG_HEADERS:
+            if field not in claimed and pattern.search(text):
+                out.append((col["x0"], col["x1"], field))
+                claimed.add(field)
+                break
+    return out
+
+
 def _extract_values_positional(
     product_row: List[Dict[str, Any]],
     product_name: str,
+    page_spans: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Positional mapping: extract numeric + dimension values from the row,
     assign them to CANONICAL_PACKING_ORDER fields based on the count we see.
@@ -320,10 +375,7 @@ def _extract_values_positional(
             if known_n <= n:
                 target_order = KNOWN_COLUMN_ORDERS[known_n]
                 break
-    if not target_order:
-        return out
-
-    for i, (kind, val) in enumerate(numeric_and_dim):
+    for i, (kind, val) in enumerate(numeric_and_dim if target_order else []):
         if i >= len(target_order):
             break
         field = target_order[i]
@@ -339,31 +391,23 @@ def _extract_values_positional(
                 continue
         out[field] = val
 
-    # Bullet-to-column mapping for the technical-characteristics strip.
-    # Ceramic spec pages print bullets under: MATT / GLOSS / SHADE VAR /
-    # SHOWER WALL / SHOWER FLOOR / FLOOR / TRAFFIC. We can't tell the
-    # exact X→column mapping without header coordinates, so instead we
-    # rely on the fact that in the product row the bullet spans appear
-    # left-to-right in the same order as the header columns.
-    BULLET_POSITIONS: List[Tuple[str, Any]] = [
-        ("finish_matt", True),
-        ("finish_gloss", True),
-        ("shade_variation_flag", True),
-        ("recommended_use_shower_wall", True),
-        ("recommended_use_shower_floor", True),
-        ("recommended_use_floor", True),
-        ("traffic_flag", True),
-    ]
-    # Re-walk the tokens to find bullet positions in document order
-    bullet_index = 0
-    for kind, _val in tokens:
-        if kind == "bullet" and bullet_index < len(BULLET_POSITIONS):
-            field, value = BULLET_POSITIONS[bullet_index]
-            out[field] = value
-            bullet_index += 1
-        elif kind == "number":
-            # Stop counting bullets once we've passed into the numeric row
-            break
+    # A bullet sets the flag of the header COLUMN it sits under. Bullet order says nothing:
+    # a row that marks only GLOSS has one bullet, and counting would call it MATT. No header
+    # geometry means no flags, recorded as unmapped rather than guessed.
+    bullet_spans = [sp for sp in product_row if _is_bullet_glyph(sp["text"].strip())]
+    if bullet_spans:
+        columns = _flag_columns(page_spans or [], product_row[0]["cy"]) if page_spans else []
+        unmapped = 0
+        for sp in bullet_spans:
+            hits = [field for x0, x1, field in columns if x0 - 6 <= sp["cx"] <= x1 + 6]
+            if len(hits) == 1:
+                out[hits[0]] = True
+            else:
+                unmapped += 1
+        if unmapped:
+            out["_flags_unmapped"] = unmapped
+            logger.info(f"product_spec_extractor_v2: {unmapped} flag bullet(s) for "
+                        f"'{product_name}' sit under no recognised header column; left unset")
 
     return out
 
@@ -412,7 +456,7 @@ def _tier_a_pymupdf(
             product_row = _find_product_row(spans, product_name)
             if not product_row:
                 continue
-            row_data = _extract_values_positional(product_row, product_name)
+            row_data = _extract_values_positional(product_row, product_name, spans)
             if not row_data:
                 continue
             logger.info(
@@ -439,6 +483,30 @@ def _tier_a_pymupdf(
     return _flat_to_nested(merged_flat, product_name)
 
 
+#: Legend icon category -> performance key; a retired spelling resolves through the registry.
+_ICON_CATEGORY_TARGETS = {
+    "slip_resistance": "slip_resistance", "pei_rating": "pei_rating",
+    "water_absorption_class": "water_absorption_class", "fire_rating": "fire_rating",
+    "frost_resistance": "frost_resistance", "v_rating": "v_rating",
+    "traffic_rating": "traffic_rating",
+}
+
+
+_IMPERIAL_PACKING = (
+    ("m2_per_box", "box_area_sqft", 0.09290304),
+    ("weight_per_box_kg", "box_weight_lb", 0.45359237),
+    ("m2_per_pallet", "pallet_area_sqft", 0.09290304),
+    ("weight_per_pallet_kg", "pallet_weight_lb", 0.45359237),
+)
+
+
+def _metric(value: Any, factor: float) -> Optional[float]:
+    try:
+        return round(float(str(value).replace(",", ".")) * factor, 3)
+    except (TypeError, ValueError):
+        return None
+
+
 def _flat_to_nested(flat: Dict[str, Any], product_name: str) -> Dict[str, Any]:
     """Map the flat column output to the nested metadata shape used by
     Stage 4.7's merge function. Returns {} if nothing was extracted."""
@@ -447,17 +515,20 @@ def _flat_to_nested(flat: Dict[str, Any], product_name: str) -> Dict[str, Any]:
 
     out: Dict[str, Any] = {}
 
-    # Packaging
+    # Packaging. An imperial column fills its metric key only when the metric one is absent.
     pkg: Dict[str, Any] = {}
     for key in (
-        "pieces_per_box", "m2_per_box", "sqft_per_box",
-        "weight_per_box_kg", "weight_per_box_lb",
-        "boxes_per_pallet", "m2_per_pallet", "sqft_per_pallet",
-        "weight_per_pallet_kg", "weight_per_pallet_lb",
+        "pieces_per_box", "m2_per_box", "weight_per_box_kg",
+        "boxes_per_pallet", "m2_per_pallet", "weight_per_pallet_kg",
         "pallet_dimensions_cm",
     ):
         if key in flat and flat[key] is not None:
             pkg[key] = flat[key]
+    for metric, imperial, factor in _IMPERIAL_PACKING:
+        if pkg.get(metric) is None and flat.get(imperial) is not None:
+            converted = _metric(flat[imperial], factor)
+            if converted is not None:
+                pkg[metric] = converted
     if pkg:
         out["packaging"] = pkg
 
@@ -465,8 +536,10 @@ def _flat_to_nested(flat: Dict[str, Any], product_name: str) -> Dict[str, Any]:
     mp: Dict[str, Any] = {}
     if "thickness_mm" in flat and flat["thickness_mm"] is not None:
         mp["thickness_mm"] = flat["thickness_mm"]
-    if "thickness_inch" in flat and flat["thickness_inch"] is not None:
-        mp["thickness_inch"] = flat["thickness_inch"]
+    elif flat.get("thickness_in") is not None:
+        converted = _metric(flat["thickness_in"], 25.4)
+        if converted is not None:
+            mp["thickness_mm"] = converted
     # finish from bullets: MATT bullet → "matte"
     if flat.get("finish_matt") and not flat.get("finish_gloss"):
         mp["finish"] = "matte"
@@ -475,7 +548,7 @@ def _flat_to_nested(flat: Dict[str, Any], product_name: str) -> Dict[str, Any]:
     if mp:
         out["material_properties"] = mp
 
-    # Application / recommended_use
+    # Application
     uses: List[str] = []
     if flat.get("recommended_use_shower_wall"):
         uses.append("shower_wall")
@@ -484,7 +557,7 @@ def _flat_to_nested(flat: Dict[str, Any], product_name: str) -> Dict[str, Any]:
     if flat.get("recommended_use_floor"):
         uses.append("floor")
     if uses:
-        out["application"] = {"recommended_use": uses}
+        out["application"] = {"application": uses}
 
     return out
 
@@ -501,6 +574,7 @@ def _tier_b_opus(
     job_id: Optional[str] = None,
     product_id: Optional[str] = None,
     document_id: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Fallback: delegate to the existing product_spec_vision_extractor
     but with the Claude Opus model override. Returns the same nested-metadata
@@ -526,6 +600,7 @@ def _tier_b_opus(
             product_id=product_id,
             document_id=document_id,
             model=OPUS_FALLBACK_MODEL,
+            category=category,
         )
     except Exception as e:
         logger.warning(
@@ -535,7 +610,14 @@ def _tier_b_opus(
 
     if not raw:
         return {}
-    return psve.map_vision_specs_to_product_metadata(raw)
+    status = raw.get("_status", "ok")
+    failures = raw.get("_page_failures") or []
+    if status == "failed":
+        return {"_tier_error": f"tier_b_all_pages_failed: {failures[:5]}"}
+    mapped = psve.map_vision_specs_to_product_metadata(raw, category)
+    if status == "degraded":
+        mapped["_tier_degraded"] = {"tier": "claude_opus_vision", "page_failures": failures}
+    return mapped
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -581,12 +663,11 @@ def _tier_c_legend_inheritance(
             code = icon.get("code")
             if not category or not code:
                 continue
-            if category in (
-                "slip_resistance", "pei_rating", "water_absorption",
-                "fire_rating", "frost_resistance", "shade_variation",
-                "traffic_level",
-            ):
-                target = "water_absorption_class" if category == "water_absorption" else category
+            target = _ICON_CATEGORY_TARGETS.get(category)
+            if target is None and field_registry.is_loaded:
+                resolved = field_registry.resolve_field_key(category, "tiles")
+                target = resolved if resolved in _ICON_CATEGORY_TARGETS.values() else None
+            if target is not None:
                 if target not in performance:
                     performance[target] = code
         if performance:
@@ -609,6 +690,7 @@ async def extract_product_spec(
     catalog_legends: Optional[Dict[str, Any]] = None,
     job_id: Optional[str] = None,
     enable_tier_b: bool = True,
+    category: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Extract a product's spec block from the PDF using the 3-tier hybrid.
 
@@ -633,8 +715,10 @@ async def extract_product_spec(
     """
     # _tier_b_opus -> psve builds its prompt synchronously from the cache.
     await prefetch(("extraction", "product_spec_vision", "image_analysis"))
+    await field_registry.ensure_loaded()
     log_prefix = f"[{job_id or '-'}] spec_v2 '{product_name}'"
     source_tiers: List[str] = []
+    degraded_tiers: List[Dict[str, Any]] = []
 
     try:
         # ── Tier A — PyMuPDF text-dict ──────────────────────────────────
@@ -652,7 +736,7 @@ async def extract_product_spec(
         # We ALWAYS run Tier B when enabled, because:
         # - Tier A only extracts the packing row + thickness + bullet flags
         # - Tier B uniquely provides: commercial.vision_variants (SKU
-        # metadata per color), commercial.grout_details (per-color
+        # metadata per color), commercial.grout_color_codes (per-color
         # grout recommendations), and any per-product performance
         if enable_tier_b:
             if tier_a_count >= TIER_A_SUFFICIENT_FIELDS:
@@ -672,7 +756,13 @@ async def extract_product_spec(
                 job_id=job_id,
                 product_id=product_id,
                 document_id=document_id,
+                category=category,
             )
+            if tier_b_result.get("_tier_error"):
+                # Every page failed: a failure, not "no specs". Stage 4 counts it.
+                return {"_source_tiers": source_tiers, **tier_b_result}
+            if tier_b_result.get("_tier_degraded"):
+                degraded_tiers.append(tier_b_result["_tier_degraded"])
             if tier_b_result:
                 source_tiers.append("claude_opus_vision")
                 merged = _merge_specs(merged, tier_b_result)
@@ -689,6 +779,8 @@ async def extract_product_spec(
                 )
 
         merged["_source_tiers"] = source_tiers
+        if degraded_tiers:
+            merged["_degraded_tiers"] = degraded_tiers
         return merged
 
     except Exception as e:

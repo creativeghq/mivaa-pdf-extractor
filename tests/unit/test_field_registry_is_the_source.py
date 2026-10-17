@@ -68,7 +68,8 @@ SYNC_ACCESSORS = {
     "fields_for_category", "category", "skip_fields", "controlled_vocab",
     "all_controlled_vocab", "controlled_vocab_by_category", "priority_fields_prompt",
     "extraction_tips_prompt", "skip_fields_prompt", "controlled_vocab_prompt",
-    "category_prompt_block",
+    "category_prompt_block", "resolve_category", "resolve_field_key", "is_registered",
+    "all_field_names",
 }
 
 #: FUNCTIONS that read an accessor without loading it, each for a stated reason.

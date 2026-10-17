@@ -30,7 +30,12 @@ def fj():
 
 
 def _src(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        from comment_budget import blank_comments
+        return blank_comments(path.read_text(encoding="utf-8"))
+    finally:
+        sys.path.pop(0)
 
 
 # ── the pure part ─────────────────────────────────────────────────────────────
@@ -127,7 +132,15 @@ def test_judge_only_reads_low_confidence_products_of_this_document_in_this_works
     src = _src(JUDGE)
     assert '.eq("source_document_id", document_id)' in src
     assert '.eq("workspace_id", self.workspace_id)' in src
-    assert '.lt("confidence_score", confidence_below)' in src
+    assert "confidence_score.is.null,confidence_score.lt." in src
+    assert ".lt(\"confidence_score\"" not in src
+
+
+def test_an_empty_or_incomplete_verdict_is_not_ok():
+    src = _src(JUDGE)
+    empty = src.index("if not kept:")
+    assert '"failed"' in src[empty:empty + 300]
+    assert '"ok" if complete else "partial"' in src
 
 
 def test_stage_5_runs_the_judge_after_image_validation_and_never_fails_the_job_on_it():

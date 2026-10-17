@@ -77,55 +77,75 @@ class ImportHistoryResponse(BaseModel):
 # API Endpoints
 # ============================================================================
 
+_FEED_IMPORT_CAPABILITIES = frozenset({"catalog.import", "pricing.manage"})
+
+
+def _require_catalog_import(claims: Dict[str, Any], workspace_id: str) -> None:
+    """The caller must hold `catalog.import` OR `pricing.manage` in the workspace (the edge rule, mirrored).
+
+    The platform service identity passes; a user passes as a platform operator or through
+    `workspace_role_capability_matrix()` for their ACTIVE role there.
+    """
+    if claims.get("service") == "mivaa" or claims.get("is_test_user"):
+        return
+    user_id = claims.get("sub") or claims.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=403, detail="Missing user identity")
+    client = get_supabase_client().client
+    try:
+        profile = client.table("user_profiles").select("roles!user_profiles_role_id_fkey(name)")             .eq("user_id", user_id).limit(1).execute()
+        global_role = ((profile.data or [{}])[0].get("roles") or {}).get("name")
+        if global_role in ("admin", "super_admin"):
+            return
+        member = client.table("workspace_members").select("role")             .eq("workspace_id", workspace_id).eq("user_id", user_id).eq("status", "active")             .limit(1).execute()
+        role = (member.data or [{}])[0].get("role")
+        if role:
+            matrix = client.rpc("workspace_role_capability_matrix").execute()
+            if any(r.get("role") == role and r.get("capability") in _FEED_IMPORT_CAPABILITIES
+                   for r in (matrix.data or [])):
+                return
+    except Exception as e:
+        logger.error(f"catalog.import check failed: {e}")
+        raise HTTPException(status_code=403, detail="Workspace authorization failed")
+    raise HTTPException(status_code=403, detail="Importing products needs the catalog.import or pricing.manage capability")
+
+
 @router.post("/process", response_model=ImportProcessResponse)
 async def process_import_job(
     request: ProcessImportRequest,
     background_tasks: BackgroundTasks,
     claims: Dict[str, Any] = Depends(get_current_user),
 ) -> Dict[str, Any]:
-    """
-    Start processing an import job.
-    
-    This endpoint is called by the Edge Function after creating the import job.
-    It processes the job in the background using batch processing, image downloads,
-    and product normalization.
-    
-    Args:
-        request: Process import request
-        background_tasks: FastAPI background tasks
-        
-    Returns:
-        Processing status
-    """
+    """Claim a pending import job (pending -> processing, once) and process it in the background."""
+    await authorize_rag_workspace(claims, request.workspace_id)
+    _require_catalog_import(claims, request.workspace_id)
+
     try:
-        # Cross-tenant guard (audit #217 H7): trust the Material-Kai service identity
-        # (the xml-import-orchestrator edge fn), else require the caller to be a member
-        # of the target workspace.
-        await authorize_rag_workspace(claims, request.workspace_id)
-
-        logger.info(f"🚀 Starting import job processing: {request.job_id}")
-
-        # Initialize service
-        import_service = DataImportService()
-        
-        # Add processing task to background
-        background_tasks.add_task(
-            import_service.process_import_job,
-            job_id=request.job_id,
-            workspace_id=request.workspace_id
-        )
-        
-        return {
-            "success": True,
-            "message": "Import job processing started",
-            "job_id": request.job_id
-        }
-
-    except HTTPException:
-        raise
+        client = get_supabase_client().client
+        claimed = client.table("data_import_jobs")             .update({"status": "processing"})             .eq("id", request.job_id)             .eq("workspace_id", request.workspace_id)             .eq("status", "pending")             .execute()
     except Exception as e:
-        logger.error(f"❌ Failed to start import job processing: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Failed to claim import job {request.job_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not claim the import job")
+    if not claimed.data:
+        existing = client.table("data_import_jobs").select("status")             .eq("id", request.job_id).eq("workspace_id", request.workspace_id).limit(1).execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail=f"Job {request.job_id} not found")
+        raise HTTPException(
+            status_code=409,
+            detail=f"Job {request.job_id} is already {existing.data[0].get('status')}",
+        )
+
+    import_service = DataImportService()
+    background_tasks.add_task(
+        import_service.process_import_job,
+        job_id=request.job_id,
+        workspace_id=request.workspace_id,
+    )
+    return {
+        "success": True,
+        "message": "Import job processing started",
+        "job_id": request.job_id,
+    }
 
 
 @router.get("/jobs/{job_id}")

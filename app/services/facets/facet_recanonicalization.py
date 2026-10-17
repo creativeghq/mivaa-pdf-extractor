@@ -42,6 +42,9 @@ from typing import Any, Dict, List, Optional
 
 from app.services.core.supabase_client import get_supabase_client
 from app.services.facets import canonicalize_product_attributes
+from app.services.facets.facet_canonicalizer import _raw_strings
+from app.services.facets.facet_whitelist import is_canonicalizable
+from app.services.metadata.field_registry import field_registry
 
 logger = logging.getLogger(__name__)
 
@@ -59,16 +62,32 @@ _SELECT = (
 def _replay_source(product: Dict[str, Any]) -> Dict[str, Any]:
     """What to feed back through the canonicalizer.
 
-    `attributes_raw` is the contract and wins. The `metadata` fallback is for products
-    ingested before that column was populated: their raw values only ever existed in the
-    source metadata blob, and without the fallback the sweep would skip exactly the oldest
-    products — the ones most likely to predate the current rules.
+    `attributes_raw` is the contract, with any metadata key that is canonicalizable NOW
+    merged over it: a field approved for canonicalization after ingest replays from the
+    metadata it was always stored in. A product with no raw map replays its whole metadata.
     """
     raw = product.get('attributes_raw') or {}
-    if isinstance(raw, dict) and raw:
-        return dict(raw)
     meta = product.get('metadata') or {}
-    return dict(meta) if isinstance(meta, dict) else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    if not isinstance(raw, dict) or not raw:
+        return dict(meta)
+
+    source: Dict[str, Any] = {
+        k: list(v) if isinstance(v, list) else v for k, v in raw.items()
+    }
+    for key, value in meta.items():
+        if not isinstance(key, str) or key.startswith('_') or not is_canonicalizable(key):
+            continue
+        current = source.get(key)
+        bucket = list(current) if isinstance(current, list) else (
+            [current] if current not in (None, '') else [])
+        for item in _raw_strings(value):
+            if item not in bucket:
+                bucket.append(item)
+        if bucket:
+            source[key] = bucket
+    return source
 
 
 async def recanonicalize_products(
@@ -78,12 +97,16 @@ async def recanonicalize_products(
     batch_size: int = 25,
     workspace_id: Optional[str] = None,
     degraded_only: bool = False,
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Replay `attributes_raw` through the canonicalizer for stale products.
 
     Bounded and safe to call repeatedly. Returns per-outcome counts plus `remaining`, so the
-    caller knows whether another pass is needed rather than having to guess.
+    caller knows whether another pass is needed rather than having to guess. `force` also
+    takes products already AT the target version and re-resolves every raw value instead
+    of reusing stored canonicals — otherwise a forced replay changes nothing.
     """
+    await field_registry.ensure_loaded()
     supabase = get_supabase_client()
 
     # One embedding service for the whole sweep. Instantiating per product would re-open the
@@ -105,11 +128,15 @@ async def recanonicalize_products(
         'remaining': 0,
         'workspace_id': workspace_id,
         'degraded_only': degraded_only,
+        'force': force,
     }
 
     def _base_query():
         q = supabase.client.table('products').select(_SELECT)
-        q = q.lt('facet_canonicalization_version', target_version)
+        if force:
+            q = q.lte('facet_canonicalization_version', target_version)
+        else:
+            q = q.lt('facet_canonicalization_version', target_version)
         if workspace_id:
             q = q.eq('workspace_id', workspace_id)
         return q
@@ -167,6 +194,7 @@ async def recanonicalize_products(
                         product_id=pid,
                         embedding_service=embedding_service,
                         workspace_id=product.get('workspace_id'),
+                        reuse_existing=not force,
                     )
                 except Exception:
                     logger.exception(f"facet sweep: canonicalize raised for {pid}")

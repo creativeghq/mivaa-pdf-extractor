@@ -38,6 +38,14 @@ class ContextRetrievalError(RuntimeError):
     """
 
 
+class SearchFailedError(RuntimeError):
+    """A search could not run — never to be returned as an empty result list.
+
+    The route turns it into a 5xx; `{"results": []}` with a 200 reads as "nothing
+    matched" to every caller that only looks at the list.
+    """
+
+
 class RAGService:
     """
     RAG Service for multi-vector search using direct vector database queries.
@@ -647,6 +655,17 @@ class RAGService:
             }
             embedding_weights = config.get('weights', default_weights)
 
+            # A channel that RAISED is recorded here, so "every channel failed" can be
+            # told apart from "nothing matched" at the end.
+            channel_errors: Dict[str, str] = {}
+
+            # Filters are predicates over products, resolved before any channel is
+            # limited: `allowed_product_ids` is None when no filter has a predicate form.
+            allowed_product_ids, filters_applied, filters_ignored = await self._filtered_product_ids(
+                workspace_id, material_filters,
+            )
+            candidate_limit = top_k * 3 if allowed_product_ids is None else max(top_k * 10, 100)
+
             # ============================================================================
             # STEP 1: Generate query embeddings (visual + text + understanding)
             # All embedding calls run in PARALLEL with 10s timeout each.
@@ -734,7 +753,9 @@ class RAGService:
                         "⚠️ No visual embedding: image unusable and no query text to fall back to"
                     )
                     return None
-                result = await self.embeddings_service.generate_visual_embedding(query)
+                result = await self.embeddings_service.generate_visual_embedding(
+                    query, workspace_id=workspace_id,
+                )
                 if result.get("success"):
                     emb = result.get("embedding", [])
                     self.logger.info(f"✅ Visual embedding from text: {len(emb)}D")
@@ -745,12 +766,14 @@ class RAGService:
             async def _get_text_embedding():
                 if not (enable_chunk or enable_product):
                     return None
-                result = await self.embeddings_service.generate_text_embedding(query)
+                result = await self.embeddings_service.generate_text_embedding(
+                    query, input_type="query", workspace_id=workspace_id,
+                )
                 if result.get("success"):
                     emb = result.get("embedding", [])
                     self.logger.info(f"✅ Text embedding: {len(emb)}D")
                     return emb
-                self.logger.warning("⚠️ Text embedding generation failed")
+                channel_errors["text_embedding"] = result.get("error") or "no vector"
                 return None
 
             async def _get_understanding_embedding():
@@ -764,7 +787,9 @@ class RAGService:
                     return emb
                 if not has_text_query:
                     return None
-                result = await self.embeddings_service.generate_understanding_query_embedding(query)
+                result = await self.embeddings_service.generate_understanding_query_embedding(
+                    query, workspace_id=workspace_id,
+                )
                 if result.get("success"):
                     emb = result.get("embedding", [])
                     self.logger.info(f"✅ Understanding embedding: {len(emb)}D")
@@ -784,7 +809,9 @@ class RAGService:
                 # produces a vector that ranks pages against nothing in particular.
                 if not has_text_query:
                     return None
-                result = await self.embeddings_service.generate_page_query_embedding(query)
+                result = await self.embeddings_service.generate_page_query_embedding(
+                    query, workspace_id=workspace_id,
+                )
                 if result.get("success"):
                     emb = result.get("embedding", [])
                     self.logger.info(f"✅ Page query embedding: {len(emb)}D")
@@ -826,61 +853,66 @@ class RAGService:
             # ============================================================================
             image_scores = {}  # Maps image_id -> {embedding_type: score}
 
-            if enable_visual and visual_embedding:
-                embedding_types = ['color', 'texture', 'style', 'material']
+            if enable_visual:
+                # Each image channel runs on ITS OWN query vector. The 768D SLIG vector
+                # queries image_slig_embeddings; the aspect and understanding collections
+                # are 1024D Voyage and take the image-derived or text vectors. One
+                # channel's missing vector never switches another channel off.
+                embedding_types: List[str] = []
                 search_tasks = []
 
-                # The 4 aspect collections are 1024D Voyage embeddings of per-aspect text
-                # from VisionAnalysis (always-on post-Phase-10). Query must live in the same
-                # space — a 768D SLIG visual would dim-mismatch and return [] from all 4.
-                aspect_queries = image_query_vecs
-
-                if not aspect_queries and not understanding_embedding:
-                    self.logger.warning(
-                        "⚠️ Aspect search skipped — no aspect query vector available "
-                        f"(has_image={bool(image_base64)}, has_visual={bool(visual_embedding)}, "
-                        f"has_text={bool(text_embedding)})"
+                if visual_embedding:
+                    embedding_types.append('visual')
+                    search_tasks.append(
+                        self.vecs_service.search_similar_images(
+                            query_embedding=visual_embedding,
+                            limit=candidate_limit,
+                            filters={"workspace_id": {"$eq": workspace_id}},
+                            include_metadata=True,
+                        )
                     )
-                    embedding_types = []
 
-                # Per-aspect vector when the image gave us one, else the shared text vector.
-                # An aspect the image had nothing to say about (no discernible pattern -> no
-                # texture string) falls back to the text vector rather than borrowing another
-                # aspect's — that would be a different question answered confidently.
-                resolved_types = []
-                for emb_type in embedding_types:
+                # Per-aspect vector when the image gave us one, else the understanding
+                # vector — never another aspect's, which would answer a different question.
+                aspect_queries = image_query_vecs
+                for emb_type in ('color', 'texture', 'style', 'material'):
                     q = aspect_queries.get(emb_type) or understanding_embedding
                     if not q:
                         continue
-                    resolved_types.append(emb_type)
+                    embedding_types.append(emb_type)
                     search_tasks.append(
                         self.vecs_service.search_specialized_embeddings(
                             query_embedding=q,
                             embedding_type=emb_type,
-                            limit=top_k * 3,
+                            limit=candidate_limit,
                             workspace_id=workspace_id,
                             include_metadata=True
                         )
                     )
-                embedding_types = resolved_types
 
-                # Add understanding search in parallel with visual searches
                 if understanding_embedding:
+                    embedding_types.append('understanding')
                     search_tasks.append(
                         self.vecs_service.search_understanding_embeddings(
                             query_embedding=understanding_embedding,
-                            limit=top_k * 3,
+                            limit=candidate_limit,
                             workspace_id=workspace_id,
                             include_metadata=True
                         )
                     )
-                    embedding_types = embedding_types + ['understanding']
+
+                if not search_tasks:
+                    self.logger.warning(
+                        "⚠️ Image channels skipped — no visual, aspect or understanding "
+                        f"query vector (has_image={bool(image_base64)})"
+                    )
 
                 self.logger.info(f"🚀 Searching {len(embedding_types)} embeddings...")
                 search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
 
                 for emb_type, results in zip(embedding_types, search_results):
                     if isinstance(results, Exception):
+                        channel_errors[emb_type] = str(results)[:300]
                         self.logger.warning(f"⚠️ {emb_type} failed: {results}")
                         continue
 
@@ -908,7 +940,7 @@ class RAGService:
                     chunk_results = await self._search_chunks_by_embedding(
                         query_embedding=text_embedding,
                         workspace_id=workspace_id,
-                        limit=top_k * 3
+                        limit=candidate_limit
                     )
 
                     for chunk in chunk_results:
@@ -944,6 +976,7 @@ class RAGService:
                             self.logger.warning(f"Cross-reference expansion failed: {xref_e}")
 
                 except Exception as e:
+                    channel_errors['chunk'] = str(e)[:300]
                     self.logger.warning(f"⚠️ Chunk search failed: {e}")
 
             # ============================================================================
@@ -957,7 +990,7 @@ class RAGService:
                     product_results = await self._search_products_by_embedding(
                         query_embedding=text_embedding,
                         workspace_id=workspace_id,
-                        limit=top_k * 2
+                        limit=candidate_limit
                     )
 
                     for product in product_results:
@@ -968,6 +1001,7 @@ class RAGService:
                     self.logger.info(f"✅ Product search: {len(direct_product_scores)} products")
 
                 except Exception as e:
+                    channel_errors['product'] = str(e)[:300]
                     self.logger.warning(f"⚠️ Product search failed: {e}")
 
             # ============================================================================
@@ -981,8 +1015,8 @@ class RAGService:
                 fulltext_results = await self._search_products_fulltext(
                     query=query,
                     workspace_id=workspace_id,
-                    limit=top_k * 2
-                )
+                    limit=candidate_limit
+                ) if has_text_query else []
 
                 for result in fulltext_results:
                     product_id = result.get('product_id')
@@ -996,6 +1030,7 @@ class RAGService:
                     self.logger.info(f"✅ Fulltext search: {len(fulltext_product_scores)} products")
 
             except Exception as e:
+                channel_errors['fulltext'] = str(e)[:300]
                 self.logger.warning(f"⚠️ Fulltext search failed: {e}")
 
             # ============================================================================
@@ -1025,6 +1060,7 @@ class RAGService:
 
                     self.logger.info(f"✅ Page search: {len(page_scores)} pages")
                 except Exception as e:
+                    channel_errors['page'] = str(e)[:300]
                     self.logger.warning(f"⚠️ Page search failed: {e}")
 
             # ============================================================================
@@ -1178,6 +1214,15 @@ class RAGService:
                 except Exception as e:
                     self.logger.warning(f"⚠️ Page→Product mapping failed: {e}")
 
+            if allowed_product_ids is not None:
+                product_scores = {
+                    pid: sc for pid, sc in product_scores.items() if pid in allowed_product_ids
+                }
+                # A product that satisfies the filters is a candidate even when no limited
+                # channel reached it; it is then ranked by whatever signal it has.
+                for pid in allowed_product_ids:
+                    product_scores.setdefault(pid, {})
+
             self.logger.info(f"🎯 Total products with scores: {len(product_scores)}")
 
             # ============================================================================
@@ -1192,7 +1237,7 @@ class RAGService:
                 for i in range(0, len(product_ids), batch_size):
                     batch_ids = product_ids[i:i + batch_size]
                     products_response = self.supabase_client.client.table('products')\
-                        .select('id, name, description, metadata, workspace_id, source_document_id')\
+                        .select('id, name, description, metadata, attributes, category, workspace_id, source_document_id')\
                         .in_('id', batch_ids)\
                         .eq('workspace_id', workspace_id)\
                         .execute()
@@ -1231,50 +1276,7 @@ class RAGService:
                     if active_weight_sum > 0:
                         weighted_score = weighted_score / active_weight_sum
 
-                    # Apply material filters as soft boosts
-                    filter_boost = 0.0
-                    if material_filters:
-                        product_metadata = product.get('metadata') or {}
-
-                        for filter_key, filter_value in material_filters.items():
-                            # Handle nested paths like "appearance.colors"
-                            if '.' in filter_key:
-                                path_parts = filter_key.split('.')
-                                product_value = product_metadata
-                                for part in path_parts:
-                                    if isinstance(product_value, dict):
-                                        product_value = product_value.get(part)
-                                    else:
-                                        product_value = None
-                                        break
-                            else:
-                                product_value = product_metadata.get(filter_key)
-
-                            if product_value is None:
-                                continue
-
-                            # Handle dict values with 'value' key
-                            if isinstance(product_value, dict) and 'value' in product_value:
-                                product_value = product_value['value']
-
-                            # Handle list values
-                            if isinstance(product_value, list):
-                                product_value = ' '.join(str(v) for v in product_value)
-
-                            # Use contains matching
-                            product_value_str = str(product_value).lower()
-                            if isinstance(filter_value, list):
-                                matched = any(str(v).lower() in product_value_str or product_value_str in str(v).lower()
-                                            for v in filter_value)
-                                if matched:
-                                    filter_boost += 0.15
-                            else:
-                                filter_value_str = str(filter_value).lower()
-                                if filter_value_str in product_value_str or product_value_str in filter_value_str:
-                                    filter_boost += 0.15
-
-                    # Add filter boost to weighted score
-                    final_score = weighted_score + filter_boost
+                    final_score = weighted_score
 
                     # Adaptive threshold: if most embedding sources failed/timed out,
                     # lower the threshold so fulltext/keyword results can still surface.
@@ -1289,14 +1291,16 @@ class RAGService:
                             "product_name": product.get('name'),
                             "description": product.get('description'),
                             "metadata": product.get('metadata', {}),
+                            "attributes": product.get('attributes') or {},
+                            "category": product.get('category'),
                             "workspace_id": product.get('workspace_id'),
                             "source_document_id": product.get('source_document_id'),
                             "score": final_score,
                             **score_breakdown,  # Include scores from all sources
-                            "filter_boost": filter_boost,
                             "search_type": "hybrid_multi_source",
                             "sources_used": {
-                                "visual": enable_visual and len(image_scores) > 0,
+                                "visual": any('visual' in v for v in image_scores.values()),
+                                "image_aspects": enable_visual and len(image_scores) > 0,
                                 "chunk": enable_chunk and len(chunk_scores) > 0,
                                 "product": enable_product and len(direct_product_scores) > 0,
                                 "keyword": enable_keyword,
@@ -1328,6 +1332,16 @@ class RAGService:
 
             else:
                 self.logger.warning("⚠️ No product scores available, returning empty results")
+
+            attempted_channels = sum([
+                bool(enable_visual and (visual_embedding or understanding_embedding or image_query_vecs)),
+                bool(enable_chunk and text_embedding),
+                bool(enable_product and text_embedding),
+                bool(has_text_query),
+                bool(page_embedding),
+            ])
+            if not results and channel_errors and len(channel_errors) >= max(attempted_channels, 1):
+                raise SearchFailedError(f"every search channel failed: {channel_errors}")
 
             # Apply metadata prototype validation scoring (if available)
             if material_filters and results:
@@ -1377,20 +1391,87 @@ class RAGService:
                         "products": len(direct_product_scores) if enable_product else 0
                     }
                 },
-                "material_filters_applied": material_filters if material_filters else None,
+                "material_filters_applied": filters_applied or None,
+                "material_filters_ignored": filters_ignored or None,
+                "channels_failed": channel_errors or None,
                 "metadata_validation_enabled": True,
                 "query": query,
                 "search_type": "hybrid_multi_source"
             }
 
+        except SearchFailedError:
+            raise
         except Exception as e:
             self.logger.error(f"Multi-vector search failed: {e}", exc_info=True)
-            return {
-                "results": [],
-                "error": str(e),
-                "total_results": 0,
-                "processing_time": time.time() - start_time if 'start_time' in locals() else 0
-            }
+            raise SearchFailedError(f"multi-vector search failed: {e}") from e
+
+    #: Upper bound on products a filter may admit as candidates in one search.
+    FILTER_CANDIDATE_CAP = 1000
+
+    async def _filtered_product_ids(
+        self,
+        workspace_id: str,
+        material_filters: Optional[Dict[str, Any]],
+    ) -> "tuple[Optional[set], Dict[str, List[str]], Dict[str, Any]]":
+        """Products in this workspace that satisfy every filter with a predicate form.
+
+        Returns `(ids, applied, ignored)`; `ids` is None when no filter applies. A
+        failing predicate query raises: an unapplied filter would widen the result
+        set silently, which is the opposite of what the caller asked for.
+        """
+        from app.services.search.search_filters import (
+            CATEGORY_FILTER_KEYS,
+            build_filter_predicates,
+            filter_values,
+            predicate_tree,
+        )
+
+        if not material_filters:
+            return None, {}, {}
+
+        category_terms = sorted({
+            v for k, raw in material_filters.items() if k in CATEGORY_FILTER_KEYS
+            for v in filter_values(raw)
+        })
+        category_ids_by_key: Dict[str, str] = {}
+        try:
+            if category_terms:
+                resp = await asyncio.to_thread(
+                    self.supabase_client.client.table('material_categories')
+                    .select('id, category_key')
+                    .in_('category_key', category_terms)
+                    .execute
+                )
+                category_ids_by_key = {
+                    r['category_key']: str(r['id']) for r in (resp.data or [])
+                    if r.get('category_key') and r.get('id')
+                }
+
+            predicates, applied, ignored = build_filter_predicates(
+                material_filters, category_ids_by_key,
+            )
+            tree = predicate_tree(predicates)
+            if tree is None:
+                return None, applied, ignored
+
+            resp = await asyncio.to_thread(
+                self.supabase_client.client.table('products')
+                .select('id')
+                .eq('workspace_id', workspace_id)
+                .or_(tree)
+                .limit(self.FILTER_CANDIDATE_CAP)
+                .execute
+            )
+        except Exception as e:
+            raise SearchFailedError(f"filter predicate query failed: {e}") from e
+
+        ids = {r['id'] for r in (resp.data or []) if r.get('id')}
+        if len(ids) >= self.FILTER_CANDIDATE_CAP:
+            self.logger.warning(
+                f"⚠️ Filters admit ≥{self.FILTER_CANDIDATE_CAP} products; ranking the first "
+                f"{self.FILTER_CANDIDATE_CAP} by id"
+            )
+        return ids, applied, ignored
 
     async def _calculate_metadata_validation_boost(
         self,
@@ -1536,7 +1617,7 @@ class RAGService:
             if mat_cat:
                 text_parts.append(('material_category', mat_cat, 2.0))
 
-            colors = metadata.get('available_colors')
+            colors = metadata.get('color')
             if isinstance(colors, list):
                 text_parts.append(('colors', ' '.join(str(c) for c in colors), 1.5))
 
@@ -1640,11 +1721,29 @@ class RAGService:
                     "processing_time": time.time() - start_time
                 }
 
-            # Get all products for the workspace
-            products_response = self.supabase_client.client.table('products')\
-                .select('id, name, description, metadata, workspace_id, source_document_id')\
-                .eq('workspace_id', workspace_id)\
-                .execute()
+            # Attribute / category / column filters run as SQL predicates; only the keys
+            # with no predicate form are matched against `metadata` below.
+            allowed_ids, filters_applied, metadata_filters = await self._filtered_product_ids(
+                workspace_id, material_filters,
+            )
+            if match_mode != "AND" and filters_applied:
+                raise SearchFailedError(
+                    "match_mode='OR' is not supported for attribute/category filters"
+                )
+            if allowed_ids is not None and not allowed_ids:
+                return {
+                    "results": [],
+                    "total_results": 0,
+                    "processing_time": time.time() - start_time,
+                    "filters": material_filters,
+                    "match_mode": match_mode,
+                }
+            products_query = self.supabase_client.client.table('products')\
+                .select('id, name, description, metadata, attributes, category, workspace_id, source_document_id')\
+                .eq('workspace_id', workspace_id)
+            if allowed_ids is not None:
+                products_query = products_query.in_('id', sorted(allowed_ids))
+            products_response = products_query.execute()
 
             if not products_response.data:
                 return {
@@ -1662,7 +1761,7 @@ class RAGService:
 
                 # Check each filter
                 filter_results = []
-                for key, value in material_filters.items():
+                for key, value in metadata_filters.items():
                     product_value = product_metadata.get(key)
 
                     if product_value is None:
@@ -1700,10 +1799,12 @@ class RAGService:
                         )
 
                 # Apply AND/OR logic
-                if match_mode == "AND":
-                    matches = all(filter_results) if filter_results else False
+                if not filter_results:
+                    matches = allowed_ids is not None
+                elif match_mode == "AND":
+                    matches = all(filter_results)
                 else:  # OR
-                    matches = any(filter_results) if filter_results else False
+                    matches = any(filter_results)
 
                 if matches:
                     results.append({
@@ -1711,6 +1812,8 @@ class RAGService:
                         "product_name": product.get("name"),
                         "description": product.get("description"),
                         "metadata": product_metadata,
+                        "attributes": product.get("attributes") or {},
+                        "category": product.get("category"),
                         "workspace_id": product.get("workspace_id"),
                         "source_document_id": product.get("source_document_id"),
                         "search_type": "material_property"
@@ -1729,12 +1832,7 @@ class RAGService:
 
         except Exception as e:
             self.logger.error(f"Material property search failed: {e}", exc_info=True)
-            return {
-                "results": [],
-                "error": str(e),
-                "total_results": 0,
-                "processing_time": time.time() - start_time if 'start_time' in locals() else 0
-            }
+            raise SearchFailedError(f"material property search failed: {e}") from e
 
     async def image_similarity_search(
         self,
@@ -1862,12 +1960,7 @@ class RAGService:
 
         except Exception as e:
             self.logger.error(f"Image similarity search failed: {e}", exc_info=True)
-            return {
-                "results": [],
-                "error": str(e),
-                "total_results": 0,
-                "processing_time": time.time() - start_time if 'start_time' in locals() else 0
-            }
+            raise SearchFailedError(f"image similarity search failed: {e}") from e
 
     async def _generate_visual_embedding_for_search(self, image: 'Image') -> Optional[List[float]]:
         """
@@ -1931,7 +2024,9 @@ class RAGService:
                 "workspace_id is required to retrieve RAG context"
             )
 
-        embed = await self.embeddings_service.generate_text_embedding(query)
+        embed = await self.embeddings_service.generate_text_embedding(
+            query, input_type="query", workspace_id=workspace_id,
+        )
         if not embed.get("success"):
             raise ContextRetrievalError(
                 f"query embedding failed: {embed.get('error', 'unknown')}"
@@ -2536,9 +2631,7 @@ class RAGService:
                 return []
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Chunk search failed: {e}")
-            # Graceful degradation: return empty list
-            return []
+            raise SearchFailedError(f"chunk channel: {e}") from e
 
     async def _search_products_by_embedding(
         self,
@@ -2584,9 +2677,7 @@ class RAGService:
                 return []
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Product search failed: {e}")
-            # Graceful degradation: return empty list
-            return []
+            raise SearchFailedError(f"product channel: {e}") from e
 
     async def _search_products_fulltext(
         self,
@@ -2621,6 +2712,5 @@ class RAGService:
                 return []
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Fulltext search failed: {e}")
-            return []
+            raise SearchFailedError(f"fulltext channel: {e}") from e
 

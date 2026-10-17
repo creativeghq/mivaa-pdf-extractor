@@ -337,4 +337,11 @@ def get_metadata_validator(job_id: Optional[str] = None) -> MetadataPrototypeVal
     return _validator_instance
 
 
+def invalidate_prototype_cache() -> None:
+    """Drop the loaded vocabularies so the next validation re-reads the registry."""
+    if _validator_instance is not None:
+        _validator_instance._prototype_cache = {}
+        _validator_instance._cache_loaded = False
+
+
 

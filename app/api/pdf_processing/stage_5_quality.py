@@ -73,11 +73,14 @@ async def process_stage_5_quality(
             document_id=document_id,
             workspace_id=workspace_id,
         )
+        validation_results.setdefault('status', 'ok')
         logger.info(f"   Claude validation: {validation_results.get('validated', 0)} images validated")
-        logger.info(f"   Average quality improvement: {validation_results.get('avg_improvement', 0):.2f}")
     except CircuitBreakerError as cb_error:
         logger.warning(f"⚠️ Claude validation skipped (circuit breaker open): {cb_error}")
-        validation_results = {'validated': 0, 'avg_improvement': 0}
+        validation_results = {
+            'status': 'skipped', 'reason': f'circuit breaker open: {cb_error}',
+            'validated': None, 'avg_improvement': None,
+        }
 
     # A second reader for the products the extractor was least sure about: the rendered
     # page beside the extracted fields, one verdict per field with a reason (the GAIK
@@ -109,7 +112,7 @@ async def process_stage_5_quality(
 
     await tracker._sync_to_database(stage="quality_enhancement")
 
-    logger.info(f"📊 Progress updated: 100% (Stage 5 complete - {validation_results.get('validated', 0)} images validated)")
+    logger.info(f"📊 Progress updated: 100% (Stage 5 complete - claude validation {validation_results.get('status')})")
     
     # NOTE: Cleanup moved to admin panel cron job
     
@@ -121,7 +124,8 @@ async def process_stage_5_quality(
         "product_names": [p.name for p in catalog.products],
         "chunks_created": tracker.chunks_created,
         "images_processed": images_processed,
-        "claude_validations": validation_results.get('validated', 0),
+        "claude_validations": validation_results.get('validated'),
+        "claude_validation_status": validation_results.get('status'),
         "field_judgements": {k: v for k, v in field_judgements.items() if k != 'products'},
         "pages_processed": len(physical_pages),
         "pages_skipped": len([p for p in range(1, tracker.total_pages + 1) if p not in physical_pages]),

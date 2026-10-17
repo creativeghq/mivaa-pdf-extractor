@@ -11,13 +11,29 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
-from app.services.facets.facet_translator import is_ascii_english, translate_facet_values
+from app.services.facets.facet_translator import is_ascii_english, translate_facet_values_with_status
 from app.services.facets.facet_whitelist import capture_permissively, is_canonicalizable
 from app.services.metadata.field_registry import field_registry
 
 logger = logging.getLogger(__name__)
 
 _THRESHOLD = 0.92
+
+#: Longer strings are prose (descriptions, notes), never a facet value worth replaying.
+_MAX_RAW_VALUE_CHARS = 300
+
+
+def _raw_strings(value: Any) -> List[str]:
+    """The replayable raw strings in a metadata value: scalars and lists of scalars only."""
+    items = value if isinstance(value, (list, tuple)) else [value]
+    out: List[str] = []
+    for item in items:
+        if item is None or isinstance(item, (dict, list, tuple)):
+            continue
+        text = str(item).strip()
+        if text and len(text) <= _MAX_RAW_VALUE_CHARS and text not in out:
+            out.append(text)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -83,27 +99,29 @@ class FacetCanonicalizer:
         source: str,
         product_id: Optional[UUID] = None,
         workspace_id: Optional[str] = None,
+        reuse_existing: bool = True,
     ) -> CanonicalizedAttributes:
         # The allowlist lives in the DB (#347 phase 3.2) and _collect_pending reads it
         # synchronously, so it has to be in memory before we get there.
         await field_registry.ensure_loaded()
 
-        # ── 1. Collect canonicalizable (facet, raw, norm) triples ────────────
+        # ── 1. Canonicalizable triples, plus EVERY raw value for the lossless raw map ──
         pending = self._collect_pending(raw_metadata)
-        if not pending:
+        raw_all = collect_raw_attributes(raw_metadata)
+        if not pending and not raw_all:
             return CanonicalizedAttributes(attributes={}, attributes_raw={}, resolutions=[])
 
         # ── 2. Diff against existing product if product_id supplied ──────────
         existing_attrs, existing_raw = await self._load_existing(product_id)
 
-        # `reused`: (facet, raw, norm) we already canonicalized in a prior run.
-        # Their canonical comes from existing_attrs; no RPC / embed / translate needed.
+        # Reuse a prior canonical only when it provably came from this raw: a scalar facet
+        # whose recorded raws are exactly [raw]. A list facet stores no per-raw map.
         reused: List[Tuple[str, str, str, str]] = []      # (facet, raw, norm, canonical)
         fresh: List[Tuple[str, str, str]] = []
         for facet, raw, norm in pending:
             prior_raws = existing_raw.get(facet, []) if existing_raw else []
             prior_canonical = self._lookup_prior_canonical(existing_attrs, facet)
-            if raw in prior_raws and prior_canonical is not None:
+            if reuse_existing and prior_raws == [raw] and prior_canonical is not None:
                 reused.append((facet, raw, norm, prior_canonical))
             else:
                 fresh.append((facet, raw, norm))
@@ -122,7 +140,7 @@ class FacetCanonicalizer:
 
         # ── 3. Build canonical + raw maps ────────────────────────────────────
         attributes = self._build_canonical_map(raw_metadata, resolutions)
-        attributes_raw = self._merge_raw_maps(existing_raw, pending)
+        attributes_raw = self._merge_raw_maps(existing_raw, pending, raw_all)
 
         return CanonicalizedAttributes(
             attributes=attributes,
@@ -179,33 +197,27 @@ class FacetCanonicalizer:
         existing_attrs: Dict[str, Any],
         facet: str,
     ) -> Optional[str]:
-        """For list-valued facets we can't know which canonical a specific raw
-        produced — only that the raw was seen and the facet had at least one
-        canonical. We return the first canonical so reuse remains stable.
-        Callers that re-resolve from raw aliases would be more precise but
-        require a per-alias map, which we don't store.
+        """The stored canonical of a SCALAR facet, else None.
+
+        A list facet records no per-raw canonical, so its raws are always re-resolved
+        (tier-1 alias hits keep that cheap) instead of all inheriting the first canonical.
         """
         val = existing_attrs.get(facet)
-        if val is None:
-            return None
-        if isinstance(val, list):
-            return val[0] if val else None
-        if isinstance(val, str):
-            return val
-        return None
+        return val if isinstance(val, str) and val else None
 
     def _merge_raw_maps(
         self,
         existing_raw: Dict[str, List[str]],
         pending: List[Tuple[str, str, str]],
+        raw_all: Optional[Dict[str, List[str]]] = None,
     ) -> Dict[str, List[str]]:
         merged: Dict[str, List[str]] = {}
-        # Start from existing (preserve prior raw values across runs)
         for facet, vals in (existing_raw or {}).items():
             if isinstance(vals, list):
                 merged[facet] = [v for v in vals if isinstance(v, str)]
-        # Append new raws (dedupe)
-        for facet, raw, _norm in pending:
+        new_raws = [(facet, raw) for facet, raw, _norm in pending]
+        new_raws += [(facet, raw) for facet, raws in (raw_all or {}).items() for raw in raws]
+        for facet, raw in new_raws:
             bucket = merged.setdefault(facet, [])
             if raw not in bucket:
                 bucket.append(raw)
@@ -248,7 +260,12 @@ class FacetCanonicalizer:
         translation_inputs = [(facet, raw) for (facet, raw, norm) in fresh if not is_ascii_english(norm)]
         translations: Dict[Tuple[str, str], str] = {}
         if translation_inputs:
-            translations = await translate_facet_values(translation_inputs)
+            translations, translation_degraded = await translate_facet_values_with_status(
+                translation_inputs)
+            if translation_degraded:
+                # An untranslated value is rejected by the RPC's non-ASCII guard: that facet
+                # is missing, not absent.
+                degraded = True
 
         # Build a working list (facet, raw, effective_normalized) post-pretranslate.
         # If pretranslate produced an English term for this (facet, raw), use it
@@ -454,16 +471,15 @@ async def resolve_query_term(
 def collect_raw_attributes(raw_metadata: Dict[str, Any]) -> Dict[str, List[str]]:
     """Build the attributes_raw map from metadata WITHOUT any embedding/RPC.
 
-    Pure-local fallback for ingest paths when canonicalization times out or
-    errors: products.attributes_raw is the lossless contract that lets a later
-    re-canonicalization pass replay — losing it means the product is
-    permanently unfacetable without a full re-ingest. Mirrors
-    FacetCanonicalizer._collect_pending's whitelist rules.
+    `attributes_raw` keeps EVERY extracted key, canonicalizable or not, so a field an
+    operator later marks `canonicalize=true` replays without a re-ingest. Eligibility
+    applies only when promoting to `attributes`. Scalars and lists of scalars only;
+    structural keys (ids, prose, money) are left out by `capture_permissively`.
     """
     # Exactly ONE of these rules applies, never both.
     if field_registry.is_loaded:
         def keep(k: str, v: Any) -> bool:
-            return v is not None and is_canonicalizable(k)
+            return v is not None and (is_canonicalizable(k) or capture_permissively(k, v))
     else:
         logger.warning(
             "Field registry not loaded — collect_raw_attributes is over-capturing into "
@@ -473,18 +489,11 @@ def collect_raw_attributes(raw_metadata: Dict[str, Any]) -> Dict[str, List[str]]
 
     raw_map: Dict[str, List[str]] = {}
     for key, value in raw_metadata.items():
-        if not keep(key, value):
+        if not isinstance(key, str) or key.startswith("_") or not keep(key, value):
             continue
-        raw_values = value if isinstance(value, list) else [value]
-        for rv in raw_values:
-            if rv is None:
-                continue
-            raw_str = str(rv).strip()
-            if not raw_str:
-                continue
-            bucket = raw_map.setdefault(key, [])
-            if raw_str not in bucket:
-                bucket.append(raw_str)
+        strings = _raw_strings(value)
+        if strings:
+            raw_map[key] = strings
     return raw_map
 
 
@@ -496,6 +505,7 @@ async def canonicalize_product_attributes(
     product_id: Optional[UUID] = None,
     embedding_service: Optional[Any] = None,
     workspace_id: Optional[str] = None,
+    reuse_existing: bool = True,
 ) -> CanonicalizedAttributes:
     """One-shot helper for ingest paths. Instantiates RealEmbeddingsService if
     one wasn't supplied. Failures degrade gracefully — returns a result with
@@ -508,6 +518,7 @@ async def canonicalize_product_attributes(
         canonicalizer = FacetCanonicalizer(supabase, embedding_service)
         return await canonicalizer.canonicalize_product(
             raw_metadata, source=source, product_id=product_id, workspace_id=workspace_id,
+            reuse_existing=reuse_existing,
         )
     except Exception as e:
         logger.error(f"canonicalize_product_attributes failed (source={source}): {e}")

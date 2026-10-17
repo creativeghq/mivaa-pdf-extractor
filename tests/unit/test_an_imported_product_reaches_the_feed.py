@@ -74,10 +74,30 @@ class TestCategoryResolvesToAnId:
 
     def test_load_category_units_still_returns_exactly_two_maps(self):
         # stage_4_products unpacks two; a third breaks it the moment the module loads.
-        assert _cu.load_category_units(object()) == ({}, {})
+        class _Resp:
+            data = [{"id": "id-tiles", "category_key": "tiles", "default_unit": "m2",
+                     "controlled_vocab": ["floor_tile"], "vocab_aliases": ["tile"]}]
 
-    def test_the_registry_loader_fails_soft_to_three_empty_maps(self):
-        assert _cu.load_category_registry(object()) == ({}, {}, {})
+        class _Q:
+            def table(self, _name): return self
+            def select(self, _cols): return self
+            def eq(self, *_a): return self
+            def execute(self): return _Resp()
+
+        assert _cu.load_category_units(_Q()) == (
+            {"tiles": "m2"}, {"floor_tile": "tiles", "tile": "tiles"})
+
+    def test_an_unreadable_registry_raises_instead_of_resolving_everything_to_pcs(self):
+        import pytest
+        with pytest.raises(_cu.CategoryRegistryUnavailable):
+            _cu.load_category_registry(object())
+
+    def test_only_a_successful_read_is_cached(self):
+        import pytest
+        _cu.invalidate_category_registry()
+        with pytest.raises(_cu.CategoryRegistryUnavailable):
+            _cu.get_category_registry(object())
+        assert _cu._CACHE is None
 
 
 class TestTheImportWritesWhatTheFeedReads:

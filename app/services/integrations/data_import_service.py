@@ -2,8 +2,10 @@
 
 import logging
 import os
-from typing import Dict, List, Any, Optional
-from datetime import datetime
+import re
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Dict, List, Any, Optional, Tuple
 
 
 def _env_int(name: str, default: int, minimum: int = 1) -> int:
@@ -18,10 +20,8 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
     return value if value >= minimum else default
 from app.config import get_settings
 from app.services.core.supabase_client import get_supabase_client
-from app.services.tracking.checkpoint_recovery_service import checkpoint_recovery_service, ProcessingStage
 from app.services.tracking.xml_import_stages import XmlImportStage, get_xml_import_progress
 from app.services.images.image_download_service import ImageDownloadService
-from app.services.images.image_processing_service import ImageProcessingService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.chunking.unified_chunking_service import UnifiedChunkingService, ChunkingConfig, ChunkingStrategy
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
@@ -30,45 +30,106 @@ from app.services.products.material_quota import material_quota_remaining_async
 import sentry_sdk
 from app.utils.text_fold import fold_model_token
 from app.services.products.category_units import (
-    load_category_registry, resolve_category_id, resolve_default_unit,
+    CategoryRegistryUnavailable, get_category_registry, resolve_category_id, resolve_default_unit,
 )
 from app.utils.price_parsing import parse_price
 
-_CATEGORY_UNITS = None
-_VOCAB_TO_CATEGORY = None
-_CATEGORY_IDS = None
+
+def _default_unit_for(material_category, supabase):
+    """Raises CategoryRegistryUnavailable when `material_categories` cannot be read."""
+    units, vocab, _ids = get_category_registry(supabase)
+    return resolve_default_unit(material_category, units, vocab)
 
 
-def _load_registry(supabase=None):
-    global _CATEGORY_UNITS, _VOCAB_TO_CATEGORY, _CATEGORY_IDS
-    if _CATEGORY_UNITS is None and supabase is not None:
-        _CATEGORY_UNITS, _VOCAB_TO_CATEGORY, _CATEGORY_IDS = load_category_registry(supabase)
-
-
-def _default_unit_for(material_category, supabase=None):
-    _load_registry(supabase)
-    return resolve_default_unit(material_category, _CATEGORY_UNITS, _VOCAB_TO_CATEGORY)
-
-
-def _category_id_for(material_category, supabase=None):
-    _load_registry(supabase)
-    return resolve_category_id(material_category, _CATEGORY_IDS, _VOCAB_TO_CATEGORY)
+def _category_id_for(material_category, supabase):
+    """Raises CategoryRegistryUnavailable when `material_categories` cannot be read."""
+    _units, vocab, ids = get_category_registry(supabase)
+    return resolve_category_id(material_category, ids, vocab)
 
 logger = logging.getLogger(__name__)
 
 
-#: Keys a supplier feed may never set: identity, tenancy, provenance, and the two fields the
-#: platform derives rather than accepts. Invariant 8 wants an allowlisted payload; the
-#: product_metadata literal below IS that allowlist, and this set is what stops the feed's own
-#: blob from being spread over it. Kept narrow on purpose — a supplier sending `finish` or
-#: `pei_rating` is exactly what an import is for. (audit #17 M4-5)
+#: Keys a supplier feed may never set: identity, tenancy, provenance, and the fields the
+#: platform derives rather than accepts (invariant 8).
 _SUPPLIER_RESERVED_METADATA_KEYS = frozenset({
     'workspace_id', 'user_id', 'created_by', 'owner_id',
     'id', 'product_id_internal', 'source_job_id', 'import_job_id', 'import_batch_id',
     'extracted_from', 'extraction_date', 'source_type', 'created_from_type',
     'status', 'is_verified', 'is_locked', 'credits',
-    'external_sku_folded',
+    'external_sku_folded', 'import_identity', 'facet_canonicalization',
 })
+
+#: Descriptive keys a caller may pass at top level instead of inside `metadata`.
+_TOP_LEVEL_FACET_KEYS = ('color', 'designer', 'collection', 'finish', 'material', 'size')
+
+#: `products.source_type` CHECK values. Any other ingest path records its provenance in
+#: `created_from_type` only.
+_SOURCE_TYPES = frozenset({'pdf_processing', 'xml_import', 'web_scraping', 'csv_import'})
+
+#: Columns a supplier feed owns. A re-import rewrites these and nothing else, so status,
+#: curated category and the operator's own edits survive a refresh.
+_SUPPLIER_OWNED_COLUMNS = frozenset({
+    'name', 'description', 'long_description', 'mpn', 'barcode', 'net_mass_kg',
+    'warranty', 'country_of_origin',
+    'cost', 'cost_currency', 'cost_source', 'cost_updated_at',
+    'external_sku', 'external_sku_folded', 'import_identity',
+    'source_job_id', 'import_batch_id', 'source_type', 'updated_at',
+})
+
+_ISO2_RE = re.compile(r'^[A-Z]{2}$')
+
+
+class ImportRowError(ValueError):
+    """A row the importer refuses, with the reason the operator reads."""
+
+
+def source_type_for(source: str) -> Optional[str]:
+    """The CHECK-constrained `products.source_type` for an ingest path, or None."""
+    return source if source in _SOURCE_TYPES else None
+
+
+def import_identity_for(
+    factory_name: Optional[str],
+    external_sku_folded: Optional[str],
+    product_name: Optional[str],
+    *,
+    allow_name_identity: bool,
+) -> Optional[str]:
+    """Supplier namespace + folded SKU; else (feeds only) namespace + folded name."""
+    namespace = fold_model_token(factory_name or '') or 'UNBRANDED'
+    if external_sku_folded:
+        return f"{namespace}|sku:{external_sku_folded}"
+    if allow_name_identity:
+        folded_name = fold_model_token(product_name or '')
+        if folded_name:
+            return f"{namespace}|name:{folded_name}"
+    return None
+
+
+def resolve_money(raw: Any, hint_currency: Optional[str]) -> Tuple[Decimal, str]:
+    """(amount, ISO currency) for a feed price, or ImportRowError when it is not unambiguous."""
+    text = str(raw).strip()
+    amount, stated = parse_price(text)
+    _, hinted = parse_price(None, hint_currency)
+    if amount is None or amount < 0:
+        raise ImportRowError(f"price '{text}' is not a number")
+    if stated and hinted and stated != hinted:
+        raise ImportRowError(f"price '{text}' is in {stated} but the feed's currency says {hinted}")
+    if '¥' in text and not hinted:
+        raise ImportRowError(f"price '{text}': ¥ is JPY or CNY — map or set a currency")
+    currency = stated or hinted
+    if not currency:
+        raise ImportRowError(f"price '{text}' has no currency — map a currency field or set a default")
+    return amount, currency
+
+
+def derive_import_outcome(processed: int, failed: int, skipped: int) -> Tuple[str, str]:
+    """(data_import_jobs.status, outcome) from the row results — the one place this is decided."""
+    if processed == 0:
+        return 'failed', 'failed'
+    if failed or skipped:
+        return 'completed', 'partial'
+    return 'completed', 'complete'
 
 
 class DataImportService:
@@ -76,38 +137,23 @@ class DataImportService:
 
     def __init__(self, workspace_id: str = None):
         supabase_wrapper = get_supabase_client()
-        self.supabase = supabase_wrapper.client   # sync client (legacy, kept for compatibility)
-        self.db = supabase_wrapper.async_client   # async façade — use in all async methods
+        self.supabase_wrapper = supabase_wrapper
+        self.supabase = supabase_wrapper.client
+        self.db = supabase_wrapper.async_client
         self.image_downloader = ImageDownloadService()
-        # 5-product batches keep peak memory low (≤25 images in flight per batch)
-        # and avoid piling requests against cold HuggingFace endpoints. Tunable
-        # via env vars for ops flexibility without redeploy.
         self.batch_size = _env_int('XML_IMPORT_BATCH_SIZE', 5)
         self.max_concurrent_images = _env_int('XML_IMPORT_MAX_CONCURRENT_IMAGES', 5)
-        # Retained for back-compat with callers that pass it, and deliberately NOT read as
-        # the tenant anywhere: every method that needs a workspace takes one as an argument.
-        # Reading this instead is audit #17 M4-8, and it was None at both call sites.
+        # Never read as the tenant: every method that needs a workspace takes one (audit #17 M4-8).
         self.workspace_id = workspace_id
+        self._bg_job_id: Optional[str] = None
 
-        # ✅ Initialize chunking service for quality scoring and smart chunking
         self.chunking_service = UnifiedChunkingService(ChunkingConfig(
             strategy=ChunkingStrategy.HYBRID,
             max_chunk_size=1000,
             min_chunk_size=100,
             overlap_size=100
         ))
-
-        # Image processor for classification and SLIG embeddings (lazy init)
-        self.image_processor = None
-
-        # Embedding service for inline text-embedding generation
         self.embedding_service = RealEmbeddingsService()
-
-    def _get_image_processor(self, workspace_id: str) -> ImageProcessingService:
-        """Get or create image processor for workspace."""
-        if not self.image_processor or self.image_processor.workspace_id != workspace_id:
-            self.image_processor = ImageProcessingService(workspace_id=workspace_id)
-        return self.image_processor
 
     async def _log_stage(
         self,
@@ -118,245 +164,166 @@ class DataImportService:
         items: int = None,
         error: str = None
     ) -> None:
-        """
-        Log stage progress with structured format for debugging.
-
-        Args:
-            job_id: Job ID
-            stage: Current processing stage
-            status: 'started', 'completed', or 'failed'
-            duration_ms: Duration in milliseconds (for completed stages)
-            items: Number of items processed (for completed stages)
-            error: Error message (for failed stages)
-        """
-        if status == "started":
-            logger.info(f"[{job_id}] Stage: {stage.value} | Status: started")
-        elif status == "completed":
-            msg = f"[{job_id}] Stage: {stage.value} | Status: completed"
+        """Log stage progress and mirror the stage onto the job's background_jobs row."""
+        if status == "failed":
+            logger.error(f"[{job_id}] Stage: {stage.value} | Status: failed | Error: {error}")
+        else:
+            msg = f"[{job_id}] Stage: {stage.value} | Status: {status}"
             if duration_ms is not None:
                 msg += f" | Duration: {duration_ms}ms"
             if items is not None:
                 msg += f" | Items: {items}"
             logger.info(msg)
-        elif status == "failed":
-            logger.error(f"[{job_id}] Stage: {stage.value} | Status: failed | Error: {error}")
 
-        # Update background_jobs with current stage and progress
+        if not self._bg_job_id:
+            return
         try:
-            progress = get_xml_import_progress(stage)
             await self.db.table('background_jobs').update({
                 'current_stage': stage.value,
-                'progress': progress,
+                'progress': get_xml_import_progress(stage),
                 'updated_at': datetime.utcnow().isoformat()
-            }).eq('id', job_id).execute()
+            }).eq('id', self._bg_job_id).execute()
         except Exception as e:
             logger.warning(f"Failed to update job stage: {e}")
 
     async def process_import_job(self, job_id: str, workspace_id: str) -> Dict[str, Any]:
-        """
-        Process an import job from start to finish.
+        """Process an import job (already claimed by the route) from its checkpoint to the end."""
+        # Ownership first and outside the try: a job id from another workspace must not reach
+        # the failure handler, which writes to the job.
+        job = await self._get_job(job_id, workspace_id)
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+        self._bg_job_id = job.get('background_job_id')
 
-        Args:
-            job_id: Import job ID
-            workspace_id: Workspace ID
-
-        Returns:
-            Processing result with statistics
-        """
-        # Sentry transaction for performance monitoring
         with sentry_sdk.start_transaction(op="xml_import", name="process_import_job") as transaction:
             transaction.set_tag("job_id", job_id)
             transaction.set_tag("workspace_id", workspace_id)
 
             try:
-                logger.info(f"🚀 Starting import job processing: {job_id}")
-
-                # ✅ Stage: INITIALIZED
                 await self._log_stage(job_id, XmlImportStage.INITIALIZED, "started")
-
-                sentry_sdk.add_breadcrumb(
-                    category="xml_import",
-                    message=f"Starting XML import job {job_id}",
-                    level="info"
-                )
-
-                # Get job details.
-                job = await self._get_job(job_id, workspace_id)
-                if not job:
-                    raise ValueError(f"Job {job_id} not found")
-
-                # Update job status to processing
-                await self._update_job_status(job_id, 'processing', started_at=datetime.utcnow())
-
-                # 🆕 Update background_jobs to 'processing'
+                await self._update_job_status(job_id, workspace_id, 'processing', started_at=datetime.utcnow())
                 await self._update_background_job_status(job_id, 'processing', started_at=datetime.utcnow())
 
-                # Products are stored in data_import_job_products (child table)
-                # and page-read per batch so we never hold more than `batch_size`
-                # products in memory at once. total_products is authoritative
-                # from the job row (set at import time by the edge function).
                 total_products = int(job.get('total_products') or 0)
                 if total_products <= 0:
                     raise ValueError(f"No products found for job {job_id}")
-
-                # ✅ Stage: PRODUCTS_PARSED
                 await self._log_stage(job_id, XmlImportStage.PRODUCTS_PARSED, "completed", items=total_products)
 
-                # Materials quota (#214): resolve the workspace's remaining new-material
-                # allowance once; create_product_from_payload consumes it and skips NEW
-                # inserts at 0. SKU re-imports update in place and stay unaffected — so
-                # a job is never refused up front (it may be a pure re-import).
+                # Materials quota (#214): consumed by NEW inserts only; re-imports update in place.
                 self._material_quota_remaining = await material_quota_remaining_async(self.db, workspace_id)
                 self._quota_skipped = 0
-                if self._material_quota_remaining == 0:
-                    logger.error(
-                        f"⛔ quota_exceeded: workspace {workspace_id} is at its materials plan "
-                        f"limit — only SKU re-imports will apply; new products will be skipped"
+
+                checkpoint = (job.get('metadata') or {}).get('checkpoint') or {}
+                start_batch = int(checkpoint.get('batch_index') or 0)
+                processed_count = int(checkpoint.get('processed') or 0)
+                failed_count = int(checkpoint.get('failed') or 0)
+                skipped_count = int(checkpoint.get('skipped') or 0)
+                if start_batch:
+                    logger.info(
+                        f"♻️ Resuming {job_id} at batch {start_batch} "
+                        f"({processed_count} processed, {failed_count} failed, {skipped_count} skipped)"
                     )
-
-                logger.info(f"📦 Processing {total_products} products in batches of {self.batch_size}")
-
-                transaction.set_data("total_products", total_products)
-                transaction.set_data("batch_size", self.batch_size)
-
-                # Check for existing checkpoint
-                last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
-                start_batch = 0
-                if last_checkpoint:
-                    start_batch = last_checkpoint.get('batch_index', 0)
-                    logger.info(f"♻️ Resuming from batch {start_batch}")
-
-                # Process in batches
-                processed_count = 0
-                failed_count = 0
 
                 for batch_index in range(start_batch, (total_products + self.batch_size - 1) // self.batch_size):
                     batch_start = batch_index * self.batch_size
                     batch_end = min(batch_start + self.batch_size, total_products)
                     batch = await self._fetch_products_batch(job_id, batch_start, batch_end - batch_start)
                     if batch is None:
-                        # audit #17 M4-7: `_fetch_products_batch` returned [] on a DB failure
-                        # and the loop treated an empty batch as skippable, so a job with
-                        # total_products > 0 completed with zero processed and zero failed —
-                        # a clean, successful, entirely empty import.
                         raise RuntimeError(
                             f"Could not read products {batch_start}-{batch_end} for job "
                             f"{job_id}. Failing the job rather than completing it short."
                         )
                     if not batch:
-                        logger.warning(
-                            f"   ⚠️ Empty batch at {batch_start}-{batch_end} for job {job_id} — skipping"
-                        )
+                        logger.warning(f"   ⚠️ Empty batch at {batch_start}-{batch_end} for job {job_id}")
                         continue
 
-                    logger.info(f"🔄 Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}")
-
-                    sentry_sdk.add_breadcrumb(
-                        category="xml_import",
-                        message=f"Processing batch {batch_index + 1}: products {batch_start + 1}-{batch_end}",
-                        level="info",
-                        data={"batch_index": batch_index + 1, "batch_size": len(batch)}
-                    )
-
-                    # Process batch
                     batch_result = await self._process_batch(
                         job_id=job_id,
                         workspace_id=workspace_id,
                         products=batch,
                         batch_index=batch_index,
-                        field_mappings=job.get('field_mappings', {})
+                        field_mappings=job.get('field_mappings') or {},
                     )
-
                     processed_count += batch_result['processed']
                     failed_count += batch_result['failed']
+                    skipped_count += batch_result['skipped']
 
-                    # Update progress
-                    progress = int((batch_end / total_products) * 100)
+                    await self._save_checkpoint(job_id, {
+                        'batch_index': batch_index + 1,
+                        'processed': processed_count,
+                        'failed': failed_count,
+                        'skipped': skipped_count,
+                    })
                     await self._update_job_progress(
                         job_id=job_id,
+                        workspace_id=workspace_id,
                         processed=processed_count,
                         failed=failed_count,
                         total=total_products,
                         stage=f'batch_{batch_index + 1}',
-                        progress_percent=progress
+                        progress_percent=int((batch_end / total_products) * 100),
                     )
 
-                    # Save checkpoint
-                    await checkpoint_recovery_service.save_checkpoint(
-                        job_id=job_id,
-                        stage=ProcessingStage.PRODUCTS_CREATED,
-                        data={
-                            'batch_index': batch_index + 1,
-                            'processed_count': processed_count,
-                            'failed_count': failed_count
-                        }
-                    )
-
-                    logger.info(f"✅ Batch {batch_index + 1} complete: {batch_result['processed']} processed, {batch_result['failed']} failed")
-
-                # audit #17 M4-7: every product the job claimed must be accounted for. This
-                # single assertion closes the whole silent-zero class on this path — a
-                # swallowed batch read, a skipped range, an off-by-one in the batch maths, a
-                # quota clamp that lost count — because all of them arrive here as a number
-                # that does not add up. Without it, the only signal was a completed job whose
-                # processed count nobody compared to anything.
-                accounted = processed_count + failed_count
+                # audit #17 M4-7: every declared product must be accounted for.
+                accounted = processed_count + failed_count + skipped_count
                 if accounted != total_products:
                     raise RuntimeError(
                         f"Import job {job_id} does not reconcile: {processed_count} processed "
-                        f"+ {failed_count} failed = {accounted}, but the job declared "
-                        f"{total_products} products. Refusing to mark it completed — "
-                        f"{total_products - accounted} product(s) were never seen."
+                        f"+ {failed_count} failed + {skipped_count} skipped = {accounted}, but the "
+                        f"job declared {total_products} products."
                     )
 
-                # Mark job as completed
+                final_status, outcome = derive_import_outcome(processed_count, failed_count, skipped_count)
+                summary = None
+                if outcome != 'complete':
+                    summary = (
+                        f"{failed_count} of {total_products} rows failed"
+                        + (f", {skipped_count} skipped (materials plan limit)" if skipped_count else "")
+                        + " — see the row history for each reason."
+                    )
+
+                availability = {'applied': False, 'reason': 'run was not complete'}
+                dropped = int((job.get('metadata') or {}).get('dropped_count') or 0)
+                if outcome == 'complete' and dropped == 0:
+                    availability = await self._apply_missing_from_feed_policy(job, workspace_id)
+
+                await self._merge_job_metadata(job_id, {
+                    'outcome': outcome,
+                    'skipped': skipped_count,
+                    'availability_policy': availability,
+                })
                 await self._update_job_status(
-                    job_id=job_id,
-                    status='completed',
+                    job_id, workspace_id,
+                    status='completed' if final_status == 'completed' else 'failed',
                     completed_at=datetime.utcnow(),
                     processed_products=processed_count,
-                    failed_products=failed_count
+                    failed_products=failed_count,
+                    error_message=summary,
                 )
 
-                # Collect chunk dedup metrics from chunking service
                 qm = self.chunking_service.quality_metrics
-                chunk_metrics = {
-                    'total_chunks_created': qm.total_chunks_created,
-                    'exact_duplicates_prevented': qm.exact_duplicates_prevented,
-                    'low_quality_rejected': qm.low_quality_rejected,
-                    'final_chunks': qm.final_chunks,
-                }
-                if qm.exact_duplicates_prevented > 0 or qm.low_quality_rejected > 0:
-                    logger.info(
-                        f"   📊 Chunk dedup: {qm.total_chunks_created} created → "
-                        f"{qm.final_chunks} final "
-                        f"({qm.exact_duplicates_prevented} deduped, {qm.low_quality_rejected} rejected)"
-                    )
-
-                # 🆕 Update background_jobs to 'completed'
                 await self._update_background_job_status(
                     job_id=job_id,
-                    status='completed',
+                    status=final_status,
                     completed_at=datetime.utcnow(),
                     progress_percent=100,
+                    error_message=summary,
                     metadata={
                         'total_products': total_products,
                         'processed': processed_count,
                         'failed': failed_count,
-                        'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0,
-                        'quality_metrics': chunk_metrics,
-                        # Explicit marker (#214): "quota clamped this import" is
-                        # distinguishable from "the feed only had N products".
-                        'quota_skipped': getattr(self, '_quota_skipped', 0),
+                        'skipped': skipped_count,
+                        'outcome': outcome,
+                        'completed_with_failures': outcome == 'partial',
+                        'quota_skipped': skipped_count,
+                        'quality_metrics': {
+                            'total_chunks_created': qm.total_chunks_created,
+                            'exact_duplicates_prevented': qm.exact_duplicates_prevented,
+                            'low_quality_rejected': qm.low_quality_rejected,
+                            'final_chunks': qm.final_chunks,
+                        },
                     }
                 )
-
-                if getattr(self, '_quota_skipped', 0):
-                    logger.error(
-                        f"⛔ quota_exceeded: {self._quota_skipped} new product(s) skipped in job "
-                        f"{job_id} — materials plan limit reached for workspace {workspace_id}"
-                    )
-                logger.info(f"🎉 Import job {job_id} completed: {processed_count}/{total_products} products processed")
 
                 try:
                     from app.services.core.endpoint_controller import endpoint_controller
@@ -364,112 +331,115 @@ class DataImportService:
                 except Exception as scale_err:
                     logger.warning(f"⚠️ scale_all_to_zero failed on XML import completion: {scale_err}")
 
-                # ── Factory propagation + enrichment trigger ─────────────────
-                # Re-use the same helper from the PDF pipeline
-                try:
-                    import os, httpx as _httpx
-                    _supabase_url = os.getenv("SUPABASE_URL", "")
-                    _service_key  = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-                    if _supabase_url and _service_key:
-                        # Collect all product IDs created in this job
-                        _pids_resp = self.supabase.table('products').select('id').eq('source_job_id', job_id).execute()
-                        _pids = [r['id'] for r in (_pids_resp.data or [])]
-                        if _pids:
-                            async with _httpx.AsyncClient(timeout=15) as _hc:
-                                _resp = await _hc.post(
-                                    f"{_supabase_url}/functions/v1/trigger-factory-enrichment",
-                                    json={
-                                        "workspace_id": workspace_id,
-                                        "product_ids": _pids,
-                                        "scope_column": "source_job_id",
-                                        "scope_value": job_id,
-                                    },
-                                    headers={"Authorization": f"Bearer {_service_key}"},
-                                )
-                                _d = _resp.json()
-                                logger.info(
-                                    f"🏭 Factory enrichment: propagated={_d.get('propagated', 0)}, "
-                                    f"queued_job={_d.get('queued_job_id') or 'none'}"
-                                )
-                except Exception as _fe:
-                    logger.warning(f"⚠️ Factory enrichment trigger (non-blocking): {_fe}")
+                if processed_count and self._bg_job_id:
+                    await self._post_import_enrichment(workspace_id)
 
-                # ── Rebuild gold-layer product relationship edges ────────────
-                # SQL rule-derived edges (whole workspace) + LLM text-stated edges
-                # over this job's products. Both non-blocking.
-                try:
-                    from app.services.products.product_relationship_service import ProductRelationshipService
-                    _rel_service = ProductRelationshipService(self.supabase)
-                    _edge_count = await _rel_service.rebuild_edges(workspace_id)
-                    logger.info(f"🔗 Product edges rebuilt (rules): {_edge_count} for workspace {workspace_id}")
-
-                    _job_pids_resp = self.supabase.table('products').select('id').eq(
-                        'source_job_id', job_id
-                    ).execute()
-                    _job_pids = [r['id'] for r in (_job_pids_resp.data or [])]
-                    if _job_pids:
-                        _llm_edges = await _rel_service.extract_llm_edges(
-                            workspace_id, product_ids=_job_pids, job_id=job_id
-                        )
-                        logger.info(f"🔗 Product edges extracted (LLM): {_llm_edges} for {len(_job_pids)} products")
-                except Exception as _ee:
-                    logger.warning(f"⚠️ Product edge rebuild (non-blocking): {_ee}")
-
-                # ✅ Stage: COMPLETED
                 await self._log_stage(job_id, XmlImportStage.COMPLETED, "completed", items=processed_count)
-
-                sentry_sdk.add_breadcrumb(
-                    category="xml_import",
-                    message=f"XML import job {job_id} completed successfully",
-                    level="info",
-                    data={
-                        "total_products": total_products,
-                        "processed": processed_count,
-                        "failed": failed_count,
-                        "completion_rate": (processed_count / total_products * 100) if total_products > 0 else 0
-                    }
-                )
-
                 transaction.set_status("ok")
-
                 return {
-                    'success': True,
+                    'success': final_status == 'completed',
                     'job_id': job_id,
+                    'outcome': outcome,
                     'total_products': total_products,
                     'processed': processed_count,
                     'failed': failed_count,
-                    'completion_rate': (processed_count / total_products * 100) if total_products > 0 else 0
+                    'skipped': skipped_count,
                 }
 
             except Exception as e:
                 logger.error(f"❌ Import job {job_id} failed: {e}", exc_info=True)
-
                 sentry_sdk.capture_exception(e)
                 transaction.set_status("internal_error")
-
-                # Mark job as failed
                 await self._update_job_status(
-                    job_id=job_id,
+                    job_id, workspace_id,
                     status='failed',
                     error_message=str(e),
                     completed_at=datetime.utcnow()
                 )
-
-                # 🆕 Update background_jobs to 'failed'
                 await self._update_background_job_status(
                     job_id=job_id,
                     status='failed',
                     error_message=str(e),
                     completed_at=datetime.utcnow()
                 )
-
                 try:
                     from app.services.core.endpoint_controller import endpoint_controller
                     await endpoint_controller.scale_all_to_zero(reason=f"xml_import_failed_{job_id}")
                 except Exception as scale_err:
                     logger.warning(f"⚠️ scale_all_to_zero failed on XML import failure: {scale_err}")
-
                 raise
+
+    async def _post_import_enrichment(self, workspace_id: str) -> None:
+        """Factory propagation and relationship edges over this run's products (non-blocking)."""
+        try:
+            pids_resp = await self.db.table('products').select('id') \
+                .eq('workspace_id', workspace_id).eq('source_job_id', self._bg_job_id).execute()
+            pids = [r['id'] for r in (pids_resp.data or [])]
+        except Exception as e:
+            logger.warning(f"⚠️ Could not list this run's products: {e}")
+            return
+        if not pids:
+            return
+        try:
+            import httpx as _httpx
+            _supabase_url = os.getenv("SUPABASE_URL", "")
+            _service_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+            if _supabase_url and _service_key:
+                async with _httpx.AsyncClient(timeout=15) as _hc:
+                    _resp = await _hc.post(
+                        f"{_supabase_url}/functions/v1/trigger-factory-enrichment",
+                        json={
+                            "workspace_id": workspace_id,
+                            "product_ids": pids,
+                            "scope_column": "source_job_id",
+                            "scope_value": self._bg_job_id,
+                        },
+                        headers={"Authorization": f"Bearer {_service_key}"},
+                    )
+                    _d = _resp.json()
+                    logger.info(f"🏭 Factory enrichment: propagated={_d.get('propagated', 0)}")
+        except Exception as _fe:
+            logger.warning(f"⚠️ Factory enrichment trigger (non-blocking): {_fe}")
+        try:
+            from app.services.products.product_relationship_service import ProductRelationshipService
+            _rel_service = ProductRelationshipService(self.supabase)
+            await _rel_service.rebuild_edges(workspace_id)
+            await _rel_service.extract_llm_edges(workspace_id, product_ids=pids, job_id=self._bg_job_id)
+        except Exception as _ee:
+            logger.warning(f"⚠️ Product edge rebuild (non-blocking): {_ee}")
+
+    async def _apply_missing_from_feed_policy(self, job: Dict[str, Any], workspace_id: str) -> Dict[str, Any]:
+        """Mark products an earlier run of THIS feed created, and this full run did not carry,
+        as discontinued by the supplier. Never deletes; refuses when most of the feed vanished."""
+        root = job.get('parent_job_id')
+        if not root or not self._bg_job_id:
+            return {'applied': False, 'reason': 'not a repeat run of a feed'}
+        lineage = await self.db.table('data_import_jobs').select('background_job_id') \
+            .eq('workspace_id', workspace_id).or_(f"id.eq.{root},parent_job_id.eq.{root}").execute()
+        prior_runs = [r['background_job_id'] for r in (lineage.data or [])
+                      if r.get('background_job_id') and r['background_job_id'] != self._bg_job_id]
+        if not prior_runs:
+            return {'applied': False, 'reason': 'no earlier run'}
+        missing_resp = await self.db.table('products').select('id') \
+            .eq('workspace_id', workspace_id).in_('source_job_id', prior_runs) \
+            .is_('discontinued_by_supplier_on', 'null').execute()
+        missing = [r['id'] for r in (missing_resp.data or [])]
+        if not missing:
+            return {'applied': True, 'marked': 0}
+        present_resp = await self.db.table('products').select('id', count='exact') \
+            .eq('workspace_id', workspace_id).eq('source_job_id', self._bg_job_id).limit(1).execute()
+        present = int(present_resp.count or 0)
+        if len(missing) > present:
+            logger.error(
+                f"Availability policy refused for job {job.get('id')}: {len(missing)} products "
+                f"missing vs {present} present — a truncated feed is likelier than a delisting."
+            )
+            return {'applied': False, 'reason': 'more products missing than present', 'missing': len(missing)}
+        today = datetime.now(timezone.utc).date().isoformat()
+        for i in range(0, len(missing), 200):
+            await self.db.table('products').update({'discontinued_by_supplier_on': today}) \
+                .eq('workspace_id', workspace_id).in_('id', missing[i:i + 200]).execute()
+        return {'applied': True, 'marked': len(missing)}
 
     async def _process_batch(
         self,
@@ -479,111 +449,53 @@ class DataImportService:
         batch_index: int,
         field_mappings: Dict[str, str]
     ) -> Dict[str, int]:
-        """
-        Process a batch of products.
-        
-        Args:
-            job_id: Import job ID
-            workspace_id: Workspace ID
-            products: List of product data
-            batch_index: Current batch index
-            field_mappings: Field mapping configuration
-            
-        Returns:
-            Dictionary with processed and failed counts
-        """
-        processed = 0
-        failed = 0
-        
+        """Process a batch; every row ends processed, failed or skipped, with its history row."""
+        processed = failed = skipped = 0
         for product in products:
             try:
-                # Apply field mappings to normalize product data
                 normalized_product = await self._normalize_product(product, field_mappings)
-                
-                # Download images if present
                 if normalized_product.get('images'):
-                    image_urls = normalized_product['images']
-                    downloaded_images = await self._download_images(image_urls, job_id, workspace_id)
-                    normalized_product['downloaded_images'] = downloaded_images
-                
-                # Queue for product creation pipeline
-                await self._queue_product_processing(
-                    job_id=job_id,
-                    workspace_id=workspace_id,
-                    product_data=normalized_product
+                    normalized_product['downloaded_images'] = await self._download_images(
+                        normalized_product['images'], job_id, workspace_id,
+                    )
+                product_id = await self.create_product_from_payload(
+                    workspace_id, normalized_product, source='xml_import', job_id=job_id,
                 )
-                
-                # Record in import history
+                if product_id is None:
+                    skipped += 1
+                    await self._record_import_history(
+                        job_id=job_id, source_data=product, normalized_data={},
+                        status='skipped', error_details='materials plan limit reached',
+                    )
+                    continue
                 await self._record_import_history(
-                    job_id=job_id,
-                    source_data=product,
-                    normalized_data=normalized_product,
-                    status='success'
+                    job_id=job_id, source_data=product, normalized_data=normalized_product,
+                    status='success', product_id=product_id,
                 )
-                
                 processed += 1
-                
             except Exception as e:
                 logger.error(f"❌ Failed to process product: {e}")
-                
-                # Record failure in import history
                 await self._record_import_history(
-                    job_id=job_id,
-                    source_data=product,
-                    normalized_data={},
-                    status='failed',
-                    error_details=str(e)
+                    job_id=job_id, source_data=product, normalized_data={},
+                    status='failed', error_details=str(e),
                 )
-                
                 failed += 1
-        
-        return {'processed': processed, 'failed': failed}
+        return {'processed': processed, 'failed': failed, 'skipped': skipped}
 
     async def _normalize_product(
         self,
         product: Dict[str, Any],
         field_mappings: Dict[str, str]
     ) -> Dict[str, Any]:
-        """
-        Normalize product data using field mappings.
-
-        Args:
-            product: Raw product data from XML
-            field_mappings: Field mapping configuration
-
-        Returns:
-            Normalized product data
-        """
-        # The product dict here is ALREADY canonical — the edge-function
-        # orchestrator resolved every field_mappings entry (raw XML tag →
-        # canonical target) and stored the finished product_data in
-        # data_import_job_products.
+        """The orchestrator already resolved every mapping; this only drops reserved keys."""
         normalized = {
             k: v for k, v in product.items()
             if k != 'metadata' and k not in _SUPPLIER_RESERVED_METADATA_KEYS
         }
-
         normalize_factory_keys(normalized)
-
-        # Ensure required fields exist
-        if 'name' not in normalized:
-            normalized['name'] = product.get('name', 'Unknown Product')
-
-        if 'factory_name' not in normalized:
-            normalized['factory_name'] = product.get('factory_name', 'Unknown Factory')
-
-        if 'material_category' not in normalized:
-            normalized['material_category'] = product.get('material_category', 'Unknown Category')
-
-        # Add metadata (also normalize any inner metadata blob the caller passed)
-        inner_meta = dict(product.get('metadata', {}))
+        inner_meta = dict(product.get('metadata') or {})
         normalize_factory_keys(inner_meta)
-        normalized['metadata'] = {
-            'source_type': 'xml_import',
-            'import_date': datetime.utcnow().isoformat(),
-            **inner_meta,
-        }
-
+        normalized['metadata'] = inner_meta
         return normalized
 
     async def _download_images(
@@ -592,41 +504,14 @@ class DataImportService:
         job_id: str,
         workspace_id: str
     ) -> List[Dict[str, Any]]:
-        """
-        Download images concurrently using ImageDownloadService.
-
-        Args:
-            image_urls: List of image URLs
-            job_id: Import job ID
-            workspace_id: Workspace ID
-
-        Returns:
-            List of downloaded image references
-        """
+        """Download images concurrently using ImageDownloadService."""
         if not image_urls:
             return []
-
-        logger.info(f"📥 Downloading {len(image_urls)} images")
-
-        # Download images using ImageDownloadService
-        downloaded_images = await self.image_downloader.download_images(
+        return await self.image_downloader.download_images(
             urls=image_urls,
             job_id=job_id,
             workspace_id=workspace_id,
             max_concurrent=self.max_concurrent_images
-        )
-
-        return downloaded_images
-
-    async def _queue_product_processing(
-        self,
-        job_id: str,
-        workspace_id: str,
-        product_data: Dict[str, Any]
-    ) -> None:
-        """Thin XML-import adapter over the shared single-product create core."""
-        await self.create_product_from_payload(
-            workspace_id, product_data, source='xml_import', job_id=job_id,
         )
 
     async def create_product_from_payload(
@@ -638,676 +523,533 @@ class DataImportService:
         job_id: Optional[str] = None,
         status: str = 'draft',
     ) -> Optional[str]:
-        """Shared single-product create core — the ONE place that turns a structured
-        payload into a searchable product row: canonical metadata → facet
-        canonicalization → Voyage text_embedding_1024 → image linking → optional
-        chunking. Called by the XML importer and the dealer "Add Product" flow (and,
-        as a follow-up, PDF Stage 4) so the embedding/canonicalization standard never
-        drifts across ingest paths.
-        """
+        """Shared single-product create core: canonical metadata → facet canonicalization →
+        Voyage text_embedding_1024 → image linking → optional chunking. Returns None only when
+        the materials quota skipped a NEW product; every refusal of the row raises."""
+        product_name = product_data.get('name', 'Unknown Product')
+        logger.info(f"📤 Creating product: {product_name}")
+        normalize_factory_keys(product_data)
+        is_feed = source == 'xml_import'
+
+        # Money is decided before anything is written: an ambiguous price refuses the row.
+        hint = product_data.get('currency') or (None if is_feed else 'EUR')
+        price = None
+        if product_data.get('price') not in (None, ''):
+            price = resolve_money(product_data['price'], hint)
+        cost = None
+        if product_data.get('supplier_cost') not in (None, ''):
+            cost = resolve_money(product_data['supplier_cost'], hint)
+
+        factory_obj = {}
+        for _f in ('factory_name', 'factory_group_name', 'address', 'city', 'country', 'postal_code',
+                   'phone', 'email', 'website', 'country_of_origin', 'founded_year', 'company_type',
+                   'linkedin_url', 'employee_count'):
+            _v = product_data.get(_f)
+            if _v and str(_v).strip() not in ('', 'Unknown Factory', 'n/a', 'N/A'):
+                factory_obj[_f] = _v
+
+        inner_meta = dict(product_data.get('metadata') or {})
+        normalize_factory_keys(inner_meta)
+        attributes_in = product_data.get('attributes')
+        if isinstance(attributes_in, dict):
+            inner_meta.update(attributes_in)
+        for k in _TOP_LEVEL_FACET_KEYS:
+            v = product_data.get(k)
+            if v not in (None, '') and inner_meta.get(k) in (None, ''):
+                inner_meta[k] = v
+
+        mat_cat = product_data.get('material_category')
+        supplier_meta = dict(inner_meta)
+        rejected = [k for k in supplier_meta if k in _SUPPLIER_RESERVED_METADATA_KEYS]
+        for k in rejected:
+            supplier_meta.pop(k, None)
+        if rejected:
+            logger.warning(
+                "   WARN supplier feed tried to set reserved metadata key(s) %s on '%s' — dropped",
+                rejected, product_name,
+            )
+        feed_unit = str(product_data.get('unit') or supplier_meta.get('unit') or '').strip()
+        _cat_id = None
+        _registry_error = None
         try:
-            product_name = product_data.get('name', 'Unknown Product')
-            logger.info(f"📤 Creating product: {product_name}")
-
-            # ── Defensive: normalize any factory aliases on the inbound row ──
-            normalize_factory_keys(product_data)
-
-            # ── Build canonical factory nested object ────────────────────
-            factory_obj = {}
-            _factory_fields = [
-                'factory_name', 'factory_group_name', 'address', 'city',
-                'country', 'postal_code', 'phone', 'email', 'website',
-                'country_of_origin', 'founded_year', 'company_type',
-                'linkedin_url', 'employee_count',
-            ]
-            for _f in _factory_fields:
-                _v = product_data.get(_f)
-                if _v and str(_v).strip() not in ('', 'Unknown Factory', 'n/a', 'N/A'):
-                    factory_obj[_f] = _v
-
-            # ── Build metadata (canonical location for all content fields) ─
-            # Normalize the inner metadata blob too, then spread.
-            inner_meta = dict(product_data.get('metadata', {}))
-            normalize_factory_keys(inner_meta)
-
-            mat_cat = product_data.get('material_category')
-            # audit #17 M4-5 / invariant 8. `**inner_meta` used to be spread LAST, over
-            # everything above it — so a supplier feed carrying a `workspace_id`,
-            # `import_job_id`, `unit` or `material_category` key silently rewrote the
-            # provenance and classification of the product being created.
-            supplier_meta = dict(inner_meta)
-            rejected = [k for k in supplier_meta if k in _SUPPLIER_RESERVED_METADATA_KEYS]
-            for k in rejected:
-                supplier_meta.pop(k, None)
-            if rejected:
-                logger.warning(
-                    "   WARN supplier feed tried to set reserved metadata key(s) %s on '%s' "
-                    "— dropped", rejected, product_name,
-                )
-
-            product_metadata = {
-                **supplier_meta,
-                "extracted_from": source,
-                "import_job_id": job_id,
-                "extraction_date": datetime.utcnow().isoformat(),
-                "workspace_id": workspace_id,
-                # Content fields — same schema as PDF/scraping
-                "material_category": mat_cat,
-                "unit": _default_unit_for(mat_cat, self.supabase),
-                "factory_name": product_data.get('factory_name'),
-                "factory_group_name": product_data.get('factory_group_name'),
-                "color": product_data.get('color'),
-                "colors": product_data.get('colors'),
-                "designer": product_data.get('designer'),
-                "collection": product_data.get('collection'),
-                "finish": product_data.get('finish'),
-                "material": product_data.get('material'),
-                "size": product_data.get('size'),
-            }
-            if factory_obj:
-                product_metadata['factory'] = factory_obj
-
-            # Every public surface reads the image off `metadata` (imageFromMetadata);
-            # _link_images_to_product writes document_images, which none of them query.
-            # pdf-tiles is public-read, so the URL is stable and safe to persist.
-            _hero = next(
-                (i.get('storage_url') for i in (product_data.get('downloaded_images') or [])
-                 if i.get('success') and i.get('storage_url')),
-                None,
-            )
-            if _hero:
-                product_metadata['image_url'] = _hero
-
-            # Build product record for database
-            product_record = {
-                "name": product_name,
-                # `or ''` guards against a JSON-null description (.get(...,'')
-                # only defaults a MISSING key; an explicit null returns None and
-                # None[:200] raises TypeError, failing an otherwise-valid product).
-                "description": (product_data.get('description') or '')[:200],
-                "long_description": (product_data.get('description') or '')[:5000],
-                "workspace_id": workspace_id,
-                "properties": {
-                    # Non-content / display fields only
-                    "price": product_data.get('price'),
-                    "dimensions": product_data.get('dimensions'),
-                    "size": product_data.get('size'),
-                    "import_source": source,
-                    "import_job_id": job_id,
-                    "auto_generated": True,
-                    "generation_timestamp": datetime.utcnow().isoformat()
-                },
-                "metadata": product_metadata,
-                "status": status,
-                "created_from_type": source,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }
-
-            # Columns a marketplace feed reads directly. `category_id` was never set at all,
-            # so <category> came out empty on every imported product and both Skroutz and
-            # BestPrice drop a product missing it.
+            if not feed_unit:
+                feed_unit = _default_unit_for(mat_cat, self.supabase)
             _cat_id = _category_id_for(mat_cat, self.supabase)
-            if _cat_id:
-                product_record['category_id'] = _cat_id
-            for _col, _src in (('mpn', 'mpn'), ('barcode', 'barcode')):
-                _v = product_data.get(_src)
-                if _v and str(_v).strip():
-                    product_record[_col] = str(_v).strip()
-            _weight = product_data.get('weight')
-            if _weight is not None and str(_weight).strip():
-                try:
-                    product_record['net_mass_kg'] = float(str(_weight).replace(',', '.').strip())
-                except (TypeError, ValueError):
-                    logger.warning(f"   WARN unparseable weight '{_weight}' for {product_name}")
+        except CategoryRegistryUnavailable as e:
+            # No unit and no category_id rather than `pcs` stated as fact.
+            _registry_error = str(e)[:200]
+            logger.error("   category registry unavailable for '%s': %s", product_name, e)
 
-            # Add source tracking fields
-            product_record['source_type'] = source
-            product_record['source_job_id'] = job_id
-            product_record['import_batch_id'] = f"{source}_{job_id}" if job_id else source
+        product_metadata = {
+            **supplier_meta,
+            "extracted_from": source,
+            "import_job_id": job_id,
+            "extraction_date": datetime.utcnow().isoformat(),
+            "workspace_id": workspace_id,
+            "material_category": mat_cat,
+            "unit": feed_unit or None,
+            "factory_name": product_data.get('factory_name'),
+            "factory_group_name": product_data.get('factory_group_name'),
+        }
+        if factory_obj:
+            product_metadata['factory'] = factory_obj
+        if _registry_error:
+            product_metadata['_category_registry'] = {'status': 'unavailable', 'error': _registry_error}
 
-            # SKU-based dedup: if the XML provides a product_id/sku, treat
-            # (workspace_id, external_sku) as the unique key. Re-imports of the
-            # same SKU update the existing row in place; downstream chunks +
-            # image associations for that product are wiped so the regenerate
-            # path produces fresh artifacts instead of duplicating them.
-            sku_raw = (product_data.get('product_id')
-                       or product_data.get('sku')
-                       or (inner_meta.get('product_id') if isinstance(inner_meta, dict) else None))
-            external_sku = str(sku_raw).strip() if sku_raw else None
-            # audit #17 M4-6. `.strip()` was the entire normalization, so identity was decided
-            # byte-exactly. Greek capital M (U+039C) and Latin M render identically, so
-            # "7012<greek-M><greek-T>" and "7012MT" are one product that compared unequal, and
-            # every re-import of that feed minted a duplicate. "7012-MT" and "7012 mt" did the
-            # same through separators and case.
-            external_sku_folded = fold_model_token(external_sku) if external_sku else None
-            if external_sku:
-                product_record['external_sku'] = external_sku
-                product_record['external_sku_folded'] = external_sku_folded
+        _hero = next(
+            (i.get('storage_url') for i in (product_data.get('downloaded_images') or [])
+             if i.get('success') and i.get('storage_url')),
+            None,
+        )
+        if _hero:
+            product_metadata['image_url'] = _hero
 
-            existing_id: Optional[str] = None
-            if external_sku_folded:
-                try:
-                    existing = await self.db.table('products') \
-                        .select('id') \
-                        .eq('workspace_id', workspace_id) \
-                        .eq('external_sku_folded', external_sku_folded) \
-                        .limit(1) \
-                        .execute()
-                    if existing.data:
-                        existing_id = existing.data[0]['id']
-                except Exception as lookup_err:
-                    logger.warning(f"   WARN SKU lookup failed for {external_sku}: {lookup_err}")
+        columns = await self._route_registry_columns(product_metadata)
 
-            # Materials quota (#214): a NEW row consumes the workspace's remaining
-            # allowance — skip BEFORE the canonicalize/embedding spend when exhausted.
-            # Updates (existing_id) pass untouched. Single-create callers outside a
-            # batch job (dealer manual add) fall back to a one-shot lookup; the
-            # enforce_material_quota DB trigger stays the hard boundary either way.
-            if existing_id is None:
-                _remaining = getattr(self, '_material_quota_remaining', None)
-                if _remaining is None:
-                    _remaining = await material_quota_remaining_async(self.db, workspace_id)
-                if _remaining == 0:
-                    self._quota_skipped = getattr(self, '_quota_skipped', 0) + 1
-                    logger.error(
-                        f"   ⛔ quota_exceeded: skipping '{product_name}' — materials plan limit reached"
-                    )
-                    return None
+        product_record: Dict[str, Any] = {
+            "name": product_name,
+            "description": (product_data.get('description') or '')[:200],
+            "long_description": (product_data.get('description') or '')[:5000],
+            "workspace_id": workspace_id,
+            "properties": {
+                "dimensions": product_data.get('dimensions'),
+                "size": product_data.get('size'),
+                "import_source": source,
+                "import_job_id": job_id,
+                "auto_generated": True,
+                "generation_timestamp": datetime.utcnow().isoformat()
+            },
+            "metadata": product_metadata,
+            "status": status,
+            "created_from_type": source,
+            "source_type": source_type_for(source),
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+            **columns,
+        }
 
-            # ── Auto-canonicalize descriptive facets (XML supplier feeds) ────
-            # XML has no LLM upstream, so this path relies entirely on the
-            # canonicalizer's L0.5 (Haiku pretranslate) + L2 (Voyage cosine).
-            # Multilingual raw values from supplier feeds (Greek/Italian/German)
-            # auto-collapse to English canonicals here.
+        if _cat_id:
+            product_record['category_id'] = _cat_id
+        for _col, _src in (('mpn', 'mpn'), ('barcode', 'barcode')):
+            _v = product_data.get(_src)
+            if _v and str(_v).strip():
+                product_record[_col] = str(_v).strip()
+        _weight = product_data.get('weight')
+        if _weight is not None and str(_weight).strip():
             try:
-                canonical = await canonicalize_product_attributes(
-                    self.db, product_metadata, source=source,
-                    product_id=existing_id if existing_id else None,
-                    # audit #17 M4-8: was `self.workspace_id`, an instance field set only by a
-                    # constructor argument that NEITHER call site passes — so it was None on
-                    # every import this platform has ever run.
-                    workspace_id=workspace_id,
-                )
-                product_record['attributes'] = canonical.attributes
-                product_record['attributes_raw'] = canonical.attributes_raw
-                if canonical.resolutions:
-                    logger.info(
-                        f"   🏷️  XML canonicalized {len(canonical.resolutions)} facet values "
-                        f"across {len(canonical.attributes)} facets"
-                    )
-            except Exception as canon_err:
-                logger.warning(f"   ⚠️ Canonicalization failed (XML), continuing: {canon_err}")
+                product_record['net_mass_kg'] = float(str(_weight).replace(',', '.').strip())
+            except (TypeError, ValueError):
+                logger.warning(f"   WARN unparseable weight '{_weight}' for {product_name}")
+        if cost is not None:
+            product_record['cost'] = float(cost[0])
+            product_record['cost_currency'] = cost[1]
+            product_record['cost_source'] = 'supplier_feed'
+            product_record['cost_updated_at'] = datetime.utcnow().isoformat()
 
-            # Phase 2: resolve maker → per-workspace crm_companies node (flows
-            # into both the insert and the update_payload via product_record).
-            try:
-                _factory_name = (product_metadata.get('factory_name') or '').strip()
-                # Same field, and here the None made the whole branch unreachable: guarded on
-                # `self.workspace_id`, which is always None, so brand resolution never ran on a
-                # single imported product and `brand_company_id` was silently NULL forever.
-                # A silent zero hiding inside a tenancy bug (audit #17 M4-8).
-                if _factory_name and _factory_name.lower() != 'unknown factory' and workspace_id:
-                    _bc = await self.db.rpc('resolve_brand_company', {
-                        'p_workspace_id': workspace_id,
-                        'p_name': _factory_name,
-                    }).execute()
-                    product_record['brand_company_id'] = _bc.data if (_bc and _bc.data) else None
-            except Exception as _brand_err:
-                logger.warning(f"   ⚠️ brand resolve failed (XML): {_brand_err}")
+        if self._bg_job_id:
+            product_record['source_job_id'] = self._bg_job_id
+        product_record['import_batch_id'] = f"{source}_{job_id}" if job_id else source
 
-            if existing_id:
-                # Update in place; refresh updated_at, preserve created_at
-                update_payload = {k: v for k, v in product_record.items() if k != 'created_at'}
-                await self.db.table('products').update(update_payload).eq('id', existing_id).execute()
-                product_id = existing_id
-                logger.info(f"♻️ Updated existing product {product_id} via SKU={external_sku}: {product_name}")
+        sku_raw = (product_data.get('external_sku') or product_data.get('product_id')
+                   or product_data.get('sku') or inner_meta.get('product_id'))
+        external_sku = str(sku_raw).strip() if sku_raw else None
+        # audit #17 M4-6: identity is decided on the folded token (Greek Μ vs Latin M, separators).
+        external_sku_folded = fold_model_token(external_sku) if external_sku else None
+        if external_sku:
+            product_record['external_sku'] = external_sku
+            product_record['external_sku_folded'] = external_sku_folded
+        import_identity = import_identity_for(
+            product_data.get('factory_name'), external_sku_folded, product_name,
+            allow_name_identity=is_feed,
+        )
+        if import_identity:
+            product_record['import_identity'] = import_identity
 
-                # Wipe stale chunks + image associations so the rest of the
-                # batch regenerates them cleanly. Images themselves stay in
-                # document_images (other products may reference them); only
-                # the product↔image join is cleared.
-                try:
-                    await self.db.table('document_chunks').delete().eq('product_id', product_id).execute()
-                    await self.db.table('image_product_associations').delete().eq('product_id', product_id).execute()
-                except Exception as wipe_err:
-                    logger.warning(f"   ⚠️ Failed to clear stale artifacts for {product_id}: {wipe_err}")
-            else:
-                insert_response = await self.db.table('products').insert(product_record).execute()
-                if not insert_response.data:
-                    raise ValueError("Failed to insert product - no data returned")
-                product_id = insert_response.data[0]['id']
-                if isinstance(getattr(self, '_material_quota_remaining', None), int) and self._material_quota_remaining > 0:
-                    self._material_quota_remaining -= 1
-                logger.info(f"✅ Created product {product_id}: {product_name}")
+        existing: Optional[Dict[str, Any]] = None
+        if import_identity:
+            found = await self.db.table('products') \
+                .select('id, metadata, attributes, attributes_raw, properties, category_id, brand_company_id') \
+                .eq('workspace_id', workspace_id) \
+                .eq('import_identity', import_identity) \
+                .limit(1) \
+                .execute()
+            if found.data:
+                existing = found.data[0]
+        existing_id = existing['id'] if existing else None
 
-            # The product feed and the storefront both read FROM product_prices, so a product
-            # with no row there is invisible to both however complete it is. The price was
-            # already captured into metadata and stopped there.
-            await self._upsert_import_price(
-                workspace_id, product_id, product_data, product_metadata.get('unit'), product_name,
+        if existing_id is None:
+            _remaining = getattr(self, '_material_quota_remaining', None)
+            if _remaining is None:
+                _remaining = await material_quota_remaining_async(self.db, workspace_id)
+            if _remaining == 0:
+                self._quota_skipped = getattr(self, '_quota_skipped', 0) + 1
+                logger.error(f"   ⛔ quota_exceeded: skipping '{product_name}' — materials plan limit reached")
+                return None
+
+        canonical = await canonicalize_product_attributes(
+            self.supabase_wrapper, product_metadata, source=source,
+            product_id=existing_id,
+            workspace_id=workspace_id,
+        )
+        product_record['attributes'] = canonical.attributes
+        product_record['attributes_raw'] = canonical.attributes_raw
+        if getattr(canonical, 'status', 'ok') != 'ok':
+            product_metadata['facet_canonicalization'] = {
+                'status': canonical.status,
+                'at': datetime.utcnow().isoformat(),
+                'stage': source,
+            }
+            logger.error(
+                f"   ❌ Facet canonicalization DEGRADED for {product_name} — flagged via "
+                f"metadata.facet_canonicalization"
             )
 
-            # Generate text_embedding_1024 for product-level vector search
-            try:
-                emb_parts = [product_name or '']
-                desc = product_data.get('description', '')
-                if desc:
-                    emb_parts.append(desc[:500])
-                for key in ('factory_name', 'factory_group_name', 'designer', 'material_category', 'collection', 'color', 'colors', 'finish', 'material', 'size'):
-                    val = product_data.get(key) or product_metadata.get(key)
-                    if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a', ''):
-                        emb_parts.append(val.replace('_', ' '))
+        try:
+            _factory_name = (product_metadata.get('factory_name') or '').strip()
+            if _factory_name and _factory_name.lower() != 'unknown factory':
+                _bc = await self.db.rpc('resolve_brand_company', {
+                    'p_workspace_id': workspace_id,
+                    'p_name': _factory_name,
+                }).execute()
+                product_record['brand_company_id'] = _bc.data if (_bc and _bc.data) else None
+        except Exception as _brand_err:
+            logger.warning(f"   ⚠️ brand resolve failed: {_brand_err}")
 
-                from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-                emb_svc = RealEmbeddingsService()
-                emb_result = await emb_svc.generate_text_embedding(' | '.join(emb_parts))
-                text_emb = emb_result.get('embedding') if emb_result.get('success') else None
-                if text_emb:
-                    if len(text_emb) != 1024:
-                        # Defense-in-depth dim check (mirrors stage_4_products):
-                        # OpenAI fallback could in theory return a wrong-dim
-                        # vector; refusing to store keeps the column from
-                        # holding mixed-dim rows that break vector search.
-                        logger.error(
-                            f"   ❌ XML import embedding for {product_name} returned "
-                            f"wrong dim ({len(text_emb)}D, expected 1024D). Refusing to store."
-                        )
-                    else:
-                        # Persist provenance (model + schema_version) alongside
-                        # the vector so the admin UI / backfill cron can detect
-                        # Voyage→OpenAI fallback drift and target stale-schema
-                        # rows. Without these fields the rows are invisible to
-                        # the standard backfill cron — XML-imported products
-                        # silently age out of the v2 schema window.
-                        emb_str = '[' + ','.join(str(x) for x in text_emb) + ']'
-                        emb_model = emb_result.get('model') if isinstance(emb_result, dict) else None
-                        update_payload: Dict[str, Any] = {
-                            'text_embedding_1024': emb_str,
-                            'text_embedding_schema_version': 1,
-                        }
-                        if emb_model:
-                            update_payload['text_embedding_1024_model'] = emb_model
-                        await self.db.table('products').update(update_payload)\
-                            .eq('id', product_id).execute()
-                        logger.info(
-                            f"   🧠 Generated text_embedding_1024 for {product_name} "
-                            f"(model={emb_model or get_settings().voyage_document_model})"
-                        )
-            except Exception as emb_err:
-                logger.warning(f"   ⚠️ Product embedding failed (non-blocking): {emb_err}")
+        if existing:
+            product_id = existing_id
+            update_payload = {k: v for k, v in product_record.items() if k in _SUPPLIER_OWNED_COLUMNS}
+            update_payload['metadata'] = {**(existing.get('metadata') or {}), **product_metadata}
+            update_payload['attributes'] = {**(existing.get('attributes') or {}), **canonical.attributes}
+            update_payload['attributes_raw'] = {**(existing.get('attributes_raw') or {}), **canonical.attributes_raw}
+            update_payload['properties'] = {**(existing.get('properties') or {}), **product_record['properties']}
+            update_payload['discontinued_by_supplier_on'] = None
+            if not existing.get('category_id') and product_record.get('category_id'):
+                update_payload['category_id'] = product_record['category_id']
+            if not existing.get('brand_company_id') and product_record.get('brand_company_id'):
+                update_payload['brand_company_id'] = product_record['brand_company_id']
+            await self.db.table('products').update(update_payload) \
+                .eq('id', product_id).eq('workspace_id', workspace_id).execute()
+            logger.info(f"♻️ Updated existing product {product_id} ({import_identity}): {product_name}")
+            await self.db.table('document_chunks').delete() \
+                .eq('product_id', product_id).eq('source_type', 'xml_import').execute()
+            await self.db.table('image_product_associations').delete() \
+                .eq('product_id', product_id).eq('reasoning', 'xml_import_extracted').execute()
+        else:
+            insert_response = await self.db.table('products').insert(product_record).execute()
+            if not insert_response.data:
+                raise ValueError("Failed to insert product - no data returned")
+            product_id = insert_response.data[0]['id']
+            if isinstance(getattr(self, '_material_quota_remaining', None), int) and self._material_quota_remaining > 0:
+                self._material_quota_remaining -= 1
+            logger.info(f"✅ Created product {product_id}: {product_name}")
 
-            # Link downloaded images to product
-            downloaded_images = product_data.get('downloaded_images', [])
-            if downloaded_images:
-                await self._link_images_to_product(product_id, downloaded_images, workspace_id, job_id)
+        if price is not None:
+            await self._upsert_import_price(workspace_id, product_id, price, product_metadata.get('unit'))
 
-            # Queue for async text processing (chunking, embeddings)
-            # This happens in background - product is already created
-            if product_data.get('description'):
-                await self._queue_text_processing(product_id, product_data, workspace_id, job_id)
+        await self._embed_product(workspace_id, product_id, product_name, product_data, product_metadata)
 
-            return product_id
+        downloaded_images = product_data.get('downloaded_images') or []
+        if downloaded_images:
+            linked = await self._link_images_to_product(
+                product_id, downloaded_images, workspace_id, job_id, product_name, source=source,
+            )
+            if linked:
+                await self._embed_linked_images(product_id, workspace_id, linked, mat_cat, job_id)
 
-        except Exception as e:
-            logger.error(f"❌ Failed to create product {product_data.get('name')}: {e}")
-            raise
+        if product_data.get('description'):
+            await self._queue_text_processing(product_id, product_data, workspace_id, job_id, source=source)
+
+        return product_id
+
+    async def _route_registry_columns(self, metadata: Dict[str, Any]) -> Dict[str, str]:
+        """Move registry `destination='column'` values onto their products column (stage 4's rule)."""
+        from app.services.metadata.field_registry import field_registry
+        from app.api.pdf_processing.stage_4_products import _route_column_fields
+
+        await field_registry.ensure_loaded()
+        columns = _route_column_fields(metadata)
+        origin = columns.get('country_of_origin')
+        if origin is not None:
+            if _ISO2_RE.match(origin.upper()):
+                columns['country_of_origin'] = origin.upper()
+            else:
+                metadata['country_of_origin'] = columns.pop('country_of_origin')
+        columns.pop('sku', None)
+        return columns
+
+    async def _embed_product(
+        self,
+        workspace_id: str,
+        product_id: str,
+        product_name: str,
+        product_data: Dict[str, Any],
+        product_metadata: Dict[str, Any],
+    ) -> None:
+        """text_embedding_1024 for product-level vector search, attributed to the product."""
+        try:
+            emb_parts = [product_name or '']
+            desc = product_data.get('description') or ''
+            if desc:
+                emb_parts.append(desc[:500])
+            for key in ('factory_name', 'factory_group_name', 'designer', 'material_category',
+                        'collection', 'color', 'finish', 'material', 'size'):
+                val = product_metadata.get(key)
+                if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a', ''):
+                    emb_parts.append(val.replace('_', ' '))
+            emb_result = await self.embedding_service.generate_text_embedding(
+                ' | '.join(emb_parts),
+                job_id=self._bg_job_id,
+                workspace_id=workspace_id,
+                product_id=product_id,
+            )
+            text_emb = emb_result.get('embedding') if emb_result.get('success') else None
+            if not text_emb:
+                logger.warning(f"   ⚠️ No product embedding for {product_name}")
+                return
+            if len(text_emb) != 1024:
+                logger.error(f"   ❌ Embedding for {product_name} is {len(text_emb)}D, expected 1024D. Refusing to store.")
+                return
+            update_payload: Dict[str, Any] = {
+                'text_embedding_1024': '[' + ','.join(str(x) for x in text_emb) + ']',
+                'text_embedding_schema_version': 1,
+            }
+            if emb_result.get('model'):
+                update_payload['text_embedding_1024_model'] = emb_result['model']
+            await self.db.table('products').update(update_payload) \
+                .eq('id', product_id).eq('workspace_id', workspace_id).execute()
+        except Exception as emb_err:
+            logger.warning(f"   ⚠️ Product embedding failed (non-blocking): {emb_err}")
 
     async def _upsert_import_price(
         self,
         workspace_id: str,
         product_id: str,
-        product_data: Dict[str, Any],
+        price: Tuple[Decimal, str],
         unit: Optional[str],
-        product_name: str,
     ) -> None:
-        """Write the supplier's price onto product_prices.
+        """Write the supplier's list price onto product_prices; a failed write fails the row.
 
-        Upserts on (workspace_id, product_id, variant_key) so a re-import updates in place.
-        `storefront_published` is deliberately NOT set: publishing to a public shop and a
-        marketplace is a decision, not a side effect of an import.
+        Upserts on (workspace_id, product_id, variant_key). `storefront_published` is not set:
+        publishing is a decision, not a side effect of an import.
         """
-        raw = product_data.get('price')
-        if raw is None or str(raw).strip() == '':
-            return
-        amount, currency = parse_price(str(raw))
-        if amount is None or amount <= 0:
-            logger.warning(f"   WARN unparseable price '{raw}' for {product_name} — no price row")
-            return
-        try:
-            await self.db.table('product_prices').upsert(
-                {
-                    'workspace_id': workspace_id,
-                    'product_id': product_id,
-                    'variant_key': None,
-                    'list_price': float(amount),
-                    'currency': currency or 'EUR',
-                    'unit': unit,
-                    'notes': 'From supplier import',
-                },
-                on_conflict='workspace_id,product_id,variant_key',
-            ).execute()
-        except Exception as price_err:
-            logger.warning(f"   WARN price write failed for {product_name}: {price_err}")
+        amount, currency = price
+        await self.db.table('product_prices').upsert(
+            {
+                'workspace_id': workspace_id,
+                'product_id': product_id,
+                'variant_key': None,
+                'list_price': float(amount),
+                'currency': currency,
+                'unit': unit,
+                'notes': 'From supplier import',
+            },
+            on_conflict='workspace_id,product_id,variant_key',
+        ).execute()
 
     async def _link_images_to_product(
         self,
         product_id: str,
         downloaded_images: List[Dict[str, Any]],
         workspace_id: str,
-        job_id: str = None
+        job_id: Optional[str],
+        product_name: Optional[str] = None,
+        *,
+        source: str = 'xml_import',
+    ) -> List[Dict[str, Any]]:
+        """Product-scoped image rows (no document) plus their product associations.
+
+        Returns `{'id', 'storage_path'}` per stored row, for `_embed_linked_images`.
+        """
+        successful = [img for img in downloaded_images if img.get('success') and img.get('storage_url')]
+        if not successful:
+            return []
+        rows = [{
+            'document_id': None,
+            'workspace_id': workspace_id,
+            'image_url': img['storage_url'],
+            'image_type': 'product_image',
+            'source_type': 'xml_import' if source == 'xml_import' else None,
+            'product_name': (product_name or '')[:255] or None,
+            'processing_status': 'pending',
+            'metadata': {
+                'product_id': product_id,
+                'original_url': img.get('original_url'),
+                'storage_path': img.get('storage_path'),
+                'filename': img.get('filename'),
+                'content_type': img.get('content_type'),
+                'import_job_id': job_id,
+            },
+        } for img in successful]
+        inserted = await self.db.table('document_images').insert(rows).execute()
+        image_ids = [r['id'] for r in (inserted.data or [])]
+        if len(image_ids) != len(rows):
+            raise ImportRowError(f"only {len(image_ids)} of {len(rows)} images were stored")
+        associations = []
+        for idx, image_id in enumerate(image_ids):
+            score = max(0.0, 1.0 - (idx * 0.05))
+            associations.append({
+                "workspace_id": workspace_id,
+                "product_id": product_id,
+                "image_id": image_id,
+                "spatial_score": 0.0,
+                "caption_score": 0.0,
+                # NULL, not 0.0: no visual comparison happened.
+                "clip_score": None,
+                "overall_score": score,
+                "confidence": score,
+                "reasoning": f"{source}_extracted",
+                "metadata": {"source": source, "job_id": job_id, "import_index": idx},
+            })
+        await self.db.table('image_product_associations').insert(associations).execute()
+        return [
+            {'id': image_id, 'storage_path': img.get('storage_path')}
+            for image_id, img in zip(image_ids, successful)
+        ]
+
+    async def _embed_linked_images(
+        self,
+        product_id: str,
+        workspace_id: str,
+        linked: List[Dict[str, Any]],
+        material_category: Optional[str],
+        job_id: Optional[str],
     ) -> None:
-        """
-        Link downloaded images to product in database.
+        """Vision analysis + image vectors inline. A failure is logged and marked on the row
+        (`embedding_metadata.status='failed'`); the rows keep `has_slig_embedding = false`, so
+        the backfill can still retry them. It never fails the product."""
+        from app.services.images.image_processing_service import ImageProcessingService
 
-        ✅ ENHANCED: Now includes image classification and SLIG embedding generation.
-
-        Args:
-            product_id: Product ID
-            downloaded_images: List of downloaded image references
-            workspace_id: Workspace ID
-            job_id: Job ID for tracking
-        """
         try:
-            # Filter successful downloads
-            successful_images = [img for img in downloaded_images if img.get('success')]
-
-            if not successful_images:
-                logger.info(f"⏭️ No images to link for product {product_id}")
-                return
-
-            logger.info(f"📷 Processing {len(successful_images)} images for product {product_id}")
-
-            # Prepare images for classification and SLIG generation
-            images_for_processing = []
-            for img in successful_images:
-                images_for_processing.append({
-                    'storage_url': img.get('storage_url'),
-                    'url': img.get('storage_url'),
-                    'public_url': img.get('storage_url'),
-                    'filename': img.get('filename'),
-                    'path': None,  # Will trigger download from storage
-                    'content_type': img.get('content_type'),
-                    'size_bytes': img.get('size_bytes'),
-                    'original_url': img.get('original_url'),
-                    'storage_path': img.get('storage_path'),
-                    'index': img.get('index'),
-                    'product_id': product_id
-                })
-
-            image_processor = self._get_image_processor(workspace_id)
-
-            logger.info(f"   🤖 Classifying {len(images_for_processing)} images")
-
-            # Classify images (material vs non-material) - pass job_id for cost tracking
-            material_images, non_material_images = await image_processor.classify_images(
-                extracted_images=images_for_processing,
-                confidence_threshold=0.6,
-                job_id=job_id  # Track AI cost per job
+            result = await ImageProcessingService(workspace_id=workspace_id).embed_product_images(
+                product_id=product_id,
+                workspace_id=workspace_id,
+                images=linked,
+                material_category=material_category,
+                job_id=job_id,
             )
-
-            logger.info(f"   ✅ Classification: {len(material_images)} material, {len(non_material_images)} non-material")
-
-            # Generate SLIG embeddings for ALL images
-            all_images = material_images + non_material_images
-
-            if all_images:
-                logger.info(f"   🎨 Generating SLIG embeddings for ALL {len(all_images)} images")
-
-                result = await image_processor.save_images_and_generate_clips(
-                    material_images=all_images,  # Process all images
-                    document_id=product_id,
-                    workspace_id=workspace_id,
-                    batch_size=10,
-                    max_retries=3,
-                    job_id=job_id  # Track AI cost per job
-                )
-
-                logger.info(f"   ✅ Saved {result.get('images_saved', 0)} images with {result.get('clip_embeddings_generated', 0)} embeddings")
-
-                # Get saved image IDs for associations
-                saved_response = self.supabase.table('document_images')\
-                    .select('id')\
-                    .eq('document_id', product_id)\
-                    .order('created_at', desc=True)\
-                    .limit(len(all_images))\
-                    .execute()
-
-                if saved_response.data:
-                    # Create product-image relationships
-                    relationship_records = []
-                    for idx, image_data in enumerate(saved_response.data):
-                        score = 1.0 - (idx * 0.05)  # First image gets highest score
-                        relationship_records.append({
-                            # The function has taken workspace_id as a parameter all
-                            # along; the row simply never carried it (#25 M12-4). It is
-                            # NOT NULL now, with a composite FK re-checking it against
-                            # the product.
-                            "workspace_id": workspace_id,
-                            "product_id": product_id,
-                            "image_id": image_data['id'],
-                            "spatial_score": 0.0,
-                            "caption_score": 0.0,
-                            # NULL, not 0.0: an XML import performs no visual comparison
-                            # at all, and 0.0 would claim it looked and found nothing.
-                            "clip_score": None,
-                            "overall_score": score,
-                            "confidence": score,
-                            "reasoning": "xml_import_extracted",
-                            "metadata": {
-                                "source": "xml_import",
-                                "job_id": job_id,
-                                "import_index": idx
-                            }
-                        })
-
-                    if relationship_records:
-                        self.supabase.table('image_product_associations').insert(relationship_records).execute()
-                        logger.info(f"   ✅ Created {len(relationship_records)} product-image relationships")
-
         except Exception as e:
-            logger.error(f"❌ Failed to process images for product {product_id}: {e}")
-            logger.exception(e)
-            # Don't raise - product is already created
+            logger.error("   image embedding failed for product %s: %s", product_id, e)
+            sentry_sdk.capture_exception(e)
+            for img in linked:
+                try:
+                    await self.db.table('document_images').update({
+                        'embedding_metadata': {
+                            'status': 'failed',
+                            'error': f"{type(e).__name__}: {e}"[:1000],
+                            'failed_at': datetime.utcnow().isoformat(),
+                        },
+                    }).eq('id', img['id']).execute()
+                except Exception as mark_err:
+                    logger.warning("   could not mark image %s failed: %s", img['id'], mark_err)
+            return
+        failed = result.get('failed_images') or []
+        if failed:
+            logger.error(
+                "   %d of %d images for product %s got no vectors: %s",
+                len(failed), len(linked), product_id, failed[:3],
+            )
 
     async def _queue_text_processing(
         self,
         product_id: str,
         product_data: Dict[str, Any],
         workspace_id: str,
-        job_id: str = None
+        job_id: str = None,
+        *,
+        source: str = 'xml_import',
     ) -> None:
-        """
-        Queue product text for async processing (chunking, embeddings).
-
-        ✅ ENHANCED: Uses smart chunking for long descriptions (>1500 chars)
-        to improve retrieval quality with proper semantic boundaries.
-
-        Args:
-            product_id: Product ID
-            product_data: Product data with text content
-            workspace_id: Workspace ID
-            job_id: Job ID for tracking
-        """
+        """Chunk the product description (product-scoped, no document) and embed the chunks."""
         try:
-            description = product_data.get('description', '')
+            description = product_data.get('description', '') or ''
             product_name = product_data.get('name', 'Unknown')
-
-            if not description or len(description) < 50:
-                logger.info(f"⏭️ Skipping text processing for product {product_id} - insufficient content")
+            if len(description) < 50:
                 return
 
+            chunk_source_type = source_type_for(source)
+            base_meta = {
+                "source": source,
+                "product_id": product_id,
+                "product_name": product_name,
+                "auto_generated": True,
+            }
             chunk_ids = []
-
-            # Use smart chunking for long descriptions (>1500 chars)
             if len(description) > 1500:
-                logger.info(f"📚 Long description ({len(description)} chars) - using smart chunking for {product_name}")
-
-                # Use UnifiedChunkingService for smart chunking
                 chunks = await self.chunking_service.chunk_text(
-                    text=description,
-                    document_id=product_id,
-                    metadata={
-                        "source": "xml_import",
-                        "product_id": product_id,
-                        "product_name": product_name,
-                        "auto_generated": True
-                    }
+                    text=description, document_id=product_id, metadata=base_meta,
                 )
-
-                logger.info(f"   📚 Created {len(chunks)} chunks for long description")
-
-                # Insert all chunks
                 for chunk in chunks:
-                    chunk_record = {
-                        "document_id": product_id,
+                    chunk_response = await self.db.table('document_chunks').insert({
+                        "document_id": None,
+                        "product_id": product_id,
                         "workspace_id": workspace_id,
                         "content": chunk.content,
                         "chunk_index": chunk.chunk_index,
                         "quality_score": chunk.quality_score,
-                        "source_type": "xml_import",
-                        "source_job_id": job_id,
-                        "metadata": {
-                            **chunk.metadata,
-                            "quality_score": chunk.quality_score
-                        }
-                    }
-
-                    chunk_response = await self.db.table('document_chunks').insert(chunk_record).execute()
+                        "source_type": chunk_source_type,
+                        "metadata": {**chunk.metadata, "quality_score": chunk.quality_score},
+                    }).execute()
                     if chunk_response.data:
                         chunk_ids.append({'id': chunk_response.data[0]['id']})
             else:
-                # Short description - single chunk (original behavior)
-                chunk_record = {
-                    "document_id": product_id,
+                from app.services.chunking.unified_chunking_service import Chunk
+                quality_score = self.chunking_service._calculate_chunk_quality(Chunk(
+                    id='pending', content=description, chunk_index=0, total_chunks=1,
+                    start_position=0, end_position=len(description), metadata={},
+                ))
+                chunk_response = await self.db.table('document_chunks').insert({
+                    "document_id": None,
+                    "product_id": product_id,
                     "workspace_id": workspace_id,
                     "content": description,
                     "chunk_index": 0,
-                    "source_type": "xml_import",
-                    "source_job_id": job_id,
-                    "metadata": {
-                        "source": "xml_import",
-                        "product_id": product_id,
-                        "product_name": product_name,
-                        "auto_generated": True
-                    }
-                }
-
-                chunk_response = await self.db.table('document_chunks').insert(chunk_record).execute()
-
+                    "quality_score": quality_score,
+                    "source_type": chunk_source_type,
+                    "metadata": {**base_meta, "quality_score": quality_score},
+                }).execute()
                 if chunk_response.data:
-                    chunk_id = chunk_response.data[0]['id']
-
-                    # Calculate quality score
-                    from app.services.chunking.unified_chunking_service import Chunk
-                    temp_chunk = Chunk(
-                        id=chunk_id,
-                        content=description,
-                        chunk_index=0,
-                        total_chunks=1,
-                        start_position=0,
-                        end_position=len(description),
-                        metadata={}
-                    )
-                    quality_score = self.chunking_service._calculate_chunk_quality(temp_chunk)
-
-                    # Update chunk with quality score
-                    await self.db.table('document_chunks').update({
-                        'quality_score': quality_score,
-                        'metadata': {
-                            **chunk_record['metadata'],
-                            'quality_score': quality_score
-                        }
-                    }).eq('id', chunk_id).execute()
-
-                    chunk_ids.append({'id': chunk_id})
+                    chunk_ids.append({'id': chunk_response.data[0]['id']})
 
             if chunk_ids:
-                logger.info(f"✅ Created {len(chunk_ids)} chunks for product {product_name}")
-
-                # Generate text embeddings inline (ai_analysis_queue has no consumer)
-                await self._generate_chunk_embeddings(chunk_ids)
-
+                await self._generate_chunk_embeddings(chunk_ids, workspace_id, product_id)
         except Exception as e:
             logger.error(f"❌ Failed to queue text processing for product {product_id}: {e}")
-            # Don't raise - product is already created
 
-    async def _generate_chunk_embeddings(self, chunk_ids: list) -> None:
-        """Generate Voyage AI text embeddings for chunks inline.
-
-        Per-chunk skip diagnostics (promoted from silent `continue` to
-        WARNING-with-context on 2026-05-01): silent skips here turned
-        into "this product has no searchable text" weeks later in
-        production with nothing to grep for. Each skip now logs the
-        chunk_id and the trigger condition.
-        """
-        skipped_no_row = 0
-        skipped_empty = 0
+    async def _generate_chunk_embeddings(self, chunk_ids: list, workspace_id: str, product_id: str) -> None:
+        """Voyage text embeddings for the chunks, attributed to the job, workspace and product."""
+        skipped = 0
         for chunk_ref in chunk_ids:
             chunk_id = chunk_ref['id']
             try:
                 chunk_response = await self.db.table('document_chunks').select('content').eq('id', chunk_id).single().execute()
-                if not chunk_response.data:
-                    skipped_no_row += 1
-                    logger.warning(
-                        f"⚠️ Chunk {chunk_id} not found when generating embedding "
-                        f"(was it deleted between create and embed?). Skipping."
-                    )
-                    continue
-                content = chunk_response.data.get('content', '')
+                content = (chunk_response.data or {}).get('content', '')
                 if not content:
-                    skipped_empty += 1
-                    logger.warning(
-                        f"⚠️ Chunk {chunk_id} has empty content. Skipping embedding."
-                    )
+                    skipped += 1
+                    logger.warning(f"⚠️ Chunk {chunk_id} is missing or empty. Skipping embedding.")
                     continue
-                # generate_text_embedding returns {success, embedding, model} —
-                # unpack the embedding vector; writing the dict into halfvec is
-                # the bug fixed 2026-05-23.
-                emb_result = await self.embedding_service.generate_text_embedding(content)
+                emb_result = await self.embedding_service.generate_text_embedding(
+                    content, job_id=self._bg_job_id, workspace_id=workspace_id, product_id=product_id,
+                )
                 emb_vec = emb_result.get('embedding') if isinstance(emb_result, dict) else None
                 if emb_result and emb_result.get('success') and emb_vec:
-                    from datetime import datetime as _dt
                     await self.db.table('document_chunks').update({
                         'text_embedding': emb_vec,
                         'embedding_model': emb_result.get('model') or get_settings().voyage_document_model,
                         'embedding_dimension': len(emb_vec),
-                        'embedding_generated_at': _dt.utcnow().isoformat(),
+                        'embedding_generated_at': datetime.utcnow().isoformat(),
                         'has_text_embedding': True,
                     }).eq('id', chunk_id).execute()
-                    logger.info(f"✅ Generated text embedding for chunk {chunk_id}")
             except Exception as e:
                 logger.error(f"Failed to generate text embedding for chunk {chunk_id}: {e}")
-
-        # Aggregate ERROR if more than half the chunks were silently skipped —
-        # that's a structural issue (e.g. chunks getting deleted by a
-        # parallel writer) and must be visible at job level, not buried in
-        # per-chunk WARNINGs.
         total = len(chunk_ids)
-        skipped = skipped_no_row + skipped_empty
         if total > 0 and skipped / total >= 0.5:
-            logger.error(
-                f"❌ Embedding loop skipped {skipped}/{total} chunks "
-                f"({skipped_no_row} missing rows, {skipped_empty} empty content). "
-                f"This is unusually high — a concurrent writer may be deleting "
-                f"chunks, or the upstream chunker is producing empty rows. "
-                f"Investigate before this batch's products go searchable with "
-                f"no text-embedding coverage."
-            )
+            logger.error(f"❌ Embedding loop skipped {skipped}/{total} chunks for product {product_id}.")
 
     async def _get_job(
         self,
         job_id: str,
         workspace_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """Get job details, scoped to the workspace the caller was authorized for.
-
-        `workspace_id` is not optional in practice — it defaults to None only so the
-        single-product path (which has no job) keeps working. Passing a job id whose row
-        belongs to another workspace returns None, so the caller raises "job not found"
-        rather than reporting a permissions problem: same reason the platform's rule is
-        404-not-403 on an ownership mismatch, since a distinguishable error is an id oracle.
-        """
+        """Get job details, scoped to the workspace the caller was authorized for (404 not 403)."""
         try:
             q = self.db.table('data_import_jobs').select('*').eq('id', job_id)
             if workspace_id:
@@ -1324,14 +1066,7 @@ class DataImportService:
         offset: int,
         limit: int,
     ) -> Optional[List[Dict[str, Any]]]:
-        """
-        Fetch a single batch of products for this job, ordered by product_index.
-
-        Returns None when the READ FAILED, [] when the range is genuinely empty.
-
-        Products are stored in data_import_job_products (one row per product).
-        Range is inclusive on both ends per PostgREST `.range(start, end)`.
-        """
+        """One batch of this job's products by product_index. None when the READ FAILED."""
         try:
             end_inclusive = offset + limit - 1
             response = await self.db.table('data_import_job_products') \
@@ -1343,111 +1078,86 @@ class DataImportService:
             rows = response.data or []
             return [row.get('product_data') for row in rows if row.get('product_data') is not None]
         except Exception as e:
-            logger.error(
-                f"Failed to fetch products batch for job {job_id} "
-                f"(offset={offset}, limit={limit}): {e}"
-            )
-            # None, not []. The caller cannot tell a broken read from an empty range
-            # otherwise, and it used to skip both (audit #17 M4-7).
+            logger.error(f"Failed to fetch products batch for job {job_id} (offset={offset}, limit={limit}): {e}")
             return None
 
-    async def _update_job_status(self, job_id: str, status: str, **kwargs) -> None:
-        """Update job status in database."""
+    async def _save_checkpoint(self, job_id: str, checkpoint: Dict[str, Any]) -> None:
+        """The resume point and its counters, in one atomic metadata merge. A lost write raises."""
+        await self.db.rpc('merge_import_job_metadata', {
+            'p_job_id': job_id,
+            'p_metadata': {'checkpoint': checkpoint},
+        }).execute()
+
+    async def _merge_job_metadata(self, job_id: str, patch: Dict[str, Any]) -> None:
+        try:
+            await self.db.rpc('merge_import_job_metadata', {'p_job_id': job_id, 'p_metadata': patch}).execute()
+        except Exception as e:
+            logger.error(f"Failed to merge metadata into import job {job_id}: {e}")
+
+    async def _update_job_status(self, job_id: str, workspace_id: str, status: str, **kwargs) -> None:
+        """Update the job row, scoped to its workspace."""
         try:
             update_data = {'status': status, 'updated_at': datetime.utcnow().isoformat()}
             update_data.update(kwargs)
-
-            # Convert datetime objects to ISO strings
             for key, value in update_data.items():
                 if isinstance(value, datetime):
                     update_data[key] = value.isoformat()
-
-            await self.db.table('data_import_jobs').update(update_data).eq('id', job_id).execute()
-            logger.info(f"✅ Updated job {job_id} status to {status}")
+            await self.db.table('data_import_jobs').update(update_data) \
+                .eq('id', job_id).eq('workspace_id', workspace_id).execute()
         except Exception as e:
             logger.error(f"Failed to update job status: {e}")
 
     async def _update_job_progress(
         self,
         job_id: str,
+        workspace_id: str,
         processed: int,
         failed: int,
         total: int,
         stage: str,
         progress_percent: int = None
     ) -> None:
-        """Update job progress in database and job_progress table."""
+        """Update job progress on data_import_jobs and its background_jobs row."""
         try:
             if progress_percent is None:
                 progress_percent = int((processed / total) * 100) if total > 0 else 0
-
             now = datetime.utcnow().isoformat()
-
             await self.db.table('data_import_jobs').update({
                 'processed_products': processed,
                 'failed_products': failed,
                 'last_heartbeat': now,
-            }).eq('id', job_id).execute()
+            }).eq('id', job_id).eq('workspace_id', workspace_id).execute()
 
+            if not self._bg_job_id:
+                return
             try:
-                await self.db.rpc('merge_background_job_metadata', {
-                    'p_job_id': job_id,
-                    'p_metadata': {
-                        'current_stage': stage,
-                        'progress_percentage': progress_percent,
-                    }
+                await self.db.rpc('append_stage_history', {
+                    'p_job_id': self._bg_job_id,
+                    'p_event': {
+                        'stage': f'xml_import_{stage}',
+                        'status': 'in_progress',
+                        'progress': progress_percent,
+                        'completed_at': now,
+                        'data': {'processed': processed, 'failed': failed, 'total': total, 'current_stage': stage},
+                        'source': 'xml_import',
+                    },
                 }).execute()
-            except Exception:
-                pass
-
-            # Look up background_job_id
-            job_response = await self.db.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
-            background_job_id = job_response.data.get('background_job_id') if job_response.data else None
-
-            if background_job_id:
-                # Stage event → background_jobs.stage_history (canonical).
-                try:
-                    await self.db.rpc('append_stage_history', {
-                        'p_job_id': background_job_id,
-                        'p_event': {
-                            'stage': f'xml_import_{stage}',
-                            'status': 'in_progress',
-                            'progress': progress_percent,
-                            'completed_at': now,
-                            'data': {
-                                'processed': processed,
-                                'failed': failed,
-                                'total': total,
-                                'current_stage': stage,
-                            },
-                            'source': 'xml_import',
-                        },
-                    }).execute()
-                except Exception as hist_err:
-                    logger.warning(f"XML stage_history append failed: {hist_err}")
-
-                # Update background_jobs scalar fields. CORRECTION (2026-05-23):
-                # the column is `progress`, not `progress_percent`. PostgREST
-                # silently dropped the unknown column → XML jobs' progress was
-                # never updated in background_jobs. The stage_history append
-                # above is the only thing that worked.
-                await self.db.table('background_jobs').update({
-                    'progress': progress_percent,
-                    'last_heartbeat': now,
-                }).eq('id', background_job_id).execute()
-
-                # Merge metadata atomically — no read-modify-write race
-                await self.db.rpc('merge_background_job_metadata', {
-                    'p_job_id': background_job_id,
-                    'p_metadata': {
-                        'processed': processed,
-                        'failed': failed,
-                        'total': total,
-                        'current_stage': stage
-                    }
-                }).execute()
-
-                logger.debug(f"📊 Updated job progress: {progress_percent}% ({processed}/{total} products)")
+            except Exception as hist_err:
+                logger.warning(f"XML stage_history append failed: {hist_err}")
+            await self.db.table('background_jobs').update({
+                'progress': progress_percent,
+                'last_heartbeat': now,
+            }).eq('id', self._bg_job_id).execute()
+            await self.db.rpc('merge_background_job_metadata', {
+                'p_job_id': self._bg_job_id,
+                'p_metadata': {
+                    'processed': processed,
+                    'failed': failed,
+                    'total': total,
+                    'current_stage': stage,
+                    'progress_percentage': progress_percent,
+                }
+            }).execute()
         except Exception as e:
             logger.error(f"Failed to update job progress: {e}")
 
@@ -1457,34 +1167,13 @@ class DataImportService:
         status: str,
         **kwargs
     ) -> None:
-        """
-        Update background_jobs status via data_import_jobs.
-
-        Args:
-            job_id: data_import_jobs ID
-            status: New status
-            **kwargs: Additional fields (started_at, completed_at, error_message, progress_percent, metadata)
-        """
+        """Update the job's background_jobs row (status validated against JobStatus)."""
         try:
-            # Get background_job_id from data_import_jobs
-            job_response = await self.db.table('data_import_jobs').select('background_job_id').eq('id', job_id).single().execute()
-            background_job_id = job_response.data.get('background_job_id') if job_response.data else None
-
-            if not background_job_id:
+            if not self._bg_job_id:
                 logger.warning(f"No background_job_id found for data_import_job {job_id}")
                 return
-
-            # Validate status against the JobStatus enum. JobStatus(status)
-            # raises ValueError on values not in the DB CHECK constraint —
-            # so a typo from a caller fails LOUDLY here instead of being
-            # silently rejected by Postgres.
             from app.schemas.jobs import JobStatus as _JS_dis
-            validated_status = _JS_dis(status).value
-
-            # Build update data for scalar fields
-            update_data = {'status': validated_status, 'last_heartbeat': datetime.utcnow().isoformat()}
-
-            # Separate out 'metadata' — merge atomically; everything else goes in update_data
+            update_data = {'status': _JS_dis(status).value, 'last_heartbeat': datetime.utcnow().isoformat()}
             extra_metadata = None
             for key, value in kwargs.items():
                 if key == 'metadata':
@@ -1493,20 +1182,14 @@ class DataImportService:
                     update_data[key] = value.isoformat()
                 else:
                     update_data[key] = value
-
-            await self.db.table('background_jobs').update(update_data).eq('id', background_job_id).execute()
-
+            await self.db.table('background_jobs').update(update_data).eq('id', self._bg_job_id).execute()
             if extra_metadata:
                 await self.db.rpc('merge_background_job_metadata', {
-                    'p_job_id': background_job_id,
+                    'p_job_id': self._bg_job_id,
                     'p_metadata': extra_metadata
                 }).execute()
-
-            logger.info(f"✅ Updated background_job {background_job_id} status to {status}")
-
         except Exception as e:
             logger.error(f"Failed to update background_job status: {e}")
-            # Don't raise - this is non-critical
 
     async def _record_import_history(
         self,
@@ -1514,19 +1197,19 @@ class DataImportService:
         source_data: Dict[str, Any],
         normalized_data: Dict[str, Any],
         status: str,
-        error_details: Optional[str] = None
+        error_details: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> None:
         """Record import history entry."""
         try:
             await self.db.table('data_import_history').insert({
                 'job_id': job_id,
+                'product_id': product_id,
                 'source_data': source_data,
-                'normalized_data': normalized_data,
+                'normalized_data': {k: v for k, v in normalized_data.items() if k != 'downloaded_images'},
                 'processing_status': status,
                 'error_details': error_details,
                 'created_at': datetime.utcnow().isoformat()
             }).execute()
         except Exception as e:
             logger.error(f"Failed to record import history: {e}")
-
-

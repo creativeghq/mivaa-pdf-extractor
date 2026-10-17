@@ -1,0 +1,92 @@
+"""Guards for the #494 wiring that spans files: registry partition, stage 4 markers,
+category registry handling, recanonicalize `force`, and product-scoped image vectors.
+
+Source rules read code with comments and docstrings blanked, so prose cannot satisfy them.
+"""
+
+import ast
+import sys
+from pathlib import Path
+
+import pytest
+
+pytestmark = pytest.mark.unit
+
+ROOT = Path(__file__).resolve().parents[2]
+APP = ROOT / "app"
+DISC = APP / "services" / "discovery" / "product_discovery_service.py"
+STAGE4 = APP / "api" / "pdf_processing" / "stage_4_products.py"
+IMPORT = APP / "services" / "integrations" / "data_import_service.py"
+FACETS = APP / "api" / "facet_routes.py"
+IMAGES = APP / "services" / "images" / "image_processing_service.py"
+
+
+def _func(path: Path, name: str) -> str:
+    source = path.read_text(encoding="utf-8")
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            sys.path.insert(0, str(ROOT / "scripts"))
+            try:
+                from comment_budget import blank_comments
+                return blank_comments(ast.get_source_segment(source, node) or "")
+            finally:
+                sys.path.pop(0)
+    raise AssertionError(f"{path.name} no longer defines {name}()")
+
+
+def test_partition_asks_whether_the_key_is_registered():
+    # destination_of() answers 'metadata' for an unknown key, so it made every key "known".
+    body = _func(DISC, "_partition_by_registry")
+    assert "is_registered(key)" in body
+    assert "destination_of" not in body
+
+
+def test_spec_extraction_gets_the_category_and_records_degradation():
+    body = _func(STAGE4, "enrich_products_from_chunks_and_vision")
+    assert 'category=metadata.get("material_category")' in body
+    assert '"_degraded_tiers"' in body and '"status": "degraded"' in body
+    assert 'new_metadata["_spec_extraction"] = spec_status' in body
+
+
+def test_a_failed_functional_extraction_is_recorded_not_read_as_empty():
+    body = _func(STAGE4, "enrich_products_from_chunks_and_vision")
+    failed = body.index('prop_result.status == "failed"')
+    assert failed < body.index("prop_result.coverage_pct > 0")
+    assert 'new_metadata["_functional_extraction"]' in body
+    assert '"category_confidence": prop_result.category_confidence' in body
+    assert "if not filled and not markers_changed:" in body
+
+
+def test_registry_validation_is_category_scoped():
+    body = _func(STAGE4, "create_single_product")
+    assert "validate_metadata_against_registry(\n            metadata, category=" in body
+
+
+@pytest.mark.parametrize("path", [STAGE4, IMPORT])
+def test_category_registry_is_cached_and_its_failure_is_never_an_empty_map(path):
+    src = path.read_text(encoding="utf-8")
+    assert "get_category_registry(" in src
+    assert "load_category_registry(" not in src
+    assert "except CategoryRegistryUnavailable" in src
+
+
+def test_recanonicalize_route_passes_force():
+    body = _func(FACETS, "recanonicalize")
+    assert "force=req.force" in body
+
+
+def test_product_scoped_images_anchor_tenancy_on_the_product():
+    body = _func(IMAGES, "save_images_and_generate_clips")
+    product = body.index("_assert_product_in_workspace(product_id, workspace_id)")
+    assert product < body.index("icon_candidates =")
+    embed = _func(IMAGES, "embed_product_images")
+    assert embed.index("_assert_product_in_workspace(") < embed.index(".download")
+    assert "staging_failures" in embed and "_mark_embedding_failed(" in embed
+
+
+def test_imported_images_are_embedded_inline_and_failures_are_marked():
+    body = _func(IMPORT, "create_product_from_payload")
+    assert "await self._embed_linked_images(" in body
+    embed = _func(IMPORT, "_embed_linked_images")
+    assert "embed_product_images(" in embed
+    assert "'status': 'failed'" in embed

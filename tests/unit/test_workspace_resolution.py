@@ -107,10 +107,12 @@ def test_the_boundary_maps_the_refusal_to_that_status():
     )
 
 
-def test_user_with_no_requested_workspace_keeps_the_established_one():
-    check = member_of(OWN)
-    assert resolve(USER, None, is_member=check) == OPERATOR
-    assert check.calls == [], "nothing was requested, so nothing needs checking"
+def test_the_token_default_is_membership_checked_when_nothing_was_requested():
+    """The claims workspace is a default, not a validation (#494): a non-member must not
+    inherit the operator workspace just by asking for nothing."""
+    assert resolve(USER, None, is_member=member_of(OPERATOR)) == OPERATOR
+    with pytest.raises(WorkspaceAccessDenied):
+        resolve(USER, None, is_member=member_of(OWN))
 
 
 def test_a_middleware_validated_workspace_wins_over_the_token_default():
@@ -128,9 +130,9 @@ def test_requesting_exactly_the_validated_workspace_needs_no_recheck():
 @pytest.mark.parametrize("blank", ["", "   ", "None", "null", None])
 def test_blank_request_values_are_not_treated_as_a_workspace(blank):
     """A literal 'None' string reaching a filter is how an unscoped query happens."""
-    check = member_of()
-    assert resolve(USER, blank, is_member=check) == OPERATOR
-    assert check.calls == []
+    assert resolve(USER, blank, is_member=member_of(OPERATOR)) == OPERATOR
+    with pytest.raises(WorkspaceAccessDenied):
+        resolve(USER, blank, is_member=member_of())
 
 
 def test_a_user_with_no_subject_cannot_pass_a_foreign_workspace():

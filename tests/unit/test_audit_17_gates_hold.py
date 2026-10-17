@@ -280,8 +280,8 @@ def test_sku_identity_is_decided_on_the_folded_token():
         "the SKU is no longer folded before matching — same class as the CRM company dedupe "
         "(platform #366 BU-3) and mention identity (#18 M5-9)"
     )
-    assert re.search(r"eq\('external_sku_folded',\s*external_sku_folded\)", body), (
-        "the dedupe lookup matches the raw external_sku again"
+    assert re.search(r"eq\('import_identity',\s*import_identity\)", body), (
+        "the dedupe lookup no longer goes through the supplier-namespaced folded identity"
     )
     assert "'external_sku'] = external_sku" in body, (
         "the raw supplier SKU is no longer stored — it is what a purchase order has to quote"
@@ -354,9 +354,9 @@ def test_a_discovered_field_is_not_registered_for_every_category():
     )
 
     scope = _strip_comments(_func(EXTRACTOR, "_observed_category"))
-    assert "category_for_vocab" in scope, (
-        "the vocab->category mapping is no longer derived from the registry — a second map "
-        "here would be the ninth copy"
+    assert "field_registry.resolve_category" in scope, (
+        "the hint is no longer resolved through the registry's one category resolver "
+        "(key -> controlled_vocab -> vocab_aliases) — a second map here would be the ninth copy"
     )
 
 

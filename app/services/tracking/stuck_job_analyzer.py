@@ -6,13 +6,26 @@ Tracks performance bottlenecks and generates optimization recommendations.
 """
 
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any, List
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Any, List, Optional
 from collections import defaultdict
 
 from app.services.core.supabase_client import get_supabase_client
 
 logger = logging.getLogger(__name__)
+
+
+def parse_utc(value: Any) -> Optional[datetime]:
+    """An aware UTC datetime from a DB timestamp; a naive one is UTC. None if unparseable."""
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 class StuckJobAnalyzer:
@@ -90,15 +103,12 @@ class StuckJobAnalyzer:
             logger.error(f"❌ Failed to analyze stuck job {job_id}: {e}")
             return {"error": str(e)}
     
-    def _calculate_stuck_duration(self, job: Dict[str, Any]) -> float:
-        """Calculate how long job has been stuck (in minutes)"""
-        try:
-            updated_at = datetime.fromisoformat(job['updated_at'].replace('Z', '+00:00'))
-            now = datetime.utcnow()
-            duration = (now - updated_at).total_seconds() / 60
-            return round(duration, 2)
-        except Exception:
-            return 0.0
+    def _calculate_stuck_duration(self, job: Dict[str, Any]) -> Optional[float]:
+        """Minutes since the job's last update, or None when that is unknown (never 0)."""
+        updated_at = parse_utc(job.get('updated_at'))
+        if updated_at is None:
+            return None
+        return round((datetime.now(timezone.utc) - updated_at).total_seconds() / 60, 2)
     
     def _analyze_stage_progression(self, checkpoints: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Analyze how long each stage took"""
@@ -110,7 +120,6 @@ class StuckJobAnalyzer:
             
             if i == 0:
                 # First checkpoint - time from job start
-                datetime.fromisoformat(checkpoint['created_at'].replace('Z', '+00:00'))
                 stage_times[stage] = {
                     "duration_seconds": 0,
                     "completed_at": checkpoint['created_at']
@@ -118,12 +127,15 @@ class StuckJobAnalyzer:
             else:
                 # Calculate time since previous checkpoint
                 prev_checkpoint = checkpoints[i-1]
-                prev_time = datetime.fromisoformat(prev_checkpoint['created_at'].replace('Z', '+00:00'))
-                curr_time = datetime.fromisoformat(checkpoint['created_at'].replace('Z', '+00:00'))
-                duration = (curr_time - prev_time).total_seconds()
-                
+                prev_time = parse_utc(prev_checkpoint.get('created_at'))
+                curr_time = parse_utc(checkpoint.get('created_at'))
+                duration = (
+                    round((curr_time - prev_time).total_seconds(), 2)
+                    if prev_time and curr_time else None
+                )
+
                 stage_times[stage] = {
-                    "duration_seconds": round(duration, 2),
+                    "duration_seconds": duration,
                     "completed_at": checkpoint['created_at']
                 }
         
@@ -139,7 +151,7 @@ class StuckJobAnalyzer:
         # Find stage with longest duration
         bottleneck = max(
             stage_analysis.items(),
-            key=lambda x: x[1].get('duration_seconds', 0)
+            key=lambda x: x[1].get('duration_seconds') or 0
         )
         
         return bottleneck[0]

@@ -8,12 +8,11 @@ Author: Material Kai Vision Platform
 Created: 2025-10-27
 """
 
-import hashlib
 import logging
 import threading
 import uuid
 from collections import OrderedDict, deque
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 import json
 
@@ -39,6 +38,10 @@ _RECENT_LOG_KEYS_MAX = 512
 _dead_letter_usage_rows: deque = deque(maxlen=200)
 _dead_letter_lock = threading.Lock()
 
+#: Actions that mean the call did not produce a usable result. A row carrying one of
+#: these is a failure even when the caller passed no error text.
+_FAILED_ACTIONS = frozenset({"fallback_failed", "call_failed", "failed", "invalid_output"})
+
 
 class AICallLogger:
     """AI Call Logger Service"""
@@ -51,18 +54,13 @@ class AICallLogger:
         from app.services.integrations.credits_integration_service import get_credits_service
         self.credits_service = get_credits_service()
 
-    async def _debit(self, **kwargs) -> Optional[str]:
+    async def _debit(self, **kwargs) -> Tuple[Optional[str], Optional[str]]:
         """Debit AI credits and DON'T silently swallow a failure.
 
-        `debit_credits_for_ai_operation` returns {'success': False, ...} (it does not
-        raise) when the balance is exhausted or the RPC fails. The AI call already ran,
-        so we can't refuse it post-hoc — but a failed debit is unbilled revenue and must
-        be visible/alertable, not dropped. Log it at ERROR with enough context to recover.
-
-        Returns:
-            The `unbilled_reason` to persist on the log row, or None when the
-            debit actually succeeded. Returning it (rather than only logging)
-            is what makes unbilled spend a SQL question instead of a grep.
+        Returns `(unbilled_reason, usage_log_id)`. The reason is None when the debit
+        succeeded. `usage_log_id` is the ai_usage_logs row `debit_and_log_ai_usage`
+        wrote in the same transaction; `log_ai_call` completes that row instead of
+        inserting a second one for the same invocation.
         """
         try:
             result = await self.credits_service.debit_credits_for_ai_operation(**kwargs)
@@ -71,7 +69,8 @@ class AICallLogger:
                 "[ai_call_logger] credit debit raised (UNBILLED) user=%s op=%s model=%s: %s",
                 kwargs.get('user_id'), kwargs.get('operation_type'), kwargs.get('model_name'), e,
             )
-            return 'debit_raised'
+            return 'debit_raised', None
+        usage_log_id = result.get('usage_log_id') if isinstance(result, dict) else None
         if isinstance(result, dict) and result.get('success') is False:
             # Carry the RPC's own reason through instead of flattening everything to
             # 'debit_failed' (mivaa#17 M4-1). The reasons are not equivalent:
@@ -85,8 +84,8 @@ class AICallLogger:
                 reason, kwargs.get('user_id'), kwargs.get('operation_type'),
                 kwargs.get('model_name'), result.get('error') or result,
             )
-            return reason
-        return None
+            return reason, usage_log_id
+        return None, usage_log_id
 
     def _record_missing_principal(self, task: str, model: str, cost: float) -> str:
         """An AI call ran with nobody to bill. Record it on the row."""
@@ -120,6 +119,10 @@ class AICallLogger:
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
         unbilled_reason: Optional[str] = None,
+        cost_breakdown: Optional[Dict[str, Any]] = None,
+        image_pixels: Optional[int] = None,
+        usage_log_id: Optional[str] = None,
+        invocation_id: Optional[str] = None,
     ) -> bool:
         """
         Log an AI call to the database.
@@ -139,17 +142,22 @@ class AICallLogger:
             request_data: Optional request data for debugging
             response_data: Optional response data for debugging
             error_message: Optional error message if call failed
-            
+            cost_breakdown: Caller-priced cost (input/output/raw/markup/billed USD), for
+                calls the token table cannot price, e.g. multimodal pixels.
+            image_pixels: Pixels the provider billed, recorded on the usage row.
+            usage_log_id: The ai_usage_logs row the debit RPC already wrote for this
+                invocation; it is completed in place rather than duplicated.
+            invocation_id: One id per call. Content can repeat ($0 aspect rows), so
+                deduplication keys on this and never on the call's figures.
+
         Returns:
             bool: True if logged successfully, False otherwise
         """
         try:
-            # Idempotency guard: skip if this exact call was already logged by
-            # an earlier attempt of the retry decorator (insert committed
-            # server-side but the response timed out client-side).
-            idem_key = hashlib.sha1(
-                f"{task}|{model}|{job_id}|{input_tokens}|{output_tokens}|{latency_ms}|{cost}".encode()
-            ).hexdigest()
+            if error_message is None and action in _FAILED_ACTIONS:
+                error_message = f"call reported action={action}"
+            invocation_id = invocation_id or str(uuid.uuid4())
+            idem_key = invocation_id
             if idem_key in _recent_log_keys:
                 self.logger.info(
                     f"↩️ Skipping duplicate AI-call log (retry of committed insert): {task}/{model}"
@@ -157,6 +165,7 @@ class AICallLogger:
                 return True
 
             log_entry = {
+                "id": invocation_id,
                 "timestamp": datetime.utcnow().isoformat(),
                 "job_id": job_id,
                 "task": task,
@@ -219,7 +228,7 @@ class AICallLogger:
             # Audit fix #35: previously a single failed insert silently lost
             # the cost row. Now: 2 attempts, bump to ERROR on persistent
             # failure so operator sees cost-tracking gap.
-            cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens)
+            cost_data = cost_breakdown or ai_pricing.calculate_cost(model, input_tokens, output_tokens)
             # `calculate_cost` is TOKEN-based and returns $0 for GPU/time-based
             # endpoints (SLIG, PaddleOCR) which have 0 tokens. Those callers
             # (`log_time_based_call`) already computed the GPU-seconds cost and
@@ -227,9 +236,9 @@ class AICallLogger:
             # the mirror would silently bill $0 for every GPU call.
             _markup = float(cost_data.get("markup_multiplier", 1.5)) or 1.5
             _computed_billed = float(cost_data.get("billed_cost_usd", 0) or 0)
-            _billed = _computed_billed if _computed_billed > 0 else float(cost or 0)
+            _billed = _computed_billed if (cost_breakdown or _computed_billed > 0) else float(cost or 0)
             _computed_raw = float(cost_data.get("raw_cost_usd", 0) or 0)
-            _raw = _computed_raw if _computed_raw > 0 else (
+            _raw = _computed_raw if (cost_breakdown or _computed_raw > 0) else (
                 _billed / _markup if _markup else _billed
             )
             usage_entry = {
@@ -238,7 +247,7 @@ class AICallLogger:
                 # the same on every attempt or the replay of a write that DID commit
                 # books the spend twice — which is the failure the PostgREST retry patch
                 # refuses to risk, and this buffer was taking it by hand.
-                "id": str(uuid.uuid4()),
+                "id": str(uuid.uuid5(uuid.NAMESPACE_OID, f"ai_usage_logs:{invocation_id}")),
                 "user_id": user_id,
                 "workspace_id": workspace_id,
                 "operation_type": task,
@@ -267,8 +276,13 @@ class AICallLogger:
                     # Perplexity calls that were watched and duly caught at 401.
                     "success": error_message is None,
                     "error": error_message,
+                    "invocation_id": invocation_id,
+                    **({"image_pixels": int(image_pixels)} if image_pixels is not None else {}),
                 },
             }
+            if usage_log_id:
+                self._complete_debit_usage_row(usage_log_id, usage_entry)
+                return audit_ok
             mirror_attempt = 0
             last_mirror_err = None
             while mirror_attempt < 2:
@@ -302,6 +316,41 @@ class AICallLogger:
             # Don't fail the main operation if logging fails
             return False
     
+    def _complete_debit_usage_row(self, usage_log_id: str, usage_entry: Dict[str, Any]) -> None:
+        """Fill in the row the debit RPC wrote, instead of mirroring a second one.
+
+        The RPC owns credits and unbilled_reason; this adds what only the caller
+        knows: outcome, latency, attribution, and a cost the token table cannot price.
+        """
+        try:
+            existing = (
+                self.supabase.client.table("ai_usage_logs")
+                .select("metadata")
+                .eq("id", usage_log_id)
+                .limit(1)
+                .execute()
+            )
+            prior = ((existing.data or [{}])[0] or {}).get("metadata") or {}
+            patch = {
+                k: usage_entry[k]
+                for k in ("raw_cost_usd", "markup_multiplier", "billed_cost_usd",
+                          "input_cost_usd", "output_cost_usd", "job_id", "module_slug",
+                          "product_id", "image_id")
+                if usage_entry.get(k) is not None
+            }
+            patch["metadata"] = {**prior, **usage_entry["metadata"]}
+            (
+                self.supabase.client.table("ai_usage_logs")
+                .update(patch)
+                .eq("id", usage_log_id)
+                .execute()
+            )
+        except Exception as e:
+            self.logger.error(
+                f"❌ Could not complete debit usage row {usage_log_id} for "
+                f"{usage_entry.get('operation_type')}: {e}"
+            )
+
     def _flush_dead_letter_rows(self) -> None:
         """Retry buffered ai_usage_logs rows that failed their original insert.
 
@@ -390,8 +439,9 @@ class AICallLogger:
             # Debit credits, and record the outcome either way. The `if user_id:`
             # that used to wrap this was the whole of M3-2: with no principal the
             # branch was skipped and nothing — not even a marker — was written.
+            usage_log_id = None
             if user_id:
-                unbilled_reason = await self._debit(
+                unbilled_reason, usage_log_id = await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -428,6 +478,15 @@ class AICallLogger:
             else:
                 response_text = str(response)
 
+            # The provider billed the call either way, so the debit above stands; the
+            # row still has to say the reply was unusable.
+            from app.services.core.claude_tool_call import claude_reply_failure
+
+            reply_failure = claude_reply_failure(response, request_data)
+            if reply_failure:
+                action = "invalid_output"
+                confidence_score = 0.0
+
             return await self.log_ai_call(
                 task=task,
                 model=model,
@@ -438,6 +497,8 @@ class AICallLogger:
                 confidence_score=confidence_score,
                 confidence_breakdown=confidence_breakdown,
                 action=action,
+                error_message=reply_failure,
+                usage_log_id=usage_log_id,
                 job_id=job_id,
                 fallback_reason=fallback_reason,
                 request_data=request_data,
@@ -493,8 +554,9 @@ class AICallLogger:
                 # Apply markup manually
                 cost = float(cost_per_generation_usd) * float(ai_pricing.MARKUP_MULTIPLIER)
 
+            usage_log_id = None
             if user_id and cost > 0:
-                await self._debit(
+                _reason, usage_log_id = await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -524,6 +586,7 @@ class AICallLogger:
                 module_slug=module_slug,
                 product_id=product_id,
                 image_id=image_id,
+                usage_log_id=usage_log_id,
             )
         except Exception as e:
             self.logger.error(f"❌ Failed to log Replicate call: {e}")
@@ -545,6 +608,7 @@ class AICallLogger:
         module_slug: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
+        error_message: Optional[str] = None,
     ) -> bool:
         """
         Log a time-based (GPU endpoint) call: SLIG (Modal), PaddleOCR (Modal structural pass).
@@ -564,8 +628,9 @@ class AICallLogger:
             )
             cost = float(cost_data.get("billed_cost_usd", 0.0))
 
+            usage_log_id = None
             if user_id and cost > 0:
-                await self._debit(
+                _reason, usage_log_id = await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=task,
@@ -595,6 +660,8 @@ class AICallLogger:
                 module_slug=module_slug,
                 product_id=product_id,
                 image_id=image_id,
+                error_message=error_message,
+                usage_log_id=usage_log_id,
             )
         except Exception as e:
             self.logger.error(f"❌ Failed to log time-based call: {e}")
@@ -667,8 +734,9 @@ class AICallLogger:
                     "even attempted",
                     operation_type, url, credits_used,
                 )
+                usage_log_id = None
             else:
-                await self._debit(
+                _reason, usage_log_id = await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=f"firecrawl_{operation_type}",
@@ -708,9 +776,13 @@ class AICallLogger:
                 'created_at': datetime.utcnow().isoformat()
             }
 
-            repeatable_insert(
-                self.supabase.client, 'ai_usage_logs', log_data
-            ).execute()
+            log_data['metadata']['success'] = bool(success) and error_message is None
+            if usage_log_id:
+                self._complete_debit_usage_row(usage_log_id, log_data)
+            else:
+                repeatable_insert(
+                    self.supabase.client, 'ai_usage_logs', log_data
+                ).execute()
 
             self.logger.info(
                 f"✅ Logged Firecrawl {operation_type}: {credits_used} credits "
@@ -774,7 +846,7 @@ class AICallLogger:
         try:
             # Debit credits if user_id provided
             if user_id and success:
-                await self._debit(
+                _reason, _usage_log_id = await self._debit(
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type="vision_guided_extraction",

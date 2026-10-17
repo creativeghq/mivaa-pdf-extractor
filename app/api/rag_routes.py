@@ -22,7 +22,7 @@ import sentry_sdk
 from pydantic import BaseModel, Field, model_validator
 
 from app.config import get_settings
-from app.auth.workspace_resolution import billing_user_id
+from app.auth.workspace_resolution import SERVICE_SUBJECT, billing_user_id
 from app.services.search.rag_service import RAGService
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.products.product_creation_service import ProductCreationService
@@ -39,7 +39,7 @@ from app.schemas.api_responses import (
     CheckpointListResponse, RelevancyListResponse, StatsResponse,
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
-from app.dependencies import current_user_id, get_current_user, get_optional_workspace_context, resolve_workspace_id, verify_internal_access
+from app.dependencies import current_user_id, get_current_user, get_optional_workspace_context, require_workspace_capability, resolve_workspace_id, verify_internal_access
 from app.utils.untrusted_content import as_untrusted_data
 from app.utils.pdf_bounds import PdfBoundsError, assert_page_count
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
@@ -78,18 +78,12 @@ def _fail_job_terminally(job_id: str, reason: str, *, source: str) -> None:
         logger.error("Could not append terminal stage_history for %s: %s", job_id, e)
 
 
-async def require_rag_resource_access(
-    request: Request,
-    workspace_context = Depends(get_optional_workspace_context),
-):
-    """FastAPI dependency authorizing a caller against the workspace that owns the resource a
-    sensitive /api/rag route operates on — resolved from the request (job_id → background_jobs,
-    document_id → documents, path param or ?document_id query).
-    """
+async def _authorize_rag_resource(request: Request, workspace_context) -> Optional[str]:
+    """Return the workspace owning the job/document this route acts on, or None for cron."""
     cron_secret_header = (request.headers.get("x-cron-secret") or "").strip()
     expected_cron_secret = (os.getenv("CRON_SECRET") or "").strip()
     if expected_cron_secret and cron_secret_header == expected_cron_secret:
-        return  # trusted automation (auto-recovery cron)
+        return None
 
     if workspace_context is None:
         raise HTTPException(
@@ -113,15 +107,13 @@ async def require_rag_resource_access(
 
     try:
         sb = get_supabase_client()
-        row = sb.client.table(table).select("workspace_id").eq("id", str(id_value)).single().execute()
-        if not row.data:
+        row = sb.client.table(table).select("workspace_id").eq("id", str(id_value)).maybe_single().execute()
+        data = getattr(row, "data", None) if row else None
+        resource_ws = str((data or {}).get("workspace_id") or "")
+        # An unowned row is nobody's, not everybody's: only cron may touch it.
+        if not data or not resource_ws or resource_ws != str(workspace_context.workspace_id):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"{label} not found")
-        resource_ws = str(row.data.get("workspace_id") or "")
-        if resource_ws and resource_ws != str(workspace_context.workspace_id):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You are not a member of the workspace that owns this {label}.",
-            )
+        return resource_ws
     except HTTPException:
         raise
     except Exception as ownership_err:
@@ -133,6 +125,27 @@ async def require_rag_resource_access(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Could not verify {label} ownership; refusing the operation.",
         )
+
+
+async def require_rag_resource_access(
+    request: Request,
+    workspace_context = Depends(get_optional_workspace_context),
+):
+    """Authorize a caller against the workspace that owns the job/document of this route."""
+    await _authorize_rag_resource(request, workspace_context)
+
+
+def require_rag_resource_capability(capability: str):
+    """`require_rag_resource_access` plus a capability in the owning workspace."""
+    async def _dependency(
+        request: Request,
+        workspace_context = Depends(get_optional_workspace_context),
+    ):
+        resource_ws = await _authorize_rag_resource(request, workspace_context)
+        if resource_ws is None or workspace_context.user_id == SERVICE_SUBJECT:
+            return
+        await require_workspace_capability(workspace_context.user_id, resource_ws, capability)
+    return _dependency
 
 
 # ============================================================================
@@ -296,7 +309,7 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
     if doc_ids:
         try:
             docs = supabase_client.client.table('documents') \
-                .select('id, file_path, workspace_id') \
+                .select('id, file_path, workspace_id, metadata') \
                 .in_('id', doc_ids).execute()
             for d in (docs.data or []):
                 docs_by_id[d['id']] = d
@@ -319,7 +332,11 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
 
         doc_row = docs_by_id[doc_id]
         file_path = doc_row.get('file_path')
-        workspace_id = doc_row.get('workspace_id') or meta.get('workspace_id')
+        workspace_id = doc_row.get('workspace_id')
+        if not workspace_id:
+            logger.warning(f"   ⏭️  Skipping {job_id}: document has no workspace")
+            skipped_no_doc += 1
+            continue
 
         if not file_path or not os.path.exists(file_path):
             # Temp PDF was wiped (full host reboot, /tmp on tmpfs, etc.).
@@ -377,11 +394,6 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
             logger.error(f"   ❌ Failed to claim {job_id} for resume: {e}")
             continue
 
-        # Rehydrate orchestrator parameters from saved metadata.
-        categories = meta.get('categories') or ['products']
-        if isinstance(categories, str):
-            categories = [c.strip() for c in categories.split(',')]
-
         try:
             asyncio.create_task(
                 process_document_with_discovery(
@@ -389,23 +401,15 @@ async def _resume_recently_interrupted_jobs(supabase_client) -> None:
                     document_id=doc_id,
                     file_path=file_path,
                     filename=job.get('filename') or meta.get('filename') or 'resumed.pdf',
-                    title=meta.get('title'),
-                    description=meta.get('description'),
-                    document_tags=meta.get('tags') or [],
-                    discovery_model=meta.get('discovery_model') or 'claude-vision',
-                    extract_categories=categories,
-                    chunk_size=meta.get('chunk_size') or 1000,
-                    chunk_overlap=meta.get('chunk_overlap') or 200,
                     workspace_id=workspace_id,
-                    agent_prompt=meta.get('agent_prompt'),
-                    enable_prompt_enhancement=meta.get('prompt_enhancement_enabled', True),
-                    test_single_product=meta.get('test_single_product', False),
+                    **resume_dispatch_params(job, doc_row),
                 )
             )
             resumed += 1
             logger.info(f"   🚀 Resumed {job_id} (attempt {(job.get('recovery_attempts') or 0) + 1}/3)")
         except Exception as e:
             logger.error(f"   ❌ Failed to dispatch resume for {job_id}: {e}", exc_info=True)
+            _release_resume_claim(supabase_client, job_id, f"startup dispatch failed: {e}")
 
     logger.warning(
         f"🔄 Auto-resume summary: resumed={resumed}, "
@@ -694,6 +698,11 @@ async def upload_document(
                     ),
                 )
 
+        upload_user_id: Optional[str] = None
+        if workspace_context is not None and workspace_context.user_id != SERVICE_SUBJECT:
+            await require_workspace_capability(workspace_context.user_id, workspace_id, "catalog.import")
+            upload_user_id = billing_user_id({"sub": workspace_context.user_id})
+
         # Validate input: either file or file_url must be provided
         if not file and not file_url:
             raise HTTPException(
@@ -790,47 +799,40 @@ async def upload_document(
 
             # #250 H7/E: SSRF-guard the user-supplied URL (block internal/metadata hosts),
             # don't follow redirects, and cap the download size (memory-exhaustion defense).
-            from app.utils.ssrf_guard import assert_safe_url, SSRFError
+            from urllib.parse import unquote, urlparse
+            from app.utils.ssrf_guard import MAX_PDF_BYTES, ResponseTooLarge, SSRFError, safe_fetch_bytes
             try:
-                file_url = assert_safe_url(file_url)
+                fetched = await safe_fetch_bytes(
+                    file_url,
+                    max_bytes=MAX_PDF_BYTES,
+                    timeout=60.0,
+                    allow_schemes=("http", "https"),
+                    max_redirects=0,
+                )
+            except ResponseTooLarge:
+                raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                    detail="PDF exceeds the 100MB limit")
             except SSRFError as _e:
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"file_url is not allowed: {_e}")
-            _MAX_PDF_BYTES = 100 * 1024 * 1024  # 100MB (matches the documented cap)
-
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(file_url, timeout=aiohttp.ClientTimeout(total=60), allow_redirects=False) as response:
-                        if response.status != 200:
-                            raise HTTPException(
-                                status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"Failed to download PDF from URL: HTTP {response.status}"
-                            )
-                        if response.content_length and response.content_length > _MAX_PDF_BYTES:
-                            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                                                detail="PDF exceeds the 100MB limit")
-
-                        # Read at most _MAX_PDF_BYTES+1 so an unset/lied Content-Length can't
-                        # blow memory; reject if it overflows.
-                        file_content = await response.content.read(_MAX_PDF_BYTES + 1)
-                        if len(file_content) > _MAX_PDF_BYTES:
-                            raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                                                detail="PDF exceeds the 100MB limit")
-
-                        # Extract filename from URL or use default
-                        from urllib.parse import urlparse
-                        parsed_url = urlparse(file_url)
-                        filename = parsed_url.path.split('/')[-1] or "downloaded.pdf"
-
-                        if not filename.lower().endswith('.pdf'):
-                            filename += '.pdf'
-
-                        logger.info(f"✅ Downloaded {len(file_content)} bytes from URL")
-
-            except aiohttp.ClientError as e:
+            except Exception as e:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Failed to download PDF from URL: {str(e)}"
                 )
+            if fetched.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Failed to download PDF from URL: HTTP {fetched.status_code}"
+                )
+            file_content = fetched.content
+            if not file_content:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail="Downloaded PDF is empty")
+
+            filename = unquote(urlparse(file_url).path.split('/')[-1]) or "downloaded.pdf"
+            if not filename.lower().endswith('.pdf'):
+                filename += '.pdf'
+            logger.info(f"✅ Downloaded {len(file_content)} bytes from URL")
 
         # Generate IDs
         from uuid import uuid4
@@ -922,103 +924,63 @@ async def upload_document(
                     if tail.startswith("public/") or tail.startswith("sign/"):
                         tail = tail.split("/", 1)[1]
                     if "/" in tail:
+                        from urllib.parse import unquote as _unquote
                         storage_bucket, rest = tail.split("/", 1)
-                        storage_object_path = rest.split("?", 1)[0]
+                        # The signed URL percent-encodes the key; storage.objects.name is decoded.
+                        storage_object_path = _unquote(rest.split("?", 1)[0])
                 except Exception:
                     pass
 
-            supabase_client.client.table('documents').insert({
-                "id": document_id,
-                "workspace_id": workspace_id,
+            document_metadata = {
+                "title": title or filename,
+                "description": description or f"Document with {', '.join(category_list)} extraction",
+                "tags": document_tags,
+                "source": "consolidated_upload",
+                "categories": category_list,
+                "material_category": material_category,
+                "discovery_model": discovery_model,
+                "prompt_enhancement_enabled": enable_prompt_enhancement,
+                "agent_prompt": agent_prompt,
+                # Never file_url: a short-lived signed URL. Resume re-signs from bucket+path.
+            }
+            job_metadata = {
                 "filename": filename,
-                "content_type": "application/pdf",
-                "file_size": file_size,
-                "file_path": file_path,
-                "storage_bucket": storage_bucket,
-                "storage_object_path": storage_object_path,
-                "processing_status": "processing",
-                "metadata": {
-                    "title": title or filename,
-                    "description": description or f"Document with {', '.join(category_list)} extraction",
-                    "tags": document_tags,
-                    "source": "consolidated_upload",
-                    "categories": category_list,
-                    "material_category": material_category,
-                    "discovery_model": discovery_model,
-                    "prompt_enhancement_enabled": enable_prompt_enhancement,
-                    "agent_prompt": agent_prompt,
-                    # NOTE: do NOT persist file_url here. It is a short-lived
-                    # signed URL on a private bucket and will 403 the moment
-                    # the token expires. Resume reads (storage_bucket,
-                    # storage_object_path) and re-signs via service role.
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
+                "title": title,
+                "description": description,
+                "tags": document_tags,
+                "categories": category_list,
+                "extract_only_mode": extract_only_mode,
+                "material_category": material_category,
+                "discovery_model": discovery_model,
+                "prompt_enhancement_enabled": enable_prompt_enhancement,
+                "agent_prompt": agent_prompt,
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+                "test_single_product": test_single_product,
+            }
+            # documents + processed_documents + background_jobs in ONE transaction: three
+            # commits left a document stuck at 'processing' when the second or third failed.
+            supabase_client.client.rpc('create_document_upload_job', {
+                "p_document_id": document_id,
+                "p_job_id": job_id,
+                "p_workspace_id": workspace_id,
+                "p_user_id": upload_user_id,
+                "p_filename": filename,
+                "p_file_size": file_size,
+                "p_file_path": file_path,
+                "p_storage_bucket": storage_bucket,
+                "p_storage_object_path": storage_object_path,
+                "p_document_metadata": document_metadata,
+                "p_job_metadata": job_metadata,
             }).execute()
-            logger.info(f"✅ Created document record {document_id}")
+            logger.info(f"✅ Created document {document_id} + job {job_id}")
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"❌ Failed to create document record: {e}")
+            logger.error(f"❌ Failed to create document/job records: {e}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create document record: {str(e)}"
-            )
-
-        # Create processed_documents record (required for job_progress foreign key)
-        # Use upsert to handle cases where record already exists
-        try:
-            supabase_client.client.table('processed_documents').upsert({
-                "id": document_id,  # Use same ID as documents table
-                "workspace_id": workspace_id,
-                "pdf_document_id": document_id,
-                "content": "",  # Will be populated during processing
-                "processing_status": "processing",
-                "processing_started_at": datetime.utcnow().isoformat(),
-                "metadata": {
-                    "categories": category_list
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).execute()
-            logger.info(f"✅ Created/updated processed_documents record: {document_id}")
-        except Exception as proc_doc_error:
-            logger.error(f"❌ Failed to create processed_documents record: {proc_doc_error}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create processed_documents record: {str(proc_doc_error)}"
-            )
-
-        # Create background job record
-        try:
-            supabase_client.client.table('background_jobs').insert({
-                "id": job_id,
-                "filename": filename,
-                "job_type": "product_discovery_upload",  # CRITICAL: Must match resume logic check
-                "status": "processing",
-                "progress": 0,
-                "document_id": document_id,
-                "workspace_id": workspace_id,
-                "metadata": {
-                    "filename": filename,
-                    "categories": category_list,
-                    "material_category": material_category,
-                    "discovery_model": discovery_model,
-                    "prompt_enhancement_enabled": enable_prompt_enhancement,
-                    "agent_prompt": agent_prompt,
-                    # NOTE: do NOT persist file_url here — see documents.metadata
-                    # comment above. Resume uses storage_bucket/storage_object_path.
-                    "test_single_product": test_single_product  # 🧪 TEST MODE flag
-                },
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).execute()
-            logger.info(f"✅ Created background job record {job_id}")
-        except Exception as e:
-            logger.error(f"❌ Failed to create background job record: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create background job record: {str(e)}"
+                detail=f"Failed to create document/job records: {str(e)}"
             )
 
         # Start background processing with deep mode
@@ -1273,14 +1235,169 @@ async def get_job_checkpoints(job_id: str):
         )
 
 
-@router.post("/jobs/{job_id}/restart", response_model=StatusResponse, dependencies=[Depends(require_rag_resource_access)])
+def _release_resume_claim(supabase_client, job_id: str, reason: str) -> None:
+    """Hand a claimed-but-not-dispatched job back to recovery as 'interrupted'."""
+    try:
+        now_iso = datetime.utcnow().isoformat()
+        supabase_client.client.table('background_jobs').update({
+            'status': 'interrupted',
+            'interrupted_at': now_iso,
+            'updated_at': now_iso,
+            'error': f"Resume refused before dispatch: {reason}"[:1000],
+        }).eq('id', job_id).eq('status', 'processing').execute()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Could not release resume claim for {job_id}: {e}")
+
+
+def resume_dispatch_params(job_data: Dict[str, Any], doc_data: Dict[str, Any]) -> Dict[str, Any]:
+    """The upload parameters a resumed job must run with, read back from what upload stored."""
+    job_meta = job_data.get('metadata') or {}
+    doc_meta = doc_data.get('metadata') or {}
+    categories = job_meta.get('categories') or doc_meta.get('categories') or ['products']
+    if isinstance(categories, str):
+        categories = [c.strip() for c in categories.split(',') if c.strip()]
+    extract_only_mode = bool(job_meta.get('extract_only_mode')) or 'extract_only' in categories
+    return {
+        "title": job_meta.get('title') or doc_meta.get('title'),
+        "description": job_meta.get('description') or doc_meta.get('description'),
+        "document_tags": job_meta.get('tags') or doc_meta.get('tags') or [],
+        "discovery_model": (
+            job_meta.get('discovery_model') or doc_meta.get('discovery_model')
+            or get_settings().anthropic_model_validation
+        ),
+        "extract_categories": categories,
+        "extract_only_mode": extract_only_mode,
+        "chunk_size": job_meta.get('chunk_size') or 1000,
+        "chunk_overlap": job_meta.get('chunk_overlap') or 200,
+        "agent_prompt": job_meta.get('agent_prompt') or doc_meta.get('agent_prompt'),
+        "enable_prompt_enhancement": job_meta.get(
+            'prompt_enhancement_enabled', doc_meta.get('prompt_enhancement_enabled', True)
+        ),
+        "test_single_product": bool(job_meta.get('test_single_product', False)),
+    }
+
+
+async def _prepare_resume(supabase_client, job_id: str) -> Dict[str, Any]:
+    """Everything between the claim and the dispatch. Raises; the caller releases the claim."""
+    last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
+    if not last_checkpoint:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"No checkpoint found for job {job_id}")
+    try:
+        resume_stage = ProcessingStage(last_checkpoint.get('stage'))
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Checkpoint stage {last_checkpoint.get('stage')!r} is not resumable",
+        )
+    if not await checkpoint_recovery_service.verify_checkpoint_data(job_id, resume_stage):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Checkpoint data verification failed for stage {resume_stage.value}",
+        )
+
+    job_result = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
+    if not job_result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job {job_id} not found")
+    job_data = job_result.data[0]
+    document_id = job_data.get('document_id')
+    if not document_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Job {job_id} has no document")
+
+    doc_result = supabase_client.client.table('documents').select('*').eq('id', document_id).execute()
+    if not doc_result.data:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Document {document_id} not found")
+    doc_data = doc_result.data[0]
+
+    workspace_id = str(job_data.get('workspace_id') or doc_data.get('workspace_id') or '')
+    if not workspace_id or (
+        doc_data.get('workspace_id') and str(doc_data['workspace_id']) != workspace_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Job {job_id} and its document do not agree on a workspace; refusing to resume",
+        )
+
+    file_path = doc_data.get('file_path')
+    filename = doc_data.get('filename', 'document.pdf')
+    storage_bucket = doc_data.get('storage_bucket')
+    storage_object_path = doc_data.get('storage_object_path')
+
+    # A local temp path is gone after a restart; the canonical location is bucket + path.
+    if file_path and file_path.startswith('/tmp/'):
+        if not (storage_bucket and storage_object_path):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Document {document_id} has local temp file_path but no storage_bucket/storage_object_path. Cannot resume."
+            )
+        file_path = None
+    if not file_path and not (storage_bucket and storage_object_path):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Document {document_id} has no file_path or storage location"
+        )
+
+    logger.info(f"📥 Downloading file: bucket={storage_bucket} path={storage_object_path} fallback={file_path}")
+    if storage_bucket and storage_object_path:
+        file_content = supabase_client.client.storage.from_(storage_bucket).download(storage_object_path)
+    elif file_path.startswith('http://') or file_path.startswith('https://'):
+        # `documents.file_path` is a DB column: an invariant-7 fetch.
+        from app.utils.ssrf_guard import MAX_PDF_BYTES, SSRFError, safe_fetch_bytes
+
+        try:
+            fetched = await safe_fetch_bytes(
+                file_path, max_bytes=MAX_PDF_BYTES, timeout=60.0, allow_schemes=("http", "https"),
+            )
+        except SSRFError as ssrf_err:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Blocked document file_path: {ssrf_err}")
+        if not fetched.ok:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to download file from URL: HTTP {fetched.status_code}",
+            )
+        file_content = fetched.content
+    else:
+        # Legacy: file_path encodes "{bucket}/{key}"
+        bucket_name = file_path.split('/')[0] if '/' in file_path else 'pdf-documents'
+        storage_path = '/'.join(file_path.split('/')[1:]) if '/' in file_path else file_path
+        file_content = supabase_client.client.storage.from_(bucket_name).download(storage_path)
+    if not file_content:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"File not found in storage: {file_path}")
+
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+    temp_file.write(file_content)
+    temp_file.close()
+    local_path = temp_file.name
+    logger.info(f"✅ Saved {len(file_content)} bytes to temp file for resume: {local_path}")
+
+    resource_manager = get_resource_manager()
+    await resource_manager.register_resource(
+        resource_id=f"temp_pdf_{document_id}",
+        resource_type="file",
+        path=local_path,
+        job_id=job_id,
+        metadata={"document_id": document_id}
+    )
+
+    return {
+        "resume_stage": resume_stage,
+        "last_checkpoint": last_checkpoint,
+        "job_data": job_data,
+        "kwargs": {
+            "job_id": job_id,
+            "document_id": document_id,
+            "file_path": local_path,
+            "filename": filename,
+            "workspace_id": workspace_id,
+            **resume_dispatch_params(job_data, doc_data),
+        },
+    }
+
+
+@router.post("/jobs/{job_id}/restart", response_model=StatusResponse, dependencies=[Depends(require_rag_resource_capability("catalog.import"))])
 async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundTasks):
     """Manually restart a job from its last checkpoint."""
     try:
-        # Atomic claim — must run before any expensive work (file download,
-        # checkpoint verification). The .eq("status", "pending|interrupted")
-        # filter ensures only one of N concurrent callers wins; the rest
-        # fall through to the 409 path below.
+        # Atomic claim before any expensive work: only one of N concurrent callers wins.
         supabase_client = get_supabase_client()
         nowiso = datetime.utcnow().isoformat()
         claim_result = supabase_client.client.table('background_jobs').update({
@@ -1290,11 +1407,6 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         }).eq('id', job_id).in_('status', ['pending', 'interrupted']).execute()
 
         if not claim_result.data:
-            # Either job already 'processing' (someone else claimed it), or
-            # status='completed'/'failed' (no recovery needed), or row missing.
-            # 409 is correct because the operation isn't an error — another
-            # caller is running it. The cron path treats !ok as a soft fail
-            # and reverts pending→interrupted, so this is idempotent.
             row_check = supabase_client.client.table('background_jobs').select('id, status').eq('id', job_id).execute()
             if not row_check.data:
                 raise HTTPException(
@@ -1308,291 +1420,69 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
                 detail=f"Job {job_id} is in status '{existing_status}' — cannot resume (another caller may have claimed it)"
             )
 
-        # Get last checkpoint
-        last_checkpoint = await checkpoint_recovery_service.get_last_checkpoint(job_id)
-
-        if not last_checkpoint:
-            # We claimed the row but there's no checkpoint to resume from.
-            # Revert the claim so the row's status doesn't stay 'processing'
-            # with no orchestrator. The auto-recovery cron will then
-            # eventually fail-out the job via fail_exhausted_pdf_jobs once
-            # the stuck threshold elapses.
-            try:
-                supabase_client.client.table('background_jobs').update({
-                    'status': 'interrupted',
-                    'interrupted_at': datetime.utcnow().isoformat(),
-                }).eq('id', job_id).execute()
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No checkpoint found for job {job_id}"
-            )
-
-        # Verify checkpoint data exists
-        resume_stage_str = last_checkpoint.get('stage')
-        resume_stage = ProcessingStage(resume_stage_str)
-        can_resume = await checkpoint_recovery_service.verify_checkpoint_data(job_id, resume_stage)
-
-        if not can_resume:
-            try:
-                supabase_client.client.table('background_jobs').update({
-                    'status': 'interrupted',
-                    'interrupted_at': datetime.utcnow().isoformat(),
-                }).eq('id', job_id).execute()
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Checkpoint data verification failed for stage {resume_stage}"
-            )
-
-        # Get full job details from database (claim_result.data[0] is also valid
-        # but a fresh read avoids any chance of stale fields between the claim
-        # update and the rest of this handler).
-        job_result = supabase_client.client.table('background_jobs').select('*').eq('id', job_id).execute()
-
-        if not job_result.data or len(job_result.data) == 0:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Job {job_id} not found in database"
-            )
-
-        job_data = job_result.data[0]
-        document_id = job_data['document_id']
-
-        # NOTE: status='processing' is intentionally NOT flipped here. The
-        # previous ordering set the flag BEFORE the download / temp-file
-        # write, so transient Storage 5xx or /tmp-full errors left the row
-        # at status='processing' with no orchestrator running. Auto-recovery
-        # cron then back-offs (waiting for stuck-threshold) instead of
-        # immediately reclaiming.
-
-        # Re-trigger the processing pipeline; process_document_with_discovery resumes from the checkpoint.
-
-        # Get the file content from storage
+        # Every refusal between the claim and the dispatch hands the claim back, or the
+        # row says 'processing' with no orchestrator behind it.
         try:
-            # Get document details
-            doc_result = supabase_client.client.table('documents').select('*').eq('id', document_id).execute()
-            if not doc_result.data or len(doc_result.data) == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Document {document_id} not found"
-                )
-
-            doc_data = doc_result.data[0]
-            file_path = doc_data.get('file_path')
-            filename = doc_data.get('filename', 'document.pdf')
-            doc_data.get('metadata', {})
-            storage_bucket = doc_data.get('storage_bucket')
-            storage_object_path = doc_data.get('storage_object_path')
-
-            # If file_path points at a local temp file (gone after pod restart),
-            # fall back to canonical (storage_bucket, storage_object_path). The
-            # previously-persisted metadata.file_url is intentionally NOT read
-            # here — it was a short-lived signed URL and would have expired by
-            # the time auto-recovery runs.
-            if file_path and file_path.startswith('/tmp/'):
-                if storage_bucket and storage_object_path:
-                    logger.info(
-                        f"⚠️ file_path is local temp file ({file_path}); "
-                        f"resolving from storage bucket={storage_bucket} path={storage_object_path}"
-                    )
-                    file_path = None  # force the storage-download branch below
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Document {document_id} has local temp file_path but no storage_bucket/storage_object_path. Cannot resume."
-                    )
-
-            if not file_path and not (storage_bucket and storage_object_path):
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Document {document_id} has no file_path or storage location"
-                )
-
-            # Download file from storage or URL
-            logger.info(f"📥 Downloading file: bucket={storage_bucket} path={storage_object_path} fallback={file_path}")
-
-            if storage_bucket and storage_object_path:
-                # Service-role download from the canonical storage location.
-                # Bypasses signed-URL TTLs entirely.
-                file_response = supabase_client.client.storage.from_(storage_bucket).download(storage_object_path)
-            elif file_path and (file_path.startswith('http://') or file_path.startswith('https://')):
-                # Legacy URL-based path (pre-storage_object_path migration).
-                # `documents.file_path` is a DB column, so this is an invariant-7 fetch:
-                # guarded helper, every redirect hop re-validated, body capped while
-                # streaming at the same limit upload accepts.
-                from app.utils.ssrf_guard import MAX_PDF_BYTES, SSRFError, safe_fetch_bytes
-
-                try:
-                    fetched = await safe_fetch_bytes(
-                        file_path,
-                        max_bytes=MAX_PDF_BYTES,
-                        timeout=60.0,
-                        allow_schemes=("http", "https"),
-                    )
-                except SSRFError as ssrf_err:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Blocked document file_path: {ssrf_err}",
-                    )
-                if not fetched.ok:
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail=f"Failed to download file from URL: HTTP {fetched.status_code}",
-                    )
-                file_response = fetched.content
-                logger.info(f"✅ Downloaded file from URL: {len(file_response)} bytes")
-            else:
-                # Legacy: file_path encodes "{bucket}/{key}"
-                bucket_name = file_path.split('/')[0] if '/' in file_path else 'pdf-documents'
-                storage_path = '/'.join(file_path.split('/')[1:]) if '/' in file_path else file_path
-                file_response = supabase_client.client.storage.from_(bucket_name).download(storage_path)
-            if not file_response:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"File not found in storage: {file_path}"
-                )
-
-            file_content = file_response
-            logger.info(f"✅ Downloaded file: {len(file_content)} bytes")
-
-            # STREAMING REFACTOR: Save to temp file for processing
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
-            temp_file.write(file_content)
-            temp_file.close()
-            # Update file_path to point to local temp file
-            file_path = temp_file.name
-            logger.info(f"✅ Saved to temp file for processing: {file_path}")
-
-            # Register with resource manager for lifecycle control
-            resource_manager = get_resource_manager()
-            await resource_manager.register_resource(
-                resource_id=f"temp_pdf_{document_id}",
-                resource_type="file",
-                path=file_path,
-                job_id=job_id,
-                metadata={"document_id": document_id}
-            )
-            logger.info(f"✅ Registered temp PDF with ResourceManager: {file_path}")
-            
-            # Free memory
-            file_content = None
-
-            # Initialize job in job_storage (CRITICAL: required by process_document_with_discovery)
-            import time as _time
-            _evict_expired_job_storage()
-            job_storage[job_id] = {
-                "job_id": job_id,
-                "document_id": document_id,
-                "status": "processing",
-                "progress": job_data.get('progress', 0),
-                "metadata": job_data.get('metadata', {})
-            }
-            _job_storage_inserted_at[job_id] = _time.monotonic()
-            logger.info(f"✅ Job {job_id} added to job_storage for resume")
-
-            # CONSOLIDATED: All jobs now use process_document_with_discovery
-            # This pipeline handles checkpoint recovery and continues from where it left off
-            job_type = job_data.get('job_type', 'document_upload')
-            logger.info(f"🔄 Resuming job {job_id} (type: {job_type}) using unified discovery pipeline")
-
-            # Extract parameters from job metadata (works for both legacy and discovery jobs)
-            job_metadata = job_data.get('metadata', {})
-            discovery_model = job_metadata.get('discovery_model') or get_settings().anthropic_model_validation
-            categories = job_metadata.get('categories', ['products'])
-            enable_prompt_enhancement = job_metadata.get('prompt_enhancement_enabled', False)
-            agent_prompt = job_metadata.get('agent_prompt')
-            test_single_product = job_metadata.get('test_single_product', False)
-
-            logger.info(f"   Resume parameters: discovery_model={discovery_model}, categories={categories}, test_mode={test_single_product}")
-
-            background_tasks.add_task(
-                run_async_in_background(process_document_with_discovery),
-                job_id=job_id,
-                document_id=document_id,
-                file_path=file_path,
-                filename=filename,
-                workspace_id=doc_data.get('workspace_id') or get_settings().default_workspace_id,
-                title=doc_data.get('title'),
-                description=doc_data.get('description'),
-                document_tags=doc_data.get('tags', []),
-                discovery_model=discovery_model,
-                extract_categories=categories,
-                chunk_size=1000,
-                chunk_overlap=200,
-                agent_prompt=agent_prompt,
-                enable_prompt_enhancement=enable_prompt_enhancement,
-                test_single_product=test_single_product
+            prepared = await _prepare_resume(supabase_client, job_id)
+        except HTTPException as refusal:
+            _release_resume_claim(supabase_client, job_id, str(refusal.detail))
+            raise
+        except Exception as e:
+            logger.error(f"Resume preparation failed for {job_id}: {e}", exc_info=True)
+            _release_resume_claim(supabase_client, job_id, str(e))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to prepare restart: {str(e)}"
             )
 
-            # Status is already 'processing' from the atomic claim at the top
-            # of this handler. We just need to record the restart context
-            # (clear `error`, stamp `started_at`, append restart metadata).
-            # Audit fix (this PR): use merge_background_job_metadata RPC for
-            # the metadata write so we don't read-modify-write — concurrent
-            # heartbeat / stage_history updates were racing with this overwrite.
+        resume_stage = prepared["resume_stage"]
+        job_data = prepared["job_data"]
+        kwargs = prepared["kwargs"]
+
+        import time as _time
+        _evict_expired_job_storage()
+        job_storage[job_id] = {
+            "job_id": job_id,
+            "document_id": kwargs["document_id"],
+            "status": "processing",
+            "progress": job_data.get('progress', 0),
+            "metadata": job_data.get('metadata', {})
+        }
+        _job_storage_inserted_at[job_id] = _time.monotonic()
+
+        logger.info(
+            f"🔄 Resuming job {job_id} from {resume_stage.value}: categories={kwargs['extract_categories']}, "
+            f"extract_only={kwargs['extract_only_mode']}, test_mode={kwargs['test_single_product']}"
+        )
+        background_tasks.add_task(run_async_in_background(process_document_with_discovery), **kwargs)
+
+        try:
             supabase_client.client.table('background_jobs').update({
                 "error": None,
                 "interrupted_at": None,
                 "started_at": datetime.utcnow().isoformat(),
                 "updated_at": datetime.utcnow().isoformat(),
             }).eq('id', job_id).execute()
-            try:
-                supabase_client.client.rpc(
-                    'merge_background_job_metadata',
-                    {
-                        'p_job_id': job_id,
-                        'p_metadata': {
-                            "restart_from_stage": resume_stage.value,
-                            "restart_reason": "manual_restart",
-                            "restart_at": datetime.utcnow().isoformat(),
-                        },
+            supabase_client.client.rpc(
+                'merge_background_job_metadata',
+                {
+                    'p_job_id': job_id,
+                    'p_metadata': {
+                        "restart_from_stage": resume_stage.value,
+                        "restart_reason": "manual_restart",
+                        "restart_at": datetime.utcnow().isoformat(),
                     },
-                ).execute()
-            except Exception as e:
-                logger.warning(f"merge_background_job_metadata failed for {job_id}: {e}")
-
-            logger.info(f"✅ Job {job_id} marked for restart from {resume_stage} and background task triggered (type: {job_type})")
-
-        except HTTPException:
-            # Audit fix (this PR): the atomic claim above flipped status to
-            # 'processing'. If the file-download path raises, no orchestrator
-            # is running but the row says we're processing — auto-recovery
-            # waits the full stuck threshold before reclaiming. Revert the
-            # claim so the cron sees an 'interrupted' row immediately.
-            try:
-                supabase_client.client.table('background_jobs').update({
-                    'status': 'interrupted',
-                    'interrupted_at': datetime.utcnow().isoformat(),
-                    'updated_at': datetime.utcnow().isoformat(),
-                }).eq('id', job_id).eq('status', 'processing').execute()
-            except Exception:
-                pass
-            raise
+                },
+            ).execute()
         except Exception as e:
-            logger.error(f"Failed to download file for restart: {e}", exc_info=True)
-            try:
-                supabase_client.client.table('background_jobs').update({
-                    'status': 'interrupted',
-                    'interrupted_at': datetime.utcnow().isoformat(),
-                    'updated_at': datetime.utcnow().isoformat(),
-                    'error': f"Resume download failed: {str(e)[:1000]}",
-                }).eq('id', job_id).eq('status', 'processing').execute()
-            except Exception:
-                pass
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to download file for restart: {str(e)}"
-            )
+            logger.warning(f"Restart bookkeeping failed for {job_id} (job is dispatched): {e}")
 
         return JSONResponse(content={
             "success": True,
-            "message": f"Job restarted from checkpoint: {resume_stage}",
+            "message": f"Job restarted from checkpoint: {resume_stage.value}",
             "job_id": job_id,
             "restart_stage": resume_stage.value,
-            "checkpoint_data": last_checkpoint.get('checkpoint_data', {})
+            "checkpoint_data": prepared["last_checkpoint"].get('checkpoint_data', {})
         })
 
     except HTTPException:
@@ -1605,69 +1495,22 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
         )
 
 
-@router.post("/documents/job/{job_id}/resume", response_model=StatusResponse)
-async def resume_job(
-    job_id: str,
-    background_tasks: BackgroundTasks,
-    request: Request,
-    workspace_context = Depends(get_optional_workspace_context),
-):
-    """Resume a job from its last checkpoint (alias for restart)."""
-    # Cron bypass: if the call carries a valid x-cron-secret header, skip the
-    # workspace ownership check. This is the only path the supabase
-    # `auto-recovery-cron` edge function uses.
-    import os as _os
-    cron_secret_header = (request.headers.get("x-cron-secret") or "").strip()
-    expected_cron_secret = (_os.getenv("CRON_SECRET") or "").strip()
-    is_cron_call = bool(expected_cron_secret) and cron_secret_header == expected_cron_secret
-
-    if not is_cron_call:
-        # Non-cron callers MUST authenticate with a JWT.
-        if workspace_context is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=(
-                    "Authentication required. Provide a Bearer JWT, or an "
-                    "x-cron-secret header for trusted automated recovery."
-                ),
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        # Enforce workspace ownership.
-        try:
-            supabase_client = get_supabase_client()
-            job_row = supabase_client.client.table('background_jobs') \
-                .select('workspace_id') \
-                .eq('id', job_id) \
-                .single().execute()
-            if not job_row.data:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Job {job_id} not found",
-                )
-            job_ws = str(job_row.data.get('workspace_id') or '')
-            if job_ws and job_ws != str(workspace_context.workspace_id):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You are not a member of the workspace that owns this job.",
-                )
-        except HTTPException:
-            raise
-        except Exception as ownership_err:
-            # Don't let a DB hiccup turn into a silent bypass.
-            logger.error(f"resume_job: ownership check raised: {ownership_err}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Could not verify job ownership; refusing resume.",
-            )
-
+@router.post(
+    "/documents/job/{job_id}/resume",
+    response_model=StatusResponse,
+    dependencies=[Depends(require_rag_resource_capability("catalog.import"))],
+)
+async def resume_job(job_id: str, background_tasks: BackgroundTasks):
+    """Resume a job from its last checkpoint (alias for restart). Cron passes x-cron-secret."""
     return await restart_job_from_checkpoint(job_id, background_tasks)
 
 
-@router.post("/documents/{document_id}/reprocess", dependencies=[Depends(require_rag_resource_access)])
+@router.post("/documents/{document_id}/reprocess", dependencies=[Depends(require_rag_resource_capability("catalog.import"))])
 async def reprocess_document(
     document_id: str,
     background_tasks: BackgroundTasks,
     clear_intermediate: bool = True,
+    workspace_context = Depends(get_optional_workspace_context),
 ) -> Dict[str, Any]:
     """Full Stage 0→4.7 reprocess of an existing document without re-uploading
     the PDF. Use this to validate pipeline changes against a known document.
@@ -1717,10 +1560,10 @@ async def reprocess_document(
                     "one is in flight — wait for it to finish, or cancel it first."
                 ),
             )
-        prev_job_meta = prev_job.get("metadata") or {}
+        if not workspace_id:
+            raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
 
-        discovery_model = prev_job_meta.get("discovery_model") or get_settings().anthropic_model_validation
-        extract_categories = prev_job_meta.get("extract_categories") or []
+        params = resume_dispatch_params(prev_job, doc)
 
         # ── 2. Resolve PDF on disk ─────────────────────────────────────
         from app.services.products.product_spec_vision_extractor import _get_source_pdf_path
@@ -1735,92 +1578,111 @@ async def reprocess_document(
                 ),
             )
 
-        # ── 3. Clear intermediate data (optional) ──────────────────────
-        if clear_intermediate:
-            logger.info(f"🧹 reprocess: clearing intermediate data for {document_id}")
-
-            # A SELECT of this document's product ids used to sit here, commented
-            # "so we can delete their joins" — and nothing ever deleted a join with
-            # them. A read whose result was discarded, so removing it changes no
-            # behaviour. NOTE the intent it recorded was never implemented: if
-            # product join rows do need clearing on reprocess, that is a real gap and
-            # not something this cleanup should invent a fix for.
-
-            # 3a. VECS embeddings — these are NOT FK-cascaded from
-            # document_images / products. Without explicit cleanup the
-            # vector index keeps returning hits to deleted rows and the
-            # next reprocess writes new vectors alongside the stale ones.
-            try:
-                from app.services.embeddings.vecs_service import get_vecs_service
-                vecs = get_vecs_service()
-                vec_count = await vecs.delete_document_embeddings(document_id)
-                logger.info(f"🧹 reprocess: cleared {vec_count} VECS embeddings for {document_id}")
-            except Exception as vec_err:
-                logger.warning(f"reprocess: VECS cleanup failed (continuing): {vec_err}")
-
-            # 3b. Storage objects — pdf-tiles under extracted/{document_id}/.
-            # The original PDF is preserved (we need it on disk to reprocess).
-            # We deliberately do NOT call cleanup_document_storage here, since
-            # the trigger on the documents row would also try to fire if we
-            # ended up touching the row. Use cleanup_storage_bucket directly.
-            try:
-                from app.services.utilities.cleanup_service import CleanupService
-                cs = CleanupService()
-                tiles_deleted = cs.cleanup_storage_bucket(
-                    "pdf-tiles", f"extracted/{document_id}", supabase
-                )
-                legacy_deleted = cs.cleanup_storage_bucket(
-                    "documents", document_id, supabase
-                )
-                logger.info(
-                    f"🧹 reprocess: deleted {tiles_deleted + legacy_deleted} extracted tiles"
-                )
-            except Exception as storage_err:
-                logger.warning(f"reprocess: storage cleanup failed (continuing): {storage_err}")
-
-            # 3c. Tables. document_images delete fires the per-row trigger
-            # which scrubs any image_url that points at a storage object —
-            # so any stragglers the prefix-based delete missed get cleaned
-            # row-by-row.
-            #
-            # image_product_associations / kb_doc_attachments cascade off
-            # both products and document_images, so they go automatically.
-            supabase.client.table("products") \
-                .delete().eq("source_document_id", document_id).execute()
-            supabase.client.table("document_chunks") \
-                .delete().eq("document_id", document_id).execute()
-            supabase.client.table("document_images") \
-                .delete().eq("document_id", document_id).execute()
-
-            # stage_history lives on background_jobs.stage_history.
-            # We're spawning a brand-new job row below; the old row's
-            # history stays as audit data and naturally drops out of any
-            # job-id-scoped queries. Nothing to clear here.
-
-            # Wipe the Layer 1/2 cached output on the document so they re-run
-            doc_metadata.pop("catalog_layout", None)
-            doc_metadata.pop("catalog_legends", None)
-            supabase.client.table("documents") \
-                .update({"metadata": doc_metadata}).eq("id", document_id).execute()
-
-        # ── 4. Create a fresh background_jobs row ──────────────────────
+        # ── 3. The job row BEFORE anything is deleted: a failed insert must leave
+        # the document's outputs intact rather than wiped with no job to rebuild them.
         new_job_id = str(uuid.uuid4())
+        caller_id = getattr(workspace_context, "user_id", None)
         supabase.client.table("background_jobs").insert({
             "id": new_job_id,
             "document_id": document_id,
             "workspace_id": workspace_id,
+            "user_id": billing_user_id({"sub": caller_id}) if caller_id else None,
             "job_type": "pdf_processing",
-            "status": "pending",
+            "status": "processing",
             "progress": 0,
             "filename": filename,
-            "discovery_model": discovery_model,
-            "extract_categories": extract_categories,
             "metadata": {
+                "filename": filename,
+                "title": params["title"],
+                "description": params["description"],
+                "tags": params["document_tags"],
+                "categories": params["extract_categories"],
+                "extract_only_mode": params["extract_only_mode"],
+                "discovery_model": params["discovery_model"],
+                "prompt_enhancement_enabled": params["enable_prompt_enhancement"],
+                "agent_prompt": params["agent_prompt"],
+                "chunk_size": params["chunk_size"],
+                "chunk_overlap": params["chunk_overlap"],
+                "test_single_product": False,
                 "reprocess_of": prev_job.get("id"),
                 "triggered_by": "reprocess_endpoint",
                 "clear_intermediate": clear_intermediate,
             },
         }).execute()
+
+        # ── 4. Clear intermediate data (optional) ──────────────────────
+        try:
+            if clear_intermediate:
+                logger.info(f"🧹 reprocess: clearing intermediate data for {document_id}")
+
+                # A SELECT of this document's product ids used to sit here, commented
+                # "so we can delete their joins" — and nothing ever deleted a join with
+                # them. A read whose result was discarded, so removing it changes no
+                # behaviour. NOTE the intent it recorded was never implemented: if
+                # product join rows do need clearing on reprocess, that is a real gap and
+                # not something this cleanup should invent a fix for.
+
+                # 3a. VECS embeddings — these are NOT FK-cascaded from
+                # document_images / products. Without explicit cleanup the
+                # vector index keeps returning hits to deleted rows and the
+                # next reprocess writes new vectors alongside the stale ones.
+                try:
+                    from app.services.embeddings.vecs_service import get_vecs_service
+                    vecs = get_vecs_service()
+                    vec_count = await vecs.delete_document_embeddings(document_id)
+                    logger.info(f"🧹 reprocess: cleared {vec_count} VECS embeddings for {document_id}")
+                except Exception as vec_err:
+                    logger.warning(f"reprocess: VECS cleanup failed (continuing): {vec_err}")
+
+                # 3b. Storage objects — pdf-tiles under extracted/{document_id}/.
+                # The original PDF is preserved (we need it on disk to reprocess).
+                # We deliberately do NOT call cleanup_document_storage here, since
+                # the trigger on the documents row would also try to fire if we
+                # ended up touching the row. Use cleanup_storage_bucket directly.
+                try:
+                    from app.services.utilities.cleanup_service import CleanupService
+                    cs = CleanupService()
+                    tiles_deleted = cs.cleanup_storage_bucket(
+                        "pdf-tiles", f"extracted/{document_id}", supabase
+                    )
+                    legacy_deleted = cs.cleanup_storage_bucket(
+                        "documents", document_id, supabase
+                    )
+                    logger.info(
+                        f"🧹 reprocess: deleted {tiles_deleted + legacy_deleted} extracted tiles"
+                    )
+                except Exception as storage_err:
+                    logger.warning(f"reprocess: storage cleanup failed (continuing): {storage_err}")
+
+                # 3c. Tables. document_images delete fires the per-row trigger
+                # which scrubs any image_url that points at a storage object —
+                # so any stragglers the prefix-based delete missed get cleaned
+                # row-by-row.
+                #
+                # image_product_associations / kb_doc_attachments cascade off
+                # both products and document_images, so they go automatically.
+                supabase.client.table("products") \
+                    .delete().eq("source_document_id", document_id).execute()
+                supabase.client.table("document_chunks") \
+                    .delete().eq("document_id", document_id).execute()
+                supabase.client.table("document_images") \
+                    .delete().eq("document_id", document_id).execute()
+
+                # stage_history lives on background_jobs.stage_history.
+                # We're spawning a brand-new job row below; the old row's
+                # history stays as audit data and naturally drops out of any
+                # job-id-scoped queries. Nothing to clear here.
+
+                # Wipe the Layer 1/2 cached output on the document so they re-run
+                doc_metadata.pop("catalog_layout", None)
+                doc_metadata.pop("catalog_legends", None)
+                supabase.client.table("documents") \
+                    .update({"metadata": doc_metadata}).eq("id", document_id).execute()
+        except Exception as cleanup_err:
+            _fail_job_terminally(
+                new_job_id, f"Reprocess cleanup failed: {cleanup_err}", source="reprocess_cleanup",
+            )
+            raise
 
         # ── 5. Kick off process_document_with_discovery in the background
         background_tasks.add_task(
@@ -1829,17 +1691,8 @@ async def reprocess_document(
             document_id=document_id,
             file_path=pdf_path,
             filename=filename,
-            title=doc_metadata.get("title") or filename,
-            description=doc_metadata.get("description") or "",
-            document_tags=doc_metadata.get("tags") or [],
-            discovery_model=discovery_model,
-            extract_categories=extract_categories,
-            chunk_size=1000,
-            chunk_overlap=200,
             workspace_id=workspace_id,
-            agent_prompt=doc_metadata.get("agent_prompt"),
-            enable_prompt_enhancement=True,
-            test_single_product=False,
+            **{**params, "title": params["title"] or filename, "test_single_product": False},
         )
 
         logger.info(
@@ -1949,7 +1802,7 @@ async def list_jobs(
         )
 
 
-@router.delete("/documents/jobs/{job_id}", dependencies=[Depends(require_rag_resource_access)])
+@router.delete("/documents/jobs/{job_id}", dependencies=[Depends(require_rag_resource_capability("workspace.manage"))])
 async def delete_job(
     job_id: str,
     preserve_outputs: Optional[bool] = Query(
@@ -2751,6 +2604,7 @@ async def process_document_with_discovery(
     # failed debit is money already spent and the logger can only record "UNBILLED". A
     # 0-credit account could therefore upload a large PDF and have the platform absorb the
     # entire multi-dollar job. (audit #286)
+    _job_user = None
     try:
         _min_credits = float(os.getenv("PDF_JOB_MIN_CREDITS", "10"))
         # Own client binding: the module-level name `supabase` is not bound until much later in
@@ -4222,6 +4076,7 @@ async def process_document_with_discovery(
                         document_id=document_id,
                         workspace_id=workspace_id,
                         job_id=job_id,
+                        user_id=str(_job_user) if _job_user else None,
                     ),
                     # Bounded so a Voyage outage cannot hold the whole job open: the
                     # per-page rows already written stay, and the backfill picks up
@@ -4379,7 +4234,10 @@ async def process_document_with_discovery(
 
         # Mark job as failed using tracker
         if 'tracker' in locals():
-            await tracker.fail_job(error=e)
+            try:
+                await tracker.fail_job(error=e)
+            except Exception as persist_err:
+                logger.error(f"❌ {persist_err}", exc_info=True)
 
         # Flip the document record so it stops showing as 'processing' forever.
         try:
@@ -4624,6 +4482,44 @@ async def chat_with_documents(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Chat processing failed: {str(e)}"
         )
+
+
+def search_failure(results: Any) -> Optional[str]:
+    """The error a rag_service search reported, or None. An error with no results is a
+    failed search, never an empty one."""
+    if not isinstance(results, dict):
+        return "search returned no result object"
+    error = results.get('error')
+    if error and not results.get('results'):
+        return str(error)
+    return None
+
+
+def redact_internal_fields(supabase_client, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop every internal key (cost, markup, supplier price…) at any depth, per the
+    registry's `redact_internal_product_fields`. Fails closed: no verdict, no results."""
+    if not results:
+        return results
+    import json as _json
+
+    try:
+        payload = _json.loads(_json.dumps(results, default=str))
+        redacted = supabase_client.client.rpc(
+            'redact_internal_product_fields', {'p_data': payload}
+        ).execute()
+    except Exception as e:
+        logger.error(f"Search result redaction failed; withholding results: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search results could not be checked for internal fields; refusing to return them.",
+        )
+    data = getattr(redacted, 'data', None)
+    if not isinstance(data, list) or len(data) != len(results):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Search results could not be checked for internal fields; refusing to return them.",
+        )
+    return data
 
 
 async def _enhance_search_results(
@@ -4923,6 +4819,13 @@ async def search_documents(
         # Combined search time (vector + fulltext + scoring all happen inside rag_service)
         stage_timings['vector_search_ms'] = int((_time.time() - _t_search_start) * 1000)
 
+        search_error = search_failure(results)
+        if search_error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Search failed: {search_error}",
+            )
+
         # Get raw results
         raw_results = results.get('results', [])
 
@@ -4959,6 +4862,8 @@ async def search_documents(
                 if isinstance(_r, dict):
                     _r.pop('content', None)
 
+        enhanced_results = redact_internal_fields(supabase_client, enhanced_results)
+
         stage_timings['enhancement_ms'] = int((_time.time() - _t_enhancement_start) * 1000)
         stage_timings['total_ms'] = int((_time.time() - _t_total_start) * 1000)
 
@@ -4994,6 +4899,10 @@ async def search_documents(
             'weight_profile': weight_profile,
             'dynamic_weights': dynamic_weights,
         }
+        # Partial source failures are surfaced, never read as "no matches there".
+        for _flag in ('degraded', 'sources_failed', 'source_errors'):
+            if results.get(_flag):
+                search_metadata[_flag] = results[_flag]
 
         # Add parallel execution metadata for 'all' strategy
         if strategy == "all":
@@ -5923,8 +5832,11 @@ async def search_knowledge_base(
                             }
                         })
 
+                results["products"] = redact_internal_fields(get_supabase_client(), results["products"])
                 logger.info(f"   ✅ Found {len(results['products'])} products")
 
+            except HTTPException:
+                raise
             except Exception as e:
                 # A failed branch is not an empty one (#29 M15-4). The response used to
                 # carry counts and no per-branch status, so an RPC error, an embedding

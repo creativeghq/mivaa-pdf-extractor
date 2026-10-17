@@ -363,6 +363,33 @@ def _classify_page(
     return ("other", [])
 
 
+def _cache_text_by_sheet(
+    pdf_path: str,
+    physical_texts: Dict[int, str],
+    total_sheets: int,
+) -> Dict[int, str]:
+    """Regroup 1-based physical-page cache text onto 0-based PDF sheets (a spread holds two)."""
+    if not physical_texts:
+        return {}
+    try:
+        from app.utils.pdf_to_images import analyze_pdf_layout
+        physical_to_pdf = analyze_pdf_layout(pdf_path).physical_to_pdf_map or {}
+    except Exception as e:
+        logger.warning(f"catalog_layout_analyzer: spread map unavailable, cache text unused: {e}")
+        return {}
+    by_sheet: Dict[int, List[str]] = {}
+    for physical in sorted(physical_texts):
+        mapped = physical_to_pdf.get(physical)
+        if not mapped:
+            continue
+        sheet = int(mapped[0])
+        if 0 <= sheet < total_sheets:
+            texts = by_sheet.setdefault(sheet, [])
+            if physical_texts[physical] not in texts:
+                texts.append(physical_texts[physical])
+    return {sheet: "\n\n".join(parts) for sheet, parts in by_sheet.items()}
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Main entry point
 # ──────────────────────────────────────────────────────────────────────────
@@ -510,20 +537,20 @@ async def analyze_catalog_layout(
         from app.api.pdf_processing.stage_1_layout_precompute import (
             load_page_texts_from_cache,
         )
-        # 0-indexed to match doc[idx] in the classification loop.
-        cache_page_texts = load_page_texts_from_cache(
-            supabase, document_id, logger=logger, zero_indexed=True,
-        )
+        # Keyed by 1-based PHYSICAL page; regrouped per PDF sheet below.
+        cache_page_texts = load_page_texts_from_cache(supabase, document_id, logger=logger)
     except Exception as _e:
         cache_page_texts = {}
         logger.debug(
             f"[{job_id or '-'}] catalog_layout_analyzer: layout cache read "
             f"failed (non-fatal), using raw text: {_e}"
         )
+    sheet_texts = _cache_text_by_sheet(pdf_path, cache_page_texts, total_pages)
 
     try:
+        # Every index this function emits is a 0-based PDF SHEET (what doc[idx] renders).
         for idx in range(total_pages):
-            text = cache_page_texts.get(idx) or doc[idx].get_text() or ""
+            text = sheet_texts.get(idx) or doc[idx].get_text() or ""
             ptype, matched_names = _classify_page(
                 page_text=text,
                 page_index=idx,
@@ -559,6 +586,7 @@ async def analyze_catalog_layout(
     layout = {
         "analyzed_at": datetime.utcnow().isoformat(),
         "total_pages": total_pages,
+        "page_index_space": "pdf_sheet_0based",
         "page_types": page_types,
         "legend_pages": legend_pages,
         "product_pages_by_name": product_pages_by_name,

@@ -418,6 +418,29 @@ async def process_stage_0_discovery(
                         operation_name="Product discovery (Stage 0A + 0B)",
                     )
                 )
+                _disc_status = getattr(catalog, "discovery_status", "ok") or "ok"
+                if _disc_status != "ok":
+                    logger.error(
+                        f"❌ [STAGE 0] Discovery degraded ({_disc_status}): "
+                        f"{getattr(catalog, 'discovery_error', None)}"
+                    )
+                    try:
+                        supabase.client.rpc('merge_background_job_metadata', {
+                            'p_job_id': job_id,
+                            'p_metadata': {
+                                'discovery_status': _disc_status,
+                                'discovery_error': getattr(catalog, 'discovery_error', None),
+                                'discovery_coverage': getattr(catalog, 'discovery_coverage', None) or {},
+                            },
+                        }).execute()
+                    except Exception as _marker_err:
+                        logger.warning(f"   discovery_status marker write failed: {_marker_err}")
+                    if not catalog.products:
+                        # Zero products with no verdict must fail, never end as zero_entities_discovered.
+                        raise RuntimeError(
+                            f"Product discovery could not reach a verdict ({_disc_status}): "
+                            f"{getattr(catalog, 'discovery_error', None)}"
+                        )
                 logger.info("✅ [STAGE 0] DISCOVERY COMPLETED SUCCESSFULLY")
 
                 # Persist catalog for resume reuse (best-effort).
@@ -869,7 +892,8 @@ async def process_stage_0_discovery(
                     # Cache so a duplicate name later in the same loop also
                     # collapses (defensive — Stage 0 dedupes already).
                     existing_by_name[lookup_key] = product_db_id
-                    if product_db_id and quota_remaining > 0:
+                    if (product_db_id and quota_remaining > 0
+                            and not product_creation_result.get('deduplicated')):
                         quota_remaining -= 1
 
                     # Audit fix #15 reader half: create_single_product surfaces

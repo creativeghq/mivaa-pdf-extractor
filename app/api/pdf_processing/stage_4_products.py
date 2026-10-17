@@ -14,24 +14,224 @@ import sentry_sdk
 from typing import Dict, Any, List, Optional
 
 from app.config import get_settings
-from app.services.metadata.metadata_normalizer import normalize_factory_keys
+from app.services.metadata.metadata_normalizer import normalize_factory_keys, scale_value
 from app.services.facets import canonicalize_product_attributes
 from app.services.metadata.field_validation import validate_metadata_against_registry
 from app.services.metadata.field_registry import field_registry
 from app.services.utilities.prompt_registry import load_prompt, prefetch, render
-from app.services.products.category_units import load_category_units, resolve_default_unit
+from app.services.products.category_units import (
+    CategoryRegistryUnavailable, get_category_registry, resolve_default_unit,
+)
+from app.utils.postgrest_filters import escape_like
+from app.utils.text_fold import fold_identity
 
-# ── Category → default unit ──────────────────────────────────────────────────
-_CATEGORY_UNITS: Optional[Dict[str, str]] = None
-_VOCAB_TO_CATEGORY: Optional[Dict[str, str]] = None
+
+def _resolve_default_unit(material_category: Optional[str], supabase: Any) -> str:
+    """Resolve the selling unit for a category key or a vocabulary value.
+
+    Raises:
+        CategoryRegistryUnavailable: `material_categories` could not be read.
+    """
+    units, vocab, _ids = get_category_registry(supabase)
+    return resolve_default_unit(material_category, units, vocab)
 
 
-def _resolve_default_unit(material_category: Optional[str], supabase: Any = None) -> str:
-    """Resolve the selling unit for a category key or a vocabulary value."""
-    global _CATEGORY_UNITS, _VOCAB_TO_CATEGORY
-    if _CATEGORY_UNITS is None and supabase is not None:
-        _CATEGORY_UNITS, _VOCAB_TO_CATEGORY = load_category_units(supabase)
-    return resolve_default_unit(material_category, _CATEGORY_UNITS, _VOCAB_TO_CATEGORY)
+def _resolve_category_id(material_category: Optional[str], supabase: Any) -> Optional[str]:
+    """`material_categories.id` for the category the registry resolver picks; None if none.
+
+    Raises:
+        CategoryRegistryUnavailable: `material_categories` could not be read.
+    """
+    _units, _vocab, ids = get_category_registry(supabase)
+    key = field_registry.resolve_category(material_category) if material_category else None
+    return ids.get(key) if key else None
+
+
+#: Registry keys with `destination='column'` that have a real products column. Order matters:
+#: the first key carrying a value wins its column. An alias (`product_code`) resolves to its field.
+_COLUMN_FOR_FIELD: Dict[str, str] = {
+    'sku': 'sku',
+    'mpn': 'mpn',
+    'barcode': 'barcode',
+    'warranty': 'warranty',
+    'country_of_origin': 'country_of_origin',
+}
+
+
+def _route_column_fields(metadata: Dict[str, Any], category: Optional[str] = None) -> Dict[str, str]:
+    """Move registry `destination='column'` values out of metadata onto their products column.
+
+    Keys are resolved through the registry (exact name, then aliases, scoped to `category` or
+    the metadata's own), so `origin_country` reaches `country_of_origin`. A list or object
+    value stays in metadata: a column holds one.
+    """
+    category = category or _category_of(metadata)
+    order = list(_COLUMN_FOR_FIELD)
+    candidates = []
+    for raw_key in list(metadata.keys()):
+        field = field_registry.resolve_field_key(raw_key, category)
+        if field in _COLUMN_FOR_FIELD and field_registry.destination_of(field) == 'column':
+            candidates.append((order.index(field), raw_key, field))
+
+    columns: Dict[str, str] = {}
+    for _rank, raw_key, field in sorted(candidates):
+        column = _COLUMN_FOR_FIELD[field]
+        if column in columns:
+            continue
+        value = metadata.get(raw_key)
+        if isinstance(value, dict):
+            value = value.get('value')
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = str(value)
+        if not isinstance(value, str) or _is_empty_value(value):
+            continue
+        columns[column] = value.strip()
+        metadata.pop(raw_key, None)
+    return columns
+
+
+def _confidence_score(raw: Any) -> Optional[float]:
+    """Extraction confidence as products.confidence_score (0..1), None when unknown."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if value > 1.0 and value <= 100.0:
+        value = value / 100.0
+    if value < 0.0 or value > 1.0:
+        return None
+    return round(value, 4)
+
+
+def _find_workspace_duplicate(
+    supabase: Any,
+    workspace_id: str,
+    document_id: str,
+    name: str,
+    factory_name: Optional[str],
+    sku: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """An existing product of this workspace, from ANOTHER source, that is the same product.
+
+    Same SKU, or same folded name AND same folded maker. A name alone is not an identity:
+    two makers both sell a "Classic". The same document is left to Stage 0's own idempotency.
+    """
+    client = supabase.client
+    if sku:
+        rows = client.table('products') \
+            .select('id, name, source_document_id, metadata') \
+            .eq('workspace_id', workspace_id).eq('sku', sku).limit(5).execute().data or []
+        for row in rows:
+            if str(row.get('source_document_id')) != str(document_id):
+                return row
+
+    folded_name = fold_identity(name)
+    folded_factory = fold_identity(factory_name)
+    if not folded_name or not folded_factory:
+        return None
+    query = client.table('products') \
+        .select('id, name, source_document_id, metadata') \
+        .eq('workspace_id', workspace_id)
+    query = query.ilike('name', escape_like(name.strip()))
+    for row in query.limit(50).execute().data or []:
+        if str(row.get('source_document_id')) == str(document_id):
+            continue
+        meta = row.get('metadata') or {}
+        if fold_identity(row.get('name')) == folded_name and \
+                fold_identity(meta.get('factory_name')) == folded_factory:
+            return row
+    return None
+
+
+def _category_of(metadata: Dict[str, Any]) -> Optional[str]:
+    raw = (metadata or {}).get('material_category')
+    if isinstance(raw, dict):
+        raw = raw.get('value')
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _flatten_for_canonicalization(metadata: Dict[str, Any], category: Optional[str] = None) -> Dict[str, Any]:
+    """Top-level keys plus registry keys nested one level down, `{value: x}` unwrapped.
+
+    The canonicalizer reads top-level field names only, so a section-nested field
+    (`material_properties.finish`) or an alias (`available_colors`) is also placed under its
+    registry name. An alias carrying a unit factor (`width_cm`) arrives converted, or not at all.
+    """
+    category = category or _category_of(metadata)
+    flat: Dict[str, Any] = {}
+    top: List[tuple] = []
+    nested: List[tuple] = []
+    for key, value in (metadata or {}).items():
+        if not isinstance(key, str) or key.startswith('_'):
+            continue
+        if isinstance(value, dict) and 'value' in value:
+            value = value['value']
+        flat[key] = value
+        if isinstance(value, dict):
+            nested.extend((ck, cv, True) for ck, cv in value.items()
+                          if isinstance(ck, str) and not ck.startswith('_'))
+        else:
+            top.append((key, value, False))
+    if not field_registry.is_loaded:
+        return flat
+    for key, value, is_nested in top + nested:
+        hit = field_registry.resolve_field(key, category)
+        if hit is None or (hit[0] == key and not is_nested):
+            continue
+        resolved, factor = hit
+        if not _is_empty_value(flat.get(resolved)):
+            continue
+        if isinstance(value, dict) and 'value' in value:
+            value = value['value']
+        if factor != 1.0:
+            value = scale_value(value, factor)
+            if value is None:
+                continue
+        flat[resolved] = value
+    return flat
+
+
+async def recanonicalize_product(
+    supabase: Any,
+    product_id: Optional[str],
+    metadata: Dict[str, Any],
+    workspace_id: Optional[str],
+    source: str,
+    logger: logging.Logger,
+) -> Dict[str, Any]:
+    """Re-derive attributes + attributes_raw from the product's final metadata.
+
+    Returns the column payload to write WITH the metadata. Mutates `metadata` only to set
+    or clear the `facet_canonicalization` degraded marker. A degraded run keeps the stored
+    attributes rather than replacing them with an empty map.
+    """
+    from datetime import datetime as _dt
+    from app.services.facets import CanonicalizedAttributes
+    from app.services.facets.facet_canonicalizer import collect_raw_attributes
+
+    await field_registry.ensure_loaded()
+    flat = _flatten_for_canonicalization(metadata)
+    try:
+        canonical = await asyncio.wait_for(
+            canonicalize_product_attributes(
+                supabase, flat, source=source, product_id=product_id, workspace_id=workspace_id,
+            ),
+            timeout=30.0,
+        )
+    except asyncio.TimeoutError:
+        canonical = CanonicalizedAttributes(
+            attributes={}, attributes_raw=collect_raw_attributes(flat),
+            resolutions=[], status='degraded',
+        )
+
+    if getattr(canonical, 'status', 'ok') != 'ok':
+        metadata['facet_canonicalization'] = {
+            'status': canonical.status, 'at': _dt.utcnow().isoformat(), 'stage': source,
+        }
+        logger.error(f"   ❌ Facet re-canonicalization DEGRADED for product {product_id} ({source})")
+        return {}
+    metadata.pop('facet_canonicalization', None)
+    return {'attributes': canonical.attributes, 'attributes_raw': canonical.attributes_raw}
 
 
 # ── Factory field keys (canonical set) ───────────────────────────────────────
@@ -310,6 +510,7 @@ async def create_single_product(
     icon_rollup = await _merge_icon_metadata_into_product(
         document_id=document_id,
         image_indices=product.image_indices,
+        page_range=getattr(product, 'page_range', None),
         known_spec_fields=known_spec_fields,
         supabase=supabase,
         logger=logger,
@@ -333,18 +534,15 @@ async def create_single_product(
         logger.warning(f"   ⚠️ Metadata consolidation failed, using AI metadata only: {e}")
         metadata = ai_metadata
 
-    # Merge icon rollup into top-level metadata. Icon-extracted spec values
-    # are the most authoritative source for technical specs (R-rating, PEI,
-    # fire rating, frost resistance) because they come from canonical icons
-    # in the catalog — write them last to override AI text guesses.
+    # Icon values fill gaps only: they are read off the product's own pages, but the
+    # product's own extracted value is the more specific claim.
     if icon_rollup:
         unknown_counts = icon_rollup.pop('_unknown_field_counts', None)
         for spec_field, spec_value in icon_rollup.items():
             if spec_field.startswith('_'):
-                # Defense-in-depth: never write any underscore-prefixed
-                # sentinel from the icon rollup as a top-level spec field.
                 continue
-            metadata[spec_field] = spec_value
+            if _is_empty_value(metadata.get(spec_field)):
+                metadata[spec_field] = spec_value
         if unknown_counts:
             audit_block = metadata.get('_icon_rollup_audit') or {}
             if not isinstance(audit_block, dict):
@@ -378,6 +576,34 @@ async def create_single_product(
         if factory_obj.get('factory_group_name'):
             metadata['factory_group_name'] = factory_obj['factory_group_name']
         logger.info(f"   🏭 Factory object assembled: {list(factory_obj.keys())}")
+
+    await field_registry.ensure_loaded()
+    column_values = _route_column_fields(metadata)
+
+    # One product per workspace identity, whichever upload it arrived in. Checked before any
+    # paid call below; a lookup that cannot run fails the creation rather than duplicating.
+    duplicate = _find_workspace_duplicate(
+        supabase, workspace_id, document_id, product.name,
+        metadata.get('factory_name'), column_values.get('sku'),
+    )
+    if duplicate:
+        existing_meta = dict(duplicate.get('metadata') or {})
+        also_in = [d for d in (existing_meta.get('also_in_documents') or []) if d]
+        if str(document_id) not in [str(d) for d in also_in]:
+            also_in.append(str(document_id))
+            existing_meta['also_in_documents'] = also_in
+            supabase.client.table('products').update({'metadata': existing_meta}) \
+                .eq('id', duplicate['id']).eq('workspace_id', workspace_id).execute()
+        logger.info(
+            f"   ♻️ '{product.name}' already exists in this workspace as {duplicate['id']} "
+            f"(from document {duplicate.get('source_document_id')}) — reusing, not inserting"
+        )
+        return {
+            'product_id': duplicate['id'],
+            'embedding_failed': False,
+            'deduplicated': True,
+            'duplicate_of_document': duplicate.get('source_document_id'),
+        }
 
     # ── Auto-classify material_category + zone_intent if missing / not in vocab ──
     raw_cat = metadata.get("material_category")
@@ -437,8 +663,15 @@ async def create_single_product(
                 logger.info(f"   📝 Extracted description from metadata.description: {description[:50]}...")
 
     # Set default unit from category if not already present
-    if not metadata.get('unit'):
-        metadata['unit'] = _resolve_default_unit(metadata.get('material_category'), supabase)
+    _category_id: Optional[str] = None
+    try:
+        if not metadata.get('unit'):
+            metadata['unit'] = _resolve_default_unit(metadata.get('material_category'), supabase)
+        _category_id = _resolve_category_id(metadata.get('material_category'), supabase)
+    except CategoryRegistryUnavailable as _cat_err:
+        # No unit and no category_id rather than `pcs` stated as fact.
+        logger.error(f"   ⚠️ Category registry unavailable for {product.name}: {_cat_err}")
+        metadata['_category_registry'] = {'status': 'unavailable', 'error': str(_cat_err)[:200]}
 
     # ── Validate extracted values against the field registry ─────────────
     # Runs BEFORE canonicalization on purpose: it rewrites enum values to the admin's curated
@@ -446,7 +679,9 @@ async def create_single_product(
     # (pei_rating, slip_resistance, wood_type, application_areas) are also canonicalizable, so
     # the clusterer should see the curated form.
     try:
-        metadata, _validation_report = await validate_metadata_against_registry(metadata)
+        metadata, _validation_report = await validate_metadata_against_registry(
+            metadata, category=metadata.get('material_category'),
+        )
     except Exception as _val_err:
         # Validation is advisory. It must never be the reason a product fails to ingest —
         # but it also must not fail invisibly, so the product carries the marker.
@@ -454,42 +689,30 @@ async def create_single_product(
         metadata['_validation'] = {'status': 'validator_failed', 'error': str(_val_err)[:200]}
 
     # ── Auto-canonicalize descriptive facets (multilingual auto-merge) ────
-    # Whitelisted facet values (color, material, finish, style, …) flow
-    # through L1 string-normalize + L2 Voyage cosine cluster vs
-    # facet_canonical_values. Greek/German/Italian raw values auto-collapse
-    # to canonical English. Identifiers, numerics, codes are skipped.
-    # Failures degrade silently — product insert is never blocked by this.
+    # Failures degrade with a marker; the product insert is never blocked by this.
     import asyncio as _asyncio
+    _flat_metadata = _flatten_for_canonicalization(metadata)
     try:
         canonical = await _asyncio.wait_for(
-            canonicalize_product_attributes(supabase, metadata, source='pdf_stage_4', workspace_id=workspace_id),
+            canonicalize_product_attributes(supabase, _flat_metadata, source='pdf_stage_4', workspace_id=workspace_id),
             timeout=30.0,
         )
     except _asyncio.TimeoutError:
         logger.error(
             f"   ⏱️ Facet canonicalization exceeded 30s for {product.name} — "
-            f"degrading to empty canonical attributes (raw values preserved). "
-            f"Voyage/HF outage suspected."
+            f"degrading to empty canonical attributes (raw values preserved)."
         )
-        # Degrade to empty CANONICAL attributes but keep the lossless raw map:
-        # attributes_raw is the replay contract — with it, a later
-        # re-canonicalization pass can rebuild attributes without re-ingesting;
-        # without it the product is permanently unfacetable.
-        # collect_raw_attributes applies the same whitelist as the
-        # canonicalizer and returns the proper Dict[str, List[str]] shape.
+        # attributes_raw is the replay contract: it lets a later pass rebuild attributes.
         from app.services.facets import CanonicalizedAttributes
         from app.services.facets.facet_canonicalizer import collect_raw_attributes
         canonical = CanonicalizedAttributes(
             attributes={},
-            attributes_raw=collect_raw_attributes(metadata),
+            attributes_raw=collect_raw_attributes(_flat_metadata),
             resolutions=[],
             status='degraded',
         )
-    # Stamp the degraded verdict onto the product's metadata so the
-    # re-canonicalization pass can FIND these rows. attributes_raw being preserved is
-    # only half the replay contract — something has to say which products need
-    # replaying, or an outage's worth of empty-attribute products is indistinguishable
-    # from products that genuinely have no facets.
+    # The marker is how the re-canonicalization pass finds rows whose empty attributes
+    # mean "a dependency failed", not "no facets".
     if getattr(canonical, 'status', 'ok') != 'ok':
         from datetime import datetime as _dt
         metadata['facet_canonicalization'] = {
@@ -498,9 +721,8 @@ async def create_single_product(
             'stage': 'pdf_stage_4',
         }
         logger.error(
-            f"   ❌ Facet canonicalization DEGRADED for {product.name} — "
-            f"attributes are empty because a dependency failed, not because the "
-            f"product has no facets; flagged via metadata.facet_canonicalization"
+            f"   ❌ Facet canonicalization DEGRADED for {product.name}; "
+            f"flagged via metadata.facet_canonicalization"
         )
     if canonical.resolutions:
         logger.info(
@@ -532,7 +754,11 @@ async def create_single_product(
         'attributes_raw': canonical.attributes_raw,
         'brand_company_id': brand_company_id,
         'source_type': 'pdf_processing',
-        'source_job_id': job_id
+        'source_job_id': job_id,
+        'status': 'draft',
+        'category_id': _category_id,
+        'confidence_score': _confidence_score(getattr(product, 'confidence', None)),
+        **column_values,
     }
 
     # Audit fix #40: validate FK targets before insert. Previously a missing
@@ -645,47 +871,47 @@ async def create_single_product(
         # it as a successful product creation. Previously embedding-failed products
         # had text_embedding_1024=NULL and were invisible to vector search forever.
 
-        # Audit fix #41: write image_product_associations immediately when we
-        # know the image set, instead of deferring to Stage 4.7. Closes the
-        # window where products are searchable but not linked to their images.
-        # Best-effort — failure here doesn't block the product creation;
-        # Stage 4.7 still runs as a backstop.
+        # Images on pages this product does not share with another catalogue product are
+        # its own; a shared page is left to the evidence-based linker (B8).
+        image_link_status = 'skipped_no_pages'
         try:
-            page_range = (
-                getattr(product, 'page_range', None)
-                or getattr(product, 'product_pages', None)  # forward-compat
-                or []
-            )
-            if page_range:
-                img_resp = supabase.client.table('document_images')\
-                    .select('id, page_number')\
-                    .eq('document_id', document_id)\
-                    .in_('page_number', page_range).execute()
+            page_range = getattr(product, 'page_range', None) or []
+            other_pages: set = set()
+            for other in (getattr(catalog, 'products', None) or []):
+                if other is product:
+                    continue
+                for p in (getattr(other, 'page_range', None) or []):
+                    other_pages.add(p)
+            own_pages = [p for p in page_range if p not in other_pages]
+            if own_pages:
+                img_resp = supabase.client.table('document_images')                    .select('id, page_number')                    .eq('document_id', document_id)                    .in_('page_number', own_pages).execute()
                 image_ids = [r['id'] for r in (img_resp.data or [])]
+                image_link_status = 'linked' if image_ids else 'no_images_yet'
                 if image_ids:
-                    # Verified 2026-05-01: image_product_associations columns
-                    # are (id, image_id, product_id, spatial_score, caption_score,
-                    # clip_score, overall_score, confidence, reasoning, metadata,
-                    # created_at, updated_at). Unique constraint is (image_id,
-                    # product_id) — note the order matters for on_conflict.
-                    # association_method has no dedicated column, store under metadata.
                     rows = [
-                        {'product_id': product_id, 'image_id': iid,
+                        {'workspace_id': workspace_id, 'product_id': product_id, 'image_id': iid,
                          'metadata': {'association_method': 'stage_4_immediate_by_page'}}
                         for iid in image_ids
                     ]
-                    supabase.client.table('image_product_associations')\
-                        .upsert(rows, on_conflict='image_id,product_id').execute()
+                    supabase.client.table('image_product_associations').upsert(rows, on_conflict='image_id,product_id').execute()
                     logger.info(
                         f"   🔗 Linked {len(image_ids)} images to product {product_id} "
-                        f"(immediate, audit fix #41, page_range={page_range})"
+                        f"(immediate, own pages={own_pages})"
                     )
+            elif page_range:
+                image_link_status = 'skipped_shared_pages'
         except Exception as assoc_err:
-            logger.warning(
-                f"   ⚠️ Immediate image-product association failed (Stage 4.7 will retry): {assoc_err}"
+            image_link_status = 'failed'
+            logger.error(
+                f"   ❌ Immediate image-product association failed for {product_id} "
+                f"(the per-product linker retries): {assoc_err}"
             )
 
-        return {'product_id': product_id, 'embedding_failed': embedding_failed}
+        return {
+            'product_id': product_id,
+            'embedding_failed': embedding_failed,
+            'image_link_status': image_link_status,
+        }
     else:
         raise Exception(f"Failed to create product {product.name} in database")
 
@@ -800,13 +1026,12 @@ def build_product_embedding_text(
         val = metadata.get(key)
         if val and isinstance(val, str) and val.lower() not in ('not specified', 'not found', 'unknown', 'n/a'):
             embedding_text_parts.append(val.replace('_', ' '))
-    # S4-6: colors live under several keys depending on the source — the AI-text /
-    # XML path writes `available_colors`, the vision rollup writes
-    # `appearance.colors_from_vision` (and `appearance_colors`). The clause used to
-    # read only `available_colors`, so vision-derived colors (the common catalog
-    # case) never reached the embedding text. Gather from all known sources, deduped.
+    # Discovery writes `color`; the vision rollup writes `appearance.colors_from_vision`.
+    _color = metadata.get('color')
+    if isinstance(_color, dict):
+        _color = _color.get('value')
     _color_sources = [
-        metadata.get('available_colors'),
+        [_color] if isinstance(_color, str) else _color,
         metadata.get('appearance_colors'),
         (metadata.get('appearance') or {}).get('colors_from_vision') if isinstance(metadata.get('appearance'), dict) else None,
     ]
@@ -960,28 +1185,24 @@ async def _merge_icon_metadata_into_product(
     known_spec_fields: List[str],
     supabase: Any,
     logger: logging.Logger,
+    page_range: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
-    """Walk all `document_images` for a product, collect every icon_metadata
-    entry, normalize field names against `material_metadata_fields`, and
-    return a flat dict of `{field_name: value}` to merge into the product's
-    top-level metadata.
+    """Roll the icon_metadata of THIS product's pages up into flat `{field: value}`.
 
-    Returns:
-        Flat dict of {spec_field_name: value} ready to merge into
-        `product.metadata`. Empty dict if there are no icons.
+    Only images on the product's own pages are read: a catalogue-wide read let one
+    product's R-rating or certification stamp every product in the document.
     """
     if not known_spec_fields:
         return {}
+    pages = sorted({
+        int(p) for p in (page_range or [])
+        if isinstance(p, (int, float)) and not isinstance(p, bool)
+    })
+    if not pages:
+        return {}
 
     try:
-        # Fetch all images for this document — we'll filter to ones with
-        # icon_metadata in their metadata blob. We don't filter by image
-        # index because Stage 3 may have routed icons to image indices the
-        # product object doesn't know about (icons are detected post-classification).
-        images_response = supabase.client.table('document_images') \
-            .select('id, page_number, metadata') \
-            .eq('document_id', document_id) \
-            .execute()
+        images_response = supabase.client.table('document_images')             .select('id, page_number, metadata')             .eq('document_id', document_id)             .in_('page_number', pages)             .execute()
         if not images_response.data:
             return {}
 
@@ -1062,42 +1283,59 @@ async def _merge_icon_metadata_into_product(
         return {}
 
 
+#: Facts about the MAKER, true of every product a catalogue describes.
+_CATALOGUE_LEVEL_FIELDS = (
+    'factory_name', 'factory_group_name', 'manufacturing_country',
+    'manufacturing_location', 'origin',
+)
+#: Shared by products only when at least this many of them state the same value.
+_COLLECTION_MIN_AGREEING = 2
+
+
+def _unanimous_value(products: List[Dict[str, Any]], field: str) -> tuple:
+    """(value, how many products state it) when every stated value agrees, else (None, 0)."""
+    stated = []
+    for product in products:
+        value = (product.get('metadata') or {}).get(field)
+        if isinstance(value, dict) and 'value' in value:
+            value = value['value']
+        if not _is_empty_value(value) and isinstance(value, (str, int, float)):
+            stated.append(value)
+    if not stated:
+        return None, 0
+    if len({fold_identity(str(v)) for v in stated}) != 1:
+        return None, 0
+    return stated[0], len(stated)
+
+
 async def propagate_common_fields_to_products(
     document_id: str,
     supabase: Any,
     logger: logging.Logger,
     material_category_override: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Propagate common fields (factory, manufacturing, material_category) across all products
-    from the same document. If one product has factory info and others don't, share it.
+    """Share VERIFIED catalogue-level facts across the products of one document.
 
-    Args:
-        document_id: Document identifier
-        supabase: Supabase client
-        logger: Logger instance
-        material_category_override: Material category from upload settings (highest priority)
-
-    Returns:
-        Stats about propagation
+    A maker fact is shared only when every product that states it agrees; a collection
+    only when several agree. Sizes, thickness, body and composition are per-product facts
+    and are never copied from a sibling.
     """
     logger.info(f"🔄 Propagating common fields across products from document {document_id}...")
 
     stats = {
         'products_checked': 0,
         'products_updated': 0,
-        'fields_propagated': []
+        'fields_propagated': [],
+        'fields_withheld_disagreement': [],
     }
 
     try:
-        # If material_category_override not provided, try to get from document/job metadata
         if not material_category_override:
-            # Try to get from background_jobs metadata first
             job_result = supabase.client.table('background_jobs').select('metadata').eq('document_id', document_id).order('created_at', desc=True).limit(1).execute()
             if job_result.data and len(job_result.data) > 0:
                 job_metadata = job_result.data[0].get('metadata', {})
                 material_category_override = job_metadata.get('material_category')
 
-            # Fallback: try to get from documents metadata
             if not material_category_override:
                 doc_result = supabase.client.table('documents').select('metadata').eq('id', document_id).execute()
                 if doc_result.data and len(doc_result.data) > 0:
@@ -1107,149 +1345,93 @@ async def propagate_common_fields_to_products(
         if material_category_override:
             logger.info(f"   📦 Using material_category from upload: {material_category_override}")
 
-        # Fetch all products from this document
         products_response = supabase.client.table('products') \
-            .select('id, name, metadata') \
+            .select('id, name, metadata, workspace_id') \
             .eq('source_document_id', document_id) \
             .execute()
 
-        if not products_response.data or len(products_response.data) == 0:
+        if not products_response.data:
             logger.info("   ℹ️ No products found for document")
             return stats
 
         products = products_response.data
         stats['products_checked'] = len(products)
 
-        # Top-level fields to propagate (shared across all products from same document)
-        common_fields = [
-            'factory_name',
-            'factory_group_name',
-            'country_of_origin',
-            'origin',
-            'material_category',
-            # Manufacturing details
-            'manufacturing_location',
-            'manufacturing_process',
-            'manufacturing_country',
-            # Dimensions — catalog siblings share the same size options
-            'available_sizes',
-        ]
+        common_values: Dict[str, Any] = {}
+        if material_category_override and not _is_empty_value(material_category_override):
+            # The operator's own upload choice, not an inference from a sibling.
+            common_values['material_category'] = material_category_override
 
-        # ── Find the most complete nested factory object across all products ──
+        for field in _CATALOGUE_LEVEL_FIELDS:
+            value, _count = _unanimous_value(products, field)
+            if value is not None:
+                common_values[field] = value
+            elif any(not _is_empty_value((p.get('metadata') or {}).get(field)) for p in products):
+                stats['fields_withheld_disagreement'].append(field)
+
+        collection, agreeing = _unanimous_value(products, 'collection')
+        if collection is not None and agreeing >= _COLLECTION_MIN_AGREEING:
+            common_values['collection'] = collection
+
+        # The most complete factory object, shared only with products of the SAME maker.
         best_factory: Dict[str, Any] = {}
         best_factory_score = 0
         _completeness_fields = ['factory_name', 'city', 'country', 'address',
-                                 'phone', 'email', 'website', 'country_of_origin', 'employee_count']
+                                'phone', 'email', 'website', 'country_of_origin', 'employee_count']
         for product in products:
-            meta = product.get('metadata', {}) or {}
-            fobj = meta.get('factory') or {}
+            fobj = (product.get('metadata') or {}).get('factory') or {}
             if not isinstance(fobj, dict):
                 continue
             score = sum(1 for f in _completeness_fields if fobj.get(f) and not _is_empty_value(fobj[f]))
             if score > best_factory_score:
                 best_factory_score = score
                 best_factory = fobj
+        best_maker = fold_identity(best_factory.get('factory_name')) if best_factory else ''
 
-        # Material-level properties tiles/stones from the same catalog series share.
-        material_fields = ['thickness', 'body_type', 'composition']
-        legacy_nested_sources = ['material_properties']
-
-        def _read_material_field(metadata: Dict[str, Any], field: str) -> Any:
-            """Flat first, then the pre-2.1 nested location. Returns None when absent."""
-            value = metadata.get(field)
-            if value and not _is_empty_value(value):
-                return value
-            for parent_key in legacy_nested_sources:
-                parent = metadata.get(parent_key)
-                if isinstance(parent, dict):
-                    value = parent.get(field)
-                    if value and not _is_empty_value(value):
-                        return value
-            return None
-
-        # Find the best value for each common field (first non-empty value)
-        common_values = {}
-
-        # ALWAYS use material_category from upload if provided
-        if material_category_override and not _is_empty_value(material_category_override):
-            common_values['material_category'] = material_category_override
-            logger.info(f"   ✅ material_category set from upload: {material_category_override}")
-
-        for field in common_fields:
-            # Skip material_category if we already have it from upload
-            if field == 'material_category' and 'material_category' in common_values:
-                continue
-
-            for product in products:
-                metadata = product.get('metadata', {}) or {}
-                value = metadata.get(field)
-
-                # Skip empty/invalid values
-                if value and not _is_empty_value(value):
-                    common_values[field] = value
-                    break  # Use first valid value found
-
-        # Material fields join the flat common set; the value may still be found nested on a
-        # pre-2.1 row, but it is written back flat.
-        for field in material_fields:
-            if field in common_values:
-                continue
-            for product in products:
-                value = _read_material_field(product.get('metadata', {}) or {}, field)
-                if value is not None:
-                    common_values[field] = value
-                    break
-
-        if not common_values:
-            logger.info("   ℹ️ No common values to propagate")
+        if not common_values and not best_factory:
+            logger.info("   ℹ️ No verified common values to propagate")
             return stats
 
-        all_found = list(common_values.keys())
-        logger.info(f"   📦 Found common values: {all_found}")
+        logger.info(f"   📦 Verified common values: {list(common_values.keys())}")
 
-        # Update products that are missing these common fields (one DB write per product)
         for product in products:
             product_id = product['id']
             metadata = product.get('metadata', {}) or {}
-            updates_needed = {}
+            updates_needed: Dict[str, Any] = {}
 
             for field, common_value in common_values.items():
-                # A material field already present in the legacy nested spot counts as present —
-                # otherwise every pre-2.1 product gets rewritten on every run.
-                current_value = (
-                    _read_material_field(metadata, field) if field in material_fields
-                    else metadata.get(field)
-                )
-                if _is_empty_value(current_value) and not _is_empty_value(common_value):
+                if _is_empty_value(metadata.get(field)):
                     updates_needed[field] = common_value
 
-            # Propagate nested factory object if product is missing/incomplete
             if best_factory:
                 existing_fobj = metadata.get('factory') or {}
+                if not isinstance(existing_fobj, dict):
+                    existing_fobj = {}
+                own_maker = fold_identity(
+                    existing_fobj.get('factory_name') or metadata.get('factory_name')
+                    or updates_needed.get('factory_name')
+                )
                 existing_score = sum(
                     1 for f in _completeness_fields
                     if existing_fobj.get(f) and not _is_empty_value(existing_fobj[f])
-                ) if isinstance(existing_fobj, dict) else 0
-                if existing_score < best_factory_score:
-                    # Merge: existing values win, best_factory fills gaps
+                )
+                if best_maker and own_maker == best_maker and existing_score < best_factory_score:
                     merged_factory = {**best_factory, **{
                         k: v for k, v in existing_fobj.items()
                         if v and not _is_empty_value(v)
                     }}
                     updates_needed['factory'] = merged_factory
-                    # Mirror to top-level metadata for jsonb-contains filtering
-                    # by frontend (MyFactoryTab / MarketTrendsTab). Same
-                    # rationale as the assembly path above.
-                    if merged_factory.get('factory_name'):
-                        updates_needed['factory_name'] = merged_factory['factory_name']
-                    if merged_factory.get('factory_group_name'):
+                    if merged_factory.get('factory_group_name') and _is_empty_value(metadata.get('factory_group_name')):
                         updates_needed['factory_group_name'] = merged_factory['factory_group_name']
 
             if updates_needed:
                 updated_metadata = {**metadata, **updates_needed}
-
+                columns = await recanonicalize_product(
+                    supabase, product_id, updated_metadata, product.get('workspace_id'),
+                    'pdf_stage_4_5_propagation', logger,
+                )
                 supabase.client.table('products') \
-                    .update({'metadata': updated_metadata}) \
+                    .update({'metadata': updated_metadata, **columns}) \
                     .eq('id', product_id) \
                     .execute()
 
@@ -1258,8 +1440,7 @@ async def propagate_common_fields_to_products(
                 stats['fields_propagated'].extend(propagated)
                 logger.info(f"   ✅ Updated product {product['name']}: {propagated}")
 
-        # Deduplicate fields_propagated
-        stats['fields_propagated'] = list(set(stats['fields_propagated']))
+        stats['fields_propagated'] = sorted(set(stats['fields_propagated']))
 
         logger.info(f"✅ Propagation complete: {stats['products_updated']}/{stats['products_checked']} products updated")
         return stats
@@ -1270,119 +1451,124 @@ async def propagate_common_fields_to_products(
         return stats
 
 
+_SIZE_RE = None
+_THICKNESS_RE = None
+
+
+def _dimension_patterns():
+    global _SIZE_RE, _THICKNESS_RE
+    if _SIZE_RE is None:
+        import re
+        num = r'(\d{1,4}(?:[.,]\d{1,2})?)'
+        _SIZE_RE = re.compile(
+            num + r'\s*[×xX]\s*' + num + r'(?:\s*[×xX]\s*' + num + r')?\s*(mm|cm|in|")(?![a-zA-Z])',
+            re.IGNORECASE,
+        )
+        _THICKNESS_RE = re.compile(
+            r'(?:thickness|spessore|epaisseur|st[aä]rke|dikte|πάχος)[^\n]{0,40}?'
+            r'(\d{1,3}(?:[.,]\d{1,2})?)\s*(mm|cm)(?![a-zA-Z])',
+            re.IGNORECASE,
+        )
+    return _SIZE_RE, _THICKNESS_RE
+
+
+def _scan_dimensions(text: str) -> Dict[str, Any]:
+    """Sizes and thickness stated in ONE product's own text, in the unit the text states.
+
+    A size without a unit is not read: "60x60" alone cannot be told from mm or cm.
+    """
+    size_re, thick_re = _dimension_patterns()
+    sizes: List[str] = []
+    for m in size_re.finditer(text or ''):
+        unit = m.group(4).lower().replace('"', 'in')
+        parts = [g.replace(',', '.') for g in m.groups()[:3] if g]
+        sizes.append('×'.join(parts) + f' {unit}')
+    found: Dict[str, Any] = {}
+    if sizes:
+        found['available_sizes'] = list(dict.fromkeys(sizes))
+    m = thick_re.search(text or '')
+    if m:
+        value = float(m.group(1).replace(',', '.'))
+        found['thickness_mm'] = round(value * 10, 2) if m.group(2).lower() == 'cm' else value
+    return found
+
+
 async def extract_dimensions_from_document_chunks(
     document_id: str,
     supabase: Any,
     logger: logging.Logger,
 ) -> Dict[str, Any]:
+    """Stage 4.6: fill a product's missing sizes/thickness from ITS OWN chunks.
+
+    Each product is scanned against the chunks linked to it, never the whole document,
+    so one product cannot receive the catalogue's size list. No AI calls.
     """
-    Stage 4.6: scan all text chunks belonging to this document for dimension patterns
-    (tile sizes like "10×45 cm", thickness like "6.9 mm") and fill in any products
-    that are still missing those fields after Stage 4.5 propagation.
-
-    Runs entirely on already-extracted text — no extra AI calls needed.
-
-    Returns:
-        Stats dict: products_checked, products_updated, dimensions_found
-    """
-    import re
-
     stats: Dict[str, Any] = {
         'products_checked': 0,
         'products_updated': 0,
+        'products_without_own_chunks': 0,
         'dimensions_found': [],
     }
 
     try:
-        # ── 1. Fetch all text chunks for this document ──────────────────────
         chunks_resp = supabase.client.table('document_chunks') \
-            .select('content') \
+            .select('content, product_id') \
             .eq('document_id', document_id) \
             .execute()
-        chunks = chunks_resp.data or []
+        text_by_product: Dict[str, List[str]] = {}
+        for chunk in chunks_resp.data or []:
+            if chunk.get('product_id') and chunk.get('content'):
+                text_by_product.setdefault(chunk['product_id'], []).append(chunk['content'])
 
-        if not chunks:
-            logger.info("   ℹ️ No text chunks found for dimension scan")
-            return stats
-
-        # Merge all chunk content for scanning
-        combined_text = ' '.join(c.get('content', '') for c in chunks if c.get('content'))
-
-        # ── 2. Extract size patterns: 10×45 cm, 15 x 38, 20X60 ────────────
-        size_re = re.compile(r'(\d{1,4})\s*[×xX]\s*(\d{1,4})(?:\s*cm)?', re.IGNORECASE)
-        found_sizes = []
-        for m in size_re.finditer(combined_text):
-            w, h = int(m.group(1)), int(m.group(2))
-            if 5 <= w <= 300 and 5 <= h <= 300:
-                found_sizes.append(f"{w}×{h} cm")
-        found_sizes = list(dict.fromkeys(found_sizes))  # dedup, preserve order
-
-        # ── 3. Extract thickness near keyword ─────────────────────────────
-        thickness_value: Optional[str] = None
-        thick_re = re.compile(
-            r'(?:thickness|spessore|epaisseur|st[aä]rke|dikte)[^\n]{0,80}?(\d+[\.,]?\d*)\s*mm',
-            re.IGNORECASE,
-        )
-        m = thick_re.search(combined_text)
-        if m:
-            thickness_value = f"{m.group(1).replace(',', '.')}mm"
-        else:
-            bare_mm = re.findall(r'\b(\d+[\.,]\d+)\s*mm\b', combined_text, re.IGNORECASE)
-            if bare_mm:
-                thickness_value = f"{bare_mm[0].replace(',', '.')}mm"
-
-        if not found_sizes and not thickness_value:
-            logger.info("   ℹ️ No dimension patterns found in text chunks")
-            return stats
-
-        logger.info(
-            f"   📐 Dimension patterns found in text: sizes={found_sizes}, thickness={thickness_value}"
-        )
-        if found_sizes:
-            stats['dimensions_found'].extend(found_sizes)
-        if thickness_value:
-            stats['dimensions_found'].append(thickness_value)
-
-        # ── 4. Fetch products for this document ───────────────────────────
         products_resp = supabase.client.table('products') \
-            .select('id, name, metadata') \
+            .select('id, name, metadata, workspace_id') \
             .eq('source_document_id', document_id) \
             .execute()
         products = products_resp.data or []
         stats['products_checked'] = len(products)
 
-        # ── 5. Fill products that are still missing the fields ────────────
         for product in products:
             product_id = product['id']
+            own_text = text_by_product.get(product_id)
+            if not own_text:
+                stats['products_without_own_chunks'] += 1
+                continue
+            found = _scan_dimensions(' '.join(own_text))
+            if not found:
+                continue
+
             existing_metadata = product.get('metadata') or {}
             updated_metadata = {**existing_metadata}
-            changed = False
+            changed = []
+            if found.get('available_sizes') and _is_empty_value(existing_metadata.get('available_sizes')):
+                updated_metadata['available_sizes'] = found['available_sizes']
+                changed.append('available_sizes')
+            legacy_thickness = (existing_metadata.get('material_properties') or {}).get('thickness') \
+                if isinstance(existing_metadata.get('material_properties'), dict) else None
+            if 'thickness_mm' in found and _is_empty_value(existing_metadata.get('thickness_mm')) \
+                    and _is_empty_value(existing_metadata.get('thickness')) and _is_empty_value(legacy_thickness):
+                updated_metadata['thickness_mm'] = found['thickness_mm']
+                changed.append('thickness_mm')
+            if not changed:
+                continue
 
-            if found_sizes and _is_empty_value(existing_metadata.get('available_sizes')):
-                updated_metadata['available_sizes'] = found_sizes
-                changed = True
+            extraction_meta = dict(updated_metadata.get('_extraction_metadata') or {})
+            for key in changed:
+                extraction_meta[key] = {'source': 'product_chunk_regex', 'confidence': 0.65}
+            updated_metadata['_extraction_metadata'] = extraction_meta
+            columns = await recanonicalize_product(
+                supabase, product_id, updated_metadata, product.get('workspace_id'),
+                'pdf_stage_4_6_dimensions', logger,
+            )
+            supabase.client.table('products') \
+                .update({'metadata': updated_metadata, **columns}) \
+                .eq('id', product_id) \
+                .execute()
+            stats['products_updated'] += 1
+            stats['dimensions_found'].extend(found.get('available_sizes') or [])
+            logger.info(f"   ✅ Filled {changed} for product '{product['name']}' from its own chunks")
 
-            if thickness_value:
-                mat_props = dict(existing_metadata.get('material_properties') or {})
-                if _is_empty_value(mat_props.get('thickness')):
-                    mat_props['thickness'] = {
-                        'value': thickness_value,
-                        'confidence': 0.65,
-                        'source': 'document_text',
-                    }
-                    updated_metadata['material_properties'] = mat_props
-                    changed = True
-
-            if changed:
-                supabase.client.table('products') \
-                    .update({'metadata': updated_metadata}) \
-                    .eq('id', product_id) \
-                    .execute()
-                stats['products_updated'] += 1
-                logger.info(
-                    f"   ✅ Filled dimensions for product '{product['name']}' from text chunks"
-                )
-
+        stats['dimensions_found'] = list(dict.fromkeys(stats['dimensions_found']))
         logger.info(
             f"✅ Dimension extraction complete: {stats['products_updated']}/{stats['products_checked']} products updated"
         )
@@ -1417,103 +1603,18 @@ def _is_empty_value(value) -> bool:
 
 import re as _re
 
-# Controlled vocabulary map for vision_analysis material_type → products.material_category
-# Maps AI-freeform material_type strings (from vision analysis) to
-# controlled-vocab values that exist in `material_categories.controlled_vocab`.
-# Every value here MUST be present in that vocabulary — _normalize_material_category enforces
-# it at runtime rather than trusting the comment, because the vocabulary is now admin-editable
-# and a value removed there would otherwise keep being written by this map with nothing failing.
-_MATERIAL_TYPE_TO_CATEGORY = {
-    # Tiles
-    "ceramic tile": "ceramic_tile",
-    "porcelain tile": "porcelain_tile",
-    "stoneware": "floor_tile",       # normalize to floor_tile (in vocab)
-    "stoneware tile": "floor_tile",
-    "mosaic": "wall_tile",           # normalize to wall_tile (in vocab)
-    "mosaic tile": "wall_tile",
-    "outdoor tile": "floor_tile",    # normalize to floor_tile (in vocab)
-    "wall tile": "wall_tile",
-    "floor tile": "floor_tile",
-    "bathroom tile": "bathroom_tile",
-    "shower tile": "shower_tile",
-    # Stone / general materials
-    "natural stone": "stone_slab",
-    "marble": "stone_slab",
-    "granite": "stone_slab",
-    "slate": "stone_slab",
-    "limestone": "stone_slab",
-    "travertine": "stone_slab",
-    "quartz": "quartz",
-    "terrazzo": "terrazzo",
-    "concrete": "concrete",
-    # Wood
-    "wood": "wood_flooring",
-    "wood flooring": "wood_flooring",
-    "hardwood": "hardwood",
-    "engineered wood": "engineered_wood",
-    "parquet": "parquet",
-    "laminate": "laminate",
-    "vinyl": "vinyl_flooring",
-    "bamboo": "wood_flooring",
-    # Furniture
-    "sofa": "sofa",
-    "chair": "dining_chair",
-    "table": "dining_table",
-    "cabinet": "cabinet",
-    # Sanitary
-    "toilet": "toilet",
-    "basin": "basin",
-    "bathtub": "bathtub",
-    "tap": "tap",
-    "faucet": "faucet",
-    # Heating
-    "radiator": "radiator",
-    "towel rail": "towel_rail",
-    "boiler": "boiler",
-    # Lighting
-    "light": "lighting",
-    "lamp": "lighting",
-    "pendant": "pendant_light",
-    "chandelier": "chandelier",
-    # Paint / Wall
-    "paint": "wall_paint",
-    "wallpaper": "wallpaper",
-    # Kitchen
-    "worktop": "kitchen_worktop",
-    "countertop": "countertop",
-}
-
-
 def _normalize_material_category(raw: str) -> Optional[str]:
-    """Map an AI-freeform material_type to our controlled vocab.
+    """A vision `material_type` as a vocabulary value, else the registry's category, else None.
 
-    The result is checked against the live vocabulary before being returned. An admin who
-    removes a value from `material_categories.controlled_vocab` would otherwise keep getting
-    it written here — accepted by no validator, offered by no prompt, and reported by nothing.
+    "porcelain tile" -> porcelain_tile; "marble" -> general_materials (a vocab alias). No
+    substring guessing: an unresolved value is left unset, and this only fills a gap.
     """
-    if not raw or not isinstance(raw, str):
+    if not raw or not isinstance(raw, str) or not field_registry.is_loaded:
         return None
-    key = raw.strip().lower()
-
-    mapped = _MATERIAL_TYPE_TO_CATEGORY.get(key)
-    if mapped is None:
-        for phrase, vocab in _MATERIAL_TYPE_TO_CATEGORY.items():
-            if phrase in key:
-                mapped = vocab
-                break
-    if mapped is None:
-        return None
-
-    if field_registry.is_loaded and mapped not in field_registry.all_controlled_vocab():
-        # `logger` is a PARAMETER throughout this module, not a global — see line ~310, which
-        # resolves it inline for the same reason. This function takes no logger.
-        logging.getLogger(__name__).error(
-            "_MATERIAL_TYPE_TO_CATEGORY maps '%s' to '%s', which is no longer in "
-            "material_categories.controlled_vocab — dropping. Fix the map or restore the value.",
-            key, mapped,
-        )
-        return None
-    return mapped
+    slug = _re.sub(r"[^a-z0-9]+", "_", raw.strip().lower()).strip("_")
+    if slug in field_registry.all_controlled_vocab():
+        return slug
+    return field_registry.resolve_category(slug)
 
 
 def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:
@@ -1593,22 +1694,22 @@ def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:
         r"(\d{1,4})\s+(Mapei|Kerakoll|Isomat|Technica|Litokol)\b",
         _re.IGNORECASE,
     )
-    grout_suppliers = set()
+    grout_brands = set()
     grout_entries = []
     for m in grout_pattern.finditer(text):
         dose = int(m.group(1))
         supplier = m.group(2).capitalize()
-        grout_suppliers.add(supplier.upper())
+        grout_brands.add(supplier.upper())
         grout_entries.append({"supplier": supplier, "dose": dose})
-    if grout_suppliers:
-        candidates["grout_suppliers"] = sorted(grout_suppliers)
+    # ONE `grout_color_codes` map: {suppliers, by_code, <supplier>: product name}.
+    grout: Dict[str, Any] = {}
+    if grout_brands:
+        grout["suppliers"] = sorted(grout_brands)
     if grout_entries and sku_codes:
-        # Try to correlate grout entries with SKU codes by order of appearance.
-        # This is best-effort — the SKU and grout dose often appear on the same
-        # line in catalog tables.
+        # Best-effort: SKU and grout dose usually share a line in catalog tables.
         codes_in_order = list(sku_codes.values())
         if len(codes_in_order) == len(grout_entries):
-            candidates["grout_color_codes"] = {
+            grout["by_code"] = {
                 codes_in_order[i]: grout_entries[i] for i in range(len(codes_in_order))
             }
 
@@ -1682,7 +1783,6 @@ def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:
         r"(MAPEI|KERAKOLL|ISOMAT|TECHNICA|LITOKOL)\s*\|\s*([A-Z][A-Z0-9\s]{2,30})",
         _re.IGNORECASE,
     )
-    grout_products: Dict[str, str] = {}
     for m in grout_product_pattern.finditer(text):
         supplier = m.group(1).upper()
         product = m.group(2).strip()
@@ -1691,9 +1791,9 @@ def _extract_fields_from_chunk_text(text: str) -> Dict[str, Any]:
         # Stop at common end-of-line markers
         product = _re.split(r"\*+|\|", product, maxsplit=1)[0].strip()
         if 3 <= len(product) <= 40:
-            grout_products[f"grout_{supplier.lower()}_product"] = product
-    if grout_products:
-        candidates.update(grout_products)
+            grout[supplier.lower()] = product
+    if grout:
+        candidates["grout_color_codes"] = grout
 
     # ── MATT/GLOSS finish indicators appearing in packing tables ─────────
     # "MATT" and "GLOSS" on the spec page are options, not confirmed values for
@@ -1799,7 +1899,7 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
     Returns:
         Candidate fields including: material_category, finish, design_style,
         pattern (+ patterns list), texture (+ textures list), appearance_colors,
-        applications, category, subcategory, description, detected_text,
+        application, category, subcategory, description, detected_text,
         vision_confidence.
     """
     if not vision_rows:
@@ -1946,7 +2046,7 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
         candidates["appearance_colors"] = _dedupe_pretty(all_colors, cap=20)
 
     if all_applications:
-        candidates["applications"] = _dedupe_pretty(all_applications, cap=10)
+        candidates["application"] = _dedupe_pretty(all_applications, cap=10)
 
     if descriptions:
         # Pick the most-descriptive (longest) — descriptions are typically unique
@@ -1961,6 +2061,11 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
         candidates["vision_confidence"] = round(sum(confidences) / len(confidences), 3)
 
     return candidates
+
+
+def _registry_key(key: str, category: Optional[str] = None) -> Optional[str]:
+    """The registry field `key` names (exact or unconverted alias), where the facet reader looks."""
+    return field_registry.resolve_field_key(key, category) if field_registry.is_loaded else None
 
 
 def _merge_enriched_fields_into_metadata(
@@ -1987,6 +2092,9 @@ def _merge_enriched_fields_into_metadata(
     def fill_if_empty(key: str, value: Any, source: str, container: Optional[str] = None):
         if _is_empty_value(value):
             return
+        resolved = _registry_key(key, _category_of(new_metadata)) if container else None
+        if resolved:
+            key, container = resolved, None
         if container:
             parent = dict(new_metadata.get(container) or {})
             if _is_empty_value(parent.get(key)):
@@ -2009,13 +2117,7 @@ def _merge_enriched_fields_into_metadata(
     fill_if_empty("patterns_count", chunk_candidates.get("patterns_count"), "chunk_regex", container="packaging")
     fill_if_empty("body_type", chunk_candidates.get("body_type"), "chunk_regex", container="material_properties")
     fill_if_empty("sku_codes", chunk_candidates.get("sku_codes"), "chunk_regex", container="commercial")
-    fill_if_empty("grout_suppliers", chunk_candidates.get("grout_suppliers"), "chunk_regex", container="commercial")
     fill_if_empty("grout_color_codes", chunk_candidates.get("grout_color_codes"), "chunk_regex", container="commercial")
-    # Grout product names (chunk 17 style): MAPEI | ULTRACOLOR PLUS, etc.
-    fill_if_empty("grout_mapei", chunk_candidates.get("grout_mapei_product"), "chunk_regex", container="commercial")
-    fill_if_empty("grout_kerakoll", chunk_candidates.get("grout_kerakoll_product"), "chunk_regex", container="commercial")
-    fill_if_empty("grout_isomat", chunk_candidates.get("grout_isomat_product"), "chunk_regex", container="commercial")
-    fill_if_empty("grout_technica", chunk_candidates.get("grout_technica_product"), "chunk_regex", container="commercial")
 
     # Dimensions special-case: only fill if currently empty/missing/hallucinated
     chunk_dims = chunk_candidates.get("dimensions")
@@ -2053,7 +2155,7 @@ def _merge_enriched_fields_into_metadata(
     fill_if_empty("textures", vision_candidates.get("textures"), "vision_rollup", container="appearance")
     fill_if_empty("design_style", vision_candidates.get("design_style"), "vision_rollup", container="design")
     fill_if_empty("style", vision_candidates.get("style"), "vision_rollup", container="design")
-    fill_if_empty("applications", vision_candidates.get("applications"), "vision_rollup")
+    fill_if_empty("application", vision_candidates.get("application"), "vision_rollup")
     # New schema-aligned propagation (post-2026-05-04 — was orphaned in the
     # legacy rollup that read fields the schema doesn't emit).
     fill_if_empty("category", vision_candidates.get("category"), "vision_rollup", container="appearance")
@@ -2109,6 +2211,7 @@ async def enrich_products_from_chunks_and_vision(
     """
     # write_product_description_from_chunks is sync and reads the cache.
     await prefetch(("generation", "product_description"))
+    await field_registry.ensure_loaded()
     stats: Dict[str, Any] = {
         "products_checked": 0,
         "products_updated": 0,
@@ -2292,7 +2395,17 @@ async def enrich_products_from_chunks_and_vision(
             # source of page_range when the product row doesn't have one.
             product_chunks = [c for c in all_chunks if c.get("product_id") == product_id]
             if not product_chunks:
-                product_chunks = all_chunks  # doc-wide fallback
+                # Chunks on the product's own pages, never the whole document: a doc-wide
+                # fallback gave every unlinked product the catalogue's text.
+                own_pages = {
+                    int(p) for p in (metadata.get("page_range") or [])
+                    if isinstance(p, (int, float)) and not isinstance(p, bool)
+                }
+                product_chunks = [
+                    c for c in all_chunks
+                    if isinstance(c.get("metadata"), dict)
+                    and c["metadata"].get("page_number") in own_pages
+                ] if own_pages else []
 
             # ── Resolve the product's PDF page range ─────────────────────
             # We UNION four signals rather than short-circuiting on the first
@@ -2366,12 +2479,9 @@ async def enrich_products_from_chunks_and_vision(
             )
 
             # ── Scope vision rows by page_range ──────────────────────────
-            if page_set:
-                product_vision = [
-                    v for v in all_vision if v.get("page_number") in page_set
-                ]
-            else:
-                product_vision = all_vision
+            product_vision = [
+                v for v in all_vision if v.get("page_number") in page_set
+            ] if page_set else []
 
             chunk_candidates = _extract_fields_from_chunk_text(combined_text)
             vision_candidates = _rollup_vision_analysis(product_vision)
@@ -2391,6 +2501,7 @@ async def enrich_products_from_chunks_and_vision(
                 # Fallback to the chunk-derived page_set (1-indexed → 0-indexed)
                 resolved_page_indices = sorted({int(p) - 1 for p in page_set if int(p) > 0})
 
+            spec_status: Optional[Dict[str, Any]] = None
             if enable_spec_vision and resolved_page_indices and pdf_path:
                 try:
                     from app.services.products.product_spec_extractor_v2 import extract_product_spec
@@ -2403,6 +2514,7 @@ async def enrich_products_from_chunks_and_vision(
                         catalog_legends=catalog_legends,
                         job_id=job_id,
                         enable_tier_b=True,
+                        category=metadata.get("material_category"),
                     )
                     if spec_vision_candidates:
                         tiers = spec_vision_candidates.pop("_source_tiers", [])
@@ -2410,19 +2522,36 @@ async def enrich_products_from_chunks_and_vision(
                         # than raising, so a truthy dict is not automatically a
                         # successful extraction.
                         extract_error = spec_vision_candidates.get("_error")
-                        tier_errors = [
-                            v for k, v in spec_vision_candidates.items()
-                            if k == "_tier_error"
-                        ]
-                        if extract_error or tier_errors:
+                        tier_error = spec_vision_candidates.get("_tier_error")
+                        degraded_tiers = spec_vision_candidates.get("_degraded_tiers") or []
+                        usable = any(
+                            not str(k).startswith("_") for k in spec_vision_candidates
+                        )
+                        if extract_error or (tier_error and not usable):
                             stats["spec_vision_failures"] += 1
                             logger.error(
                                 f"   ❌ spec_v2 '{product_name}' FAILED: "
-                                f"{extract_error or tier_errors}, tiers={tiers}"
+                                f"{extract_error or tier_error}, tiers={tiers}"
                             )
-                            # Nothing usable came back; do not let the marker
-                            # dict count as candidates downstream.
+                            spec_status = {
+                                "status": "failed",
+                                "error": str(extract_error or tier_error)[:300],
+                                "tiers": tiers,
+                            }
                             spec_vision_candidates = {}
+                        elif tier_error or degraded_tiers:
+                            stats.setdefault("spec_vision_degraded", 0)
+                            stats["spec_vision_degraded"] += 1
+                            logger.warning(
+                                f"   ⚠️ spec_v2 '{product_name}' DEGRADED: "
+                                f"tier_error={tier_error}, degraded={degraded_tiers}, tiers={tiers}"
+                            )
+                            spec_status = {
+                                "status": "degraded",
+                                "tier_error": str(tier_error)[:300] if tier_error else None,
+                                "degraded_tiers": degraded_tiers,
+                                "tiers": tiers,
+                            }
                         else:
                             stats["spec_vision_calls"] += 1
                             logger.info(
@@ -2431,6 +2560,7 @@ async def enrich_products_from_chunks_and_vision(
                             )
                 except Exception as e:
                     stats["spec_vision_failures"] += 1
+                    spec_status = {"status": "failed", "error": f"{type(e).__name__}: {e}"[:300]}
                     logger.warning(f"   ⚠️ spec_v2 failed for '{product_name}': {e}")
                     with sentry_sdk.configure_scope() as scope:
                         scope.set_tag("job_id", job_id)
@@ -2482,6 +2612,15 @@ async def enrich_products_from_chunks_and_vision(
                         container = dict(new_metadata.get(key) or {})
                         any_added = False
                         for child_key, child_value in value.items():
+                            top_key = _registry_key(child_key)
+                            if top_key:
+                                if _is_empty_value(new_metadata.get(top_key)) and not _is_empty_value(child_value):
+                                    new_metadata[top_key] = child_value
+                                    extraction_meta[top_key] = {
+                                        "source": "claude_spec_vision", "confidence": 0.85
+                                    }
+                                    filled.append(top_key)
+                                continue
                             if _is_empty_value(container.get(child_key)) and not _is_empty_value(child_value):
                                 container[child_key] = child_value
                                 extraction_meta[f"{key}.{child_key}"] = {
@@ -2499,6 +2638,14 @@ async def enrich_products_from_chunks_and_vision(
                             filled.append(key)
                 if filled:
                     new_metadata["_extraction_metadata"] = extraction_meta
+
+            markers_changed = False
+            if spec_status is not None:
+                new_metadata["_spec_extraction"] = spec_status
+                markers_changed = True
+            elif "_spec_extraction" in new_metadata and enable_spec_vision and resolved_page_indices and pdf_path:
+                new_metadata.pop("_spec_extraction")
+                markers_changed = True
 
             # ── Stage 4.7.d: Description writer (writes to products.description) ─
             # Separate from metadata because description is a top-level column.
@@ -2541,11 +2688,24 @@ async def enrich_products_from_chunks_and_vision(
                         workspace_id=product.get("workspace_id"),
                         product_id=product_id,
                     )
-                    if prop_result.coverage_pct > 0:
+                    if prop_result.status == "failed":
+                        stats.setdefault("functional_property_failures", 0)
+                        stats["functional_property_failures"] += 1
+                        new_metadata["_functional_extraction"] = {
+                            "status": "failed", "error": prop_result.error,
+                        }
+                        markers_changed = True
+                        logger.error(
+                            f"   ❌ Functional property extraction FAILED for "
+                            f"'{product_name}': {prop_result.error}"
+                        )
+                    elif prop_result.coverage_pct > 0:
+                        new_metadata.pop("_functional_extraction", None)
                         new_metadata["functional_metadata"] = prop_result.properties
                         new_metadata.setdefault("_extraction_metadata", {})["functional_metadata"] = {
                             "source": prop_result.method,
                             "confidence": prop_result.confidence,
+                            "category_confidence": prop_result.category_confidence,
                             "coverage_pct": prop_result.coverage_pct,
                             "processing_time_ms": prop_result.processing_time_ms,
                         }
@@ -2553,11 +2713,15 @@ async def enrich_products_from_chunks_and_vision(
                         stats.setdefault("functional_property_extractions", 0)
                         stats["functional_property_extractions"] += 1
                 except Exception as e:
+                    new_metadata["_functional_extraction"] = {
+                        "status": "failed", "error": f"{type(e).__name__}: {e}"[:300],
+                    }
+                    markers_changed = True
                     logger.warning(
                         f"   ⚠️ Functional property extraction failed for '{product_name}': {e}"
                     )
 
-            if not filled:
+            if not filled and not markers_changed:
                 logger.info(
                     f"   ℹ️ Enrichment: '{product_name}' already has all fields — "
                     f"no empty slots to fill"
@@ -2568,6 +2732,10 @@ async def enrich_products_from_chunks_and_vision(
             update_payload: Dict[str, Any] = {"metadata": new_metadata}
             if new_description:
                 update_payload["description"] = new_description
+            update_payload.update(await recanonicalize_product(
+                supabase, product_id, new_metadata, product.get("workspace_id"),
+                "pdf_stage_4_7_enrichment", logger,
+            ))
 
             # Wrap the DB write so a transient Postgres / network error on
             # one product doesn't propagate out and silently strand every

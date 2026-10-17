@@ -16,7 +16,8 @@ from app.services.products.product_creation_service import ProductCreationServic
 from app.services.core.supabase_client import SupabaseClient
 from app.schemas.api_responses import ServiceHealthResponse
 from app.services.integrations.data_import_service import DataImportService
-from app.dependencies import get_workspace_context, get_current_user, resolve_workspace_id
+from app.auth.workspace_resolution import SERVICE_SUBJECT
+from app.dependencies import get_workspace_context, get_current_user, require_workspace_capability, resolve_workspace_id
 from app.middleware.jwt_auth import WorkspaceContext
 
 logger = logging.getLogger(__name__)
@@ -488,7 +489,7 @@ class ManualProductRequest(BaseModel):
     unit: Optional[str] = None
     dimensions: Optional[str] = None
     external_sku: Optional[str] = None
-    # Dynamic descriptive facets (color, finish, material, available_colors, …) — free
+    # Dynamic descriptive facets (color, finish, material, …) — free
     # form; canonicalized + embedded by the shared core just like catalog ingestion.
     metadata: Dict[str, Any] = Field(default_factory=dict)
     images: List[ManualImageRef] = Field(default_factory=list)
@@ -507,6 +508,15 @@ class ManualProductRequest(BaseModel):
     # (marketplace dealer add); the admin KB modal passes 'manual' so its products
     # keep the same created_from_type label they had before this path was embedded.
     source: Optional[str] = None
+    # Registry destination='column' values, routed by the dealer form.
+    column_fields: Dict[str, Any] = Field(default_factory=dict)
+
+
+# Real products columns a manual create may set from registry destination='column'
+# fields; identity and trust columns (workspace, status, cost, supplier) are not here.
+_MANUAL_COLUMN_FIELDS = frozenset({
+    'sku', 'mpn', 'barcode', 'warranty', 'country_of_origin', 'product_url',
+})
 
 
 @router.post("/create-manual")
@@ -521,6 +531,9 @@ async def create_manual_product(
     """
     svc = DataImportService()
     ws = ctx.workspace_id
+
+    if (request.price is not None or request.cost is not None) and ctx.user_id != SERVICE_SUBJECT:
+        await require_workspace_capability(ctx.user_id, ws, "pricing.manage")
 
     # 1 credit for the product itself, 1 per image analysed. Root/operator is not billed —
     # it owns the platform, same rule as the inbound sync and the other metered routes.
@@ -570,7 +583,7 @@ async def create_manual_product(
         'metadata': meta,
     }
     # Promote common descriptive facets the core reads explicitly at top level.
-    for k in ('color', 'colors', 'designer', 'collection', 'finish', 'material'):
+    for k in ('color', 'designer', 'collection', 'finish', 'material'):
         if k in meta:
             payload[k] = meta[k]
     if request.images:
@@ -605,11 +618,10 @@ async def create_manual_product(
             )
         raise HTTPException(status_code=500, detail="Product creation failed")
 
-    # Passthrough for first-class fields the admin product modal carries that the shared
-    # ingest core doesn't model. Applied as one update so the embedding/canonicalization
-    # core stays a single chokepoint. properties is MERGED (core seeds import-provenance
-    # keys we don't want to clobber); the rest are set when provided.
-    passthrough: Dict[str, Any] = {}
+    # First-class fields the shared ingest core does not model, applied after it. A failed
+    # write here is a failed request: the product is removed and the credits refunded.
+    failed_writes: List[str] = []
+    passthrough: Dict[str, Any] = {'supply_mode': request.supply_mode}
     if request.category is not None:
         passthrough['category'] = request.category
     if request.long_description is not None:
@@ -621,41 +633,55 @@ async def create_manual_product(
         passthrough['cost_updated_at'] = datetime.utcnow().isoformat()
     if request.specifications:
         passthrough['specifications'] = request.specifications
+    for col, val in (request.column_fields or {}).items():
+        if col in _MANUAL_COLUMN_FIELDS and val not in (None, ''):
+            passthrough[col] = val
     if request.properties:
         try:
-            cur = svc.supabase.table('products').select('properties') \
-                .eq('id', product_id).limit(1).execute()
+            cur = svc.supabase.table('products').select('properties')                 .eq('id', product_id).limit(1).execute()
             base = (cur.data[0].get('properties') if cur and cur.data else None) or {}
-        except Exception:
-            base = {}
-        passthrough['properties'] = {**base, **request.properties}
-    if passthrough:
+            passthrough['properties'] = {**base, **request.properties}
+        except Exception as e:
+            logger.error(f"manual product properties read failed for {product_id}: {e}")
+            failed_writes.append('properties')
+    if not failed_writes:
         try:
             svc.supabase.table('products').update(passthrough).eq('id', product_id).execute()
         except Exception as e:
-            logger.warning(f"manual product passthrough update failed for {product_id}: {e}")
-
-    # supply_mode flag + cascade base price on the dealer's own product_prices row.
-    try:
-        svc.supabase.table('products').update({'supply_mode': request.supply_mode}) \
-            .eq('id', product_id).execute()
-    except Exception as e:
-        logger.warning(f"supply_mode set failed for {product_id}: {e}")
-    if request.price is not None:
+            logger.error(f"manual product field update failed for {product_id}: {e}")
+            failed_writes.append('product_fields')
+    if request.price is not None and not failed_writes:
         try:
-            # The unique index is (workspace_id, product_id, variant_key) NULLS NOT DISTINCT.
-            # Naming only the first two is not a narrower match — Postgres raises 42P10 "no
-            # unique or exclusion constraint matching the ON CONFLICT specification", so this
-            # upsert failed on every call. It failed into the `logger.warning` below, which is
-            # why nobody noticed: the product was created, `success: True` came back, and the
-            # price was silently never stored.
+            # The unique index is (workspace_id, product_id, variant_key) NULLS NOT DISTINCT;
+            # naming only two of the three raises 42P10.
             svc.supabase.table('product_prices').upsert({
                 'workspace_id': ws, 'product_id': product_id,
                 'list_price': request.price, 'currency': request.currency,
                 'unit': request.unit,
             }, on_conflict='workspace_id,product_id,variant_key').execute()
         except Exception as e:
-            logger.warning(f"product_prices upsert failed for {product_id}: {e}")
+            logger.error(f"product_prices upsert failed for {product_id}: {e}")
+            failed_writes.append('price')
+
+    if failed_writes:
+        removed = False
+        try:
+            svc.supabase.table('products').delete().eq('id', product_id).eq('workspace_id', ws).execute()
+            removed = True
+        except Exception as e:
+            logger.error(f"could not remove half-created product {product_id}: {e}")
+        if debit_amount:
+            refund_credits(user_id=user_id, amount=debit_amount,
+                           operation_type="product.create_manual", workspace_id=ws)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Product was created but its fields could not be saved",
+                "failed": failed_writes,
+                "product_id": None if removed else product_id,
+                "product_removed": removed,
+            },
+        )
 
     return {'success': True, 'product_id': product_id}
 

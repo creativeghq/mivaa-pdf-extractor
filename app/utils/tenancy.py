@@ -53,6 +53,29 @@ def _client(supabase: Any) -> Any:
     return getattr(supabase, "client", supabase)
 
 
+def capability_is_held(
+    *,
+    member_role: Any,
+    capability: str,
+    matrix_rows: Iterable[dict],
+    is_platform_operator: bool,
+) -> bool:
+    """The rule behind `has_workspace_capability`, plus the operator persona.
+
+    `matrix_rows` is `workspace_role_capability_matrix()`. Operator-only capabilities
+    (`catalog.import`) are held by no workspace role; the operator persona holds all.
+    """
+    if not member_role:
+        return False
+    if is_platform_operator:
+        return True
+    role = str(member_role)
+    return any(
+        str(r.get("role")) == role and str(r.get("capability")) == capability
+        for r in (matrix_rows or [])
+    )
+
+
 def assert_document_in_workspace(supabase: Any, document_id: str, workspace_id: str) -> None:
     """Raise unless `document_id` belongs to `workspace_id`.
 

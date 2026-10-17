@@ -28,6 +28,26 @@ def clear_pdf_processor():
     _pdf_processor_instance = None
 
 
+def _sheet_physical_pages(
+    pdf_idx: int,
+    has_spread_layout: bool,
+    physical_to_pdf_map: Dict[int, tuple],
+) -> List[int]:
+    """Every physical page printed on PDF sheet `pdf_idx`, from the FULL spread map.
+
+    A product may own only one half of a spread; its images still have to be resolved
+    against both halves, or the facing page's images are assigned to it.
+    """
+    if not has_spread_layout:
+        return []
+    pages = []
+    for physical_page, mapped in (physical_to_pdf_map or {}).items():
+        idx = mapped[0] if isinstance(mapped, (list, tuple)) else mapped
+        if idx == pdf_idx:
+            pages.append(int(physical_page))
+    return sorted(pages)
+
+
 def _get_pdf_index_for_physical_page(
     physical_page: int,
     has_spread_layout: bool,
@@ -184,6 +204,9 @@ async def _process_product_images(
 
     # Process each unique PDF sheet once
     extracted_images_list = []
+    product_pages = set(physical_pages)
+    spread_images_dropped_other_page = 0
+    spread_images_side_unresolved = 0
 
     for pdf_idx, sheet_physical_pages in sorted(pdf_sheets_to_extract.items()):
         pdf_page_1based = pdf_idx + 1
@@ -221,8 +244,10 @@ async def _process_product_images(
         # ========================================================================
         # ASSIGN IMAGES TO CORRECT PHYSICAL PAGES
         # ========================================================================
-        if has_spread_layout and len(sheet_physical_pages) == 2:
-            # Spread layout: determine which physical page each image belongs to
+        full_sheet_pages = _sheet_physical_pages(pdf_idx, has_spread_layout, physical_to_pdf_map)
+        if has_spread_layout and len(full_sheet_pages) == 2:
+            # Spread layout: determine which physical page each image belongs to,
+            # against BOTH halves of the sheet, then keep only this product's half.
             import fitz
 
             # Get sheet width for side detection
@@ -237,8 +262,9 @@ async def _process_product_images(
                 doc.close()
 
             mid_x = sheet_width / 2
-            left_phys = min(sheet_physical_pages)
-            right_phys = max(sheet_physical_pages)
+            left_phys = min(full_sheet_pages)
+            right_phys = max(full_sheet_pages)
+            owns_both_halves = left_phys in product_pages and right_phys in product_pages
 
             # Track images without valid bbox for fallback assignment
             images_without_bbox = []
@@ -272,8 +298,8 @@ async def _process_product_images(
                     is_scene = spans_middle and (bbox_w_pts > sheet_width * 0.45)
 
                     if is_scene:
-                        # Scene spans both pages - assign to left page with scene flag
-                        img['page_number'] = left_phys  # Physical page (1-based)
+                        # Scene spans both pages: filed on whichever half this product owns.
+                        img['page_number'] = left_phys if left_phys in product_pages else right_phys
                         img['physical_side'] = 'spread'
                         img['is_scene'] = True
                         logger.info(f"      🎞️ Scene image detected spanning pages {left_phys}-{right_phys}")
@@ -288,6 +314,9 @@ async def _process_product_images(
                     images_without_bbox.append((img_idx, img))
                     continue  # Will assign after loop
 
+                if img['page_number'] not in product_pages:
+                    spread_images_dropped_other_page += 1
+                    continue
                 extracted_images_list.append(img)
 
             # Fallback for images without valid bbox: try layout regions first, then distribute evenly.
@@ -335,14 +364,20 @@ async def _process_product_images(
                                         logger.debug(f"      📍 Region crop {filename} assigned to right page via bbox")
                                         break
 
-                    # ✅ Final fallback: alternate between left and right
+                    # No position: only safe to keep when this product owns both halves.
                     if not assigned:
+                        if not owns_both_halves:
+                            spread_images_side_unresolved += 1
+                            continue
                         is_left = (fallback_idx % 2 == 0)
                         img['page_number'] = left_phys if is_left else right_phys
                         img['physical_side'] = 'left' if is_left else 'right'
                         img['bbox_fallback'] = True
                         logger.debug(f"      📍 Image {img_idx} ({filename}) fallback assigned to {'left' if is_left else 'right'} page")
 
+                    if img['page_number'] not in product_pages:
+                        spread_images_dropped_other_page += 1
+                        continue
                     extracted_images_list.append(img)
         else:
             # Single page or non-spread: all images go to the physical page
@@ -360,6 +395,14 @@ async def _process_product_images(
     # each PHYSICAL page as the same clipped half Stage 1.5 used and crops the
     # cached pixel bboxes directly. Crops are already keyed by physical page, so
     # no spread side-assignment is needed.
+    if spread_images_dropped_other_page or spread_images_side_unresolved:
+        logger.info(
+            f"   📐 Spread resolution: {spread_images_dropped_other_page} image(s) belong to the "
+            f"facing page, {spread_images_side_unresolved} had no position on a shared sheet — not "
+            f"assigned to {product.name}"
+        )
+
+    region_crop_status: Dict[str, Any] = {'status': 'ok', 'crops': 0}
     try:
         from app.services.pdf.region_crop_extractor import (
             extract_region_crops_for_physical_pages,
@@ -392,9 +435,15 @@ async def _process_product_images(
                 + (f" ({_pre - len(region_crops)} duplicates dropped)" if _pre != len(region_crops) else "")
             )
             extracted_images_list.extend(region_crops)
+        region_crop_status['crops'] = len(region_crops or [])
     except Exception as region_err:
+        # Explicit marker: "region crops failed" must not read as "this page has no figures".
+        region_crop_status = {
+            'status': 'failed', 'crops': 0, 'error': str(region_err)[:300],
+            'error_type': type(region_err).__name__,
+        }
         logger.error(
-            f"   ❌ Spread-aware region crop extraction failed (non-fatal): {region_err}"
+            f"   ❌ Spread-aware region crop extraction failed: {region_err}"
         )
 
     total_images = len(extracted_images_list)
@@ -424,7 +473,12 @@ async def _process_product_images(
         logger.warning("      1. Pages are text-only (no embedded images)")
         logger.warning("      2. Images were filtered out by size/quality thresholds")
         logger.warning("      3. The layout structural pass returned errors")
-        return {'images_processed': 0, 'images_material': 0, 'images_non_material': 0, 'clip_embeddings_generated': 0}
+        return {
+            'images_processed': 0, 'images_material': 0, 'images_non_material': 0,
+            'clip_embeddings_generated': 0,
+            'region_crop_status': region_crop_status,
+            'spread_images_side_unresolved': spread_images_side_unresolved,
+        }
 
     logger.info(f"   ✅ Extracted {total_images} images from {len(physical_pages)} physical pages")
 
@@ -666,6 +720,9 @@ async def _process_product_images(
         },
         'vector_stats': vector_stats,
         'failed_images': failed_images,
+        'region_crop_status': region_crop_status,
+        'spread_images_dropped_other_page': spread_images_dropped_other_page,
+        'spread_images_side_unresolved': spread_images_side_unresolved,
     }
 
 
@@ -1059,6 +1116,8 @@ async def process_catalog_wide_icons(
                 workspace_id=workspace_id,
                 idx=idx,
                 total=total_icons,
+                material_category=getattr(catalog, 'material_category', None),
+                job_id=job_id,
             )
         except Exception as icon_err:
             logger.warning(

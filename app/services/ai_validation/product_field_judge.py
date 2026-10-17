@@ -108,8 +108,9 @@ class ProductFieldJudge:
             )
             .eq("source_document_id", document_id)
             .eq("workspace_id", self.workspace_id)
-            .lt("confidence_score", confidence_below)
-            .order("confidence_score")
+            # An unscored product is the least certain of all, not out of scope.
+            .or_(f"confidence_score.is.null,confidence_score.lt.{float(confidence_below)}")
+            .order("confidence_score", nullsfirst=True)
             .limit(max_products)
             .execute()
         )
@@ -179,8 +180,9 @@ class ProductFieldJudge:
     async def _judge_one(self, pdf, product: Dict[str, Any], document_id: str, prompt: str) -> Dict[str, Any]:
         product_id = product["id"]
         meta = product.get("metadata") or {}
+        page_range = meta.get("page_range") if isinstance(meta.get("page_range"), list) else []
         try:
-            page_number = int(meta.get("page_number") or 0)
+            page_number = int(meta.get("page_number") or (min(page_range) if page_range else 0))
         except (TypeError, ValueError):
             page_number = 0
         fields = fields_for_judgement(flatten_product_fields(product))
@@ -240,19 +242,28 @@ class ProductFieldJudge:
         kept, dropped = validate_verdicts(result.data.get("verdicts"), fields.keys())
         counts = summarize_verdicts(kept)
         page_legible = bool(result.data.get("page_legible", True))
+        if not kept:
+            reason = f"no usable verdict for {len(fields)} field(s) ({len(dropped)} dropped)"
+            self._stamp(product, "failed", error=reason, page_number=page_number)
+            return {"product_id": product_id, "status": "failed", "error": reason}
+        complete = len(kept) >= len(fields)
+        verdict_status = "ok" if complete else "partial"
         await asyncio.to_thread(self._write_judgements, product, document_id, page_number, kept, fields)
         self._stamp(
-            product,
-            "ok",
+            product, "ok" if complete else "partial",
             page_number=page_number,
             page_legible=page_legible,
             fields_judged=len(kept),
+            fields_offered=len(fields),
             verdicts_dropped=len(dropped),
             **counts,
         )
         if dropped:
             logger.info("Field judge dropped %d verdict(s) for product %s: %s", len(dropped), product_id, dropped[:3])
-        return {"product_id": product_id, "status": "ok", "page_legible": page_legible, "dropped": len(dropped), **counts}
+        return {
+            "product_id": product_id, "status": verdict_status, "page_legible": page_legible,
+            "dropped": len(dropped), "fields_offered": len(fields), **counts,
+        }
 
     async def judge_document_products(
         self,
@@ -268,7 +279,7 @@ class ProductFieldJudge:
         records that as a failure of the judge, not of the job.
         """
         summary: Dict[str, Any] = {
-            "status": "ok", "judged": 0, "skipped": 0, "failed": 0,
+            "status": "ok", "judged": 0, "partial": 0, "skipped": 0, "failed": 0,
             "ok": 0, "suspect": 0, "wrong": 0, "absent_on_page": 0, "products": [],
         }
         doc = await asyncio.to_thread(self._load_document, document_id)
@@ -299,8 +310,10 @@ class ProductFieldJudge:
                 outcome = await self._judge_one(pdf, product, document_id, prompt)
                 summary["products"].append(outcome)
                 status = outcome.get("status")
-                if status == "ok":
+                if status in ("ok", "partial"):
                     summary["judged"] += 1
+                    if status == "partial":
+                        summary["partial"] += 1
                     for k in ("ok", "suspect", "wrong", "absent_on_page"):
                         summary[k] += int(outcome.get(k) or 0)
                 elif status == "skipped":

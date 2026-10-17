@@ -49,30 +49,74 @@ class _TableHTMLParser(HTMLParser):
 
     Uses the stdlib parser rather than a regex sweep (or a new bs4/lxml
     dependency) — VLM-generated table HTML is well-formed but does use nested
-    inline tags, which a naive regex would mangle.
+    inline tags, which a naive regex would mangle. ``rowspan``/``colspan`` are
+    expanded so every column keeps its header.
     """
 
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.rows: List[List[str]] = []
-        self._row: Optional[List[str]] = None
+        self._row: Optional[List[tuple]] = None
         self._cell: Optional[List[str]] = None
+        self._cell_span: tuple = (1, 1)
+        # column index -> [rows still to fill, text]
+        self._carry: Dict[int, List[Any]] = {}
+
+    @staticmethod
+    def _span(attrs: Any, name: str) -> int:
+        for key, value in attrs or []:
+            if key == name:
+                try:
+                    return max(1, min(int(str(value).strip()), 100))
+                except (TypeError, ValueError):
+                    return 1
+        return 1
 
     def handle_starttag(self, tag: str, attrs: Any) -> None:
         if tag == "tr":
+            self._flush_row()
             self._row = []
         elif tag in ("td", "th"):
             self._cell = []
+            self._cell_span = (self._span(attrs, "colspan"), self._span(attrs, "rowspan"))
 
     def handle_endtag(self, tag: str) -> None:
         if tag in ("td", "th") and self._cell is not None:
             if self._row is None:
                 self._row = []
-            self._row.append(" ".join("".join(self._cell).split()))
+            self._row.append((" ".join("".join(self._cell).split()), *self._cell_span))
             self._cell = None
-        elif tag == "tr" and self._row is not None:
-            self.rows.append(self._row)
-            self._row = None
+        elif tag == "tr":
+            self._flush_row()
+
+    def _flush_row(self) -> None:
+        if self._row is None:
+            return
+        cells = self._row
+        self._row = None
+        out: List[str] = []
+        col = 0
+        pending = list(cells)
+        while pending or any(c >= col for c in self._carry):
+            carried = self._carry.get(col)
+            if carried is not None:
+                out.append(carried[1])
+                carried[0] -= 1
+                if carried[0] <= 0:
+                    del self._carry[col]
+                col += 1
+                continue
+            if not pending:
+                out.append("")
+                col += 1
+                continue
+            text, colspan, rowspan = pending.pop(0)
+            for _ in range(colspan):
+                out.append(text)
+                if rowspan > 1:
+                    self._carry[col] = [rowspan - 1, text]
+                col += 1
+        self.rows.append(out)
 
     def handle_data(self, data: str) -> None:
         if self._cell is not None:
@@ -82,8 +126,7 @@ class _TableHTMLParser(HTMLParser):
         super().close()
         # Tolerate an unclosed trailing <tr>.
         if self._row:
-            self.rows.append(self._row)
-            self._row = None
+            self._flush_row()
 
 
 def parse_html_table(content: str) -> Optional[List[List[str]]]:

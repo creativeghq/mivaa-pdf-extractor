@@ -10,11 +10,11 @@ import fitz  # PyMuPDF
 from PIL import Image
 
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
+from app.services.metadata.field_registry import field_registry
+from app.services.metadata.metadata_normalizer import scale_value
 from app.services.utilities.prompt_registry import get_cached
 
 logger = logging.getLogger(__name__)
-
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Haiku 4.5 is plenty capable for ceramic tile spec extraction and 10x cheaper
 # than Opus. If results are weak on a specific catalog, we can override via
@@ -39,15 +39,21 @@ MAX_IMAGE_BYTES = 4_000_000
 from app.services.core.claude_tool_call import ToolCallNotReturned, extract_tool_input
 
 
-def _build_spec_prompt(product_name: str) -> str:
-    """Fill the stored spec template with the target product name.
+def _build_spec_prompt(product_name: str, category: Optional[str] = None) -> str:
+    """Fill the stored spec template with the target product name (and category fields).
 
-    We use a plain `.replace` rather than `.format` because the template
-    embeds literal JSON braces that would trip .format's {…} parser.
+    A plain `.replace`, because the template embeds literal JSON braces. `{category_fields}`
+    is filled from the registry when the stored prompt carries that placeholder.
     """
-    safe = (product_name or "").strip() or "the ceramic product on this page"
+    safe = (product_name or "").strip() or "the product on this page"
     template = get_cached("extraction", "product_spec_vision", stage="image_analysis")
-    return template.replace("{product_name}", safe)
+    prompt = template.replace("{product_name}", safe)
+    if "{category_fields}" in prompt:
+        block = ""
+        if category and field_registry.is_loaded:
+            block = field_registry.priority_fields_prompt(category)
+        prompt = prompt.replace("{category_fields}", block)
+    return prompt
 
 
 # Was `SPEC_PROMPT = _build_spec_prompt(...)`, evaluated at IMPORT time — which can neither
@@ -62,14 +68,15 @@ SPEC_VISION_TOOL = {
     ),
     "input_schema": {
         "type": "object",
-        "properties": {},
+        "properties": {"page_contains_target": {"type": "boolean"}},
+        "required": ["page_contains_target"],
         "additionalProperties": True,
     },
 }
 
 
 def default_spec_prompt() -> str:
-    return _build_spec_prompt("the ceramic product on this page")
+    return _build_spec_prompt("the product on this page")
 
 
 def _render_pdf_page_to_bytes(
@@ -201,7 +208,7 @@ def _call_claude_vision(
     """Single Claude Vision call, returns parsed JSON dict or None on failure."""
     if prompt is None:
         prompt = default_spec_prompt()
-    if not ANTHROPIC_API_KEY:
+    if not os.getenv("ANTHROPIC_API_KEY"):
         logger.error("product_spec_vision_extractor: ANTHROPIC_API_KEY not set")
         return None
 
@@ -247,14 +254,16 @@ def _call_claude_vision(
     # ignored the 'no fences' instruction" — repair logic written by someone who had
     # already watched the free-form contract break.
     try:
-        return extract_tool_input(resp, SPEC_VISION_TOOL["name"])
+        data = extract_tool_input(resp, SPEC_VISION_TOOL["name"])
     except ToolCallNotReturned as e:
-        # None is the caller's "nothing on this page" signal and is preserved on
-        # purpose — `extract_specs_from_pdf_pages` does `if not data: continue`, so
-        # raising here would abandon the remaining pages of the catalogue over one bad
-        # reply. Logged at warning so a systematic break is still visible.
+        # None = this page FAILED; the caller counts it and moves to the next page. A page
+        # with nothing for the product answers page_contains_target=false instead.
         logger.warning(f"product_spec_vision_extractor: {e}")
         return None
+    if not isinstance(data.get("page_contains_target"), bool):
+        logger.warning("product_spec_vision_extractor: reply has no boolean page_contains_target")
+        return None
+    return data
 
 
 def _get_source_pdf_path(document_id: str) -> Optional[str]:
@@ -462,8 +471,9 @@ def extract_specs_from_pdf_pages(
     product_id: Optional[str] = None,
     document_id: Optional[str] = None,
     model: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Extract ceramic-tile specifications from a product's PDF spec pages.
+    """Extract a product's specifications from its PDF spec pages.
 
     Args:
         pdf_path: Path to the source PDF on disk.
@@ -474,12 +484,13 @@ def extract_specs_from_pdf_pages(
                       `page_contains_target=false` are dropped entirely.
 
     Returns:
-        Merged spec dict (schema defined by the extraction/product_spec_vision prompt).
-        Empty on failure.
+        Merged spec dict (schema defined by the extraction/product_spec_vision prompt) with
+        `_status` ('ok' | 'degraded' | 'failed') and `_page_failures`. Empty only when no
+        page could be resolved for the product.
     """
     if not os.path.exists(pdf_path):
         logger.warning(f"product_spec_vision_extractor: PDF not found at {pdf_path}")
-        return {}
+        return {"_status": "failed", "_page_failures": [{"page": None, "reason": "pdf_not_found"}]}
 
     pdf_indices = _resolve_pdf_pages_for_product(
         pdf_path, product_page_range, product_name=product_name,
@@ -491,7 +502,7 @@ def extract_specs_from_pdf_pages(
 
     pdf_indices = pdf_indices[:8]
 
-    product_aware_prompt = _build_spec_prompt(product_name or "")
+    product_aware_prompt = _build_spec_prompt(product_name or "", category)
     logger.info(
         f"📸 product_spec_vision_extractor: {product_name or '?'} "
         f"scanning {len(pdf_indices)} pages {pdf_indices}"
@@ -500,15 +511,19 @@ def extract_specs_from_pdf_pages(
     results: List[Dict[str, Any]] = []
     pages_kept = 0
     pages_dropped_other_product = 0
+    pages_attempted = 0
+    page_failures: List[Dict[str, Any]] = []
 
     for idx in pdf_indices:
         # Render directly under the 5 MB Claude limit via PyMuPDF (PNG then
         # JPEG fallback at progressively lower DPI). This bypasses PIL
         # entirely, which previously choked on some high-res Harmony
         # spreads with "cannot identify image file".
+        pages_attempted += 1
         image_bytes = _render_page_under_limit(pdf_path, idx)
         if image_bytes is None:
             logger.warning(f"   ⚠️ render page {idx} failed at every DPI/format attempt")
+            page_failures.append({"page": idx, "reason": "render_failed"})
             continue
 
         try:
@@ -521,9 +536,11 @@ def extract_specs_from_pdf_pages(
             )
         except Exception as e:
             logger.warning(f"   ⚠️ Claude Vision call failed for page {idx}: {e}")
+            page_failures.append({"page": idx, "reason": f"call_failed: {str(e)[:200]}"})
             continue
 
         if not data:
+            page_failures.append({"page": idx, "reason": "no_valid_reply"})
             continue
 
         # Skip pages that explicitly said they don't contain target product data.
@@ -542,7 +559,7 @@ def extract_specs_from_pdf_pages(
         has_icons = any(
             data.get(k) not in (None, [], "")
             for k in ("slip_resistance", "pei_rating", "water_absorption_class",
-                      "shade_variation")
+                      "v_rating")
         )
         has_packing = all(
             data.get(k) not in (None, [], "")
@@ -555,18 +572,28 @@ def extract_specs_from_pdf_pages(
             )
             break
 
+    status = "ok"
+    if page_failures:
+        status = "failed" if len(page_failures) >= pages_attempted else "degraded"
+        logger.warning(
+            f"   ⚠️ product_spec_vision_extractor: {len(page_failures)}/{pages_attempted} "
+            f"page(s) failed for '{product_name}' ({status})"
+        )
+
     if not results:
         logger.info(
             f"   ℹ️ product_spec_vision_extractor: no pages matched '{product_name}' "
             f"({pages_dropped_other_product} pages belonged to other products)"
         )
-        return {}
+        return {"_status": status, "_page_failures": page_failures} if page_failures else {}
 
     merged = _select_best_spec_result(results)
     # Strip out the envelope flags before returning — callers don't need them.
     merged.pop("page_contains_target", None)
+    merged["_status"] = status
+    merged["_page_failures"] = page_failures
 
-    populated = sum(1 for v in merged.values() if v not in (None, [], ""))
+    populated = sum(1 for k, v in merged.items() if not k.startswith("_") and v not in (None, [], ""))
     logger.info(
         f"   ✅ product_spec_vision_extractor: {populated}/{len(merged)} fields populated "
         f"from {pages_kept} page(s) ({pages_dropped_other_product} other-product pages dropped)"
@@ -574,10 +601,28 @@ def extract_specs_from_pdf_pages(
     return merged
 
 
+#: Keys the explicit mapping below already places (or that are envelope/audit keys).
+_EXPLICITLY_MAPPED = frozenset({
+    "finish", "body_type", "thickness_mm", "patterns",
+    "slip_resistance", "pei_rating", "water_absorption_class", "water_absorption_pct",
+    "fire_rating", "frost_resistance", "installation_method", "joint_width_mm",
+    "pieces_per_box", "m2_per_box", "weight_per_box_kg",
+    "boxes_per_pallet", "m2_per_pallet", "weight_per_pallet_kg",
+    "packaging_per_variant", "grout_recommendations", "variants", "certifications",
+    "dimensions_cm", "dimensions_inch", "page_contains_target",
+})
+
+
 def map_vision_specs_to_product_metadata(
     specs: Dict[str, Any],
+    category: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Transform the flat vision result into the nested product.metadata shape."""
+    """Transform the flat vision result into the nested product.metadata shape.
+
+    Keys outside the explicit mapping go through the field registry: a key that resolves
+    to a field applying to `category` lands under its registry name in its registry
+    section; anything else is kept, flagged, under `unregistered_spec_fields`.
+    """
     out: Dict[str, Any] = {}
 
     # Material properties
@@ -586,15 +631,14 @@ def map_vision_specs_to_product_metadata(
     if specs.get("body_type"):        mp["body_type"] = specs["body_type"]
     if specs.get("thickness_mm") is not None:
         mp["thickness_mm"] = specs["thickness_mm"]
-    if specs.get("patterns"):         mp["patterns"] = specs["patterns"]
+    if specs.get("patterns"):         mp["pattern"] = specs["patterns"]
     if mp:
         out["material_properties"] = mp
 
     # Performance (the spec icon block)
     perf = {}
     for k in ("slip_resistance", "pei_rating", "water_absorption_class",
-              "water_absorption_pct", "fire_rating", "frost_resistance",
-              "shade_variation", "traffic_level"):
+              "water_absorption_pct", "fire_rating", "frost_resistance"):
         if specs.get(k) not in (None, [], ""):
             perf[k] = specs[k]
     if perf:
@@ -602,7 +646,6 @@ def map_vision_specs_to_product_metadata(
 
     # Application
     app = {}
-    if specs.get("recommended_use"):       app["recommended_use"] = specs["recommended_use"]
     if specs.get("installation_method"):   app["installation_method"] = specs["installation_method"]
     if specs.get("joint_width_mm") is not None:
         app["joint_width_mm"] = specs["joint_width_mm"]
@@ -611,10 +654,8 @@ def map_vision_specs_to_product_metadata(
 
     # Packaging — scalar (per product) fields
     pkg = {}
-    for k in ("pieces_per_box", "m2_per_box", "sqft_per_box",
-              "weight_per_box_kg", "weight_per_box_lb",
-              "boxes_per_pallet", "m2_per_pallet",
-              "weight_per_pallet_kg", "weight_per_pallet_lb"):
+    for k in ("pieces_per_box", "m2_per_box", "weight_per_box_kg",
+              "boxes_per_pallet", "m2_per_pallet", "weight_per_pallet_kg"):
         if specs.get(k) is not None:
             pkg[k] = specs[k]
     # Per-variant packaging rows (when the catalog's packing table lists
@@ -632,7 +673,7 @@ def map_vision_specs_to_product_metadata(
     # Commercial — grout recommendations have their own shape
     commercial = {}
     if specs.get("grout_recommendations"):
-        commercial["grout_details"] = specs["grout_recommendations"]
+        commercial["grout_color_codes"] = {"details": specs["grout_recommendations"]}
     if specs.get("variants"):
         commercial["vision_variants"] = specs["variants"]
     if commercial:
@@ -650,5 +691,23 @@ def map_vision_specs_to_product_metadata(
         out["dimensions_cm_from_vision"] = specs["dimensions_cm"]
     if specs.get("dimensions_inch"):
         out["dimensions_inch_from_vision"] = specs["dimensions_inch"]
+
+    category_key = None
+    if category and field_registry.is_loaded:
+        category_key = field_registry.resolve_category(category)
+    for key, value in specs.items():
+        if key in _EXPLICITLY_MAPPED or key.startswith("_") or value in (None, [], "", {}):
+            continue
+        spec = None
+        if field_registry.is_loaded:
+            hit = field_registry.resolve_field(key, category_key)
+            spec = field_registry.spec_for(hit[0]) if hit else None
+            if spec is not None and hit[1] != 1.0:
+                value = scale_value(value, hit[1])
+                spec = spec if value is not None else None
+        if spec is not None and (category_key is None or spec.applies_to(category_key)):
+            out.setdefault(spec.section or "other", {}).setdefault(spec.name, value)
+        else:
+            out.setdefault("unregistered_spec_fields", {})[key] = value
 
     return out

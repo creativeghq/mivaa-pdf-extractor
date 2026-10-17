@@ -401,9 +401,10 @@ class RealEmbeddingsService:
         user_id: Optional[str] = None,
         product_id: Optional[str] = None,
         image_id: Optional[str] = None,
+        input_type: str = "document",
     ) -> Dict[str, Any]:
         """
-        Public method to generate a text embedding for search queries.
+        Public method to generate a text embedding.
 
         Returns dict with {"success", "embedding", "model"} format. The model
         field is the model that actually produced the vector, so callers can
@@ -415,13 +416,18 @@ class RealEmbeddingsService:
             job_id: Optional job ID for cost attribution
             product_id: Optional product ID for per-product cost attribution
             image_id: Optional image ID for per-image cost attribution
+            input_type: Voyage input_type — "document" for anything stored,
+                "query" for a search-time vector compared against stored ones.
         """
+        if input_type not in ("document", "query"):
+            raise ValueError(f"input_type must be 'document' or 'query', got {input_type!r}")
         try:
             # _last_provider is stamped by the embedder at the end of the call.
             self._last_provider = None
             embedding = await self._generate_text_embedding(
                 text=query,
                 dimensions=dimensions,
+                input_type=input_type,
                 job_id=job_id,
                 workspace_id=workspace_id,
                 user_id=user_id,
@@ -435,7 +441,7 @@ class RealEmbeddingsService:
                     # Report the model that ACTUALLY produced the vector, not the
                     # configured default - they differ whenever settings change
                     # between a row being written and being read.
-                    "model": self._last_provider or self.voyage_model,
+                    "model": self._last_provider or self.voyage_model_for(input_type),
                 }
             return {"success": False, "error": "Text embedding generation returned None"}
         except Exception as e:
@@ -482,6 +488,7 @@ class RealEmbeddingsService:
                     job_id=job_id,
                     workspace_id=workspace_id,
                     user_id=user_id,
+                    error_message=(failure or action) if action != "use_ai_result" else None,
                 )
             except Exception as log_err:
                 self.logger.warning(f"Could not log visual query embedding call: {log_err}")
@@ -640,7 +647,9 @@ class RealEmbeddingsService:
 
     async def generate_understanding_query_embedding(
         self,
-        query: str
+        query: str,
+        workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate understanding-space embedding from a text query for search.
@@ -657,7 +666,9 @@ class RealEmbeddingsService:
         try:
             embedding = await self._generate_text_embedding(
                 text=query,
-                input_type="query"
+                input_type="query",
+                workspace_id=workspace_id,
+                user_id=user_id,
             )
             if embedding:
                 return {"success": True, "embedding": embedding}
@@ -794,6 +805,11 @@ class RealEmbeddingsService:
                     user_id=user_id,
                     product_id=product_id,
                     image_id=image_id,
+                    cost_breakdown={k: float(costs[k]) for k in (
+                        "input_cost_usd", "output_cost_usd", "raw_cost_usd",
+                        "markup_multiplier", "billed_cost_usd",
+                    )},
+                    image_pixels=image_pixels,
                 )
 
                 self.logger.info(
@@ -887,12 +903,19 @@ class RealEmbeddingsService:
             image_id=image_id,
         )
 
-    async def generate_page_query_embedding(self, query: str) -> Dict[str, Any]:
+    async def generate_page_query_embedding(
+        self,
+        query: str,
+        workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Embed a text query into the PAGE vector space for search."""
         result = await self._voyage_multimodal_embed(
             content=[{"type": "text", "text": query}],
             input_type="query",
             task="page_query_embedding_generation",
+            workspace_id=workspace_id,
+            user_id=user_id,
         )
         if result and result.get("embedding"):
             return {"success": True, "embedding": result["embedding"], "model": result["embedding_model"]}
@@ -1608,6 +1631,7 @@ class RealEmbeddingsService:
                             user_id=user_id,
                             product_id=product_id,
                             image_id=image_id,
+                            error_message="SLIG returned a wrong-dimension vector 3x",
                         )
                         return None, None
 
@@ -1674,6 +1698,7 @@ class RealEmbeddingsService:
                             user_id=user_id,
                             product_id=product_id,
                             image_id=image_id,
+                            error_message=f"{type(e).__name__}: {e}"[:500],
                         )
                     except Exception as log_err:
                         # Never let the cost log turn a soft failure into a hard one.

@@ -6,10 +6,13 @@ It ensures that interrupted jobs can be resumed after service restarts.
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+#: The job types this service runs; every other type belongs to another runner.
+MIVAA_PDF_JOB_TYPES = ('product_discovery_upload', 'pdf_processing')
 
 
 class JobRecoveryService:
@@ -167,49 +170,60 @@ class JobRecoveryService:
             logger.error(f"Failed to mark job {job_id} as interrupted: {e}")
             return False
     
-    async def mark_all_processing_as_interrupted(self, reason: str = "Service restart") -> int:
-        """
-        Mark all currently processing jobs as interrupted.
-        This should be called on service startup.
-        
-        Args:
-            reason: Reason for interruption
-            
-        Returns:
-            int: Number of jobs marked as interrupted
+    async def mark_all_processing_as_interrupted(
+        self,
+        reason: str = "Service restart",
+        job_types: tuple = MIVAA_PDF_JOB_TYPES,
+        heartbeat_stale_seconds: Optional[int] = None,
+    ) -> int:
+        """Mark this service's dead PDF jobs as interrupted (call on startup).
+
+        Only MIVAA's own job types in 'processing', and only rows whose heartbeat has
+        gone stale: other job types belong to other runners, 'pending' is queued work,
+        and a fresh heartbeat is a worker that is still alive somewhere.
         """
         try:
-            # Get all processing jobs
-            response = self.supabase.client.table(self.table_name).select("id").in_(
-                "status", ["processing", "pending"]
-            ).execute()
-            
+            if heartbeat_stale_seconds is None:
+                try:
+                    from app.config import get_settings
+                    heartbeat_stale_seconds = 2 * max(15, int(get_settings().job_heartbeat_interval_seconds))
+                except Exception:
+                    heartbeat_stale_seconds = 120
+            cutoff = (datetime.now(timezone.utc) - timedelta(seconds=heartbeat_stale_seconds))
+            cutoff_iso = cutoff.replace(tzinfo=None).isoformat() + "Z"
+
+            response = self.supabase.client.table(self.table_name).select("id") \
+                .eq("status", "processing") \
+                .in_("job_type", list(job_types)) \
+                .or_(f"last_heartbeat.is.null,last_heartbeat.lt.{cutoff_iso}") \
+                .execute()
+
             jobs = response.data or []
-            
+
             if not jobs:
                 logger.info("✅ No processing jobs to mark as interrupted")
                 return 0
-            
-            # Mark them all as interrupted
+
             job_ids = [job["id"] for job in jobs]
-            
+
+            now_iso = datetime.utcnow().isoformat()
             self.supabase.client.table(self.table_name).update({
                 "status": "interrupted",
                 "error": reason,
-                "interrupted_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat()
-            }).in_("id", job_ids).execute()
-            
+                "interrupted_at": now_iso,
+                "updated_at": now_iso,
+            }).in_("id", job_ids).eq("status", "processing").execute()
+
             logger.warning(f"🛑 Marked {len(job_ids)} jobs as interrupted due to: {reason}")
             for job_id in job_ids:
                 logger.warning(f"   - Job {job_id}")
-            
+
             return len(job_ids)
-            
+
         except Exception as e:
             logger.error(f"Failed to mark processing jobs as interrupted: {e}", exc_info=True)
             return 0
-    
+
     async def get_job_status(self, job_id: str) -> Optional[Dict[str, Any]]:
         """
         Get job status from database.

@@ -268,7 +268,6 @@ class ClaudeValidationService:
                     'claude_validation': claude_result,
                     'claude_validated_at': datetime.utcnow().isoformat()
                 },
-                'updated_at': datetime.utcnow().isoformat()
             }
             
             self.supabase.client.table('document_images')\

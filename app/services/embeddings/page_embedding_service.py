@@ -114,6 +114,7 @@ class PageEmbeddingService:
         job_id: Optional[str] = None,
         page_numbers: Optional[List[int]] = None,
         force: bool = False,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Render + embed a document's pages.
 
@@ -123,6 +124,7 @@ class PageEmbeddingService:
                 see below; it is not trusted as the source of tenancy.
             page_numbers: 1-based pages to process. None = all pages, capped.
             force: re-embed pages already marked `embedded` (use after a model change).
+            user_id: principal the Voyage spend is billed to.
 
         Returns a summary dict. Never raises for per-page failures: a page that fails
         is recorded with cache_status='failed' so the backfill can retry it, and the
@@ -208,6 +210,7 @@ class PageEmbeddingService:
                         page_text=page_texts.get(page_no),
                         dpi=settings.page_embedding_dpi,
                         job_id=job_id,
+                        user_id=user_id,
                     )
 
             outcomes = await asyncio.gather(*[_one(p) for p in todo], return_exceptions=True)
@@ -407,6 +410,7 @@ class PageEmbeddingService:
         page_text: Optional[str],
         dpi: int,
         job_id: Optional[str],
+        user_id: Optional[str] = None,
     ) -> str:
         """Render → upload → embed → upsert one page. Returns the cache_status written."""
         try:
@@ -443,6 +447,8 @@ class PageEmbeddingService:
             image_base64=base64.b64encode(png_bytes).decode("ascii"),
             page_text=page_text,
             job_id=job_id,
+            workspace_id=str(workspace_id),
+            user_id=user_id,
         )
         if not result or not result.get("embedding"):
             await self._record(
