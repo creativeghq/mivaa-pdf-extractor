@@ -11,12 +11,13 @@ import threading
 
 
 class CrossLoopSemaphore:
-    def __init__(self, value: int = 1, poll_seconds: float = 0.01) -> None:
+    def __init__(self, value: int = 1, poll_seconds: float = 0.005, max_poll_seconds: float = 0.1) -> None:
         if value < 1:
             raise ValueError("value must be >= 1")
         self._free = value
         self._guard = threading.Lock()
         self._poll = poll_seconds
+        self._max_poll = max(max_poll_seconds, poll_seconds)
 
     def _try_acquire(self) -> bool:
         with self._guard:
@@ -26,8 +27,11 @@ class CrossLoopSemaphore:
             return False
 
     async def acquire(self) -> None:
+        # Backing off keeps hundreds of waiters from spinning the loop at 100 wakeups/s each.
+        delay = self._poll
         while not self._try_acquire():
-            await asyncio.sleep(self._poll)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, self._max_poll)
 
     def release(self) -> None:
         with self._guard:
@@ -46,5 +50,5 @@ class CrossLoopSemaphore:
 
 
 class CrossLoopLock(CrossLoopSemaphore):
-    def __init__(self, poll_seconds: float = 0.01) -> None:
-        super().__init__(1, poll_seconds)
+    def __init__(self, poll_seconds: float = 0.005, max_poll_seconds: float = 0.1) -> None:
+        super().__init__(1, poll_seconds, max_poll_seconds)

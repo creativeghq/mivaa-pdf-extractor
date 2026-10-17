@@ -30,7 +30,8 @@ class AdaptiveConcurrency:
     the first loop that waits on it and raises in every other job.
     """
 
-    _POLL_SECONDS = 0.05
+    _POLL_MIN_SECONDS = 0.005
+    _POLL_MAX_SECONDS = 0.1
 
     def __init__(
         self,
@@ -83,8 +84,10 @@ class AdaptiveConcurrency:
         Blocks (cooperatively) until `in_flight < limit`. Releases on exit even
         if the protected code raises.
         """
+        delay = self._POLL_MIN_SECONDS
         while not self._try_take():
-            await asyncio.sleep(self._POLL_SECONDS)
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, self._POLL_MAX_SECONDS)
         try:
             yield
         finally:
@@ -97,41 +100,43 @@ class AdaptiveConcurrency:
         After `success_threshold` consecutive successes we grow the limit by 1
         (additive increase), capped at `maximum`.
         """
-        self._consecutive_successes += 1
-        self._consecutive_failures = 0
+        with self._guard:
+            self._consecutive_successes += 1
+            self._consecutive_failures = 0
 
-        if (
-            self._consecutive_successes >= self._success_threshold
-            and self._limit < self._max
-        ):
-            old = self._limit
-            self._limit += 1
-            self._consecutive_successes = 0
-            logger.info(
-                "🐰 %s adaptive concurrency: %d → %d (after %d consecutive successes)",
-                self._name, old, self._limit, self._success_threshold,
-            )
+            if (
+                self._consecutive_successes >= self._success_threshold
+                and self._limit < self._max
+            ):
+                old = self._limit
+                self._limit += 1
+                self._consecutive_successes = 0
+                logger.info(
+                    "🐰 %s adaptive concurrency: %d → %d (after %d consecutive successes)",
+                    self._name, old, self._limit, self._success_threshold,
+                )
 
     def record_failure(self) -> None:
         """Signal that an in-flight call failed with a backpressure-relevant error."""
-        self._consecutive_failures += 1
-        self._consecutive_successes = 0
+        with self._guard:
+            self._consecutive_failures += 1
+            self._consecutive_successes = 0
 
-        if (
-            self._consecutive_failures >= self._failure_threshold
-            and self._limit > self._min
-        ):
-            old = self._limit
-            self._limit = max(self._min, self._limit // 2)
-            self._consecutive_failures = 0
-            logger.warning(
-                "🐢 %s adaptive concurrency: %d → %d "
-                "(after %d consecutive failures — endpoint overloaded)",
-                self._name, old, self._limit, self._failure_threshold,
-            )
-            # Note: we do NOT forcibly interrupt in-flight callers. They finish
-            # naturally; new slots will simply be unavailable until in_flight
-            # drops below the new limit.
+            if (
+                self._consecutive_failures >= self._failure_threshold
+                and self._limit > self._min
+            ):
+                old = self._limit
+                self._limit = max(self._min, self._limit // 2)
+                self._consecutive_failures = 0
+                logger.warning(
+                    "🐢 %s adaptive concurrency: %d → %d "
+                    "(after %d consecutive failures — endpoint overloaded)",
+                    self._name, old, self._limit, self._failure_threshold,
+                )
+                # Note: we do NOT forcibly interrupt in-flight callers. They finish
+                # naturally; new slots will simply be unavailable until in_flight
+                # drops below the new limit.
 
     def force_minimum(self) -> None:
         """Immediately shrink the concurrency limit to `minimum`.
@@ -140,14 +145,15 @@ class AdaptiveConcurrency:
         check failed, URL not configured). Prevents the controller from handing
         out slots that would just pile up against a broken endpoint.
         """
-        if self._limit != self._min:
-            old = self._limit
-            self._limit = self._min
-            logger.warning(
-                "🛑 %s adaptive concurrency forced to minimum: %d → %d "
-                "(endpoint dead/unconfigured)",
-                self._name, old, self._limit,
-            )
+        with self._guard:
+            if self._limit != self._min:
+                old = self._limit
+                self._limit = self._min
+                logger.warning(
+                    "🛑 %s adaptive concurrency forced to minimum: %d → %d "
+                    "(endpoint dead/unconfigured)",
+                    self._name, old, self._limit,
+                )
 
     def stats(self) -> dict:
         """Snapshot of current state for logging / progress reports."""

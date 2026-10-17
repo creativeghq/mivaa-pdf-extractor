@@ -122,8 +122,13 @@ def _route_column_fields(metadata: Dict[str, Any], category: Optional[str] = Non
     return columns
 
 
+#: EU and UK conventions that are not ISO 3166-1 codes for the country they name.
+_ISO_COUNTRY_EXCEPTIONS = {"EL": "GR", "UK": "GB"}
+
+
 def _iso_country(value: str) -> Optional[str]:
     code = value.strip().upper()
+    code = _ISO_COUNTRY_EXCEPTIONS.get(code, code)
     return code if re.fullmatch(r"[A-Z]{2}", code) else None
 
 
@@ -2179,7 +2184,9 @@ def _merge_enriched_fields_into_metadata(
         if container:
             current = new_metadata.get(container)
             if not isinstance(current, dict) and not _is_empty_value(current):
-                extraction_meta.setdefault(f"{container}._not_nested", []).append(key)
+                skipped = extraction_meta.setdefault(f"{container}._not_nested", [])
+                if key not in skipped:
+                    skipped.append(key)
                 return
             parent = dict(current or {})
             if _is_empty_value(parent.get(key)):
@@ -2252,7 +2259,9 @@ def _merge_enriched_fields_into_metadata(
     vision_colors = vision_candidates.get("appearance_colors")
     current_appearance = new_metadata.get("appearance")
     if vision_colors and not isinstance(current_appearance, dict) and not _is_empty_value(current_appearance):
-        extraction_meta.setdefault("appearance._not_nested", []).append("colors_from_vision")
+        skipped = extraction_meta.setdefault("appearance._not_nested", [])
+        if "colors_from_vision" not in skipped:
+            skipped.append("colors_from_vision")
     elif vision_colors:
         appearance = dict(current_appearance or {})
         # Store under appearance.colors_from_vision so it doesn't clobber the

@@ -2,7 +2,6 @@
 
 import logging
 import os
-import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Dict, List, Any, Optional, Tuple
@@ -76,7 +75,6 @@ _SUPPLIER_OWNED_COLUMNS = frozenset({
     'source_job_id', 'import_batch_id', 'source_type', 'updated_at',
 })
 
-_ISO2_RE = re.compile(r'^[A-Z]{2}$')
 
 
 class ImportRowError(ValueError):
@@ -768,12 +766,6 @@ class DataImportService:
 
         await field_registry.ensure_loaded()
         columns = _route_column_fields(metadata)
-        origin = columns.get('country_of_origin')
-        if origin is not None:
-            if _ISO2_RE.match(origin.upper()):
-                columns['country_of_origin'] = origin.upper()
-            else:
-                metadata['country_of_origin'] = columns.pop('country_of_origin')
         columns.pop('sku', None)
         return columns
 

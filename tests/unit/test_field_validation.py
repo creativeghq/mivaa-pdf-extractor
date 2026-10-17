@@ -510,3 +510,9 @@ def test_derived_parts_land_beside_the_source_and_never_overwrite():
     assert block["flush_volume_reduced_l"] == 2.5, "an extracted value beats a derived one"
     assert out["_extraction_metadata"]["water_performance.flush_volume_full_l"] == {
         "derived_from": "water_performance.flush_volume_l"}
+
+
+@pytest.mark.parametrize("raw, kept", [("12.5", 12.5), ("40", 40), ("1,200", "1,200"), ("12.000", "12.000")])
+def test_a_bare_number_becomes_a_number_unless_it_is_thousands_shaped(raw, kept):
+    verdict = fv.validate_value(Spec(field_type="number"), raw)
+    assert verdict.value == kept

@@ -121,10 +121,11 @@ async def translate_facet_values_with_status(
             "untranslated (degraded)", len(needs_translation))
         return out, True
 
+    # Outside the try: PromptNotConfigured / PromptStoreUnavailable must not read as a model failure.
+    user_prompt = await _build_user_prompt(needs_translation)
     started = time.time()
     try:
         from app.services.core.claude_tool_call import call_with_tool
-        user_prompt = await _build_user_prompt(needs_translation)
         result = await call_with_tool(
             task="facet_translation",
             model=_MODEL,

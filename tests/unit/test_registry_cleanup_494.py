@@ -248,7 +248,7 @@ def stage4(env):
     keep += [n for n in tree.body if isinstance(n, ast.AnnAssign)
              and getattr(n.target, "id", None) == "_COLUMN_FOR_FIELD"]
     keep += [n for n in tree.body if isinstance(n, ast.Assign)
-             and any(getattr(t, "id", None) == "_COLUMN_FORM" for t in n.targets)]
+             and any(getattr(t, "id", None) in ("_COLUMN_FORM", "_ISO_COUNTRY_EXCEPTIONS") for t in n.targets)]
     from typing import Any, Dict, List, Optional
     ns = {"field_registry": env.registry, "scale_value": env.normalizer.scale_value, "_re": re, "re": re,
           "Any": Any, "Dict": Dict, "List": List, "Optional": Optional}
@@ -306,3 +306,8 @@ def test_a_scalar_already_holding_a_container_key_is_kept_not_crashed_on(stage4)
     assert merged["appearance"] == "matte white"
     assert merged["_extraction_metadata"]["appearance._not_nested"] == ["colors_from_vision"] \
         or "_extraction_metadata" not in merged
+
+
+def test_the_eu_and_uk_country_conventions_map_to_iso(stage4):
+    assert stage4._route_column_fields({"country_of_origin": "EL"}) == {"country_of_origin": "GR"}
+    assert stage4._route_column_fields({"country_of_origin": "uk"}) == {"country_of_origin": "GB"}

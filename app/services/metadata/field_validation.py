@@ -102,6 +102,8 @@ _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
 #: match and is reported — that is a genuinely malformed answer, not a formatting quirk.
 _LEADING_NUMBER_RE = re.compile(r"^\s*([+-]?\d+(?:[.,]\d+)?)\s*([a-zA-Z%°/²³]*)\s*$")
 _BARE_NUMBER_RE = re.compile(r"^\s*[+-]?\d+(?:[.,]\d+)?\s*$")
+#: "1,200" / "12.000" may be a thousands separator or a decimal comma: left as written.
+_THOUSANDS_SHAPED_RE = re.compile(r"^\s*[+-]?\d{1,3}[.,]\d{3}\s*$")
 
 _TRUE_TOKENS = {"true", "yes", "y", "1", "present", "included"}
 _FALSE_TOKENS = {"false", "no", "n", "0", "absent", "not included"}
@@ -418,7 +420,8 @@ def validate_value(spec: "FieldSpec", value: Any) -> Verdict:
         objection = _apply_rules(spec, value, number, text)
         if objection:
             return objection
-        if isinstance(value, str) and _BARE_NUMBER_RE.match(value):
+        if isinstance(value, str) and _BARE_NUMBER_RE.match(value) \
+                and not _THOUSANDS_SHAPED_RE.match(value):
             return Verdict(OK, _as_number(number), normalized_from=text)
         return Verdict(OK, value)
 
