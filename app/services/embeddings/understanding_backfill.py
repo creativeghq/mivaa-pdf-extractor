@@ -33,7 +33,7 @@ async def _fetch_stale_images(
     """Find document_images whose understanding embedding is stale.
 
     Stale = (no embedding) OR (schema_version < current SCHEMA_VERSION) OR
-    (embedding_model is not 'voyage-4' — i.e. served by OpenAI fallback).
+    (embedding_model does not start with 'voyage' — a non-Voyage vector).
     """
     from app.services.embeddings.classification_backfill import is_quarantined
 

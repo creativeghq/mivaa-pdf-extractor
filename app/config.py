@@ -834,6 +834,18 @@ class Settings(BaseSettings):
             return [item.strip() for item in v.split(",") if item.strip()]
         return v
 
+    @field_validator("voyage_chunk_model")
+    @classmethod
+    def validate_voyage_chunk_model(cls, v):
+        """Only contextualized models measured to share the voyage-4 query space."""
+        allowed = ("voyage-context-4",)
+        if v not in allowed:
+            raise ValueError(
+                f"voyage_chunk_model must be one of {allowed}: chunks are queried with voyage-4, "
+                f"and {v!r} is not known to share its latent space"
+            )
+        return v
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v):

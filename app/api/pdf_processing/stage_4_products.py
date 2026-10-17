@@ -13,6 +13,7 @@ import httpx
 import sentry_sdk
 from typing import Dict, Any, List, Optional
 
+from app.config import get_settings
 from app.services.metadata.metadata_normalizer import normalize_factory_keys
 from app.services.facets import canonicalize_product_attributes
 from app.services.metadata.field_validation import validate_metadata_against_registry
@@ -627,7 +628,7 @@ async def create_single_product(
                     supabase.client.table('products').update(
                         update_payload
                     ).eq('id', product_id).execute()
-                    logger.info(f"   🧠 Generated text_embedding_1024 for {product.name} (model={embedding_model or 'voyage-4'})")
+                    logger.info(f"   🧠 Generated text_embedding_1024 for {product.name} (model={embedding_model or get_settings().voyage_document_model})")
                     embedding_failed = False
             else:
                 logger.error(

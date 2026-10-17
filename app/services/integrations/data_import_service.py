@@ -932,7 +932,7 @@ class DataImportService:
                             .eq('id', product_id).execute()
                         logger.info(
                             f"   🧠 Generated text_embedding_1024 for {product_name} "
-                            f"(model={emb_model or 'voyage-4'})"
+                            f"(model={emb_model or get_settings().voyage_document_model})"
                         )
             except Exception as emb_err:
                 logger.warning(f"   ⚠️ Product embedding failed (non-blocking): {emb_err}")

@@ -1356,7 +1356,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                                 "Content-Type": "application/json"
                             },
                             json={
-                                "model": "voyage-4",
+                                "model": get_settings().voyage_query_model,
                                 "input": ["test"],
                                 "output_dimension": 1024
                             }

@@ -2307,7 +2307,8 @@ async def get_embeddings(
                 'color_aspect_embedding_model, color_aspect_schema_version, '
                 'texture_aspect_embedding_model, texture_aspect_schema_version, '
                 'style_aspect_embedding_model, style_aspect_schema_version, '
-                'material_aspect_embedding_model, material_aspect_schema_version'
+                'material_aspect_embedding_model, material_aspect_schema_version, '
+                'understanding_embedding_model'
             ).eq('document_id', document_id).range(offset, offset + limit - 1).execute()
 
             aspect_rows = {
@@ -2318,7 +2319,7 @@ async def get_embeddings(
             }
             non_aspect_rows = {
                 'has_slig_embedding':         ('visual_slig_768',     768,  'siglip2',  'visual'),
-                'has_understanding_embedding':('understanding_1024',  1024, 'voyage-4', 'understanding'),
+                'has_understanding_embedding':('understanding_1024',  1024, None, 'understanding'),
             }
 
             for img in (image_result.data or []):
@@ -2333,7 +2334,7 @@ async def get_embeddings(
                         'entity_type': 'image',
                         'embedding_type': label,
                         'dimension': dim,
-                        'model': model,
+                        'model': model or img.get('understanding_embedding_model'),
                         'present': True,
                         'storage': f"vecs.image_{type_alias if type_alias != 'visual' else 'slig'}_embeddings",
                     })
@@ -2362,7 +2363,7 @@ async def get_embeddings(
         # ── Text chunk embeddings: still inline (1024D Voyage AI) ──
         if not embedding_type or embedding_type == 'text':
             chunk_query = supabase_client.client.table('document_chunks').select(
-                'id, content, text_embedding, embedding_dimension'
+                'id, content, text_embedding, embedding_dimension, embedding_model'
             ).eq('document_id', document_id).not_('text_embedding', 'is', None).range(offset, offset + limit - 1)
 
             chunk_result = chunk_query.execute()
@@ -2376,7 +2377,7 @@ async def get_embeddings(
                         'entity_type': 'chunk',
                         'embedding_type': f'text_{dimension}',
                         'dimension': dimension,
-                        'model': 'voyage-4',
+                        'model': chunk.get('embedding_model'),
                         'embedding': chunk['text_embedding']
                     })
                     embedding_stats[f'text_{dimension}'] = embedding_stats.get(f'text_{dimension}', 0) + 1
@@ -5634,6 +5635,10 @@ class KBRechunkRequest(BaseModel):
         default=None, max_length=500, description="Rechunk an explicit set"
     )
     all: bool = Field(default=False, description="Backfill mode: page through all kb_docs")
+    stale: bool = Field(
+        default=False,
+        description="Drain mode: the docs kb_docs_needing_rechunk returns (chunks missing, out of date, or failed)",
+    )
     workspace_id: Optional[str] = Field(default=None, description="Restrict backfill to a workspace")
     limit: int = Field(default=25, ge=1, le=500, description="Max docs per call (backfill paging)")
     offset: int = Field(default=0, ge=0, description="Backfill paging offset")
@@ -5671,6 +5676,9 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
         ids = [request.doc_id]
     elif request.doc_ids:
         ids = request.doc_ids
+    elif request.stale:
+        rows = sb.client.rpc("kb_docs_needing_rechunk", {"p_limit": min(request.limit, 50)}).execute()
+        ids = [r["id"] for r in (rows.data or [])]
     elif request.all:
         q = sb.client.table("kb_docs").select("id").neq("content", "").order("id")
         if request.workspace_id:
@@ -5679,7 +5687,7 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
         ids = [r["id"] for r in (rows.data or [])]
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Provide doc_id, doc_ids, or all=true")
+                            detail="Provide doc_id, doc_ids, all=true or stale=true")
 
     results = []
     for did in ids:
@@ -5733,7 +5741,7 @@ async def kb_retrieval_eval_run(request: KBRetrievalEvalRequest, http_request: R
 
     batch_id = request.batch_id or str(uuid4())
     from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
-    embedding_model = getattr(RealEmbeddingsService(), "voyage_model", None) or "voyage-4"
+    embedding_model = get_settings().voyage_query_model
 
     results: List[Dict[str, Any]] = []
     embed_failures: List[str] = []

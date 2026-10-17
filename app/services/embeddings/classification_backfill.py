@@ -178,7 +178,7 @@ async def _embed_confirmed_material(
                 image_id=image_id,
                 embedding=understanding,
                 metadata=vec_meta,
-                embedding_model=meta_versions.get("understanding") or "voyage-4",
+                embedding_model=meta_versions.get("understanding") or get_settings().voyage_document_model,
                 schema_version=meta_schemas.get("understanding"),
             )
         except Exception as e:

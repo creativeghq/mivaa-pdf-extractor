@@ -12,6 +12,7 @@ import logging
 from datetime import datetime
 from typing import List, Optional
 
+from app.config import get_settings
 from app.dependencies import verify_internal_access
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -55,9 +56,9 @@ class ClipTextRequest(BaseModel):
         ...,
         description="Text to generate embedding for"
     )
-    model: str = Field(
-        default="voyage-4",
-        description="Embedding model to use (voyage-4)"
+    model: Optional[str] = Field(
+        default=None,
+        description="Ignored: the model follows input_type (document vs query)"
     )
     input_type: str = Field(
         default="document",
@@ -180,7 +181,7 @@ async def generate_clip_text_embedding(
             success=True,
             embedding=embedding,
             dimensions=len(embedding),
-            model=request.model
+            model=embedding_service.voyage_model_for(request.input_type)
         )
         
     except HTTPException:
@@ -204,7 +205,7 @@ async def health_check():
             "success": True,
             "message": "Embeddings service is healthy",
             "timestamp": datetime.utcnow().isoformat(),
-            "available_models": ["clip-vit-base-patch32", "voyage-4"]
+            "available_models": [get_settings().voyage_document_model, get_settings().voyage_query_model]
         }
     except Exception as e:
         logger.error(f"Embeddings health check failed: {e}")

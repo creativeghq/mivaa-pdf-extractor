@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import fitz  # PyMuPDF
 from PIL import Image
 
+from app.config import get_settings
 from app.services.core.anthropic_error_reporter import report_anthropic_failure
 from app.services.utilities.prompt_registry import load_prompt
 
@@ -357,7 +358,8 @@ async def extract_catalog_knowledge_from_pdf(
                         supabase.client.table("kb_docs").update({
                             "text_embedding": text_embedding,
                             "embedding_status": "success",
-                            "embedding_model": "voyage-4",
+                            "embedding_model": (emb_result.get("metadata", {}).get("model_versions", {}).get("text")
+                                                or get_settings().voyage_document_model),
                             "embedding_generated_at": datetime.utcnow().isoformat(),
                         }).eq("id", doc_id).execute()
                 else:

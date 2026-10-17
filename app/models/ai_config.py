@@ -24,10 +24,9 @@ class AIModelConfig(BaseModel):
         description="Fallback visual embedding model (not used - cloud-only)"
     )
     
-    # Text Embedding Model (Voyage AI primary, OpenAI fallback)
     text_embedding_model: str = Field(
-        default="voyage-4",
-        description="Text embedding model (Voyage AI primary, OpenAI fallback)"
+        default="voyage-4-large",
+        description="Text embedding model for documents (Voyage AI; queries use voyage-4)"
     )
     text_embedding_dimensions: int = Field(
         default=1024,
@@ -118,7 +117,7 @@ class AIModelConfig(BaseModel):
             "example": {
                 "visual_embedding_primary": "basiliskan/slig",
                 "visual_embedding_fallback": None,
-                "text_embedding_model": "voyage-4",
+                "text_embedding_model": "voyage-4-large",
                 "text_embedding_dimensions": 1024,
                 "text_embedding_input_type": "document",
                 "classification_primary_model": "claude-opus-5",

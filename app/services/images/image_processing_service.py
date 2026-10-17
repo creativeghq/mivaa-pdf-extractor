@@ -1635,7 +1635,7 @@ class ImageProcessingService:
                                 'workspace_id': workspace_id,
                                 'page_number': img_data.get('page_number', 1)
                             },
-                            embedding_model=meta_versions.get('understanding') or 'voyage-4',
+                            embedding_model=meta_versions.get('understanding') or get_settings().voyage_document_model,
                             schema_version=meta_schemas.get('understanding'),
                         )
                         logger.debug(f"   ✅ Saved understanding embedding (1024D) to VECS for {image_id}")

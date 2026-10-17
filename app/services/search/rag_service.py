@@ -1,5 +1,6 @@
 """RAG Service - Direct Vector DB Implementation"""
 
+from array import array
 import logging
 import os
 from typing import Dict, List, Optional, Any, TYPE_CHECKING
@@ -299,6 +300,24 @@ class RAGService:
             except Exception as mem_error:
                 self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
 
+            # One contextualized call for the whole document, so every chunk is embedded with all
+            # of it in view; float32 arrays keep the held vectors small until each batch writes them.
+            _embeddable = [c for c in chunks if c.content and c.content.strip()]
+            try:
+                self.embeddings_service._last_provider = None
+            except Exception:
+                pass
+            _doc_vectors = await self.embeddings_service.generate_contextualized_embeddings(
+                [c.content for c in _embeddable],
+                workspace_id=None if workspace_id == 'default' else workspace_id,
+                product_id=metadata.get('product_id'),
+            )
+            vector_by_chunk = {
+                id(c): (array('f', v) if v else None) for c, v in zip(_embeddable, _doc_vectors)
+            }
+            del _doc_vectors, _embeddable
+            chunk_model = self.embeddings_service.voyage_chunk_model
+
             self.logger.info(f"🔄 Processing {total_chunks} chunks in batches of {CHUNK_BATCH_SIZE}")
 
             for batch_start in range(0, total_chunks, CHUNK_BATCH_SIZE):
@@ -346,6 +365,7 @@ class RAGService:
                 batch_chunk_ids = []
                 batch_texts = []
                 batch_chunk_records = []
+                batch_chunk_objs = []
 
                 # Step 3a: Store chunks in database
                 self.logger.info(f"   📝 Storing {len(batch_chunks)} chunks in database for batch {batch_num}/{total_batches}...")
@@ -389,6 +409,7 @@ class RAGService:
                             batch_chunk_ids.append(chunk_id)
                             batch_texts.append(chunk.content)
                             batch_chunk_records.append(chunk_record)
+                            batch_chunk_objs.append(chunk)
                             chunk_ids.append(chunk_id)
                             chunks_created += 1
 
@@ -401,112 +422,56 @@ class RAGService:
 
                 self.logger.info(f"   ✅ Stored {len(batch_chunk_ids)} chunks in database for batch {batch_num}/{total_batches}")
 
-                # Step 3b: Generate embeddings for ENTIRE BATCH in ONE API call
+                # Step 3b: write this batch's precomputed vectors. A chunk the contextualized call
+                # could not embed is embedded on its own: same 4-series space, so it ranks beside them.
                 if batch_chunk_ids:
-                    # Initialize embedding_vectors to prevent NameError in cleanup
-                    embedding_vectors = []
-
-                    try:
-                        self.logger.info(f"   🔄 Generating embeddings for batch {batch_num}/{total_batches} ({len(batch_texts)} chunks)...")
-
-                        # Reset _last_provider so the post-batch stamp reflects
-                        # THIS call's provider, not the previous one. Critical
-                        # for the chunk embedding_model provenance write below.
-                        try:
-                            self.embeddings_service._last_provider = None
-                        except Exception:
-                            pass
-                        # One document's chunks, in order: each is embedded with the batch in view.
-                        embedding_vectors = await self.embeddings_service.generate_contextualized_embeddings(
-                            batch_texts,
-                            workspace_id=None if workspace_id == 'default' else workspace_id,
-                        )
-
-                        if embedding_vectors:
-                            # Prepare batch update records
-                            updates = []
-                            embeddings_stored = 0
-
-                            for chunk_id, embedding in zip(batch_chunk_ids, embedding_vectors):
-                                if embedding:
-                                    updates.append({
-                                        'id': chunk_id,
-                                        'text_embedding': embedding
-                                    })
-                                    embeddings_stored += 1
-                                else:
-                                    self.logger.warning(f"   ⚠️ No embedding generated for chunk {chunk_id}")
-
-                            # Use UPDATE per row, not UPSERT — UPSERT falls back to INSERT on
-                            # missing IDs and trips the NOT NULL `content` constraint.
-                            # Provenance (2026-05-23): stamp embedding_model +
-                            # embedding_dimension + embedding_generated_at on every chunk
-                            # so Voyage→OpenAI drift is detectable on chunk rows the
-                            # same way it is on image rows.
-                            from datetime import datetime as _dt
-                            _emb_model = (
+                    from datetime import datetime as _dt
+                    embeddings_stored = 0
+                    for chunk_id, chunk_obj, text in zip(batch_chunk_ids, batch_chunk_objs, batch_texts):
+                        held = vector_by_chunk.get(id(chunk_obj))
+                        vector = held.tolist() if held is not None else None
+                        model = chunk_model
+                        if vector is None:
+                            try:
+                                self.embeddings_service._last_provider = None
+                                vector = await self.embeddings_service._generate_text_embedding(
+                                    text,
+                                    dimensions=1024,
+                                    input_type="document",
+                                    workspace_id=None if workspace_id == 'default' else workspace_id,
+                                    product_id=metadata.get('product_id'),
+                                )
+                            except Exception as individual_error:
+                                self.logger.warning(f"   ⚠️ Individual embedding failed for chunk {chunk_id}: {individual_error}")
+                                vector = None
+                            if not vector:
+                                self.logger.warning(f"   ⚠️ No embedding generated for chunk {chunk_id}")
+                                continue
+                            model = (
                                 getattr(self.embeddings_service, '_last_provider', None)
-                                or getattr(self.embeddings_service, 'voyage_model', None)
                                 or get_settings().voyage_document_model
                             )
-                            _emb_now = _dt.utcnow().isoformat()
-                            if updates:
-                                embeddings_stored = 0
-                                for update in updates:
-                                    try:
-                                        self.supabase_client.client.table('document_chunks')\
-                                            .update({
-                                                'text_embedding': update['text_embedding'],
-                                                'has_text_embedding': True,
-                                                'embedding_model': _emb_model,
-                                                'embedding_dimension': len(update['text_embedding']) if update['text_embedding'] else 1024,
-                                                'embedding_generated_at': _emb_now,
-                                            })\
-                                            .eq('id', update['id'])\
-                                            .execute()
-                                        embeddings_stored += 1
-                                    except Exception as individual_update_error:
-                                        self.logger.warning(f"   ⚠️ Failed to update chunk {update['id']}: {individual_update_error}")
-
-                                total_embeddings_stored += embeddings_stored
-                                self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(updates)} embeddings")
-
-                    except Exception as batch_embedding_error:
-                        self.logger.error(f"   ❌ Batch embedding generation failed: {batch_embedding_error}", exc_info=True)
-
-                        # Fallback to individual embedding generation
-                        self.logger.info(f"   ⚠️ Falling back to individual embedding generation for batch {batch_num}...")
-                        embeddings_stored = 0
-                        for chunk_id, text in zip(batch_chunk_ids, batch_texts):
-                            try:
-                                embedding = await self.embeddings_service.generate_embedding(text, dimensions=1024)
-                                if embedding:
-                                    from datetime import datetime as _dt
-                                    _emb_model = (
-                                        getattr(self.embeddings_service, '_last_provider', None)
-                                        or getattr(self.embeddings_service, 'voyage_model', None)
-                                        or get_settings().voyage_document_model
-                                    )
-                                    self.supabase_client.client.table('document_chunks')\
-                                        .update({
-                                            'text_embedding': embedding,
-                                            'has_text_embedding': True,
-                                            'embedding_model': _emb_model,
-                                            'embedding_dimension': len(embedding),
-                                            'embedding_generated_at': _dt.utcnow().isoformat(),
-                                        })\
-                                        .eq('id', chunk_id)\
-                                        .execute()
-                                    embeddings_stored += 1
-                            except Exception as individual_error:
-                                self.logger.warning(f"   ⚠️ Failed to generate individual embedding for chunk {chunk_id}: {individual_error}")
-
-                        if embeddings_stored > 0:
-                            total_embeddings_stored += embeddings_stored
-                            self.logger.info(f"   ✅ Stored {embeddings_stored} embeddings via individual fallback")
+                        try:
+                            # UPDATE per row, not UPSERT: UPSERT falls back to INSERT on a
+                            # missing id and trips the NOT NULL `content` constraint.
+                            self.supabase_client.client.table('document_chunks')\
+                                .update({
+                                    'text_embedding': vector,
+                                    'has_text_embedding': True,
+                                    'embedding_model': model,
+                                    'embedding_dimension': len(vector),
+                                    'embedding_generated_at': _dt.utcnow().isoformat(),
+                                })\
+                                .eq('id', chunk_id)\
+                                .execute()
+                            embeddings_stored += 1
+                        except Exception as update_error:
+                            self.logger.warning(f"   ⚠️ Failed to update chunk {chunk_id}: {update_error}")
+                    total_embeddings_stored += embeddings_stored
+                    self.logger.info(f"   ✅ Stored {embeddings_stored}/{len(batch_chunk_ids)} embeddings")
 
                 # Step 3c: cleanup after batch.
-                del batch_chunk_ids, batch_texts, batch_chunk_records, embedding_vectors
+                del batch_chunk_ids, batch_texts, batch_chunk_records, batch_chunk_objs
                 gc.collect()
 
                 # Log memory usage after batch
@@ -517,7 +482,7 @@ class RAGService:
                     self.logger.debug(f"Memory monitoring unavailable: {mem_error}")
 
             # Drop the chunks list now that all batches are persisted.
-            del chunks
+            del chunks, vector_by_chunk
             gc.collect()
             self.logger.info("   🧹 Released chunks list from memory")
 

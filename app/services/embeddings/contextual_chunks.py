@@ -10,6 +10,15 @@ WINDOW_TOKENS = 12000
 REQUEST_TOKENS = 60000
 MAX_CHUNK_CHARS = 24000
 DIMENSIONS = 1024
+MAX_ATTEMPTS = 3
+
+
+def is_retryable(status_code: int) -> bool:
+    return status_code == 429 or status_code >= 500
+
+
+def backoff_seconds(attempt: int) -> float:
+    return 2.0 * (2 ** attempt)
 
 
 def estimate_tokens(text: str) -> int:
