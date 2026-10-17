@@ -806,11 +806,17 @@ class CleanupService:
             image_ids: List[str] = []
             if product_ids:
                 try:
-                    img_resp = supabase_client.client.table('document_images')\
-                        .select('id')\
+                    # document_images has no product_id: the link is image_product_associations.
+                    # Only images of no document, or of this job's document, are this job's to delete.
+                    assoc = supabase_client.client.table('image_product_associations')\
+                        .select('image_id, document_images(id, document_id)')\
                         .in_('product_id', product_ids)\
                         .execute()
-                    image_ids = [r['id'] for r in (img_resp.data or []) if r.get('id')]
+                    for row in (assoc.data or []):
+                        img = row.get('document_images') or {}
+                        if img.get('id') and img.get('document_id') in (None, document_id) \
+                                and img['id'] not in image_ids:
+                            image_ids.append(img['id'])
                     if image_ids:
                         self.logger.info(f"🖼️ Resolved {len(image_ids)} images tied to those products")
                 except Exception as e:
@@ -871,11 +877,9 @@ class CleanupService:
             # These tables don't have a job_id of their own; they're keyed off
             # image_id, so we need the resolved image_ids list.
             if image_ids:
-                # NOTE: image_metafield_values was dropped from the schema —
-                # do not attempt to delete from it (PGRST205 every run).
+                # image_metafield_values and image_validations were dropped from the schema.
                 for table_name, stat_key in [
                     ('chunk_image_relationships',  'chunk_image_relationships_deleted'),
-                    ('image_validations',          'image_validations_deleted'),
                     ('image_product_associations', 'image_product_associations_deleted'),
                 ]:
                     try:
@@ -963,6 +967,19 @@ class CleanupService:
             # Checkpoints now live on background_jobs.stage_history; deleted
             # automatically when the job row is removed in step 10.
             stats['checkpoints_deleted'] = 0
+
+            # 7c. Rows keyed to the document with no FK cascade: they outlived every wipe.
+            if document_id:
+                for table_name, column, stat_key in [
+                    ('document_entities', 'source_document_id', 'document_entities_deleted'),
+                    ('processed_documents', 'pdf_document_id', 'processed_documents_deleted'),
+                ]:
+                    try:
+                        resp = supabase_client.client.table(table_name).delete().eq(column, document_id).execute()
+                        stats[stat_key] = len(resp.data) if resp.data else 0
+                    except Exception as e:
+                        self.logger.warning(f"Failed to clean {table_name}: {e}")
+                        stats['errors'].append(f"{table_name} deletion failed: {str(e)}")
 
             # 8. Delete the document ROW first, then the storage bytes.
             if document_id:

@@ -139,3 +139,12 @@ def test_an_upload_carries_its_content_hash_and_a_duplicate_is_a_409():
     dup = body.index('outcome.get("status") == "duplicate"')
     assert rpc < dup < body.index("background_tasks.add_task(")
     assert "HTTP_409_CONFLICT" in body[dup:]
+
+
+def test_a_job_wipe_reaches_every_table_keyed_to_its_document():
+    body = _func(APP / "services" / "utilities" / "cleanup_service.py", "delete_job_completely")
+    for table, column in (("document_entities", "source_document_id"), ("processed_documents", "pdf_document_id")):
+        assert f"('{table}', '{column}'" in body, table
+    assert body.index("('processed_documents'") < body.index("doc_response = supabase_client.client.table('documents')")
+    assert "'image_validations'" not in body, "dropped table"
+    assert ".in_('product_id', product_ids)" in body and "table('image_product_associations')" in body

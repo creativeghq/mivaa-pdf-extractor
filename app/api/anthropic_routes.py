@@ -145,24 +145,6 @@ async def validate_image_with_claude(
             else "invalid"
         )
 
-        # Store validation result
-        validation_record = {
-            "image_id": request.image_id,
-            "workspace_id": request.workspace_id,
-            "validation_status": validation_status,
-            "quality_score": quality_score,
-            "issues": analysis_result.get("issues", []),
-            "recommendations": analysis_result.get("recommendations", []),
-            "validated_at": datetime.utcnow().isoformat(),
-            "metadata": {
-                "content_description": analysis_result.get("content_description"),
-                "materials_identified": analysis_result.get("materials_identified"),
-                "model_used": "claude-opus-5",
-            },
-        }
-
-        supabase.client.table("image_validations").insert(validation_record).execute()
-
         processing_time = (time.time() - start_time) * 1000
 
         return ImageValidationResponse(
