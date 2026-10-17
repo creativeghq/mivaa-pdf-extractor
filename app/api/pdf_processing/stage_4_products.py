@@ -2177,7 +2177,11 @@ def _merge_enriched_fields_into_metadata(
         if resolved:
             key, container = resolved, None
         if container:
-            parent = dict(new_metadata.get(container) or {})
+            current = new_metadata.get(container)
+            if not isinstance(current, dict) and not _is_empty_value(current):
+                extraction_meta.setdefault(f"{container}._not_nested", []).append(key)
+                return
+            parent = dict(current or {})
             if _is_empty_value(parent.get(key)):
                 parent[key] = value
                 new_metadata[container] = parent
@@ -2246,8 +2250,11 @@ def _merge_enriched_fields_into_metadata(
     fill_if_empty("vision_confidence", vision_candidates.get("vision_confidence"), "vision_rollup")
 
     vision_colors = vision_candidates.get("appearance_colors")
-    if vision_colors:
-        appearance = dict(new_metadata.get("appearance") or {})
+    current_appearance = new_metadata.get("appearance")
+    if vision_colors and not isinstance(current_appearance, dict) and not _is_empty_value(current_appearance):
+        extraction_meta.setdefault("appearance._not_nested", []).append("colors_from_vision")
+    elif vision_colors:
+        appearance = dict(current_appearance or {})
         # Store under appearance.colors_from_vision so it doesn't clobber the
         # text-extracted colors_from_chunks if both exist.
         if _is_empty_value(appearance.get("colors_from_vision")):
@@ -2256,7 +2263,7 @@ def _merge_enriched_fields_into_metadata(
             extraction_meta["appearance.colors_from_vision"] = {"source": "vision_rollup", "confidence": 0.85}
             filled.append("appearance.colors_from_vision")
 
-    if filled:
+    if filled or any(k.endswith("._not_nested") for k in extraction_meta):
         new_metadata["_extraction_metadata"] = extraction_meta
 
     return new_metadata, filled
@@ -2690,7 +2697,11 @@ async def enrich_products_from_chunks_and_vision(
                         continue
                     if isinstance(value, dict):
                         # nested container — merge each child if missing
-                        container = dict(new_metadata.get(key) or {})
+                        current = new_metadata.get(key)
+                        # A scalar already holds this key (e.g. `packaging` as text): it is kept,
+                        # and children with no registry field of their own are named, not nested.
+                        scalar_owner = not isinstance(current, dict) and not _is_empty_value(current)
+                        container = dict(current) if isinstance(current, dict) else {}
                         any_added = False
                         for child_key, child_value in value.items():
                             top_key = _registry_key(child_key)
@@ -2701,6 +2712,12 @@ async def enrich_products_from_chunks_and_vision(
                                         "source": "claude_spec_vision", "confidence": 0.85
                                     }
                                     filled.append(top_key)
+                                continue
+                            if scalar_owner:
+                                if not _is_empty_value(child_value):
+                                    skipped = extraction_meta.setdefault(f"{key}._not_nested", [])
+                                    if child_key not in skipped:
+                                        skipped.append(child_key)
                                 continue
                             if _is_empty_value(container.get(child_key)) and not _is_empty_value(child_value):
                                 container[child_key] = child_value
@@ -2717,7 +2734,7 @@ async def enrich_products_from_chunks_and_vision(
                             new_metadata[key] = value
                             extraction_meta[key] = {"source": "claude_spec_vision", "confidence": 0.85}
                             filled.append(key)
-                if filled:
+                if filled or any(k.endswith("._not_nested") for k in extraction_meta):
                     new_metadata["_extraction_metadata"] = extraction_meta
 
             markers_changed = False

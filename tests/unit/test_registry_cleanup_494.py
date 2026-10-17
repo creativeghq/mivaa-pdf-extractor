@@ -296,3 +296,13 @@ def test_chunk_grout_lands_in_one_grout_color_codes_map(stage4):
     assert merged["grout_color_codes"] == grout
     assert merged["application"] == ["floor"]
     assert not [k for k in merged if k.startswith("grout_") and k != "grout_color_codes"]
+
+
+def test_a_scalar_already_holding_a_container_key_is_kept_not_crashed_on(stage4):
+    merged, _filled = stage4._merge_enriched_fields_into_metadata(
+        {"appearance": "matte white", "material_category": "tiles"},
+        {}, {"appearance_colors": ["white"]},
+    )
+    assert merged["appearance"] == "matte white"
+    assert merged["_extraction_metadata"]["appearance._not_nested"] == ["colors_from_vision"] \
+        or "_extraction_metadata" not in merged
