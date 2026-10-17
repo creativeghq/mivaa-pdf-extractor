@@ -1005,14 +1005,15 @@ async def upload_document(
                     os.unlink(file_path)
                 except OSError:
                     pass
-                raise HTTPException(
+                # A JSONResponse, not HTTPException: the app's error handler requires a string detail.
+                return JSONResponse(
                     status_code=status.HTTP_409_CONFLICT,
-                    detail={
+                    content={"detail": {
                         "error": "duplicate_document",
                         "message": "This file is already in this workspace. Send allow_duplicate=true to process it again.",
                         "document_id": outcome.get("document_id"),
                         "job_id": outcome.get("job_id"),
-                    },
+                    }},
                 )
             logger.info(f"✅ Created document {document_id} + job {job_id}")
         except HTTPException:

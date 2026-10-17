@@ -138,7 +138,7 @@ def test_an_upload_carries_its_content_hash_and_a_duplicate_is_a_409():
     rpc = body.index("rpc('create_document_upload_job'")
     dup = body.index('outcome.get("status") == "duplicate"')
     assert rpc < dup < body.index("background_tasks.add_task(")
-    assert "HTTP_409_CONFLICT" in body[dup:]
+    assert "HTTP_409_CONFLICT" in body[dup:] and "return JSONResponse(" in body[dup:]
 
 
 def test_a_job_wipe_reaches_every_table_keyed_to_its_document():
