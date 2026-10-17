@@ -13,7 +13,7 @@ import os
 import uuid
 import httpx
 import sentry_sdk
-from typing import Dict, Any, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.config import get_settings
 from app.services.metadata.metadata_normalizer import normalize_factory_keys, scale_value
@@ -87,7 +87,8 @@ _COLUMN_FOR_FIELD: Dict[str, str] = {
 }
 
 
-def _route_column_fields(metadata: Dict[str, Any], category: Optional[str] = None) -> Dict[str, str]:
+def _route_column_fields(metadata: Dict[str, Any], category: Optional[str] = None,
+                         country: Optional[Callable[[str], Optional[str]]] = None) -> Dict[str, str]:
     """Move registry `destination='column'` values out of metadata onto their products column.
 
     Keys are resolved through the registry (exact name, then aliases, scoped to `category` or
@@ -114,7 +115,8 @@ def _route_column_fields(metadata: Dict[str, Any], category: Optional[str] = Non
             value = str(value)
         if not isinstance(value, str) or _is_empty_value(value):
             continue
-        clean = _COLUMN_FORM.get(column, str.strip)(value)
+        form = country if (column == 'country_of_origin' and country) else _COLUMN_FORM.get(column, str.strip)
+        clean = form(value)
         if clean is None:
             continue  # stays in metadata as printed; the column's CHECK would refuse the whole product
         columns[column] = clean
@@ -134,6 +136,27 @@ def _iso_country(value: str) -> Optional[str]:
 
 #: Columns with a CHECK on their form (`products_country_of_origin_check`: ISO 3166-1 alpha-2).
 _COLUMN_FORM = {'country_of_origin': _iso_country}
+
+
+def country_resolver(client: Any) -> Callable[[str], Optional[str]]:
+    """`resolve_country_iso2` (names, native names, ISO-3, EL/UK) with a per-call cache.
+
+    `_iso_country` is only the fallback when the vocabulary cannot be read: it cannot tell
+    `EU` from a country.
+    """
+    cache: Dict[str, Optional[str]] = {}
+
+    def resolve(value: str) -> Optional[str]:
+        key = value.strip().lower()
+        if key not in cache:
+            try:
+                found = client.rpc('resolve_country_iso2', {'p_value': value}).execute().data
+            except Exception:  # noqa: BLE001
+                return _iso_country(value)
+            cache[key] = found if isinstance(found, str) and found else None
+        return cache[key]
+
+    return resolve
 
 
 def _confidence_score(raw: Any) -> Optional[float]:
@@ -647,7 +670,7 @@ async def create_single_product(
         logger.info(f"   🏭 Factory object assembled: {list(factory_obj.keys())}")
 
     await field_registry.ensure_loaded()
-    column_values = _route_column_fields(metadata)
+    column_values = _route_column_fields(metadata, country=country_resolver(supabase.client))
 
     # One product per workspace identity, whichever upload it arrived in. Checked before any
     # paid call below; a lookup that cannot run fails the creation rather than duplicating.

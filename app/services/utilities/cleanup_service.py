@@ -635,16 +635,18 @@ class CleanupService:
                 job_response = supabase_client.client.table('background_jobs')\
                     .select('document_id, workspace_id')\
                     .eq('id', job_id)\
-                    .single()\
+                    .limit(1)\
                     .execute()
 
                 if not job_response.data:
-                    self.logger.warning(f"Job {job_id} not found")
+                    # Already gone (a repeated delete): the route answers 404, nothing failed.
+                    self.logger.info(f"Job {job_id} not found")
                     stats['errors'].append("Job not found")
                     return stats
 
-                document_id = job_response.data.get('document_id')
-                workspace_id = job_response.data.get('workspace_id')
+                job_row = job_response.data[0]
+                document_id = job_row.get('document_id')
+                workspace_id = job_row.get('workspace_id')
 
                 self.logger.info(f"Found job {job_id} with document_id={document_id}, workspace_id={workspace_id}")
 

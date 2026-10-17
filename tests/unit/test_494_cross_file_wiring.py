@@ -121,3 +121,21 @@ def test_a_pdf_product_insert_is_identity_keyed_and_safe_to_repeat():
     assert ".insert(product_data)" not in body
     race = body[insert:]
     assert "'23505'" in race and "_reuse_existing_product(" in race
+
+
+def test_ai_calls_with_only_a_job_bill_the_job_payer_before_debiting():
+    logger_path = APP / "services" / "core" / "ai_call_logger.py"
+    for method in ("log_claude_call", "log_replicate_call", "log_time_based_call"):
+        body = _func(logger_path, method)
+        assert body.index("await self._job_payer(job_id)") < body.index("try:"), method
+    assert "not system_initiated" in _func(logger_path, "log_claude_call")
+    assert "background_jobs" in _func(logger_path, "_job_payer")
+
+
+def test_an_upload_carries_its_content_hash_and_a_duplicate_is_a_409():
+    body = _func(APP / "api" / "rag_routes.py", "upload_document")
+    assert '"p_content_sha256": None if allow_duplicate else _sha256_file(file_path)' in body
+    rpc = body.index("rpc('create_document_upload_job'")
+    dup = body.index('outcome.get("status") == "duplicate"')
+    assert rpc < dup < body.index("background_tasks.add_task(")
+    assert "HTTP_409_CONFLICT" in body[dup:]

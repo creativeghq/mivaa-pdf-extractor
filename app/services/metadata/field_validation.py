@@ -208,8 +208,9 @@ def _parse_range(text: str) -> Optional[_Parsed]:
     if not m:
         return None
     low = _num(m.group(1))
-    high = _num(m.group(2)) if m.group(2) else low
-    return (low, (low, high))
+    if not m.group(2):
+        return (low, (None, None))  # one printed value is not a range: no min/max invented
+    return (low, (low, _num(m.group(2))))
 
 
 def _parse_acoustic(text: str) -> Optional[_Parsed]:
@@ -502,13 +503,25 @@ async def validate_metadata_against_registry(
             holder[key] = kept
             report.checked += 1
             for target, part in (verdict.derived or {}).items():
-                if _is_empty(holder.get(target)):
-                    holder[target] = part
+                if not _is_empty(holder.get(target)):
+                    continue
+                target_path = f"{container}.{target}" if container else target
+                target_spec = lookup(target)
+                part_verdict = validate_value(target_spec, part) if target_spec else None
+                if part_verdict is not None and part_verdict.is_suspect:
+                    # The derived part breaks its own field's rules: kept out, and said so.
+                    report.suspect[target_path] = part_verdict.status
                     if stamp:
-                        target_path = f"{container}.{target}" if container else target
                         extraction_meta[target_path] = {
                             **(extraction_meta.get(target_path) or {}), "derived_from": path,
+                            "rejected": part_verdict.as_record(),
                         }
+                    continue
+                holder[target] = part_verdict.value if part_verdict is not None else part
+                if stamp:
+                    extraction_meta[target_path] = {
+                        **(extraction_meta.get(target_path) or {}), "derived_from": path,
+                    }
 
             if verdict.normalized_from is not None:
                 report.normalized[path] = verdict.normalized_from

@@ -762,10 +762,10 @@ class DataImportService:
     async def _route_registry_columns(self, metadata: Dict[str, Any]) -> Dict[str, str]:
         """Move registry `destination='column'` values onto their products column (stage 4's rule)."""
         from app.services.metadata.field_registry import field_registry
-        from app.api.pdf_processing.stage_4_products import _route_column_fields
+        from app.api.pdf_processing.stage_4_products import _route_column_fields, country_resolver
 
         await field_registry.ensure_loaded()
-        columns = _route_column_fields(metadata)
+        columns = _route_column_fields(metadata, country=country_resolver(get_supabase_client().client))
         columns.pop('sku', None)
         return columns
 
@@ -911,7 +911,7 @@ class DataImportService:
         the backfill can still retry them. It never fails the product."""
         from app.services.images.image_processing_service import ImageProcessingService
 
-        blocked = await self._embed_credit_block(workspace_id)
+        blocked = await self._embed_credit_block(workspace_id, len(linked))
         if blocked:
             logger.warning("   inline image embedding skipped for product %s: %s", product_id, blocked)
             await self._mark_images(linked, {
@@ -972,11 +972,16 @@ class DataImportService:
         cache[cache_key] = str(user_id) if user_id else None
         return cache[cache_key]
 
-    async def _embed_credit_block(self, workspace_id: str) -> Optional[str]:
-        """Why paid inline embedding must not run now (invariant 10), or None. Fails closed."""
+    async def _embed_credit_block(self, workspace_id: str, image_count: int) -> Optional[str]:
+        """Why paid inline embedding must not run now (invariant 10), or None. Fails closed.
+
+        The balance must cover an estimate for these images; the calls then debit their actual
+        cost to the job's payer (`background_jobs.user_id`, stamped by the orchestrator).
+        """
         from app.services.integrations.credits_integration_service import get_credits_service
 
-        floor = float(os.getenv('XML_IMPORT_EMBED_MIN_CREDITS', '1'))
+        per_image = float(os.getenv('XML_IMPORT_EMBED_CREDITS_PER_IMAGE', '10'))
+        floor = max(float(os.getenv('XML_IMPORT_EMBED_MIN_CREDITS', '1')), per_image * max(image_count, 1))
         try:
             user_id = await self._billing_user(workspace_id)
         except Exception as e:  # noqa: BLE001

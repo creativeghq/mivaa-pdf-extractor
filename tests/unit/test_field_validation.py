@@ -477,12 +477,19 @@ def test_dual_flush_splits_into_full_and_reduced(value, full, reduced):
     assert verdict.derived == expected
 
 
-@pytest.mark.parametrize("value,low,high", [("2-5 mm", 2, 5), ("2 to 5mm", 2, 5), ("3", 3, 3), (3, 3, 3)])
+@pytest.mark.parametrize("value,low,high", [("2-5 mm", 2, 5), ("2 to 5mm", 2, 5)])
 def test_a_joint_width_range_splits_into_min_and_max(value, low, high):
     verdict = fv.validate_value(JOINT, value)
     assert verdict.status == fv.OK
     assert verdict.value == low
     assert verdict.derived == {"joint_width_min_mm": low, "joint_width_max_mm": high}
+
+
+@pytest.mark.parametrize("value", ["3", 3])
+def test_a_single_joint_width_is_not_turned_into_a_range(value):
+    verdict = fv.validate_value(JOINT, value)
+    assert verdict.status == fv.OK and verdict.value == 3
+    assert not verdict.derived
 
 
 @pytest.mark.parametrize("value", ["42 (-1;-5)", "Rw 42 (C;Ctr) = (-1;-5)", "Rw (C;Ctr) = 42 (−1;−5) dB"])
@@ -516,3 +523,15 @@ def test_derived_parts_land_beside_the_source_and_never_overwrite():
 def test_a_bare_number_becomes_a_number_unless_it_is_thousands_shaped(raw, kept):
     verdict = fv.validate_value(Spec(field_type="number"), raw)
     assert verdict.value == kept
+
+
+def test_a_derived_part_that_breaks_its_own_field_rules_is_kept_out():
+    max_spec = Spec("number", name="joint_width_max_mm", validation_rules={"min": 0, "max": 50})
+    min_spec = Spec("number", name="joint_width_min_mm", validation_rules={"min": 0, "max": 50})
+    out, report = _run_with_registry(
+        {"joint_width_mm": "2-80 mm"},
+        {"joint_width_mm": JOINT, "joint_width_max_mm": max_spec, "joint_width_min_mm": min_spec},
+    )
+    assert out["joint_width_min_mm"] == 2
+    assert "joint_width_max_mm" not in out
+    assert out["_extraction_metadata"]["joint_width_max_mm"]["rejected"]["status"] != fv.OK

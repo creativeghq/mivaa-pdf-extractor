@@ -249,8 +249,8 @@ def stage4(env):
              and getattr(n.target, "id", None) == "_COLUMN_FOR_FIELD"]
     keep += [n for n in tree.body if isinstance(n, ast.Assign)
              and any(getattr(t, "id", None) in ("_COLUMN_FORM", "_ISO_COUNTRY_EXCEPTIONS") for t in n.targets)]
-    from typing import Any, Dict, List, Optional
-    ns = {"field_registry": env.registry, "scale_value": env.normalizer.scale_value, "_re": re, "re": re,
+    from typing import Any, Callable, Dict, List, Optional
+    ns = {"Callable": Callable, "field_registry": env.registry, "scale_value": env.normalizer.scale_value, "_re": re, "re": re,
           "Any": Any, "Dict": Dict, "List": List, "Optional": Optional}
     exec(compile(ast.Module(body=keep, type_ignores=[]), "stage_4_products", "exec"), ns)
     return types.SimpleNamespace(**{k: ns[k] for k in (*_STAGE4_FNS, "_COLUMN_FOR_FIELD")})
@@ -311,3 +311,12 @@ def test_a_scalar_already_holding_a_container_key_is_kept_not_crashed_on(stage4)
 def test_the_eu_and_uk_country_conventions_map_to_iso(stage4):
     assert stage4._route_column_fields({"country_of_origin": "EL"}) == {"country_of_origin": "GR"}
     assert stage4._route_column_fields({"country_of_origin": "uk"}) == {"country_of_origin": "GB"}
+
+
+def test_the_country_column_takes_the_vocabulary_answer_not_the_regex(stage4):
+    known = {"italy": "IT", "ελλάδα": "GR"}
+    resolve = lambda v: known.get(v.strip().lower())  # noqa: E731
+    assert stage4._route_column_fields({"country_of_origin": "Ελλάδα"}, country=resolve) == {"country_of_origin": "GR"}
+    meta = {"country_of_origin": "EU"}
+    assert stage4._route_column_fields(meta, country=resolve) == {}, "EU is two letters, not a country"
+    assert meta["country_of_origin"] == "EU"

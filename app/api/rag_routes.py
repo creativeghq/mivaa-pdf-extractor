@@ -152,6 +152,15 @@ def require_rag_resource_capability(capability: str):
 # Background Task Helper for Async Functions
 # ============================================================================
 
+def _sha256_file(path: str) -> str:
+    import hashlib
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def run_async_in_background(async_func):
     """
     Wrapper to run async functions in FastAPI BackgroundTasks.
@@ -595,6 +604,11 @@ async def upload_document(
                     "description, which went stale twice."
     ),
 
+    allow_duplicate: bool = Form(
+        False,
+        description="Process the file even when this workspace already holds a live document with the same content",
+    ),
+
     # NEW: URL-based upload
     file_url: Optional[str] = Form(
         None,
@@ -973,16 +987,33 @@ async def upload_document(
                 "p_storage_object_path": storage_object_path,
                 "p_document_metadata": document_metadata,
                 "p_job_metadata": job_metadata,
+                # One live document per workspace per file: a re-upload is refused before any paid stage.
+                "p_content_sha256": None if allow_duplicate else _sha256_file(file_path),
             }
             for _attempt in range(3):
                 try:
-                    supabase_client.client.rpc('create_document_upload_job', _rpc_args).execute()
+                    created = supabase_client.client.rpc('create_document_upload_job', _rpc_args).execute()
                     break
                 except httpx.TransportError as _te:
                     if _attempt == 2:
                         raise
                     logger.warning(f"create_document_upload_job transport error, replaying: {_te}")
                     await asyncio.sleep(0.5 * (_attempt + 1))
+            outcome = created.data if isinstance(created.data, dict) else {}
+            if outcome.get("status") == "duplicate":
+                try:
+                    os.unlink(file_path)
+                except OSError:
+                    pass
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "duplicate_document",
+                        "message": "This file is already in this workspace. Send allow_duplicate=true to process it again.",
+                        "document_id": outcome.get("document_id"),
+                        "job_id": outcome.get("job_id"),
+                    },
+                )
             logger.info(f"✅ Created document {document_id} + job {job_id}")
         except HTTPException:
             raise

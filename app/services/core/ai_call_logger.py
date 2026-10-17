@@ -8,6 +8,7 @@ Author: Material Kai Vision Platform
 Created: 2025-10-27
 """
 
+import asyncio
 import logging
 import threading
 import uuid
@@ -43,6 +44,9 @@ _dead_letter_lock = threading.Lock()
 _FAILED_ACTIONS = frozenset({"fallback_failed", "call_failed", "failed", "invalid_output"})
 
 
+_JOB_PAYERS: Dict[str, Optional[str]] = {}
+
+
 class AICallLogger:
     """AI Call Logger Service"""
     
@@ -53,6 +57,30 @@ class AICallLogger:
         # Import credits service here to avoid circular imports
         from app.services.integrations.credits_integration_service import get_credits_service
         self.credits_service = get_credits_service()
+
+    async def _job_payer(self, job_id: Optional[str]) -> Optional[str]:
+        """The user who started `job_id` (`background_jobs.user_id`), for calls that name no payer.
+
+        Ingestion stages log with the job id only; without this every one of their calls was
+        recorded and never debited. Cached per job; a failed lookup is not cached.
+        """
+        if not job_id:
+            return None
+        if job_id in _JOB_PAYERS:
+            return _JOB_PAYERS[job_id]
+        try:
+            rows = await asyncio.to_thread(
+                lambda: self.supabase.client.table("background_jobs").select("user_id")
+                .eq("id", str(job_id)).limit(1).execute()
+            )
+        except Exception as e:  # noqa: BLE001 — billing lookup must not break the AI path
+            self.logger.warning("[ai_call_logger] payer lookup failed for job %s: %s", job_id, e)
+            return None
+        payer = ((rows.data or [{}])[0] or {}).get("user_id")
+        _JOB_PAYERS[job_id] = str(payer) if payer else None
+        while len(_JOB_PAYERS) > 2048:
+            _JOB_PAYERS.pop(next(iter(_JOB_PAYERS)))
+        return _JOB_PAYERS[job_id]
 
     async def _debit(self, **kwargs) -> Tuple[Optional[str], Optional[str]]:
         """Debit AI credits and DON'T silently swallow a failure.
@@ -428,6 +456,8 @@ class AICallLogger:
         Returns:
             bool: True if logged successfully
         """
+        if not user_id and not system_initiated:
+            user_id = await self._job_payer(job_id)
         try:
             # Extract token usage from Claude response
             input_tokens = response.usage.input_tokens if hasattr(response, 'usage') else 0
@@ -546,6 +576,8 @@ class AICallLogger:
         If cost_per_generation_usd is None, looks up the model's price from
         ai_pricing's per-generation pricing table (REPLICATE_PRICING).
         """
+        if not user_id:
+            user_id = await self._job_payer(job_id)
         try:
             if cost_per_generation_usd is None:
                 cost_data = ai_pricing.calculate_replicate_cost(model=model, num_generations=1)
@@ -619,6 +651,8 @@ class AICallLogger:
 
         This is the ONLY correct logger for HuggingFace endpoint calls.
         """
+        if not user_id:
+            user_id = await self._job_payer(job_id)
         try:
             # ai_pricing handles time_based billing internally — pass duration as
             # input_tokens placeholder isn't right; use the dedicated path.
