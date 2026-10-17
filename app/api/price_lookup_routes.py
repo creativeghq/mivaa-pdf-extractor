@@ -106,7 +106,19 @@ async def authenticate_api_key(
             )
 
     user_id = key.get("user_id")
-    workspace_id = _resolve_workspace_for_user(sb, user_id) if user_id else None
+    workspace_id = None
+    if user_id:
+        member_of = _active_workspace_ids(sb, user_id)
+        bound = key.get("workspace_id")
+        if bound:
+            if bound not in member_of:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="API key's workspace is no longer accessible",
+                )
+            workspace_id = bound
+        elif len(member_of) == 1:
+            workspace_id = member_of[0]
 
     # Touch last_used_at (fire and forget — failure here shouldn't block the request)
     try:
@@ -139,23 +151,20 @@ def _endpoint_allowed(path: str, allowed_patterns: list) -> bool:
     return False
 
 
-def _resolve_workspace_for_user(sb, user_id: str) -> Optional[str]:
-    """Pick the user's primary active workspace. Oldest membership wins."""
+def _active_workspace_ids(sb, user_id: str) -> list:
+    """The key owner's active memberships. A key acts in `api_keys.workspace_id`, never a guess among these."""
     try:
         res = (
             sb.table("workspace_members")
-            .select("workspace_id, joined_at, status")
+            .select("workspace_id")
             .eq("user_id", user_id)
             .eq("status", "active")
-            .order("joined_at", desc=False)
-            .limit(1)
             .execute()
         )
-        rows = res.data or []
-        return rows[0]["workspace_id"] if rows else None
+        return [r["workspace_id"] for r in (res.data or [])]
     except Exception as e:
-        logger.warning(f"Could not resolve workspace for user {user_id}: {e}")
-        return None
+        logger.warning(f"Could not resolve workspaces for user {user_id}: {e}")
+        return []
 
 
 # ────────────────────────────────────────────────────────────────────────────
