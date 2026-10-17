@@ -9,12 +9,17 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 
 
+def _document_model() -> str:
+    from app.config import get_settings
+    return get_settings().voyage_document_model
+
+
 class EmbeddingConfig(BaseModel):
     """Configuration for embedding service."""
 
     model_name: str = Field(
-        default="voyage-4",
-        description="Embedding model name (voyage-4)"
+        default_factory=lambda: _document_model(),
+        description="Document embedding model (Settings.voyage_document_model)"
     )
     model_type: str = Field(
         default="voyage",

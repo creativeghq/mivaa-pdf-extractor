@@ -113,7 +113,7 @@ def _call_lines(node, attr):
 
 
 def test_kb_rechunk_swaps_chunks_only_through_the_atomic_rpc_after_embedding():
-    fn = _fn("services/kb/kb_chunk_service.py", "rechunk_doc")
+    fn = _fn("services/kb/kb_chunk_service.py", "_rechunk_doc")
     assert not _call_lines(fn, "delete") and not _call_lines(fn, "insert"), (
         "kb_doc_chunks must be replaced by replace_kb_doc_chunks in one transaction, "
         "never by a delete plus separate inserts"
@@ -172,3 +172,39 @@ def test_the_chunk_model_setting_refuses_a_model_outside_the_query_space():
                    if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "allowed")
     assert {e.value for e in allowed.elts} == {"voyage-context-4"}
     assert any(isinstance(n, ast.Raise) for n in ast.walk(validator))
+
+
+def test_every_rechunk_failure_is_recorded_on_the_doc():
+    fn = _fn("services/kb/kb_chunk_service.py", "rechunk_doc")
+    handlers = [h for t in ast.walk(fn) if isinstance(t, ast.Try) for h in t.handlers]
+    assert any(_call_lines_by_name(h, "_record_failure") for h in handlers), (
+        "rechunk_doc must catch EVERY exception from the work and record it on kb_docs.chunks_error; "
+        "an unrecorded failure retries forever with no reason anywhere"
+    )
+    assert any(isinstance(n, ast.Raise) for h in handlers for n in ast.walk(h))
+
+
+def _call_lines_by_name(node, name):
+    return [n.lineno for n in ast.walk(node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == name]
+
+
+def test_the_drain_claims_before_it_works_and_answers_at_once():
+    fn = _fn("api/rag_routes.py", "kb_docs_rechunk")
+    rpcs = {n.args[0].value for n in ast.walk(fn) if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Attribute) and n.func.attr == "rpc"
+            and n.args and isinstance(n.args[0], ast.Constant)}
+    assert "claim_kb_docs_for_rechunk" in rpcs, "overlapping drain ticks must not take the same doc"
+    assert "kb_docs_needing_rechunk" not in rpcs, "a read-only pick lets two ticks process one doc"
+    assert _call_lines(fn, "add_task"), "stale mode runs in the background so the edge never times out"
+
+
+def test_pdf_chunk_embedding_is_a_slow_operation_and_fails_fast_in_an_outage():
+    fn = _fn("services/search/rag_service.py", "index_pdf_content")
+    assert _call_lines(fn, "set_slow_operation") and _call_lines(fn, "clear_slow_operation")
+    guarded = [
+        i for i in ast.walk(fn) if isinstance(i, ast.If)
+        and "_voyage_answered" in ast.unparse(i.test)
+        and any(isinstance(n, ast.Continue) for n in i.body)
+    ]
+    assert guarded, "when every window failed, chunks must not each retry on their own"

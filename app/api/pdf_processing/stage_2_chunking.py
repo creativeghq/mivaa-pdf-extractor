@@ -27,7 +27,8 @@ async def process_product_chunking(
     logger: logging.Logger,
     product_id: Optional[str] = None,
     temp_pdf_path: Optional[str] = None,
-    layout_regions: Optional[List[Any]] = None
+    layout_regions: Optional[List[Any]] = None,
+    tracker: Any = None,
 ) -> Dict[str, Any]:
     """Create text chunks for a single product (product-centric pipeline).
 
@@ -322,7 +323,8 @@ async def process_product_chunking(
         },
         catalog=catalog,
         page_chunks=page_chunks_data,
-        layout_regions_by_page=layout_regions_by_page
+        layout_regions_by_page=layout_regions_by_page,
+        tracker=tracker,
     )
 
     chunks_created = chunk_result.get('chunks_created', 0)

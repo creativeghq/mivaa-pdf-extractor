@@ -11,7 +11,6 @@ retried by the drain rather than leaving stale sections searchable indefinitely.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from app.services.kb.chunk_source_hash import source_hash
@@ -28,11 +27,12 @@ def _to_vec_literal(emb) -> Optional[str]:
     return "[" + ",".join(f"{float(x):.5g}" for x in emb) + "]"
 
 
-def _record_attempt(supabase, doc_id: str, error: Optional[str]) -> None:
-    supabase.client.table("kb_docs").update({
-        "chunks_attempted_at": datetime.now(timezone.utc).isoformat(),
-        "chunks_error": error,
-    }).eq("id", doc_id).execute()
+def _record_failure(supabase, doc_id: str, error: str) -> None:
+    """chunks_pending_since stays set; only a successful replace_kb_doc_chunks clears it."""
+    try:
+        supabase.client.table("kb_docs").update({"chunks_error": error[:500]}).eq("id", doc_id).execute()
+    except Exception as e:
+        logger.error("rechunk_doc %s: could not record failure %r: %s", doc_id, error, e)
 
 
 async def rechunk_doc(
@@ -43,23 +43,39 @@ async def rechunk_doc(
     target: Optional[int] = None,
     overlap: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Rechunk + re-embed a single kb_doc. Returns a per-doc summary."""
+    """Rechunk + re-embed a single kb_doc. Returns a per-doc summary; every failure is recorded on the doc."""
+    try:
+        return await _rechunk_doc(supabase, doc_id, embeddings_service=embeddings_service,
+                                  target=target, overlap=overlap)
+    except Exception as e:
+        if SOURCE_CHANGED in str(e):
+            # A newer edit superseded this run; the doc stays stale until a run with its current text.
+            logger.info("rechunk_doc %s: superseded by an edit during chunking", doc_id)
+            return {"doc_id": doc_id, "superseded": True, "chunks": 0}
+        _record_failure(supabase, doc_id, f"{type(e).__name__}: {e}")
+        raise
+
+
+SOURCE_CHANGED = "kb_doc_source_changed"
+
+
+async def _rechunk_doc(supabase, doc_id, *, embeddings_service, target, overlap) -> Dict[str, Any]:
     row = (
         supabase.client.table("kb_docs")
         .select("id, title, content, workspace_id")
         .eq("id", doc_id)
-        .single()
+        .maybe_single()
         .execute()
     )
-    doc = row.data
+    doc = row.data if row else None
     if not doc:
         return {"doc_id": doc_id, "error": "not_found", "chunks": 0}
 
+    supabase.client.rpc("begin_kb_rechunk", {"p_doc_id": doc_id}).execute()
     content = doc.get("content") or ""
     workspace_id = doc.get("workspace_id")
     title = doc.get("title")
     digest = source_hash(title, content)
-    _record_attempt(supabase, doc_id, None)
 
     kwargs = {}
     if target is not None:
@@ -89,10 +105,10 @@ async def rechunk_doc(
     failed = sum(1 for e in embeddings if not e)
     if failed:
         # Embed before replacing: the existing rows stay until a full set exists, and the
-        # unchanged hash keeps the doc in kb_docs_needing_rechunk for the drain to retry.
+        # unchanged hash keeps the doc queued for the drain.
         logger.warning("rechunk_doc %s: %d/%d chunks failed to embed; kept existing chunks",
                        doc_id, failed, len(chunks))
-        _record_attempt(supabase, doc_id, f"{failed}/{len(chunks)} chunks failed to embed")
+        _record_failure(supabase, doc_id, f"{failed}/{len(chunks)} chunks failed to embed")
         return {"doc_id": doc_id, "error": "embedding_failed", "chunks": 0,
                 "embedded": 0, "failed": failed, "content_len": len(content)}
 
@@ -108,13 +124,9 @@ async def rechunk_doc(
         "schema_version": 1,
     } for ch, emb in zip(chunks, embeddings)]
 
-    try:
-        supabase.client.rpc("replace_kb_doc_chunks", {
-            "p_doc_id": doc_id, "p_source_hash": digest, "p_rows": rows,
-        }).execute()
-    except Exception as e:
-        _record_attempt(supabase, doc_id, f"replace failed: {str(e)[:300]}")
-        raise
+    supabase.client.rpc("replace_kb_doc_chunks", {
+        "p_doc_id": doc_id, "p_source_hash": digest, "p_rows": rows,
+    }).execute()
 
     return {
         "doc_id": doc_id,

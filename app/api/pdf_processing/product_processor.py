@@ -419,7 +419,8 @@ async def process_single_product(
                 logger=logger_instance,
                 product_id=product_db_id,
                 temp_pdf_path=temp_pdf_path,
-                layout_regions=layout_regions
+                layout_regions=layout_regions,
+                tracker=tracker,
             )
 
             chunks_created = chunk_result.get('chunks_created', 0)

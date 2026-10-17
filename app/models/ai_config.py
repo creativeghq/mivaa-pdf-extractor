@@ -9,6 +9,11 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+def _document_model() -> str:
+    from app.config import get_settings
+    return get_settings().voyage_document_model
+
+
 class AIModelConfig(BaseModel):
     """Configuration for AI models used in PDF processing pipeline."""
 
@@ -25,8 +30,8 @@ class AIModelConfig(BaseModel):
     )
     
     text_embedding_model: str = Field(
-        default="voyage-4-large",
-        description="Text embedding model for documents (Voyage AI; queries use voyage-4)"
+        default_factory=lambda: _document_model(),
+        description="Document embedding model (Settings.voyage_document_model)"
     )
     text_embedding_dimensions: int = Field(
         default=1024,

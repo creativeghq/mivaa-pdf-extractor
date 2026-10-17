@@ -144,7 +144,8 @@ class RAGService:
         catalog: Optional[Any] = None,
         page_chunks: Optional[List[Dict[str, Any]]] = None,
         progress_callback: Optional[callable] = None,
-        layout_regions_by_page: Optional[Dict[int, List[Dict[str, Any]]]] = None
+        layout_regions_by_page: Optional[Dict[int, List[Dict[str, Any]]]] = None,
+        tracker: Optional[Any] = None,
     ) -> Dict[str, Any]:
         """
         Index PDF content by extracting text, chunking, and generating embeddings.
@@ -307,11 +308,35 @@ class RAGService:
                 self.embeddings_service._last_provider = None
             except Exception:
                 pass
-            _doc_vectors = await self.embeddings_service.generate_contextualized_embeddings(
-                [c.content for c in _embeddable],
-                workspace_id=None if workspace_id == 'default' else workspace_id,
-                product_id=metadata.get('product_id'),
-            )
+            # Marked as a slow operation: with retries one call can legitimately run for minutes,
+            # and stuck-job recovery must not read that as a dead job.
+            _slow_op = f"chunk_embedding:{document_id}:{metadata.get('product_id') or 'document'}"
+            _slow_op_set = False
+            if tracker is not None:
+                try:
+                    await tracker.set_slow_operation(
+                        operation=_slow_op, expected_max_seconds=max(300, len(_embeddable) * 4),
+                    )
+                    _slow_op_set = True
+                except Exception as _slow_err:
+                    self.logger.debug(f"set_slow_operation failed (non-fatal): {_slow_err}")
+            try:
+                _doc_vectors = await self.embeddings_service.generate_contextualized_embeddings(
+                    [c.content for c in _embeddable],
+                    workspace_id=None if workspace_id == 'default' else workspace_id,
+                    product_id=metadata.get('product_id'),
+                    job_id=metadata.get('job_id'),
+                )
+            finally:
+                if _slow_op_set:
+                    try:
+                        await tracker.clear_slow_operation(operation=_slow_op)
+                    except Exception as _clear_err:
+                        self.logger.debug(f"clear_slow_operation failed (non-fatal): {_clear_err}")
+            # A chunk is embedded on its own only when the service demonstrably answered for this
+            # document; if every window failed, Voyage is down and per-chunk calls would only
+            # multiply the failure.
+            _voyage_answered = any(v is not None for v in _doc_vectors)
             vector_by_chunk = {
                 id(c): (array('f', v) if v else None) for c, v in zip(_embeddable, _doc_vectors)
             }
@@ -431,6 +456,8 @@ class RAGService:
                         held = vector_by_chunk.get(id(chunk_obj))
                         vector = held.tolist() if held is not None else None
                         model = chunk_model
+                        if vector is None and not _voyage_answered:
+                            continue
                         if vector is None:
                             try:
                                 self.embeddings_service._last_provider = None

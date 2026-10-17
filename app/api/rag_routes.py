@@ -5660,11 +5660,12 @@ def _require_internal_kb_caller(http_request: Request, route: str) -> None:
 
 
 @router.post("/kb-docs/rechunk")
-async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
-    """Chunk + embed kb_docs into kb_doc_chunks (section-level retrieval). Idempotent
-    (delete+reinsert per doc). Internal/admin only — gated on x-cron-secret, since the
-    /api/rag prefix is excluded from the JWT middleware. Called on-write (per doc) and by
-    the one-time backfill (all=true, paged by limit/offset).
+async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request, background_tasks: BackgroundTasks):
+    """Chunk + embed kb_docs into kb_doc_chunks (section-level retrieval). Idempotent.
+    Internal only — gated on x-cron-secret or the service-role bearer, since the /api/rag
+    prefix is excluded from the JWT middleware. Called on-write (per doc), by the backfill
+    (all=true, paged), and by the drain (stale=true: claims docs and returns at once; the
+    outcome is recorded on each kb_docs row, not in this response).
     """
     _require_internal_kb_caller(http_request, "kb-docs/rechunk")
 
@@ -5677,8 +5678,19 @@ async def kb_docs_rechunk(request: KBRechunkRequest, http_request: Request):
     elif request.doc_ids:
         ids = request.doc_ids
     elif request.stale:
-        rows = sb.client.rpc("kb_docs_needing_rechunk", {"p_limit": min(request.limit, 50)}).execute()
-        ids = [r["id"] for r in (rows.data or [])]
+        claimed = sb.client.rpc("claim_kb_docs_for_rechunk", {"p_limit": min(request.limit, 20)}).execute()
+        claimed_ids = [r["id"] for r in (claimed.data or [])]
+
+        async def _drain(doc_ids: List[str]) -> None:
+            for did in doc_ids:
+                try:
+                    await rechunk_doc(sb, did)
+                except Exception as e:  # recorded on the doc by rechunk_doc
+                    logger.warning("rechunk failed for %s: %s", did, e)
+
+        if claimed_ids:
+            background_tasks.add_task(_drain, claimed_ids)
+        return {"queued": len(claimed_ids), "doc_ids": claimed_ids}
     elif request.all:
         q = sb.client.table("kb_docs").select("id").neq("content", "").order("id")
         if request.workspace_id:
