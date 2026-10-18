@@ -512,7 +512,8 @@ async def classify_batch(
                     "messages": [{"role": "user", "content": _build_user_prompt(facets, batch_hits, corrections)}],
                 }
                 resp = await http.post(_ANTHROPIC_URL, headers=headers, json=payload)
-                resp.raise_for_status()
+                if resp.status_code >= 400:
+                    raise RuntimeError(f"anthropic {resp.status_code}: {resp.text[:300]}")
                 data = resp.json()
                 usage = data.get("usage") or {}
                 in_tok = int(usage.get("input_tokens") or 0)
@@ -545,7 +546,7 @@ async def classify_batch(
                     _put_cached(hits[global_idx].content_hash, facets_hash, verdict)
             except Exception as e:
                 success = False
-                err = str(e)[:200]
+                err = f"{type(e).__name__}: {e}"[:400]
                 logger.warning(f"job-classifier haiku batch failed: {err}")
                 for global_idx in chunk_indices:
                     out[global_idx] = {"relevance": "unverifiable", "relevance_score": 0.0, "match_note": f"classifier error: {err}", "classifier_cached": False}

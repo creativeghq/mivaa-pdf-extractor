@@ -1094,7 +1094,7 @@ class RealEmbeddingsService:
                     raise Exception(f"Voyage AI API error: {response.status_code} - {error_body}")
 
             except Exception as e:
-                self.logger.error(f"Voyage AI batch embedding failed: {e}")
+                self.logger.error(f"Voyage AI batch embedding failed: {type(e).__name__}: {e}")
 
                 # Log the failed Voyage call
                 latency_ms = int((time.time() - start_time) * 1000)
@@ -1231,7 +1231,7 @@ class RealEmbeddingsService:
                     vectors[i] = emb
                 await log_call(req, start_time, (data.get("usage") or {}).get("total_tokens", 0))
             except Exception as e:
-                self.logger.error(f"Voyage contextualized embedding failed: {e}")
+                self.logger.error(f"Voyage contextualized embedding failed: {type(e).__name__}: {e}")
                 await log_call(req, start_time, 0, error=str(e))
         if any(v is not None for v in vectors):
             self._last_provider = model
@@ -1389,7 +1389,7 @@ class RealEmbeddingsService:
                         raise Exception(f"Voyage AI API error: {response.status_code} - {error_body}")
 
             except Exception as e:
-                self.logger.error(f"Voyage AI text embedding failed: {e}")
+                self.logger.error(f"Voyage AI text embedding failed: {type(e).__name__}: {e}")
 
                 # Log the failed Voyage call
                 latency_ms = int((time.time() - start_time) * 1000)

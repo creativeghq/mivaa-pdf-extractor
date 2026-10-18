@@ -26,6 +26,14 @@ HEALTHY_CADENCE_HOURS = 24
 SPIKE_THRESHOLD_RATIO = 2.0
 
 
+def refresh_error_summary(errors: Optional[Dict[str, str]]) -> Optional[str]:
+    """`source: error` for every source that failed, or None when all answered."""
+    failed = {k: v for k, v in (errors or {}).items() if v}
+    if not failed:
+        return None
+    return "; ".join(f"{k}: {str(v)[:200]}" for k, v in sorted(failed.items()))[:1000]
+
+
 class TrackedMentionsService:
     def __init__(self) -> None:
         self.supabase = get_supabase_client()
@@ -736,6 +744,7 @@ class TrackedMentionsService:
                     "last_run_id": run_id,
                     **({} if history_persisted else {"history_persist_failed": True}),
                 },
+                "last_error": refresh_error_summary(errors),
             }
             if history_persisted:
                 payload["current_sentiment_avg"] = sentiment_avg
