@@ -20,6 +20,8 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.services.integrations import job_cost_logger as costs
+from app.services.integrations.ats_boards import board_url, parse_board
+from app.utils.html_to_markdown import html_to_markdown
 from app.services.integrations.perplexity_agent_client import (
     build_agent_body,
     call_agent,
@@ -138,6 +140,8 @@ class JobHit:
     employment_type: Optional[str] = None
     seniority: Optional[str] = None
     description_excerpt: Optional[str] = None
+    # The whole body when the source gives one; never a snippet or an LLM summary.
+    description_md: Optional[str] = None
     posted_at: Optional[str] = None  # ISO string, parsed by orchestrator
     source: str = "google_jobs"
     raw_payload: Dict[str, Any] = field(default_factory=dict)
@@ -572,6 +576,7 @@ def _parse_google_jobs_items(data: Optional[Dict[str, Any]]) -> List[JobHit]:
                     salary_period=salary.get("type"),
                     employment_type=contract,
                     description_excerpt=(item.get("description") or "")[:600] or None,
+                    description_md=(item.get("description") or "").strip() or None,
                     posted_at=item.get("timestamp") or item.get("date_posted"),
                     source="google_jobs",
                     raw_payload={"thumbnail": item.get("employer_image_url") or item.get("thumbnail"),
@@ -1579,12 +1584,6 @@ from datetime import datetime, timezone
 from app.services.utilities.prompt_registry import load_prompt, render
 
 
-def _strip_html(s: str) -> str:
-    if not s:
-        return ""
-    return re.sub(r"<[^>]+>", " ", s).strip()
-
-
 def _parse_rss_date(s: Optional[str]) -> Optional[str]:
     """RSS pubDate is RFC-822 ('Mon, 14 May 2026 09:30:00 GMT'); Atom is ISO-8601.
     Return ISO-8601 or the raw string if we can't parse."""
@@ -1689,8 +1688,10 @@ async def search_via_rss_feeds(
                             rel = (child.attrib.get("rel") or "alternate").lower()
                             if href and (rel == "alternate" or not link):
                                 link = href
-                    elif tag in ("description", "summary", "content"):
-                        desc = _strip_html((child.text or ""))[:600] or desc
+                    elif tag in ("description", "summary", "content", "encoded"):
+                        body = html_to_markdown(child.text or "")
+                        if len(body) > len(desc or ""):
+                            desc = body
                     elif tag in ("pubdate", "published", "updated"):
                         pub = _parse_rss_date(child.text)
                     elif tag in ("author", "creator"):
@@ -1718,7 +1719,8 @@ async def search_via_rss_feeds(
                     title=title,
                     company=company,
                     company_domain=domain_of(link) or feed_host,
-                    description_excerpt=desc,
+                    description_excerpt=desc[:600] if desc else None,
+                    description_md=desc or None,
                     posted_at=pub,
                     source="rss_feed",
                     raw_payload={"feed_url": url},
@@ -1805,13 +1807,6 @@ def parse_ats_entry(entry: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _ats_epoch_ms_to_iso(v: Any) -> Optional[str]:
-    try:
-        return datetime.fromtimestamp(int(v) / 1000.0, tz=timezone.utc).isoformat()
-    except Exception:
-        return None
-
-
 async def search_via_ats_boards(*, entries: List[str], attribution) -> List[JobHit]:
     """Poll each configured company ATS board. Returns JobHit list (source='ats_board')."""
     parsed: List[Tuple[str, str, str]] = []
@@ -1837,71 +1832,29 @@ async def search_via_ats_boards(*, entries: List[str], attribution) -> List[JobH
         success = True
         err: Optional[str] = None
         try:
-            if provider == "greenhouse":
-                url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs"
-            elif provider == "lever":
-                url = f"https://api.lever.co/v0/postings/{slug}?mode=json"
-            else:
-                url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}"
             async with sem:
-                async with httpx.AsyncClient(timeout=httpx.Timeout(25.0, connect=8.0)) as client:
-                    resp = await client.get(url, headers={"Accept": "application/json"})
+                async with httpx.AsyncClient(timeout=httpx.Timeout(45.0, connect=8.0)) as client:
+                    resp = await client.get(board_url(provider, slug), headers={"Accept": "application/json"})
                     resp.raise_for_status()
-                    data = resp.json()
-
-            rows: List[Dict[str, Any]] = []
-            if provider == "greenhouse":
-                rows = (data or {}).get("jobs") or []
-            elif provider == "lever":
-                rows = data if isinstance(data, list) else []
-            else:
-                rows = (data or {}).get("jobs") or []
-
-            for r in rows:
-                if not isinstance(r, dict):
-                    continue
-                if provider == "greenhouse":
-                    title = r.get("title")
-                    link = r.get("absolute_url") or ""
-                    loc = ((r.get("location") or {}) or {}).get("name")
-                    posted = r.get("first_published") or r.get("updated_at")
-                    company = r.get("company_name") or slug
-                    remote = ("remote" in (loc or "").lower()) or None
-                    emp = None
-                elif provider == "lever":
-                    title = r.get("text")
-                    link = r.get("hostedUrl") or r.get("applyUrl") or ""
-                    cats = r.get("categories") or {}
-                    loc = cats.get("location")
-                    posted = _ats_epoch_ms_to_iso(r.get("createdAt"))
-                    company = slug
-                    wt = (r.get("workplaceType") or "").lower()
-                    remote = True if wt == "remote" else (False if wt in ("onsite", "on-site") else None)
-                    emp = cats.get("commitment")
-                else:  # ashby
-                    if r.get("isListed") is False:
-                        continue
-                    title = r.get("title")
-                    link = r.get("jobUrl") or r.get("applyUrl") or ""
-                    loc = r.get("location")
-                    posted = r.get("publishedAt")
-                    company = slug
-                    remote = r.get("isRemote")
-                    emp = r.get("employmentType")
-                if not link or not title:
-                    continue
+            board_company, postings = parse_board(provider, resp.content)
+            for r in postings:
+                title, link = r["title"], r["canonical_url"]
+                company = board_company or (slug if provider == "greenhouse" else slug.replace("-", " ").title())
+                body = r["description_md"] or None
                 canonical = canonicalize_url(link)
                 out.append(JobHit(
                     url=link,
                     canonical_url=canonical,
                     content_hash=content_hash(canonical, title, company),
                     title=title,
-                    company=(company or "").replace("-", " ").title() if provider != "greenhouse" else company,
+                    company=company,
                     company_domain=domain_of(link),
-                    location=loc,
-                    is_remote=remote,
-                    employment_type=emp,
-                    posted_at=posted,
+                    location=r["location"],
+                    is_remote=r["is_remote"],
+                    employment_type=r["employment_type"],
+                    description_md=body,
+                    description_excerpt=body[:600] if body else None,
+                    posted_at=r["posted_at"],
                     source="ats_board",
                     raw_payload={"ats": f"{provider}:{slug}", "entry": entry},
                 ))

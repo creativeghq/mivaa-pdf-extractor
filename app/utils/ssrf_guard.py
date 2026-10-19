@@ -97,13 +97,15 @@ class SafeFetchResult:
     point of this helper is that the bytes in your hand are the bytes that fit.
     """
 
-    __slots__ = ("content", "content_type", "status_code", "final_url")
+    __slots__ = ("content", "content_type", "status_code", "final_url", "etag")
 
-    def __init__(self, content: bytes, content_type: str, status_code: int, final_url: str):
+    def __init__(self, content: bytes, content_type: str, status_code: int, final_url: str,
+                 etag: str = ""):
         self.content = content
         self.content_type = content_type
         self.status_code = status_code
         self.final_url = final_url
+        self.etag = etag
 
     @property
     def ok(self) -> bool:
@@ -145,7 +147,7 @@ async def safe_fetch_bytes(
                 timeout=timeout,
                 follow_redirects=False,
             ) as resp:
-                if 300 <= resp.status_code < 400:
+                if 300 <= resp.status_code < 400 and resp.status_code != 304:
                     location = resp.headers.get("location")
                     if not location:
                         raise SSRFError(
@@ -182,6 +184,7 @@ async def safe_fetch_bytes(
                     content_type=resp.headers.get("content-type", ""),
                     status_code=resp.status_code,
                     final_url=current,
+                    etag=resp.headers.get("etag", ""),
                 )
 
         raise SSRFError(f"too many redirects (> {max_redirects}) starting at {url[:120]}")

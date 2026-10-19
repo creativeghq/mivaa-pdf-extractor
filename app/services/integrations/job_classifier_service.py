@@ -153,10 +153,14 @@ def _is_non_posting(hit: JobHit) -> bool:
     return False
 
 
+# Requirements usually sit well below a job ad's opening paragraph.
+_BODY_CHARS = 1500
+
+
 def rule_shortcut(facets: JobFacets, hit: JobHit) -> Optional[Tuple[str, str]]:
     """Deterministic verdict before Haiku. Returns (relevance, note) or None."""
     blob = " ".join(filter(None, [
-        _normalize(hit.title), _normalize(hit.description_excerpt or ""),
+        _normalize(hit.title), _normalize((hit.description_md or hit.description_excerpt or "")[:_BODY_CHARS]),
         _normalize(hit.company or ""), _normalize(hit.location or ""),
     ]))
     if not blob.strip():
@@ -409,7 +413,7 @@ def _build_user_prompt(facets: JobFacets, batch: List[JobHit], corrections: Opti
         items.append(
             f"[{i}] title='{fence_untrusted(h.title)}' company='{fence_untrusted(h.company)}' "
             f"location='{fence_untrusted(h.location)}' "
-            f"excerpt='{fence_untrusted(h.description_excerpt)}'"
+            f"excerpt='{fence_untrusted(h.description_md or h.description_excerpt, _BODY_CHARS)}'"
         )
     return (
         f"{facets_block}\n"

@@ -1112,6 +1112,7 @@ class JobResearchService:
                     "employment_type": hit.employment_type,
                     "seniority": hit.seniority,
                     "description_excerpt": hit.description_excerpt,
+                    "description_md": hit.description_md,
                     # Bug-fix 2026-06-26: normalize relative dates ("2 days ago",
                     # "New", "1 month ago") → ISO. A raw relative string used to
                     # 400 the insert (22007) and silently drop the listing — which

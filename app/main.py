@@ -1846,6 +1846,7 @@ from app.api.tracked_queries_routes import router as tracked_queries_router
 from app.api.mention_monitoring_routes import router as mention_monitoring_router
 from app.api.mention_tracking_routes import router as mention_tracking_router
 from app.api.job_research_routes import router as job_research_router
+from app.api.signals_routes import router as signals_router
 from app.api.job_tracking_routes import router as job_tracking_router
 from app.api.seo_agent_routes import router as seo_agent_router
 from app.api.public_tools_routes import router as public_tools_router
@@ -1900,6 +1901,7 @@ app.include_router(tracked_queries_router)  # NEW: Public /api/v1/prices/track/*
 app.include_router(mention_monitoring_router)  # NEW: Mention monitoring (DataForSEO News + Perplexity + RSS + LLM probes) — internal flow (session JWT)
 app.include_router(mention_tracking_router)    # NEW: Public /api/v1/mentions/track/* — external mention tracking (api_keys Bearer auth)
 app.include_router(job_research_router)        # NEW: Job research — DataForSEO Jobs + Perplexity Sonar + Firecrawl careers, daily consolidated email digest
+app.include_router(signals_router)             # Signals corpus (#462) — x-cron-secret only
 app.include_router(job_tracking_router)        # NEW: Public /api/v1/jobs/track/* — external job-search tracking (api_keys Bearer auth)
 app.include_router(seo_agent_router)           # NEW: SEO agent toolkit dispatcher — internal-only (x-cron-secret), routes to DataForSEOUnifiedClient
 app.include_router(public_tools_router)        # NEW: Public /tools page backend — captcha-gated, 2 scans/day/IP, no auth required

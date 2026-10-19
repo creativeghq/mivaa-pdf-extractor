@@ -125,6 +125,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             "/api/v1/price-monitoring",   # Internal (session JWT, route-level) + cron (x-cron-secret)
             "/api/v1/mention-monitoring", # Internal (session JWT, route-level) + cron (x-cron-secret)
             "/api/v1/job-research",       # Internal (session JWT, route-level) + cron (x-cron-secret)
+            "/api/v1/signals",            # cron (x-cron-secret, route-level)
             "/api/v1/seo-agent",          # x-cron-secret gated (route-level)
             "/api/internal",              # Service-to-service (edge) incl. /api/internal/catalog cron
             # Internal compute endpoints called by edge fns without a Supabase JWT
