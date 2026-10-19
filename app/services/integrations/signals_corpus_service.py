@@ -22,6 +22,7 @@ from app.services.integrations.ats_boards import (
     find_careers_links,
     parse_board,
 )
+from app.services.integrations.tech_fingerprints import detect as detect_technologies
 from app.utils.ssrf_guard import ResponseTooLarge, SSRFError, safe_fetch_bytes
 
 logger = logging.getLogger(__name__)
@@ -62,8 +63,10 @@ async def _get_page(client: httpx.AsyncClient, url: str) -> Tuple[Optional[str],
     return text, res.final_url, res.status_code
 
 
-async def resolve_domain(client: httpx.AsyncClient, domain: str) -> Dict[str, Any]:
-    """Read the homepage and up to two careers pages. Returns the record_company_ats_check args."""
+async def resolve_domain(client: httpx.AsyncClient, domain: str,
+                         fingerprints: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Read the homepage and up to two careers pages. Returns the record_company_ats_check args,
+    plus `technologies` (slugs the homepage gives away) and `home_url`, which are not RPC args."""
     home = None
     last_error = None
     for url in (f"https://{domain}/", f"https://www.{domain}/"):
@@ -77,6 +80,7 @@ async def resolve_domain(client: httpx.AsyncClient, domain: str) -> Dict[str, An
     if home is None:
         return {"p_status": "unreachable", "p_careers_url": None, "p_error": last_error, "p_accounts": []}
 
+    technologies = detect_technologies(home, fingerprints or [])
     accounts = find_ats_accounts(home)
     careers = find_careers_links(home, base)
     for url in careers[:2]:
@@ -100,30 +104,40 @@ async def resolve_domain(client: httpx.AsyncClient, domain: str) -> Dict[str, An
         "p_careers_url": careers[0] if careers else None,
         "p_error": None if status != "unreadable" else "homepage carried almost no links (JS-rendered?)",
         "p_accounts": [{"provider": p, "token": t} for p, t in accounts],
+        "technologies": technologies,
+        "home_url": base,
     }
 
 
 async def run_resolution(limit: int = 8, budget_s: float = 45.0) -> Dict[str, Any]:
     due = await _rpc("claim_company_ats_checks", {"p_limit": limit}) or []
+    fingerprints = (await _rpc("get_technology_fingerprints", {}) or []) if due else []
     tally: Dict[str, int] = {}
     accounts_written = 0
+    technologies_written = 0
     sem = asyncio.Semaphore(8)
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         async def one(row: Dict[str, Any]) -> None:
-            nonlocal accounts_written
+            nonlocal accounts_written, technologies_written
             domain = row["domain"]
             async with sem:
                 try:
-                    args = await asyncio.wait_for(resolve_domain(client, domain), _DOMAIN_BUDGET_S)
+                    args = await asyncio.wait_for(resolve_domain(client, domain, fingerprints), _DOMAIN_BUDGET_S)
                 except asyncio.TimeoutError:
                     args = {"p_status": "unreachable", "p_careers_url": None,
                             "p_error": f"timed out after {_DOMAIN_BUDGET_S:.0f}s", "p_accounts": []}
                 except Exception as e:  # noqa: BLE001 — recorded on the row, never swallowed
                     args = {"p_status": "unreachable", "p_careers_url": None,
                             "p_error": f"{type(e).__name__}: {str(e)[:160]}", "p_accounts": []}
+            technologies = args.pop("technologies", None) or []
+            home_url = args.pop("home_url", None)
             n = await _rpc("record_company_ats_check", {"p_domain": domain, **args})
             accounts_written += int(n or 0)
+            if technologies:
+                t = await _rpc("record_company_technologies", {
+                    "p_domain": domain, "p_slugs": technologies, "p_evidence_url": home_url})
+                technologies_written += int(t or 0)
             tally[args["p_status"]] = tally.get(args["p_status"], 0) + 1
 
         results, timed_out = await _gather_within([one(r) for r in due], budget_s)
@@ -131,6 +145,7 @@ async def run_resolution(limit: int = 8, budget_s: float = 45.0) -> Dict[str, An
     for e in errors:
         logger.error(f"signals resolve: recording a check failed: {e}")
     return {"claimed": len(due), "by_status": tally, "accounts_written": accounts_written,
+            "technologies_written": technologies_written, "fingerprints": len(fingerprints),
             "timed_out": timed_out, "record_errors": errors}
 
 

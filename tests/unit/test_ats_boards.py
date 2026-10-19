@@ -28,6 +28,7 @@ def _load(name: str, rel: str):
 
 h2m = _load("app.utils.html_to_markdown", "app/utils/html_to_markdown.py")
 ats = _load("app.services.integrations.ats_boards", "app/services/integrations/ats_boards.py")
+fp = _load("app.services.integrations.tech_fingerprints", "app/services/integrations/tech_fingerprints.py")
 
 
 def _b(obj) -> bytes:
@@ -176,3 +177,24 @@ def test_eu_boards_and_the_greenhouse_js_embed():
 
 def test_a_percent_encoded_token_is_not_encoded_twice():
     assert ats.board_url("ashby", "Acme%20Labs") == "https://api.ashbyhq.com/posting-api/job-board/Acme%20Labs"
+
+
+def test_homepage_fingerprints():
+    page = """<html><head><meta name="generator" content="WordPress 6.6">
+      <script src="https://www.googletagmanager.com/gtag/js?id=G-1"></script>
+      <script async src="//static.klaviyo.com/onsite/js/klaviyo.js"></script></head>
+      <body><a href="/wp-content/uploads/x.jpg">x</a></body></html>"""
+    rules = [
+        {"slug": "wordpress", "detect_html": {"meta_generator": ["wordpress"], "html": ["/wp-content/"]}},
+        {"slug": "google-analytics", "detect_html": {"script_src": ["googletagmanager.com/gtag/js"]}},
+        {"slug": "klaviyo", "detect_html": {"script_src": ["static.klaviyo.com"]}},
+        {"slug": "shopify", "detect_html": {"script_src": ["cdn.shopify.com"], "html": ["Shopify.theme"]}},
+        {"slug": "empty", "detect_html": {"html": [""]}},
+    ]
+    assert fp.detect(page, rules) == ["wordpress", "google-analytics", "klaviyo"]
+
+
+def test_a_script_url_in_page_text_is_not_a_script_tag():
+    page = "<p>We moved off static.klaviyo.com last year</p>"
+    rules = [{"slug": "klaviyo", "detect_html": {"script_src": ["static.klaviyo.com"]}}]
+    assert fp.detect(page, rules) == []
