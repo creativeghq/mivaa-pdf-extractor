@@ -671,11 +671,13 @@ class DataForSEOUnifiedClient:
         language_code: str = "en", country_code: Optional[str] = None,
         platform: Optional[str] = None, limit: int = 100,
         order_by: Optional[List[str]] = None,
+        keyword_scope: Optional[List[str]] = None,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
         body = [_llm_mentions_body(
             keyword=keyword, domain=domain, language_code=language_code,
             country_code=country_code, platform=platform, limit=limit, order_by=order_by,
+            keyword_scope=keyword_scope,
         )]
         return await self._call(LLM_MENTIONS_PATHS["search"], body,
                                 attribution=attribution, log_kind="labs",

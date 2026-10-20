@@ -362,7 +362,7 @@ class TestTheCitedQuestionsSearch:
 class TestTheMarketKeywordScope:
     def test_the_three_market_reads_take_a_keyword_scope(self):
         src = _blank_comments(_source(_CLIENT))
-        for name in ("top_pages", "top_domains", "top_brands"):
+        for name in ("top_pages", "top_domains", "top_brands", "search"):
             body = src.split(f"async def ai_llm_mentions_{name}(")[1].split("async def ")[0]
             assert "keyword_scope: Optional[List[str]] = None," in body, name
             assert "keyword_scope=keyword_scope" in body, name
