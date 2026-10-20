@@ -291,6 +291,7 @@ class AICallLogger:
                 "module_slug": module_slug,
                 "product_id": product_id,
                 "image_id": image_id,
+                "unbilled_reason": unbilled_reason,
                 "metadata": {
                     "action": action,
                     "confidence_score": round(confidence_score, 2),
