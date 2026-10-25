@@ -41,7 +41,8 @@ async def process_stage_0_discovery(
     logger: Any,
     temp_pdf_path: Optional[str] = None,  # Optional existing temp path
     test_single_product: bool = False,  # 🧪 TEST MODE: Process only first product
-    catalog_cache_key: Optional[str] = None  # Stable cache key (see below)
+    catalog_cache_key: Optional[str] = None,  # Stable cache key (see below)
+    multi_brand: bool = False,
 ) -> Dict[str, Any]:
     """
     Stage 0: Product Discovery
@@ -781,6 +782,7 @@ async def process_stage_0_discovery(
             logger.warning(f"⚠️ Could not query existing products for idempotency: {e}")
 
         product_db_ids = []  # Store created/reused product IDs
+        supplier_offers_recorded = 0
 
         # Materials quota (#214): resolve the workspace's remaining new-material
         # allowance once (-1 = unlimited). New rows consume it; reused rows pass.
@@ -893,7 +895,8 @@ async def process_stage_0_discovery(
                         job_id=job_id,
                         catalog=catalog,
                         supabase=supabase,
-                        logger=logger
+                        logger=logger,
+                        multi_brand=multi_brand,
                     )
 
                     product_db_id = product_creation_result.get('product_id')
@@ -946,6 +949,20 @@ async def process_stage_0_discovery(
                             pass
                     logger.info(f"   ✅ [{i}/{len(catalog.products)}] Created product: {product.name} (DB ID: {product_db_id})")
 
+                # A multi-brand catalog's main company is the DISTRIBUTOR: it supplies the
+                # product, it is not the brand.
+                if multi_brand and catalog.catalog_factory and product_db_id:
+                    try:
+                        supabase.client.rpc('record_catalog_supplier_offer', {
+                            'p_workspace_id': workspace_id,
+                            'p_product_id': product_db_id,
+                            'p_supplier_name': catalog.catalog_factory,
+                        }).execute()
+                        supplier_offers_recorded += 1
+                    except Exception as offer_err:
+                        logger.error(f"   ❌ Could not record {catalog.catalog_factory!r} as supplier of {product.name}: {offer_err}")
+                        sentry_sdk.capture_exception(offer_err)
+
                 # 3. Update product_progress with DB ID
                 await product_tracker.update_product_metadata(
                     product_id=product_id,
@@ -970,6 +987,7 @@ async def process_stage_0_discovery(
         # Explicit failure marker (#214): downstream/monitoring can tell "quota
         # clamped this catalog" apart from "the catalog only had N products".
         checkpoint_data["products_skipped_quota"] = len(quota_skipped)
+        checkpoint_data["supplier_offers_recorded"] = supplier_offers_recorded
 
     # ============================================================
     # RETURN DATA: Include comprehensive metrics

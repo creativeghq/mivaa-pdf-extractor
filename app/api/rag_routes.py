@@ -609,6 +609,11 @@ async def upload_document(
         description="TEST MODE: Process only the first product (for testing/debugging)"
     ),
 
+    multi_brand: bool = Form(
+        False,
+        description="A distributor's catalog carrying several brands: each product keeps its own brand and the catalog's main company is recorded as a SUPPLIER of those products, not as their brand."
+    ),
+
     publish_on_complete: bool = Form(
         True,
         description="Activate (draft -> active) this upload's products when the job finishes with no failed product. Send false to keep them as drafts for review."
@@ -994,6 +999,7 @@ async def upload_document(
                 "chunk_overlap": chunk_overlap,
                 "test_single_product": test_single_product,
                 "publish_on_complete": publish_on_complete,
+                "multi_brand": multi_brand,
             }
             # documents + processed_documents + background_jobs in ONE transaction: three
             # commits left a document stuck at 'processing' when the second or third failed.
@@ -1071,6 +1077,7 @@ async def upload_document(
             enable_prompt_enhancement=enable_prompt_enhancement,
             test_single_product=test_single_product,  # 🧪 TEST MODE flag
             publish_on_complete=publish_on_complete,
+            multi_brand=multi_brand,
             extract_only_mode=extract_only_mode  # NEW: skip Stage 0 + downstream
         )
         logger.info(f"✅ Background processing task started for job {job_id}")
@@ -1342,6 +1349,7 @@ def resume_dispatch_params(job_data: Dict[str, Any], doc_data: Dict[str, Any]) -
         ),
         "test_single_product": bool(job_meta.get('test_single_product', False)),
         "publish_on_complete": bool(job_meta.get('publish_on_complete', False)),
+        "multi_brand": bool(job_meta.get('multi_brand', False)),
     }
 
 
@@ -2639,6 +2647,7 @@ async def process_document_with_discovery(
     test_single_product: bool = False,  # 🧪 TEST MODE: Process only first product
     extract_only_mode: bool = False,  # 2026-05-23: skip discovery + downstream, run extract-only
     publish_on_complete: bool = False,
+    multi_brand: bool = False,
 ):
     """Background task to process document with intelligent product discovery.
 
@@ -3435,6 +3444,7 @@ async def process_document_with_discovery(
                 logger=logger,
                 temp_pdf_path=file_path,
                 test_single_product=test_single_product,
+                multi_brand=multi_brand,
                 catalog_cache_key=original_pdf_sha256,
             )
 

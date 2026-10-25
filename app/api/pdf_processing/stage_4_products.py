@@ -199,12 +199,27 @@ def _maker_is_a_designer_credit(name: Optional[str], metadata: Dict[str, Any]) -
 
 
 def _resolve_product_maker(
-    maker: Optional[str], catalog_maker: Optional[str], metadata: Dict[str, Any],
+    maker: Optional[str], catalog_maker: Optional[str], metadata: Dict[str, Any], multi_brand: bool = False,
 ) -> Optional[str]:
-    """The catalog's own maker is every product's maker; with none stated, a credited designer is not one."""
-    if catalog_maker:
+    """A single-brand catalog's stated maker is every product's maker; a multi-brand catalog's is its distributor.
+
+    A credited designer is never a maker; a multi-brand product keeps its own brand or has none.
+    """
+    if catalog_maker and not multi_brand:
         return catalog_maker
     return None if _maker_is_a_designer_credit(maker, metadata) else maker
+
+
+def _job_is_multi_brand(supabase: Any, document_id: str) -> bool:
+    """Whether the newest job for this document was uploaded as a multi-brand (distributor) catalog."""
+    try:
+        rows = (
+            supabase.client.table('background_jobs').select('metadata')
+            .eq('document_id', document_id).order('created_at', desc=True).limit(1).execute().data
+        )
+        return bool(rows and (rows[0].get('metadata') or {}).get('multi_brand'))
+    except Exception:
+        return False
 
 
 def _find_workspace_duplicate(
@@ -558,7 +573,8 @@ async def create_single_product(
     job_id: str,
     catalog: Any,
     supabase: Any,
-    logger: logging.Logger
+    logger: logging.Logger,
+    multi_brand: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a single product in the database (product-centric pipeline).
@@ -610,9 +626,9 @@ async def create_single_product(
 
     # Prepare factory defaults
     factory_defaults = {}
-    if catalog.catalog_factory:
+    if catalog.catalog_factory and not multi_brand:
         factory_defaults['factory_name'] = catalog.catalog_factory
-    if catalog.catalog_factory_group:
+    if catalog.catalog_factory_group and not multi_brand:
         factory_defaults['factory_group_name'] = catalog.catalog_factory_group
 
     # ✨ NEW: Fetch visual metadata from product images
@@ -691,7 +707,7 @@ async def create_single_product(
     normalize_factory_keys(metadata)
 
     # The maker mints a CRM company, so a credited studio must never land here.
-    _maker = _resolve_product_maker(metadata.get('factory_name'), catalog.catalog_factory, metadata)
+    _maker = _resolve_product_maker(metadata.get('factory_name'), catalog.catalog_factory, metadata, multi_brand)
     if _maker != metadata.get('factory_name'):
         logger.warning(
             f"   ⚠️ {product.name}: factory_name {metadata.get('factory_name')!r} replaced by {_maker!r}"
@@ -1514,7 +1530,7 @@ async def propagate_common_fields_to_products(
             # The operator's own upload choice, not an inference from a sibling.
             common_values['material_category'] = material_category_override
 
-        for field in _CATALOGUE_LEVEL_FIELDS:
+        for field in (() if _job_is_multi_brand(supabase, document_id) else _CATALOGUE_LEVEL_FIELDS):
             value, _count = _unanimous_value(products, field)
             if value is not None:
                 common_values[field] = value
@@ -2224,6 +2240,7 @@ def _merge_enriched_fields_into_metadata(
     existing_metadata: Dict[str, Any],
     chunk_candidates: Dict[str, Any],
     vision_candidates: Dict[str, Any],
+    allow_maker_fill: bool = True,
 ) -> (Dict[str, Any], List[str]):
     """Merge chunk + vision candidates into a fresh metadata dict.
 
@@ -2267,7 +2284,7 @@ def _merge_enriched_fields_into_metadata(
                 filled.append(key)
 
     # ── Apply chunk candidates ────────────────────────────────────────────
-    _chunk_maker = chunk_candidates.get("factory_name")
+    _chunk_maker = chunk_candidates.get("factory_name") if allow_maker_fill else None
     if _chunk_maker and _maker_is_a_designer_credit(
         _chunk_maker, {**new_metadata, "designers": chunk_candidates.get("designers")}
     ):
@@ -2380,6 +2397,7 @@ async def enrich_products_from_chunks_and_vision(
     # write_product_description_from_chunks is sync and reads the cache.
     await prefetch(("generation", "product_description"))
     await field_registry.ensure_loaded()
+    multi_brand = _job_is_multi_brand(supabase, document_id)
     stats: Dict[str, Any] = {
         "products_checked": 0,
         "products_updated": 0,
@@ -2756,6 +2774,7 @@ async def enrich_products_from_chunks_and_vision(
                 existing_metadata=metadata,
                 chunk_candidates=chunk_candidates,
                 vision_candidates=vision_candidates,
+                allow_maker_fill=not multi_brand,
             )
 
             # Second merge pass: bring in the nested dicts from spec_vision

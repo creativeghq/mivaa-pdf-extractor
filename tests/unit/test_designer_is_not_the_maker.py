@@ -80,6 +80,15 @@ def test_with_no_catalog_maker_a_credit_is_dropped_and_a_real_maker_kept():
     assert resolve(None, None, {}) is None
 
 
+def test_a_multi_brand_catalog_keeps_each_products_own_brand_and_never_the_distributor():
+    resolve = _load()["_resolve_product_maker"]
+    credit = {"designer": f"{STUDIO} / {PERSON}"}
+    assert resolve(REAL_MAKER, CATALOG_MAKER, {}, True) == REAL_MAKER
+    assert resolve(None, CATALOG_MAKER, {}, True) is None
+    assert resolve(STUDIO, CATALOG_MAKER, credit, True) is None
+    assert resolve(CATALOG_MAKER, CATALOG_MAKER, {}, True) == CATALOG_MAKER
+
+
 def test_the_resolved_maker_is_set_before_any_company_can_be_minted():
     """The property that matters: the maker is resolved BEFORE resolve_brand_company reads it."""
     creator = next(
