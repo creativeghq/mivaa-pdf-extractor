@@ -249,25 +249,16 @@ class ProgressiveTimeoutStrategy:
     @staticmethod
     def calculate_product_discovery_timeout(page_count: int, categories: list) -> float:
         """
-        Calculate timeout for product discovery based on pages and categories.
+        Deadline for Stage 0 (discovery + the metadata pass that precedes product creation).
 
-        Base: 60s for index scan
-        Scaling: +30s per 10 pages for metadata extraction
-        Categories: +30s per category
-        Max: 10min
+        Base: 120s. +60s per 10 pages. +60s per category. Max: 30min.
+        A 71-page catalog with four categories gets 786s; it was 393s, and the same catalog
+        took 5-6.5 minutes on a good day, so a slow model call failed a healthy run.
         """
-        base_timeout = 60  # 1min for index scan
-
-        # Add time for metadata extraction (30s per 10 pages)
-        metadata_time = (page_count / 10) * 30
-        base_timeout += metadata_time
-
-        # Add time per category
-        category_time = len(categories) * 30
-        base_timeout += category_time
-
-        # Cap at 10 minutes
-        return min(base_timeout, 600)
+        base_timeout = 120
+        base_timeout += (page_count / 10) * 60
+        base_timeout += len(categories) * 60
+        return min(base_timeout, 1800)
 
     @staticmethod
     def calculate_chunking_timeout(page_count: int, chunk_size: int = 512) -> float:
