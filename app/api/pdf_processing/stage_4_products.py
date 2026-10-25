@@ -53,7 +53,9 @@ _UPLOAD_CATEGORY: Dict[str, Optional[str]] = {}
 
 
 def _coarse_category(value: Any) -> Optional[str]:
-    return field_registry.resolve_category(value) if isinstance(value, str) and value.strip() else None
+    if not field_registry.is_loaded or not isinstance(value, str) or not value.strip():
+        return None
+    return field_registry.resolve_category(value)
 
 
 def _upload_category_hint(supabase: Any, document_id: str) -> Optional[str]:
