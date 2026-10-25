@@ -11,7 +11,7 @@ from asyncio import Semaphore
 import logging
 
 from app.services.core.supabase_client import get_supabase_client
-from app.services.embeddings.vecs_service import VecsService
+from app.services.embeddings.vecs_service import get_vecs_service
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.models.ocr_context import build_ocr_context_block
 from app.models.vision_category_context import build_category_context_block
@@ -102,7 +102,7 @@ class ImageProcessingService:
     def __init__(self, workspace_id: str = None):
         """Initialize service."""
         self.supabase_client = get_supabase_client()
-        self.vecs_service = VecsService()
+        self.vecs_service = get_vecs_service()
         self.embedding_service = RealEmbeddingsService()
         self.pdf_processor = PDFProcessor()
         self.settings = get_settings()

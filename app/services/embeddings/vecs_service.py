@@ -3,6 +3,8 @@
 import asyncio
 import os
 import logging
+import threading
+import time
 from typing import List, Dict, Any, Optional, Tuple
 import vecs
 from vecs.collection import Collection, IndexMethod
@@ -12,6 +14,24 @@ from vecs.collection import Collection, IndexMethod
 from app.services.search.weight_profiles import image_only_weights
 
 logger = logging.getLogger(__name__)
+
+#: The session pooler admits 15 clients in total, so writers are capped well below it.
+_VECS_WRITE_SLOTS = threading.BoundedSemaphore(8)
+
+
+def _upsert_bounded(collection: Collection, records: List[Any], attempts: int = 4) -> Any:
+    """`collection.upsert` under a process-wide writer cap, retried while the pooler is full.
+
+    An upsert is idempotent, so retrying `EMAXCONNSESSION` cannot duplicate a row.
+    """
+    for attempt in range(1, attempts + 1):
+        try:
+            with _VECS_WRITE_SLOTS:
+                return collection.upsert(records=records)
+        except Exception as e:
+            if "EMAXCONN" not in str(e) or attempt == attempts:
+                raise
+            time.sleep(min(8.0, 0.5 * 2 ** (attempt - 1)))
 
 
 def _is_page_space_model(model: Optional[str]) -> bool:
@@ -243,7 +263,7 @@ class VecsService:
                 return False
 
             # Upsert single record
-            await asyncio.to_thread(collection.upsert,
+            await asyncio.to_thread(_upsert_bounded, collection,
                 records=[(image_id, siglip_embedding, meta)]
             )
 
@@ -286,7 +306,7 @@ class VecsService:
                 return 0
 
             # Batch upsert
-            await asyncio.to_thread(collection.upsert, records=records)
+            await asyncio.to_thread(_upsert_bounded, collection, records=records)
 
             # Update canonical presence flags on document_images
             for record in records:
@@ -376,7 +396,7 @@ class VecsService:
                         name=collection_name,
                         dimension=derived_dim,
                     )
-                    await asyncio.to_thread(collection.upsert, records=[(image_id, embeddings[embedding_type], metadata)])
+                    await asyncio.to_thread(_upsert_bounded, collection, records=[(image_id, embeddings[embedding_type], metadata)])
                     results[collection_name] = True
                     succeeded_types.append(embedding_type)
                     logger.debug(
@@ -473,7 +493,7 @@ class VecsService:
                 logger.error(f"Refusing understanding upsert for image {image_id}: metadata missing workspace_id (tenant-attribution invariant)")
                 return False
 
-            await asyncio.to_thread(collection.upsert,
+            await asyncio.to_thread(_upsert_bounded, collection,
                 records=[(image_id, embedding, meta)]
             )
 
@@ -629,7 +649,7 @@ class VecsService:
                 name=self.PAGE_COLLECTION,
                 dimension=self.PAGE_DIMENSION,
             )
-            await asyncio.to_thread(collection.upsert,
+            await asyncio.to_thread(_upsert_bounded, collection,
                 records=[(self.page_vector_id(document_id, page_number), embedding, meta)]
             )
             logger.debug(f"✅ Upserted page embedding for {document_id} p{page_number}")
