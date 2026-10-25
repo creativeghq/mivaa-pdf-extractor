@@ -121,41 +121,56 @@ class PaddleService:
             pipeline_version=PIPELINE_VERSION,
         )
 
-        # Cold-start warmup with SELF-RECYCLE. Even on the sync path, PaddleOCR-VL's
-        # native VLM generation INTERMITTENTLY wedges on the first predict() of a
-        # cold container (a paddle/CUDA cold-init race — confirmed
-        # non-deterministic: same image+config sometimes warms in ~4s, sometimes
-        # hangs forever).
+        # Cold-start warmup. PaddleOCR-VL's first predict() INTERMITTENTLY wedges on a cold
+        # container (a paddle/CUDA cold-init race: ~4s one start, forever the next). Raising
+        # from here kills the container, and Modal answers a failed start with a crash-loop
+        # back-off of about 10 minutes, so a wedge cost 10 minutes. Reload the pipeline
+        # in-process first; only after every attempt wedges, recycle the container.
         import threading as _th, time as _t, tempfile
         from PIL import Image, ImageDraw
         WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "35"))
-        _w = {"ok": False, "err": None, "secs": None}
+        WARMUP_ATTEMPTS = int(os.environ.get("PADDLEOCR_WARMUP_ATTEMPTS", "3"))
 
-        def _run_warmup():
-            try:
-                im = Image.new("RGB", (400, 200), "white")
-                ImageDraw.Draw(im).text((20, 80), "WARMUP 123", fill="black")
-                with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tf:
-                    im.save(tf.name, format="PNG")
-                    t0 = _t.time()
-                    _ = list(self.pipeline.predict(tf.name, use_queues=False, max_new_tokens=2048))
-                _w["secs"] = _t.time() - t0
-                _w["ok"] = True
-            except Exception as e:  # noqa: BLE001
-                _w["err"] = repr(e)
+        def _warm(pipeline):
+            out = {"ok": False, "err": None, "secs": None}
 
-        wt = _th.Thread(target=_run_warmup, daemon=True)
-        wt.start()
-        wt.join(timeout=WARMUP_BUDGET)
-        if _w["ok"]:
-            print(f"✅ warmup ok in {_w['secs']:.1f}s — PaddleOCR-VL ready", flush=True)
-        elif _w["err"] is not None:
-            # predict raised fast (not a wedge) — model loaded, stay up.
-            print(f"⚠️ warmup raised (continuing): {_w['err']}", flush=True)
-        else:
-            raise RuntimeError(
-                f"VLM warmup wedged >{WARMUP_BUDGET}s on this container — recycling"
-            )
+            def _run():
+                try:
+                    im = Image.new("RGB", (400, 200), "white")
+                    ImageDraw.Draw(im).text((20, 80), "WARMUP 123", fill="black")
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tf:
+                        im.save(tf.name, format="PNG")
+                        t0 = _t.time()
+                        _ = list(pipeline.predict(tf.name, use_queues=False, max_new_tokens=2048))
+                    out["secs"] = _t.time() - t0
+                    out["ok"] = True
+                except Exception as e:  # noqa: BLE001
+                    out["err"] = repr(e)
+
+            t = _th.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout=WARMUP_BUDGET)
+            return out
+
+        for attempt in range(1, WARMUP_ATTEMPTS + 1):
+            res = _warm(self.pipeline)
+            if res["ok"]:
+                print(f"✅ warmup ok in {res['secs']:.1f}s on attempt {attempt} — PaddleOCR-VL ready", flush=True)
+                return
+            if res["err"] is not None:
+                # predict raised fast (not a wedge) — model loaded, stay up.
+                print(f"⚠️ warmup raised (continuing): {res['err']}", flush=True)
+                return
+            print(f"⚠️ VLM warmup wedged >{WARMUP_BUDGET}s (attempt {attempt}/{WARMUP_ATTEMPTS})", flush=True)
+            if attempt < WARMUP_ATTEMPTS:
+                self.pipeline = PaddleOCRVL(
+                    device="gpu",
+                    use_queues=False,
+                    pipeline_version=PIPELINE_VERSION,
+                )
+        raise RuntimeError(
+            f"VLM warmup wedged on all {WARMUP_ATTEMPTS} attempts — recycling the container"
+        )
 
     def _parse_image(self, image_bytes: bytes):
         """Run the pipeline on one image; return (regions, width, height)."""
