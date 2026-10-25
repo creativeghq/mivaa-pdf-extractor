@@ -121,14 +121,14 @@ class PaddleService:
             pipeline_version=PIPELINE_VERSION,
         )
 
-        # Cold-start warmup with SELF-RECYCLE. Even on the sync path, PaddleOCR-VL's
-        # native VLM generation INTERMITTENTLY wedges on the first predict() of a
-        # cold container (a paddle/CUDA cold-init race — confirmed
-        # non-deterministic: same image+config sometimes warms in ~4s, sometimes
-        # hangs forever).
+        # Cold-start warmup with SELF-RECYCLE. The first predict() sometimes took >35s with no
+        # output (6 of 7 cold starts on 2026-10-25). Warming only needs to exercise the GPU, so the
+        # call is capped at WARMUP_MAX_NEW_TOKENS: an uncapped 2048-token generation on a blank
+        # synthetic image is the suspected cause. A start that still exceeds the budget recycles.
         import threading as _th, time as _t, tempfile
         from PIL import Image, ImageDraw
-        WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "35"))
+        WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "60"))
+        WARMUP_MAX_NEW_TOKENS = int(os.environ.get("PADDLEOCR_WARMUP_MAX_NEW_TOKENS", "48"))
         _w = {"ok": False, "err": None, "secs": None}
 
         def _run_warmup():
@@ -138,7 +138,7 @@ class PaddleService:
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tf:
                     im.save(tf.name, format="PNG")
                     t0 = _t.time()
-                    _ = list(self.pipeline.predict(tf.name, use_queues=False, max_new_tokens=2048))
+                    _ = list(self.pipeline.predict(tf.name, use_queues=False, max_new_tokens=WARMUP_MAX_NEW_TOKENS))
                 _w["secs"] = _t.time() - t0
                 _w["ok"] = True
             except Exception as e:  # noqa: BLE001
