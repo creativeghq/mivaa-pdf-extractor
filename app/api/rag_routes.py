@@ -610,8 +610,8 @@ async def upload_document(
     ),
 
     publish_on_complete: bool = Form(
-        False,
-        description="Activate (draft -> active) this upload's products when the job finishes with no failed product. Off by default: ingested products stay drafts for review."
+        True,
+        description="Activate (draft -> active) this upload's products when the job finishes with no failed product. Send false to keep them as drafts for review."
     ),
 
     # NEW: Category-based extraction

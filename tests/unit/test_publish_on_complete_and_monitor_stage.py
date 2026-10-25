@@ -39,17 +39,23 @@ def test_the_publish_call_is_gated_on_the_flag_and_on_no_failed_product():
     assert "_publish_job_products" in _chain(inner)
 
 
-def test_publish_is_opt_in_everywhere_it_is_declared():
+def test_the_upload_publishes_by_default_but_a_resumed_or_older_job_never_does():
     tree = _tree(_ROUTES)
     upload = _function(tree, "upload_document")
-    arg = next(a for a in upload.args.args + upload.args.kwonlyargs if a.arg == "publish_on_complete")
-    assert arg is not None
     defaults = {a.arg: d for a, d in zip(upload.args.args[-len(upload.args.defaults):], upload.args.defaults)}
-    assert "False" in _chain(defaults["publish_on_complete"])
+    assert _chain(defaults["publish_on_complete"]).startswith("Form(True")
     runner = _function(tree, "process_document_with_discovery")
     names = [a.arg for a in runner.args.args]
     default = runner.args.defaults[names.index("publish_on_complete") - (len(names) - len(runner.args.defaults))]
     assert _chain(default) == "False"
+    resumed = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and _chain(n.func) == "job_meta.get"
+        and len(n.args) == 2
+        and isinstance(n.args[0], ast.Constant) and n.args[0].value == "publish_on_complete"
+        and isinstance(n.args[1], ast.Constant) and n.args[1].value is False
+    ]
+    assert resumed, "a resumed job must not publish unless it was started with the option"
 
 
 def test_the_monitor_gets_a_processing_stage_with_its_own_timeout():
