@@ -198,6 +198,15 @@ def _maker_is_a_designer_credit(name: Optional[str], metadata: Dict[str, Any]) -
     return bool(folded) and folded in _designer_names(metadata)
 
 
+def _resolve_product_maker(
+    maker: Optional[str], catalog_maker: Optional[str], metadata: Dict[str, Any],
+) -> Optional[str]:
+    """The catalog's own maker is every product's maker; with none stated, a credited designer is not one."""
+    if catalog_maker:
+        return catalog_maker
+    return None if _maker_is_a_designer_credit(maker, metadata) else maker
+
+
 def _find_workspace_duplicate(
     supabase: Any,
     workspace_id: str,
@@ -681,16 +690,13 @@ async def create_single_product(
     # and removes the alias keys, so the rest of the platform only sees the canonical schema.
     normalize_factory_keys(metadata)
 
-    # A designer's credit is not the maker: it would mint a company per studio.
-    if (
-        _maker_is_a_designer_credit(metadata.get('factory_name'), metadata)
-        and fold_identity(metadata.get('factory_name')) != fold_identity(catalog.catalog_factory)
-    ):
+    # The maker mints a CRM company, so a credited studio must never land here.
+    _maker = _resolve_product_maker(metadata.get('factory_name'), catalog.catalog_factory, metadata)
+    if _maker != metadata.get('factory_name'):
         logger.warning(
-            f"   ⚠️ {product.name}: factory_name {metadata.get('factory_name')!r} is the credited "
-            f"designer — using the catalog maker {catalog.catalog_factory!r}"
+            f"   ⚠️ {product.name}: factory_name {metadata.get('factory_name')!r} replaced by {_maker!r}"
         )
-        metadata['factory_name'] = catalog.catalog_factory or None
+        metadata['factory_name'] = _maker
 
     # ── Assemble canonical factory nested object ──────────────────────────
     factory_obj = _build_factory_object(metadata, factory_defaults)
