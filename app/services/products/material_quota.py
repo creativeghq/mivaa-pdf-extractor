@@ -5,6 +5,10 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class MaterialQuotaExceeded(RuntimeError):
+    """A catalog holds more new products than the workspace plan can still add."""
+
+
 def material_quota_remaining_sync(client, workspace_id) -> int:
     """Remaining new-material allowance for a workspace. -1 = unlimited. Sync client."""
     if not workspace_id:

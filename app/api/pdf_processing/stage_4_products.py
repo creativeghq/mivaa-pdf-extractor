@@ -172,6 +172,20 @@ def _confidence_score(raw: Any) -> Optional[float]:
     return round(value, 4)
 
 
+def _designer_names(metadata: Dict[str, Any]) -> set:
+    """Folded names of the designers credited on a product (`designer` and `designers`)."""
+    raw = [metadata.get('designer')]
+    plural = metadata.get('designers')
+    raw.extend(plural if isinstance(plural, list) else [plural])
+    return {fold_identity(n) for n in raw if isinstance(n, str) and fold_identity(n)}
+
+
+def _maker_is_a_designer_credit(name: Optional[str], metadata: Dict[str, Any]) -> bool:
+    """True when `name` is a credited designer: a credit, not the company that makes the product."""
+    folded = fold_identity(name)
+    return bool(folded) and folded in _designer_names(metadata)
+
+
 def _find_workspace_duplicate(
     supabase: Any,
     workspace_id: str,
@@ -654,6 +668,14 @@ async def create_single_product(
     # Folds metadata.manufacturer / brand / supplier / factory_group → factory_name / factory_group_name
     # and removes the alias keys, so the rest of the platform only sees the canonical schema.
     normalize_factory_keys(metadata)
+
+    # A designer's credit is not the maker: it would mint a company per studio.
+    if _maker_is_a_designer_credit(metadata.get('factory_name'), metadata):
+        logger.warning(
+            f"   ⚠️ {product.name}: factory_name {metadata.get('factory_name')!r} is the credited "
+            f"designer — using the catalog maker {catalog.catalog_factory!r}"
+        )
+        metadata['factory_name'] = catalog.catalog_factory or None
 
     # ── Assemble canonical factory nested object ──────────────────────────
     factory_obj = _build_factory_object(metadata, factory_defaults)
@@ -2224,7 +2246,12 @@ def _merge_enriched_fields_into_metadata(
                 filled.append(key)
 
     # ── Apply chunk candidates ────────────────────────────────────────────
-    fill_if_empty("factory_name", chunk_candidates.get("factory_name"), "chunk_regex")
+    _chunk_maker = chunk_candidates.get("factory_name")
+    if _chunk_maker and _maker_is_a_designer_credit(
+        _chunk_maker, {**new_metadata, "designers": chunk_candidates.get("designers")}
+    ):
+        _chunk_maker = None
+    fill_if_empty("factory_name", _chunk_maker, "chunk_regex")
     fill_if_empty("designers", chunk_candidates.get("designers"), "chunk_regex")
     fill_if_empty("collection", chunk_candidates.get("collection"), "chunk_regex")
     fill_if_empty("inspiration", chunk_candidates.get("inspiration"), "chunk_regex", container="design")

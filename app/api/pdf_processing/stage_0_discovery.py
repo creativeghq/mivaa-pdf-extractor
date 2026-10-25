@@ -787,13 +787,22 @@ async def process_stage_0_discovery(
         # The enforce_material_quota DB trigger stays the hard boundary — this
         # pre-flight only avoids burning tracker rows + LLM spend on products
         # whose insert would be refused.
-        from app.services.products.material_quota import material_quota_remaining_sync
+        from app.services.products.material_quota import (
+            MaterialQuotaExceeded,
+            material_quota_remaining_sync,
+        )
         quota_remaining = material_quota_remaining_sync(supabase.client, workspace_id)
         quota_skipped: List[str] = []
-        if quota_remaining == 0:
-            logger.error(
-                f"⛔ quota_exceeded: workspace {workspace_id} is at its materials plan "
-                f"limit — new products in this catalog will be skipped"
+        # All or nothing: a catalog is never half-ingested, and nothing past discovery is paid for.
+        new_product_count = sum(
+            1 for p in products_to_create
+            if existing_by_name.get(_idem_key(p.name, p.page_range)) is None
+        )
+        if quota_remaining >= 0 and new_product_count > quota_remaining:
+            raise MaterialQuotaExceeded(
+                f"quota_exceeded: this catalog has {new_product_count} new products but workspace "
+                f"{workspace_id} can add {quota_remaining} more on its plan. Nothing was created. "
+                f"Raise the plan's materials limit, or upload a catalog with fewer products."
             )
 
         for i, product in enumerate(products_to_create, start=1):
