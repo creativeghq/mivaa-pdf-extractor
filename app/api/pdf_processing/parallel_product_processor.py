@@ -15,6 +15,17 @@ from app.services.discovery.entity_linking_service import EntityLinkingService
 
 logger = logging.getLogger(__name__)
 
+_TRANSIENT_BACKOFF_SECONDS = (20, 60, 120)
+_TRANSIENT_MARKERS = ("PGRST002", "PGRST001", "DatabaseTimeout", "statusCode': 544")
+
+
+def is_transient_platform_error(exc: BaseException) -> bool:
+    """A Supabase platform hiccup (schema cache reload, DB timeout), not a fault in the product."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return False
+    text = str(exc)
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
 
 def _default_max_concurrent() -> int:
     return get_settings().max_concurrent_products
@@ -168,27 +179,39 @@ async def process_products_parallel(
                     tracker.current_step = f"Processing product {product_index}/{total_products}: {product.name}"
 
                 # Process the product (P2-2: hard-capped wall time)
-                product_result = await asyncio.wait_for(
-                    process_single_product(
-                        product=product,
-                        product_index=product_index,
-                        total_products=total_products,
-                        file_content=file_content,
-                        document_id=document_id,
-                        workspace_id=workspace_id,
-                        job_id=job_id,
-                        catalog=catalog,
-                        tracker=tracker,
-                        product_tracker=product_tracker,
-                        checkpoint_recovery_service=checkpoint_recovery_service,
-                        supabase=supabase,
-                        config=config,
-                        logger_instance=logger_instance,
-                        physical_page_upper_bound=_physical_bound,
-                        temp_pdf_path=temp_pdf_path,
-                    ),
-                    timeout=per_product_timeout,
-                )
+                for _attempt in range(len(_TRANSIENT_BACKOFF_SECONDS) + 1):
+                    try:
+                        product_result = await asyncio.wait_for(
+                            process_single_product(
+                                product=product,
+                                product_index=product_index,
+                                total_products=total_products,
+                                file_content=file_content,
+                                document_id=document_id,
+                                workspace_id=workspace_id,
+                                job_id=job_id,
+                                catalog=catalog,
+                                tracker=tracker,
+                                product_tracker=product_tracker,
+                                checkpoint_recovery_service=checkpoint_recovery_service,
+                                supabase=supabase,
+                                config=config,
+                                logger_instance=logger_instance,
+                                physical_page_upper_bound=_physical_bound,
+                                temp_pdf_path=temp_pdf_path,
+                            ),
+                            timeout=per_product_timeout,
+                        )
+                        break
+                    except Exception as _exc:
+                        if _attempt >= len(_TRANSIENT_BACKOFF_SECONDS) or not is_transient_platform_error(_exc):
+                            raise
+                        _wait = _TRANSIENT_BACKOFF_SECONDS[_attempt]
+                        logger_instance.warning(
+                            f"⏳ {product.name}: database platform error, retrying in {_wait}s "
+                            f"(attempt {_attempt + 2}/{len(_TRANSIENT_BACKOFF_SECONDS) + 1}): {str(_exc)[:160]}"
+                        )
+                        await asyncio.sleep(_wait)
 
                 # Update shared metrics. The lock protects ONLY the in-memory
                 # dict mutations + the snapshot we pass to the tracker — DB
