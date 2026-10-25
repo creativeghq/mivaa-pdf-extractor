@@ -222,6 +222,8 @@ def _require_uuid(value: Any, field: str) -> str:
 # Initialize router
 router = APIRouter(prefix="/api/rag", tags=["RAG"])
 
+WARMUP_HARD_CAP_SECONDS = 330
+
 # Job storage for async processing (in-memory cache)
 job_storage: Dict[str, Dict[str, Any]] = {}
 # Tracks insertion time for TTL eviction (job_id -> monotonic timestamp)
@@ -2990,7 +2992,10 @@ async def process_document_with_discovery(
                             return manager.warmup()
                         return False
 
-                    success = await asyncio.to_thread(resume_and_warmup_slig)
+                    success = await asyncio.wait_for(
+                        asyncio.to_thread(resume_and_warmup_slig),
+                        timeout=WARMUP_HARD_CAP_SECONDS,
+                    )
                     if success:
                         warmup_results["success"].append("slig")
                         logger.info("   ✅ SLIG warmup complete")
@@ -3022,7 +3027,10 @@ async def process_document_with_discovery(
                             return manager.warmup()
                         return False
 
-                    success = await asyncio.to_thread(resume_and_warmup_paddleocr)
+                    success = await asyncio.wait_for(
+                        asyncio.to_thread(resume_and_warmup_paddleocr),
+                        timeout=WARMUP_HARD_CAP_SECONDS,
+                    )
                     if success:
                         warmup_results["success"].append("paddleocr")
                         logger.info("   ✅ PaddleOCR warmup complete")

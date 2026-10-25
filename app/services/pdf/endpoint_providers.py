@@ -4,6 +4,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from typing import Any, Dict
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -89,6 +90,39 @@ class EndpointProvider(ABC):
             logger.debug("   %s /health probe exception: %s", self.label, e)
             return False
 
+    def _get_within_deadline(self, url: str, base: str, deadline: float):
+        """GET ``url`` following redirects by hand under ONE wall-clock deadline.
+
+        ``requests`` timeouts are per connect/read, so Modal's chain of 303
+        cold-start redirects reset the clock on every hop. Returns None when the
+        deadline passes. The bearer token only travels to the base URL's host.
+        """
+        base_host = urlparse(base).netloc
+        session = requests.Session()
+        try:
+            for _ in range(50):
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return None
+                headers = self.auth_header() if urlparse(url).netloc == base_host else {}
+                try:
+                    resp = session.get(
+                        url,
+                        headers=headers,
+                        timeout=(min(10.0, remaining), remaining),
+                        allow_redirects=False,
+                    )
+                except requests.exceptions.Timeout:
+                    return None
+                location = resp.headers.get("Location")
+                if resp.status_code in (301, 302, 303, 307, 308) and location:
+                    url = urljoin(url, location)
+                    continue
+                return resp
+            return None
+        finally:
+            session.close()
+
     def _warmup_by_probe(self) -> bool:
         """Warm the endpoint with ONE patient probe (not a probe loop).
 
@@ -105,15 +139,20 @@ class EndpointProvider(ABC):
             self.label, self.provider_name, self.warmup_timeout,
         )
         start = time.time()
+        deadline = start + self.warmup_timeout
         try:
             base = (self.resolve_base_url() or "").rstrip("/")
             if not base:
                 logger.error("❌ %s warmup: base URL unresolved", self.label)
                 return False
             url = base if base.endswith(self.health_path) else base + self.health_path
-            resp = requests.get(
-                url, headers=self.auth_header(), timeout=self.warmup_timeout
-            )
+            resp = self._get_within_deadline(url, base, deadline)
+            if resp is None:
+                logger.error(
+                    "❌ %s warmup gave up after %.1fs (deadline %ds, no healthy answer)",
+                    self.label, time.time() - start, self.warmup_timeout,
+                )
+                return False
             if resp.status_code == 200:
                 logger.info(
                     "✅ %s endpoint warmed up in %.1fs (single probe)",
