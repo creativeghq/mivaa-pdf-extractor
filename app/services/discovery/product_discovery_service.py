@@ -4,7 +4,7 @@ import logging
 import os
 import asyncio
 import re
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Callable, Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -382,6 +382,31 @@ def _tool_input_or_raise(response, where: str) -> Dict[str, Any]:
         f"{where}: Claude returned no tool_use block for a forced tool_choice "
         f"(types: {[getattr(b, 'type', '?') for b in (getattr(response, 'content', None) or [])]})"
     )
+
+
+def expand_endpoint_page_ranges(
+    page_ranges: List[List[int]],
+    total_pages: int,
+    section_end_after: Callable[[int], int],
+) -> Dict[int, List[int]]:
+    """Spans for the ranges the model gave as [first, last] instead of every page.
+
+    Index -> pages, for those entries only. A span runs from its first page to just before the
+    next product starts (or the end of its section) and is never shorter than the model's own.
+    """
+    firsts = sorted({min(r) for r in page_ranges if r})
+    out: Dict[int, List[int]] = {}
+    for i, r in enumerate(page_ranges):
+        if not (isinstance(r, list) and len(r) == 2 and all(isinstance(x, int) for x in r)):
+            continue
+        first, last = r
+        if last - first <= 1:
+            continue
+        later = [f for f in firsts if f > first]
+        end = (min(later) - 1) if later else section_end_after(first)
+        end = min(max(end, last), max(total_pages, last))
+        out[i] = list(range(first, end + 1))
+    return out
 
 
 class ProductDiscoveryService:
@@ -1551,6 +1576,19 @@ class ProductDiscoveryService:
             toc_pages = self._detect_toc_pages(
                 pages_content, all_product_names, catalog.content_classification
             )
+
+            # ✅ STEP 0: a model range given as [first, last] is a span, not two pages
+            expanded = expand_endpoint_page_ranges(
+                [p.page_range for p in catalog.products],
+                pdf_page_count,
+                lambda first: self._section_end_after(first, pdf_page_count, catalog.content_classification),
+            )
+            for idx, pages in expanded.items():
+                self.logger.info(
+                    f"   ✅ {catalog.products[idx].name}: page_range {catalog.products[idx].page_range} "
+                    f"read as the span {pages[0]}-{pages[-1]}"
+                )
+                catalog.products[idx].page_range = pages
 
             # ✅ STEP 1: Calculate page_range from start_page (primary method)
             # This sets page_range for products that have start_page from INDEX reading
