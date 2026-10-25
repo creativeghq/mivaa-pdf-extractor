@@ -172,12 +172,24 @@ def _confidence_score(raw: Any) -> Optional[float]:
     return round(value, 4)
 
 
+_CREDIT_KEYS = (
+    'designer', 'designers', 'studio', 'design_studio', 'designer_studio', 'designer_name', 'designed_by',
+)
+_CREDIT_SPLIT = re.compile(r'\s*(?:/|&|,|;|\||\+|\band\b|\sx\s)\s*', re.IGNORECASE)
+
+
 def _designer_names(metadata: Dict[str, Any]) -> set:
-    """Folded names of the designers credited on a product (`designer` and `designers`)."""
-    raw = [metadata.get('designer')]
-    plural = metadata.get('designers')
-    raw.extend(plural if isinstance(plural, list) else [plural])
-    return {fold_identity(n) for n in raw if isinstance(n, str) and fold_identity(n)}
+    """Folded names credited as designer or studio, each part of a "Studio / Person" credit included."""
+    names = set()
+    for key in _CREDIT_KEYS:
+        value = metadata.get(key)
+        for raw in (value if isinstance(value, list) else [value]):
+            if isinstance(raw, str):
+                for part in (raw, *_CREDIT_SPLIT.split(raw)):
+                    folded = fold_identity(part)
+                    if folded:
+                        names.add(folded)
+    return names
 
 
 def _maker_is_a_designer_credit(name: Optional[str], metadata: Dict[str, Any]) -> bool:
@@ -670,7 +682,10 @@ async def create_single_product(
     normalize_factory_keys(metadata)
 
     # A designer's credit is not the maker: it would mint a company per studio.
-    if _maker_is_a_designer_credit(metadata.get('factory_name'), metadata):
+    if (
+        _maker_is_a_designer_credit(metadata.get('factory_name'), metadata)
+        and fold_identity(metadata.get('factory_name')) != fold_identity(catalog.catalog_factory)
+    ):
         logger.warning(
             f"   ⚠️ {product.name}: factory_name {metadata.get('factory_name')!r} is the credited "
             f"designer — using the catalog maker {catalog.catalog_factory!r}"
