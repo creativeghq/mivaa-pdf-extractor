@@ -56,6 +56,10 @@ class VecsService:
         """Initialize VECS client with Supabase connection."""
         self._client = None
         self._collections: Dict[str, Collection] = {}
+        # Parallel products first ask for the client / a collection in the same instant; unguarded,
+        # each thread built its own client (5 in one run) and the losers kept pool connections open.
+        self._client_lock = threading.Lock()
+        self._collection_lock = threading.Lock()
         self._supabase_rest = None  # lazy-init Supabase REST client for boolean flag updates
 
     def _get_supabase_rest(self):
@@ -171,9 +175,11 @@ class VecsService:
     def _get_client(self) -> vecs.Client:
         """Get or create vecs client."""
         if self._client is None:
-            connection_string = self._get_connection_string()
-            self._client = vecs.create_client(connection_string)
-            logger.info("✅ VECS client initialized")
+            with self._client_lock:
+                if self._client is None:
+                    connection_string = self._get_connection_string()
+                    self._client = vecs.create_client(connection_string)
+                    logger.info("✅ VECS client initialized")
         return self._client
     
     def get_or_create_collection(
@@ -198,39 +204,43 @@ class VecsService:
         if name in self._collections:
             return self._collections[name]
 
-        try:
-            client = self._get_client()
+        with self._collection_lock:
+            if name in self._collections:
+                return self._collections[name]
 
-            # Get or create collection
-            collection = client.get_or_create_collection(
-                name=name,
-                dimension=dimension
-            )
+            try:
+                client = self._get_client()
 
-            # Create HNSW index for fast similarity search (if not exists)
-            if create_index:
-                try:
-                    # HNSW parameters for optimal performance:
-                    # - m=16: Number of connections per layer (higher = better recall, more memory)
-                    # - ef_construction=64: Size of dynamic candidate list (higher = better index quality)
-                    if index_method == "hnsw":
-                        collection.create_index(method=IndexMethod.hnsw, m=16, ef_construction=64)
-                        logger.info(f"✅ Created HNSW index for collection '{name}' (m=16, ef_construction=64)")
-                    else:
-                        collection.create_index(method=IndexMethod.ivfflat)
-                        logger.info(f"✅ Created IVFFlat index for collection '{name}'")
-                except Exception as index_error:
-                    # Index might already exist
-                    logger.debug(f"Index creation skipped for '{name}': {index_error}")
+                # Get or create collection
+                collection = client.get_or_create_collection(
+                    name=name,
+                    dimension=dimension
+                )
 
-            self._collections[name] = collection
-            logger.info(f"✅ Collection '{name}' ready (dimension={dimension}, index={index_method})")
+                # Create HNSW index for fast similarity search (if not exists)
+                if create_index:
+                    try:
+                        # HNSW parameters for optimal performance:
+                        # - m=16: Number of connections per layer (higher = better recall, more memory)
+                        # - ef_construction=64: Size of dynamic candidate list (higher = better index quality)
+                        if index_method == "hnsw":
+                            collection.create_index(method=IndexMethod.hnsw, m=16, ef_construction=64)
+                            logger.info(f"✅ Created HNSW index for collection '{name}' (m=16, ef_construction=64)")
+                        else:
+                            collection.create_index(method=IndexMethod.ivfflat)
+                            logger.info(f"✅ Created IVFFlat index for collection '{name}'")
+                    except Exception as index_error:
+                        # Index might already exist
+                        logger.debug(f"Index creation skipped for '{name}': {index_error}")
 
-            return collection
+                self._collections[name] = collection
+                logger.info(f"✅ Collection '{name}' ready (dimension={dimension}, index={index_method})")
 
-        except Exception as e:
-            logger.error(f"❌ Failed to get/create collection '{name}': {e}")
-            raise
+                return collection
+
+            except Exception as e:
+                logger.error(f"❌ Failed to get/create collection '{name}': {e}")
+                raise
     
     async def upsert_image_embedding(
         self,
