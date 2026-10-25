@@ -96,7 +96,7 @@ class PaddleOCRManager:
         provider: EndpointProvider,
         model_name: str = "paddleocr-vl",
         inference_timeout: int = 180,
-        warmup_timeout: int = 300,
+        warmup_timeout: int = 600,
         max_image_pixels: int = 8_000_000,
         enabled: bool = True,
     ):
@@ -123,7 +123,7 @@ class PaddleOCRManager:
             provider=provider,
             model_name=config.get("model_name", "paddleocr-vl"),
             inference_timeout=config.get("inference_timeout", 180),
-            warmup_timeout=config.get("warmup_timeout", 300),
+            warmup_timeout=config.get("warmup_timeout", 600),
             max_image_pixels=config.get("max_image_pixels", 8_000_000),
             enabled=True,
         )

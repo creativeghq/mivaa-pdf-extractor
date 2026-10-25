@@ -13,6 +13,7 @@ import httpx
 from app.config import get_settings
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.supabase_client import get_supabase_client
+from app.utils.retry_helper import async_retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +195,20 @@ async def _call_anthropic_async(
     # Use a per-call AsyncClient so we don't pin a connection across the
     # whole pipeline. ai_client_service.httpx is sized for parallel calls
     # but we want isolated retry/timeout semantics per Anthropic call.
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-        resp = await client.post(_ANTHROPIC_API_URL, headers=headers, json=payload)
+    # A connect failure means the request never left, so retrying cannot repeat a
+    # billed call; the connect budget is short so a blip costs seconds, not `timeout`.
+    @async_retry_with_backoff(
+        max_retries=2,
+        initial_delay=1.0,
+        retry_on_exceptions=(httpx.ConnectError, httpx.ConnectTimeout),
+    )
+    async def _post_once() -> httpx.Response:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout, connect=15.0)
+        ) as client:
+            return await client.post(_ANTHROPIC_API_URL, headers=headers, json=payload)
+
+    resp = await _post_once()
     if resp.status_code >= 400:
         body_preview = resp.text[:500]
         raise httpx.HTTPStatusError(

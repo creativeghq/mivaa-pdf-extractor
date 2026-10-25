@@ -37,6 +37,7 @@ Understanding Embedding Strategy:
 """
 
 from app.utils.cross_loop_lock import CrossLoopSemaphore
+from app.utils.retry_helper import async_retry_with_backoff
 import logging
 import asyncio
 import os
@@ -1299,15 +1300,25 @@ class RealEmbeddingsService:
                     if output_dtype != "float":
                         request_data["output_dtype"] = output_dtype
 
-                    response = await client.post(
-                        "https://api.voyageai.com/v1/embeddings",
-                        headers={
-                            "Authorization": f"Bearer {self.voyage_api_key}",
-                            "Content-Type": "application/json"
-                        },
-                        json=request_data,
-                        timeout=30.0
+                    # Connect failures never reached Voyage, so retrying is free of side
+                    # effects; the failure otherwise returns no vector (no fallback).
+                    @async_retry_with_backoff(
+                        max_retries=2,
+                        initial_delay=1.0,
+                        retry_on_exceptions=(httpx.ConnectError, httpx.ConnectTimeout),
                     )
+                    async def _post_embeddings() -> httpx.Response:
+                        return await client.post(
+                            "https://api.voyageai.com/v1/embeddings",
+                            headers={
+                                "Authorization": f"Bearer {self.voyage_api_key}",
+                                "Content-Type": "application/json"
+                            },
+                            json=request_data,
+                            timeout=httpx.Timeout(30.0, connect=10.0),
+                        )
+
+                    response = await _post_embeddings()
 
                     # Audit fix #34: handle 429 rate-limit explicitly. Without this,
                     # 429s would otherwise fall through to the generic except and be
@@ -1332,15 +1343,7 @@ class RealEmbeddingsService:
                         # latency of the second is dominated by sleep, not by Voyage.
                         throttled_ms += int(retry_after * 1000)
                         await asyncio.sleep(retry_after)
-                        response = await client.post(
-                            "https://api.voyageai.com/v1/embeddings",
-                            headers={
-                                "Authorization": f"Bearer {self.voyage_api_key}",
-                                "Content-Type": "application/json"
-                            },
-                            json=request_data,
-                            timeout=30.0
-                        )
+                        response = await _post_embeddings()
                         rate_limit_attempt += 1
 
                     if response.status_code == 200:

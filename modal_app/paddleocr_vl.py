@@ -11,7 +11,7 @@ import modal
 # --------------------------------------------------------------------------- #
 GPU = os.environ.get("PADDLEOCR_GPU", "A10G")               # 24 GB; VLM ~2-4 GB + small detector
 CUDA_TAG = os.environ.get("PADDLEOCR_CUDA_TAG", "12.6.3-devel-ubuntu22.04")  # matches cu126 wheel
-SCALEDOWN_WINDOW = int(os.environ.get("PADDLEOCR_SCALEDOWN_WINDOW", "120"))  # idle → $0
+SCALEDOWN_WINDOW = int(os.environ.get("PADDLEOCR_SCALEDOWN_WINDOW", "600"))  # idle → $0; > the longest gap between OCR bursts in one job (288s measured)
 MIN_CONTAINERS = int(os.environ.get("PADDLEOCR_MIN_CONTAINERS", "0"))        # 0 = scale-to-zero
 MAX_CONTAINERS = int(os.environ.get("PADDLEOCR_MAX_CONTAINERS", "8"))        # autoscale ceiling
 # A GPU container runs inferences SERIALLY (one VLM), so to parallelise Stage 1.5

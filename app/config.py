@@ -551,9 +551,9 @@ class Settings(BaseSettings):
         description="Per-call /parse timeout (s). Warm parses are ~1-3s; the budget covers dense pages."
     )
     paddleocr_warmup_timeout: int = Field(
-        default=300,
+        default=600,
         env="PADDLEOCR_WARMUP_TIMEOUT",
-        description="Max warmup time after a cold start (s). Cold start = model load + first-call JIT (~90s)."
+        description="Max warmup time after a cold start (s). Measured 179s to over 300s on Modal."
     )
     paddleocr_max_image_pixels: int = Field(
         default=8_000_000,

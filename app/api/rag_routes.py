@@ -222,7 +222,7 @@ def _require_uuid(value: Any, field: str) -> str:
 # Initialize router
 router = APIRouter(prefix="/api/rag", tags=["RAG"])
 
-WARMUP_HARD_CAP_SECONDS = 330
+WARMUP_HARD_CAP_SECONDS = 630
 
 # Job storage for async processing (in-memory cache)
 job_storage: Dict[str, Dict[str, Any]] = {}

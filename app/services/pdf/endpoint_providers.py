@@ -30,7 +30,7 @@ class EndpointProvider(ABC):
         *,
         label: str,
         token: str = "",
-        warmup_timeout: int = 300,
+        warmup_timeout: int = 600,
         health_path: str = "/health",
         health_timeout: int = 15,
     ):
@@ -195,7 +195,7 @@ class ModalEndpointProvider(EndpointProvider):
         base_url: str,
         token: str = "",
         label: str = "paddleocr",
-        warmup_timeout: int = 300,
+        warmup_timeout: int = 600,
         health_timeout: int = 15,
     ):
         super().__init__(
@@ -243,7 +243,7 @@ def build_endpoint_provider(config: Dict[str, Any], *, label: str) -> EndpointPr
     Currently Modal-only (``config['provider']`` is expected to be ``modal``).
     Uses ``modal_url`` (falling back to ``endpoint_url``) + ``modal_api_key``.
     """
-    warmup_timeout = int(config.get("warmup_timeout", 300))
+    warmup_timeout = int(config.get("warmup_timeout", 600))
     return ModalEndpointProvider(
         base_url=config.get("modal_url", "") or config.get("endpoint_url", ""),
         token=config.get("modal_api_key", ""),

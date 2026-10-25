@@ -69,6 +69,10 @@ class ToolCallNotReturned(RuntimeError):
     """
 
 
+class UnparseableReply(ToolCallNotReturned):
+    """A strict-schema reply that was not JSON. Retried once; refusals and max_tokens are not."""
+
+
 def _structured_output_spec(kind: str, name: str, required: Optional[List[str]]) -> Dict[str, Any]:
     """What `ai_call_logger.claude_reply_failure` checks the billed reply against."""
     return {"structured_output": {"kind": kind, "name": name, "required": list(required or [])}}
@@ -229,8 +233,9 @@ def extract_structured_output(response: Any, label: str) -> Dict[str, Any]:
     try:
         parsed = json.loads(text)
     except Exception as e:
-        raise ToolCallNotReturned(
-            f"{label} returned text that is not JSON despite a strict output schema: {e}"
+        raise UnparseableReply(
+            f"{label} returned text that is not JSON despite a strict output schema: {e}; "
+            f"reply began {text[:300]!r}"
         ) from e
 
     if not isinstance(parsed, dict):
@@ -305,29 +310,35 @@ async def call_with_schema(
 
     merged = {**(extra_kwargs or {})}
     caller_output_config = merged.pop("output_config", None) or {}
-    response = await tracked_claude_call_async(
-        task=task,
-        model=model,
-        confidence_score=_DEFAULT_CONFIDENCE,
-        max_tokens=max_tokens,
-        system=system,
-        messages=messages,
-        job_id=job_id,
-        user_id=user_id,
-        workspace_id=workspace_id,
-        product_id=product_id,
-        image_id=image_id,
-        request_data=_structured_output_spec("schema", label, required),
-        extra_kwargs={
-            **merged,
-            # `effort` and the schema both live under output_config, so the caller's
-            # call-shape keys are merged rather than replaced — dropping either silently
-            # would change what the model does with no error.
-            "output_config": {**caller_output_config, **output_config},
-        },
-    )
-
-    data = extract_structured_output(response, label)
+    for attempt in (1, 2):
+        response = await tracked_claude_call_async(
+            task=task,
+            model=model,
+            confidence_score=_DEFAULT_CONFIDENCE,
+            max_tokens=max_tokens,
+            system=system,
+            messages=messages,
+            job_id=job_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            image_id=image_id,
+            request_data=_structured_output_spec("schema", label, required),
+            extra_kwargs={
+                **merged,
+                # `effort` and the schema both live under output_config, so the caller's
+                # call-shape keys are merged rather than replaced — dropping either silently
+                # would change what the model does with no error.
+                "output_config": {**caller_output_config, **output_config},
+            },
+        )
+        try:
+            data = extract_structured_output(response, label)
+            break
+        except UnparseableReply as e:
+            if attempt == 2:
+                raise
+            logger.warning("%s — asking once more: %s", label, e)
 
     missing = [k for k in (required or []) if data.get(k) in (None, "")]
     if missing:
