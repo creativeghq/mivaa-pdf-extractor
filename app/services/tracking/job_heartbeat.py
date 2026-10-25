@@ -9,7 +9,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-MODEL_KEEPALIVE_SECONDS = 240
+MODEL_KEEPALIVE_SECONDS = 60
 
 
 class JobHeartbeat:
@@ -45,21 +45,32 @@ class JobHeartbeat:
             logger.debug(f"heartbeat write failed for {self.job_id}: {e}")
 
     def _keep_models_warm(self) -> None:
-        """Ping the PaddleOCR Modal app so its container outlives a quiet stretch of the job.
+        """Ping each Modal GPU app so its container outlives a quiet stretch of the job.
 
-        A cold start can wedge for the whole warm-up deadline, and a job goes more than the
-        container's idle window without OCR (18 min measured), so the next call paid for one.
+        A cold start can wedge for the whole warm-up deadline, and a job goes longer than the
+        containers' idle windows (PaddleOCR 600s, SLIG 120s) without a call; 18 min measured.
         """
         try:
             import requests
             from app.config import get_settings
             cfg = get_settings()
-            if not cfg.paddleocr_enabled or not cfg.paddleocr_modal_url:
-                return
-            headers = {"Authorization": f"Bearer {cfg.paddleocr_modal_api_key}"} if cfg.paddleocr_modal_api_key else {}
-            requests.get(cfg.paddleocr_modal_url.rstrip("/") + "/health", headers=headers, timeout=15)
+            apps = (
+                (cfg.paddleocr_enabled, cfg.paddleocr_modal_url, cfg.paddleocr_modal_api_key),
+                (cfg.slig_enabled, cfg.slig_modal_url, cfg.slig_modal_api_key),
+            )
+            for enabled, url, key in apps:
+                if not enabled or not url:
+                    continue
+                try:
+                    requests.get(
+                        url.rstrip("/") + "/health",
+                        headers={"Authorization": f"Bearer {key}"} if key else {},
+                        timeout=15,
+                    )
+                except Exception as e:  # noqa: BLE001 - one app's missed ping must not skip the other
+                    logger.debug(f"model keep-alive ping failed for {self.job_id}: {e}")
         except Exception as e:  # noqa: BLE001 - a missed ping must never touch the job
-            logger.debug(f"model keep-alive ping failed for {self.job_id}: {e}")
+            logger.debug(f"model keep-alive skipped for {self.job_id}: {e}")
 
     def _thread_loop(self) -> None:
         """Threaded heartbeat loop. Runs independently of the asyncio event loop.

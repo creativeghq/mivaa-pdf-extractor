@@ -25,7 +25,7 @@ def test_the_ping_is_spaced_wider_than_the_heartbeat_and_inside_the_container_id
         t.id: n.value.value for n in _tree().body if isinstance(n, ast.Assign) and isinstance(n.value, ast.Constant)
         for t in n.targets if isinstance(t, ast.Name)
     }
-    assert 60 < consts["MODEL_KEEPALIVE_SECONDS"] < 600
+    assert 15 <= consts["MODEL_KEEPALIVE_SECONDS"] <= 60
 
 
 def test_a_failed_ping_never_reaches_the_job():
