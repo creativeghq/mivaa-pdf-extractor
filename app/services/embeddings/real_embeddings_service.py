@@ -1774,12 +1774,31 @@ class RealEmbeddingsService:
         # field to also wipe out a perfectly good material vector.
         embeddings: Dict[str, List[float]] = {}
         any_failure = False
+        present = [(aspect, text) for aspect, text in aspect_texts.items() if text]
         for aspect, text in aspect_texts.items():
             if not text:
                 self.logger.debug(f"⏭️ Aspect '{aspect}' skipped — empty source text")
-                continue
+
+        # One request for all of an image's aspects; a batch that returns nothing for an
+        # aspect falls back to that aspect's own call, which carries the 429 handling.
+        batched: List[Optional[List[float]]] = []
+        if len(present) > 1:
+            async with self._get_voyage_semaphore():
+                batched = await self.generate_batch_embeddings(
+                    [text for _, text in present],
+                    input_type="document",
+                    job_id=job_id,
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    product_id=product_id,
+                    image_id=image_id,
+                )
+        if len(batched) != len(present):
+            batched = [None] * len(present)
+
+        for (aspect, text), batch_vec in zip(present, batched):
             try:
-                vec = await self._generate_text_embedding(
+                vec = batch_vec or await self._generate_text_embedding(
                     text=text,
                     input_type="document",
                     job_id=job_id,
