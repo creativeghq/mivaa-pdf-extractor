@@ -164,7 +164,7 @@ def test_vecs_writes_run_off_the_event_loop():
     for name in ("upsert_image_embedding", "upsert_specialized_embeddings",
                  "upsert_understanding_embedding", "upsert_page_embedding"):
         body = _function(_VECS, name)
-        assert "asyncio.to_thread(collection.upsert" in body, name
+        assert "asyncio.to_thread(_upsert_bounded, collection" in body, name
         assert "\n            collection.upsert(" not in body, name
 
 
