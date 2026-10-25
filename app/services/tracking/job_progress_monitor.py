@@ -251,7 +251,7 @@ class JobProgressMonitor:
 
             # Use stage-specific timeouts so legitimately slow stages don't
             # trip false "stuck job" alerts under a global threshold.
-            stage_timeout = STAGE_TIMEOUTS.get(effective_current, STAGE_TIMEOUTS["default"])
+            stage_timeout = STAGE_TIMEOUTS.get(self.current_stage, STAGE_TIMEOUTS["default"])
 
             if time_in_current_stage > stage_timeout:
                 timeout_minutes = stage_timeout / 60

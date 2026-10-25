@@ -67,3 +67,15 @@ def test_the_monitor_gets_a_processing_stage_with_its_own_timeout():
         and n.args and isinstance(n.args[0], ast.Constant)
     ]
     assert stages.index("product_discovery") < stages.index("product_processing") < stages.index("field_propagation")
+
+
+def test_the_stuck_threshold_is_keyed_by_the_stage_whose_clock_is_measured():
+    """time_in_current_stage runs from self.current_stage_start, so the timeout must follow self.current_stage,
+    not the rotating checkpoint names the database keeps in stage_history."""
+    report = _function(_tree(_MONITOR), "_report_status")
+    lookups = [
+        n for n in ast.walk(report)
+        if isinstance(n, ast.Call) and _chain(n.func) == "STAGE_TIMEOUTS.get"
+    ]
+    assert lookups
+    assert all(_chain(c.args[0]) == "self.current_stage" for c in lookups)
