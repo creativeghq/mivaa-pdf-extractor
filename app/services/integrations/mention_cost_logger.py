@@ -101,17 +101,20 @@ def log_dataforseo_labs_call(
     latency_ms: int,
     success: bool = True,
     error_message: Optional[str] = None,
+    cost_usd: Optional[float] = None,
 ) -> None:
     log_external_call(
         module_slug=_slug_for(attribution),
         operation_type=f"{_op_prefix(attribution)}.dataforseo_labs",
         model_name="dataforseo-labs-related-keywords",
-        raw_cost_usd=DATAFORSEO_LABS_PER_CALL,
+        raw_cost_usd=DATAFORSEO_LABS_PER_CALL if cost_usd is None else cost_usd,
         attribution=attribution,
         latency_ms=latency_ms,
-        extra_metadata={"seed": seed_keyword[:120], "items_returned": items_returned},
+        extra_metadata={"seed": seed_keyword[:120], "items_returned": items_returned,
+                        "cost_source": "estimate" if cost_usd is None else "provider"},
         success=success,
         error_message=error_message,
+        provider_charged=bool(cost_usd),
     )
 
 
@@ -124,17 +127,20 @@ def log_dataforseo_serp_call(
     latency_ms: int,
     success: bool = True,
     error_message: Optional[str] = None,
+    cost_usd: Optional[float] = None,
 ) -> None:
     log_external_call(
         module_slug=_slug_for(attribution),
         operation_type=f"{_op_prefix(attribution)}.dataforseo_serp.{operation}",
         model_name="dataforseo-serp-google-organic",
-        raw_cost_usd=DATAFORSEO_SERP_PER_CALL,  # SERP API priced same as News
+        raw_cost_usd=DATAFORSEO_SERP_PER_CALL if cost_usd is None else cost_usd,
         attribution=attribution,
         latency_ms=latency_ms,
-        extra_metadata={"query": query[:120], "items_returned": items_returned},
+        extra_metadata={"query": query[:120], "items_returned": items_returned,
+                        "cost_source": "estimate" if cost_usd is None else "provider"},
         success=success,
         error_message=error_message,
+        provider_charged=bool(cost_usd),
     )
 
 

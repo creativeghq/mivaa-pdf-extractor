@@ -43,6 +43,14 @@ def log_operation_slug(operation: str) -> str:
     return (operation or "call").replace(".", "_").replace("/", "_")[:60]
 
 
+def _reported_cost(data: Dict[str, Any]) -> Optional[float]:
+    """What DataForSEO says it charged for this response, whether or not the task succeeded."""
+    tasks = [t for t in (data.get("tasks") or []) if isinstance(t, dict)]
+    if not tasks:
+        return None
+    return sum(float(t.get("cost") or 0.0) for t in tasks)
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Country / language code maps (full coverage from DataForSEO Appendix)
@@ -343,7 +351,7 @@ class DataForSEOUnifiedClient:
                         if isinstance(r, dict) and "items" in r:
                             partial_items.extend(r.get("items") or [])
             self._log_cost(log_kind, attribution, operation, items=len(partial_items), latency_ms=elapsed,
-                           success=False, error=envelope_reason)
+                           success=False, error=envelope_reason, cost_usd=_reported_cost(data))
             self._refund_call(attribution, operation, charged)
             return DataForSEOResult(ok=False, error=envelope_reason, raw=data, items=partial_items,
                                     status_code=resp.status_code, latency_ms=elapsed)
@@ -364,7 +372,8 @@ class DataForSEOUnifiedClient:
                 else:
                     items.append(r)
 
-        self._log_cost(log_kind, attribution, operation, items=len(items), latency_ms=elapsed, success=True)
+        self._log_cost(log_kind, attribution, operation, items=len(items), latency_ms=elapsed, success=True,
+                       cost_usd=cost)
         return DataForSEOResult(ok=True, items=items, raw=data, status_code=resp.status_code,
                                 cost_usd=cost, latency_ms=elapsed)
 
@@ -450,19 +459,20 @@ class DataForSEOUnifiedClient:
     def _log_cost(
         self, kind: str, attribution: Optional[CostAttribution], operation: str,
         *, items: int, latency_ms: int, success: bool, error: Optional[str] = None,
+        cost_usd: Optional[float] = None,
     ) -> None:
         try:
             if kind == "serp":
                 log_dataforseo_serp_call(
                     attribution=attribution, operation=operation or "serp", query=operation,
                     items_returned=items, latency_ms=latency_ms,
-                    success=success, error_message=error,
+                    success=success, error_message=error, cost_usd=cost_usd,
                 )
             else:
                 log_dataforseo_labs_call(
                     attribution=attribution, seed_keyword=operation or "labs",
                     items_returned=items, latency_ms=latency_ms,
-                    success=success, error_message=error,
+                    success=success, error_message=error, cost_usd=cost_usd,
                 )
         except Exception as e:
             logger.debug(f"DataForSEO cost log failed: {e}")

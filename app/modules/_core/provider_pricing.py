@@ -32,6 +32,8 @@ def sonar_rates(model: str) -> tuple[float, float, float]:
 # in two files, which reads as two independent facts and is one.
 # Source: https://dataforseo.com/apis/serp-api/pricing — verified 2026-08-17.
 # High priority is $0.0012 and live is $0.002; if a caller switches queue this is wrong.
+# FALLBACK ONLY: the unified client books the `cost` DataForSEO reports. A live advanced SERP at
+# depth 100 is $0.0155, 26x this number, which is how $33 of $50 went unrecorded (2026-10-25).
 DATAFORSEO_SERP_PER_CALL = 0.0006
 
 # Labs is a DIFFERENT product and was priced at the SERP rate, ~12x light.

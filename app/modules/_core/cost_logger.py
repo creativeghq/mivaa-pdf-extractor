@@ -100,15 +100,22 @@ def log_external_call(
     success: bool = True,
     error_message: Optional[str] = None,
     markup_multiplier: float = DEFAULT_MARKUP,
+    provider_charged: bool = False,
 ) -> None:
-    """Best-effort insert into ai_usage_logs. Never raises."""
+    """Best-effort insert into ai_usage_logs. Never raises.
+
+    `provider_charged`: the provider's own response reported this cost, so it is booked even
+    when the task failed (DataForSEO bills a partial 40106 result).
+    """
     try:
         sb = get_supabase_client().client
         # A call that did not happen did not cost anything. This used to be
         # `raw_cost_usd * markup` regardless of `success`, so every flat-rate provider booked
         # its per-call price for refusals — $1.22 of billed spend in seven days that nobody
         # ever spent. `success` lived only in metadata, so no cost view could tell.
-        raw_usd, billed, unbilled_reason = settle_call_cost(raw_cost_usd, markup_multiplier, success)
+        raw_usd, billed, unbilled_reason = settle_call_cost(
+            raw_cost_usd, markup_multiplier, success or provider_charged,
+        )
 
         meta: Dict[str, Any] = {"latency_ms": latency_ms, "success": success}
         if unbilled_reason:
