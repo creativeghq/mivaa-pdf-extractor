@@ -3,10 +3,13 @@
 import asyncio
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+MODEL_KEEPALIVE_SECONDS = 240
 
 
 class JobHeartbeat:
@@ -41,6 +44,23 @@ class JobHeartbeat:
             # short outage just looks like one missed heartbeat.
             logger.debug(f"heartbeat write failed for {self.job_id}: {e}")
 
+    def _keep_models_warm(self) -> None:
+        """Ping the PaddleOCR Modal app so its container outlives a quiet stretch of the job.
+
+        A cold start can wedge for the whole warm-up deadline, and a job goes more than the
+        container's idle window without OCR (18 min measured), so the next call paid for one.
+        """
+        try:
+            import requests
+            from app.config import get_settings
+            cfg = get_settings()
+            if not cfg.paddleocr_enabled or not cfg.paddleocr_modal_url:
+                return
+            headers = {"Authorization": f"Bearer {cfg.paddleocr_modal_api_key}"} if cfg.paddleocr_modal_api_key else {}
+            requests.get(cfg.paddleocr_modal_url.rstrip("/") + "/health", headers=headers, timeout=15)
+        except Exception as e:  # noqa: BLE001 - a missed ping must never touch the job
+            logger.debug(f"model keep-alive ping failed for {self.job_id}: {e}")
+
     def _thread_loop(self) -> None:
         """Threaded heartbeat loop. Runs independently of the asyncio event loop.
 
@@ -52,6 +72,7 @@ class JobHeartbeat:
         """
         # Write one immediately so dashboards show "started" instantly.
         self._write_once()
+        last_ping = 0.0
         while not self._stop_event.is_set():
             # Event.wait returns True if set, False if timeout — we use it
             # as a non-busy sleep that can be interrupted by stop().
@@ -65,6 +86,9 @@ class JobHeartbeat:
                 self._stop_event.set()
                 break
             self._write_once()
+            if time.monotonic() - last_ping >= MODEL_KEEPALIVE_SECONDS:
+                last_ping = time.monotonic()
+                self._keep_models_warm()
         # Final heartbeat so the cron sees a fresh timestamp on natural completion.
         # Skipped if we exited due to terminal-status detection (already final).
         if not self._is_job_terminal():
