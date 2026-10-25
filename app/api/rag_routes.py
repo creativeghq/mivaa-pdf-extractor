@@ -224,6 +224,22 @@ router = APIRouter(prefix="/api/rag", tags=["RAG"])
 
 WARMUP_HARD_CAP_SECONDS = 630
 
+
+def _publish_job_products(job_id: str) -> int:
+    """Activate (draft -> active) the products this job created. Returns how many."""
+    client = get_supabase_client().client
+    rows = (
+        client.table('products')
+        .update({'status': 'active'})
+        .eq('source_job_id', job_id)
+        .eq('status', 'draft')
+        .execute()
+        .data
+        or []
+    )
+    logger.info(f"   📣 publish_on_complete: activated {len(rows)} product(s) from job {job_id}")
+    return len(rows)
+
 # Job storage for async processing (in-memory cache)
 job_storage: Dict[str, Dict[str, Any]] = {}
 # Tracks insertion time for TTL eviction (job_id -> monotonic timestamp)
@@ -591,6 +607,11 @@ async def upload_document(
     test_single_product: bool = Form(
         False,
         description="TEST MODE: Process only the first product (for testing/debugging)"
+    ),
+
+    publish_on_complete: bool = Form(
+        False,
+        description="Activate (draft -> active) this upload's products when the job finishes with no failed product. Off by default: ingested products stay drafts for review."
     ),
 
     # NEW: Category-based extraction
@@ -972,6 +993,7 @@ async def upload_document(
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
                 "test_single_product": test_single_product,
+                "publish_on_complete": publish_on_complete,
             }
             # documents + processed_documents + background_jobs in ONE transaction: three
             # commits left a document stuck at 'processing' when the second or third failed.
@@ -1048,6 +1070,7 @@ async def upload_document(
             agent_prompt=agent_prompt,
             enable_prompt_enhancement=enable_prompt_enhancement,
             test_single_product=test_single_product,  # 🧪 TEST MODE flag
+            publish_on_complete=publish_on_complete,
             extract_only_mode=extract_only_mode  # NEW: skip Stage 0 + downstream
         )
         logger.info(f"✅ Background processing task started for job {job_id}")
@@ -1318,6 +1341,7 @@ def resume_dispatch_params(job_data: Dict[str, Any], doc_data: Dict[str, Any]) -
             'prompt_enhancement_enabled', doc_meta.get('prompt_enhancement_enabled', True)
         ),
         "test_single_product": bool(job_meta.get('test_single_product', False)),
+        "publish_on_complete": bool(job_meta.get('publish_on_complete', False)),
     }
 
 
@@ -2613,7 +2637,8 @@ async def process_document_with_discovery(
     agent_prompt: Optional[str] = None,
     enable_prompt_enhancement: bool = True,
     test_single_product: bool = False,  # 🧪 TEST MODE: Process only first product
-    extract_only_mode: bool = False  # 2026-05-23: skip discovery + downstream, run extract-only
+    extract_only_mode: bool = False,  # 2026-05-23: skip discovery + downstream, run extract-only
+    publish_on_complete: bool = False,
 ):
     """Background task to process document with intelligent product discovery.
 
@@ -3748,6 +3773,8 @@ async def process_document_with_discovery(
         if parallel_config.enable_parallel:
             logger.info(f"   Max concurrent products: {parallel_config.max_concurrent}")
 
+        progress_monitor.update_stage("product_processing", {"products": len(products_to_process)})
+
         # Process all products (parallel or sequential based on config)
         with pipeline_stage_span(
             "products.parallel_processing",
@@ -4185,6 +4212,15 @@ async def process_document_with_discovery(
             logger.info(f"   ✅ Marked document {document_id} as completed")
         except Exception as status_error:
             logger.warning(f"   ⚠️ Failed to mark document completed: {status_error}")
+
+        if publish_on_complete:
+            if products_failed == 0:
+                await asyncio.to_thread(_publish_job_products, job_id)
+            else:
+                logger.warning(
+                    f"   ⚠️ publish_on_complete skipped: {products_failed} product(s) failed, "
+                    f"so this catalog stays draft for review"
+                )
 
         # Calculate total processing time
         end_time = datetime.utcnow()

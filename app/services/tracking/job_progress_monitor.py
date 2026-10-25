@@ -28,6 +28,7 @@ STAGE_TIMEOUTS = {
     "storing_chunks": 900,           # 15 minutes - database operations
     "image_processing": 1800,        # 30 minutes - same as extracting_images
     "metadata_extraction": 1200,     # 20 minutes - metadata processing
+    "product_processing": 10800,     # 3 hours - per-product layout, images, vision, embeddings (~6 min/product)
     "field_propagation": 120,        # 2 minutes  - sibling field propagation (DB reads/writes only)
     "dimension_extraction": 120,     # 2 minutes  - regex scan of text chunks for sizes/thickness
     "quality_enhancement": 1800,     # 30 minutes - Stage 5 quality validation
