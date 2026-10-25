@@ -347,8 +347,18 @@ class PDFProcessor:
             # Optimization: Write to file in executor to ensure pdf_bytes scope ends and memory is freed
             # This prevents holding the full PDF in memory while processing
             def write_pdf_to_disk(path, data):
-                with open(path, 'wb') as f:
-                    f.write(data)
+                # Concurrent calls share this path: a truncating open() lets a
+                # reader see an empty file, so write aside and swap in whole.
+                if os.path.exists(path) and os.path.getsize(path) == len(data):
+                    return
+                part = f"{path}.{uuid.uuid4().hex}.part"
+                try:
+                    with open(part, 'wb') as f:
+                        f.write(data)
+                    os.replace(part, path)
+                finally:
+                    if os.path.exists(part):
+                        os.remove(part)
             
             await asyncio.get_event_loop().run_in_executor(None, write_pdf_to_disk, temp_pdf_path, pdf_bytes)
             
