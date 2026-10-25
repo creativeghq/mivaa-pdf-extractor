@@ -59,8 +59,8 @@ def _coarse_category(value: Any) -> Optional[str]:
 def _upload_category_hint(supabase: Any, document_id: str) -> Optional[str]:
     """The category the operator declared on upload, when it is a specific one.
 
-    It fills a product the extractor left uncategorised or put in `general_materials`; a
-    specific category the extractor found wins, because one catalogue can span several.
+    It overrides the extractor's per-product guess (a wall tile came back as "sofa"); a
+    catalogue that spans several categories is uploaded without one.
     """
     key = str(document_id)
     if key in _UPLOAD_CATEGORY:
@@ -774,7 +774,7 @@ async def create_single_product(
             logger.warning(f"   ⚠️ Auto-classification skipped: {cls_err}")
 
     upload_category = _upload_category_hint(supabase, document_id)
-    if upload_category and _coarse_category(metadata.get("material_category")) in (None, "general_materials"):
+    if upload_category and metadata.get("material_category") != upload_category:
         logger.info(f"   🏷️ material_category {metadata.get('material_category')!r} -> upload's {upload_category!r}")
         metadata["material_category"] = upload_category
         metadata["_material_category_source"] = "upload"

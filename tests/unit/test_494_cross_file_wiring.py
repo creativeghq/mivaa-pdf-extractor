@@ -108,7 +108,8 @@ def test_the_upload_category_fills_an_uncategorised_product_before_it_is_resolve
     hint = body.index("_upload_category_hint(supabase, document_id)")
     resolve = body.index("_resolve_category_id(metadata.get('material_category')")
     assert classify < hint < resolve
-    assert '"general_materials"' in body[hint:resolve]
+    assert "metadata.get(\"material_category\") != upload_category" in body[hint:resolve]
+    assert '"general_materials"' not in body[hint:resolve]
 
 
 def test_a_pdf_product_insert_is_identity_keyed_and_safe_to_repeat():
