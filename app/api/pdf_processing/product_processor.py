@@ -907,30 +907,6 @@ async def process_single_product(
         logger_instance.info(f"   📌 Created PRODUCTS_CREATED checkpoint for {product.name}")
 
         # ========================================================================
-        # STAGE 4.5: Auto-create KB documents from extracted metadata
-        # ========================================================================
-        logger_instance.info(f"📚 [STAGE 4.5/{product_index}] Creating knowledge base documents...")
-
-        try:
-            from app.services.knowledge.auto_kb_document_service import AutoKBDocumentService
-
-            kb_service = AutoKBDocumentService()
-            kb_result = await kb_service.create_kb_documents_from_metadata(
-                product_id=product_db_id,
-                product_name=product.name,
-                workspace_id=workspace_id,
-                metadata=extraction_result.get('metadata', {})
-            )
-
-            kb_docs_created = kb_result.get('documents_created', 0)
-            if kb_docs_created > 0:
-                logger_instance.info(f"   ✅ Created {kb_docs_created} KB documents")
-            else:
-                logger_instance.info("   ℹ️ No KB documents created (no eligible metadata)")
-        except Exception as e:
-            logger_instance.warning(f"   ⚠️ KB creation failed: {e}")
-
-        # ========================================================================
         # STAGE 5: Create Relationships (Link chunks/images to product)
         # ========================================================================
         current_stage = ProductStage.RELATIONSHIPS

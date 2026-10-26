@@ -552,7 +552,6 @@ async def extract_catalog_legends(
                         # force=True (or recovering from a partial-failure
                         # run where kb_doc was upserted with the same id)
                         # doesn't 23505-fail on the already-linked rows.
-                        # Mirrors the AutoKBDocumentService pattern.
                         try:
                             (
                                 supabase.client.table("kb_doc_attachments")

@@ -2410,7 +2410,6 @@ async def enrich_products_from_chunks_and_vision(
         # that ran fine and found nothing. Counted separately.
         "spec_vision_failures": 0,
         "description_writes": 0,
-        "kb_docs_created": 0,
         "kb_attachments_created": 0,
         "catalog_kb_docs_created": 0,
     }
@@ -2955,9 +2954,7 @@ async def enrich_products_from_chunks_and_vision(
                     sentry_sdk.capture_exception(db_err)
                 except Exception:
                     pass
-                # Skip downstream KB regen for this product — its metadata
-                # is in-memory but not persisted, so the AutoKBDocumentService
-                # call below would write KB docs against stale data.
+                # Its metadata is in-memory but not persisted: skip the re-embed below.
                 continue
 
             stats["products_updated"] += 1
@@ -2982,44 +2979,6 @@ async def enrich_products_from_chunks_and_vision(
                 if reembedded:
                     stats.setdefault("products_reembedded", 0)
                     stats["products_reembedded"] += 1
-
-            # ── Stage 4.7.e: Re-run AutoKBDocumentService with newly-enriched metadata ──
-            # The existing product_processor wired this service at product creation,
-            # but at that point packaging/compliance/care were all empty. Now that
-            # enrichment has populated them, re-invoke the service to produce the KB
-            # docs that were skipped the first time.
-            try:
-                # workspace_id lives on the product row itself — prefer that
-                # over the metadata blob which is frequently missing the key.
-                ws_id = (
-                    product.get("workspace_id")
-                    or new_metadata.get("workspace_id")
-                    or None
-                )
-                if not ws_id:
-                    logger.info(
-                        f"   ℹ️ Skipping AutoKBDocumentService for '{product_name}' "
-                        f"(no workspace_id resolvable — kb_docs requires a valid UUID)"
-                    )
-                else:
-                    from app.services.knowledge.auto_kb_document_service import AutoKBDocumentService
-                    kb_service = AutoKBDocumentService()
-                    kb_stats = await kb_service.create_kb_documents_from_metadata(
-                        product_id=product_id,
-                        product_name=product_name,
-                        workspace_id=ws_id,
-                        metadata=new_metadata,
-                    )
-                    if kb_stats.get("documents_created"):
-                        stats["kb_docs_created"] += kb_stats["documents_created"]
-                        logger.info(
-                            f"   📚 AutoKBDocumentService created {kb_stats['documents_created']} "
-                            f"KB docs for '{product_name}' from enriched metadata"
-                        )
-            except Exception as kb_err:
-                logger.warning(
-                    f"   ⚠️ AutoKBDocumentService failed for '{product_name}': {kb_err}"
-                )
 
         # ── Stage 4.7.f: Catalog-wide knowledge extraction (ONCE per document) ──
         # Runs after all products have been enriched. Uses Claude Vision on the
