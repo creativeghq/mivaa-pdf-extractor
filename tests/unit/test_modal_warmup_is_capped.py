@@ -23,8 +23,14 @@ def test_the_warmup_predict_passes_the_token_cap_and_the_parse_path_does_not_reu
     assert predict_caps(parse) == ["2048"]
 
 
-def test_the_warmup_budget_outlasts_a_slow_first_predict():
-    """A 60s budget recycled healthy containers: the first predict takes longer, and a recycle costs a ~9 min back-off."""
+def test_the_warmup_budget_is_short_enough_to_recycle_a_hang_and_long_enough_to_dump_it():
+    """The first predict either returns in seconds or hangs; the budget leaves room for two stack dumps (25s apart) before recycling."""
     import re
     match = re.search(r'PADDLEOCR_WARMUP_BUDGET", "(\d+)"', _SRC.read_text(encoding="utf-8"))
-    assert match and 180 <= int(match.group(1)) < 300
+    assert match and 60 <= int(match.group(1)) <= 120
+
+
+def test_a_wedged_warmup_dumps_every_thread_before_the_container_is_recycled():
+    source = _SRC.read_text(encoding="utf-8")
+    assert "faulthandler.dump_traceback_later(25, repeat=True" in source
+    assert source.index("dump_traceback_later") < source.index("wt.start()") < source.index("cancel_dump_traceback_later")

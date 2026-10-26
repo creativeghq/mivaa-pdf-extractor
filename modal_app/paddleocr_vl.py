@@ -127,7 +127,7 @@ class PaddleService:
         # synthetic image is the suspected cause of the original hang.
         import threading as _th, time as _t, tempfile
         from PIL import Image, ImageDraw
-        WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "285"))
+        WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "90"))
         WARMUP_MAX_NEW_TOKENS = int(os.environ.get("PADDLEOCR_WARMUP_MAX_NEW_TOKENS", "48"))
         _w = {"ok": False, "err": None, "secs": None}
 
@@ -144,9 +144,22 @@ class PaddleService:
             except Exception as e:  # noqa: BLE001
                 _w["err"] = repr(e)
 
+        # A wedged predict dumps every thread's stack to the container log, so the hang is located
+        # rather than guessed at; the GPU line says which node the start landed on.
+        import faulthandler, subprocess, sys
+        try:
+            gpu = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,driver_version,pci.bus_id,memory.used", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout.strip()
+        except Exception as e:  # noqa: BLE001
+            gpu = f"nvidia-smi failed: {e!r}"
+        print(f"WARMUP gpu={gpu}", flush=True)
+        faulthandler.dump_traceback_later(25, repeat=True, file=sys.stderr)
         wt = _th.Thread(target=_run_warmup, daemon=True)
         wt.start()
         wt.join(timeout=WARMUP_BUDGET)
+        faulthandler.cancel_dump_traceback_later()
         if _w["ok"]:
             print(f"✅ warmup ok in {_w['secs']:.1f}s — PaddleOCR-VL ready", flush=True)
         elif _w["err"] is not None:
