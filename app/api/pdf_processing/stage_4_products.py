@@ -1244,6 +1244,16 @@ def build_product_embedding_text(
                 embedding_text_parts.append(
                     f"{spec_field.replace('_', ' ')}: {', '.join(items)}"
                 )
+        elif isinstance(val, dict):
+            pairs = [
+                f"{str(k).replace('_', ' ')} {str(v).strip()}"
+                for k, v in val.items()
+                if isinstance(v, (str, int, float)) and not isinstance(v, bool) and str(v).strip()
+            ]
+            if pairs:
+                embedding_text_parts.append(
+                    f"{spec_field.replace('_', ' ')}: {', '.join(pairs)}"
+                )
 
     # Append the product's reading-order page body text LAST (bounded upstream).
     if page_body_text and page_body_text.strip():

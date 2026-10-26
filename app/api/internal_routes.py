@@ -1803,6 +1803,46 @@ async def validate_pipeline(
 # POST /api/internal/enrich-existing-product/{product_id}
 # ============================================================================
 
+class ProductGapsRequest(BaseModel):
+    workspace_id: str
+    document_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
+
+
+@router.post("/product-enrichment/gaps")
+async def product_enrichment_gaps(
+    req: ProductGapsRequest,
+    _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
+) -> Dict[str, Any]:
+    """Readiness report for draft products: empty registry fields and whether a held URL exists.
+
+    Called by the edge gateway, which has already verified the caller against `workspace_id`.
+    Reads only; spends nothing.
+    """
+    import asyncio
+    from app.services.products.enrichment_gaps import product_gaps, summarize
+
+    if bool(req.document_id) == bool(req.product_ids):
+        raise HTTPException(status_code=400, detail="Send exactly one of document_id or product_ids")
+    supabase = get_supabase_client()
+    ids = list(req.product_ids or [])
+    if req.document_id:
+        resp = await asyncio.to_thread(
+            supabase.client.table("products").select("id")
+            .eq("workspace_id", req.workspace_id).eq("source_document_id", req.document_id)
+            .eq("status", "draft").order("id").limit(5000).execute
+        )
+        ids = [r["id"] for r in (resp.data or [])]
+    if len(ids) > 5000:
+        raise HTTPException(status_code=400, detail="At most 5000 products per call")
+    try:
+        report = await product_gaps(supabase, ids, req.workspace_id)
+    except Exception as e:
+        logger.exception("product gaps failed")
+        raise HTTPException(status_code=500, detail=f"Gap report failed: {e}")
+    return {"summary": summarize(report), "products": report}
+
+
 class EnrichExistingProductResponse(BaseModel):
     success: bool
     product_id: str
