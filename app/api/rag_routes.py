@@ -223,6 +223,7 @@ def _require_uuid(value: Any, field: str) -> str:
 router = APIRouter(prefix="/api/rag", tags=["RAG"])
 
 WARMUP_HARD_CAP_SECONDS = 630
+WARMUP_RETRY_ATTEMPTS = 2
 
 
 def _publish_job_products(job_id: str) -> int:
@@ -3219,6 +3220,25 @@ async def process_document_with_discovery(
                 ok = False
             health_results[name] = ok
             logger.info(f"   {'✅' if ok else '❌'} {name}: {'healthy' if ok else 'UNHEALTHY'}")
+
+        # A crashed Modal container is replaced after ~10 min, so one more patient warm-up usually
+        # finds the next container healthy; failing the job here discarded runs that would have worked.
+        for _attempt in range(WARMUP_RETRY_ATTEMPTS):
+            unhealthy = [n for n in ('slig', 'paddleocr') if n in endpoint_managers and not health_results.get(n, False)]
+            if not unhealthy:
+                break
+            logger.warning(f"⏳ {unhealthy} unhealthy — warm-up retry {_attempt + 1}/{WARMUP_RETRY_ATTEMPTS}")
+            for name in unhealthy:
+                manager = endpoint_managers[name]
+                try:
+                    ok = await asyncio.to_thread(
+                        lambda m=manager: bool(m.resume_if_needed() and m.warmup() and m._test_inference())
+                    )
+                except Exception as retry_err:
+                    logger.warning(f"   ⚠️ {name} warm-up retry raised: {retry_err}")
+                    ok = False
+                health_results[name] = ok
+                logger.info(f"   {'✅' if ok else '❌'} {name} after retry: {'healthy' if ok else 'UNHEALTHY'}")
 
         required_endpoints = [n for n in ('slig', 'paddleocr') if n in endpoint_managers]
         all_healthy = all(health_results.get(n, False) for n in required_endpoints)

@@ -24,6 +24,46 @@ from app.services.tracking.checkpoint_recovery_service import ProcessingStage as
 module_logger = logging.getLogger(__name__)
 
 
+
+_CURRENCY_SYMBOLS = {"€": "EUR", "$": "USD", "£": "GBP"}
+
+
+def offer_price_from_metadata(metadata: Any) -> "tuple[Optional[float], Optional[str]]":
+    """The catalogue's printed price and its currency, or (None, None).
+
+    A price without a stated currency is not recorded: the offer table defaults to EUR, and a
+    price booked in the wrong currency is a valid number that nothing downstream can catch.
+    """
+    if not isinstance(metadata, dict):
+        return None, None
+
+    def _plain(value: Any) -> Any:
+        return value.get("value") if isinstance(value, dict) else value
+
+    raw, cur = _plain(metadata.get("supplier_price")), _plain(metadata.get("price_currency"))
+    if raw is None or cur is None:
+        return None, None
+    currency = _CURRENCY_SYMBOLS.get(str(cur).strip(), str(cur).strip().upper())
+    if len(currency) != 3 or not currency.isalpha():
+        return None, None
+    if str(raw).strip().startswith("-"):
+        return None, None
+    text = "".join(ch for ch in str(raw) if ch.isdigit() or ch in ".,")
+    if not text or not any(ch.isdigit() for ch in text):
+        return None, None
+    if "," in text and "." in text:
+        decimal = "," if text.rfind(",") > text.rfind(".") else "."
+        text = text.replace("." if decimal == "," else ",", "").replace(decimal, ".")
+    elif "," in text:
+        head, _, tail = text.rpartition(",")
+        text = head.replace(",", "") + "." + tail if len(tail) <= 2 else text.replace(",", "")
+    try:
+        value = float(text)
+    except ValueError:
+        return None, None
+    return (value, currency) if 0 < value < 1_000_000 else (None, None)
+
+
 async def process_stage_0_discovery(
     file_content: bytes,
     document_id: str,
@@ -953,10 +993,14 @@ async def process_stage_0_discovery(
                 # product, it is not the brand.
                 if multi_brand and catalog.catalog_factory and product_db_id:
                     try:
+                        stored = supabase.client.table('products').select('metadata').eq('id', product_db_id).limit(1).execute()
+                        cost, currency = offer_price_from_metadata(((stored.data or [{}])[0] or {}).get('metadata'))
                         supabase.client.rpc('record_catalog_supplier_offer', {
                             'p_workspace_id': workspace_id,
                             'p_product_id': product_db_id,
                             'p_supplier_name': catalog.catalog_factory,
+                            'p_cost': cost,
+                            'p_currency': currency,
                         }).execute()
                         supplier_offers_recorded += 1
                     except Exception as offer_err:

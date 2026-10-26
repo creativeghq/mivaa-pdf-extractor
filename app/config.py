@@ -392,10 +392,15 @@ class Settings(BaseSettings):
         default="claude-opus-5",
         env="ANTHROPIC_MODEL_VALIDATION"
     )
-    # SECOND reader for vision_analysis (issue #393 Step 4). Empty string = off.
+    # SECOND reader for vision_analysis (issue #393 Step 4). Empty string = off, which is the
+    # default: it re-read every image for ~14% of a catalogue's cost and only recorded an agreement score.
     anthropic_model_vision_checker: str = Field(
-        default="claude-sonnet-5",
+        default="",
         env="ANTHROPIC_MODEL_VISION_CHECKER"
+    )
+    anthropic_model_classification: str = Field(
+        default="claude-opus-5",
+        env="ANTHROPIC_MODEL_CLASSIFICATION"
     )
     anthropic_model_enrichment: str = Field(
         default="claude-opus-5",

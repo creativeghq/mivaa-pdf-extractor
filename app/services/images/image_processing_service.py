@@ -227,7 +227,8 @@ class ImageProcessingService:
             raise ValueError("ANTHROPIC_API_KEY not configured")
 
         async def classify_image_with_vision_model(image_path: str, model: str, base64_data: str = None) -> Dict[str, Any]:
-            """Image classification via Anthropic Claude Opus + tool use."""
+            """Image classification via Anthropic Claude + tool use (model: ANTHROPIC_MODEL_CLASSIFICATION)."""
+            classification_model = self.settings.anthropic_model_classification
             image_base64 = base64_data
             detected_media_type = "image/jpeg"
             try:
@@ -258,7 +259,7 @@ class ImageProcessingService:
                 try:
                     call = await call_with_tool(
                         task="image_classification",
-                        model='claude-opus-5',
+                        model=classification_model,
                         max_tokens=1024,
                         tool=classify_tool,
                         # `cache_control` rides on the prompt block inside `messages`, so
@@ -293,7 +294,7 @@ class ImageProcessingService:
                         'is_material': False,
                         'confidence': 0.0,
                         'reason': 'No tool_use block returned',
-                        'model': 'claude-opus-5_invalid_response',
+                        'model': f'{classification_model}_invalid_response',
                     }
 
                 result = call.data
@@ -312,19 +313,19 @@ class ImageProcessingService:
                     'reason': reason,
                     'classification': classification_category,
                     'product_indicators': result.get('product_indicators') or [],
-                    'model': 'claude-opus-5',
+                    'model': classification_model,
                 }
 
             except Exception as e:
                 logger.error(
-                    f"❌ CLASSIFICATION FAILED for {image_path} | model=claude-opus-5 "
+                    f"❌ CLASSIFICATION FAILED for {image_path} | model={classification_model} "
                     f"| {type(e).__name__}: {str(e)[:200]}"
                 )
                 return {
                     'is_material': False,
                     'confidence': 0.0,
-                    'reason': f'claude-opus-5 failed: {str(e)}',
-                    'model': 'claude-opus-5_failed',
+                    'reason': f'{classification_model} failed: {str(e)}',
+                    'model': f'{classification_model}_failed',
                     'error': str(e),
                 }
             finally:
@@ -1181,7 +1182,11 @@ class ImageProcessingService:
             # of product genuinely does not have.
             category_block = await self._category_context_for_vision(material_category)
 
+            # The static instructions lead and carry the cache marker, so every image after the first
+            # in a run reads them from the prompt cache; the image and its OCR are the only per-call text.
             content = [
+                {"type": "text", "text": category_block},
+                {"type": "text", "text": self.material_analyzer_prompt, "cache_control": {"type": "ephemeral"}},
                 {
                     "type": "image",
                     "source": {
@@ -1191,8 +1196,6 @@ class ImageProcessingService:
                     },
                 },
                 {"type": "text", "text": ocr_block},
-                {"type": "text", "text": category_block},
-                {"type": "text", "text": self.material_analyzer_prompt},
             ]
 
             from app.config import get_settings as _get_settings_validation
