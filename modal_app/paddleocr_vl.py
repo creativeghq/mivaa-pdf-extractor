@@ -121,13 +121,13 @@ class PaddleService:
             pipeline_version=PIPELINE_VERSION,
         )
 
-        # Cold-start warmup with SELF-RECYCLE. The first predict() sometimes took >35s with no
-        # output (6 of 7 cold starts on 2026-10-25). Warming only needs to exercise the GPU, so the
-        # call is capped at WARMUP_MAX_NEW_TOKENS: an uncapped 2048-token generation on a blank
-        # synthetic image is the suspected cause. A start that still exceeds the budget recycles.
+        # Cold-start warmup. The first predict() is slow (>60s measured) and a recycle costs a ~9 min
+        # Modal crash-loop back-off, so the budget is long; only a call that never returns recycles.
+        # The call is capped at WARMUP_MAX_NEW_TOKENS: an uncapped 2048-token generation on a blank
+        # synthetic image is the suspected cause of the original hang.
         import threading as _th, time as _t, tempfile
         from PIL import Image, ImageDraw
-        WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "60"))
+        WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "285"))
         WARMUP_MAX_NEW_TOKENS = int(os.environ.get("PADDLEOCR_WARMUP_MAX_NEW_TOKENS", "48"))
         _w = {"ok": False, "err": None, "secs": None}
 

@@ -21,3 +21,10 @@ def test_the_warmup_predict_passes_the_token_cap_and_the_parse_path_does_not_reu
 
     assert predict_caps(load) == ["WARMUP_MAX_NEW_TOKENS"]
     assert predict_caps(parse) == ["2048"]
+
+
+def test_the_warmup_budget_outlasts_a_slow_first_predict():
+    """A 60s budget recycled healthy containers: the first predict takes longer, and a recycle costs a ~9 min back-off."""
+    import re
+    match = re.search(r'PADDLEOCR_WARMUP_BUDGET", "(\d+)"', _SRC.read_text(encoding="utf-8"))
+    assert match and 180 <= int(match.group(1)) < 300
