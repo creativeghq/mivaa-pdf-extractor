@@ -72,11 +72,18 @@ def test_degraded_canonicalization_is_not_done():
     assert run(io)["status"] == "promoted" and io.attempt["canonicalization_state"] == "degraded"
 
 
-def test_a_field_filled_since_extraction_is_not_overwritten():
+def test_a_field_filled_since_extraction_is_not_overwritten_but_the_vector_is_still_rebuilt():
     io = FakeIO(empty=[])
     out = run(io)
     assert out["status"] == "done" and out["promoted_fields"] == []
-    assert not any(c[0] in ("merge", "canon", "embed") for c in io.calls)
+    assert not any(c[0] == "merge" for c in io.calls)
+    assert [c[0] for c in io.calls if c[0] in ("canon", "embed")] == ["canon", "embed"]
+
+
+def test_a_crash_after_the_merge_still_ends_with_a_rebuilt_vector():
+    io = FakeIO(status="extracted", empty=[])
+    assert run(io)["status"] == "done"
+    assert io.attempt["embedding_state"] == "ok" and ("embed",) in io.calls
 
 
 def test_a_published_product_is_left_alone():

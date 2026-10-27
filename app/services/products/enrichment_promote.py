@@ -34,7 +34,9 @@ def finished_status(canonicalization: str, embedding: str) -> str:
 async def promote_attempt(io: EnrichmentIO, attempt_id: str) -> Dict[str, Any]:
     """Resumable: an `extracted` attempt is promoted then derived; a `promoted` one only re-derives.
 
-    Nothing here calls a model or a crawler, so a retry never spends again.
+    Nothing here calls a model or a crawler, so a retry never spends again. The derived steps run
+    even when nothing was merged now: a crash between the merge and its checkpoint leaves a retry
+    with nothing left to merge and a stale vector, and it cannot tell that from "someone else filled it".
     """
     attempt = await io.load_attempt(attempt_id)
     if not attempt:
@@ -58,12 +60,6 @@ async def promote_attempt(io: EnrichmentIO, attempt_id: str) -> Dict[str, Any]:
         source = {"source": "web_enrichment", "url": attempt.get("source_url"), "confidence": attempt.get("confidence")}
         promoted = await io.merge(product["id"], patch, source) if patch else []
         await io.save_attempt(attempt_id, {"status": "promoted", "promoted_fields": promoted})
-        if not promoted:
-            await io.save_attempt(attempt_id, {
-                "status": "done", "canonicalization_state": "ok", "embedding_state": "ok",
-                "reason": "every claimed field was filled by someone else first",
-            })
-            return {"status": "done", "promoted_fields": []}
         product = await io.load_product(product["id"]) or product
 
     canon = "ok" if await _safely(io.canonicalize, product) else "degraded"
