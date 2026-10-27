@@ -1262,6 +1262,21 @@ def build_product_embedding_text(
     return ' | '.join(embedding_text_parts)
 
 
+def embedding_inputs_changed(
+    name: Optional[str],
+    old_description: Optional[str],
+    old_metadata: Dict[str, Any],
+    new_description: Optional[str],
+    new_metadata: Dict[str, Any],
+    known_spec_fields: List[str],
+) -> bool:
+    """True when the text a product is embedded from differs, so its stored vector is stale."""
+    def text(description: Optional[str], metadata: Dict[str, Any]) -> str:
+        return build_product_embedding_text(name, description, metadata or {}, known_spec_fields)
+
+    return text(old_description, old_metadata) != text(new_description, new_metadata)
+
+
 async def build_product_page_body_text(
     supabase: Any,
     document_id: Optional[str],
@@ -2975,16 +2990,18 @@ async def enrich_products_from_chunks_and_vision(
                 f"vision_candidates={list(vision_candidates.keys())})"
             )
 
-            # S4-2: when enrichment writes a NEW description, the inline Stage 4
-            # text_embedding_1024 (built before the description existed) is stale
-            # w.r.t. the persisted row. Re-embed from the FINAL fields via the
-            # shared helper so the stored vector matches the row and doesn't drift
-            # from a later backfill. Best-effort — a failed re-embed leaves the
-            # (stale-but-present) vector rather than nulling it.
-            if new_description:
+            # S4-2: the inline Stage 4 vector predates whatever this step just filled. Re-embed
+            # from the FINAL fields when the embedding text changed (a new description OR any
+            # filled spec field), keeping the existing description. Best-effort: a failed
+            # re-embed leaves the stale-but-present vector rather than nulling it.
+            final_description = new_description or existing_description or None
+            if embedding_inputs_changed(
+                product.get("name"), product.get("description"), metadata,
+                final_description, new_metadata, _known_spec_fields,
+            ):
                 reembedded = await reembed_product_text(
                     supabase, document_id, product_id, product_name,
-                    new_description, new_metadata, _known_spec_fields, logger,
+                    final_description, new_metadata, _known_spec_fields, logger,
                 )
                 if reembedded:
                     stats.setdefault("products_reembedded", 0)
