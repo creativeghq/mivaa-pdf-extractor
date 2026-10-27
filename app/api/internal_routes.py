@@ -1843,6 +1843,32 @@ async def product_enrichment_gaps(
     return {"summary": summarize(report), "products": report}
 
 
+class PromoteEnrichmentRequest(BaseModel):
+    attempt_id: str
+
+
+@router.post("/product-enrichment/promote")
+async def product_enrichment_promote(
+    req: PromoteEnrichmentRequest,
+    _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
+) -> Dict[str, Any]:
+    """Write an attempt's saved claims into empty metadata keys of a draft, then re-derive.
+
+    Called by the edge gateway after it saved the claims. Resumable and free: it never calls a
+    model or a crawler, so calling it again only repeats a derived step that failed.
+    """
+    from app.services.products.enrichment_promote import SupabaseIO, promote_attempt
+
+    try:
+        result = await promote_attempt(SupabaseIO(get_supabase_client()), req.attempt_id)
+    except Exception as e:
+        logger.exception("promote enrichment failed")
+        raise HTTPException(status_code=500, detail=f"Promotion failed: {e}")
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Attempt not found")
+    return result
+
+
 class EnrichExistingProductResponse(BaseModel):
     success: bool
     product_id: str
