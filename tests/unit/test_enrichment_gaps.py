@@ -1,8 +1,15 @@
 from types import SimpleNamespace
 
-from app.services.products.enrichment_gaps import (
-    GAPS_NO_SOURCE, GAPS_WITH_SOURCE, NOTHING_MISSING, empty_fields, source_for, summarize, verdict,
-)
+import importlib.util
+from pathlib import Path
+
+_SRC = Path(__file__).resolve().parents[2] / "app" / "services" / "products" / "enrichment_gaps.py"
+_spec = importlib.util.spec_from_file_location("enrichment_gaps", _SRC)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+
+GAPS_NO_SOURCE, GAPS_WITH_SOURCE, NOTHING_MISSING = _mod.GAPS_NO_SOURCE, _mod.GAPS_WITH_SOURCE, _mod.NOTHING_MISSING
+empty_fields, source_for, summarize, verdict = _mod.empty_fields, _mod.source_for, _mod.summarize, _mod.verdict
 
 
 def _spec(name, role="descriptive", destination="metadata", sensitivity="public"):

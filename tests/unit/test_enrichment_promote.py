@@ -1,6 +1,14 @@
 import asyncio
 
-from app.services.products.enrichment_promote import claims_to_patch, finished_status, promote_attempt
+import importlib.util
+from pathlib import Path
+
+_SRC = Path(__file__).resolve().parents[2] / "app" / "services" / "products" / "enrichment_promote.py"
+_spec = importlib.util.spec_from_file_location("enrichment_promote", _SRC)
+_mod = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_mod)
+
+claims_to_patch, finished_status, promote_attempt = _mod.claims_to_patch, _mod.finished_status, _mod.promote_attempt
 
 
 class FakeIO:

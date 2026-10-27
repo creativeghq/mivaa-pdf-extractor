@@ -1,4 +1,13 @@
-from app.api.pdf_processing.stage_4_products import build_product_embedding_text
+import ast
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+_SRC = Path(__file__).resolve().parents[2] / "app" / "api" / "pdf_processing" / "stage_4_products.py"
+_tree = ast.parse(_SRC.read_text(encoding="utf-8"))
+_fn = next(n for n in _tree.body if isinstance(n, ast.FunctionDef) and n.name == "build_product_embedding_text")
+_ns: Dict[str, Any] = {"Any": Any, "Dict": Dict, "List": List, "Optional": Optional}
+exec(compile(ast.Module(body=[_fn], type_ignores=[]), str(_SRC), "exec"), _ns)
+build_product_embedding_text = _ns["build_product_embedding_text"]
 
 
 def _text(metadata, fields):
