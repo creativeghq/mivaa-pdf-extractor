@@ -1812,7 +1812,7 @@ class ProductGapsRequest(BaseModel):
 @router.post("/product-enrichment/gaps")
 async def product_enrichment_gaps(
     req: ProductGapsRequest,
-    _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
+    trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
 ) -> Dict[str, Any]:
     """Readiness report for draft products: empty registry fields and whether a held URL exists.
 
@@ -1824,19 +1824,20 @@ async def product_enrichment_gaps(
 
     if bool(req.document_id) == bool(req.product_ids):
         raise HTTPException(status_code=400, detail="Send exactly one of document_id or product_ids")
+    workspace_id = await resolve_workspace_id(trusted or {"service": "mivaa"}, req.workspace_id)
     supabase = get_supabase_client()
     ids = list(req.product_ids or [])
     if req.document_id:
         resp = await asyncio.to_thread(
             supabase.client.table("products").select("id")
-            .eq("workspace_id", req.workspace_id).eq("source_document_id", req.document_id)
+            .eq("workspace_id", workspace_id).eq("source_document_id", req.document_id)
             .eq("status", "draft").order("id").limit(5000).execute
         )
         ids = [r["id"] for r in (resp.data or [])]
     if len(ids) > 5000:
         raise HTTPException(status_code=400, detail="At most 5000 products per call")
     try:
-        report = await product_gaps(supabase, ids, req.workspace_id)
+        report = await product_gaps(supabase, ids, workspace_id)
     except Exception as e:
         logger.exception("product gaps failed")
         raise HTTPException(status_code=500, detail=f"Gap report failed: {e}")
