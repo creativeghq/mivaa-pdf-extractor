@@ -251,14 +251,15 @@ class ProgressiveTimeoutStrategy:
         """
         Deadline for Stage 0 (discovery + the metadata pass that precedes product creation).
 
-        Base: 120s. +60s per 10 pages. +60s per category. Max: 30min.
-        A 71-page catalog with four categories gets 786s; it was 393s, and the same catalog
-        took 5-6.5 minutes on a good day, so a slow model call failed a healthy run.
+        Base: 120s. +300s per 10 pages. +60s per category. Max: 60min.
+        The metadata pass makes one ~36s call per product, in sequence, so a product-dense
+        catalog is bound by its product count: KORADO's 60 pages hold 44 products (~26min)
+        and were killed at product 21 by the old 720s deadline.
         """
         base_timeout = 120
-        base_timeout += (page_count / 10) * 60
+        base_timeout += (page_count / 10) * 300
         base_timeout += len(categories) * 60
-        return min(base_timeout, 1800)
+        return min(base_timeout, 3600)
 
     @staticmethod
     def calculate_chunking_timeout(page_count: int, chunk_size: int = 512) -> float:

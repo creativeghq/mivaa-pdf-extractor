@@ -26,7 +26,12 @@ def test_the_deadline_grows_with_pages_and_categories_and_is_capped():
     d = _deadline()
     assert d(100, ["products"]) > d(50, ["products"]) > d(10, ["products"])
     assert d(50, ["products", "logos"]) > d(50, ["products"])
-    assert d(5000, ["products"] * 10) == 1800
+    assert d(5000, ["products"] * 10) == 3600
+
+
+def test_a_product_dense_catalog_gets_time_for_one_sequential_call_per_product():
+    # KORADO KORALUX: 60 pages, 44 products at ~36s each, four categories.
+    assert _deadline()(60, ["products", "certificates", "logos", "specifications"]) >= 44 * 36 * 1.25
 
 
 def test_a_tiny_document_still_gets_a_real_floor():
