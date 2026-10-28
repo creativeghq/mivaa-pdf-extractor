@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from app.services.pdf.embedded_image_format import sniff_media_type
 from app.models.vision_analysis import (
     SCHEMA_VERSION,
     VisionAnalysis,
@@ -158,7 +159,7 @@ async def _analyze_one(
                             "type": "image",
                             "source": {
                                 "type": "base64",
-                                "media_type": "image/jpeg",
+                                "media_type": sniff_media_type(image_bytes),
                                 "data": image_b64,
                             },
                         },
