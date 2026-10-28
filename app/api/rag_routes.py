@@ -39,7 +39,7 @@ from app.schemas.api_responses import (
     CheckpointListResponse, RelevancyListResponse, StatsResponse,
     AITrackingResponse, StuckJobsResponse, DocumentContentResponse,
 )
-from app.dependencies import current_user_id, get_current_user, get_optional_workspace_context, require_workspace_capability, resolve_workspace_id, verify_internal_access
+from app.dependencies import current_user_id, get_current_user, get_optional_workspace_context, get_workspace_context, require_workspace_capability, resolve_workspace_id, verify_internal_access
 from app.utils.untrusted_content import as_untrusted_data
 from app.utils.pdf_bounds import PdfBoundsError, assert_page_count
 # NOTE: `authorize_rag_workspace` is imported at the BOTTOM of this module, not here.
@@ -1840,7 +1840,7 @@ async def _edition_caller(workspace_context, capability: str) -> str:
 
 
 @router.get("/documents/{document_id}/edition")
-async def get_edition_changes(document_id: str, workspace_context=Depends(get_optional_workspace_context)):
+async def get_edition_changes(document_id: str, workspace_context=Depends(get_workspace_context)):
     """What this catalogue edition adds, removes and changes, with the proposed action per row."""
     workspace_id = await _edition_caller(workspace_context, "workspace.read")
     _require_uuid(document_id, "document_id")
@@ -1851,7 +1851,7 @@ async def get_edition_changes(document_id: str, workspace_context=Depends(get_op
 
 
 @router.post("/documents/{document_id}/edition/apply")
-async def apply_edition_changes(document_id: str, workspace_context=Depends(get_optional_workspace_context)):
+async def apply_edition_changes(document_id: str, workspace_context=Depends(get_workspace_context)):
     """Apply every proposed row of this edition: publish the added, retire or flag the removed, update the changed."""
     workspace_id = await _edition_caller(workspace_context, "catalog.import")
     _require_uuid(document_id, "document_id")
