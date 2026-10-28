@@ -181,10 +181,20 @@ from app.services.chunking.unified_chunking_service import UnifiedChunkingServic
 
 # Import worker for process isolation
 from app.services.pdf.pdf_worker import execute_pdf_extraction_job
+from app.services.pdf.embedded_image_format import to_readable_image
 from app.killable import KillableCrashed, KillableTimeout, run_killable
 from app.utils.cross_loop_lock import CrossLoopLock
 
 # PageConverter removed - using simple PDF page numbers instead
+
+
+def _embedded_image_as_png(doc, xref):
+    import fitz
+
+    pix = fitz.Pixmap(doc, xref)
+    if pix.alpha or (pix.colorspace is not None and pix.colorspace.n != 3):
+        pix = fitz.Pixmap(fitz.csRGB, pix)
+    return pix.tobytes("png")
 
 
 @dataclass
@@ -1019,6 +1029,9 @@ class PDFProcessor:
                             base_image = doc.extract_image(xref)
                             image_bytes = base_image["image"]
                             image_ext = base_image["ext"]
+                            image_bytes, image_ext = to_readable_image(
+                                image_bytes, image_ext, lambda: _embedded_image_as_png(doc, xref)
+                            )
                             img_width = base_image.get('width', 0)
                             img_height = base_image.get('height', 0)
 
