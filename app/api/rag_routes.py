@@ -1851,7 +1851,7 @@ async def get_edition_changes(document_id: str, workspace_context=Depends(get_wo
 
 
 @router.post("/documents/{document_id}/edition/apply")
-async def apply_edition_changes(document_id: str, workspace_context=Depends(get_workspace_context)):
+async def apply_edition_changes(document_id: str, background_tasks: BackgroundTasks, workspace_context=Depends(get_workspace_context)):
     """Apply every proposed row of this edition: publish the added, retire or flag the removed, update the changed."""
     workspace_id = await _edition_caller(workspace_context, "catalog.import")
     _require_uuid(document_id, "document_id")
@@ -1861,6 +1861,16 @@ async def apply_edition_changes(document_id: str, workspace_context=Depends(get_
     )
     if result.get("error") == "not_found":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    changed = result.get("changed_product_ids") or []
+    if changed:
+        get_supabase_client().client.table('products').update({'text_embedding_1024': None})             .in_('id', changed).eq('workspace_id', workspace_id).execute()
+        from app.services.embeddings.text_embedding_backfill import backfill_text_embeddings
+        background_tasks.add_task(
+            run_async_in_background(backfill_text_embeddings),
+            max_products=len(changed), workspace_id=workspace_id, product_ids=changed,
+            include_products=True, include_chunks=False,
+        )
+        result["re_embedding"] = len(changed)
     return result
 
 
