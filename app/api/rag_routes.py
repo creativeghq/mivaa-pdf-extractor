@@ -638,6 +638,16 @@ async def upload_document(
         description="Process the file even when this workspace already holds a live document with the same content",
     ),
 
+    edition_label: Optional[str] = Form(None, description="Catalogue edition, e.g. '2027'"),
+    supersedes_document_id: Optional[str] = Form(
+        None,
+        description="The document this edition replaces. Products are matched to it and the job ends with proposals, never publishing.",
+    ),
+    missing_policy: Optional[str] = Form(
+        None,
+        description="For products in the superseded catalogue and absent here: retire | needs_replacement | keep",
+    ),
+
     # NEW: URL-based upload
     file_url: Optional[str] = Form(
         None,
@@ -758,6 +768,17 @@ async def upload_document(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Provide either 'file' or 'file_url', not both"
             )
+
+        if missing_policy and missing_policy not in ("retire", "needs_replacement", "keep"):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="missing_policy must be retire, needs_replacement or keep")
+        if supersedes_document_id:
+            _require_uuid(supersedes_document_id, "supersedes_document_id")
+            _old = get_supabase_client().client.table('documents').select('id') \
+                .eq('id', supersedes_document_id).eq('workspace_id', workspace_id).limit(1).execute().data
+            if not _old:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="supersedes_document_id not found")
+            publish_on_complete = False
 
         # Parse and validate categories
         category_list = [cat.strip() for cat in categories.split(',')]
@@ -1046,6 +1067,13 @@ async def upload_document(
                         "job_id": outcome.get("job_id"),
                     }},
                 )
+            if edition_label or supersedes_document_id or missing_policy:
+                supabase_client.client.table('documents').update({
+                    'edition_label': edition_label,
+                    'edition_date': datetime.utcnow().date().isoformat(),
+                    'supersedes_document_id': supersedes_document_id,
+                    'missing_policy': missing_policy,
+                }).eq('id', document_id).execute()
             logger.info(f"✅ Created document {document_id} + job {job_id}")
         except HTTPException:
             raise
@@ -1804,6 +1832,38 @@ async def reprocess_document(
 # carry a job_id and NOT for this one: the gate resolves an id from the path or query
 # and raises 400 when there is none ("A list endpoint with no resource id would
 # otherwise return rows across all tenants"). Swapping it here would 400 every call.
+async def _edition_caller(workspace_context, capability: str) -> str:
+    if workspace_context is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication required")
+    await require_workspace_capability(workspace_context.user_id, str(workspace_context.workspace_id), capability)
+    return str(workspace_context.workspace_id)
+
+
+@router.get("/documents/{document_id}/edition")
+async def get_edition_changes(document_id: str, workspace_context=Depends(get_optional_workspace_context)):
+    """What this catalogue edition adds, removes and changes, with the proposed action per row."""
+    workspace_id = await _edition_caller(workspace_context, "workspace.read")
+    _require_uuid(document_id, "document_id")
+    rows = get_supabase_client().client.table('catalog_edition_changes').select('*') \
+        .eq('new_document_id', document_id).eq('workspace_id', workspace_id) \
+        .order('change_kind').execute().data or []
+    return {"document_id": document_id, "changes": rows}
+
+
+@router.post("/documents/{document_id}/edition/apply")
+async def apply_edition_changes(document_id: str, workspace_context=Depends(get_optional_workspace_context)):
+    """Apply every proposed row of this edition: publish the added, retire or flag the removed, update the changed."""
+    workspace_id = await _edition_caller(workspace_context, "catalog.import")
+    _require_uuid(document_id, "document_id")
+    from app.services.catalog_edition_service import apply_edition
+    result = await asyncio.to_thread(
+        apply_edition, get_supabase_client().client, workspace_id, document_id, str(workspace_context.user_id)
+    )
+    if result.get("error") == "not_found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    return result
+
+
 @router.get("/documents/jobs", responses={200: {"model": ListDataResponse}}, dependencies=[Depends(verify_internal_access)])
 async def list_jobs(
     request: Request,
@@ -4242,6 +4302,12 @@ async def process_document_with_discovery(
             logger.info(f"   ✅ Marked document {document_id} as completed")
         except Exception as status_error:
             logger.warning(f"   ⚠️ Failed to mark document completed: {status_error}")
+
+        try:
+            from app.services.catalog_edition_service import finalize_edition
+            await asyncio.to_thread(finalize_edition, get_supabase_client().client, document_id)
+        except Exception as edition_error:
+            logger.warning(f"   ⚠️ edition diff not finalized: {edition_error}")
 
         if publish_on_complete:
             if products_failed == 0:

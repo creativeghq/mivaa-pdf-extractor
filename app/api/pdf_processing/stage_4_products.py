@@ -946,10 +946,15 @@ async def create_single_product(
         if not (identity and '23505' in str(insert_err) and 'import_identity' in str(insert_err)):
             raise
         existing = supabase.client.table('products') \
-            .select('id, name, source_document_id, metadata') \
+            .select('id, name, sku, description, source_document_id, metadata') \
             .eq('workspace_id', workspace_id).eq('import_identity', identity).limit(1).execute()
         if not existing.data:
             raise
+        try:
+            from app.services.catalog_edition_service import record_match
+            record_match(supabase.client, workspace_id, document_id, existing.data[0], product_data)
+        except Exception as edition_err:
+            logger.warning(f"   ⚠️ edition diff not recorded for '{product.name}': {edition_err}")
         return _reuse_existing_product(supabase, workspace_id, document_id, existing.data[0],
                                        product.name, logger)
 
