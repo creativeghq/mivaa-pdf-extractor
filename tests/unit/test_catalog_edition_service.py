@@ -1,4 +1,11 @@
-from app.services.catalog_edition_service import compute_field_diffs
+import importlib.util
+from pathlib import Path
+
+_path = Path(__file__).resolve().parents[2] / "app" / "services" / "catalog_edition_service.py"
+_spec = importlib.util.spec_from_file_location("catalog_edition_service", _path)
+_module = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_module)
+compute_field_diffs = _module.compute_field_diffs
 
 
 def test_identical_product_has_no_diffs():
