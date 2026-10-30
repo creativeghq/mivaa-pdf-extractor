@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import asyncio
+import random
 import os
 import httpx
 from datetime import datetime
@@ -399,12 +400,13 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                     json=prediction_payload
                 )
 
-                # 429 is a THROTTLE, not a failure. Replicate drops the account to
-                # 6 requests/minute with a burst of 1 whenever the balance is under $5
-                # (verified 2026-08-22 — the message says so verbatim), and the grid fans
-                # 11 image-to-image models out behind a semaphore of 3, so under that tier
-                # almost every tile 429s at once.
-                if response.status_code == 429:
+                # 429 is a THROTTLE, not a failure: under $5 credit Replicate allows 6
+                # requests/minute with a burst of 1, and the grid fans models out behind a
+                # semaphore, so tiles collide. Retry in place (jittered so they stop
+                # colliding) instead of surfacing the throttle text on the tile.
+                for _throttle_try in range(8):
+                    if response.status_code != 429:
+                        break
                     try:
                         retry_after = int(
                             response.headers.get("retry-after")
@@ -413,9 +415,8 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                         )
                     except (ValueError, TypeError, KeyError):
                         retry_after = 11
-                    # +2s of slack: the window is per-minute and the reset is approximate.
-                    wait_s = min(max(retry_after, 1) + 2, 60)
-                    print(f"⏳ [{model['name']}] throttled by Replicate; waiting {wait_s}s")
+                    wait_s = min(max(retry_after, 1) + 2 + random.uniform(0, 8), 60)
+                    print(f"⏳ [{model['name']}] throttled by Replicate; waiting {wait_s:.0f}s")
                     await asyncio.sleep(wait_s)
                     response = await client.post(
                         url,
