@@ -10,12 +10,22 @@ from pathlib import Path
 
 import pytest
 
-from app.services.images.classification_verdict import (
-    VERDICT_COLUMNS,
-    classification_failed,
-    failed_result,
-    verdict_update,
-)
+
+def _load_verdict_module():
+    path = Path(__file__).resolve().parents[2] / "app" / "services" / "images" / "classification_verdict.py"
+    spec = importlib.util.spec_from_file_location("classification_verdict", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_verdict = _load_verdict_module()
+VERDICT_COLUMNS = _verdict.VERDICT_COLUMNS
+MIN_CLASSIFY_SIDE_PX = _verdict.MIN_CLASSIFY_SIDE_PX
+classification_failed = _verdict.classification_failed
+failed_result = _verdict.failed_result
+verdict_update = _verdict.verdict_update
+_below_minimum_size = _verdict.below_minimum_size
 
 pytestmark = pytest.mark.unit
 
@@ -87,8 +97,6 @@ def test_the_classifier_marks_its_own_failures():
 
 
 def test_tiny_images_skip_the_model_call():
-    from app.services.images.classification_verdict import MIN_CLASSIFY_SIDE_PX, below_minimum_size as _below_minimum_size
-
     assert _below_minimum_size({"width": 60, "height": 40})
     assert _below_minimum_size({"width": MIN_CLASSIFY_SIDE_PX - 1, "height": 20})
     assert not _below_minimum_size({"width": MIN_CLASSIFY_SIDE_PX, "height": 30})
