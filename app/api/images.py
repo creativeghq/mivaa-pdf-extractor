@@ -29,6 +29,7 @@ from ..schemas.common import BaseResponse, ProcessingStatus
 from ..schemas.api_responses import ImageReclassifyResponse, SegmentResponse
 from ..services.integrations.material_kai_service import MaterialKaiService, get_material_kai_service
 from ..services.core.supabase_client import get_supabase_client
+from ..services.images.classification_verdict import classification_failed, verdict_update
 from ..dependencies import get_current_user, resolve_workspace_id
 from ..middleware.jwt_auth import User
 from ..utils.ssrf_guard import assert_safe_url, SSRFError
@@ -880,25 +881,16 @@ async def reclassify_image(
 
         final_classification = primary_classification
 
-        # Update database with new classification
+        if classification_failed(final_classification):
+            refund_operation(current_user, _billed, "image_reclassify")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Classification service failed, nothing was changed: {final_classification.get('reason')}",
+            )
+
         is_material = final_classification.get('is_material', False)
         new_category = 'product' if is_material else 'general'
-
-        update_data = {
-            'classification': 'material' if is_material else 'non-material',
-            'confidence': final_classification.get('confidence', 0.0),
-            'category': new_category,
-            'metadata': {
-                **image_data.get('metadata', {}),
-                'ai_classification': {
-                    'is_material': is_material,
-                    'confidence': final_classification.get('confidence'),
-                    'reason': final_classification.get('reason'),
-                    'model': final_classification.get('model'),
-                    'reclassified_at': datetime.utcnow().isoformat()
-                }
-            }
-        }
+        update_data = verdict_update(image_data.get('metadata'), final_classification, "reclassify_endpoint")
 
         logger.info(f"💾 Updating database with new classification: {new_category}")
 

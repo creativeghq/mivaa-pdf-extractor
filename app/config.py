@@ -379,10 +379,6 @@ class Settings(BaseSettings):
         default="",
         env="ANTHROPIC_API_KEY"
     )
-    anthropic_model_classification: str = Field(
-        default="claude-haiku-4-5",
-        env="ANTHROPIC_MODEL_CLASSIFICATION"
-    )
     # Vision analysis, product discovery, stage-4 validation and the document
     # classifier all read this. Moved off `claude-opus-4-8` for issue #393 — same
     # $5/$25 pricing, current generation. Safe only because
@@ -398,6 +394,9 @@ class Settings(BaseSettings):
         default="",
         env="ANTHROPIC_MODEL_VISION_CHECKER"
     )
+    # Image classification stays on Opus: Haiku 4.5 dropped 32 of 110 real product photos and
+    # Sonnet 5 dropped 5 (tile catalogue, 2026-10-31). Declared ONCE: a second declaration
+    # of the same field silently overrides the first.
     anthropic_model_classification: str = Field(
         default="claude-opus-5",
         env="ANTHROPIC_MODEL_CLASSIFICATION"

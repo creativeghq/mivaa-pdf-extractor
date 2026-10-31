@@ -21,6 +21,7 @@ from app.services.images.vision_provider import VisionProvider
 from app.services.pdf.pdf_processor import PDFProcessor
 # PageConverter removed - using simple PDF page numbers instead
 from app.config import get_settings
+from app.services.images.classification_verdict import MIN_CLASSIFY_SIDE_PX, below_minimum_size
 
 
 
@@ -571,9 +572,29 @@ class ImageProcessingService:
 
             return img_data
 
-        # Batch images to keep memory bounded.
         material_images = []
         non_material_images = []
+
+        # Icons, badges and pictograms are smaller than any product photo; measured on a
+        # 2026 tile catalogue, 0 of 110 product images were under 150px on the long side.
+        classifiable: List[Dict[str, Any]] = []
+        for img_data in extracted_images:
+            if below_minimum_size(img_data):
+                img_data['ai_classification'] = {
+                    'is_material': False,
+                    'confidence': 1.0,
+                    'reason': f'Under {MIN_CLASSIFY_SIDE_PX}px on the long side: an icon or badge, not a photograph',
+                    'classification': 'DECORATIVE',
+                    'model': 'size_prefilter',
+                }
+                non_material_images.append(img_data)
+            else:
+                classifiable.append(img_data)
+        if len(classifiable) != len(extracted_images):
+            logger.info(f"   ⏭️ Skipped {len(extracted_images) - len(classifiable)} image(s) under {MIN_CLASSIFY_SIDE_PX}px (no model call)")
+        extracted_images = classifiable
+
+        # Batch images to keep memory bounded.
         total_images = len(extracted_images)
 
         for batch_start in range(0, total_images, batch_size):

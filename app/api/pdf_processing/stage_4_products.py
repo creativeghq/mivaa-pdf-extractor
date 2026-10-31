@@ -2099,8 +2099,9 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
     Returns:
         Candidate fields including: material_category, finish, design_style,
         pattern (+ patterns list), texture (+ textures list), appearance_colors,
-        application, category, subcategory, description, detected_text,
-        vision_confidence.
+        application, category, subcategory, description, vision_confidence.
+        OCR text is deliberately not rolled up: on a catalogue it is page furniture
+        (headings, page numbers, table cells), never text printed on the material.
     """
     if not vision_rows:
         return {}
@@ -2117,7 +2118,6 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
     categories: List[str] = []
     subcategories: List[str] = []
     descriptions: List[str] = []
-    all_detected_text: List[str] = []
     confidences: List[float] = []
 
     for row in vision_rows:
@@ -2186,13 +2186,6 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
         if isinstance(desc, str) and desc.strip():
             descriptions.append(desc.strip())
 
-        # Schema field: detected_text (OCR-style list).
-        dt = va.get("detected_text")
-        if isinstance(dt, list):
-            for t in dt:
-                if isinstance(t, str) and t.strip():
-                    all_detected_text.append(t.strip())
-
         # Schema field: confidence (0.0-1.0).
         conf = va.get("confidence")
         if isinstance(conf, (int, float)) and 0.0 <= float(conf) <= 1.0:
@@ -2252,9 +2245,6 @@ def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]
         # Pick the most-descriptive (longest) — descriptions are typically unique
         # per image; majority vote rarely converges. Length is the best signal.
         candidates["vision_description"] = max(descriptions, key=len)
-
-    if all_detected_text:
-        candidates["detected_text"] = _dedupe_pretty(all_detected_text, cap=20)
 
     if confidences:
         # Mean confidence across the product's images.
@@ -2373,7 +2363,6 @@ def _merge_enriched_fields_into_metadata(
     fill_if_empty("category", vision_candidates.get("category"), "vision_rollup", container="appearance")
     fill_if_empty("subcategory", vision_candidates.get("subcategory"), "vision_rollup", container="appearance")
     fill_if_empty("vision_description", vision_candidates.get("vision_description"), "vision_rollup", container="appearance")
-    fill_if_empty("detected_text", vision_candidates.get("detected_text"), "vision_rollup", container="appearance")
     fill_if_empty("vision_confidence", vision_candidates.get("vision_confidence"), "vision_rollup")
 
     vision_colors = vision_candidates.get("appearance_colors")

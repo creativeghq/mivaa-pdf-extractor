@@ -2496,7 +2496,8 @@ class RAGService:
     async def _classify_image_material(
         self,
         image_base64: str,
-        confidence_threshold: float = 0.6
+        confidence_threshold: float = 0.6,
+        media_type: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Classify if an image shows material content using Claude Opus vision
@@ -2511,15 +2512,25 @@ class RAGService:
         """
         try:
 
+            from app.services.images.classification_verdict import failed_result
+
             anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
             if not anthropic_api_key:
                 self.logger.warning("ANTHROPIC_API_KEY not set, skipping classification")
-                return {'is_material': False, 'confidence': 0.0, 'reason': 'API key missing'}
+                return failed_result('claude-opus-5', 'API key missing')
 
             if not self.classification_prompt:
                 error_msg = "CRITICAL: Classification prompt not found in database. Add via /admin/ai-configs with prompt_type='classification', stage='image_analysis', category='image_classification'"
                 self.logger.error(f"❌ {error_msg}")
                 raise ValueError(error_msg)
+
+            if not media_type:
+                import base64 as _b64
+                from app.services.pdf.embedded_image_format import sniff_media_type
+                try:
+                    media_type = sniff_media_type(_b64.b64decode(image_base64[:64] + '=' * (-len(image_base64[:64]) % 4)))
+                except Exception:
+                    media_type = 'image/jpeg'
 
             # Tool-use schema mirrors the existing database prompt's expected
             # output shape — classification + confidence + reasoning, plus
@@ -2545,7 +2556,7 @@ class RAGService:
                                 'type': 'image',
                                 'source': {
                                     'type': 'base64',
-                                    'media_type': 'image/jpeg',
+                                    'media_type': media_type,
                                     'data': image_base64,
                                 },
                             },
@@ -2559,10 +2570,10 @@ class RAGService:
                 )
             except ToolCallNotReturned as e:
                 self.logger.warning(f"No tool_use in classification response: {e}")
-                return {'is_material': False, 'confidence': 0.0, 'reason': 'No tool_use block returned'}
+                return failed_result('claude-opus-5', 'No tool_use block returned')
             except Exception as e:
                 self.logger.error(f"Anthropic classification failed: {e}")
-                return {'is_material': False, 'confidence': 0.0, 'reason': f'API error: {str(e)[:120]}'}
+                return failed_result('claude-opus-5', f'API error: {str(e)[:120]}')
 
             result = call.data
             classification = result.get('classification', 'DECORATIVE')
@@ -2587,8 +2598,9 @@ class RAGService:
             }
 
         except Exception as e:
+            from app.services.images.classification_verdict import failed_result
             self.logger.warning(f"Image classification failed: {e}")
-            return {'is_material': False, 'confidence': 0.0, 'reason': f'Error: {str(e)}'}
+            return failed_result('claude-opus-5', f'Error: {str(e)}')
 
     async def _search_chunks_by_embedding(
         self,

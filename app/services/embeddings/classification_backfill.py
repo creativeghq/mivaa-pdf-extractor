@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.config import get_settings
 from app.services.core.supabase_client import get_supabase_client
+from app.services.images.classification_verdict import classification_failed, verdict_update
+from app.services.pdf.embedded_image_format import sniff_media_type
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.embeddings.understanding_backfill import (
     _analyze_one,
@@ -72,24 +73,11 @@ async def _stamp_verdict(
     both paths leave rows in the same shape.
     """
     client = get_supabase_client().client
-    is_material = bool(classification.get("is_material", False))
-    meta = dict(row.get("metadata") or {})
-    meta["ai_classification"] = {
-        "is_material": is_material,
-        "confidence": classification.get("confidence"),
-        "reason": classification.get("reason"),
-        "model": classification.get("model"),
-        "classification": classification.get("classification"),
-        "classification_pending": False,
-        "reclassified_at": datetime.utcnow().isoformat(),
-        "reclassified_by": "classification_backfill",
-    }
-    update_data = {
-        "classification": "material" if is_material else "non-material",
-        "confidence": classification.get("confidence", 0.0),
-        "category": "product" if is_material else "general",
-        "metadata": meta,
-    }
+    try:
+        update_data = verdict_update(row.get("metadata"), classification, "classification_backfill")
+    except ValueError as e:
+        logger.error(f"❌ Refusing to stamp a failed classification for image {row['id']}: {e}")
+        return False
     try:
         result = await asyncio.to_thread(
             client.table("document_images").update(update_data)
@@ -129,7 +117,7 @@ async def _embed_confirmed_material(
             f"a later /admin/understanding-embeddings/backfill run"
         )
 
-    data_url = f"data:image/jpeg;base64,{base64.b64encode(image_bytes).decode('utf-8')}"
+    data_url = f"data:{sniff_media_type(image_bytes)};base64,{base64.b64encode(image_bytes).decode('utf-8')}"
     embedding_result = await embeddings_svc.generate_all_embeddings(
         entity_id=image_id,
         entity_type="image",
@@ -240,13 +228,11 @@ async def backfill_pending_classifications(
         classification = await rag_service._classify_image_material(
             image_base64=image_b64,
             confidence_threshold=0.6,
+            media_type=sniff_media_type(image_bytes),
         )
         # A failed re-classification keeps the quarantine marker so the next
         # run retries — do NOT stamp a verdict derived from an API error.
-        cls_model = str(classification.get("model") or "")
-        if ("error" in classification or "_failed" in cls_model
-                or "_empty_response" in cls_model
-                or "API key missing" in str(classification.get("reason") or "")):
+        if classification_failed(classification):
             return "failed"
 
         if not await _stamp_verdict(row, classification):
