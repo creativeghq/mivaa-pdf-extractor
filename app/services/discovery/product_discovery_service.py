@@ -1805,12 +1805,10 @@ class ProductDiscoveryService:
                         for page_idx in page_indices
                     )
 
-                    # Append supplementary pages text (packaging, care, compliance)
-                    # so metadata extraction can find shared catalog metadata
-                    if supplementary_text:
-                        product_text += "\n\n--- SUPPLEMENTARY CATALOG PAGES (packaging, compliance, care) ---\n\n" + supplementary_text
-
-                    self.logger.info(f"      Using {len(product_text):,} characters ({len(page_indices)} product pages + supplementary)")
+                    self.logger.info(
+                        f"      Using {len(product_text):,} characters ({len(page_indices)} product pages) "
+                        f"+ {len(supplementary_text):,} shared supplementary"
+                    )
 
                     # Get category hint: product-level metadata first, then upload-level fallback
                     category_hint = (
@@ -1824,7 +1822,8 @@ class ProductDiscoveryService:
                     extracted = await metadata_extractor.extract_metadata(
                         pdf_text=product_text,
                         category_hint=category_hint,
-                        product_name=product.name
+                        product_name=product.name,
+                        shared_text=supplementary_text,
                     )
 
                     # Merge extracted metadata with existing metadata

@@ -151,6 +151,7 @@ class AICallLogger:
         image_pixels: Optional[int] = None,
         usage_log_id: Optional[str] = None,
         invocation_id: Optional[str] = None,
+        cache_usage: Optional[Dict[str, int]] = None,
     ) -> bool:
         """
         Log an AI call to the database.
@@ -307,6 +308,7 @@ class AICallLogger:
                     "error": error_message,
                     "invocation_id": invocation_id,
                     **({"image_pixels": int(image_pixels)} if image_pixels is not None else {}),
+                    **(cache_usage or {}),
                 },
             }
             if usage_log_id:
@@ -463,6 +465,12 @@ class AICallLogger:
             # Extract token usage from Claude response
             input_tokens = response.usage.input_tokens if hasattr(response, 'usage') else 0
             output_tokens = response.usage.output_tokens if hasattr(response, 'usage') else 0
+            # Provider input_tokens EXCLUDES cache reads/writes; recorded so cache hit rate is visible.
+            usage = getattr(response, 'usage', None)
+            cache_usage = {
+                k: int(getattr(usage, k, 0) or 0)
+                for k in ("cache_read_input_tokens", "cache_creation_input_tokens")
+            }
 
             # Calculate cost based on model
             cost = self._calculate_claude_cost(model, input_tokens, output_tokens)
@@ -540,6 +548,7 @@ class AICallLogger:
                 product_id=product_id,
                 image_id=image_id,
                 unbilled_reason=unbilled_reason,
+                cache_usage=cache_usage,
             )
 
         except Exception as e:

@@ -68,6 +68,8 @@ def _model_supports_temperature(model: str) -> bool:
 class _Usage:
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
 
 
 @dataclass
@@ -122,6 +124,8 @@ def _parse_anthropic_response(data: Dict[str, Any]) -> ClaudeResponse:
         usage=_Usage(
             input_tokens=int(usage.get("input_tokens", 0) or 0),
             output_tokens=int(usage.get("output_tokens", 0) or 0),
+            cache_read_input_tokens=int(usage.get("cache_read_input_tokens", 0) or 0),
+            cache_creation_input_tokens=int(usage.get("cache_creation_input_tokens", 0) or 0),
         ),
     )
 
@@ -545,6 +549,8 @@ async def tracked_claude_stream_async(
                 usage = message.get("usage") or {}
                 response.usage.input_tokens = int(usage.get("input_tokens", 0) or 0)
                 response.usage.output_tokens = int(usage.get("output_tokens", 0) or 0)
+                response.usage.cache_read_input_tokens = int(usage.get("cache_read_input_tokens", 0) or 0)
+                response.usage.cache_creation_input_tokens = int(usage.get("cache_creation_input_tokens", 0) or 0)
 
             elif etype == "content_block_start":
                 index = int(event.get("index", 0))
