@@ -24,6 +24,24 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _link_new_images(db, document_id: str, workspace_id: str, products: List[Dict[str, Any]],
+                     pages_of: Dict[str, List[int]], pages: set, since: str) -> int:
+    """Link this run's material images on `pages` to every product whose page_range holds them."""
+    new = (db.table("document_images").select("id,page_number,metadata").eq("document_id", document_id)
+           .gte("created_at", since).in_("page_number", sorted(pages)).execute().data or [])
+    rows = []
+    for n in new:
+        if ((n.get("metadata") or {}).get("ai_classification") or {}).get("is_material") is False:
+            continue
+        for product in products:
+            if n.get("page_number") in pages_of[product["id"]]:
+                rows.append({"workspace_id": product.get("workspace_id") or workspace_id, "product_id": product["id"],
+                             "image_id": n["id"], "metadata": {"association_method": "image_redo"}})
+    for i in range(0, len(rows), 500):
+        db.table("image_product_associations").upsert(rows[i:i + 500], on_conflict="image_id,product_id").execute()
+    return len(rows)
+
+
 async def run_image_redo(document_id: str, workspace_id: str, user_id: Optional[str],
                          product_ids: Optional[List[str]] = None, allow_restore: bool = True,
                          log: Optional[logging.Logger] = None, run_sourcing: bool = True) -> Dict[str, Any]:
@@ -89,7 +107,7 @@ async def _redo(document_id: str, workspace_id: str, user_id: Optional[str], pro
     q = q.in_("id", product_ids) if product_ids else q.eq("source_document_id", document_id)
     products = q.execute().data or []
     vecs = get_vecs_service()
-    summary: Dict[str, Any] = {"products": len(products), "retired": 0, "new_images": 0, "per_product": []}
+    summary: Dict[str, Any] = {"products": len(products), "retired": 0, "new_images": 0, "links": 0, "per_product": []}
     redo_started = _now()
     pages_of = {p["id"]: [int(x) for x in ((p.get("metadata") or {}).get("page_range") or []) if str(x).isdigit()]
                 for p in products}
@@ -104,8 +122,9 @@ async def _redo(document_id: str, workspace_id: str, user_id: Optional[str], pro
 
         linked = [r["image_id"] for r in (db.table("image_product_associations").select("image_id")
                                           .eq("product_id", product["id"]).execute().data or [])]
+        # Rows this run already created and linked from a shared page are not "old".
         old = (db.table("document_images").select("id,metadata").in_("id", linked).eq("document_id", document_id)
-               .execute().data or []) if linked else []
+               .lt("created_at", redo_started).execute().data or []) if linked else []
         if old:
             await vecs.delete_embeddings_by_image_ids([r["id"] for r in old])
             for r in old:
@@ -124,23 +143,13 @@ async def _redo(document_id: str, workspace_id: str, user_id: Optional[str], pro
                 config={"material_category": product.get("category")}, logger=log, product_db_id=product["id"],
             )
             done_pages.update(todo)
+        # Linked as soon as they exist: an interrupted run must never leave a product with no images.
+        summary["links"] += _link_new_images(db, document_id, workspace_id, products, pages_of, set(pages), redo_started)
         summary["per_product"].append({"product": product["name"], "pages": len(pages), "processed": len(todo), "retired": len(old)})
         log.info(f"🖼️ Image redo {product['name']}: retired {len(old)}, processed {len(todo)} of {len(pages)} pages")
 
-    new = (db.table("document_images").select("id,page_number,metadata").eq("document_id", document_id)
-           .gte("created_at", redo_started).execute().data or [])
-    rows = []
-    for n in new:
-        if ((n.get("metadata") or {}).get("ai_classification") or {}).get("is_material") is False:
-            continue
-        for product in products:
-            if n.get("page_number") in pages_of[product["id"]]:
-                rows.append({"workspace_id": product.get("workspace_id") or workspace_id, "product_id": product["id"],
-                             "image_id": n["id"], "metadata": {"association_method": "image_redo"}})
-    for i in range(0, len(rows), 500):
-        db.table("image_product_associations").upsert(rows[i:i + 500], on_conflict="image_id,product_id").execute()
-    summary["new_images"] = len(new)
-    summary["links"] = len(rows)
+    summary["new_images"] = len(db.table("document_images").select("id").eq("document_id", document_id)
+                                .gte("created_at", redo_started).execute().data or [])
 
     if not run_sourcing:
         return summary
