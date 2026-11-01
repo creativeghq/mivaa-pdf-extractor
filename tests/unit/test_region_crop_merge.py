@@ -32,3 +32,21 @@ def test_regions_without_an_image_under_them_and_tables_are_untouched():
     table = _region(80, 480, kind="TABLE")
     out = merge_split_photo_regions([table, _region(510, 700)], [], _identity)
     assert out == [table, _region(510, 700)]
+
+
+def test_a_full_page_photo_the_layout_model_did_not_box_gets_its_own_crop():
+    from app.services.pdf.region_crop_extractor import unboxed_photo_regions
+    bound, zoom = fitz.Rect(0, 0, 600, 900), 2.0
+    photo = {"rect": fitz.Rect(30, 90, 560, 800), "dpi": 72}
+    out = unboxed_photo_regions([], [photo], bound, zoom, _identity)
+    assert len(out) == 1 and out[0]["source"] == "embedded_image_rect"
+    assert (out[0]["x"], out[0]["y"], out[0]["width"]) == (60, 180, 1060)
+
+
+def test_a_boxed_photo_or_a_small_swatch_gets_no_second_crop():
+    from app.services.pdf.region_crop_extractor import unboxed_photo_regions
+    bound = fitz.Rect(0, 0, 600, 900)
+    photo = {"rect": fitz.Rect(30, 90, 560, 800), "dpi": 72}
+    swatch = {"rect": fitz.Rect(10, 10, 60, 40), "dpi": 24}
+    assert unboxed_photo_regions([_region(100, 700, 40, 550)], [photo], bound, 1.0, _identity) == []
+    assert unboxed_photo_regions([], [swatch], bound, 1.0, _identity) == []

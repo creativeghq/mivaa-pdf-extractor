@@ -43,6 +43,9 @@ _MIN_CROP_PX = 8
 # never above this: past it the file grows and the picture does not.
 MAX_PHOTO_CROP_DPI = 600
 PHOTO_REGION_TYPES = ("IMAGE", "FIGURE")
+# A placed photo this large that no layout region touches is cropped on its own: the layout
+# model does not box a full-bleed photo, and the page's only other capture is a whole-spread render.
+UNBOXED_PHOTO_MIN_PAGE_SHARE = 0.15
 
 
 def _embedded_images(page: "fitz.Page", bound: "fitz.Rect") -> List[Dict[str, Any]]:
@@ -96,6 +99,25 @@ def merge_split_photo_regions(regions: List[Dict[str, Any]], images: List["fitz.
     return [r for i, r in enumerate(regions) if i not in used] + merged
 
 
+def unboxed_photo_regions(regions: List[Dict[str, Any]], embedded: List[Dict[str, Any]], bound: "fitz.Rect", zoom: float, to_pdf) -> List[Dict[str, Any]]:
+    """Large placed photos no photo region overlaps, as regions in the render's pixel grid."""
+    page_area = bound.width * bound.height
+    photos = [to_pdf(r) for r in regions if r["region_type"] in PHOTO_REGION_TYPES]
+    out: List[Dict[str, Any]] = []
+    for e in embedded:
+        rect = e["rect"]
+        if page_area <= 0 or (rect.width * rect.height) / page_area < UNBOXED_PHOTO_MIN_PAGE_SHARE:
+            continue
+        if any(_covered_by(p, rect, 0.5) or _covered_by(rect, p, 0.5) for p in photos):
+            continue
+        out.append({
+            "x": (rect.x0 - bound.x0) * zoom, "y": (rect.y0 - bound.y0) * zoom,
+            "width": rect.width * zoom, "height": rect.height * zoom,
+            "region_type": "IMAGE", "confidence": None, "reading_order": None, "source": "embedded_image_rect",
+        })
+    return out
+
+
 async def extract_region_crops_for_physical_pages(
     *,
     file_content: bytes,
@@ -105,7 +127,6 @@ async def extract_region_crops_for_physical_pages(
     image_dir: str,
     job_id: Optional[str] = None,
     logger: Any = None,
-    covered_pages_out: Optional[Set[int]] = None,
 ) -> List[Dict[str, Any]]:
     """Crop IMAGE/FIGURE regions from the PaddleOCR layout cache, spread-aware.
 
@@ -119,8 +140,6 @@ async def extract_region_crops_for_physical_pages(
             whose files later get uploaded to storage).
         job_id: optional job id for log context.
         logger: optional logger.
-        covered_pages_out: filled with every physical page that HAS a layout analysis,
-            whether or not it holds a region; a full-page render is redundant for those.
 
     Returns:
         List of `image_info` dicts shaped exactly like the old
@@ -142,7 +161,6 @@ async def extract_region_crops_for_physical_pages(
         document_id=document_id,
         physical_pages=physical_pages,
         logger=log,
-        covered_pages_out=covered_pages_out,
     )
 
     if not regions_by_page:
@@ -167,9 +185,9 @@ async def extract_region_crops_for_physical_pages(
         doc = fitz.open(stream=file_content, filetype="pdf")
 
         for physical_page in sorted(set(physical_pages)):
-            regions = regions_by_page.get(physical_page)
-            if not regions:
+            if physical_page not in regions_by_page:
                 continue
+            regions = regions_by_page[physical_page]
 
             # Resolve (pdf_idx, position) — same logic Stage 1.5 used.
             if has_spread_layout and physical_page in physical_to_pdf_map:
@@ -198,6 +216,7 @@ async def extract_region_crops_for_physical_pages(
 
                 embedded = _embedded_images(page, bound_rect)
                 regions = merge_split_photo_regions(regions, [e["rect"] for e in embedded], to_pdf)
+                regions = regions + unboxed_photo_regions(regions, embedded, bound_rect, zoom, to_pdf)
             except Exception as render_err:
                 log.error(
                     f"   ❌ [Job: {job_id}] failed to render physical page "
@@ -258,6 +277,7 @@ async def extract_region_crops_for_physical_pages(
                             "region_reading_order": region.get("reading_order"),
                             "render_dpi": round(crop_dpi),
                             "merged_regions": region.get("merged_from"),
+                            "region_source": region.get("source") or "layout",
                             "caption": None,
                             "bbox": [
                                 x / img_w,
@@ -299,15 +319,12 @@ async def _load_layout_regions_for_physical_pages(
     document_id: Optional[str],
     physical_pages: List[int],
     logger: Any,
-    covered_pages_out: Optional[Set[int]] = None,
 ) -> Dict[int, List[Dict[str, Any]]]:
     """Load IMAGE/FIGURE regions keyed by physical page from the layout cache.
 
-    Queries `document_layout_analysis` by `page_number` IN physical_pages
-    directly (NO +1 offset — Stage 1.5 keys rows by physical page), filtering
-    to `processing_version == 'paddleocr-vl'`. Returns
-    `{physical_page: [{x,y,width,height,region_type,confidence,reading_order}]}`,
-    keeping only IMAGE/FIGURE regions.
+    Rows are keyed by PHYSICAL page (no +1 offset). Returns
+    `{physical_page: [{x,y,width,height,region_type,confidence,reading_order}]}`; a page
+    analysed with no such region maps to [], so an unboxed photo can still be cropped.
     """
     if not document_id or not physical_pages:
         return {}
@@ -341,8 +358,6 @@ async def _load_layout_regions_for_physical_pages(
             page_num = int(row["page_number"])
         except (TypeError, ValueError, KeyError):
             continue
-        if covered_pages_out is not None:
-            covered_pages_out.add(page_num)
         elements = row.get("layout_elements") or []
         if not isinstance(elements, list):
             continue
@@ -374,8 +389,7 @@ async def _load_layout_regions_for_physical_pages(
             except Exception:
                 continue
 
-        if regions:
-            by_page[page_num] = regions
+        by_page.setdefault(page_num, []).extend(regions)
 
     if by_page:
         total = sum(len(v) for v in by_page.values())
