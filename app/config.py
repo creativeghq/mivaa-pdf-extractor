@@ -550,7 +550,7 @@ class Settings(BaseSettings):
         description="Display/stats name for the served model."
     )
     paddleocr_inference_timeout: int = Field(
-        default=420,
+        default=180,
         env="PADDLEOCR_INFERENCE_TIMEOUT",
         description="Per-call /parse timeout (s). Warm parses are ~1-3s; the budget covers dense pages."
     )

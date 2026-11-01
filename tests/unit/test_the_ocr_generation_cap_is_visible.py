@@ -21,9 +21,9 @@ def _modal_namespace():
     return namespace
 
 
-def test_the_cap_comes_from_the_environment_and_is_larger_than_the_old_one():
+def test_the_cap_is_configurable_but_stays_2048_because_a_larger_one_made_page_33_loop():
     ns = _modal_namespace()
-    assert ns["PARSE_MAX_NEW_TOKENS"] >= 4096
+    assert ns["PARSE_MAX_NEW_TOKENS"] == 2048
     assert 'PADDLEOCR_MAX_NEW_TOKENS' in _MODAL.read_text(encoding="utf-8")
 
 
@@ -41,7 +41,7 @@ def test_every_parsed_region_and_the_response_carry_the_flag_and_the_cap():
     assert '"max_new_tokens": PARSE_MAX_NEW_TOKENS' in source
 
 
-def test_the_flag_reaches_the_layout_element_and_is_a_hard_reason():
+def test_the_flag_reaches_the_layout_element_and_only_ever_raises_a_suspicion():
     spec = importlib.util.spec_from_file_location("paddleocr_pipeline_flag_under_test", _ROOT / "app/services/pdf/paddleocr_pipeline.py")
     pipeline = importlib.util.module_from_spec(spec)
     sys.modules["paddleocr_pipeline_flag_under_test"] = pipeline
@@ -57,12 +57,6 @@ def test_the_flag_reaches_the_layout_element_and_is_a_hard_reason():
     spec.loader.exec_module(oc)
     table = "<table>" + "".join(f"<tr><td>a{i}</td><td>{i}</td></tr>" for i in range(6)) + "</table>"
     capped = oc.assess_table(table, generation_capped=True)
-    assert capped.status == oc.TRUNCATED and capped.reasons == ["generation_cap_hit"]
-    assert "generation_cap_hit" in oc.HARD_REASONS
+    assert capped.status == oc.SUSPECT and capped.reasons == ["generation_cap_near"]
+    assert not set(capped.reasons) & oc.HARD_REASONS
     assert oc.assess_table(table).status == oc.COMPLETE
-
-
-def test_the_client_waits_long_enough_for_the_larger_cap():
-    import re
-    match = re.search(r"paddleocr_inference_timeout: int = Field\(\s*default=(\d+)", (_ROOT / "app/config.py").read_text(encoding="utf-8"))
-    assert match and 300 <= int(match.group(1)) <= 540

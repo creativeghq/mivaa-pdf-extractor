@@ -21,7 +21,7 @@ MAX_CONTAINERS = int(os.environ.get("PADDLEOCR_MAX_CONTAINERS", "8"))        # a
 # leaves a slot so a /health probe never waits a full parse behind in-flight work.
 MAX_CONCURRENT = int(os.environ.get("PADDLEOCR_MAX_CONCURRENT", "2"))
 PADDLE_VERSION = os.environ.get("PADDLEOCR_PADDLE_VERSION", "3.2.1")
-PARSE_MAX_NEW_TOKENS = int(os.environ.get("PADDLEOCR_MAX_NEW_TOKENS", "4096"))
+PARSE_MAX_NEW_TOKENS = int(os.environ.get("PADDLEOCR_MAX_NEW_TOKENS", "2048"))
 CAP_SUSPECT_CHARS_PER_TOKEN = 2.7
 CAP_SUSPECT_SHARE = 0.9
 

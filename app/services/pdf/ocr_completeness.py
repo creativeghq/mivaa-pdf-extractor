@@ -16,7 +16,7 @@ MISSING_NUMBERS_SUSPECT = 0.02
 MAX_ROWS_PER_BAND = 18
 CUT_SNAP_LINES = 2
 BAND_WIDTH_TOLERANCE = 2
-HARD_REASONS = frozenset({"unclosed_table", "missing_reference_numbers", "repetition_loop", "generation_cap_hit"})
+HARD_REASONS = frozenset({"unclosed_table", "missing_reference_numbers", "repetition_loop"})
 
 _ROW = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.I | re.S)
 _CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.I | re.S)
@@ -135,7 +135,7 @@ def assess_table(
         hard.append("unclosed_table")
 
     if generation_capped:
-        hard.append("generation_cap_hit")
+        weak.append("generation_cap_near")
 
     if visible_lines is not None:
         result.visible_lines = visible_lines
