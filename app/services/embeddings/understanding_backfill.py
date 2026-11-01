@@ -40,6 +40,7 @@ async def _fetch_stale_images(
     meant stale rows past the first `limit` ids were never reached.
     """
     from app.services.embeddings.classification_backfill import (
+        NOT_AWAITING_SOURCING_FILTER,
         NOT_QUARANTINED_FILTER,
         is_quarantined,
     )
@@ -61,7 +62,7 @@ async def _fetch_stale_images(
             "document_id, workspace_id, page_number, metadata"
         )
         .or_(
-            f"and(or({NOT_QUARANTINED_FILTER}),or("
+            f"and(or({NOT_QUARANTINED_FILTER}),or({NOT_AWAITING_SOURCING_FILTER}),or("
             "has_understanding_embedding.is.null,has_understanding_embedding.is.false,"
             f"understanding_schema_version.is.null,understanding_schema_version.lt.{int(SCHEMA_VERSION)},"
             f"understanding_embedding_model.is.null,understanding_embedding_model.not.like.voyage*){settled})"

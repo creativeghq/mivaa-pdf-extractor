@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 
 #: PostgREST `or=` members equal to `not is_quarantined(row)`. NULL-safe: a bare
 #: `neq.true` would drop every row that has no classification marker at all.
+#: A low-resolution crop Stage 3 deferred for image sourcing (#525) is embedded by that step,
+#: once, on whichever image wins; a sweep embedding it first pays twice for a picture being replaced.
+NOT_AWAITING_SOURCING_FILTER = (
+    "metadata->image_quality->>sourcing.is.null,"
+    "metadata->image_quality->>sourcing.neq.pending"
+)
 NOT_QUARANTINED_FILTER = (
     "metadata->ai_classification->>classification_pending.is.null,"
     "metadata->ai_classification->>classification_pending.neq.true"

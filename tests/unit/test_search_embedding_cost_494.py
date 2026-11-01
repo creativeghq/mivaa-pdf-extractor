@@ -246,7 +246,7 @@ def test_backfills_filter_stale_rows_before_the_limit():
     fetch = _function(_UNDERSTANDING, "_fetch_stale_images")
     assert fetch.index(".or_(") < fetch.index(".limit(")
     aspect = _function(_ASPECT, "_fetch_stale_aspect_images")
-    assert aspect.index(".or_(stale_aspect_rows_filter())") < aspect.index(".limit(")
+    assert aspect.index(".or_(stale_aspect_rows_filter(") < aspect.index(".limit(")
     chunks = _function(_TEXT, "_fetch_chunks_missing_embedding")
     assert chunks.index('.neq("content", "")') < chunks.index(".limit(")
 
