@@ -132,7 +132,7 @@ def log_haiku_call(
     success: bool = True,
     error_message: Optional[str] = None,
 ) -> None:
-    # Resolved through ai_model_pricing, not restated. `claude-haiku-4-5` has a row there, and a
+    # Resolved through ai_model_pricing, not restated. `claude-haiku-5-5` has a row there, and a
     # literal beside it is a second USD source that keeps the old number after any admin edit.
     raw = haiku_token_cost(input_tokens, output_tokens)
     # A successful call reporting no tokens is an accounting failure, not a cheap call
@@ -145,7 +145,7 @@ def log_haiku_call(
         )
     log_external_call(
         operation_type=f"job_research.{operation}",
-        model_name="claude-haiku-4-5-20251001",
+        model_name="claude-haiku-5-5",
         raw_cost_usd=raw,
         attribution=attribution,
         input_tokens=input_tokens,

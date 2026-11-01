@@ -307,7 +307,7 @@ def _response_to_body(response) -> dict:
             for b in (getattr(response, "content", None) or [])
         ]
     }
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = "claude-haiku-5-5"
 _ANTHROPIC_VERSION = "2023-06-01"
 
 

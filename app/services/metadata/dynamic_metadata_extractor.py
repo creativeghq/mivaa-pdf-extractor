@@ -580,7 +580,7 @@ class DynamicMetadataExtractor:
             self.logger.info("💰 Metadata extraction cache hit — skipping Claude call")
             return copy.deepcopy(cached)
 
-        model = os.environ.get("METADATA_EXTRACTOR_MODEL", "claude-haiku-4-5")
+        model = os.environ.get("METADATA_EXTRACTOR_MODEL", "claude-haiku-5-5")
         content: Any = prompt
         if shared_block:
             content = [
@@ -910,7 +910,7 @@ class DynamicMetadataExtractor:
         try:
             call = await call_with_tool(
                 task="field_role_classification",
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 max_tokens=1500,
                 system=system_prompt,
                 tool=classify_tool,
@@ -1151,7 +1151,7 @@ class MetadataScopeDetector:
         from app.services.core.claude_helper import tracked_claude_call_async
         response = await tracked_claude_call_async(
             task="metadata_scope_detection",
-            model="claude-haiku-4-5",
+            model="claude-haiku-5-5",
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
         )

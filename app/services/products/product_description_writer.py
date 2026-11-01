@@ -10,7 +10,7 @@ from app.services.utilities.prompt_registry import get_cached, render
 
 logger = logging.getLogger(__name__)
 
-DESCRIPTION_MODEL = os.getenv("PRODUCT_DESCRIPTION_MODEL", "claude-haiku-4-5")
+DESCRIPTION_MODEL = os.getenv("PRODUCT_DESCRIPTION_MODEL", "claude-haiku-5-5")
 
 MAX_INPUT_CHARS = 6000  # ~1500 tokens — plenty for product context without overspend
 

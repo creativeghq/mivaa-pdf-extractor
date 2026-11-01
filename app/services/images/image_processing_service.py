@@ -249,7 +249,7 @@ class ImageProcessingService:
 
                 # Through the shared forced-tool helper (#33 item 2). This was a raw httpx POST
                 # that priced its own spend from a constant commented "Claude Opus 4.7 pricing"
-                # while calling `claude-opus-5`, so every image in every catalogue was booked at
+                # while calling `claude-opus-5-5`, so every image in every catalogue was booked at
                 # another model's rate. `ai_model_pricing` is the one USD source; a hardcoded
                 # price does not fail, it produces a plausible number.
                 from app.services.core.claude_tool_call import (

@@ -1523,7 +1523,7 @@ class ProductCreationService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="product_classification_stage1",
-                model="claude-haiku-4-5",
+                model="claude-haiku-5-5",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,
@@ -1551,7 +1551,7 @@ class ProductCreationService:
             # twin above. This one matters more per call: it is Opus.
             #
             # The model also comes from settings rather than being restated as
-            # "claude-opus-5" in the log — the two had to agree by hand, and the
+            # "claude-opus-5-5" in the log — the two had to agree by hand, and the
             # hardcoded price tables fixed elsewhere in this session are what a
             # restated model name eventually costs.
             from app.services.core.claude_helper import tracked_claude_call_async
@@ -1592,7 +1592,7 @@ class ProductCreationService:
             latency_ms = int((time.time() - start_time) * 1000)
             await self.ai_logger.log_ai_call(
                 task="product_enrichment_stage2",
-                model="claude-opus-5",
+                model="claude-opus-5-5",
                 input_tokens=0,
                 output_tokens=0,
                 cost=0.0,

@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/internal/tabular", tags=["Spreadsheet questions"
 
 MAX_FILE_BYTES = 15 * 1024 * 1024
 SUPPORTED_EXTENSIONS = {"xlsx", "xlsm", "xls", "csv", "tsv", "txt"}
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-haiku-5-5"
 
 
 def _agent_module():

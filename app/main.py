@@ -825,7 +825,7 @@ MIVAA is the core backend service powering the Material Kai Vision Platform, pro
 
 ### AI Models
 1. **Voyage AI**: voyage-4-large index / voyage-4 query (1024D), voyage-multimodal-3.5 pages; GPT-4o-mini (query understanding)
-2. **Anthropic**: Claude Haiku 4.5 (fast classification), Claude Opus (deep enrichment)
+2. **Anthropic**: Claude Haiku 5.5 (fast classification), Claude Opus (deep enrichment)
 3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), PaddleOCR-VL (structural pass: layout + OCR + figure boxes) — vision is on Anthropic Claude.
 4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
 5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
@@ -984,12 +984,12 @@ Get your token from the frontend application or Supabase authentication.
             {"name": "Search Suggestions", "description": "Search UX helpers - Auto-complete, trending searches, typo correction, query expansion, popular searches, and personalized suggestions."},
             {"name": "Embeddings", "description": "Multi-vector embedding generation - 7 types: text (1024D Voyage AI), visual (768D SLIG), understanding (1024D), color/texture/style/material (768D each)."},
             {"name": "Chat", "description": "AI chat interface - Contextual completions, conversation history, and intelligent material assistance."},
-            {"name": "Products", "description": "Product management - Two-stage AI classification (Claude Haiku 4.5 + Opus), enrichment, metadata extraction, and product creation from chunks."},
+            {"name": "Products", "description": "Product management - Two-stage AI classification (Claude Haiku 5.5 + Opus), enrichment, metadata extraction, and product creation from chunks."},
             {"name": "Image Analysis", "description": "Image processing - Extraction, analysis, embedding generation, OCR, reclassification, and segmentation for material images."},
             {"name": "Knowledge Base", "description": "Documentation system - CRUD documents with AI embeddings (1024D Voyage AI), semantic search, category hierarchy, product attachments, version history, and comments."},
             {"name": "Saved Searches", "description": "Saved search management - Create, list, execute, and delete saved searches with AI-powered deduplication."},
             {"name": "Duplicate Detection", "description": "Product duplicate detection - Single and batch detection, merge/undo operations, status tracking, and merge history (same-factory scope)."},
-            {"name": "Anthropic Claude", "description": "Claude integration - Image validation and product enrichment using Claude Haiku 4.5 (fast) and Opus (deep)."},
+            {"name": "Anthropic Claude", "description": "Claude integration - Image validation and product enrichment using Claude Haiku 5.5 (fast) and Opus (deep)."},
             {"name": "Interior Design", "description": "Interior design generation - AI-powered room renders with streaming progress feedback."},
             {"name": "Price Monitoring", "description": "Competitor price tracking - On-demand and scheduled monitoring via Firecrawl. Price history, alerts (drop/increase/change), statistics, source management. 1 credit/scrape."},
             {"name": "Data Import", "description": "Batch data import - XML and web-scraping sources with job tracking, processing history, and health checks."},
@@ -1275,7 +1275,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
                     # visible alongside everything else in ai_usage_logs.
                     response = tracked_claude_call(
                         task="anthropic_health_check",
-                        model="claude-haiku-4-5",
+                        model="claude-haiku-5-5",
                         max_tokens=1,
                         messages=[{"role": "user", "content": "hi"}],
                         # There is no tenant behind a health probe. Declared, so
@@ -2030,7 +2030,7 @@ def custom_openapi():
         "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
         "vector_search": "7 specialized embedding types (text, visual, understanding, color, texture, style, material)",
         "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
-        "ai_models": "Claude Opus, Sonnet 4.6, Haiku 4.5, GPT-4o-mini, SLIG, Voyage AI",
+        "ai_models": "Claude Opus, Sonnet 5.5, Haiku 5.5, GPT-4o-mini, SLIG, Voyage AI",
         "material_recognition": "Claude Opus (Anthropic vision)",
         "embedding_models": "Voyage AI voyage-4 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
         "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",

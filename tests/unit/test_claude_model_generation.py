@@ -8,13 +8,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCAN_ROOTS = ["app", "modal_app", "scripts"]
 SKIP_PARTS = {".venv", "venv", "__pycache__", "node_modules", ".git", "build", "dist"}
 
-#: ``claude-haiku-4-5`` is deliberately absent — it is the current Haiku.
+#: Retired or superseded ids. The current tier is Opus 5.5 / Sonnet 5.5 / Haiku 5.5.
 RETIRED = re.compile(
-    r"claude-(?:opus-4-(?:6|7|8)|sonnet-4-(?:5|6|7)|3(?:-[a-z0-9-]+)?|2|instant)\b"
+    r"claude-(?:opus-4-(?:6|7|8)|sonnet-4-(?:5|6|7)|sonnet-4-2025\d+|opus-5(?![-.\d])"
+    r"|sonnet-5(?![-.\d])|haiku-4-5|3(?:-[a-z0-9-]+)?|2|instant)\b"
 )
 
 #: Files whose whole job is to name the old ids.
-ALLOWED = {"tests/unit/test_claude_model_generation.py"}
+ALLOWED = {
+    "tests/unit/test_claude_model_generation.py",
+    # What each model accepts — it names the one model that still takes sampling parameters.
+    "app/services/core/claude_models.py",
+}
 
 _BLOCK_COMMENT = re.compile(r'("""|\'\'\')(?:.|\n)*?\1')
 #: Anchored to the start of a line, matching the convention the other 26 sweeps in this suite
@@ -68,6 +73,6 @@ def test_no_retired_claude_model_id_in_executable_code() -> None:
             hits.append(f"{rel}:{line} -> {match.group(0)}")
 
     assert not hits, (
-        "Retired Claude model ids in live code. Use claude-opus-5 / claude-sonnet-5 / "
-        "claude-haiku-4-5 (Haiku 4.5 IS current):\n  " + "\n  ".join(hits)
+        "Retired Claude model ids in live code. Use claude-opus-5-5 / claude-sonnet-5-5 / "
+        "claude-haiku-5-5:\n  " + "\n  ".join(hits)
     )

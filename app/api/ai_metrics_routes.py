@@ -131,7 +131,7 @@ class AIMetricsResponse(BaseModel):
       },
       "model_usage": [
         {
-          "model": "claude-opus-5",
+          "model": "claude-opus-5-5",
           "call_count": 500,
           "total_cost": 8.50,
           "total_tokens": 300000,
@@ -140,7 +140,7 @@ class AIMetricsResponse(BaseModel):
           "fallback_count": 10
         },
         {
-          "model": "claude-haiku-4-5",
+          "model": "claude-haiku-5-5",
           "call_count": 750,
           "total_cost": 3.95,
           "total_tokens": 150000,
@@ -155,7 +155,7 @@ class AIMetricsResponse(BaseModel):
           "call_count": 600,
           "total_cost": 5.20,
           "average_confidence": 0.89,
-          "models_used": ["claude-haiku-4-5"]
+          "models_used": ["claude-haiku-5-5"]
         }
       ],
       "confidence_distribution": [

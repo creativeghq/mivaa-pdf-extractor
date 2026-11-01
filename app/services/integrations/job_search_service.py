@@ -1161,7 +1161,7 @@ async def discover_local_job_boards(
         "content-type": "application/json",
     }
     payload = {
-        "model": "claude-haiku-4-5-20251001",
+        "model": "claude-haiku-5-5",
         "max_tokens": 400,
         "tools": [_BOARD_DISCOVERY_TOOL],
         "tool_choice": {"type": "tool", "name": "report_job_boards"},

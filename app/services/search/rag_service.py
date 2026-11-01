@@ -2142,7 +2142,7 @@ class RAGService:
 
             response = await tracked_claude_call_async(
                 task="rag_query_document",
-                model="claude-opus-5",
+                model="claude-opus-5-5",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
                 confidence_score=0.85,
@@ -2176,7 +2176,7 @@ class RAGService:
                 "metadata": {
                     "chunks_retrieved": len(chunks),
                     "processing_time_ms": latency_ms,
-                    "model": "claude-opus-5"
+                    "model": "claude-opus-5-5"
                 }
             }
 
@@ -2298,7 +2298,7 @@ class RAGService:
 
             response = await tracked_claude_call_async(
                 task=f"rag_advanced_query_{query_type}",
-                model="claude-opus-5",
+                model="claude-opus-5-5",
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
                 confidence_score=confidence,
@@ -2352,7 +2352,7 @@ class RAGService:
                     "query_type": query_type,
                     "has_conversation_context": conversation_context is not None,
                     "processing_time_ms": latency_ms,
-                    "model": "claude-opus-5"
+                    "model": "claude-opus-5-5"
                 }
             }
 
@@ -2481,7 +2481,7 @@ class RAGService:
                 'confidence_score': confidence_score,
                 'material_properties': material_properties,
                 'vision_analysis': result,  # full schema-locked dict for embedding
-                'model': 'claude-opus-5'
+                'model': 'claude-opus-5-5'
             }
 
         except Exception as e:
@@ -2517,7 +2517,7 @@ class RAGService:
             anthropic_api_key = os.getenv('ANTHROPIC_API_KEY')
             if not anthropic_api_key:
                 self.logger.warning("ANTHROPIC_API_KEY not set, skipping classification")
-                return failed_result('claude-opus-5', 'API key missing')
+                return failed_result('claude-opus-5-5', 'API key missing')
 
             if not self.classification_prompt:
                 error_msg = "CRITICAL: Classification prompt not found in database. Add via /admin/ai-configs with prompt_type='classification', stage='image_analysis', category='image_classification'"
@@ -2546,7 +2546,7 @@ class RAGService:
             try:
                 call = await call_with_tool(
                     task="rag_image_classification",
-                    model="claude-opus-5",
+                    model="claude-opus-5-5",
                     max_tokens=1024,
                     tool=CLASSIFICATION_TOOL,
                     messages=[{
@@ -2570,10 +2570,10 @@ class RAGService:
                 )
             except ToolCallNotReturned as e:
                 self.logger.warning(f"No tool_use in classification response: {e}")
-                return failed_result('claude-opus-5', 'No tool_use block returned')
+                return failed_result('claude-opus-5-5', 'No tool_use block returned')
             except Exception as e:
                 self.logger.error(f"Anthropic classification failed: {e}")
-                return failed_result('claude-opus-5', f'API error: {str(e)[:120]}')
+                return failed_result('claude-opus-5-5', f'API error: {str(e)[:120]}')
 
             result = call.data
             classification = result.get('classification', 'DECORATIVE')
@@ -2594,13 +2594,13 @@ class RAGService:
                 'reason': reason,
                 'classification': classification,
                 'product_indicators': result.get('product_indicators') or [],
-                'model': 'claude-opus-5'
+                'model': 'claude-opus-5-5'
             }
 
         except Exception as e:
             from app.services.images.classification_verdict import failed_result
             self.logger.warning(f"Image classification failed: {e}")
-            return failed_result('claude-opus-5', f'Error: {str(e)}')
+            return failed_result('claude-opus-5-5', f'Error: {str(e)}')
 
     async def _search_chunks_by_embedding(
         self,

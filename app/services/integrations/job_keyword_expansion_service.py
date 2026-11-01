@@ -121,7 +121,7 @@ async def expand_keywords(
     # the HTTP API has had stable tool_use since 2024-06 and doesn't care about
     # our SDK version.
     payload = {
-        "model": "claude-haiku-4-5-20251001",
+        "model": "claude-haiku-5-5",
         "max_tokens": 600,
         "tools": [_EXPAND_TOOL],
         "tool_choice": {"type": "tool", "name": "submit_expanded_keywords"},

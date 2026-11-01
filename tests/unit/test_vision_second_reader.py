@@ -139,10 +139,10 @@ def test_a_failed_checker_is_recorded_not_silently_absent(vc) -> None:
 
 def test_the_record_names_both_models(vc) -> None:
     rec = vc.build_consensus_record(
-        writer_model="claude-opus-5", checker_model="other",
+        writer_model="claude-opus-5-5", checker_model="other",
         comparison=vc.compare_vision_analyses({"finish": "matte"}, {"finish": "matte"}),
     )
-    assert rec["writer_model"] == "claude-opus-5"
+    assert rec["writer_model"] == "claude-opus-5-5"
     assert rec["checker_model"] == "other"
     assert rec["agreement"] == 1.0
 

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Haiku 4.5 is plenty capable for ceramic tile spec extraction and 10x cheaper
 # than Opus. If results are weak on a specific catalog, we can override via
 # env var without changing code.
-CLAUDE_VISION_MODEL = os.getenv("PRODUCT_SPEC_VISION_MODEL", "claude-haiku-4-5")
+CLAUDE_VISION_MODEL = os.getenv("PRODUCT_SPEC_VISION_MODEL", "claude-haiku-5-5")
 
 # Render DPI for PDF pages. 280 is high enough for the technical-characteristics
 # icon strip (slip resistance / PEI / water absorption glyphs are ~20-30 px tall

@@ -22,7 +22,7 @@ class SearchPromptService:
     ENRICHMENT = "enrichment"
 
     # Haiku — cheap and fast for search augmentation tasks
-    _MODEL = "claude-haiku-4-5"
+    _MODEL = "claude-haiku-5-5"
 
     def __init__(
         self,

@@ -389,15 +389,15 @@ class TestTrendRefusesToCompareAcrossTiers:
     def _cheap_then_frontier(self):
         return [
             _row(probe_run_id="r2", run_at="2026-08-08T00:00:00+00:00",
-                 model="claude-opus-5", mentioned=True, position=1),
+                 model="claude-opus-5-5", mentioned=True, position=1),
             _row(probe_run_id="r1", run_at="2026-08-01T00:00:00+00:00",
-                 model="claude-haiku-4-5-20251001", mentioned=True, position=5),
+                 model="claude-haiku-5-5", mentioned=True, position=5),
         ]
 
     def test_each_point_records_which_models_measured_it(self):
         trend = _FakeService(self._cheap_then_frontier()).visibility_trend("tm", days=30)
-        assert trend["points"][0]["models"] == ["claude-haiku-4-5-20251001"]
-        assert trend["points"][1]["models"] == ["claude-opus-5"]
+        assert trend["points"][0]["models"] == ["claude-haiku-5-5"]
+        assert trend["points"][1]["models"] == ["claude-opus-5-5"]
 
     def test_the_first_point_after_a_change_is_flagged(self):
         trend = _FakeService(self._cheap_then_frontier()).visibility_trend("tm", days=30)
@@ -416,9 +416,9 @@ class TestTrendRefusesToCompareAcrossTiers:
     def test_a_stable_model_set_still_gets_its_answer(self):
         rows = [
             _row(probe_run_id="r2", run_at="2026-08-08T00:00:00+00:00",
-                 model="claude-haiku-4-5-20251001", mentioned=True, position=2),
+                 model="claude-haiku-5-5", mentioned=True, position=2),
             _row(probe_run_id="r1", run_at="2026-08-01T00:00:00+00:00",
-                 model="claude-haiku-4-5-20251001", mentioned=True, position=5),
+                 model="claude-haiku-5-5", mentioned=True, position=5),
         ]
         trend = _FakeService(rows).visibility_trend("tm", days=30)
         assert trend["model_set_changed"] is False

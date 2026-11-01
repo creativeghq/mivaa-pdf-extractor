@@ -8,7 +8,7 @@ the `vecs.image_understanding_embeddings` collection drifts". That was a comment
 comments do not hold. By 2026-08-28 there were four paths and they had drifted into
 three regimes:
 
-    ingestion              claude-opus-5      8192 tokens   thinking on    DB prompt
+    ingestion              claude-opus-5-5      8192 tokens   thinking on    DB prompt
     understanding_backfill claude-opus-4-8    4096 tokens   thinking OFF   hardcoded prompt
     aspect_query           claude-opus-4-8    4096 tokens   thinking OFF
     rag_service            claude-opus-4-8    4096 tokens   thinking OFF

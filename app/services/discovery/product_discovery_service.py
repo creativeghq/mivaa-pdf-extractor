@@ -926,7 +926,7 @@ class ProductDiscoveryService:
         # Call Claude. Use Haiku 4.5 directly — vision retry is best-effort
         # and we cap cost. Opus would be 12× the price for a path that may
         # never succeed (truly non-product PDFs).
-        model_to_use = "claude-haiku-4-5"
+        model_to_use = "claude-haiku-5-5"
         try:
             # Through the tracked helper (#33 item 2). This was the SYNC
             # `messages.create` called from an `async def`, so every vision retry blocked
@@ -1176,7 +1176,7 @@ class ProductDiscoveryService:
         primary_model = _get_settings_disc().anthropic_model_validation
         # Haiku 4.5 is roughly 1/12th the price of Opus per token —
         # acceptable degradation for the retry path.
-        attempts = [primary_model, "claude-haiku-4-5"]
+        attempts = [primary_model, "claude-haiku-5-5"]
         last_error: Optional[Exception] = None
 
         for attempt_idx, model_to_use in enumerate(attempts, start=1):

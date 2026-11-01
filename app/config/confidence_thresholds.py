@@ -191,17 +191,16 @@ class EscalationRules:
     # Model escalation chain (cheapest to most expensive).
     # 2026-05-01: vision is Anthropic-only.
     MODEL_CHAIN = [
-        "claude-haiku-4-5",   # Cheapest vision-capable
-        "claude-sonnet-5",    # Balanced
-        "claude-opus-5",      # Most powerful (for critical tasks)
+        "claude-haiku-5-5",   # Cheapest vision-capable
+        "claude-sonnet-5-5",    # Balanced
+        "claude-opus-5-5",      # Most powerful (for critical tasks)
     ]
 
-    # Cost multipliers (Haiku 4.5 = baseline).
+    # Cost multipliers (Haiku 5.5 = baseline): list price against Haiku's $0.10/$0.50.
     COST_MULTIPLIERS = {
-        "claude-haiku-4-5": 1.0,       # Baseline
-        "claude-sonnet-5": 3.0,        # $3/$15 against Haiku's $1/$5 — was 4.0 for Sonnet 4.6.
-        "claude-opus-5": 5.0,          # $5/$25 against Haiku's $1/$5 — was 12.0,
-                                # a leftover from Opus-3-era $15/$75 pricing.
+        "claude-haiku-5-5": 1.0,
+        "claude-sonnet-5-5": 20.0,     # $2/$10
+        "claude-opus-5-5": 40.0,       # $4/$20
     }
     
     # Maximum escalation attempts before giving up
@@ -253,7 +252,7 @@ class EscalationRules:
         # Check if task is cost-sensitive
         if task_type.lower() in cls.COST_SENSITIVE_TASKS:
             # Don't escalate beyond Haiku
-            haiku_index = cls.MODEL_CHAIN.index("claude-haiku-4-5")
+            haiku_index = cls.MODEL_CHAIN.index("claude-haiku-5-5")
             if current_index >= haiku_index:
                 return None
         
@@ -276,7 +275,7 @@ class EscalationRules:
     @classmethod
     def get_cost_multiplier(cls, model: str) -> float:
         """
-        Get cost multiplier for a model relative to Claude Haiku 4.5 baseline.
+        Get cost multiplier for a model relative to the Claude Haiku 5.5 baseline.
         
         Args:
             model: Model name

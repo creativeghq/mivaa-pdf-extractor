@@ -92,7 +92,7 @@ class UnifiedSearchService:
         # the free-form contract was not holding.
         call = await call_with_tool(
             task="search_query_understanding",
-            model="claude-haiku-4-5",
+            model="claude-haiku-5-5",
             max_tokens=1024,
             system=system_prompt,
             tool={
@@ -167,9 +167,9 @@ class UnifiedSearchService:
 
             # Primary: Anthropic Haiku 4.5 (cheap, structured-output friendly).
             # The variable retains its name for compatibility with downstream
-            # logs / cache writes, but the actual model is `claude-haiku-4-5`.
+            # logs / cache writes, but the actual model is `claude-haiku-5-5`.
             parsed_data = None
-            model_used = "claude-haiku-4-5"
+            model_used = "claude-haiku-5-5"
             try:
                 parsed_data = await self._parse_query_with_haiku(
                     query, system_prompt, workspace_id=workspace_id
@@ -180,7 +180,7 @@ class UnifiedSearchService:
 
             # Fallback: Claude Haiku 4.5.
             if parsed_data is None:
-                model_used = "claude-haiku-4-5"
+                model_used = "claude-haiku-5-5"
                 # Forced tool (#32). This site is the clearest statement of the problem
                 # in the codebase: the system prompt ENDED with "Respond with ONLY a
                 # JSON object, no markdown fences, no explanation" — and the code below
@@ -207,7 +207,7 @@ class UnifiedSearchService:
                 try:
                     call = await call_with_tool(
                         task="search_query_understanding_fallback",
-                        model="claude-haiku-4-5",
+                        model="claude-haiku-5-5",
                         max_tokens=1024,
                         system=system_prompt,
                         tool=_QUERY_TOOL,

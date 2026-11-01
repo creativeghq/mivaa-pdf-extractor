@@ -6,7 +6,7 @@
   (degraded but still correct).
 - Model: Claude Haiku 4.5 by default (good enough for legends which
   are mostly text/logos). Override via env var
-  `CATALOG_LEGEND_VISION_MODEL=claude-opus-5` for tough catalogs.
+  `CATALOG_LEGEND_VISION_MODEL=claude-opus-5-5` for tough catalogs.
 - Per-page cost: ~$0.002-0.005 Haiku. A typical catalog has 4-8 legend
   pages → ~$0.02-0.04 total.
 - Idempotent: checks `documents.metadata.catalog_legends.extracted_at`,
@@ -31,7 +31,7 @@ from app.utils.tenancy import assert_document_in_workspace
 logger = logging.getLogger(__name__)
 
 def _legend_model() -> str:
-    return os.getenv("CATALOG_LEGEND_VISION_MODEL", "claude-haiku-4-5")
+    return os.getenv("CATALOG_LEGEND_VISION_MODEL", "claude-haiku-5-5")
 
 PAGE_RENDER_DPI = 220
 MAX_IMAGE_BYTES = 4_000_000

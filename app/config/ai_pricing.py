@@ -44,7 +44,9 @@ class AIPricingConfig:
             client = get_supabase_client().client
             rows = client.table('ai_model_pricing').select(
                 'model_key, billing_type, input_price_per_million, output_price_per_million, '
-                'cost_per_generation, cost_per_unit, markup_multiplier, is_active'
+                'cost_per_generation, cost_per_unit, markup_multiplier, is_active, '
+                'cache_read_multiplier, cache_write_multiplier, long_context_threshold_tokens, '
+                'long_context_input_price_per_million, long_context_output_price_per_million'
             ).eq('is_active', True).execute()
             cache: Dict[str, Dict] = {}
             for r in (rows.data or []):
@@ -58,6 +60,11 @@ class AIPricingConfig:
                     'cost_per_unit': Decimal(str(r.get('cost_per_unit') or '0')),
                     'markup': Decimal(str(r.get('markup_multiplier') or cls.MARKUP_MULTIPLIER)),
                     'billing_type': r.get('billing_type'),
+                    'cache_read': Decimal(str(r.get('cache_read_multiplier') or '0.10')),
+                    'cache_write': Decimal(str(r.get('cache_write_multiplier') or '1.25')),
+                    'long_threshold': int(r.get('long_context_threshold_tokens') or 0),
+                    'long_input': Decimal(str(r.get('long_context_input_price_per_million') or '0')),
+                    'long_output': Decimal(str(r.get('long_context_output_price_per_million') or '0')),
                 }
             cls._db_pricing_cache = cache
             cls._db_pricing_cache_ts = now
@@ -130,20 +137,31 @@ class AIPricingConfig:
         # call that fell through to this dict was billed at 3x. See
         # _warn_on_pricing_drift below: divergence is now reported rather than
         # discovered by hand a year later.
-        "claude-opus-5": {
-            "input": Decimal("5.00"),
-            "output": Decimal("25.00"),
-            "last_verified": "2026-04-18",
-            "source": "https://www.anthropic.com/pricing",
-            "note": "Default primary model — agent chat, discovery, metadata extraction, consensus validation"
+        "claude-opus-5-5": {
+            "input": Decimal("4.00"),
+            "output": Decimal("20.00"),
+            "cache_read": Decimal("0.05"),
+            "last_verified": "2026-11-01",
+            "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+            "note": "Default primary model — agent chat, discovery, vision, consensus validation"
         },
-        "claude-haiku-4-5": {
-            "input": Decimal("1.00"),
-            "output": Decimal("5.00"),
-            "last_verified": "2026-04-18",
-            "source": "https://www.anthropic.com/pricing",
-            "note": "Default Haiku — background agents, query parsing, reranking"
-        }
+        "claude-sonnet-5-5": {
+            "input": Decimal("2.00"),
+            "output": Decimal("10.00"),
+            "last_verified": "2026-11-01",
+            "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+            "note": "Vision second reader, chunk classification"
+        },
+        "claude-haiku-5-5": {
+            "input": Decimal("0.10"),
+            "output": Decimal("0.50"),
+            "long_threshold": 100_000,
+            "long_input": Decimal("0.50"),
+            "long_output": Decimal("2.50"),
+            "last_verified": "2026-11-01",
+            "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+            "note": "Default Haiku — metadata extraction, background agents, query parsing, reranking"
+        },
     }
 
     # OpenAI Embedding Pricing (per 1M tokens) — embeddings only, chat models removed
@@ -568,25 +586,31 @@ class AIPricingConfig:
         # defaults. Falls through to the static dicts when no row matches.
         db_row = cls._db_lookup(model)
         if db_row is not None and (db_row["input"] or db_row["output"]):
-            return {"input": db_row["input"], "output": db_row["output"]}
+            return {
+                k: db_row[k]
+                for k in ("input", "output", "cache_read", "cache_write",
+                          "long_threshold", "long_input", "long_output")
+                if k in db_row
+            }
 
         all_pricing = cls.get_all_pricing()
 
-        if model in all_pricing:
-            pricing = all_pricing[model]
+        def _rates(pricing: Dict) -> Dict:
             return {
                 "input": pricing.get("input", Decimal("0.00")),
-                "output": pricing.get("output", Decimal("0.00"))
+                "output": pricing.get("output", Decimal("0.00")),
+                **{k: pricing[k] for k in ("cache_read", "cache_write", "long_threshold",
+                                           "long_input", "long_output") if k in pricing},
             }
+
+        if model in all_pricing:
+            return _rates(all_pricing[model])
 
         # Try fuzzy matching for model variants
         model_lower = model.lower()
         for key, pricing in all_pricing.items():
             if key.lower() in model_lower or model_lower in key.lower():
-                return {
-                    "input": pricing.get("input", Decimal("0.00")),
-                    "output": pricing.get("output", Decimal("0.00"))
-                }
+                return _rates(pricing)
 
         # Default fallback pricing (conservative estimate)
         return {
@@ -601,26 +625,41 @@ class AIPricingConfig:
         input_tokens: int,
         output_tokens: int,
         provider: Optional[str] = None,
-        include_markup: bool = True
+        include_markup: bool = True,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> Dict[str, Decimal]:
         """
         Calculate cost for an AI call with optional markup.
 
         Args:
             model: Model name
-            input_tokens: Number of input tokens
+            input_tokens: Number of input tokens (the provider's figure EXCLUDES cache tokens)
             output_tokens: Number of output tokens
             provider: Optional provider hint
             include_markup: If True, returns billed cost with markup (default: True)
+            cache_read_tokens: Prompt tokens read from the cache, billed on the input side
+            cache_write_tokens: Prompt tokens written to the cache, billed on the input side
 
         Returns:
             Dict with 'raw_cost_usd', 'billed_cost_usd', 'markup_multiplier',
             'input_cost_usd', 'output_cost_usd', and 'credits_to_debit'
         """
         pricing = cls.get_model_pricing(model, provider)
+        in_rate, out_rate = pricing["input"], pricing["output"]
+        # A model with two rate cards picks one by the length of the WHOLE prompt.
+        prompt_tokens = int(input_tokens or 0) + int(cache_read_tokens or 0) + int(cache_write_tokens or 0)
+        if pricing.get("long_threshold") and prompt_tokens > pricing["long_threshold"]:
+            in_rate = pricing.get("long_input") or in_rate
+            out_rate = pricing.get("long_output") or out_rate
 
-        input_cost = (Decimal(input_tokens) / Decimal(1_000_000)) * pricing["input"]
-        output_cost = (Decimal(output_tokens) / Decimal(1_000_000)) * pricing["output"]
+        per_m = Decimal(1_000_000)
+        input_cost = (
+            Decimal(input_tokens) / per_m * in_rate
+            + Decimal(int(cache_read_tokens or 0)) / per_m * in_rate * pricing.get("cache_read", Decimal("0.10"))
+            + Decimal(int(cache_write_tokens or 0)) / per_m * in_rate * pricing.get("cache_write", Decimal("1.25"))
+        )
+        output_cost = (Decimal(output_tokens) / per_m) * out_rate
         raw_cost = input_cost + output_cost
 
         # Apply per-model markup (DB row if present, else platform default) — audit #217 H5

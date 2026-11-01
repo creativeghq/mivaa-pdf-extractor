@@ -64,11 +64,11 @@ GEMINI_FLASH_OUTPUT_PER_1K = 0.0004
 
 
 def haiku_token_cost(input_tokens: int, output_tokens: int) -> float:
-    """Raw USD for a Haiku 4.5 call, resolved through `ai_model_pricing`."""
+    """Raw USD for a Haiku call, resolved through `ai_model_pricing`."""
     from app.config.ai_pricing import AIPricingConfig
 
     result = AIPricingConfig.calculate_cost(
-        model="claude-haiku-4-5",
+        model="claude-haiku-5-5",
         input_tokens=int(input_tokens or 0),
         output_tokens=int(output_tokens or 0),
         include_markup=False,   # the loggers apply markup themselves

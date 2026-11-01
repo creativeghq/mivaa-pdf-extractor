@@ -65,7 +65,7 @@ class _Registry:
 def pds(monkeypatch):
     class _Settings:
         default_workspace_id = "ws"
-        anthropic_model_validation = "claude-opus-5"
+        anthropic_model_validation = "claude-opus-5-5"
 
     _stub(monkeypatch, "app.schemas.jobs", ProcessingStage=object)
     _stub(monkeypatch, "app.services.core.ai_call_logger", AICallLogger=object)

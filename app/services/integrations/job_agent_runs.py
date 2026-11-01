@@ -39,7 +39,7 @@ def create_background_agent_for_tracked_job(
             # is the honest descriptor anyway.)
             "trigger_type": "cron",
             "schedule": f"every {refresh_interval_hours}h",
-            "model": "claude-haiku-4-5-20251001",
+            "model": "claude-haiku-5-5",
             "config": {
                 "tracked_job_id": tracked_job_id,
                 "label": label,
@@ -113,7 +113,7 @@ def start_run(
             "status": "processing",
             "triggered_by": triggered_by,
             "input_data": {"refresh_run_id": refresh_run_id},
-            "model_used": "claude-haiku-4-5-20251001",
+            "model_used": "claude-haiku-5-5",
             "started_at": _utc_iso(),
             "last_heartbeat": _utc_iso(),
             "workspace_id": workspace_id,

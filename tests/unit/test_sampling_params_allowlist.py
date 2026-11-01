@@ -40,10 +40,14 @@ pytestmark = pytest.mark.unit
 
 _ROOT = Path(__file__).resolve().parents[2]
 _HELPER = _ROOT / "app" / "services" / "core" / "claude_helper.py"
+_MODELS = _ROOT / "app" / "services" / "core" / "claude_models.py"
 
 #: Models that reject sampling params with a 400. Sending `temperature` to any of
 #: these breaks every call site at once.
 _REJECTS_SAMPLING = (
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
     "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
@@ -58,15 +62,20 @@ def _read_helper() -> str:
     return _HELPER.read_text(encoding="utf-8")
 
 
+def _read_models() -> str:
+    assert _MODELS.exists(), f"missing {_MODELS}"
+    return _MODELS.read_text(encoding="utf-8")
+
+
 def _allowlist_prefixes(src: str) -> list[str]:
-    """Pull the string literals out of the `_MODELS_WITH_TEMPERATURE` tuple."""
+    """Pull the string literals out of the `_ACCEPTS_SAMPLING` tuple."""
     m = re.search(
-        r"^_MODELS_WITH_TEMPERATURE\s*=\s*\((.*?)\)",
+        r"^_ACCEPTS_SAMPLING\s*=\s*\((.*?)\)",
         src,
         re.DOTALL | re.MULTILINE,
     )
     assert m, (
-        "`_MODELS_WITH_TEMPERATURE` not found in claude_helper.py. If it was renamed, "
+        "`_ACCEPTS_SAMPLING` not found in claude_models.py. If it was renamed, "
         "this guard must be renamed with it — do not delete it."
     )
     return re.findall(r"[\"']([^\"']+)[\"']", m.group(1))
@@ -74,15 +83,15 @@ def _allowlist_prefixes(src: str) -> list[str]:
 
 def test_the_gate_is_an_allowlist_not_a_denylist() -> None:
     """A denylist cannot describe a model it has never heard of."""
-    src = _read_helper()
+    src = _read_models()
     # Match the ASSIGNMENT, not the name: the comment above the allowlist explains
     # what the denylist was and why it was wrong, and that prose must stay legal.
-    assert not re.search(r"^_MODELS_WITHOUT_TEMPERATURE\s*=", src, re.MULTILINE), (
+    assert not re.search(r"^_(?:MODELS_WITHOUT_TEMPERATURE|REJECTS_SAMPLING)\s*=", src, re.MULTILINE), (
         "The denylist is back. It fails open: every model absent from it gets "
         "`temperature`, and the current generation answers that with a 400. Use "
-        "`_MODELS_WITH_TEMPERATURE` (allowlist) instead."
+        "`_ACCEPTS_SAMPLING` (allowlist) instead."
     )
-    assert re.search(r"^_MODELS_WITH_TEMPERATURE\s*=", src, re.MULTILINE)
+    assert re.search(r"^_ACCEPTS_SAMPLING\s*=", src, re.MULTILINE)
 
 
 def test_sampling_gate_is_applied_when_building_the_payload() -> None:
@@ -101,7 +110,7 @@ def test_sampling_gate_is_applied_when_building_the_payload() -> None:
 @pytest.mark.parametrize("model", _REJECTS_SAMPLING)
 def test_models_that_reject_sampling_are_not_allowlisted(model: str) -> None:
     """The whole point: these must never be handed a `temperature`."""
-    prefixes = _allowlist_prefixes(_read_helper())
+    prefixes = _allowlist_prefixes(_read_models())
     matched = [p for p in prefixes if model.startswith(p)]
     assert not matched, (
         f"{model} matches allowlist prefix(es) {matched}, so `_build_payload` will "
@@ -117,7 +126,7 @@ def test_allowlist_prefixes_are_specific_enough_to_be_safe() -> None:
     a too-short prefix re-creates the denylist's failure mode silently, because it
     would also match every model Anthropic releases next.
     """
-    for prefix in _allowlist_prefixes(_read_helper()):
+    for prefix in _allowlist_prefixes(_read_models()):
         assert prefix.count("-") >= 1, f"allowlist prefix {prefix!r} is too broad"
         assert prefix not in ("claude-opus", "claude-sonnet", "claude-fable"), (
             f"allowlist prefix {prefix!r} matches a whole model family, including "

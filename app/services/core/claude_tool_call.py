@@ -153,34 +153,44 @@ async def call_with_tool(
 ) -> ToolCallResult:
     """Call Claude with `tool` forced, and return its validated input plus usage."""
     from app.services.core.claude_helper import tracked_claude_call_async
+    from app.services.core.claude_models import rejects_forced_tool_choice
 
-    response = await tracked_claude_call_async(
-        task=task,
-        model=model,
-        confidence_score=(
-            (lambda r: float(extract_tool_input(r, tool["name"]).get(confidence_key)))
-            if confidence_key
-            else _DEFAULT_CONFIDENCE
-        ),
-        max_tokens=max_tokens,
-        system=system,
-        messages=messages,
-        job_id=job_id,
-        user_id=user_id,
-        workspace_id=workspace_id,
-        product_id=product_id,
-        image_id=image_id,
-        request_data=_structured_output_spec("tool", tool["name"], required),
-        extra_kwargs={
-            **(extra_kwargs or {}),
-            # Last, deliberately: the forced tool is this helper's whole contract and a
-            # caller must not be able to unset it by passing its own `tool_choice`.
-            "tools": [tool],
-            "tool_choice": {"type": "tool", "name": tool["name"]},
-        },
-    )
-
-    tool_input = extract_tool_input(response, tool["name"])
+    # Where forcing is a 400 the request goes out as `auto`, so a reply with no tool
+    # block is possible rather than a broken contract: ask once more, never three times.
+    attempts = 2 if rejects_forced_tool_choice(model) else 1
+    for attempt in range(1, attempts + 1):
+        response = await tracked_claude_call_async(
+            task=task,
+            model=model,
+            confidence_score=(
+                (lambda r: float(extract_tool_input(r, tool["name"]).get(confidence_key)))
+                if confidence_key
+                else _DEFAULT_CONFIDENCE
+            ),
+            max_tokens=max_tokens,
+            system=system,
+            messages=messages,
+            job_id=job_id,
+            user_id=user_id,
+            workspace_id=workspace_id,
+            product_id=product_id,
+            image_id=image_id,
+            request_data=_structured_output_spec("tool", tool["name"], required),
+            extra_kwargs={
+                **(extra_kwargs or {}),
+                # Last, deliberately: the forced tool is this helper's whole contract and a
+                # caller must not be able to unset it by passing its own `tool_choice`.
+                "tools": [tool],
+                "tool_choice": {"type": "tool", "name": tool["name"]},
+            },
+        )
+        try:
+            tool_input = extract_tool_input(response, tool["name"])
+            break
+        except ToolCallNotReturned as e:
+            if attempt == attempts or getattr(response, "stop_reason", None) in ("refusal", "max_tokens"):
+                raise
+            logger.warning("%s — asking once more: %s", tool["name"], e)
 
     missing = [k for k in (required or []) if tool_input.get(k) in (None, "")]
     if missing:
@@ -441,7 +451,23 @@ async def stream_with_tool(
             "the elements already streamed are complete, the rest were never written"
         )
 
-    tool_input = extract_tool_input(response, tool["name"])
+    from app.services.core.claude_models import rejects_forced_tool_choice
+
+    try:
+        tool_input = extract_tool_input(response, tool["name"])
+    except ToolCallNotReturned as e:
+        # Sent as `auto` on these models; one non-streamed retry, same as `call_with_tool`.
+        if not rejects_forced_tool_choice(model) or response.stop_reason == "refusal":
+            raise
+        logger.warning("%s — asking once more: %s", tool["name"], e)
+        retried = await call_with_tool(
+            task=task, model=model, messages=messages, tool=tool, max_tokens=max_tokens,
+            system=system, job_id=job_id, user_id=user_id, workspace_id=workspace_id,
+            product_id=product_id, image_id=image_id, required=required,
+            confidence_key=confidence_key, extra_kwargs=extra_kwargs,
+        )
+        yield {"type": "result", "result": retried}
+        return
 
     missing = [k for k in (required or []) if tool_input.get(k) in (None, "")]
     if missing:

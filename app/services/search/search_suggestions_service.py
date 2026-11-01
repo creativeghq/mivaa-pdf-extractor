@@ -486,7 +486,7 @@ class SearchSuggestionsService:
                     from app.services.core.claude_helper import tracked_claude_call_async
                     response = await tracked_claude_call_async(
                         task="search_suggestions_semantic_expansion",
-                        model="claude-haiku-4-5",
+                        model="claude-haiku-5-5",
                         max_tokens=500,
                         temperature=0.3,
                         messages=[{"role": "user", "content": prompt}],

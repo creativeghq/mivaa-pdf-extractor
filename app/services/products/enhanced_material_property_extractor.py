@@ -325,7 +325,7 @@ class EnhancedMaterialPropertyExtractor:
 
         call = await call_with_schema(
             task="material_property_extraction",
-            model="claude-haiku-4-5",
+            model="claude-haiku-5-5",
             max_tokens=2048,
             system=self.system_prompt,
             messages=[{"role": "user", "content": user_content}],

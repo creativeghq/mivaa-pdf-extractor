@@ -24,7 +24,7 @@ __all__ = [
 #: models first: the probe asks who gets named, which needs search, not depth.
 LLM_MODEL_PREFERENCE: Dict[str, List[str]] = {
     "chat_gpt": ["gpt-5.4-mini", "gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini"],
-    "claude": ["claude-haiku-5-5", "claude-haiku-4-5", "claude-sonnet-5"],
+    "claude": ["claude-haiku-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"],
     "gemini": ["gemini-3.5-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite"],
     "perplexity": ["sonar", "sonar-pro"],
 }

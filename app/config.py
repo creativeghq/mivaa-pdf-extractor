@@ -257,7 +257,7 @@ class Settings(BaseSettings):
         env="RAG_EMBEDDING_MODEL"
     )
     rag_llm_model: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         env="RAG_LLM_MODEL"
     )
     rag_chunk_size: int = Field(
@@ -287,7 +287,7 @@ class Settings(BaseSettings):
         env="ENABLE_MULTIMODAL"
     )
     multimodal_llm_model: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         env="MULTIMODAL_LLM_MODEL"
     )
     multimodal_max_tokens: int = Field(
@@ -354,7 +354,7 @@ class Settings(BaseSettings):
         env="IMAGE_PROCESSING_ENABLED"
     )
     image_analysis_model: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         env="IMAGE_ANALYSIS_MODEL"
     )
     image_resize_max_width: int = Field(
@@ -385,7 +385,7 @@ class Settings(BaseSettings):
     # `claude_helper._MODELS_WITH_TEMPERATURE` is now an allowlist: Opus 5 rejects
     # sampling params with a 400, and the old denylist would have sent one.
     anthropic_model_validation: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         env="ANTHROPIC_MODEL_VALIDATION"
     )
     # SECOND reader for vision_analysis (issue #393 Step 4). Empty string = off, which is the
@@ -398,11 +398,11 @@ class Settings(BaseSettings):
     # Sonnet 5 dropped 5 (tile catalogue, 2026-10-31). Declared ONCE: a second declaration
     # of the same field silently overrides the first.
     anthropic_model_classification: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         env="ANTHROPIC_MODEL_CLASSIFICATION"
     )
     anthropic_model_enrichment: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         env="ANTHROPIC_MODEL_ENRICHMENT"
     )
     anthropic_max_tokens: int = Field(
@@ -423,7 +423,7 @@ class Settings(BaseSettings):
     )
     # NEW: Claude for RAG Queries
     anthropic_model_rag_query: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         env="ANTHROPIC_MODEL_RAG_QUERY",
         description="Claude model for RAG question answering"
     )
@@ -443,7 +443,7 @@ class Settings(BaseSettings):
         description="Vision model provider. Anthropic only — there is no other code path."
     )
     vision_guided_model: str = Field(
-        default="claude-opus-5",
+        default="claude-opus-5-5",
         env="VISION_GUIDED_MODEL",
         description="Vision model to use (provider-specific model name)"
     )
@@ -685,7 +685,7 @@ class Settings(BaseSettings):
     # expensive on the most token-heavy step in the pipeline for a marginal
     # accuracy gain.
     chunking_primary_model: str = Field(
-        default="claude-sonnet-5",
+        default="claude-sonnet-5-5",
         env="CHUNKING_PRIMARY_MODEL",
         description="Primary model for chunking (text task — Sonnet 5 default)"
     )

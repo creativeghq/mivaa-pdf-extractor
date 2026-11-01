@@ -11,7 +11,7 @@ from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-haiku-4-5-20251001"
+_MODEL = "claude-haiku-5-5"
 
 # Strings purely in basic ASCII printable range are presumed English already.
 # Falls through pretranslate (no Haiku cost).

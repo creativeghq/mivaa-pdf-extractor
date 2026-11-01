@@ -27,9 +27,7 @@ logger = logging.getLogger(__name__)
 # ────────────────────────────────────────────────────────────────────────────
 
 ANTHROPIC_API_BASE = "https://api.anthropic.com/v1"
-# Use the dated form when calling Anthropic's HTTP API directly — the bare
-# alias `claude-haiku-4-5` 400s. `product_identity_service.py` uses the same.
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = "claude-haiku-5-5"
 
 CLASSIFIER_BATCH_SIZE = 50
 CACHE_TTL_DAYS = 7

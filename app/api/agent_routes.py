@@ -26,7 +26,7 @@ class AgentRunRequest(BaseModel):
     agent_id:      str = Field(..., description="background_agents.id")
     agent_type:    str = Field(..., description="Registry key, e.g. 'product-enrichment'")
     input_data:    Dict[str, Any] = Field(default_factory=dict)
-    model:         Optional[str] = Field(default="claude-haiku-4-5")
+    model:         Optional[str] = Field(default="claude-haiku-5-5")
     system_prompt: Optional[str] = None
     config:        Dict[str, Any] = Field(default_factory=dict)
 
@@ -49,13 +49,13 @@ AGENT_CATALOG = [
         "agentType":    "product-enrichment",
         "name":         "Product Enrichment",
         "description":  "AI-generates descriptions, keywords and category tags for products (large batches)",
-        "defaultModel": "claude-haiku-4-5",
+        "defaultModel": "claude-haiku-5-5",
     },
     {
         "agentType":    "material-tagger",
         "name":         "Material Tagger",
         "description":  "Auto-tags materials with type, color, finish, application",
-        "defaultModel": "claude-haiku-4-5",
+        "defaultModel": "claude-haiku-5-5",
     },
 ]
 
@@ -456,7 +456,7 @@ async def handle_product_enrichment(
             attributes = product.get("attributes") or {}
             result = await call_with_tool(
                 task="agent_product_enrichment",
-                model=req.model or "claude-haiku-4-5",
+                model=req.model or "claude-haiku-5-5",
                 max_tokens=512,
                 system=system,
                 messages=[{"role": "user", "content": _product_record(
@@ -560,7 +560,7 @@ async def handle_material_tagger(
             from app.services.core.claude_tool_call import call_with_tool
             result = await call_with_tool(
                 task="agent_material_tagger",
-                model=req.model or "claude-haiku-4-5",
+                model=req.model or "claude-haiku-5-5",
                 max_tokens=256,
                 system=system,
                 messages=[{"role": "user", "content": _product_record(product)}],

@@ -20,7 +20,7 @@ from app.services.utilities.prompt_registry import load_prompt
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_MODEL = "claude-haiku-5-5"
 SQL_TASK = "tabular_sql"
 ANSWER_TASK = "tabular_answer"
 MAX_ROWS = 100

@@ -48,7 +48,7 @@ def test_no_cost_logger_redefines_a_provider_rate(path: Path):
 
 @pytest.mark.parametrize("path", COST_SITES, ids=lambda p: p.name)
 def test_haiku_is_resolved_not_restated(path: Path):
-    # `claude-haiku-4-5` has an ai_model_pricing row, so its rate is looked up. A literal beside a
+    # `claude-haiku-5-5` has an ai_model_pricing row, so its rate is looked up. A literal beside a
     # DB-backed price keeps the old number forever after an admin edit, silently.
     text = path.read_text(encoding="utf-8")
     assert not re.search(r"HAIKU_(INPUT|OUTPUT)_PER_1K\s*=\s*[0-9]", text), (

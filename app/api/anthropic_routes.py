@@ -234,7 +234,7 @@ async def enrich_product_with_claude(
             "metadata": {
                 "key_features": enrichment_data.get("key_features"),
                 "use_cases": enrichment_data.get("use_cases"),
-                "model_used": "claude-opus-5",
+                "model_used": "claude-opus-5-5",
             },
         }
 
@@ -340,7 +340,7 @@ async def test_claude_integration(
             "claude_response": response_text,
             "processing_time_ms": processing_time,
             "api_key_available": bool(settings.anthropic_api_key),
-            "model_used": "claude-opus-5"
+            "model_used": "claude-opus-5-5"
         }
 
     except Exception as e:

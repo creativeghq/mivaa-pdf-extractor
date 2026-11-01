@@ -39,7 +39,7 @@ def _blank(path: str) -> str:
     return module.blank_comments((_ROOT / path).read_text(encoding="utf-8"))
 
 
-REAL = {"is_material": True, "confidence": 0.93, "reason": "tile swatch", "classification": "PRODUCT_IMAGE", "model": "claude-opus-5"}
+REAL = {"is_material": True, "confidence": 0.93, "reason": "tile swatch", "classification": "PRODUCT_IMAGE", "model": "claude-opus-5-5"}
 
 
 @pytest.mark.parametrize(
@@ -47,12 +47,12 @@ REAL = {"is_material": True, "confidence": 0.93, "reason": "tile swatch", "class
     [
         None,
         {},
-        failed_result("claude-opus-5", "API error: credit balance is too low"),
+        failed_result("claude-opus-5-5", "API error: credit balance is too low"),
         {"is_material": False, "confidence": 0.0, "reason": "API error: 400"},
         {"is_material": False, "confidence": 0.0, "reason": "No tool_use block returned"},
         {"is_material": False, "confidence": 0.0, "reason": "API key missing"},
         {"is_material": False, "confidence": 0.0, "reason": "Error: boom"},
-        {"is_material": False, "model": "claude-opus-5_failed"},
+        {"is_material": False, "model": "claude-opus-5-5_failed"},
     ],
 )
 def test_outages_are_failures(result):
@@ -66,7 +66,7 @@ def test_a_real_verdict_is_not_a_failure():
 
 def test_a_failed_result_cannot_be_written():
     with pytest.raises(ValueError):
-        verdict_update({}, failed_result("claude-opus-5", "API error: x"), "test")
+        verdict_update({}, failed_result("claude-opus-5-5", "API error: x"), "test")
 
 
 def test_verdict_update_writes_only_real_columns_and_clears_quarantine():

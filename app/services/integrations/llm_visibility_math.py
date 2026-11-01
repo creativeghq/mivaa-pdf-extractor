@@ -58,7 +58,7 @@ _DYNAMIC_SEARCH_MIN = (4, 6)
 
 
 def _model_generation(model: str) -> Tuple[Optional[str], Tuple[int, int]]:
-    """(family, (major, minor)) from a Claude id. `claude-haiku-4-5-20251001` is
+    """(family, (major, minor)) from a Claude id. `claude-haiku-5-5` is
     (haiku, (4, 5)) — the trailing date is not a version part."""
     parts = (model or "").strip().lower().split("-")
     if len(parts) < 3 or parts[0] != "claude":

@@ -61,9 +61,9 @@ class ConsensusValidator:
     # a single vision provider — kept the dict structure so future model
     # additions (Sonnet, Haiku 4.6, etc.) can slot in easily.
     MODEL_WEIGHTS = {
-        "claude-haiku-4-5": 0.85,
-        "claude-sonnet-5": 0.95,
-        "claude-opus-5": 1.0,
+        "claude-haiku-5-5": 0.85,
+        "claude-sonnet-5-5": 0.95,
+        "claude-opus-5-5": 1.0,
     }
     
     # Critical tasks requiring consensus validation
@@ -367,7 +367,7 @@ class ConsensusValidator:
                 return {"success": False, "extracted_value": "", "confidence_score": 0.0}
 
         async def haiku_extract(data):
-            return await _extract("claude-haiku-4-5")
+            return await _extract("claude-haiku-5-5")
 
         async def claude_opus_extract(data):
             return await _extract(get_settings().anthropic_model_validation)
@@ -379,7 +379,7 @@ class ConsensusValidator:
             task_type=f"{extraction_type}_extraction",
             task_functions=[haiku_extract, claude_opus_extract],
             task_data=task_data,
-            model_names=["claude-haiku-4-5", get_settings().anthropic_model_validation],
+            model_names=["claude-haiku-5-5", get_settings().anthropic_model_validation],
             job_id=job_id,
         )
         

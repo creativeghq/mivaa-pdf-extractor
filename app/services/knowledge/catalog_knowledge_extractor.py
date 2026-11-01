@@ -22,7 +22,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 KNOWLEDGE_VISION_MODEL = os.getenv(
     "CATALOG_KNOWLEDGE_VISION_MODEL",
-    "claude-haiku-4-5",
+    "claude-haiku-5-5",
 )
 
 PAGE_RENDER_DPI = 200  # lower than spec extraction — knowledge pages are text-heavy

@@ -155,7 +155,7 @@ class ChunkTypeClassificationService:
 
             response = await tracked_claude_call_async(
                 task="chunk_type_classification",
-                model="claude-sonnet-5",
+                model="claude-sonnet-5-5",
                 system=system_prompt,
                 messages=[{
                     "role": "user",

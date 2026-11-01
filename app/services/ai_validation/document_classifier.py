@@ -5,7 +5,7 @@ Two-stage classification system for PDF content:
 1. Fast text classification (product/supporting/administrative/transitional)
 2. Deep enrichment with metadata extraction
 
-Uses Claude Haiku 4.5 for fast classification and Claude Opus for deep analysis.
+Uses Claude Haiku 5.5 for fast classification and Claude Opus for deep analysis.
 """
 
 import asyncio
@@ -56,7 +56,7 @@ class DocumentClassifier:
     """
     Two-stage document classification system.
     
-    Stage 1: Fast text classification using Claude Haiku 4.5
+    Stage 1: Fast text classification using Claude Haiku 5.5
     Stage 2: Deep enrichment using Claude Opus (for product content)
     """
     
@@ -139,7 +139,7 @@ class DocumentClassifier:
         job_id: Optional[str],
     ) -> Dict[str, Any]:
         """
-        Stage 1: Fast classification using Claude Haiku 4.5.
+        Stage 1: Fast classification using Claude Haiku 5.5.
         
         Args:
             content: Text content
@@ -166,7 +166,7 @@ class DocumentClassifier:
 
             response = await tracked_claude_call_async(
                 task="document_classification_stage1",
-                model="claude-haiku-4-5",
+                model="claude-haiku-5-5",
                 max_tokens=256,
                 messages=[{"role": "user", "content": prompt}],
                 job_id=job_id,

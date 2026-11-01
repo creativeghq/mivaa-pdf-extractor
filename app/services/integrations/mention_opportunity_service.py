@@ -47,7 +47,7 @@ DATAFORSEO_LABS_INTENT = "https://api.dataforseo.com/v3/dataforseo_labs/google/s
 DATAFORSEO_LABS_DOMAIN_RANK = "https://api.dataforseo.com/v3/dataforseo_labs/google/domain_rank_overview/live"
 DATAFORSEO_SERP_ORGANIC = "https://api.dataforseo.com/v3/serp/google/organic/live/advanced"
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+HAIKU_MODEL = "claude-haiku-5-5"
 
 # Stopwords for n-gram trending — keep tight so we don't over-prune signal.
 _STOPWORDS = {

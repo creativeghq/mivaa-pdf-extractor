@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Union
 import httpx
 
 from app.config import get_settings
+from app.services.core import claude_models
 from app.services.core.ai_call_logger import AICallLogger
 from app.services.core.supabase_client import get_supabase_client
 from app.utils.retry_helper import async_retry_with_backoff
@@ -47,17 +48,9 @@ _DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
     "validation": 0.9,
 }
 
-# Models where the Anthropic API now rejects the `temperature` parameter
-# (status: deprecated → invalid_request_error 400). Callers can keep passing
-# temperature; we silently drop it for these models so the call still succeeds.
-# Models that ACCEPT sampling parameters (`temperature` / `top_p` / `top_k`).
-_MODELS_WITH_TEMPERATURE = (
-    "claude-haiku-4-5",
-)
-
-
+# Callers can keep passing temperature; it is dropped for models that reject it.
 def _model_supports_temperature(model: str) -> bool:
-    return any(model.startswith(m) for m in _MODELS_WITH_TEMPERATURE)
+    return claude_models.accepts_sampling_params(model)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -106,6 +99,9 @@ class ClaudeResponse:
 def _parse_anthropic_response(data: Dict[str, Any]) -> ClaudeResponse:
     blocks: List[_ContentBlock] = []
     for block in data.get("content") or []:
+        # Nothing here replays an assistant turn, and callers read `content[0].text`.
+        if block.get("type") in claude_models.THINKING_BLOCK_TYPES:
+            continue
         blocks.append(_ContentBlock(
             type=block.get("type", "text"),
             text=block.get("text"),
@@ -150,7 +146,7 @@ def _build_payload(
         payload["system"] = system
     if extra:
         payload.update(extra)
-    return payload
+    return claude_models.shape_request(payload)
 
 
 def _request_headers() -> Dict[str, str]:
@@ -608,7 +604,10 @@ async def tracked_claude_stream_async(
                 detail = (event.get("error") or {}).get("message", "unknown")
                 raise RuntimeError(f"Anthropic stream error: {detail}")
 
-        response.content = [blocks[i] for i in sorted(blocks)]
+        response.content = [
+            blocks[i] for i in sorted(blocks)
+            if blocks[i].type not in claude_models.THINKING_BLOCK_TYPES
+        ]
 
     except BaseException as call_err:
         _uid, _wsid = user_id, workspace_id

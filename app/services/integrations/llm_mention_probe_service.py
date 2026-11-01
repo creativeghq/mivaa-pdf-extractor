@@ -57,13 +57,13 @@ GEMINI_API = "https://generativelanguage.googleapis.com/v1beta/models"
 OPENAI_API = "https://api.openai.com/v1/chat/completions"
 
 # Cheap tier — Haiku uses the dated form because we hit Anthropic's HTTP API directly
-HAIKU = "claude-haiku-4-5-20251001"
+HAIKU = "claude-haiku-5-5"
 GEMINI_FLASH = "gemini-2.0-flash"
 SONAR = "sonar"
 GPT_MINI = "gpt-5-mini"
 
 # Frontier tier (#349 A7) — the models a person is actually answered by.
-OPUS = "claude-opus-5"
+OPUS = "claude-opus-5-5"
 GEMINI_PRO = "gemini-3.1-pro"
 SONAR_PRO = "sonar-pro"
 GPT = "gpt-5"
@@ -110,8 +110,7 @@ TIER_MODELS: Dict[str, List[str]] = {
 
 # Token-cost in USD per 1K tokens (input, output) — for ai_usage_logs
 COST_TABLE: Dict[str, Dict[str, float]] = {
-    HAIKU: {"input": 0.001, "output": 0.005},
-    "claude-haiku-4-5": {"input": 0.001, "output": 0.005},  # alias still tracked
+    HAIKU: {"input": 0.0001, "output": 0.0005},
     GEMINI_FLASH: {"input": 0.00010, "output": 0.0004},
     SONAR: {"input": 0.0010, "output": 0.0010},
     GPT_MINI: {"input": 0.00025, "output": 0.002},

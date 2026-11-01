@@ -158,7 +158,7 @@ class AICallLogger:
         
         Args:
             task: Type of task (document_classification, product_extraction, etc.)
-            model: AI model used (claude-opus-5, claude-haiku-4-5, voyage-4, etc.)
+            model: AI model used (claude-opus-5-5, claude-haiku-5-5, voyage-4, etc.)
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
             cost: Cost in USD
@@ -438,7 +438,7 @@ class AICallLogger:
 
         Args:
             task: Type of task
-            model: Claude model (claude-opus-5, claude-opus-5, claude-haiku-4-5)
+            model: Claude model (claude-opus-5-5, claude-opus-5-5, claude-haiku-5-5)
             response: Claude API response object
             latency_ms: Latency in milliseconds
             confidence_score: Calculated confidence score
@@ -465,7 +465,7 @@ class AICallLogger:
             # Extract token usage from Claude response
             input_tokens = response.usage.input_tokens if hasattr(response, 'usage') else 0
             output_tokens = response.usage.output_tokens if hasattr(response, 'usage') else 0
-            # Provider input_tokens EXCLUDES cache reads/writes; recorded so cache hit rate is visible.
+            # Provider input_tokens EXCLUDES cache reads/writes, so they are billed as separate terms.
             usage = getattr(response, 'usage', None)
             cache_usage = {
                 k: int(getattr(usage, k, 0) or 0)
@@ -473,7 +473,10 @@ class AICallLogger:
             }
 
             # Calculate cost based on model
-            cost = self._calculate_claude_cost(model, input_tokens, output_tokens)
+            cost = self._calculate_claude_cost(
+                model, input_tokens, output_tokens,
+                cache_usage["cache_read_input_tokens"], cache_usage["cache_creation_input_tokens"],
+            )
 
             # Debit credits, and record the outcome either way. The `if user_id:`
             # that used to wrap this was the whole of M3-2: with no principal the
@@ -489,7 +492,9 @@ class AICallLogger:
                     output_tokens=output_tokens,
                     job_id=job_id,
                     metadata={'source': 'claude_api'},
-                    module_slug=module_slug
+                    module_slug=module_slug,
+                    cache_read_tokens=cache_usage["cache_read_input_tokens"],
+                    cache_write_tokens=cache_usage["cache_creation_input_tokens"],
                 )
             elif system_initiated:
                 # Declared by the caller: platform work with no tenant to bill.
@@ -711,9 +716,15 @@ class AICallLogger:
             self.logger.error(f"❌ Failed to log time-based call: {e}")
             return False
 
-    def _calculate_claude_cost(self, model: str, input_tokens: int, output_tokens: int) -> float:
+    def _calculate_claude_cost(
+        self, model: str, input_tokens: int, output_tokens: int,
+        cache_read_tokens: int = 0, cache_write_tokens: int = 0,
+    ) -> float:
         """Calculate cost for Claude API call using centralized pricing (returns billed cost with markup)"""
-        cost_data = ai_pricing.calculate_cost(model, input_tokens, output_tokens, provider="anthropic")
+        cost_data = ai_pricing.calculate_cost(
+            model, input_tokens, output_tokens, provider="anthropic",
+            cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
+        )
         return float(cost_data['billed_cost_usd'])
 
 
@@ -869,7 +880,7 @@ class AICallLogger:
 
         Args:
             page_num: PDF page number processed
-            model: Vision model used (e.g., claude-opus-5, claude-haiku-4-5)
+            model: Vision model used (e.g., claude-opus-5-5, claude-haiku-5-5)
             detections: Number of products detected on page
             confidence: Average detection confidence (0.0-1.0)
             latency_ms: Latency in milliseconds

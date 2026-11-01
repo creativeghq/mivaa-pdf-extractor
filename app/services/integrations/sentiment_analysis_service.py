@@ -73,7 +73,7 @@ class SentimentAnalysisService:
             from app.services.core.claude_helper import tracked_claude_call
             response = tracked_claude_call(
                 task="sentiment_analysis",
-                model="claude-haiku-4-5",
+                model="claude-haiku-5-5",
                 max_tokens=500,
                 temperature=0.1,
                 system="You are an expert sentiment analysis AI. Analyze user feedback and provide structured JSON responses.",
@@ -90,7 +90,7 @@ class SentimentAnalysisService:
 
             # Add metadata
             result["analyzed_at"] = datetime.utcnow().isoformat()
-            result["model_used"] = "claude-haiku-4-5"
+            result["model_used"] = "claude-haiku-5-5"
 
             return result
 

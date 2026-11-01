@@ -143,13 +143,13 @@ class SegmentationService:
         }]
 
     async def _segment_with_anthropic(self, image_base64: str, prompt: str) -> List[Dict[str, Any]]:
-        """Call Anthropic claude-opus-5 for segmentation, schema-locked via tool_use."""
+        """Call Anthropic claude-opus-5-5 for segmentation, schema-locked via tool_use."""
         from app.services.core.claude_tool_call import call_with_tool, ToolCallNotReturned
 
         try:
             result = await call_with_tool(
                 task="image_segmentation",
-                model="claude-opus-5",
+                model="claude-opus-5-5",
                 max_tokens=16384,
                 messages=self._build_messages(image_base64, prompt),
                 tool=self.SEGMENTATION_TOOL,
@@ -206,7 +206,7 @@ class SegmentationService:
         # the permanent one for that image.
         async for event in stream_with_tool(
             task="image_segmentation",
-            model="claude-opus-5",
+            model="claude-opus-5-5",
             max_tokens=16384,
             messages=self._build_messages(image_base64, prompt),
             tool=self.SEGMENTATION_TOOL,

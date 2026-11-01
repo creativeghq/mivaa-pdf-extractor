@@ -171,7 +171,9 @@ class CreditsIntegrationService:
         self,
         model_name: str,
         input_tokens: int,
-        output_tokens: int
+        output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> Dict[str, float]:
         """
         Calculate cost for AI operation based on token usage with 50% markup.
@@ -191,7 +193,9 @@ class CreditsIntegrationService:
             model=model_name,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            include_markup=True
+            include_markup=True,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
 
         return {
@@ -215,10 +219,15 @@ class CreditsIntegrationService:
         output_tokens: int,
         job_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        module_slug: Optional[str] = None
+        module_slug: Optional[str] = None,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> Dict[str, Any]:
         """Debit credits for a token-billed AI operation and log usage with 50% markup."""
-        costs = self.calculate_cost(model_name, input_tokens, output_tokens)
+        costs = self.calculate_cost(
+            model_name, input_tokens, output_tokens,
+            cache_read_tokens=cache_read_tokens, cache_write_tokens=cache_write_tokens,
+        )
         credits = costs['credits_debited']
 
         result = await self._debit_and_log(
