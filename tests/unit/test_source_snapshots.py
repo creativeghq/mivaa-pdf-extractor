@@ -79,7 +79,7 @@ def test_a_snapshot_stores_the_body_privately_and_one_row_keyed_by_content():
     assert out["id"] == "snap-1" and out["sha256"] in db.storage.uploads[0][1]
     assert db.storage.uploads[0][0] == "pdf-documents" and db.storage.uploads[0][2] == "false"
     name, row, conflict = db.rows[0]
-    assert name == "source_snapshots" and conflict == "workspace_id,url,content_sha256"
+    assert name == "source_snapshots" and conflict == "workspace_id,url,content_sha256,document_id"
     assert row["document_id"] == "d1" and row["http_status"] == 200 and row["visible_text_chars"] > 0
 
 

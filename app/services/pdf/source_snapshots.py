@@ -107,5 +107,5 @@ async def store_snapshot(
         "storage_bucket": SNAPSHOT_BUCKET,
         "storage_object_path": path,
     }
-    saved = await asyncio.to_thread(db.table("source_snapshots").upsert(row, on_conflict="workspace_id,url,content_sha256").execute)
+    saved = await asyncio.to_thread(db.table("source_snapshots").upsert(row, on_conflict="workspace_id,url,content_sha256,document_id").execute)
     return {"id": (saved.data or [{}])[0].get("id"), "text": page["text"], "links": page["links"], "sha256": digest}
