@@ -99,7 +99,25 @@ def merge_split_photo_regions(regions: List[Dict[str, Any]], images: List["fitz.
     return [r for i, r in enumerate(regions) if i not in used] + merged
 
 
-def unboxed_photo_regions(regions: List[Dict[str, Any]], embedded: List[Dict[str, Any]], bound: "fitz.Rect", zoom: float, to_pdf) -> List[Dict[str, Any]]:
+def _trim_printed_bands(rect: "fitz.Rect", text_rects: List["fitz.Rect"]) -> "fitz.Rect":
+    """Cut the heading / footer printed over a full-bleed photo off its top and bottom.
+
+    With them left in, the crop is a catalogue page and the classifier rightly rejects it.
+    """
+    top, bottom = rect.y0, rect.y1
+    band = rect.height * 0.25
+    for t in text_rects:
+        if (t & rect).is_empty:
+            continue
+        if t.y1 <= rect.y0 + band:
+            top = max(top, t.y1 + 2)
+        elif t.y0 >= rect.y1 - band:
+            bottom = min(bottom, t.y0 - 2)
+    return fitz.Rect(rect.x0, top, rect.x1, bottom) if bottom - top > rect.height * 0.5 else rect
+
+
+def unboxed_photo_regions(regions: List[Dict[str, Any]], embedded: List[Dict[str, Any]], bound: "fitz.Rect", zoom: float, to_pdf,
+                          text_rects: Optional[List["fitz.Rect"]] = None) -> List[Dict[str, Any]]:
     """Large placed photos no photo region overlaps, as regions in the render's pixel grid."""
     page_area = bound.width * bound.height
     photos = [to_pdf(r) for r in regions if r["region_type"] in PHOTO_REGION_TYPES]
@@ -110,6 +128,7 @@ def unboxed_photo_regions(regions: List[Dict[str, Any]], embedded: List[Dict[str
             continue
         if any(_covered_by(p, rect, 0.5) or _covered_by(rect, p, 0.5) for p in photos):
             continue
+        rect = _trim_printed_bands(rect, text_rects or [])
         out.append({
             "x": (rect.x0 - bound.x0) * zoom, "y": (rect.y0 - bound.y0) * zoom,
             "width": rect.width * zoom, "height": rect.height * zoom,
@@ -216,7 +235,8 @@ async def extract_region_crops_for_physical_pages(
 
                 embedded = _embedded_images(page, bound_rect)
                 regions = merge_split_photo_regions(regions, [e["rect"] for e in embedded], to_pdf)
-                regions = regions + unboxed_photo_regions(regions, embedded, bound_rect, zoom, to_pdf)
+                text_rects = [fitz.Rect(b[:4]) for b in page.get_text("blocks", clip=bound_rect) if b[6] == 0 and b[4].strip()]
+                regions = regions + unboxed_photo_regions(regions, embedded, bound_rect, zoom, to_pdf, text_rects)
             except Exception as render_err:
                 log.error(
                     f"   ❌ [Job: {job_id}] failed to render physical page "

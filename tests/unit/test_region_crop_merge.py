@@ -52,3 +52,12 @@ def test_a_boxed_photo_or_a_small_swatch_gets_no_second_crop():
     swatch = {"rect": fitz.Rect(10, 10, 60, 40), "dpi": 24}
     assert unboxed_photo_regions([_region(100, 700, 40, 550)], [photo], bound, 1.0, _identity) == []
     assert unboxed_photo_regions([], [swatch], bound, 1.0, _identity) == []
+
+
+def test_heading_and_footer_printed_over_a_full_bleed_photo_are_cut_off():
+    from app.services.pdf.region_crop_extractor import unboxed_photo_regions
+    bound = fitz.Rect(0, 0, 600, 900)
+    photo = {"rect": fitz.Rect(0, 0, 600, 900), "dpi": 72}
+    heading, footer = fitz.Rect(40, 20, 400, 50), fitz.Rect(40, 860, 200, 880)
+    out = unboxed_photo_regions([], [photo], bound, 1.0, _identity, [heading, footer])
+    assert (out[0]["y"], out[0]["y"] + out[0]["height"]) == (52, 858)
