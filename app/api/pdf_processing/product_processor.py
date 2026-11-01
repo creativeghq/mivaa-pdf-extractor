@@ -767,7 +767,6 @@ async def process_single_product(
             agg_dimensions: set = set()
             agg_colors: set = set()
             agg_materials: set = set()
-            agg_features: set = set()
             studio_name: Optional[str] = None
             for ch in (chunk_resp.data or []):
                 sm = ((ch.get('metadata') or {}).get('structured_metadata') or {})
@@ -780,7 +779,6 @@ async def process_single_product(
                 for k_src, target_set in (
                     ('colors', agg_colors),
                     ('materials', agg_materials),
-                    ('keyFeatures', agg_features),
                 ):
                     val = sm.get(k_src)
                     if isinstance(val, list):
@@ -798,15 +796,13 @@ async def process_single_product(
             if agg_materials:
                 chunk_aggregated.setdefault('material_properties', {})
                 chunk_aggregated['material_properties']['materials_mentioned'] = sorted(agg_materials)
-            if agg_features:
-                chunk_aggregated['key_features'] = sorted(agg_features)
             if studio_name and not extracted_metadata.get('studio_name'):
                 chunk_aggregated['studio_name'] = studio_name
             if chunk_aggregated:
                 logger_instance.info(
                     f"   📦 Chunk-aggregated structured_metadata: "
                     f"dimensions={len(agg_dimensions)}, colors={len(agg_colors)}, "
-                    f"materials={len(agg_materials)}, features={len(agg_features)}"
+                    f"materials={len(agg_materials)}"
                 )
         except Exception as agg_err:
             logger_instance.warning(
