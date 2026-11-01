@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import fitz  # PyMuPDF
 
 from app.api.pdf_processing.stage_1_layout_precompute import _render_physical_page
+from app.services.pdf.text_layer_extractor import LAYOUT_PROCESSING_VERSIONS, TEXT_LAYER_VERSION
 
 # Which layout-region classifications become `extraction_layer='region_crop'` rows.
 def _crop_region_types() -> tuple:
@@ -248,7 +249,7 @@ async def _load_layout_regions_for_physical_pages(
     by_page: Dict[int, List[Dict[str, Any]]] = {}
 
     for row in rows:
-        if row.get("processing_version") != "paddleocr-vl":
+        if row.get("processing_version") not in LAYOUT_PROCESSING_VERSIONS:
             continue
         try:
             page_num = int(row["page_number"])
@@ -263,6 +264,8 @@ async def _load_layout_regions_for_physical_pages(
             try:
                 region_type = (elem.get("region_type") or "").upper()
                 if region_type not in CROP_REGION_TYPES:
+                    continue
+                if region_type == "TABLE" and (elem.get("metadata") or {}).get("source") == TEXT_LAYER_VERSION:
                     continue
                 bbox_dict = elem.get("bbox") or {}
                 width = float(bbox_dict.get("width", 0)) or 0.0

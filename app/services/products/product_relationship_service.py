@@ -104,6 +104,7 @@ class ProductRelationshipService:
         """Initialize the service with Supabase client."""
         self.supabase = supabase_client
         self.settings = get_settings()
+        self.last_llm_failed_product_ids: List[str] = []
 
     async def find_related_products(
         self,
@@ -244,20 +245,22 @@ class ProductRelationshipService:
             results = await asyncio.gather(*[_worker(p) for p in pids], return_exceptions=True)
 
             edge_rows: List[Dict[str, Any]] = []
-            for r in results:
+            succeeded: List[str] = []
+            self.last_llm_failed_product_ids = []
+            for pid, r in zip(pids, results):
                 if isinstance(r, list):
                     edge_rows.extend(r)
-                elif isinstance(r, Exception):
-                    logger.warning(f"LLM edge worker error: {r}")
+                    succeeded.append(pid)
+                else:
+                    self.last_llm_failed_product_ids.append(pid)
+                    if isinstance(r, Exception):
+                        logger.warning(f"LLM edge worker error for product {pid}: {r}")
+            if self.last_llm_failed_product_ids:
+                logger.error(
+                    f"LLM edge extraction FAILED for {len(self.last_llm_failed_product_ids)} of "
+                    f"{len(pids)} products; their existing llm edges are left untouched"
+                )
 
-            # Refresh: drop prior llm edges for these sources before re-inserting.
-            for i in range(0, len(pids), 100):
-                batch = pids[i:i + 100]
-                self.supabase.table('product_edges').delete().eq(
-                    'workspace_id', workspace_id
-                ).eq('derived_from', 'llm').in_('src_product_id', batch).execute()
-
-            # Dedup within the batch (highest weight per src/dst/type) then upsert.
             deduped: Dict[tuple, Dict[str, Any]] = {}
             for e in edge_rows:
                 k = (e['src_product_id'], e['dst_product_id'], e['edge_type'])
@@ -272,6 +275,18 @@ class ProductRelationshipService:
                     chunk, on_conflict='src_product_id,dst_product_id,edge_type'
                 ).execute()
                 written += len(chunk)
+
+            for i in range(0, len(succeeded), 100):
+                batch = succeeded[i:i + 100]
+                existing = self.supabase.table('product_edges').select(
+                    'id, src_product_id, dst_product_id, edge_type'
+                ).eq('workspace_id', workspace_id).eq('derived_from', 'llm').in_('src_product_id', batch).execute()
+                stale = [
+                    r['id'] for r in (existing.data or [])
+                    if (r['src_product_id'], r['dst_product_id'], r['edge_type']) not in deduped
+                ]
+                for j in range(0, len(stale), 100):
+                    self.supabase.table('product_edges').delete().in_('id', stale[j:j + 100]).execute()
 
             logger.info(
                 f"LLM product edges: wrote {written} from {len(pids)} products "
@@ -318,7 +333,7 @@ class ProductRelationshipService:
         from app.services.core.claude_helper import tracked_claude_call_async
         response = await tracked_claude_call_async(
             task="product_edge_extraction",
-            model="claude-haiku-4-5",
+            model="claude-haiku-5-5",
             max_tokens=1024,
             workspace_id=workspace_id,
             job_id=job_id,
@@ -343,7 +358,7 @@ class ProductRelationshipService:
                     tool_input = candidate
                     break
         if not tool_input:
-            return []
+            raise ValueError("edge extraction returned no tool call")
 
         rows: List[Dict[str, Any]] = []
         seen_dst: set = set()
@@ -452,7 +467,7 @@ class ProductRelationshipService:
             from app.services.core.claude_helper import tracked_claude_call_async
             resp = await tracked_claude_call_async(
                 task="product_relationship_detection",
-                model="claude-haiku-4-5",
+                model="claude-haiku-5-5",
                 max_tokens=512,
                 messages=[{"role": "user", "content": prompt}],
             )

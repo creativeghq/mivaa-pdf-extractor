@@ -245,6 +245,7 @@ class TableExtractor:
                         table=grid,
                         page_number=int(page_number),
                         confidence=float(region.get("confidence") or 0.0),
+                        region_metadata=region.get("metadata") or {},
                     )
                 )
 
@@ -314,7 +315,8 @@ class TableExtractor:
         table: List[List[str]],
         page_number: int,
         layout_region_id: Optional[str] = None,
-        confidence: float = 0.0
+        confidence: float = 0.0,
+        region_metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Convert a parsed row grid to the structured dictionary format.
@@ -344,14 +346,31 @@ class TableExtractor:
             'num_cols': len(headers)
         }
 
+        region_metadata = region_metadata or {}
+        text_layer = region_metadata.get('source') == 'text-layer'
+        metadata: Dict[str, Any] = {}
+        if text_layer:
+            metadata['source'] = 'PDF text layer'
+        if region_metadata.get('title'):
+            metadata['title'] = region_metadata['title']
+        if region_metadata.get('needs_review'):
+            metadata['needs_review'] = True
+            metadata['review_reasons'] = (
+                region_metadata.get('completeness_reasons')
+                or (region_metadata.get('checks') or {}).get('reasons')
+                or []
+            )
+        if region_metadata.get('recovered_by'):
+            metadata['recovered_by'] = region_metadata['recovered_by']
+
         return {
             'page_number': page_number,
             'layout_region_id': layout_region_id,
             'table_data': table_data,
             'headers': headers,
             'confidence': confidence,
-            'extractor': 'paddleocr-vl',
-            'metadata': {}
+            'extractor': 'pymupdf-text' if text_layer else 'paddleocr-vl',
+            'metadata': metadata,
         }
 
     def classify_table_type(self, headers: List[str], table_data: Dict[str, Any]) -> str:

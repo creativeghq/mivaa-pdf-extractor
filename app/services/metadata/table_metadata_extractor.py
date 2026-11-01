@@ -105,6 +105,11 @@ class TableMetadataExtractor:
 
             # Process each table by type
             for table in tables:
+                if (table.get('metadata') or {}).get('needs_review'):
+                    self.logger.info(
+                        f"   Skipping table on page {table.get('page_number')} for enrichment: flagged needs_review"
+                    )
+                    continue
                 table_type = table.get('table_type', 'other')
                 table_data = table.get('table_data', {})
                 headers = table.get('headers', [])

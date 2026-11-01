@@ -43,9 +43,14 @@ async def _fetch_products_missing_embedding(
     return response.data or []
 
 
+CHUNK_ID_BATCH = 100
+
+
 async def _fetch_chunks_missing_embedding(
     limit: int,
     workspace_id: Optional[str],
+    document_id: Optional[str] = None,
+    chunk_ids: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Chunks whose text embedding never landed (flag false or NULL).
 
@@ -53,19 +58,31 @@ async def _fetch_chunks_missing_embedding(
     rows sat at the head of every page and the backfill never got past them.
     """
     client = get_supabase_client().client
-    query = (
-        client.table("document_chunks")
-        .select("id, content, workspace_id")
-        .or_("has_text_embedding.is.null,has_text_embedding.eq.false")
-        .not_.is_("content", "null")
-        .neq("content", "")
-        .order("id")
-        .limit(limit)
-    )
-    if workspace_id:
-        query = query.eq("workspace_id", workspace_id)
-    response = await asyncio.to_thread(query.execute)
-    return [r for r in (response.data or []) if (r.get("content") or "").strip()]
+
+    def build(ids: Optional[List[str]]) -> Any:
+        query = (
+            client.table("document_chunks")
+            .select("id, content, workspace_id")
+            .or_("has_text_embedding.is.null,has_text_embedding.eq.false")
+            .not_.is_("content", "null")
+            .neq("content", "")
+            .order("id")
+            .limit(limit)
+        )
+        if workspace_id:
+            query = query.eq("workspace_id", workspace_id)
+        if document_id:
+            query = query.eq("document_id", document_id)
+        if ids:
+            query = query.in_("id", ids)
+        return query
+
+    batches = [chunk_ids[i:i + CHUNK_ID_BATCH] for i in range(0, len(chunk_ids), CHUNK_ID_BATCH)] if chunk_ids else [None]
+    rows: List[Dict[str, Any]] = []
+    for ids in batches:
+        response = await asyncio.to_thread(build(ids).execute)
+        rows.extend(response.data or [])
+    return [r for r in rows[:limit] if (r.get("content") or "").strip()]
 
 
 async def backfill_product_text_embeddings(
@@ -185,6 +202,8 @@ async def backfill_chunk_text_embeddings(
     max_chunks: int = 500,
     batch_size: int = 50,
     workspace_id: Optional[str] = None,
+    document_id: Optional[str] = None,
+    chunk_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Re-embed document_chunks whose batch embedding never landed.
 
@@ -192,7 +211,10 @@ async def backfill_chunk_text_embeddings(
     per-chunk update with has_text_embedding + provenance columns.
     """
     supabase = get_supabase_client()
-    rows = await _fetch_chunks_missing_embedding(limit=max_chunks, workspace_id=workspace_id)
+    rows = await _fetch_chunks_missing_embedding(
+        limit=max_chunks, workspace_id=workspace_id,
+        document_id=document_id, chunk_ids=chunk_ids,
+    )
     if not rows:
         return {"scanned": 0, "embedded": 0, "failed": 0}
 
@@ -262,6 +284,8 @@ async def backfill_text_embeddings(
     product_ids: Optional[List[str]] = None,
     include_products: bool = True,
     include_chunks: bool = True,
+    document_id: Optional[str] = None,
+    chunk_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Combined entry point for the admin endpoint."""
     summary: Dict[str, Any] = {"ok": True}
@@ -276,6 +300,8 @@ async def backfill_text_embeddings(
             max_chunks=max_chunks,
             batch_size=batch_size,
             workspace_id=workspace_id,
+            document_id=document_id,
+            chunk_ids=chunk_ids,
         )
     logger.info(f"📊 Text-embedding backfill summary: {summary}")
     return summary

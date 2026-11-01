@@ -5,12 +5,34 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import fitz  # PyMuPDF
 from PIL import Image
+
+from app.services.pdf.table_repair import verify_ocr_tables
+from app.services.pdf.text_layer_extractor import (
+    LAYOUT_PROCESSING_VERSIONS,
+    MAX_LOST_NUMBER_SHARE,
+    MIN_NUMBERS_FOR_STRUCTURE_CHECK,
+    OCR_VERSION,
+    ROUTE_OCR,
+    ROUTE_OCR_WITH_REFERENCE,
+    ROUTE_TEXT_LAYER,
+    TEXT_LAYER_VERSION,
+    RouteDecision,
+    assess_text_layer,
+    elements_from_content,
+    extract_page_content,
+    extract_tables,
+    lost_number_share,
+    route_page,
+)
+
+_REPAIR_CALLS_PER_DOCUMENT = 40
 
 
 # Single canonical stage name surfaced to the UI through
@@ -180,6 +202,43 @@ def _pymupdf_spans_in_clip(
                     "h": int(max(1, sy1 - sy0) * PDF_POINTS_TO_PIXEL_ZOOM),
                 })
     return spans
+
+
+def _text_layer_enabled() -> bool:
+    return os.environ.get("STAGE_1_5_TEXT_LAYER", "1") != "0"
+
+
+def _table_repair_enabled() -> bool:
+    return _text_layer_enabled() and os.environ.get("STAGE_1_5_TABLE_REPAIR", "1") != "0"
+
+
+def _plan_page(
+    doc: "fitz.Document", physical_page: int, pdf_idx: int, position: str,
+) -> Tuple[Any, Dict[str, Any], Optional["fitz.Rect"], Optional[List[Dict[str, Any]]]]:
+    page = doc[pdf_idx]
+    clip = _clip_rect_for_position(page, position)
+    if page.rotation:
+        return RouteDecision(ROUTE_OCR, ["rotated_page"], {"rotation": page.rotation}), {"words": []}, clip, None
+    content = extract_page_content(page, clip, include_tables=False)
+    verdict = assess_text_layer(content["words"], content["image_coverage"])
+    if verdict.usable:
+        content["tables"], content["table_error"] = extract_tables(page, clip)
+    decision = route_page(
+        verdict, content["words"], [tuple(t["bbox"]) for t in content["tables"]],
+        content["blocks"], content["page_width"], content["largest_image"],
+    )
+    if content.get("table_error"):
+        decision.stats["table_error"] = content["table_error"]
+    elements = None
+    if decision.route == ROUTE_TEXT_LAYER:
+        origin = (clip.x0, clip.y0) if clip is not None else (0.0, 0.0)
+        elements = elements_from_content(content, physical_page, PDF_POINTS_TO_PIXEL_ZOOM, origin)
+        share, total = lost_number_share(content["words"], elements)
+        decision.stats["lost_number_share"] = round(share, 4)
+        if total >= MIN_NUMBERS_FOR_STRUCTURE_CHECK and share > MAX_LOST_NUMBER_SHARE:
+            decision = RouteDecision(ROUTE_OCR_WITH_REFERENCE, ["elements_lost_numbers"], decision.stats)
+            elements = None
+    return decision, content, clip, elements
 
 
 async def precompute_document_layout(
@@ -359,8 +418,11 @@ async def precompute_document_layout(
     extraction_paths: Dict[str, int] = {
         "paddleocr": 0,
         "paddleocr_no_text": 0,
+        "text_layer": 0,
         "none": 0,
     }
+    repair_budget: Dict[str, int] = {"left": _REPAIR_CALLS_PER_DOCUMENT}
+    table_report: Dict[str, int] = {"checked": 0, "complete": 0, "suspect": 0, "truncated": 0, "recovered": 0, "repair_attempts": 0}
     persisted = 0
 
     # Circuit breaker: if the first pages all fail with HTTP/endpoint errors, the
@@ -389,74 +451,116 @@ async def precompute_document_layout(
         extraction_path = "none"
         layout_elements_payload: List[Dict[str, Any]] = []
         cache_status = "empty_page"
+        processing_version = OCR_VERSION
+        page_notes: Dict[str, Any] = {}
+        page_tables: Dict[str, int] = {}
         page_doc = None
         try:
             page_doc = await asyncio.to_thread(fitz.open, pdf_path)
-            image, _bound_rect = await asyncio.to_thread(
-                _render_physical_page, page_doc, pdf_idx, position
-            )
-            page_w_px, page_h_px = image.size
-            try:
-                paddle_result = await asyncio.to_thread(
-                    paddleocr_manager.run_structural_pass,
-                    image, "stage_1_5_layout_precompute",
-                    physical_page, job_id, document_id,
-                )
-                regions = paddle_result.get("regions") or []
-                layout_elements_payload = regions_to_layout_elements(
-                    regions, page_w_px, page_h_px, physical_page
-                )
-                if layout_elements_payload:
-                    has_text = any(
-                        (el.get("text_content") or "").strip()
-                        for el in layout_elements_payload
+            reference: Optional[Dict[str, Any]] = None
+            use_text_layer = False
+            if _text_layer_enabled():
+                try:
+                    decision, content, clip, planned = await asyncio.to_thread(
+                        _plan_page, page_doc, physical_page, pdf_idx, position
                     )
-                    cache_status = "success" if has_text else "paddleocr_no_text"
-                    extraction_path = "paddleocr" if has_text else "paddleocr_no_text"
-                else:
-                    # Zero regions. Only call it an empty page if the RENDER is
-                    # blank; otherwise the VLM returned nothing for a page that
-                    # visibly has content, which is a failure and must stay
-                    # retryable. "empty_page" is terminal (not in
-                    # _RETRY_CACHE_STATUSES), so getting this wrong permanently
-                    # stores a dense page as blank.
-                    if _rendered_page_is_blank(image):
-                        cache_status = "empty_page"
-                        extraction_path = "none"
-                    else:
-                        cache_status = "ocr_failed"
-                        extraction_path = "none"
-                        async with _state_lock:
-                            _state["http_failures"] += 1
-                        logger.warning(
-                            f"   ⚠️ [STAGE 1.5] physical page {physical_page} rendered "
-                            f"with content but PaddleOCR returned 0 regions — marking "
-                            f"retryable (was silently cached as blank)"
+                except Exception as plan_err:
+                    decision = None
+                    page_notes["route"] = "ocr"
+                    page_notes["route_error"] = f"{type(plan_err).__name__}: {plan_err}"
+                if decision is not None:
+                    page_notes["route"] = decision.route
+                    page_notes["route_reasons"] = decision.reasons
+                    page_notes["text_layer_stats"] = decision.stats
+                    origin = (clip.x0, clip.y0) if clip is not None else (0.0, 0.0)
+                    if decision.route == ROUTE_TEXT_LAYER and planned is not None:
+                        use_text_layer = True
+                        layout_elements_payload = planned
+                        has_text = any((el.get("text_content") or "").strip() for el in layout_elements_payload)
+                        cache_status = "success" if has_text else "empty_page"
+                        extraction_path = "text_layer" if has_text else "none"
+                        processing_version = TEXT_LAYER_VERSION
+                    elif decision.route == ROUTE_OCR_WITH_REFERENCE:
+                        reference = {"words": content["words"], "origin": origin}
+            if not use_text_layer:
+                image, _bound_rect = await asyncio.to_thread(
+                    _render_physical_page, page_doc, pdf_idx, position
+                )
+                page_w_px, page_h_px = image.size
+                try:
+                    paddle_result = await asyncio.to_thread(
+                        paddleocr_manager.run_structural_pass,
+                        image, "stage_1_5_layout_precompute",
+                        physical_page, job_id, document_id,
+                    )
+                    regions = paddle_result.get("regions") or []
+                    layout_elements_payload = regions_to_layout_elements(
+                        regions, page_w_px, page_h_px, physical_page
+                    )
+                    if layout_elements_payload:
+                        has_text = any(
+                            (el.get("text_content") or "").strip()
+                            for el in layout_elements_payload
                         )
-            except PaddleOCRConfigError as cfg_err:
-                cache_status = "ocr_failed"
-                async with _state_lock:
-                    _state["config_error"] = cfg_err
-            except PaddleOCRResponseError as sre:
-                cache_status = "ocr_failed"
-                async with _state_lock:
-                    _state["http_failures"] += 1
-                logger.warning(
-                    f"   ⚠️ [STAGE 1.5] PaddleOCR exhausted retries on physical "
-                    f"page {physical_page}: {sre}"
-                )
-            except Exception as se:
-                cache_status = "ocr_failed"
-                async with _state_lock:
-                    _state["http_failures"] += 1
-                logger.warning(
-                    f"   ⚠️ [STAGE 1.5] PaddleOCR HTTP/endpoint error on physical "
-                    f"page {physical_page}: {se}"
-                )
-            try:
-                image.close()
-            except Exception:
-                pass
+                        cache_status = "success" if has_text else "paddleocr_no_text"
+                        extraction_path = "paddleocr" if has_text else "paddleocr_no_text"
+                        try:
+                            page_tables = await asyncio.to_thread(
+                                verify_ocr_tables, paddleocr_manager, image,
+                                layout_elements_payload, reference,
+                                physical_page, job_id, document_id,
+                                PDF_POINTS_TO_PIXEL_ZOOM, _table_repair_enabled(), repair_budget,
+                            ) if _text_layer_enabled() else {}
+                        except Exception as verify_err:
+                            page_tables = {"error": f"{type(verify_err).__name__}: {verify_err}"}
+                            logger.warning(
+                                f"   ⚠️ [STAGE 1.5] table verification failed on physical "
+                                f"page {physical_page}: {verify_err}"
+                            )
+                    else:
+                        # Zero regions. Only call it an empty page if the RENDER is
+                        # blank; otherwise the VLM returned nothing for a page that
+                        # visibly has content, which is a failure and must stay
+                        # retryable. "empty_page" is terminal (not in
+                        # _RETRY_CACHE_STATUSES), so getting this wrong permanently
+                        # stores a dense page as blank.
+                        if _rendered_page_is_blank(image):
+                            cache_status = "empty_page"
+                            extraction_path = "none"
+                        else:
+                            cache_status = "ocr_failed"
+                            extraction_path = "none"
+                            async with _state_lock:
+                                _state["http_failures"] += 1
+                            logger.warning(
+                                f"   ⚠️ [STAGE 1.5] physical page {physical_page} rendered "
+                                f"with content but PaddleOCR returned 0 regions — marking "
+                                f"retryable (was silently cached as blank)"
+                            )
+                except PaddleOCRConfigError as cfg_err:
+                    cache_status = "ocr_failed"
+                    async with _state_lock:
+                        _state["config_error"] = cfg_err
+                except PaddleOCRResponseError as sre:
+                    cache_status = "ocr_failed"
+                    async with _state_lock:
+                        _state["http_failures"] += 1
+                    logger.warning(
+                        f"   ⚠️ [STAGE 1.5] PaddleOCR exhausted retries on physical "
+                        f"page {physical_page}: {sre}"
+                    )
+                except Exception as se:
+                    cache_status = "ocr_failed"
+                    async with _state_lock:
+                        _state["http_failures"] += 1
+                    logger.warning(
+                        f"   ⚠️ [STAGE 1.5] PaddleOCR HTTP/endpoint error on physical "
+                        f"page {physical_page}: {se}"
+                    )
+                try:
+                    image.close()
+                except Exception:
+                    pass
         except Exception as e:
             cache_status = "page_failed"
             logger.warning(f"   ⚠️ [STAGE 1.5] page {physical_page} failed: {e}")
@@ -476,7 +580,7 @@ async def precompute_document_layout(
             "page_number": physical_page,
             "layout_elements": layout_elements_payload,
             "structure_confidence": 0.85,
-            "processing_version": "paddleocr-vl",
+            "processing_version": processing_version,
             "analysis_metadata": {
                 "stage_1_5": True,
                 "extraction_path": extraction_path,
@@ -487,6 +591,15 @@ async def precompute_document_layout(
                 "has_text_content": any(
                     (el.get("text_content") or "").strip()
                     for el in layout_elements_payload
+                ),
+                **page_notes,
+                "table_checks": page_tables,
+                "needs_review": bool(
+                    page_tables.get("suspect") or page_tables.get("truncated") or page_tables.get("error")
+                    or any(
+                        (el.get("metadata") or {}).get("needs_review")
+                        for el in layout_elements_payload
+                    )
                 ),
             },
         }
@@ -502,11 +615,13 @@ async def precompute_document_layout(
                 # evidence the endpoint is alive. "ocr_failed" / "page_failed" rows
                 # are written precisely so they can be retried — they are the
                 # opposite of a success and must never keep the breaker open.
-                if cache_status in _OCR_PRODUCTIVE_STATUSES:
+                if cache_status in _OCR_PRODUCTIVE_STATUSES and extraction_path != "text_layer":
                     _state["ocr_ok"] += 1
                 extraction_paths[extraction_path] = (
                     extraction_paths.get(extraction_path, 0) + 1
                 )
+                for key in table_report:
+                    table_report[key] += int(page_tables.get(key, 0) or 0)
         except Exception as e:
             logger.warning(
                 f"   ⚠️ [STAGE 1.5] cache write failed for physical "
@@ -645,8 +760,9 @@ async def precompute_document_layout(
     # dead endpoint used to produce a reassuring "✅ Cached 140/140" line.
     summary["pages_ocr_ok"] = ocr_ok
     summary["extraction_paths"] = extraction_paths
+    summary["table_checks"] = table_report
 
-    if ocr_ok < persisted:
+    if ocr_ok + extraction_paths.get("text_layer", 0) < persisted:
         logger.warning(
             f"⚠️ [STAGE 1.5] Cached {persisted}/{len(pages_to_process)} rows but only "
             f"{ocr_ok} carry OCR output — {persisted - ocr_ok} page(s) stored a retry "
@@ -730,7 +846,7 @@ def load_page_texts_from_cache(
 
     out: Dict[int, str] = {}
     for row in (resp.data or []):
-        if row.get("processing_version") != "paddleocr-vl":
+        if row.get("processing_version") not in LAYOUT_PROCESSING_VERSIONS:
             continue
         try:
             pn = int(row["page_number"])  # 1-based physical page
@@ -805,7 +921,7 @@ async def get_layout_from_document_cache_with_status(
         # Gate on processing_version — same as the canonical text reader
         # (load_page_texts_from_cache). Prevents a stale pre-cutover row (e.g.
         # Surya-era) from feeding the chunker as if it were PaddleOCR output.
-        if row.get("processing_version") != "paddleocr-vl":
+        if row.get("processing_version") not in LAYOUT_PROCESSING_VERSIONS:
             continue
         regions = row.get("layout_elements") or []
         if not isinstance(regions, list):
@@ -815,6 +931,7 @@ async def get_layout_from_document_cache_with_status(
             "regions": regions,
             "cache_status": meta.get("cache_status"),
             "extraction_path": meta.get("extraction_path"),
+            "needs_review": bool(meta.get("needs_review")),
         }
 
     non_empty = sum(1 for v in out.values() if v["regions"])

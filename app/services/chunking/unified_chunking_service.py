@@ -57,6 +57,7 @@ class ChunkQualityMetrics:
     exact_duplicates_prevented: int = 0
     low_quality_rejected: int = 0
     final_chunks: int = 0
+    table_chunks_exempt: int = 0
 
 
 class UnifiedChunkingService:
@@ -679,9 +680,47 @@ class UnifiedChunkingService:
             return True
         return False
 
+    CODE_DENSE_RATIO = 0.30
+    TABLE_MIN_DELIMITED_LINES = 3
+    CODE_DENSE_MIN_TOKENS = 8
+
+    def _is_table_like(self, chunk: Chunk) -> bool:
+        meta = chunk.metadata or {}
+        if meta.get('is_table') or meta.get('source') == 'table_block':
+            return True
+        delimited = [ln for ln in chunk.content.split('\n') if ' | ' in ln or '\t' in ln]
+        if len(delimited) < self.TABLE_MIN_DELIMITED_LINES:
+            return False
+        tokens = chunk.content.split()
+        if len(tokens) < self.CODE_DENSE_MIN_TOKENS:
+            return False
+        with_digit = sum(1 for t in tokens if any(c.isdigit() for c in t))
+        return with_digit / len(tokens) >= self.CODE_DENSE_RATIO
+
+    def _split_table_content(self, content: str) -> List[str]:
+        """Split an oversized table by row groups, repeating the header line in each part."""
+        limit = self.config.max_chunk_size * 4
+        if len(content) <= limit:
+            return [content]
+        lines = content.split('\n')
+        header, rows = lines[0], lines[1:]
+        parts: List[str] = []
+        current: List[str] = []
+        size = len(header)
+        for row in rows:
+            if current and size + len(row) + 1 > limit:
+                parts.append('\n'.join([header] + current))
+                current, size = [], len(header)
+            current.append(row)
+            size += len(row) + 1
+        if current:
+            parts.append('\n'.join([header] + current))
+        return parts or [content]
+
     def filter_chunks(self, chunks: List[Chunk]) -> List[Chunk]:
         """
         Filter chunks to remove duplicates and low quality chunks.
+        Table-like chunks skip both the quality gate and the md5 dedupe.
 
         Args:
             chunks: List of chunks to filter
@@ -693,6 +732,11 @@ class UnifiedChunkingService:
 
         for chunk in chunks:
             self.quality_metrics.total_chunks_created += 1
+
+            if self._is_table_like(chunk):
+                self.quality_metrics.table_chunks_exempt += 1
+                filtered_chunks.append(chunk)
+                continue
 
             # Check for exact duplicates
             if self._is_exact_duplicate(chunk):
@@ -706,11 +750,16 @@ class UnifiedChunkingService:
 
         self.quality_metrics.final_chunks = len(filtered_chunks)
 
-        if self.quality_metrics.exact_duplicates_prevented > 0 or self.quality_metrics.low_quality_rejected > 0:
+        if (
+            self.quality_metrics.exact_duplicates_prevented > 0
+            or self.quality_metrics.low_quality_rejected > 0
+            or self.quality_metrics.table_chunks_exempt > 0
+        ):
             self.logger.info(
                 f"   🔍 Filtered chunks: {self.quality_metrics.total_chunks_created} → {self.quality_metrics.final_chunks} "
                 f"(duplicates: {self.quality_metrics.exact_duplicates_prevented}, "
-                f"low quality: {self.quality_metrics.low_quality_rejected})"
+                f"low quality: {self.quality_metrics.low_quality_rejected}, "
+                f"table exempt: {self.quality_metrics.table_chunks_exempt})"
             )
 
         return filtered_chunks
@@ -878,21 +927,26 @@ class UnifiedChunkingService:
             # For TABLE regions, immediately save as complete chunk
             if region_type == 'TABLE':
                 chunk_len = len(current_chunk_text)
-                chunk = self._create_chunk(
-                    content=current_chunk_text.strip(),
-                    chunk_index=chunk_index,
-                    document_id=document_id,
-                    start_position=current_position,
-                    page_number=page_number,
-                    metadata={
+                table_parts = self._split_table_content(current_chunk_text.strip())
+                for part_no, part_text in enumerate(table_parts, start=1):
+                    table_meta = {
                         **(metadata or {}),
                         'layout_aware': True,
                         'region_types': ['TABLE'],
                         'is_table': True,
-                    },
-                )
-                chunks.append(chunk)
-                chunk_index += 1
+                    }
+                    if len(table_parts) > 1:
+                        table_meta['part'] = part_no
+                        table_meta['parts'] = len(table_parts)
+                    chunks.append(self._create_chunk(
+                        content=part_text,
+                        chunk_index=chunk_index,
+                        document_id=document_id,
+                        start_position=current_position,
+                        page_number=page_number,
+                        metadata=table_meta,
+                    ))
+                    chunk_index += 1
                 current_position += chunk_len
                 current_chunk_text = ""
                 current_chunk_regions = []
