@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import io
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import fitz  # PyMuPDF
+from PIL import Image
 
-from app.api.pdf_processing.stage_1_layout_precompute import _render_physical_page
+from app.api.pdf_processing.stage_1_layout_precompute import LAYOUT_RENDER_DPI, _render_physical_page
 from app.services.pdf.text_layer_extractor import LAYOUT_PROCESSING_VERSIONS, TEXT_LAYER_VERSION
 
 # Which layout-region classifications become `extraction_layer='region_crop'` rows.
@@ -37,6 +39,61 @@ class RegionCropCacheReadFailed(RuntimeError):
 # which renders at LAYOUT_RENDER_DPI=250 — the same grid the cached pixel bboxes
 # were measured in, so crops align with no scaling here.
 _MIN_CROP_PX = 8
+# A photo region is re-rendered at the native resolution of the embedded image under it,
+# never above this: past it the file grows and the picture does not.
+MAX_PHOTO_CROP_DPI = 600
+PHOTO_REGION_TYPES = ("IMAGE", "FIGURE")
+
+
+def _embedded_images(page: "fitz.Page", bound: "fitz.Rect") -> List[Dict[str, Any]]:
+    """Placed raster images inside the rendered area, with their native DPI on the page."""
+    out: List[Dict[str, Any]] = []
+    try:
+        infos = page.get_image_info(xrefs=True)
+    except Exception:
+        return out
+    for info in infos:
+        full = fitz.Rect(info.get("bbox") or (0, 0, 0, 0))
+        rect = full & bound
+        w, h = info.get("width") or 0, info.get("height") or 0
+        if rect.is_empty or full.width <= 0 or full.height <= 0 or not w or not h:
+            continue
+        out.append({"rect": rect, "dpi": min(w / full.width, h / full.height) * 72})
+    return out
+
+
+def _covered_by(region: "fitz.Rect", image: "fitz.Rect", share: float) -> bool:
+    area = region.width * region.height
+    inter = region & image
+    return area > 0 and not inter.is_empty and (inter.width * inter.height) / area >= share
+
+
+def merge_split_photo_regions(regions: List[Dict[str, Any]], images: List["fitz.Rect"], to_pdf) -> List[Dict[str, Any]]:
+    """One photo the layout model cut into several regions becomes one region again.
+
+    Each region belongs to the SMALLEST embedded image covering it, so two photos placed
+    on one page-wide background are not glued together through the background.
+    """
+    groups: Dict[int, List[int]] = {}
+    for i, r in enumerate(regions):
+        if r["region_type"] not in PHOTO_REGION_TYPES:
+            continue
+        rect = to_pdf(r)
+        owners = [j for j, image in enumerate(images) if _covered_by(rect, image, 0.9)]
+        if owners:
+            groups.setdefault(min(owners, key=lambda j: images[j].width * images[j].height), []).append(i)
+    used: Set[int] = set()
+    merged: List[Dict[str, Any]] = []
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        used.update(group)
+        x0 = min(regions[i]["x"] for i in group)
+        y0 = min(regions[i]["y"] for i in group)
+        x1 = max(regions[i]["x"] + regions[i]["width"] for i in group)
+        y1 = max(regions[i]["y"] + regions[i]["height"] for i in group)
+        merged.append({**regions[group[0]], "x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0, "merged_from": len(group)})
+    return [r for i, r in enumerate(regions) if i not in used] + merged
 
 
 async def extract_region_crops_for_physical_pages(
@@ -48,6 +105,7 @@ async def extract_region_crops_for_physical_pages(
     image_dir: str,
     job_id: Optional[str] = None,
     logger: Any = None,
+    covered_pages_out: Optional[Set[int]] = None,
 ) -> List[Dict[str, Any]]:
     """Crop IMAGE/FIGURE regions from the PaddleOCR layout cache, spread-aware.
 
@@ -61,6 +119,8 @@ async def extract_region_crops_for_physical_pages(
             whose files later get uploaded to storage).
         job_id: optional job id for log context.
         logger: optional logger.
+        covered_pages_out: filled with every physical page that HAS a layout analysis,
+            whether or not it holds a region; a full-page render is redundant for those.
 
     Returns:
         List of `image_info` dicts shaped exactly like the old
@@ -82,6 +142,7 @@ async def extract_region_crops_for_physical_pages(
         document_id=document_id,
         physical_pages=physical_pages,
         logger=log,
+        covered_pages_out=covered_pages_out,
     )
 
     if not regions_by_page:
@@ -126,8 +187,17 @@ async def extract_region_crops_for_physical_pages(
 
                 # Render the SAME clipped half Stage 1.5 rendered. The returned
                 # PIL image's pixel grid matches the cached region bboxes 1:1.
-                img, _bound_rect = _render_physical_page(doc, pdf_idx, position)
+                img, bound_rect = _render_physical_page(doc, pdf_idx, position)
                 rendered_pages += 1
+                page = doc[pdf_idx]
+                zoom = LAYOUT_RENDER_DPI / 72.0
+
+                def to_pdf(r: Dict[str, Any], b: "fitz.Rect" = bound_rect, z: float = zoom) -> "fitz.Rect":
+                    return fitz.Rect(b.x0 + r["x"] / z, b.y0 + r["y"] / z,
+                                     b.x0 + (r["x"] + r["width"]) / z, b.y0 + (r["y"] + r["height"]) / z)
+
+                embedded = _embedded_images(page, bound_rect)
+                regions = merge_split_photo_regions(regions, [e["rect"] for e in embedded], to_pdf)
             except Exception as render_err:
                 log.error(
                     f"   ❌ [Job: {job_id}] failed to render physical page "
@@ -153,7 +223,20 @@ async def extract_region_crops_for_physical_pages(
                             # Degenerate crop — skip.
                             continue
 
-                        cropped = img.crop((x, y, x2, y2))
+                        crop_dpi = LAYOUT_RENDER_DPI
+                        if region.get("region_type") in PHOTO_REGION_TYPES:
+                            native = [e["dpi"] for e in embedded if _covered_by(to_pdf(region), e["rect"], 0.5)]
+                            if native:
+                                crop_dpi = max(LAYOUT_RENDER_DPI, min(MAX_PHOTO_CROP_DPI, max(native)))
+                        if crop_dpi > LAYOUT_RENDER_DPI * 1.1:
+                            pix = page.get_pixmap(
+                                matrix=fitz.Matrix(crop_dpi / 72, crop_dpi / 72), clip=to_pdf(region), alpha=False,
+                            )
+                            cropped = Image.open(io.BytesIO(pix.tobytes("png")))
+                            pix = None
+                        else:
+                            crop_dpi = LAYOUT_RENDER_DPI
+                            cropped = img.crop((x, y, x2, y2))
                         filename = f"page_{physical_page}_region_{region_idx}.jpg"
                         image_path = os.path.join(image_dir, filename)
                         cropped.save(image_path, "JPEG", quality=95)
@@ -173,6 +256,8 @@ async def extract_region_crops_for_physical_pages(
                             "region_confidence": region.get("confidence"),
                             "region_type": region.get("region_type"),
                             "region_reading_order": region.get("reading_order"),
+                            "render_dpi": round(crop_dpi),
+                            "merged_regions": region.get("merged_from"),
                             "caption": None,
                             "bbox": [
                                 x / img_w,
@@ -214,6 +299,7 @@ async def _load_layout_regions_for_physical_pages(
     document_id: Optional[str],
     physical_pages: List[int],
     logger: Any,
+    covered_pages_out: Optional[Set[int]] = None,
 ) -> Dict[int, List[Dict[str, Any]]]:
     """Load IMAGE/FIGURE regions keyed by physical page from the layout cache.
 
@@ -255,6 +341,8 @@ async def _load_layout_regions_for_physical_pages(
             page_num = int(row["page_number"])
         except (TypeError, ValueError, KeyError):
             continue
+        if covered_pages_out is not None:
+            covered_pages_out.add(page_num)
         elements = row.get("layout_elements") or []
         if not isinstance(elements, list):
             continue

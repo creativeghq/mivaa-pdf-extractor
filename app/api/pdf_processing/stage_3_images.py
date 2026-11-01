@@ -409,6 +409,7 @@ async def _process_product_images(
         )
 
         region_crop_dir = tempfile.mkdtemp(prefix=f"region_crops_{document_id}_")
+        layout_pages: set = set()
         region_crops = await extract_region_crops_for_physical_pages(
             file_content=file_content,
             physical_pages=sorted(set(physical_pages)),
@@ -417,7 +418,15 @@ async def _process_product_images(
             image_dir=region_crop_dir,
             job_id=job_id,
             logger=logger,
+            covered_pages_out=layout_pages,
         )
+        # A page whose layout was analysed is represented by its region crops; its whole-page
+        # render is a duplicate that would otherwise be classified, embedded and attached.
+        _renders = [i for i in extracted_images_list
+                    if i.get('extraction_layer') == 'full_render' and i.get('page_number') in layout_pages]
+        if _renders:
+            extracted_images_list = [i for i in extracted_images_list if not any(i is r for r in _renders)]
+            logger.info(f"   🗑️ Dropped {len(_renders)} full-page render(s) superseded by layout region crops")
         if region_crops:
             # S3-4: region crops are the primary product-crop source but previously
             # bypassed the perceptual-hash dedup that embedded images get inside
