@@ -9,7 +9,7 @@ import ast
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import pytest
 
@@ -181,6 +181,22 @@ def test_create_routes_columns_sets_identity_and_draft():
     dedup = body.index("_find_workspace_duplicate(")
     assert dedup < body.index("_classify_product("), "dedup must run before the paid classifier"
     assert dedup < body.index(".upsert(product_data")
+
+
+def test_a_code_printed_against_several_products_is_not_an_identity():
+    from types import SimpleNamespace as P
+    ns = _extract(STAGE4, {"_codes_shared_by_several"},
+                  {"Callable": Callable, "fold_model_token": lambda s: s.strip().upper()})
+    shared = ns["_codes_shared_by_several"]
+    products = [P(name="Bonn", sku="M177"), P(name="Ferrara", sku="m177 "), P(name="Bonn", sku="M177"),
+                P(name="Capricci", sku="M001"), P(name="Zen", sku=None)]
+    assert shared(products, lambda p: p.sku) == {"M177"}
+    assert shared(None, lambda p: p.sku) == set()
+
+    body = _func(STAGE4, "create_single_product")
+    strip = body.index("_codes_shared_by_several(")
+    assert strip < body.index("_find_workspace_duplicate("), "a shared code must never reach the dedup"
+    assert strip < body.index("import_identity_for(")
 
 
 def test_confidence_score_is_a_fraction_or_unknown():

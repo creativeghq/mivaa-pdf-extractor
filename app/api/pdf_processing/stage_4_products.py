@@ -264,6 +264,23 @@ def _find_workspace_duplicate(
     return None
 
 
+def _codes_shared_by_several(products: Optional[List[Any]],
+                             sku_of: Callable[[Any], Optional[str]]) -> set:
+    """Folded codes the catalogue prints against more than one product: a format or family
+    code (Keros prints M177 beside every 60x120 series), so it identifies none of them."""
+    names_by_code: Dict[str, set] = {}
+    for p in products or []:
+        code = sku_of(p)
+        if code:
+            names_by_code.setdefault(fold_model_token(code), set()).add(
+                fold_identity(getattr(p, 'name', '') or ''))
+    return {code for code, names in names_by_code.items() if len(names) > 1}
+
+
+def _discovered_sku(product: Any) -> Optional[str]:
+    return _route_column_fields(dict(getattr(product, 'metadata', None) or {})).get('sku')
+
+
 def _reuse_existing_product(supabase: Any, workspace_id: str, document_id: str,
                             existing: Dict[str, Any], name: str, logger: logging.Logger) -> Dict[str, Any]:
     """Record that `document_id` also carries an existing product, and return it."""
@@ -732,6 +749,18 @@ async def create_single_product(
 
     await field_registry.ensure_loaded()
     column_values = _route_column_fields(metadata, country=country_resolver(supabase.client))
+    _printed = column_values.get('sku')
+    if _printed and fold_model_token(_printed) in _codes_shared_by_several(
+            getattr(catalog, 'products', None), _discovered_sku):
+        # Matching on a shared code would fold every series that carries it into one product.
+        column_values.pop('sku')
+        codes = metadata.get('product_codes')
+        if isinstance(codes, list):
+            metadata['product_codes'] = codes if _printed in codes else codes + [_printed]
+        elif codes and _printed not in str(codes):
+            metadata['product_codes'] = [codes, _printed]
+        elif not codes:
+            metadata['product_codes'] = _printed
 
     # One product per workspace identity, whichever upload it arrived in. Checked before any
     # paid call below; a lookup that cannot run fails the creation rather than duplicating.
