@@ -1,18 +1,23 @@
 """The unattended image backfills wait for a document's ingestion to settle; explicit repairs do not."""
 import ast
 import asyncio
+import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
-from app.services.embeddings.ingestion_settling import (
-    outside_documents_clause,
-    settling_document_ids,
-)
-
 pytestmark = pytest.mark.unit
 
 EMB = Path(__file__).resolve().parents[2] / "app" / "services" / "embeddings"
+
+# Loaded by path: other tests stub `app.services` as a plain module at import time.
+_spec = importlib.util.spec_from_file_location("ingestion_settling_under_test", EMB / "ingestion_settling.py")
+_mod = importlib.util.module_from_spec(_spec)
+sys.modules[_spec.name] = _mod
+_spec.loader.exec_module(_mod)
+outside_documents_clause = _mod.outside_documents_clause
+settling_document_ids = _mod.settling_document_ids
 
 
 class _Client:
