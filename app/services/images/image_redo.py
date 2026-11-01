@@ -27,6 +27,30 @@ def _now() -> str:
 async def run_image_redo(document_id: str, workspace_id: str, user_id: Optional[str],
                          product_ids: Optional[List[str]] = None, allow_restore: bool = True,
                          log: Optional[logging.Logger] = None, run_sourcing: bool = True) -> Dict[str, Any]:
+    """Tracked by an `image_redo` background_jobs row, which marks the document as settling so
+    the embedding backfill does not race it. Stuck-job recovery never selects this job_type."""
+    db = get_supabase_client().client
+    doc = (db.table("documents").select("filename").eq("id", document_id).limit(1).execute().data or [{}])[0]
+    row = db.table("background_jobs").insert({
+        "document_id": document_id, "workspace_id": workspace_id, "user_id": user_id,
+        "filename": doc.get("filename") or document_id, "status": "processing", "job_type": "image_redo",
+        "metadata": {"product_ids": product_ids, "run_sourcing": run_sourcing, "allow_restore": allow_restore},
+    }).execute().data[0]
+    try:
+        summary = await _redo(document_id, workspace_id, user_id, product_ids, allow_restore, log, run_sourcing)
+    except Exception as e:
+        db.table("background_jobs").update({"status": "failed", "error": str(e)[:1000], "completed_at": _now()}) \
+            .eq("id", row["id"]).execute()
+        raise
+    db.table("background_jobs").update({
+        "status": "completed" if summary.get("ok", True) else "failed", "progress": 100, "completed_at": _now(),
+        "metadata": {**(row.get("metadata") or {}), "summary": {k: v for k, v in summary.items() if k != "per_product"}},
+    }).eq("id", row["id"]).execute()
+    return summary
+
+
+async def _redo(document_id: str, workspace_id: str, user_id: Optional[str], product_ids: Optional[List[str]],
+                allow_restore: bool, log: Optional[logging.Logger], run_sourcing: bool) -> Dict[str, Any]:
     from app.api.pdf_processing.stage_3_images import process_product_images
     from app.services.embeddings.vecs_service import get_vecs_service
     from app.services.images.image_sourcing import run_image_sourcing
@@ -44,7 +68,7 @@ async def run_image_redo(document_id: str, workspace_id: str, user_id: Optional[
     if not doc or not doc.get("storage_object_path"):
         return {"ok": False, "error": "document has no stored PDF"}
     pdf = db.storage.from_(doc["storage_bucket"] or "pdf-documents").download(doc["storage_object_path"])
-    job = (db.table("background_jobs").select("id").eq("document_id", document_id)
+    job = (db.table("background_jobs").select("id").eq("document_id", document_id).neq("job_type", "image_redo")
            .order("created_at", desc=True).limit(1).execute().data or [{}])[0].get("id")
 
     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as fh:
