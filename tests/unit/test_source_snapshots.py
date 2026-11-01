@@ -14,7 +14,7 @@ HTML = (
     "<html><head><style>.a{color:red}</style><script>var x = 99999;</script></head><body>"
     "<h1>Comfort 9</h1><p>Panel 2780 x 600 x 9 mm</p><table><tr><td>Weight</td><td>12,5</td></tr></table>"
     '<a href="/catalog/acoustic_panels_1/mila_9/">Mila</a><a href="https://other.example/x">out</a>'
-    '<a href="/catalog/img/a.jpg">image</a><a href="/about/">about</a><a href="#top">top</a></body></html>'
+    '<a href="/catalog/acoustic_panels_1/?sort=PRICE&amp;order=asc">sorted</a><a href="/catalog/img/a.jpg">image</a><a href="/about/">about</a><a href="#top">top</a></body></html>'
 )
 
 

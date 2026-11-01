@@ -58,7 +58,7 @@ def same_tree_links(base_url: str, links: List[str], root_prefix: str) -> List[s
     for link in links:
         absolute = urldefrag(urljoin(base_url, link))[0]
         parsed = urlparse(absolute)
-        if parsed.scheme not in ("http", "https") or parsed.netloc != root_host:
+        if parsed.scheme not in ("http", "https") or parsed.netloc != root_host or parsed.query:
             continue
         if not absolute.startswith(root_prefix) or absolute in seen or absolute == urldefrag(base_url)[0]:
             continue
