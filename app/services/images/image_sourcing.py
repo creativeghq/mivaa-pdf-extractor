@@ -33,8 +33,10 @@ from app.utils.ssrf_guard import safe_fetch_bytes
 logger = logging.getLogger(__name__)
 
 MAX_CANDIDATES = 40
+DOWNLOAD_CONCURRENCY = 8
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
-MIN_CANDIDATE_SHORT_SIDE = 300
+# Swatch files are long strips (Ceramica Euro: 886x296), so the short side alone stays low.
+MIN_CANDIDATE_SHORT_SIDE = 200
 GEMINI_ASPECTS = (1.0, 16 / 9, 3 / 2, 4 / 3, 9 / 16, 3 / 4, 4 / 5, 5 / 4, 21 / 9, 2 / 3)
 RESTORE_PROMPT = (
     "Restore this photo of a ceramic tile product. Remove the JPEG compression blocks, pixelation and colour "
@@ -57,6 +59,12 @@ def _open(data: bytes) -> Optional[Image.Image]:
         return None
 
 
+def _thumb(img: Image.Image, side: int = 720) -> Image.Image:
+    t = img.copy()
+    t.thumbnail((side, side), Image.LANCZOS)
+    return t
+
+
 def _jpeg(img: Image.Image, quality: int = 92) -> bytes:
     buf = io.BytesIO()
     img.save(buf, "JPEG", quality=quality)
@@ -69,6 +77,12 @@ async def _download(url: str) -> Optional[bytes]:
         return r.content if r.ok else None
     except Exception:
         return None
+
+
+def _same_site(url: str) -> str:
+    """One spelling per URL: www.example.com and example.com serve the same page and file."""
+    p = urlparse(url)
+    return p._replace(netloc=(p.netloc or "").removeprefix("www.")).geturl()
 
 
 def _site_root(url: Optional[str]) -> Optional[str]:
@@ -90,6 +104,7 @@ class ImageSourcing:
         self.sb = get_supabase_client()
         self.db = self.sb.client
         self._links: Dict[str, List[Tuple[str, str]]] = {}
+        self._downloads: Dict[str, Optional[bytes]] = {}
         self.summary: Dict[str, Any] = {"products": 0, "pending_crops": 0, "matched_crops": 0,
                                         "manufacturer_images": 0, "restored": 0, "kept_source": 0,
                                         "rejected_non_product": 0, "errors": []}
@@ -146,16 +161,26 @@ class ImageSourcing:
         if root:
             if root not in self._links:
                 self._links[root] = await site.site_links(root)
-            pages += [p for p in site.candidate_pages(self._links[root], product["name"]) if p not in pages]
+            pages += site.candidate_pages(self._links[root], product["name"])
+        pages = list(dict.fromkeys(_same_site(p) for p in pages))
         urls: List[str] = []
         for p in pages[:2]:
             for u in await site.page_images(p):
-                if u not in urls:
+                if _same_site(u) not in {_same_site(x) for x in urls}:
                     urls.append(u)
         cands: Dict[str, Tuple[str, bytes, Image.Image]] = {}
         seen_hash = set()
+        # Supplier sites are slow per connection (cereuro.it ~160 KB/s): fetch in parallel, once per run.
+        todo = [u for u in urls[:MAX_CANDIDATES] if u not in self._downloads]
+        sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
+
+        async def _fetch(u: str) -> None:
+            async with sem:
+                self._downloads[u] = await _download(u)
+
+        await asyncio.gather(*(_fetch(u) for u in todo))
         for u in urls[:MAX_CANDIDATES]:
-            data = await _download(u)
+            data = self._downloads.get(u)
             img = _open(data) if data else None
             if img is None or min(img.size) < MIN_CANDIDATE_SHORT_SIDE:
                 continue
@@ -339,9 +364,12 @@ class ImageSourcing:
             if img is not None:
                 loaded.append((c, data, img))
 
+        # The matcher works at <=360 px; shrinking each picture once, not per comparison, is the run time.
+        small = {u: _thumb(v[2]) for u, v in cands.items()}
         matches: Dict[str, List[Tuple[str, MatchScore]]] = {}
         for c, _, img in loaded:
-            scores = [(u, match_score(img, v[2])) for u, v in cands.items()]
+            crop_small = _thumb(img)
+            scores = [(u, match_score(crop_small, s)) for u, s in small.items()]
             faces = faces_in_crop(scores)
             best = pick_match(scores)
             hit = faces if faces else ([best] if best else [])
@@ -390,10 +418,14 @@ class ImageSourcing:
 
     async def run_all(self, product_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         reports = []
-        for product in self._products(product_ids):
+        products = self._products(product_ids)
+        for n, product in enumerate(products, 1):
             self.summary["products"] += 1
             try:
                 reports.append(await self.run_product(product))
+                r = reports[-1]
+                self.log.info(f"🖼️ Image sourcing {n}/{len(products)} {product['name']}: {r.get('pending', 0)} low-res, "
+                              f"{r.get('matched', 0)} matched, {r.get('added', 0)} manufacturer images added")
             except Exception as e:
                 self.log.exception(f"image sourcing failed for {product.get('name')}")
                 self.summary["errors"].append(f"{product.get('name')}: {str(e)[:160]}")

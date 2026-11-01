@@ -11,10 +11,13 @@ import numpy as np
 from PIL import Image
 
 # A website candidate is the same picture when it clears these, and clears the runner-up by MARGIN.
-GLOBAL_MIN_SSIM = 0.55
+# True swatch matches measured 0.96-0.98 at the comparison blur; a different stone of the same tone 0.77.
+GLOBAL_MIN_SSIM = 0.85
 GLOBAL_MAX_DELTA_E = 7.0
 GLOBAL_MAX_ASPECT_GAP = 0.18
 PART_MIN_CORRELATION = 0.72
+# Print vs web colour drift on a true photo match measured dE 8.6; another colourway 28.8-33.3.
+PART_MAX_DELTA_E = 14.0
 MATCH_MARGIN = 0.04
 # A repair must still be the source picture once shrunk back to the source's real size.
 REPAIR_MIN_SSIM = 0.6
@@ -100,6 +103,8 @@ def part_score(crop: Image.Image, candidate: Image.Image) -> MatchScore:
         Lc = cv2.resize(large, (lw, max(8, round(large.shape[0] * lw / large.shape[1]))), interpolation=cv2.INTER_AREA)
         L = cv2.GaussianBlur(cv2.cvtColor(Lc, cv2.COLOR_RGB2GRAY), (0, 0), 1.0)
         for frac in (0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 0.92, 0.97, 1.0):
+            if label == "site-in-crop" and frac < 0.85:
+                continue  # a face of a stacked swatch spans the crop; a small patch of a decor is not a tile
             sw = round(lw * frac)
             sh = round(small.shape[0] * sw / small.shape[1])
             if sh < 16 or sw < 16 or sh > L.shape[0] or sw > L.shape[1]:
@@ -115,7 +120,7 @@ def part_score(crop: Image.Image, candidate: Image.Image) -> MatchScore:
             # Correlation is colour-blind: the same artwork in another colourway (Peonies Warm vs
             # Cold) lines up perfectly, so the matched region must also be the same colour.
             de = _mean_delta_e(cv2.GaussianBlur(Sc, (0, 0), 1.2), cv2.GaussianBlur(Lc[y:y + sh, x:x + sw], (0, 0), 1.2))
-            if de > GLOBAL_MAX_DELTA_E:
+            if de > PART_MAX_DELTA_E:
                 continue
             best, detail = float(r), f"{label} at {frac:.2f} r={r:.2f} dE {de:.1f}"
     if best < PART_MIN_CORRELATION:
