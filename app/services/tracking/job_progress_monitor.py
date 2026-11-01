@@ -79,12 +79,7 @@ class JobProgressMonitor:
             f"❌ Progress monitor task failed for job {self.job_id}: {t.exception()}", exc_info=t.exception()
         ) if not t.cancelled() and t.exception() else None)
 
-        # Log to both console and Sentry
         logger.info(f"📊 Started progress monitoring for job {self.job_id}")
-        sentry_sdk.capture_message(
-            f"📊 Started progress monitoring for job {self.job_id}",
-            level="info"
-        )
         
     async def stop(self):
         """Stop the monitoring task"""

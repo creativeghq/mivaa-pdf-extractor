@@ -2832,10 +2832,6 @@ async def process_document_with_discovery(
             "workspace_id": workspace_id,
             "started_at": start_time.isoformat()
         })
-        sentry_sdk.capture_message(
-            f"🚀 PDF Processing Started: {filename} (Job: {job_id})",
-            level="info"
-        )
 
     # Initialize job_storage for this job if not already present
     # This is critical - the job may not exist in memory if this is a new upload
@@ -4356,11 +4352,6 @@ async def process_document_with_discovery(
 
             scope.set_context("completion_metrics", final_metrics)
 
-            sentry_sdk.capture_message(
-                f"✅ PDF Processing Completed: {filename} (Job: {job_id}) in {total_duration/60:.1f} minutes",
-                level="info"
-            )
-
         # Stop progress monitoring
         progress_monitor.update_stage("completed", {"success": True})
         await progress_monitor.stop()
@@ -4411,12 +4402,6 @@ async def process_document_with_discovery(
 
             # Capture the exception with full context
             sentry_sdk.capture_exception(e)
-
-            # Also send a message for easier filtering
-            sentry_sdk.capture_message(
-                f"❌ PDF Processing Failed: {filename} at stage {current_stage} - {type(e).__name__}: {str(e)}",
-                level="error"
-            )
 
         # Stop progress monitoring on error
         if 'progress_monitor' in locals():

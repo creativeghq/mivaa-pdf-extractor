@@ -195,9 +195,7 @@ async def lifespan(app: FastAPI):
                 "environment": sentry_config["environment"],
                 "debug_mode": settings.debug,
             })
-            
-            sentry_sdk.capture_message("MIVAA PDF Extractor service started", level="info")
-            
+
         else:
             logger.info("⚠️ Sentry error tracking disabled - no DSN configured or disabled in settings")
             
