@@ -26,12 +26,17 @@ def _now() -> str:
 
 async def run_image_redo(document_id: str, workspace_id: str, user_id: Optional[str],
                          product_ids: Optional[List[str]] = None, allow_restore: bool = True,
-                         log: Optional[logging.Logger] = None) -> Dict[str, Any]:
+                         log: Optional[logging.Logger] = None, run_sourcing: bool = True) -> Dict[str, Any]:
     from app.api.pdf_processing.stage_3_images import process_product_images
     from app.services.embeddings.vecs_service import get_vecs_service
     from app.services.images.image_sourcing import run_image_sourcing
     from app.utils.pdf_to_images import analyze_pdf_layout
 
+    from app.services.images.sourcing_flag import force_sourcing_for_this_task
+
+    # This run sources its own images, so Stage 3 must defer them even where the service has it off.
+    if run_sourcing:
+        force_sourcing_for_this_task()
     log = log or logger
     db = get_supabase_client().client
     doc = (db.table("documents").select("storage_bucket,storage_object_path,workspace_id")
@@ -113,6 +118,8 @@ async def run_image_redo(document_id: str, workspace_id: str, user_id: Optional[
     summary["new_images"] = len(new)
     summary["links"] = len(rows)
 
+    if not run_sourcing:
+        return summary
     summary["sourcing"] = await run_image_sourcing(
         document_id, workspace_id, user_id, product_ids=[p["id"] for p in products], allow_restore=allow_restore, log=log,
     )

@@ -4272,7 +4272,8 @@ async def process_document_with_discovery(
 
         # Low-resolution crops were saved with embedding deferred; replace them with the
         # manufacturer's files or a repair, then embed each final image once (#525).
-        if os.getenv('IMAGE_SOURCING_ENABLED', 'true').lower() != 'false':
+        from app.services.images.sourcing_flag import sourcing_enabled
+        if sourcing_enabled():
             try:
                 from app.services.images.image_sourcing import run_image_sourcing
                 with pipeline_stage_span("stage_4_9.image_sourcing"):

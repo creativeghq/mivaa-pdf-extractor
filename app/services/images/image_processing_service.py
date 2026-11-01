@@ -1434,8 +1434,8 @@ class ImageProcessingService:
 
                 # A low-resolution source waits for image sourcing (a manufacturer original or a
                 # repair) and is embedded once, on whichever image wins; `run_image_sourcing` does it.
-                if ((img_data.get('image_quality') or {}).get('sourcing') == 'pending'
-                        and os.getenv('IMAGE_SOURCING_ENABLED', 'true').lower() != 'false'):
+                from app.services.images.sourcing_flag import sourcing_enabled
+                if (img_data.get('image_quality') or {}).get('sourcing') == 'pending' and sourcing_enabled():
                     logger.info(f"   ⏸️ Image {idx + 1}/{total} is low-resolution — embedding deferred to image sourcing")
                     return (True, False, "awaiting_image_sourcing", {
                         'image_id': image_id,
