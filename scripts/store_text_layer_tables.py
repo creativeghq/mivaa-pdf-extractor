@@ -115,6 +115,8 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     args = ap.parse_args()
 
+    for name in ("app.services.pdf", "app.services", "app"):
+        sys.modules.pop(name, None)
     sys.path.insert(0, str(ROOT))
     from app.config import get_settings
     from app.services.core.supabase_client import get_supabase_client, initialize_supabase
