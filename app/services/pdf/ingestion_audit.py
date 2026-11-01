@@ -86,7 +86,7 @@ def page_number_gaps(pages: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         missing = reference - have
         share = len(missing) / len(reference)
         if share >= PAGE_MISSING_WARN:
-            gaps.append({"page": page["page"], "missing_share": round(share, 3), "missing": len(missing), "of": len(reference), "route": page.get("route"), "examples": sorted(missing)[:8]})
+            gaps.append({"page": page["page"], "missing_share": round(share, 3), "missing": len(missing), "of": len(reference), "route": page.get("route"), "examples": sorted(missing)[:8], "all": sorted(missing)[:80]})
     return gaps
 
 
