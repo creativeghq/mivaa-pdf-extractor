@@ -6,7 +6,6 @@ from pathlib import Path
 import pytest
 
 from app.services.embeddings.ingestion_settling import (
-    SETTLING_HOURS,
     outside_documents_clause,
     settling_document_ids,
 )
@@ -30,8 +29,7 @@ class _Client:
 def test_the_rule_is_the_sql_function():
     client = _Client(["b", "a", "a", None])
     assert asyncio.run(settling_document_ids(client)) == ["a", "b"]
-    assert client.calls == [("ingestion_settling_document_ids", {"p_hours": SETTLING_HOURS})]
-    assert SETTLING_HOURS == 24
+    assert client.calls == [("ingestion_settling_document_ids", {})]
 
 
 def test_clause_keeps_images_without_a_document():
