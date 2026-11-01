@@ -723,6 +723,10 @@ class SupabaseClient:
                     # this it was dropped at save → every region crop fell to the
                     # conservative "unknown → OCR" branch, OCRing product photos.
                     'region_type': image_info.get('region_type'),
+                    'region_source': image_info.get('region_source'),
+                    'merged_regions': image_info.get('merged_regions'),
+                    'render_dpi': image_info.get('render_dpi'),
+                    'image_quality': image_info.get('image_quality'),
                     # Invariant marker (2026-06-14): why this image did NOT go
                     # through the SLIG + vision embedding bundle. None = it DID
                     # (regular material image). 'icon_candidate_spec_path' =

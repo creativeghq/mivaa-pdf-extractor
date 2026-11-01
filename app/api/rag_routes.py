@@ -4270,6 +4270,25 @@ async def process_document_with_discovery(
         except Exception as _pe:
             logger.warning(f"⚠️ Page embeddings failed (non-blocking): {_pe}")
 
+        # Low-resolution crops were saved with embedding deferred; replace them with the
+        # manufacturer's files or a repair, then embed each final image once (#525).
+        if os.getenv('IMAGE_SOURCING_ENABLED', 'true').lower() != 'false':
+            try:
+                from app.services.images.image_sourcing import run_image_sourcing
+                with pipeline_stage_span("stage_4_9.image_sourcing"):
+                    _sourcing = await asyncio.wait_for(
+                        run_image_sourcing(document_id, workspace_id, str(_job_user) if _job_user else None, log=logger),
+                        timeout=3600,
+                    )
+                logger.info(
+                    f"🖼️ Image sourcing: {_sourcing.get('pending_crops', 0)} low-res crops, "
+                    f"{_sourcing.get('matched_crops', 0)} matched, {_sourcing.get('manufacturer_images', 0)} manufacturer images, "
+                    f"{_sourcing.get('restored', 0)} restored, {_sourcing.get('kept_source', 0)} kept as-is, "
+                    f"{len(_sourcing.get('errors') or [])} errors"
+                )
+            except Exception as _se:
+                logger.error(f"❌ Image sourcing failed (deferred crops stay pending for a re-run): {_se}")
+
         # ============================================================================
         # STAGE 5: QUALITY ENHANCEMENT (MODULAR)
         # ============================================================================

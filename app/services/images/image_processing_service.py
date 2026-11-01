@@ -1432,6 +1432,22 @@ class ImageProcessingService:
                         'vision_analysis_source': VisionProvider.SKIPPED.value,
                     })
 
+                # A low-resolution source waits for image sourcing (a manufacturer original or a
+                # repair) and is embedded once, on whichever image wins; `run_image_sourcing` does it.
+                if ((img_data.get('image_quality') or {}).get('sourcing') == 'pending'
+                        and os.getenv('IMAGE_SOURCING_ENABLED', 'true').lower() != 'false'):
+                    logger.info(f"   ⏸️ Image {idx + 1}/{total} is low-resolution — embedding deferred to image sourcing")
+                    return (True, False, "awaiting_image_sourcing", {
+                        'image_id': image_id,
+                        'visual_slig': False,
+                        'color_slig': False,
+                        'texture_slig': False,
+                        'style_slig': False,
+                        'material_slig': False,
+                        'understanding': False,
+                        'vision_analysis_source': VisionProvider.SKIPPED.value,
+                    })
+
                 # Phase 0.6 crop quality-gate: a genuinely low-quality crop
                 # (blurry / tiny / artefact) yields a real-but-meaningless vector
                 # that pollutes visual search. Skip embedding such crops. Very
@@ -2212,7 +2228,9 @@ class ImageProcessingService:
             else:
                 vector_stats[f'vision_analysis_{VisionProvider.SKIPPED.value}'] += 1
 
-            if error:
+            if error == "awaiting_image_sourcing":
+                vector_stats['deferred_to_image_sourcing'] = vector_stats.get('deferred_to_image_sourcing', 0) + 1
+            elif error:
                 failed_images.append({
                     'index': global_idx,
                     'image_id': per_image_stats.get('image_id'),

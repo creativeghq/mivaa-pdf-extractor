@@ -2182,6 +2182,47 @@ async def audit_document_endpoint(
     )
 
 
+class ImageRedoRequest(BaseModel):
+    product_ids: Optional[List[str]] = None
+    allow_restore: bool = True
+    sourcing_only: bool = False
+
+
+@router.post("/admin/documents/{document_id}/image-redo")
+async def image_redo_endpoint(
+    document_id: str,
+    body: ImageRedoRequest,
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    current_user: User = Depends(require_admin),
+):
+    """Re-crop a document's product images with the current Stage 3, then source / repair / embed (#525).
+
+    Runs in the background; Gemini repairs are billed to the caller. `sourcing_only` skips the re-crop.
+    """
+    import asyncio as _asyncio
+    from ..services.images.image_redo import run_image_redo
+    from ..services.images.image_sourcing import run_image_sourcing
+
+    supabase = SupabaseClient()
+    found = supabase.client.table("documents").select("workspace_id").eq("id", document_id).execute().data or []
+    if not found or found[0].get("workspace_id") != workspace_context.workspace_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    ws, uid = workspace_context.workspace_id, current_user_id(current_user)
+
+    async def _run() -> None:
+        try:
+            if body.sourcing_only:
+                result = await run_image_sourcing(document_id, ws, uid, body.product_ids, body.allow_restore)
+            else:
+                result = await run_image_redo(document_id, ws, uid, body.product_ids, body.allow_restore)
+            logger.info(f"🖼️ Image redo for {document_id} finished: {str(result)[:1500]}")
+        except Exception:
+            logger.exception(f"❌ Image redo for {document_id} failed")
+
+    _asyncio.create_task(_run())
+    return {"accepted": True, "document_id": document_id, "sourcing_only": body.sourcing_only}
+
+
 class UpgradeLayoutRequest(BaseModel):
     dry_run: bool = True
 
