@@ -130,3 +130,15 @@ def test_an_end_to_end_call_loads_the_prompt_from_the_database_and_never_stores_
 
 async def _ok():
     return types.SimpleNamespace(data={"rows": good_rows()})
+
+
+def test_pack_table_rows_are_read_deterministically_and_handed_to_the_model():
+    lines = ts.lines_from_words([
+        (30.0, 10.0, 60.0, 20.0, "pz/box"), (100.0, 10.0, 130.0, 20.0, "m2/box"),
+        (30.0, 40.0, 60.0, 50.0, "60x120"), (100.0, 40.0, 120.0, 50.0, "2"), (140.0, 40.0, 160.0, 50.0, "1,44"),
+        (180.0, 40.0, 200.0, 50.0, "36"), (220.0, 40.0, 240.0, 50.0, "51,84"),
+    ])
+    rows = ts.pack_rows(lines)
+    assert len(rows) == 1 and rows[0]["size"] == "60x120" and rows[0]["numbers"] == ["2", "1,44", "36", "51,84"]
+    assert rows[0]["header_line"] == 0 and "60x120 -> 2 | 1,44 | 36 | 51,84" in ts.pack_hint(lines)
+    assert ts.pack_hint(ts.lines_from_words([(0.0, 0.0, 10.0, 10.0, "WHITE")])) == ""

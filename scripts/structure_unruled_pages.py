@@ -16,17 +16,26 @@ def norm(value):
     return " ".join(str(value).lower().split())
 
 
-def agreement(structured_rows, truth_rows):
+def matches(cell, values):
+    flat = cell.replace(",", ".")
+    return any(cell == v or cell in v.split() or flat in {x.replace(",", ".") for x in v.split()} or flat == v.replace(",", ".") for v in values)
+
+
+def agreement(structured_rows, truth_rows, by_header):
     by_code = {r["code"]: {norm(a["value"]) for a in r["attributes"]} for r in structured_rows}
     seen = hit = 0
     for code, cells in truth_rows.items():
         if code not in by_code:
             continue
-        for cell in cells:
+        for header, cell in cells.items():
             if cell in ("", "none") or cell in ("active", "standard range"):
                 continue
             seen += 1
-            hit += 1 if any(cell == v or cell in v.split() or cell.replace(",", ".") in {x.replace(",", ".") for x in v.split()} for v in by_code[code]) else 0
+            ok = matches(cell, by_code[code])
+            hit += 1 if ok else 0
+            counts = by_header.setdefault(header, [0, 0])
+            counts[0] += 1 if ok else 0
+            counts[1] += 1
     return hit, seen
 
 
@@ -57,10 +66,12 @@ async def main() -> int:
         products = db.table("products").select("id").eq("source_document_id", args.document_id).execute().data
         for product in products:
             for t in db.table("product_tables").select("headers, table_data, extractor").eq("product_id", product["id"]).eq("extractor", "cereuro-prep").execute().data:
+                headers = t["headers"] or []
                 for row in (t["table_data"] or {}).get("rows") or []:
                     if row and isinstance(row[0], str):
-                        truth[row[0]] = {norm(c) for c in row[1:] if c is not None}
+                        truth[row[0]] = {str(headers[i]) if i < len(headers) else str(i): norm(c) for i, c in enumerate(row) if i > 0 and c is not None}
     total_hit = total_seen = 0
+    by_header = {}
     for row in sorted(layout, key=lambda r: r["page_number"]):
         number = row["page_number"]
         page = words.get(number)
@@ -73,12 +84,14 @@ async def main() -> int:
         verdict = out.get("verdict") or {}
         print(f"p{number}: {out['status']}  rows={len(out['rows'])} inventory={out.get('inventory')} reasons={verdict.get('reasons')} missing={verdict.get('missing_codes', [])[:4]} foreign={verdict.get('foreign_codes', [])[:4]} unsupported={verdict.get('unsupported', [])[:3]}")
         if args.compare and out["rows"]:
-            hit, seen = agreement(out["rows"], truth)
+            hit, seen = agreement(out["rows"], truth, by_header)
             total_hit += hit
             total_seen += seen
             print(f"      agreement with the hand-verified table: {hit}/{seen} cells ({100 * hit / max(seen, 1):.0f}%)")
     if args.compare:
         print(f"TOTAL agreement {total_hit}/{total_seen} ({100 * total_hit / max(total_seen, 1):.1f}%)")
+        for header, (h, n) in sorted(by_header.items()):
+            print(f"   {header}: {h}/{n} ({100 * h / max(n, 1):.0f}%)")
     return 0
 
 
