@@ -115,7 +115,8 @@ def test_stitching_joins_bands_and_refuses_a_column_mismatch():
     b = table([["3", "4"], ["5", "6"]])
     stitched, reasons = oc.stitch_bands([a, b])
     assert reasons == [] and len(oc.table_rows(stitched)) == 4
-    wide = table([["3", "4", "5"]])
+    assert oc.stitch_bands([a, table([["3", "4", "5"]])])[1] == []
+    wide = table([["3", "4", "5", "6", "7"]])
     assert oc.stitch_bands([a, wide]) == (None, ["band_column_mismatch"])
     assert oc.stitch_bands([a, ""])[0] is None
 

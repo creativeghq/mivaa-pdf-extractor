@@ -114,7 +114,7 @@ def test_an_endpoint_error_during_repair_is_recorded_and_the_table_stays_flagged
 
 
 def test_mismatched_band_columns_are_not_stitched():
-    bands = [table([["a", "1"]] * 12), table([["a", "1", "2"]] * 12), table([["a", "1"]] * 12)]
+    bands = [table([["a", "1"]] * 12), table([["a", "1", "2", "3", "4", "5"]] * 12), table([["a", "1"]] * 12)]
     el, report = run(TRUNCATED_HTML, Manager(bands))
     assert report["recovered"] == 0 and el["metadata"]["html"] == TRUNCATED_HTML
 

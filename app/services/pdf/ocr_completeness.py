@@ -15,6 +15,7 @@ MISSING_NUMBERS_TRUNCATED = 0.05
 MISSING_NUMBERS_SUSPECT = 0.02
 MAX_ROWS_PER_BAND = 18
 CUT_SNAP_LINES = 2
+BAND_WIDTH_TOLERANCE = 2
 HARD_REASONS = frozenset({"unclosed_table", "missing_reference_numbers", "repetition_loop"})
 
 _ROW = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.I | re.S)
@@ -178,9 +179,9 @@ def stitch_bands(band_contents: Sequence[str]) -> Tuple[Optional[str], List[str]
         all_rows.extend(rows)
     if reasons or not all_rows:
         return None, reasons or ["no_rows"]
-    if len(widths) != 1:
+    if max(widths) - min(widths) > BAND_WIDTH_TOLERANCE:
         return None, ["band_column_mismatch"]
-    width = widths.pop()
+    width = max(widths)
     cells = []
     for row in all_rows:
         padded = row + [""] * (width - len(row))
