@@ -2153,3 +2153,30 @@ async def get_image_embeddings_status_endpoint(
         "embeddings": embeddings_state,
         "stale_aspects": stale_aspects,
     })
+
+
+class DocumentAuditRequest(BaseModel):
+    phase: str = "post_embed"
+    persist: bool = True
+
+
+@router.post("/admin/documents/{document_id}/audit")
+async def audit_document_endpoint(
+    document_id: str,
+    body: DocumentAuditRequest,
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    current_user: User = Depends(require_admin),
+):
+    """Audit a processed document: what its source says versus what the platform stored."""
+    from ..config import get_settings
+    from ..services.pdf.ingestion_audit_runner import run_ingestion_audit
+
+    if body.phase not in ("pre_embed", "post_embed"):
+        raise HTTPException(status_code=422, detail="phase must be pre_embed or post_embed")
+    supabase = SupabaseClient()
+    found = supabase.client.table("documents").select("workspace_id").eq("id", document_id).execute().data or []
+    if not found or found[0].get("workspace_id") != workspace_context.workspace_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return await run_ingestion_audit(
+        document_id, supabase, get_settings(), phase=body.phase, trigger="manual", persist=body.persist, notify=body.persist,
+    )

@@ -16,6 +16,20 @@ from app.utils.circuit_breaker import CircuitBreakerError
 logger = logging.getLogger(__name__)
 
 
+async def _run_audit(document_id: str, job_id: str, logger: Any) -> Dict[str, Any]:
+    try:
+        from app.config import get_settings
+        from app.services.core.supabase_client import get_supabase_client
+        from app.services.pdf.ingestion_audit_runner import run_ingestion_audit
+
+        outcome = await run_ingestion_audit(document_id, get_supabase_client(), get_settings(), job_id=job_id, phase="post_embed", trigger="pipeline")
+        logger.info(f"   Ingestion audit: {outcome['status']} ({len(outcome['findings'])} finding(s), {outcome['notified']} admin(s) notified)")
+        return {"status": outcome["status"], "audit_id": outcome["audit_id"], "findings": len(outcome["findings"])}
+    except Exception as audit_error:
+        logger.warning(f"⚠️ Ingestion audit could not run: {audit_error}")
+        return {"status": "audit_error", "error": str(audit_error)[:300]}
+
+
 async def process_stage_5_quality(
     document_id: str,
     job_id: str,
@@ -103,6 +117,8 @@ async def process_stage_5_quality(
         logger.warning(f"⚠️ Field judge failed: {judge_error}")
         field_judgements = {'status': 'failed', 'error': str(judge_error)[:300]}
 
+    ingestion_audit = await _run_audit(document_id, job_id, logger)
+
     # Stage 5 progress: 85% → 100% (fixed when complete)
     await tracker.update_stage(
         ProcessingStage.COMPLETED,
@@ -127,6 +143,7 @@ async def process_stage_5_quality(
         "claude_validations": validation_results.get('validated'),
         "claude_validation_status": validation_results.get('status'),
         "field_judgements": {k: v for k, v in field_judgements.items() if k != 'products'},
+        "ingestion_audit": ingestion_audit,
         "pages_processed": len(physical_pages),
         "pages_skipped": len([p for p in range(1, tracker.total_pages + 1) if p not in physical_pages]),
         "confidence_score": catalog.confidence_score
