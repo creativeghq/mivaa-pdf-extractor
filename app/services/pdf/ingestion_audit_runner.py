@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from app.services.flow_events import emit_flow_event
 from app.services.pdf.ingestion_audit import AuditResult, audit_document, db_status, platform_numbers_for_page
+from app.services.pdf.ocr_completeness import numeric_tokens
 from app.services.pdf.text_layer_extractor import assess_text_layer, reference_numbers
 
 STAGE = "ingestion_audit"
@@ -91,6 +92,9 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
     chunks = _rows(await asyncio.to_thread(
         db.table("document_chunks").select("id, product_id, content, metadata, has_text_embedding").eq("document_id", doc_id).execute
     ))
+    snapshots = _rows(await asyncio.to_thread(
+        db.table("source_snapshots").select("id, url, storage_bucket, storage_object_path").eq("document_id", doc_id).execute
+    ))
     tables: List[Dict[str, Any]] = []
     embedded: set = set()
     images: Dict[str, int] = {}
@@ -103,7 +107,7 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
         ))}
         for r in _rows(await asyncio.to_thread(db.table("image_product_associations").select("product_id").in_("product_id", ids).execute)):
             images[r["product_id"]] = images.get(r["product_id"], 0) + 1
-    return {"products": products, "layout": layout, "chunks": chunks, "tables": tables, "embedded": embedded, "images": images}
+    return {"products": products, "layout": layout, "chunks": chunks, "tables": tables, "embedded": embedded, "images": images, "snapshots": snapshots}
 
 
 async def _download(db: Any, document: Dict[str, Any]) -> Optional[bytes]:
@@ -117,7 +121,20 @@ async def _download(db: Any, document: Dict[str, Any]) -> Optional[bytes]:
         return None
 
 
-def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: Optional[bytes], phase: str) -> AuditResult:
+async def _snapshot_texts(db: Any, snapshots: List[Dict[str, Any]]) -> List[str]:
+    from app.services.pdf.source_snapshots import parse_page
+
+    texts: List[str] = []
+    for snap in snapshots:
+        try:
+            body = await asyncio.to_thread(db.storage.from_(snap["storage_bucket"]).download, snap["storage_object_path"])
+            texts.append(parse_page(body.decode("utf-8", errors="replace"))["text"])
+        except Exception as exc:
+            logging.getLogger(__name__).warning("audit: could not read snapshot %s: %s", snap.get("url"), exc)
+    return texts
+
+
+def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: Optional[bytes], phase: str, web_texts: Optional[List[str]] = None) -> AuditResult:
     layout = collected["layout"]
     chunks, tables = collected["chunks"], collected["tables"]
     pages_source = source_pages(pdf_bytes, layout) if pdf_bytes else {}
@@ -141,6 +158,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
             "platform_numbers": platform_numbers_for_page(_element_text(row.get("layout_elements") or []), chunks_by_page.get(number, []), tables_by_page.get(number, [])),
         })
     pdf_text = " ".join(w[4] for p in pages_source.values() for w in p["words"]) if pages_source else None
+    web_mode = pdf_bytes is None and bool(web_texts)
     platform_text = "\n".join(
         [c.get("content") or "" for c in chunks] + [_table_text(t) for t in tables] + [_element_text(r.get("layout_elements") or []) for r in layout]
     )
@@ -161,8 +179,12 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         }
         for p in collected["products"]
     ]
+    if web_mode:
+        pdf_text = "\n".join(web_texts or [])
+        pages = [{"page": 1, "route": None, "reference_numbers": set(numeric_tokens(pdf_text)), "platform_numbers": platform_numbers_for_page(platform_text, [], [])}]
     return audit_document(
-        source_kept=pdf_bytes is not None,
+        source_kept=pdf_bytes is not None or web_mode,
+        source_kind="web" if web_mode else "pdf",
         pages=pages,
         tables=tables,
         chunks=chunks,
@@ -228,7 +250,8 @@ async def run_ingestion_audit(
         document = found[0]
         collected = await _collect(db, document)
         pdf_bytes = await _download(db, document)
-        result = (await asyncio.to_thread(build_audit, document, collected, pdf_bytes, phase)).as_dict()
+        web_texts = await _snapshot_texts(db, collected["snapshots"]) if pdf_bytes is None and collected["snapshots"] else None
+        result = (await asyncio.to_thread(build_audit, document, collected, pdf_bytes, phase, web_texts)).as_dict()
         status = db_status(result["status"])
     except Exception as exc:
         log.warning("audit of %s crashed: %s", document_id, exc, exc_info=True)

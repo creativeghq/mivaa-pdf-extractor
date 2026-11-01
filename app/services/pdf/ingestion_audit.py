@@ -125,6 +125,32 @@ def code_findings(tables: Sequence[Dict[str, Any]], pdf_text: Optional[str], pla
         findings.append(Finding(WARN, "codes_missing_few", f"{len(missing)} item code(s) printed in the PDF are not saved", len(missing), missing))
 
 
+UNSUPPORTED_WARN = 0.05
+
+
+def table_cell_numbers(tables: Sequence[Dict[str, Any]]) -> Set[str]:
+    out: Set[str] = set()
+    for t in tables:
+        for row in ((t.get("table_data") or {}).get("rows") or []):
+            for cell in row or []:
+                out |= numeric_tokens(str(cell))
+    return out
+
+
+def unsupported_findings(tables: Sequence[Dict[str, Any]], reference: Set[str], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    if not reference:
+        return
+    stored = table_cell_numbers(tables)
+    if not stored:
+        return
+    unsupported = sorted(stored - reference)
+    share = len(unsupported) / len(stored)
+    metrics["table_numbers"] = len(stored)
+    metrics["table_numbers_not_in_source"] = len(unsupported)
+    if share >= UNSUPPORTED_WARN:
+        findings.append(Finding(WARN, "numbers_not_in_source", f"{len(unsupported)} of {len(stored)} numbers in the saved tables do not appear in the source (derived values, or a misread)", len(unsupported), unsupported))
+
+
 def table_findings(tables: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
     flagged = [t for t in tables if (t.get("metadata") or {}).get("needs_review")]
     fragments = [t for t in tables if t.get("extractor") == "paddleocr-vl" and not (t.get("metadata") or {}).get("title")]
@@ -178,21 +204,23 @@ def audit_document(
     pdf_text: Optional[str],
     platform_text: str,
     phase: str = "post_embed",
+    source_kind: str = "pdf",
 ) -> AuditResult:
     findings: List[Finding] = []
-    metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase}
+    metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase, "source_kind": source_kind}
     if not source_kept:
         findings.append(Finding(FAIL, "source_not_kept", "The source file or page snapshot was not kept, so the content cannot be verified"))
     else:
         coverage_findings(pages, findings, metrics)
         code_findings(tables, pdf_text, platform_text, findings, metrics)
+        unsupported_findings(tables, set().union(*(p.get("reference_numbers") or set() for p in pages)) if pages else set(), findings, metrics)
     table_findings(tables, findings, metrics)
     chunk_findings(chunks, tables, findings, metrics, phase)
     product_findings(products, findings, metrics, phase)
-    unrouted = sum(1 for p in pages if not p.get("route"))
+    unrouted = sum(1 for p in pages if not p.get("route")) if source_kind == "pdf" else 0
     metrics["pages"] = len(pages)
     metrics["pages_never_checked_against_text_layer"] = unrouted
-    if source_kept and pages and unrouted == len(pages):
+    if source_kept and source_kind == "pdf" and pages and unrouted == len(pages):
         findings.append(Finding(WARN, "layout_not_routed", "This document's layout predates the text-layer check; upgrade it to verify the pages", unrouted))
     severities = {f.severity for f in findings}
     if not source_kept:

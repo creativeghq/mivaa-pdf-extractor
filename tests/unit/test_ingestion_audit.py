@@ -28,7 +28,8 @@ def page(n, reference, platform, route="text_layer"):
     return {"page": n, "reference_numbers": set(reference), "platform_numbers": set(platform), "route": route}
 
 
-GOOD_PAGES = [page(1, nums(*range(100, 130)), nums(*range(100, 130)))]
+CODE_NUMBERS = [f"80{i:05d}" for i in range(10)]
+GOOD_PAGES = [page(1, nums(*range(100, 130), *CODE_NUMBERS), nums(*range(100, 130), *CODE_NUMBERS))]
 TABLE = {"id": "t1", "extractor": "pymupdf-text", "metadata": {"title": "Codes"}, "table_data": {"rows": [[f"80{i:05d}", "x"] for i in range(10)]}}
 CHUNK = {"id": "c1", "has_text_embedding": True, "content": "Codes | 8000000", "metadata": {"source": "table_block", "table_id": "t1"}}
 PRODUCT = {"name": "P", "n_tables": 1, "n_chunks": 1, "has_embedding": True, "n_images": 1}
@@ -55,15 +56,16 @@ def test_an_unkept_source_is_unverifiable_not_passed():
 
 
 def test_numbers_missing_from_a_page_fail_or_warn_by_share():
-    missing_many = [page(1, nums(*range(100, 130)), nums(*range(100, 120)))]
+    missing_many = [page(1, nums(*range(100, 130), *CODE_NUMBERS), nums(*range(100, 120), *CODE_NUMBERS))]
     r = run(pages=missing_many)
     assert r.status == ia.FAIL and "numbers_missing" in codes(r)
-    missing_few = [page(1, nums(*range(100, 150)), nums(*range(100, 149)))]
+    missing_few = [page(1, nums(*range(100, 150), *CODE_NUMBERS), nums(*range(100, 148), *CODE_NUMBERS))]
     assert "numbers_missing_few" in codes(run(pages=missing_few)) and run(pages=missing_few).status == ia.WARN
 
 
 def test_a_page_with_few_numbers_is_not_judged():
-    assert run(pages=[page(1, nums(1000, 2000), set())]).status == ia.PASS
+    empty = dict(TABLE, table_data={"rows": []})
+    assert run(pages=[page(1, nums(1000, 2000), set())], tables=[empty]).status == ia.PASS
 
 
 def test_codes_printed_in_the_pdf_but_not_saved_are_listed():
@@ -118,3 +120,16 @@ def test_platform_numbers_union_layout_chunks_and_tables():
 def test_the_result_serialises():
     d = run(source_kept=False).as_dict()
     assert d["status"] == "unverifiable" and d["findings"][0]["code"] == "source_not_kept"
+
+
+def test_numbers_in_saved_tables_that_the_source_never_prints_are_reported():
+    bad = dict(TABLE, table_data={"rows": [[f"80{i:05d}", "x", 9999 + i] for i in range(10)]})
+    r = run(tables=[bad])
+    f = next(f for f in r.findings if f.code == "numbers_not_in_source")
+    assert f.severity == ia.WARN and f.count == 10 and r.metrics["table_numbers_not_in_source"] == 10
+
+
+def test_a_web_source_is_judged_like_a_pdf_but_never_for_layout_routing():
+    pages = [page(1, nums(*range(100, 130), *CODE_NUMBERS), nums(*range(100, 130), *CODE_NUMBERS), route=None)]
+    r = run(pages=pages, source_kind="web")
+    assert r.status == ia.PASS and r.metrics["source_kind"] == "web" and "layout_not_routed" not in codes(r)
