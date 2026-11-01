@@ -1,8 +1,10 @@
 """A photo the layout model splits is cropped whole; separate photos stay separate."""
 
-import fitz
+import pytest
 
-from app.services.pdf.region_crop_extractor import merge_split_photo_regions
+fitz = pytest.importorskip("fitz")
+
+from app.services.pdf.region_crop_extractor import merge_split_photo_regions  # noqa: E402
 
 
 def _region(y0, y1, x0=100, x1=500, kind="IMAGE"):
