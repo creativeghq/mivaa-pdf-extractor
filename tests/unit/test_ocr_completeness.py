@@ -130,3 +130,8 @@ def test_the_ink_profile_counts_dark_rows_of_a_real_image():
                 image.putpixel((x, y), 0)
     profile = oc.ink_profile_of(image)
     assert len(profile) == 100 and oc.count_text_lines(profile) == 3
+
+
+def test_a_decimal_is_the_same_number_whatever_its_trailing_zeros():
+    assert oc.numeric_tokens("1080,00 | 1080,0 | 1,440 | 12,50") == {"1080", "1,44", "12,5"}
+    assert oc.numeric_tokens("<td>1080,0</td>") == oc.numeric_tokens("1080,00")

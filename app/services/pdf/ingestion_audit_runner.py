@@ -144,9 +144,28 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         tables_by_page.setdefault(int(t.get("page_number") or 0), []).append(_table_text(t))
     chunks_by_page: Dict[int, List[str]] = {}
     for c in chunks:
-        page = (c.get("metadata") or {}).get("page_number")
-        if isinstance(page, int):
+        meta = c.get("metadata") or {}
+        numbers = [n for n in ([meta.get("page_number")] + list(meta.get("page_numbers") or [])) if isinstance(n, int)]
+        for page in set(numbers):
             chunks_by_page.setdefault(page, []).append(c.get("content") or "")
+    numbers_by_product: Dict[str, set] = {}
+    for t in tables:
+        numbers_by_product.setdefault(t["product_id"], set()).update(numeric_tokens(_table_text(t)))
+    for c in chunks:
+        if c.get("product_id"):
+            numbers_by_product.setdefault(c["product_id"], set()).update(numeric_tokens(c.get("content") or ""))
+    owners: Dict[int, List[str]] = {}
+    for p in collected["products"]:
+        for n in ((p.get("metadata") or {}).get("page_range") or []):
+            if isinstance(n, int):
+                owners.setdefault(n, []).append(p["id"])
+    unowned_numbers: set = set()
+    for c in chunks:
+        if not c.get("product_id"):
+            unowned_numbers |= numeric_tokens(c.get("content") or "")
+    for t in tables:
+        if (t.get("metadata") or {}).get("scope") == "catalogue_wide":
+            unowned_numbers |= numeric_tokens(_table_text(t))
     pages: List[Dict[str, Any]] = []
     for row in layout:
         number = int(row["page_number"])
@@ -156,7 +175,9 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
             "page": number,
             "route": meta.get("route"),
             "reference_numbers": source.get("reference") or set(),
-            "platform_numbers": platform_numbers_for_page(_element_text(row.get("layout_elements") or []), chunks_by_page.get(number, []), tables_by_page.get(number, [])),
+            "platform_numbers": platform_numbers_for_page(_element_text(row.get("layout_elements") or []), chunks_by_page.get(number, []), tables_by_page.get(number, []))
+            | set().union(*(numbers_by_product.get(pid, set()) for pid in owners.get(number, [])))
+            | (unowned_numbers if number not in owners else set()),
         })
     pdf_text = " ".join(w[4] for p in pages_source.values() for w in p["words"]) if pages_source else None
     web_mode = pdf_bytes is None and bool(web_texts)
@@ -187,6 +208,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
     return audit_document(
         catalogue={"plans": plans, "unmatched": unmatched},
         source_kept=pdf_bytes is not None or web_mode,
+        source_state="missing_object" if (pdf_bytes is None and not web_mode and document.get("storage_object_path")) else "no_path",
         source_kind="web" if web_mode else "pdf",
         pages=pages,
         tables=tables,

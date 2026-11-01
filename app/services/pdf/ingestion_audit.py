@@ -15,6 +15,7 @@ UNVERIFIABLE = "unverifiable"
 PAGE_MISSING_WARN = 0.02
 PAGE_MISSING_FAIL = 0.05
 MIN_NUMBERS_PER_PAGE = 12
+MIN_MISSING_FOR_FAIL = 3
 CODE_COVERAGE_WARN = 0.99
 CODE_COVERAGE_FAIL = 0.95
 MIN_CODES_FOR_SHAPE = 8
@@ -85,7 +86,7 @@ def page_number_gaps(pages: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
         missing = reference - have
         share = len(missing) / len(reference)
         if share >= PAGE_MISSING_WARN:
-            gaps.append({"page": page["page"], "missing_share": round(share, 3), "missing": len(missing), "of": len(reference), "route": page.get("route")})
+            gaps.append({"page": page["page"], "missing_share": round(share, 3), "missing": len(missing), "of": len(reference), "route": page.get("route"), "examples": sorted(missing)[:8]})
     return gaps
 
 
@@ -98,8 +99,8 @@ def coverage_findings(pages: Sequence[Dict[str, Any]], findings: List[Finding], 
         total_ref = sum(len(p["reference_numbers"]) for p in pages if len(p.get("reference_numbers") or ()) >= MIN_NUMBERS_PER_PAGE)
         total_have = sum(len(p["reference_numbers"] & (p.get("platform_numbers") or set())) for p in pages if len(p.get("reference_numbers") or ()) >= MIN_NUMBERS_PER_PAGE)
         metrics["number_coverage"] = round(total_have / total_ref, 4) if total_ref else None
-    hard = [g for g in gaps if g["missing_share"] >= PAGE_MISSING_FAIL]
-    soft = [g for g in gaps if g["missing_share"] < PAGE_MISSING_FAIL]
+    hard = [g for g in gaps if g["missing_share"] >= PAGE_MISSING_FAIL and g["missing"] >= MIN_MISSING_FOR_FAIL]
+    soft = [g for g in gaps if g not in hard]
     if hard:
         findings.append(Finding(FAIL, "numbers_missing", f"{len(hard)} page(s) have 5% or more of the numbers printed in the PDF missing from what the platform stored", len(hard), hard))
     if soft:
@@ -217,11 +218,15 @@ def audit_document(
     phase: str = "post_embed",
     source_kind: str = "pdf",
     catalogue: Optional[Dict[str, Any]] = None,
+    source_state: str = "kept",
 ) -> AuditResult:
     findings: List[Finding] = []
     metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase, "source_kind": source_kind}
     if not source_kept:
-        findings.append(Finding(FAIL, "source_not_kept", "The source file or page snapshot was not kept, so the content cannot be verified"))
+        if source_state == "missing_object":
+            findings.append(Finding(FAIL, "source_missing_in_storage", "The source file is recorded for this document but is not in storage any more, so the content cannot be verified"))
+        else:
+            findings.append(Finding(FAIL, "source_not_kept", "The source file or page snapshot was not kept, so the content cannot be verified"))
     else:
         coverage_findings(pages, findings, metrics)
         code_findings(tables, pdf_text, platform_text, findings, metrics)

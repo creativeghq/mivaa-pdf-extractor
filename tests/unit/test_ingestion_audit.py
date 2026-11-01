@@ -133,3 +133,20 @@ def test_a_web_source_is_judged_like_a_pdf_but_never_for_layout_routing():
     pages = [page(1, nums(*range(100, 130), *CODE_NUMBERS), nums(*range(100, 130), *CODE_NUMBERS), route=None)]
     r = run(pages=pages, source_kind="web")
     assert r.status == ia.PASS and r.metrics["source_kind"] == "web" and "layout_not_routed" not in codes(r)
+
+
+def test_one_missing_number_on_a_small_page_is_a_warning_not_a_failure():
+    small = [page(1, nums(*range(100, 112), *CODE_NUMBERS), nums(*range(100, 111), *CODE_NUMBERS))]
+    r = run(pages=small)
+    assert r.status == ia.WARN and "numbers_missing_few" in codes(r) and "numbers_missing" not in codes(r)
+
+
+def test_a_failed_page_lists_the_numbers_that_are_missing():
+    r = run(pages=[page(1, nums(*range(100, 130), *CODE_NUMBERS), nums(*range(100, 120), *CODE_NUMBERS))])
+    gap = next(f for f in r.findings if f.code == "numbers_missing").examples[0]
+    assert gap["examples"][:3] == ["120", "121", "122"]
+
+
+def test_a_recorded_source_that_is_gone_from_storage_is_named_as_such():
+    r = run(source_kept=False, source_state="missing_object")
+    assert "source_missing_in_storage" in codes(r) and r.status == ia.UNVERIFIABLE

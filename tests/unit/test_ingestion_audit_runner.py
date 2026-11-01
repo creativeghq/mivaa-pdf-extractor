@@ -54,6 +54,18 @@ def collected(codes_saved):
     return {"products": [{"id": "p1", "name": "P"}], "layout": layout, "chunks": chunks, "tables": tables, "embedded": {"p1"}, "images": {"p1": 1}}
 
 
+def test_a_table_stored_under_another_page_number_still_counts_for_the_pages_its_product_owns():
+    data = collected(CODES)
+    data["products"] = [{"id": "p1", "name": "P", "metadata": {"page_range": [1]}}]
+    data["tables"][0]["page_number"] = 99
+    data["chunks"][0]["metadata"] = {"source": "table_block", "table_id": "t1", "page_number": 99}
+    data["layout"][0]["layout_elements"] = []
+    result = runner.build_audit({"id": "d"}, data, make_pdf(CODES), "post_embed")
+    assert result.metrics["pages_with_missing_numbers"] == 0, result.as_dict()
+    data["products"] = [{"id": "p1", "name": "P", "metadata": {"page_range": [5]}}]
+    assert runner.build_audit({"id": "d"}, data, make_pdf(CODES), "post_embed").metrics["pages_with_missing_numbers"] == 1
+
+
 def test_a_page_whose_numbers_are_all_stored_passes():
     result = runner.build_audit({"id": "d"}, collected(CODES), make_pdf(CODES), "post_embed")
     assert result.status == "pass", result.as_dict()

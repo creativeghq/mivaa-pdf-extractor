@@ -36,6 +36,8 @@ def numeric_tokens(text: str) -> set:
     out = set()
     for m in _NUMBER.findall(text):
         m = m.replace(".", ",")
+        if "," in m:
+            m = m.rstrip("0").rstrip(",")
         if "," in m or len(m) >= 3:
             out.add(m)
     return out
