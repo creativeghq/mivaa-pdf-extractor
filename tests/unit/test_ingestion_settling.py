@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from app.services.embeddings.ingestion_settling import (
-    ACTIVE_JOB_STATUSES,
+    SETTLING_HOURS,
     outside_documents_clause,
     settling_document_ids,
 )
@@ -16,43 +16,22 @@ pytestmark = pytest.mark.unit
 EMB = Path(__file__).resolve().parents[2] / "app" / "services" / "embeddings"
 
 
-class _Query:
-    def __init__(self, rows, seen):
-        self.rows, self.seen = rows, seen
-
-    def __getattr__(self, name):
-        def call(*args, **kwargs):
-            self.seen.append((name, args))
-            return self
-        return call
-
-    @property
-    def not_(self):
-        self.seen.append(("not_", ()))
-        return self
-
-    def execute(self):
-        return type("R", (), {"data": self.rows})()
-
-
 class _Client:
     def __init__(self, rows):
-        self.seen = []
+        self.calls = []
         self.rows = rows
 
-    def table(self, name):
-        self.seen.append(("table", (name,)))
-        return _Query(self.rows, self.seen)
+    def rpc(self, name, params):
+        self.calls.append((name, params))
+        rows = self.rows
+        return type("Q", (), {"execute": lambda _self: type("R", (), {"data": rows})()})()
 
 
-def test_active_and_recent_jobs_settle_their_documents():
-    client = _Client([{"document_id": "b"}, {"document_id": "a"}, {"document_id": "a"}, {"document_id": None}])
-    ids = asyncio.run(settling_document_ids(client, hours=24))
-    assert ids == ["a", "b"]
-    (or_filter,) = [args[0] for name, args in client.seen if name == "or_"]
-    for status in ("processing", "pending", "interrupted"):
-        assert status in ACTIVE_JOB_STATUSES and status in or_filter
-    assert "updated_at.gte." in or_filter
+def test_the_rule_is_the_sql_function():
+    client = _Client(["b", "a", "a", None])
+    assert asyncio.run(settling_document_ids(client)) == ["a", "b"]
+    assert client.calls == [("ingestion_settling_document_ids", {"p_hours": SETTLING_HOURS})]
+    assert SETTLING_HOURS == 24
 
 
 def test_clause_keeps_images_without_a_document():
