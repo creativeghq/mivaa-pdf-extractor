@@ -16,6 +16,19 @@ from app.utils.circuit_breaker import CircuitBreakerError
 logger = logging.getLogger(__name__)
 
 
+async def _attach_catalogue_tables(document_id: str, logger: Any) -> Dict[str, Any]:
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        from app.services.pdf.catalogue_tables import describe, persist_catalogue_wide_tables
+
+        summary = await persist_catalogue_wide_tables(document_id, get_supabase_client())
+        logger.info(f"   Catalogue-wide tables: {describe(summary)}")
+        return {"tables": summary["tables"], "rows_written": summary["rows_written"], "without_product": len(summary["unmatched"])}
+    except Exception as attach_error:
+        logger.warning(f"⚠️ Catalogue-wide tables could not be attached: {attach_error}")
+        return {"error": str(attach_error)[:300]}
+
+
 async def _run_audit(document_id: str, job_id: str, logger: Any) -> Dict[str, Any]:
     try:
         from app.config import get_settings
@@ -117,6 +130,7 @@ async def process_stage_5_quality(
         logger.warning(f"⚠️ Field judge failed: {judge_error}")
         field_judgements = {'status': 'failed', 'error': str(judge_error)[:300]}
 
+    catalogue_tables = await _attach_catalogue_tables(document_id, logger)
     ingestion_audit = await _run_audit(document_id, job_id, logger)
 
     # Stage 5 progress: 85% → 100% (fixed when complete)
@@ -144,6 +158,7 @@ async def process_stage_5_quality(
         "claude_validation_status": validation_results.get('status'),
         "field_judgements": {k: v for k, v in field_judgements.items() if k != 'products'},
         "ingestion_audit": ingestion_audit,
+        "catalogue_tables": catalogue_tables,
         "pages_processed": len(physical_pages),
         "pages_skipped": len([p for p in range(1, tracker.total_pages + 1) if p not in physical_pages]),
         "confidence_score": catalog.confidence_score

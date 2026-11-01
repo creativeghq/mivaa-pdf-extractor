@@ -26,6 +26,7 @@ sys.modules["app.services.flow_events"] = flow_stub
 _load("app.services.pdf.ocr_completeness", "app/services/pdf/ocr_completeness.py")
 _load("app.services.pdf.text_layer_extractor", "app/services/pdf/text_layer_extractor.py")
 _load("app.services.pdf.ingestion_audit", "app/services/pdf/ingestion_audit.py")
+_load("app.services.pdf.catalogue_tables", "app/services/pdf/catalogue_tables.py")
 runner = _load("ingestion_audit_runner_under_test", "app/services/pdf/ingestion_audit_runner.py")
 
 fitz = pytest.importorskip("fitz")

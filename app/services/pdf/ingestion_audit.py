@@ -151,6 +151,17 @@ def unsupported_findings(tables: Sequence[Dict[str, Any]], reference: Set[str], 
         findings.append(Finding(WARN, "numbers_not_in_source", f"{len(unsupported)} of {len(stored)} numbers in the saved tables do not appear in the source (derived values, or a misread)", len(unsupported), unsupported))
 
 
+def catalogue_findings(plans: Sequence[Dict[str, Any]], unmatched: Sequence[Dict[str, Any]], tables: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    have = {(t.get("product_id"), t.get("page_number")) for t in tables if (t.get("metadata") or {}).get("scope") == "catalogue_wide"}
+    missing = [{"page": p["page"], "title": p["title"]} for p in plans for pid in p["products"] if (pid, p["page"]) not in have]
+    metrics["catalogue_tables_unattached"] = len(missing)
+    metrics["catalogue_tables_without_product"] = len(unmatched)
+    if missing:
+        findings.append(Finding(WARN, "catalogue_tables_not_attached", f"{len(missing)} table(s) on pages that belong to no product are not attached to the products their heading names", len(missing), missing))
+    if unmatched:
+        findings.append(Finding(WARN, "catalogue_tables_without_product", f"{len(unmatched)} table(s) on catalogue-wide pages have a heading that names no product", len(unmatched), unmatched))
+
+
 def table_findings(tables: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
     flagged = [t for t in tables if (t.get("metadata") or {}).get("needs_review")]
     fragments = [t for t in tables if t.get("extractor") == "paddleocr-vl" and not (t.get("metadata") or {}).get("title")]
@@ -205,6 +216,7 @@ def audit_document(
     platform_text: str,
     phase: str = "post_embed",
     source_kind: str = "pdf",
+    catalogue: Optional[Dict[str, Any]] = None,
 ) -> AuditResult:
     findings: List[Finding] = []
     metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase, "source_kind": source_kind}
@@ -215,6 +227,8 @@ def audit_document(
         code_findings(tables, pdf_text, platform_text, findings, metrics)
         unsupported_findings(tables, set().union(*(p.get("reference_numbers") or set() for p in pages)) if pages else set(), findings, metrics)
     table_findings(tables, findings, metrics)
+    if catalogue:
+        catalogue_findings(catalogue["plans"], catalogue["unmatched"], tables, findings, metrics)
     chunk_findings(chunks, tables, findings, metrics, phase)
     product_findings(products, findings, metrics, phase)
     unrouted = sum(1 for p in pages if not p.get("route")) if source_kind == "pdf" else 0

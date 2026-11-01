@@ -127,3 +127,24 @@ def _take_budget(budget: Optional[Dict[str, int]]) -> bool:
             return False
         budget["left"] -= 1
         return True
+
+
+def assess_elements_offline(elements: List[Dict[str, Any]], reference: Optional[Dict[str, Any]], zoom: float) -> Dict[str, Any]:
+    report: Dict[str, Any] = {"checked": 0, "complete": 0, "suspect": 0, "truncated": 0, "recovered": 0, "repair_attempts": 0}
+    words = reference["words"] if reference else None
+    ox, oy = reference["origin"] if reference else (0.0, 0.0)
+    for el in elements:
+        if el.get("region_type") != "TABLE":
+            continue
+        meta = el.setdefault("metadata", {})
+        b = el["bbox"]
+        ref = None
+        if words:
+            rect = (b["x"] / zoom + ox, b["y"] / zoom + oy, (b["x"] + b["width"]) / zoom + ox, (b["y"] + b["height"]) / zoom + oy)
+            ref = reference_numbers(words, rect) or None
+        verdict = assess_table(meta.get("html") or el.get("text_content") or "", reference_numbers=ref)
+        meta.update(verdict.as_metadata())
+        meta["needs_review"] = verdict.status != COMPLETE
+        report["checked"] += 1
+        report[verdict.status] += 1
+    return report

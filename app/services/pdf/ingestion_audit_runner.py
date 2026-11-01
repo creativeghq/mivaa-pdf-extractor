@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from app.services.flow_events import emit_flow_event
 from app.services.pdf.ingestion_audit import AuditResult, audit_document, db_status, platform_numbers_for_page
+from app.services.pdf.catalogue_tables import plan_catalogue_tables
 from app.services.pdf.ocr_completeness import numeric_tokens
 from app.services.pdf.text_layer_extractor import assess_text_layer, reference_numbers
 
@@ -76,7 +77,7 @@ def source_pages(pdf_bytes: bytes, layout_rows: List[Dict[str, Any]]) -> Dict[in
 
 async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
     doc_id = document["id"]
-    products = _rows(await asyncio.to_thread(db.table("products").select("id, name").eq("source_document_id", doc_id).execute))
+    products = _rows(await asyncio.to_thread(db.table("products").select("id, name, metadata").eq("source_document_id", doc_id).execute))
     product_ids = [p["id"] for p in products]
     layout: List[Dict[str, Any]] = []
     start = 0
@@ -182,7 +183,9 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
     if web_mode:
         pdf_text = "\n".join(web_texts or [])
         pages = [{"page": 1, "route": None, "reference_numbers": set(numeric_tokens(pdf_text)), "platform_numbers": platform_numbers_for_page(platform_text, [], [])}]
+    plans, unmatched = plan_catalogue_tables(layout, collected["products"])
     return audit_document(
+        catalogue={"plans": plans, "unmatched": unmatched},
         source_kept=pdf_bytes is not None or web_mode,
         source_kind="web" if web_mode else "pdf",
         pages=pages,

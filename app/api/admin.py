@@ -2180,3 +2180,24 @@ async def audit_document_endpoint(
     return await run_ingestion_audit(
         document_id, supabase, get_settings(), phase=body.phase, trigger="manual", persist=body.persist, notify=body.persist,
     )
+
+
+class UpgradeLayoutRequest(BaseModel):
+    dry_run: bool = True
+
+
+@router.post("/admin/documents/{document_id}/upgrade-layout")
+async def upgrade_layout_endpoint(
+    document_id: str,
+    body: UpgradeLayoutRequest,
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    current_user: User = Depends(require_admin),
+):
+    """Bring a document's cached layout up to the text-layer check without any new OCR."""
+    from ..services.pdf.layout_upgrade import upgrade_cached_layout
+
+    supabase = SupabaseClient()
+    found = supabase.client.table("documents").select("workspace_id").eq("id", document_id).execute().data or []
+    if not found or found[0].get("workspace_id") != workspace_context.workspace_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return await upgrade_cached_layout(document_id, supabase, apply=not body.dry_run)
