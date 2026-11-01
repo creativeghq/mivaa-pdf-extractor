@@ -115,3 +115,13 @@ def test_a_repair_that_redraws_the_picture_is_rejected_and_the_clean_up_is_accep
     assert repair_is_faithful(source, classical_cleanup(source), [50, 16])[0]
     assert not repair_is_faithful(source, _texture(99), [50, 16])[0]
 
+
+
+def test_neighbouring_plain_colourways_do_not_match_and_a_plain_tile_has_no_region_match():
+    grey = Image.new("RGB", (300, 100), (168, 168, 160))
+    mint = Image.new("RGB", (300, 100), (160, 170, 156))
+    assert match_score(grey, grey.copy()).score > 0
+    assert match_score(grey, mint).score == 0
+    room = _texture(5, size=(600, 400))
+    room.paste(grey, (100, 100))
+    assert match_score(grey, room).score == 0

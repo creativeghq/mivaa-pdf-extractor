@@ -19,6 +19,7 @@ PART_MIN_CORRELATION = 0.72
 # Print vs web colour drift on a true photo match measured dE 8.6; another colourway 28.8-33.3.
 PART_MAX_DELTA_E = 14.0
 MATCH_MARGIN = 0.04
+PLAIN_MAX_DELTA_E = 4.0
 # A repair must still be the source picture once shrunk back to the source's real size.
 REPAIR_MIN_SSIM = 0.6
 
@@ -130,6 +131,12 @@ def part_score(crop: Image.Image, candidate: Image.Image) -> MatchScore:
 
 def match_score(crop: Image.Image, candidate: Image.Image) -> MatchScore:
     w = whole_image_score(crop, candidate)
+    if not is_patterned(crop):
+        # A plain tile has nothing to correlate (a flat patch "appears" in any wall of any room
+        # photo), and neighbouring colourways sit close: Spatula Grey vs Mint measured dE 5.3.
+        # True plain matches measured dE 2.0-3.0, so only a near-identical colour counts.
+        de = float(w.detail.rsplit("dE ", 1)[-1]) if "dE " in w.detail else 99.0
+        return w if w.score > 0 and de <= PLAIN_MAX_DELTA_E else MatchScore(0.0, "none", w.detail)
     p = part_score(crop, candidate)
     return w if w.score >= p.score else p
 
