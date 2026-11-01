@@ -21,6 +21,14 @@ MAX_CONTAINERS = int(os.environ.get("PADDLEOCR_MAX_CONTAINERS", "8"))        # a
 # leaves a slot so a /health probe never waits a full parse behind in-flight work.
 MAX_CONCURRENT = int(os.environ.get("PADDLEOCR_MAX_CONCURRENT", "2"))
 PADDLE_VERSION = os.environ.get("PADDLEOCR_PADDLE_VERSION", "3.2.1")
+PARSE_MAX_NEW_TOKENS = int(os.environ.get("PADDLEOCR_MAX_NEW_TOKENS", "4096"))
+CAP_SUSPECT_CHARS_PER_TOKEN = 2.7
+CAP_SUSPECT_SHARE = 0.9
+
+
+def truncation_suspected(content, cap=PARSE_MAX_NEW_TOKENS):
+    return len(content or "") >= cap * CAP_SUSPECT_CHARS_PER_TOKEN * CAP_SUSPECT_SHARE
+
 
 # The `paddleocr` package version, PINNED. This used to be unpinned, which meant
 # the model actually serving traffic was "whatever PyPI resolved the last time
@@ -185,7 +193,7 @@ class PaddleService:
         # (avoids RGB/BGR ndarray ambiguity that would corrupt OCR).
         with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tf:
             img.save(tf.name, format="PNG")
-            outputs = list(self.pipeline.predict(tf.name, use_queues=False, max_new_tokens=2048))
+            outputs = list(self.pipeline.predict(tf.name, use_queues=False, max_new_tokens=PARSE_MAX_NEW_TOKENS))
 
         regions = []
         for res in outputs:
@@ -203,11 +211,13 @@ class PaddleService:
                     order = blk.get("block_id")
                 if order is None:
                     order = len(regions)
+                content = blk.get("block_content") or blk.get("content") or ""
                 regions.append({
                     "bbox": [float(v) for v in bbox],   # pixel x0 y0 x1 y1
                     "label": str(blk.get("block_label") or blk.get("label") or "text"),
-                    "content": blk.get("block_content") or blk.get("content") or "",
+                    "content": content,
                     "order": int(order),
+                    "truncation_suspected": truncation_suspected(content),
                 })
         regions.sort(key=lambda r: r["order"])
         return regions, width, height
@@ -254,6 +264,6 @@ class PaddleService:
                 # Per-crop OCR: concatenate recognized text in reading order.
                 text = "\n".join(r["content"] for r in regions if r.get("content")).strip()
                 return {"text": text, "regions": regions, "width": width, "height": height}
-            return {"regions": regions, "width": width, "height": height}
+            return {"regions": regions, "width": width, "height": height, "max_new_tokens": PARSE_MAX_NEW_TOKENS}
 
         return api

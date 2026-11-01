@@ -16,7 +16,7 @@ MISSING_NUMBERS_SUSPECT = 0.02
 MAX_ROWS_PER_BAND = 18
 CUT_SNAP_LINES = 2
 BAND_WIDTH_TOLERANCE = 2
-HARD_REASONS = frozenset({"unclosed_table", "missing_reference_numbers", "repetition_loop"})
+HARD_REASONS = frozenset({"unclosed_table", "missing_reference_numbers", "repetition_loop", "generation_cap_hit"})
 
 _ROW = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.I | re.S)
 _CELL = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.I | re.S)
@@ -118,7 +118,12 @@ class Assessment:
         }
 
 
-def assess_table(content: str, visible_lines: Optional[int] = None, reference_numbers: Optional[set] = None) -> Assessment:
+def assess_table(
+    content: str,
+    visible_lines: Optional[int] = None,
+    reference_numbers: Optional[set] = None,
+    generation_capped: bool = False,
+) -> Assessment:
     result = Assessment()
     text = content or ""
     rows = table_rows(text)
@@ -128,6 +133,9 @@ def assess_table(content: str, visible_lines: Optional[int] = None, reference_nu
 
     if re.search(r"<table\b", text, re.I) and len(re.findall(r"<table\b", text, re.I)) != len(re.findall(r"</table>", text, re.I)):
         hard.append("unclosed_table")
+
+    if generation_capped:
+        hard.append("generation_cap_hit")
 
     if visible_lines is not None:
         result.visible_lines = visible_lines

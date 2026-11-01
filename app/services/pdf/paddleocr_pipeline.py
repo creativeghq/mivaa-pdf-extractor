@@ -179,6 +179,7 @@ def parse_parse_response(payload: Dict[str, Any]) -> List[PaddleRegion]:
                 bbox=(nx0, ny0, nx1, ny1),
                 content=str(raw.get("content") or ""),
                 order=int(raw.get("order", len(out))),
+                metadata={"truncation_suspected": True} if raw.get("truncation_suspected") is True else {},
             )
         )
     if skipped_degenerate:
@@ -225,6 +226,7 @@ def region_to_layout_element(
             # Table content is markdown/HTML from the VLM — preserve for Stage 2.
             "html": region.content if region.region_type in TABLE_REGION_TYPES else None,
             "source": "paddleocr-vl",
+            "truncation_suspected": region.metadata.get("truncation_suspected") is True,
         },
     }
 

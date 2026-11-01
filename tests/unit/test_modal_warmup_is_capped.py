@@ -20,7 +20,7 @@ def test_the_warmup_predict_passes_the_token_cap_and_the_parse_path_does_not_reu
         ]
 
     assert predict_caps(load) == ["WARMUP_MAX_NEW_TOKENS"]
-    assert predict_caps(parse) == ["2048"]
+    assert predict_caps(parse) == ["PARSE_MAX_NEW_TOKENS"]
 
 
 def test_the_warmup_budget_is_short_enough_to_recycle_a_hang_and_long_enough_to_dump_it():

@@ -88,7 +88,8 @@ def verify_ocr_tables(
         if words:
             ref = reference_numbers(words, (box[0] / zoom + ox, box[1] / zoom + oy, box[2] / zoom + ox, box[3] / zoom + oy)) or None
         content = meta.get("html") or el.get("text_content") or ""
-        verdict = assess_table(content, visible_lines=lines, reference_numbers=ref)
+        capped = bool(meta.get("truncation_suspected"))
+        verdict = assess_table(content, visible_lines=lines, reference_numbers=ref, generation_capped=capped)
         report["checked"] += 1
         if (
             repair
