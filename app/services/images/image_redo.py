@@ -120,11 +120,24 @@ async def _redo(document_id: str, workspace_id: str, user_id: Optional[str], pro
             summary["per_product"].append({"product": product["name"], "skipped": "no page_range"})
             continue
 
+        todo = [p for p in pages if p not in done_pages]
+        if todo:
+            await process_product_images(
+                file_content=pdf, document_id=document_id, workspace_id=product.get("workspace_id") or workspace_id,
+                job_id=job, product=types.SimpleNamespace(name=product["name"]), physical_pages=todo, catalog=catalog,
+                config={"material_category": product.get("category")}, logger=log, product_db_id=product["id"],
+            )
+            done_pages.update(todo)
+        # New images are linked BEFORE the old ones are retired, so a stop at any point leaves images on the product.
+        summary["links"] += _link_new_images(db, document_id, workspace_id, products, pages_of, set(pages), redo_started)
+
         linked = [r["image_id"] for r in (db.table("image_product_associations").select("image_id")
                                           .eq("product_id", product["id"]).execute().data or [])]
-        # Rows this run already created and linked from a shared page are not "old".
-        old = (db.table("document_images").select("id,metadata").in_("id", linked).eq("document_id", document_id)
-               .lt("created_at", redo_started).execute().data or []) if linked else []
+        rows = (db.table("document_images").select("id,metadata,created_at").in_("id", linked)
+                .eq("document_id", document_id).execute().data or []) if linked else []
+        old = [r for r in rows if r["created_at"] < redo_started]
+        if len(old) == len(rows):
+            old = []  # nothing new came out for this product: keep what it has rather than leave it empty
         if old:
             await vecs.delete_embeddings_by_image_ids([r["id"] for r in old])
             for r in old:
@@ -134,17 +147,6 @@ async def _redo(document_id: str, workspace_id: str, user_id: Optional[str], pro
             db.table("image_product_associations").delete().eq("product_id", product["id"]) \
                 .in_("image_id", [r["id"] for r in old]).execute()
         summary["retired"] += len(old)
-
-        todo = [p for p in pages if p not in done_pages]
-        if todo:
-            await process_product_images(
-                file_content=pdf, document_id=document_id, workspace_id=product.get("workspace_id") or workspace_id,
-                job_id=job, product=types.SimpleNamespace(name=product["name"]), physical_pages=todo, catalog=catalog,
-                config={"material_category": product.get("category")}, logger=log, product_db_id=product["id"],
-            )
-            done_pages.update(todo)
-        # Linked as soon as they exist: an interrupted run must never leave a product with no images.
-        summary["links"] += _link_new_images(db, document_id, workspace_id, products, pages_of, set(pages), redo_started)
         summary["per_product"].append({"product": product["name"], "pages": len(pages), "processed": len(todo), "retired": len(old)})
         log.info(f"🖼️ Image redo {product['name']}: retired {len(old)}, processed {len(todo)} of {len(pages)} pages")
 
