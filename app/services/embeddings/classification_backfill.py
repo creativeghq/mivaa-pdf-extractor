@@ -47,8 +47,14 @@ def is_quarantined(row: Dict[str, Any]) -> bool:
 async def _fetch_pending_images(
     limit: int,
     workspace_id: Optional[str],
+    skip_settling_documents: bool = False,
 ) -> List[Dict[str, Any]]:
     """Find document_images still carrying the quarantine marker."""
+    from app.services.embeddings.ingestion_settling import (
+        outside_documents_clause,
+        settling_document_ids,
+    )
+
     client = get_supabase_client().client
     query = (
         client.table("document_images")
@@ -57,6 +63,8 @@ async def _fetch_pending_images(
         .order("id")
         .limit(limit)
     )
+    if skip_settling_documents:
+        query = query.or_(outside_documents_clause(await settling_document_ids(client)))
     if workspace_id:
         query = query.eq("workspace_id", workspace_id)
     response = await asyncio.to_thread(query.execute)
@@ -188,6 +196,7 @@ async def backfill_pending_classifications(
     batch_size: int = 10,
     max_images: int = 100,
     workspace_id: Optional[str] = None,
+    skip_settling_documents: bool = False,
 ) -> Dict[str, Any]:
     """Re-classify quarantined images and embed the confirmed materials.
 
@@ -199,7 +208,9 @@ async def backfill_pending_classifications(
     if not anthropic_api_key:
         return {"ok": False, "error": "ANTHROPIC_API_KEY not configured"}
 
-    rows = await _fetch_pending_images(limit=max_images, workspace_id=workspace_id)
+    rows = await _fetch_pending_images(
+        limit=max_images, workspace_id=workspace_id, skip_settling_documents=skip_settling_documents,
+    )
     if not rows:
         return {
             "ok": True, "scanned": 0, "material": 0, "non_material": 0,

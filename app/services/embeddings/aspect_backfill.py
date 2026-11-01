@@ -44,12 +44,14 @@ def _aspect_stale_filter(aspect: str) -> str:
     )
 
 
-def stale_aspect_rows_filter() -> str:
-    """Any aspect stale AND the row not quarantined — one `or=` tree, applied before LIMIT."""
+def stale_aspect_rows_filter(also: str = "") -> str:
+    """Any aspect stale AND the row not quarantined (AND `also`, an or-member list) — one
+    `or=` tree, applied before LIMIT."""
     from app.services.embeddings.classification_backfill import NOT_QUARANTINED_FILTER
 
     any_stale = ",".join(_aspect_stale_filter(a) for a in ASPECT_NAMES)
-    return f"and(or({NOT_QUARANTINED_FILTER}),or({any_stale}))"
+    extra = f",or({also})" if also else ""
+    return f"and(or({NOT_QUARANTINED_FILTER}),or({any_stale}){extra})"
 
 
 def _is_aspect_stale(row: Dict[str, Any], aspect: str) -> bool:
@@ -111,6 +113,7 @@ async def _fetch_stale_aspect_images(
     document_id: Optional[str],
     image_ids: Optional[List[str]],
     product_id: Optional[str],
+    skip_settling_documents: bool = False,
 ) -> List[Dict[str, Any]]:
     """Find document_images that need at least one aspect re-embedded.
 
@@ -133,6 +136,14 @@ async def _fetch_stale_aspect_images(
             return []
         image_ids = list(set((image_ids or []) + product_image_ids))
 
+    settled = ""
+    if skip_settling_documents:
+        from app.services.embeddings.ingestion_settling import (
+            outside_documents_clause,
+            settling_document_ids,
+        )
+        settled = outside_documents_clause(await settling_document_ids(client))
+
     query = (
         client.table("document_images")
         .select(
@@ -144,7 +155,7 @@ async def _fetch_stale_aspect_images(
             "style_aspect_embedding_model, style_aspect_schema_version, "
             "material_aspect_embedding_model, material_aspect_schema_version"
         )
-        .or_(stale_aspect_rows_filter())
+        .or_(stale_aspect_rows_filter(settled))
         .order("id")
         .limit(limit)
     )
@@ -245,6 +256,7 @@ async def backfill_aspect_embeddings(
     document_id: Optional[str] = None,
     image_ids: Optional[List[str]] = None,
     product_id: Optional[str] = None,
+    skip_settling_documents: bool = False,
 ) -> Dict[str, Any]:
     """Re-embed stale aspect collections from cached VisionAnalysis JSON.
 
@@ -271,6 +283,7 @@ async def backfill_aspect_embeddings(
         document_id=document_id,
         image_ids=image_ids,
         product_id=product_id,
+        skip_settling_documents=skip_settling_documents,
     )
     if not rows:
         return {

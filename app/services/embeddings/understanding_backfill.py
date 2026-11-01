@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 async def _fetch_stale_images(
     limit: int,
     workspace_id: Optional[str],
+    skip_settling_documents: bool = False,
 ) -> List[Dict[str, Any]]:
     """Find document_images whose understanding embedding is stale.
 
@@ -43,7 +44,15 @@ async def _fetch_stale_images(
         is_quarantined,
     )
 
+    from app.services.embeddings.ingestion_settling import (
+        outside_documents_clause,
+        settling_document_ids,
+    )
+
     client = get_supabase_client().client
+    settled = ""
+    if skip_settling_documents:
+        settled = f",or({outside_documents_clause(await settling_document_ids(client))})"
     query = (
         client.table("document_images")
         .select(
@@ -55,7 +64,7 @@ async def _fetch_stale_images(
             f"and(or({NOT_QUARANTINED_FILTER}),or("
             "has_understanding_embedding.is.null,has_understanding_embedding.is.false,"
             f"understanding_schema_version.is.null,understanding_schema_version.lt.{int(SCHEMA_VERSION)},"
-            "understanding_embedding_model.is.null,understanding_embedding_model.not.like.voyage*))"
+            f"understanding_embedding_model.is.null,understanding_embedding_model.not.like.voyage*){settled})"
         )
         .order("id")
         .limit(limit)
@@ -327,6 +336,7 @@ async def backfill_understanding_embeddings(
     max_images: int = 200,
     workspace_id: Optional[str] = None,
     recompute_product_rollup: bool = True,
+    skip_settling_documents: bool = False,
 ) -> Dict[str, Any]:
     """Re-run vision_analysis + Voyage on stale rows.
 
@@ -348,7 +358,9 @@ async def backfill_understanding_embeddings(
     embeddings_svc = RealEmbeddingsService()
     vecs_svc = get_vecs_service()
 
-    rows = await _fetch_stale_images(limit=max_images, workspace_id=workspace_id)
+    rows = await _fetch_stale_images(
+        limit=max_images, workspace_id=workspace_id, skip_settling_documents=skip_settling_documents,
+    )
     if not rows:
         return {"ok": True, "scanned": 0, "reembedded": 0, "skipped": 0, "failed": 0, "products_rerolled": 0}
 

@@ -1759,6 +1759,7 @@ class UnderstandingBackfillRequest(BaseModel):
     batch_size: int = 25
     max_images: int = 200
     workspace_id: Optional[str] = None
+    skip_settling_documents: bool = False
 
 
 @router.post("/admin/understanding-embeddings/backfill")
@@ -1783,6 +1784,7 @@ async def backfill_understanding_embeddings_endpoint(
         batch_size=request.batch_size,
         max_images=request.max_images,
         workspace_id=request.workspace_id,
+        skip_settling_documents=request.skip_settling_documents,
     )
     logger.info(f"📊 Understanding backfill summary: {summary}")
     return JSONResponse(content=summary)
@@ -1909,6 +1911,7 @@ class ClassificationBackfillRequest(BaseModel):
     batch_size: int = 10
     max_images: int = 100
     workspace_id: Optional[str] = None
+    skip_settling_documents: bool = False
 
 
 @router.post("/admin/images/classification-backfill")
@@ -1925,6 +1928,7 @@ async def classification_backfill_endpoint(
         batch_size=request.batch_size,
         max_images=request.max_images,
         workspace_id=request.workspace_id,
+        skip_settling_documents=request.skip_settling_documents,
     )
     logger.info(f"📊 Classification backfill summary: {summary}")
     return JSONResponse(content=summary)
@@ -1943,6 +1947,7 @@ class AspectBackfillRequest(BaseModel):
     document_id: Optional[str] = None
     product_id: Optional[str] = None
     image_ids: Optional[List[str]] = None
+    skip_settling_documents: bool = False
 
 
 @router.post("/admin/aspect-embeddings/backfill")
@@ -1962,6 +1967,7 @@ async def backfill_aspect_embeddings_endpoint(
         document_id=request.document_id,
         image_ids=request.image_ids,
         product_id=request.product_id,
+        skip_settling_documents=request.skip_settling_documents,
     )
     logger.info(f"📊 Aspect backfill summary: {summary}")
     return JSONResponse(content=summary)
