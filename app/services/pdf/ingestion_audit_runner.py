@@ -122,20 +122,20 @@ async def _download(db: Any, document: Dict[str, Any]) -> Optional[bytes]:
         return None
 
 
-async def _snapshot_texts(db: Any, snapshots: List[Dict[str, Any]]) -> List[str]:
+async def _snapshot_texts(db: Any, snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     from app.services.pdf.source_snapshots import parse_page
 
-    texts: List[str] = []
+    texts: List[Dict[str, Any]] = []
     for snap in snapshots:
         try:
             body = await asyncio.to_thread(db.storage.from_(snap["storage_bucket"]).download, snap["storage_object_path"])
-            texts.append(parse_page(body.decode("utf-8", errors="replace"))["text"])
+            texts.append({"url": snap.get("url"), "text": parse_page(body.decode("utf-8", errors="replace"))["text"]})
         except Exception as exc:
             logging.getLogger(__name__).warning("audit: could not read snapshot %s: %s", snap.get("url"), exc)
     return texts
 
 
-def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: Optional[bytes], phase: str, web_texts: Optional[List[str]] = None) -> AuditResult:
+def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: Optional[bytes], phase: str, web_texts: Optional[List[Dict[str, Any]]] = None) -> AuditResult:
     layout = collected["layout"]
     chunks, tables = collected["chunks"], collected["tables"]
     pages_source = source_pages(pdf_bytes, layout) if pdf_bytes else {}
@@ -181,6 +181,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         })
     pdf_text = " ".join(w[4] for p in pages_source.values() for w in p["words"]) if pages_source else None
     web_mode = pdf_bytes is None and bool(web_texts)
+    web: Optional[Dict[str, Any]] = None
     platform_text = "\n".join(
         [c.get("content") or "" for c in chunks] + [_table_text(t) for t in tables] + [_element_text(r.get("layout_elements") or []) for r in layout]
     )
@@ -202,11 +203,17 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         for p in collected["products"]
     ]
     if web_mode:
-        pdf_text = "\n".join(web_texts or [])
-        pages = [{"page": 1, "route": None, "reference_numbers": set(numeric_tokens(pdf_text)), "platform_numbers": platform_numbers_for_page(platform_text, [], [])}]
+        pdf_text = "\n".join(t["text"] for t in (web_texts or []))
+        pages = [{"page": 1, "route": None, "reference_numbers": set(), "platform_numbers": set()}]
+        table_numbers_by_product: Dict[str, set] = {}
+        for t in tables:
+            table_numbers_by_product.setdefault(t["product_id"], set()).update(
+                n for row in ((t.get("table_data") or {}).get("rows") or []) for cell in (row or []) for n in numeric_tokens(str(cell)))
+        web = {"snapshots": web_texts, "products": [{"name": p["name"], "table_numbers": table_numbers_by_product.get(p["id"], set())} for p in collected["products"]]}
     plans, unmatched = plan_catalogue_tables(layout, collected["products"])
     return audit_document(
         catalogue={"plans": plans, "unmatched": unmatched},
+        web=web if web_mode else None,
         source_kept=pdf_bytes is not None or web_mode,
         source_state="missing_object" if (pdf_bytes is None and not web_mode and document.get("storage_object_path")) else "no_path",
         source_kind="web" if web_mode else "pdf",

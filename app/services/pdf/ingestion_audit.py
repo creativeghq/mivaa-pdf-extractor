@@ -163,6 +163,60 @@ def catalogue_findings(plans: Sequence[Dict[str, Any]], unmatched: Sequence[Dict
         findings.append(Finding(WARN, "catalogue_tables_without_product", f"{len(unmatched)} table(s) on catalogue-wide pages have a heading that names no product", len(unmatched), unmatched))
 
 
+GENERIC_WORDS = {"stella", "acoustic", "panels", "panel", "wall", "mdf", "interior", "slats", "slat", "for", "the", "and", "profile", "plate", "mounting"}
+WEB_UNSUPPORTED_WARN = 0.05
+WEB_UNSUPPORTED_FAIL = 0.25
+
+
+def product_key(name: str) -> List[str]:
+    return [w for w in re.findall(r"[a-z0-9]+", (name or "").lower()) if w not in GENERIC_WORDS]
+
+
+def match_snapshots(name: str, snapshots: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    key = product_key(name)
+    if not key:
+        return []
+    joined = "_".join(key)
+    out = []
+    for snap in snapshots:
+        url = (snap.get("url") or "").lower().replace("-", "_")
+        if joined in url or all(k in re.findall(r"[a-z0-9]+", url) for k in key):
+            out.append(snap)
+    return out
+
+
+def web_product_findings(products: Sequence[Dict[str, Any]], snapshots: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    unmatched: List[str] = []
+    bad: List[Dict[str, Any]] = []
+    checked = 0
+    for p in products:
+        matched = match_snapshots(p["name"], snapshots)
+        if not matched:
+            unmatched.append(p["name"])
+            continue
+        reference: Set[str] = set()
+        for snap in matched:
+            reference |= numeric_tokens(snap.get("text") or "")
+        stored = p.get("table_numbers") or set()
+        if not stored:
+            continue
+        checked += 1
+        missing = sorted(stored - reference)
+        share = len(missing) / len(stored)
+        if share >= WEB_UNSUPPORTED_WARN:
+            bad.append({"product": p["name"], "share": round(share, 3), "not_on_page": len(missing), "of": len(stored), "examples": missing[:8], "pages": [m.get("url") for m in matched][:3]})
+    metrics["web_products_checked"] = checked
+    metrics["web_products_without_page"] = len(unmatched)
+    if unmatched:
+        findings.append(Finding(WARN, "web_products_without_page", f"{len(unmatched)} product(s) have no page in the saved snapshots (the page may be gone from the site), so their values cannot be verified", len(unmatched), unmatched))
+    hard = [b for b in bad if b["share"] >= WEB_UNSUPPORTED_FAIL]
+    if hard:
+        findings.append(Finding(FAIL, "web_numbers_not_on_page", f"{len(hard)} product(s) store numbers that their page does not print", len(hard), hard))
+    soft = [b for b in bad if b not in hard]
+    if soft:
+        findings.append(Finding(WARN, "web_numbers_not_on_page_few", f"{len(soft)} product(s) store a few numbers their page does not print (derived values or a misread)", len(soft), soft))
+
+
 def table_findings(tables: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
     flagged = [t for t in tables if (t.get("metadata") or {}).get("needs_review")]
     fragments = [t for t in tables if t.get("extractor") == "paddleocr-vl" and not (t.get("metadata") or {}).get("title")]
@@ -219,6 +273,7 @@ def audit_document(
     source_kind: str = "pdf",
     catalogue: Optional[Dict[str, Any]] = None,
     source_state: str = "kept",
+    web: Optional[Dict[str, Any]] = None,
 ) -> AuditResult:
     findings: List[Finding] = []
     metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase, "source_kind": source_kind}
@@ -227,6 +282,8 @@ def audit_document(
             findings.append(Finding(FAIL, "source_missing_in_storage", "The source file is recorded for this document but is not in storage any more, so the content cannot be verified"))
         else:
             findings.append(Finding(FAIL, "source_not_kept", "The source file or page snapshot was not kept, so the content cannot be verified"))
+    elif source_kind == "web":
+        web_product_findings((web or {}).get("products") or [], (web or {}).get("snapshots") or [], findings, metrics)
     else:
         coverage_findings(pages, findings, metrics)
         code_findings(tables, pdf_text, platform_text, findings, metrics)

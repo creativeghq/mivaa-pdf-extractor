@@ -150,3 +150,37 @@ def test_a_failed_page_lists_the_numbers_that_are_missing():
 def test_a_recorded_source_that_is_gone_from_storage_is_named_as_such():
     r = run(source_kept=False, source_state="missing_object")
     assert "source_missing_in_storage" in codes(r) and r.status == ia.UNVERIFIABLE
+
+
+SNAPS = [
+    {"url": "https://stella-ist.com/catalog/acoustic_panels_1/comfort_9_2780_600_9/", "text": "Comfort 9 2780 600 9 mm pack of 1 weight 12,5 kg"},
+    {"url": "https://stella-ist.com/catalog/acoustic_panels_1/mila_9_2780_600_9/", "text": "Mila 9 2780 600 9"},
+]
+
+
+def web_run(products):
+    return ia.audit_document(source_kept=True, pages=[page(1, set(), set(), route=None)], tables=[], chunks=[], products=[],
+                             pdf_text=None, platform_text="", source_kind="web", web={"snapshots": SNAPS, "products": products})
+
+
+def test_a_product_is_matched_to_its_own_page_by_the_words_that_name_it():
+    assert [s["url"].rsplit("/", 2)[-2] for s in ia.match_snapshots("Acoustic Panels Stella Comfort 9", SNAPS)] == ["comfort_9_2780_600_9"]
+    assert ia.match_snapshots("Wall Panels MDF Stella Wave", SNAPS) == []
+
+
+def test_every_number_a_product_stores_must_be_on_its_page_and_a_gone_page_is_reported():
+    ok = web_run([{"name": "Acoustic Panels Stella Comfort 9", "table_numbers": {"2780", "12,5"}}])
+    assert ok.status == ia.PASS
+    bad = web_run([{"name": "Acoustic Panels Stella Comfort 9", "table_numbers": {"2780", "999", "888"}}])
+    f = next(f for f in bad.findings if f.code == "web_numbers_not_on_page")
+    assert bad.status == ia.FAIL and f.examples[0]["product"].endswith("Comfort 9") and f.examples[0]["examples"] == ["888", "999"]
+    gone = web_run([{"name": "Wall Panels MDF Stella Wave", "table_numbers": {"1", "2"}}])
+    assert "web_products_without_page" in codes(gone) and gone.status == ia.WARN
+
+
+def test_a_few_unprinted_numbers_are_a_warning_only():
+    nums_on_page = {str(1000 + i) for i in range(30)}
+    snaps = [{"url": "https://x/comfort_9/", "text": " ".join(nums_on_page)}]
+    r = ia.audit_document(source_kept=True, pages=[], tables=[], chunks=[], products=[], pdf_text=None, platform_text="", source_kind="web",
+                          web={"snapshots": snaps, "products": [{"name": "Comfort 9", "table_numbers": nums_on_page | {"7777", "8888", "9999"}}]})
+    assert r.status == ia.WARN and "web_numbers_not_on_page_few" in codes(r)
