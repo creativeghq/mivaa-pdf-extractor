@@ -168,6 +168,12 @@ def test_a_product_is_matched_to_its_own_page_by_the_words_that_name_it():
     assert ia.match_snapshots("Wall Panels MDF Stella Wave", SNAPS) == []
 
 
+def test_a_page_the_site_renamed_is_matched_by_its_title_not_its_old_url():
+    renamed = [{"url": "https://stella-ist.com/catalog/acoustic_panels_1/trend_20_2780_600_20/", "text": "Trend 18 (2780*600*18)\nTrend 18 2780 600 18"}]
+    assert ia.match_snapshots("Acoustic Panels Stella Trend 20", renamed) == []
+    assert len(ia.match_snapshots("Acoustic Panels Stella Trend 18", renamed)) == 1
+
+
 def test_every_number_a_product_stores_must_be_on_its_page_and_a_gone_page_is_reported():
     ok = web_run([{"name": "Acoustic Panels Stella Comfort 9", "table_numbers": {"2780", "12,5"}}])
     assert ok.status == ia.PASS

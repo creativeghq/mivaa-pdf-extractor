@@ -179,6 +179,12 @@ def match_snapshots(name: str, snapshots: Sequence[Dict[str, Any]]) -> List[Dict
     joined = "_".join(key)
     out = []
     for snap in snapshots:
+        title = ((snap.get("text") or "").strip().split("\n") or [""])[0].lower()
+        words = re.findall(r"[a-z0-9]+", title)
+        if any(w.isalpha() for w in words):
+            if all(k in words for k in key):
+                out.append(snap)
+            continue
         url = (snap.get("url") or "").lower().replace("-", "_")
         if joined in url or all(k in re.findall(r"[a-z0-9]+", url) for k in key):
             out.append(snap)
