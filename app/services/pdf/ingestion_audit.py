@@ -280,6 +280,7 @@ def audit_document(
     catalogue: Optional[Dict[str, Any]] = None,
     source_state: str = "kept",
     web: Optional[Dict[str, Any]] = None,
+    product_images: Optional[Dict[str, List[Dict[str, Any]]]] = None,
 ) -> AuditResult:
     findings: List[Finding] = []
     metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase, "source_kind": source_kind}
@@ -299,6 +300,8 @@ def audit_document(
         catalogue_findings(catalogue["plans"], catalogue["unmatched"], tables, findings, metrics)
     chunk_findings(chunks, tables, findings, metrics, phase)
     product_findings(products, findings, metrics, phase)
+    if phase != "pre_embed":
+        image_findings(product_images or {}, findings, metrics)
     unrouted = sum(1 for p in pages if not p.get("route")) if source_kind == "pdf" else 0
     metrics["pages"] = len(pages)
     metrics["pages_never_checked_against_text_layer"] = unrouted
@@ -314,6 +317,35 @@ def audit_document(
     else:
         status = PASS
     return AuditResult(status, metrics, findings)
+
+
+def _weak_image(img: Dict[str, Any]) -> bool:
+    m = img.get("metadata") or {}
+    return (img.get("extraction_layer") == "restored" and m.get("restore_method") == "classical")         or (m.get("image_quality") or {}).get("verdict") == "low_res"
+
+
+def image_findings(product_images: Dict[str, List[Dict[str, Any]]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    """Images the products ended up with, keyed by product name: nothing embedded from a weak
+    source, nothing left waiting, no product left with only weak images."""
+    low_res_embedded, awaiting, weak_only = [], [], []
+    for name, imgs in product_images.items():
+        live = [i for i in imgs if "excluded_from_products" not in (i.get("metadata") or {})]
+        for i in live:
+            q = (i.get("metadata") or {}).get("image_quality") or {}
+            if i.get("extraction_layer") != "restored" and q.get("verdict") == "low_res" and i.get("has_slig_embedding"):
+                low_res_embedded.append(i["id"])
+            if q.get("sourcing") == "pending":
+                awaiting.append(i["id"])
+        if live and not any(i.get("extraction_layer") == "manufacturer_original" for i in live)                 and all(_weak_image(i) for i in live):
+            weak_only.append(name)
+    metrics.update({"images_low_res_embedded": len(low_res_embedded), "images_awaiting_sourcing": len(awaiting),
+                    "products_only_weak_images": len(weak_only)})
+    if low_res_embedded:
+        findings.append(Finding(FAIL, "images_low_res_embedded", f"{len(low_res_embedded)} low-resolution image(s) were embedded without a better version being looked for", len(low_res_embedded), low_res_embedded))
+    if awaiting:
+        findings.append(Finding(WARN, "images_awaiting_sourcing", f"{len(awaiting)} image(s) are still waiting for the manufacturer-site search or repair", len(awaiting), awaiting))
+    if weak_only:
+        findings.append(Finding(WARN, "products_only_weak_images", f"{len(weak_only)} product(s) have only low-resolution or smoothed images and no manufacturer image", len(weak_only), weak_only))
 
 
 def platform_numbers_for_page(layout_text: str, chunk_texts: Iterable[str], table_texts: Iterable[str]) -> Set[str]:

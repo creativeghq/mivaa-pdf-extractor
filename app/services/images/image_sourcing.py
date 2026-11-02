@@ -163,8 +163,9 @@ class ImageSourcing:
             if "excluded_from_products" in m:
                 continue
             quality = m.get("image_quality") or {}
-            pending = quality.get("sourcing") == "pending" or (
-                self.low_res_embedded and quality.get("verdict") == "low_res" and not quality.get("sourcing"))
+            # A repair is the result of this step, never its input: a classical one is low_res on purpose.
+            pending = m.get("extraction_layer") != "restored" and (quality.get("sourcing") == "pending" or (
+                self.low_res_embedded and quality.get("verdict") == "low_res" and not quality.get("sourcing")))
             # A dry run also previews crops made before the quality marker existed.
             legacy = self.dry_run and m.get("extraction_layer") == "region_crop" and m.get("region_type") in ("IMAGE", "FIGURE", None)
             if pending or legacy:
@@ -291,7 +292,10 @@ class ImageSourcing:
                 "source": "image_sourcing", "extraction_layer": layer,
                 "storage_bucket": "pdf-tiles", "storage_path": up["storage_path"], "storage_uploaded": True,
                 "width": img.width, "height": img.height, "format": "JPEG",
-                "image_quality": {"verdict": "ok", "native_px": [img.width, img.height]},
+                # A classical repair adds no detail, so it keeps the source's verdict and real pixels.
+                "image_quality": ({"verdict": "low_res", "native_px": extra.get("source_native_px")}
+                                  if extra.get("restore_method") == "classical"
+                                  else {"verdict": "ok", "native_px": [img.width, img.height]}),
                 "ai_classification": {k: cls.get(k) for k in ("is_material", "confidence", "reason", "model", "classification")} if cls else None,
                 "sourced_at": _now(), **extra,
             },
@@ -413,7 +417,8 @@ class ImageSourcing:
             return
         cls = (crop.get("metadata") or {}).get("ai_classification")
         saved = await self._store(product, restored, crop.get("page_number") or 1, "restored", "pdf_processing",
-                                  {"restored_from": crop["id"], "restore_method": method, "restore_fidelity": fidelity}, cls)
+                                  {"restored_from": crop["id"], "restore_method": method, "restore_fidelity": fidelity,
+                                   "source_native_px": native}, cls)
         if not saved:
             self._mark(crop, "kept_source")
             if not crop.get("has_slig_embedding"):

@@ -99,6 +99,8 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
     tables: List[Dict[str, Any]] = []
     embedded: set = set()
     images: Dict[str, int] = {}
+    names = {p["id"]: p.get("name") or p["id"] for p in products}
+    product_images: Dict[str, List[Dict[str, Any]]] = {}
     for ids in _batches(product_ids, ID_BATCH):
         tables.extend(_rows(await asyncio.to_thread(
             db.table("product_tables").select("id, product_id, page_number, headers, table_data, extractor, metadata").in_("product_id", ids).execute
@@ -106,9 +108,15 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
         embedded |= {r["id"] for r in _rows(await asyncio.to_thread(
             db.table("products").select("id").in_("id", ids).not_.is_("text_embedding_1024", "null").execute
         ))}
-        for r in _rows(await asyncio.to_thread(db.table("image_product_associations").select("product_id").in_("product_id", ids).execute)):
+        for r in _rows(await asyncio.to_thread(
+            db.table("image_product_associations")
+            .select("product_id, document_images!inner(id, extraction_layer, has_slig_embedding, metadata)")
+            .in_("product_id", ids).execute
+        )):
             images[r["product_id"]] = images.get(r["product_id"], 0) + 1
-    return {"products": products, "layout": layout, "chunks": chunks, "tables": tables, "embedded": embedded, "images": images, "snapshots": snapshots}
+            product_images.setdefault(names.get(r["product_id"], r["product_id"]), []).append(r["document_images"])
+    return {"products": products, "layout": layout, "chunks": chunks, "tables": tables, "embedded": embedded, "images": images,
+            "product_images": product_images, "snapshots": snapshots}
 
 
 async def _download(db: Any, document: Dict[str, Any]) -> Optional[bytes]:
@@ -224,6 +232,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         pdf_text=pdf_text,
         platform_text=platform_text,
         phase=phase,
+        product_images=collected.get("product_images"),
     )
 
 

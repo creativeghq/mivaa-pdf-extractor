@@ -190,3 +190,39 @@ def test_a_few_unprinted_numbers_are_a_warning_only():
     r = ia.audit_document(source_kept=True, pages=[], tables=[], chunks=[], products=[], pdf_text=None, platform_text="", source_kind="web",
                           web={"snapshots": snaps, "products": [{"name": "Comfort 9", "table_numbers": nums_on_page | {"7777", "8888", "9999"}}]})
     assert r.status == ia.WARN and "web_numbers_not_on_page_few" in codes(r)
+
+
+def _img(i, layer="region_crop", verdict=None, embedded=False, sourcing=None, method=None, retired=False):
+    q = {k: v for k, v in (("verdict", verdict), ("sourcing", sourcing)) if v}
+    m = {"image_quality": q}
+    if method:
+        m["restore_method"] = method
+    if retired:
+        m["excluded_from_products"] = {"reason": "replaced"}
+    return {"id": i, "extraction_layer": layer, "has_slig_embedding": embedded, "metadata": m}
+
+
+def test_a_low_res_image_embedded_without_sourcing_fails_the_audit():
+    findings, metrics = [], {}
+    ia.image_findings({"DOCKS": [_img("a", verdict="low_res", embedded=True)]}, findings, metrics)
+    codes = {f.code: f.severity for f in findings}
+    assert codes["images_low_res_embedded"] == ia.FAIL
+    assert metrics["images_low_res_embedded"] == 1
+
+
+def test_a_product_with_only_smoothed_images_is_reported_and_a_maker_image_clears_it():
+    weak = [_img("r", layer="restored", method="classical", verdict="low_res", embedded=True)]
+    findings, metrics = [], {}
+    ia.image_findings({"DOCKS": weak}, findings, metrics)
+    assert [f.examples for f in findings if f.code == "products_only_weak_images"] == [["DOCKS"]]
+    findings, metrics = [], {}
+    ia.image_findings({"DOCKS": weak + [_img("m", layer="manufacturer_original", verdict="ok", embedded=True)]}, findings, metrics)
+    assert not [f for f in findings if f.code == "products_only_weak_images"]
+
+
+def test_waiting_crops_warn_and_retired_images_are_ignored():
+    findings, metrics = [], {}
+    ia.image_findings({"X": [_img("p", verdict="low_res", sourcing="pending"),
+                             _img("old", verdict="low_res", embedded=True, retired=True)]}, findings, metrics)
+    codes = {f.code for f in findings}
+    assert "images_awaiting_sourcing" in codes and "images_low_res_embedded" not in codes
