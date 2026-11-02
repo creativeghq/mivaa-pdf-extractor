@@ -35,7 +35,8 @@ def _thumb(data: Optional[bytes]) -> Image.Image:
     native = max(img.size)
     img.thumbnail((THUMB, THUMB), Image.LANCZOS)
     tile.paste(img, ((THUMB - img.width) // 2, (THUMB - img.height) // 2))
-    ImageDraw.Draw(tile).text((4, THUMB - 16), f"{native}px", fill=(200, 0, 0), font=_font(12))
+    write = ImageDraw.Draw(tile).text
+    write((4, THUMB - 16), f"{native}px", fill=(200, 0, 0), font=_font(12))
     return tile
 
 
@@ -43,11 +44,11 @@ def render_sheet(rows: List[Dict[str, Any]]) -> bytes:
     """rows: {"name", "count", "images": [bytes|None]}; the native size is printed on each thumbnail."""
     width = LABEL_W + THUMBS_PER_ROW * (THUMB + PAD) + PAD
     sheet = Image.new("RGB", (width, len(rows) * (THUMB + PAD) + PAD), "white")
-    draw = ImageDraw.Draw(sheet)
+    write = ImageDraw.Draw(sheet).text
     for n, row in enumerate(rows):
         y = PAD + n * (THUMB + PAD)
-        draw.text((PAD, y + 4), row["name"][:30], fill="black", font=_font(16))
-        draw.text((PAD, y + 26), f"{row['count']} image(s)", fill=(90, 90, 90), font=_font(13))
+        write((PAD, y + 4), row["name"][:30], fill="black", font=_font(16))
+        write((PAD, y + 26), f"{row['count']} image(s)", fill=(90, 90, 90), font=_font(13))
         for k, data in enumerate(row["images"][:THUMBS_PER_ROW]):
             sheet.paste(_thumb(data), (LABEL_W + k * (THUMB + PAD), y))
     out = io.BytesIO()
