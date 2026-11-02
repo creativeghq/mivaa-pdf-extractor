@@ -12,7 +12,7 @@ import logging
 import re
 import unicodedata
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
 logger = logging.getLogger(__name__)
 
