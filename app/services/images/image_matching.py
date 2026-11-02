@@ -274,12 +274,14 @@ RESIZED_COPY_MAX_DELTA_E = 3.0
 
 
 def is_resized_copy(a: Image.Image, b: Image.Image) -> bool:
-    ra, rb = a.width / a.height, b.width / b.height
+    # Compared on content, not canvas: two small renders on blank canvases are mostly the same white.
+    ca, cb = content_box(a), content_box(b)
+    ra, rb = ca.shape[1] / ca.shape[0], cb.shape[1] / cb.shape[0]
     if abs(ra - rb) / max(ra, rb) > RESIZED_COPY_MAX_ASPECT_GAP:
         return False
     w, h = 96, max(8, round(96 / ra))
-    sa = cv2.resize(_rgb(a), (w, h), interpolation=cv2.INTER_AREA)
-    sb = cv2.resize(_rgb(b), (w, h), interpolation=cv2.INTER_AREA)
+    sa = cv2.resize(ca, (w, h), interpolation=cv2.INTER_AREA)
+    sb = cv2.resize(cb, (w, h), interpolation=cv2.INTER_AREA)
     ssim = _ssim(cv2.cvtColor(sa, cv2.COLOR_RGB2GRAY), cv2.cvtColor(sb, cv2.COLOR_RGB2GRAY))
     return ssim >= RESIZED_COPY_MIN_SSIM and _mean_delta_e(sa, sb) <= RESIZED_COPY_MAX_DELTA_E
 

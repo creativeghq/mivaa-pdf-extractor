@@ -227,6 +227,12 @@ def test_a_render_is_kept_when_the_larger_picture_shows_a_different_surface_of_t
     assert _matching.redundant_scale_renders(images) == {}
 
 
+def test_two_renders_on_blank_canvases_are_not_copies_when_their_surfaces_differ():
+    pytest.importorskip("cv2")
+    images = [("light", _render((500, 500), (64, 64), (200, 198, 195))), ("dark", _render((500, 500), (64, 64), (60, 60, 62)))]
+    assert _matching.redundant_resized_copies(images) == {}
+
+
 def test_the_same_photo_at_two_resolutions_keeps_only_the_larger():
     pytest.importorskip("cv2")
     import numpy as np
