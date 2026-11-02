@@ -26,7 +26,8 @@ from PIL import Image
 from app.services.core.supabase_client import get_supabase_client
 from app.services.images import manufacturer_site as site
 from app.services.images.image_matching import (
-    MatchScore, classical_cleanup, faces_in_crop, is_patterned, match_score, pick_match, repair_is_faithful,
+    MatchScore, classical_cleanup, content_profile, faces_in_crop, is_patterned, match_score, pick_match,
+    redundant_scale_renders, repair_is_faithful,
 )
 from app.utils.ssrf_guard import safe_fetch_bytes
 from app.services.images.association_scores import PAGE_LINK_SCORE, SOURCED_MATCH_SCORE
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 MAX_CANDIDATES = 40
 DOWNLOAD_CONCURRENCY = 8
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
-# Swatch files are long strips (Ceramica Euro: 886x296), so the short side alone stays low.
+# Swatch files are often long strips, so the short side alone stays low.
 MIN_CANDIDATE_SHORT_SIDE = 200
 #: A crop whose real source is this small is a swatch thumbnail: no repair can be honest at product size.
 SWATCH_MAX_SOURCE_PX = 120
@@ -236,7 +237,7 @@ class ImageSourcing:
                 urls.append(u)
         cands: Dict[str, Tuple[str, bytes, Image.Image]] = {}
         seen_hash = set()
-        # Supplier sites are slow per connection (cereuro.it ~160 KB/s): fetch in parallel, once per run.
+        # Supplier sites can be slow per connection: fetch in parallel, once per run.
         todo = [u for u in urls[:MAX_CANDIDATES] if u not in self._downloads]
         sem = asyncio.Semaphore(DOWNLOAD_CONCURRENCY)
 
@@ -255,6 +256,10 @@ class ImageSourcing:
                 continue
             seen_hash.add(h)
             cands[u] = (self._name_confirmed.get(u) or (pages[0] if pages else ""), data, img)
+        # A site draws each format to scale on a blank canvas: keep the largest picture of each surface.
+        for u in redundant_scale_renders([(u, content_profile(v[2])) for u, v in cands.items()]):
+            del cands[u]
+            self.summary["scale_renders_skipped"] = self.summary.get("scale_renders_skipped", 0) + 1
         return pages, cands
 
     # ── writes ──────────────────────────────────────────────────────────────
@@ -398,7 +403,7 @@ class ImageSourcing:
     async def _repair(self, product: Dict[str, Any], crop: Dict[str, Any], crop_img: Image.Image, crop_bytes: bytes) -> None:
         native = (crop.get("metadata") or {}).get("image_quality", {}).get("native_px")
         restored, method, fidelity = None, None, None
-        # A swatch stays the size the PDF holds; there is nothing in 51 px for a repair to recover.
+        # A swatch stays the size the PDF holds; a repair has nothing at that size to recover.
         repairable = self.allow_restore and not _is_swatch(crop)
         if repairable and is_patterned(crop_img):
             g = await self._gemini_restore(crop_img)

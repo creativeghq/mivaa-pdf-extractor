@@ -180,8 +180,8 @@ async def extract_region_crops_for_physical_pages(
                         if region.get("region_type") in PHOTO_REGION_TYPES:
                             native = [e["dpi"] for e in embedded if _covered_by(to_pdf(region), e["rect"], 0.5)]
                             if native:
-                                # The photo's own resolution, never above it: rendering a 51 px swatch
-                                # at 250 DPI stores an enlargement no repair can make honest again.
+                                # The photo's own resolution, never above it: rendering a low-res photo
+                                # above it stores an enlargement no repair can make honest again.
                                 crop_dpi = min(MAX_PHOTO_CROP_DPI, max(native))
                             quality = assess_source_quality(clip, max(native) if native else None)
                             if not sourcing_enabled():

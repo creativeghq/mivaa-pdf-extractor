@@ -169,7 +169,7 @@ def is_patterned(img: Image.Image) -> bool:
 def classical_cleanup(img: Image.Image) -> Image.Image:
     """Remove JPEG blocking without inventing anything, at the source's own size: non-local-means,
     edge-preserving smoothing on lightness, stronger smoothing on colour, faint grain so it does
-    not look waxy. Never enlarged: a 2x upscale smoothed a 51 px swatch into a 670 px smear."""
+    not look waxy. Never enlarged: an upscale adds no detail, only smoothing."""
     a = cv2.cvtColor(_rgb(img), cv2.COLOR_RGB2BGR)
     a = cv2.fastNlMeansDenoisingColored(a, None, 7, 10, 7, 21)
     lab = cv2.cvtColor(a, cv2.COLOR_BGR2LAB)
@@ -200,3 +200,49 @@ def repair_is_faithful(source: Image.Image, repaired: Image.Image, native_px: Op
         a, b = sg - sg.mean(), rg - rg.mean()
         v = float((a * b).sum() / (np.sqrt((a * a).sum() * (b * b).sum()) or 1.0))
     return v >= REPAIR_MIN_SSIM, round(v, 3)
+
+
+#: A render whose real content covers less of its canvas than this is a scale drawing of a format.
+SCALE_RENDER_MAX_SHARE = 0.3
+#: It is redundant when a same-colour picture of the product holds at least this much more content.
+SCALE_RENDER_MIN_GAIN = 2.0
+SCALE_RENDER_MAX_DELTA_E = 6.0
+
+
+@dataclass
+class ContentProfile:
+    area: int
+    share: float
+    lab: Tuple[float, float, float]
+
+
+def content_profile(img: Image.Image) -> ContentProfile:
+    """The part of the picture that is not its flat background: how big, and what colour."""
+    a = _rgb(img)
+    h, w = a.shape[:2]
+    bg = np.median(np.stack([a[0, 0], a[0, -1], a[-1, 0], a[-1, -1]]), axis=0)
+    mask = np.abs(a.astype(np.int32) - bg.astype(np.int32)).sum(axis=2) > 30
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        box = a
+    else:
+        box = a[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+    lab = cv2.cvtColor(box, cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float64).mean(axis=0)
+    # OpenCV 8-bit Lab to CIE units, as in _mean_delta_e.
+    lab = (lab[0] * 100 / 255, lab[1] - 128, lab[2] - 128)
+    area = int(box.shape[0] * box.shape[1])
+    return ContentProfile(area, area / float(h * w), (float(lab[0]), float(lab[1]), float(lab[2])))
+
+
+def redundant_scale_renders(profiles: Sequence[Tuple[str, ContentProfile]]) -> List[str]:
+    """Keys of scale drawings that a larger same-colour picture of the same product already shows."""
+    out = []
+    for key, p in profiles:
+        if p.share >= SCALE_RENDER_MAX_SHARE:
+            continue
+        for other, q in profiles:
+            if other != key and q.area >= SCALE_RENDER_MIN_GAIN * p.area \
+                    and float(np.linalg.norm(np.subtract(p.lab, q.lab))) <= SCALE_RENDER_MAX_DELTA_E:
+                out.append(key)
+                break
+    return out

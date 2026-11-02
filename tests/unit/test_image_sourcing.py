@@ -182,3 +182,31 @@ def test_the_classical_cleanup_never_enlarges():
     from PIL import Image as _Image
     src = _Image.new("RGB", (51, 51), (90, 90, 95))
     assert classical_cleanup(src).size == (51, 51)
+
+
+def _render(canvas, content, colour, bg=(255, 255, 255)):
+    from PIL import Image as _Image
+    im = _Image.new("RGB", canvas, bg)
+    tile = _Image.new("RGB", content, colour)
+    im.paste(tile, ((canvas[0] - content[0]) // 2, (canvas[1] - content[1]) // 2))
+    return im
+
+
+def test_a_small_format_drawn_on_a_blank_canvas_is_dropped_for_the_full_surface():
+    pytest.importorskip("cv2")
+    black = (60, 60, 62)
+    profiles = [
+        ("10x30", _matching.content_profile(_render((500, 500), (125, 41), black))),
+        ("60x60", _matching.content_profile(_render((500, 500), (250, 250), black))),
+        ("120x120", _matching.content_profile(_render((500, 250), (500, 250), black))),
+    ]
+    assert sorted(_matching.redundant_scale_renders(profiles)) == ["10x30", "60x60"]
+
+
+def test_a_different_colour_is_never_dropped_for_another():
+    pytest.importorskip("cv2")
+    profiles = [
+        ("white_small", _matching.content_profile(_render((500, 500), (125, 125), (235, 232, 226)))),
+        ("black_full", _matching.content_profile(_render((500, 250), (500, 250), (60, 60, 62)))),
+    ]
+    assert _matching.redundant_scale_renders(profiles) == []

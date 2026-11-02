@@ -179,7 +179,7 @@ def _slug_tokens(page_url: str) -> List[str]:
 
 
 def page_names_product(page_url: str, product_name: str) -> bool:
-    """'/collezioni/51-docks' is DOCKS and '/52-spatula-30x90' is 'SPATULA (30x90 wall tile)': the
+    """'/collection/12-name' is NAME and '/13-name-30x90' is 'NAME (30x90 ...)': the
     slug, its leading catalogue id dropped, spells exactly the name and its sizes. Exact, so a
     sibling series ('spatula' vs 'spatula-30x90') never takes the other's page."""
     tokens, sizes = name_tokens(product_name)
