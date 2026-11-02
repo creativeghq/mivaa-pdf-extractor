@@ -424,7 +424,22 @@ def _position(img: Dict[str, Any]) -> Optional[tuple]:
     bbox = img.get("bbox")
     if not isinstance(bbox, list) or len(bbox) != 4:
         return None
-    return (img.get("page_number"), img.get("extraction_layer"), *(round(float(v), 3) for v in bbox))
+    return (img.get("document_id"), img.get("page_number"), img.get("extraction_layer"), *(round(float(v), 3) for v in bbox))
+
+
+HASH_NEAR_BITS = 4
+
+
+def _hash_twins(images: Sequence[Dict[str, Any]]) -> List[List[str]]:
+    """One product's images from different PDFs whose perceptual hashes differ by HASH_NEAR_BITS or fewer bits."""
+    hashed = [(i["id"], i.get("document_id"), int(h, 16)) for i in images
+              for h in [((i.get("metadata") or {}).get("layer_info") or {}).get("perceptual_hash")] if h]
+    pairs = []
+    for n, (a, da, ha) in enumerate(hashed):
+        for b, db_, hb in hashed[n + 1:]:
+            if da != db_ and bin(ha ^ hb).count("1") <= HASH_NEAR_BITS:
+                pairs.append([a, b])
+    return pairs
 
 
 def image_integrity_findings(product_images: Dict[str, List[Dict[str, Any]]], other_series: Sequence[Dict[str, Any]],
@@ -443,6 +458,8 @@ def image_integrity_findings(product_images: Dict[str, List[Dict[str, Any]]], ot
         if key:
             by_position[key].append(i["id"])
     duplicates = [ids for ids in by_position.values() if len(ids) > 1]
+    for imgs in product_images.values():
+        duplicates += _hash_twins([i for i in imgs if i["id"] in live])
     metrics.update({"images_upscaled_repairs": len(upscaled_repairs), "images_upscaled_crops": len(upscaled_crops),
                     "images_duplicated_position": sum(len(d) - 1 for d in duplicates),
                     "images_on_other_series_page": len(other_series)})

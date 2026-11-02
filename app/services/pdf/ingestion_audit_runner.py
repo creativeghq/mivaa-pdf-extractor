@@ -110,7 +110,7 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
         ))}
         for r in _rows(await asyncio.to_thread(
             db.table("image_product_associations")
-            .select("product_id, document_images!inner(id, page_number, bbox, extraction_layer, has_slig_embedding, metadata)")
+            .select("product_id, document_images!inner(id, document_id, page_number, bbox, extraction_layer, has_slig_embedding, metadata)")
             .in_("product_id", ids).execute
         )):
             images[r["product_id"]] = images.get(r["product_id"], 0) + 1

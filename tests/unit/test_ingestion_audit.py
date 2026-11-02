@@ -294,3 +294,14 @@ def test_a_series_name_that_is_the_products_own_colour_is_not_a_leak():
     ia.product_content_findings(products, findings, metrics)
     leak = next(f for f in findings if f.code == "attributes_name_other_series")
     assert [e["product"] for e in leak.examples] == ["Saboya"]
+
+
+def test_the_same_spot_in_two_pdfs_is_a_duplicate_only_when_the_pictures_match():
+    def img(i, doc, h, bbox=(0.53, 0.179, 0.405, 0.255)):
+        return {"id": i, "document_id": doc, "page_number": 64, "extraction_layer": "region_crop", "bbox": list(bbox),
+                "metadata": {"width": 800, "height": 400, "layer_info": {"perceptual_hash": h}}}
+    findings, metrics = [], {}
+    ia.image_integrity_findings({"Ardenza": [img("a", "actual", "afc989ec0ae1e0b6"), img("b", "innova", "a7c989ec0ae0f0be"),
+                                             img("c", "actual", "bacd4ff6194a022d", (0.1, 0.1, 0.2, 0.2)), img("d", "innova", "ae720c26192fc4fb", (0.1, 0.1, 0.2, 0.2))]}, [], findings, metrics)
+    dup = next(f for f in findings if f.code == "duplicate_images_same_position")
+    assert dup.examples == [["a", "b"]]
