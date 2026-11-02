@@ -181,7 +181,8 @@ class ImageSourcing:
         hits: List[Dict[str, Any]] = []
         for query in (f"site:{host} {product['name']}", f"{host.split('.')[0]} {product['name']}"):
             hits += await get_firecrawl_client().search_images(
-                query, self.user_id, product.get("workspace_id") or self.workspace_id, source_tag="image_sourcing")
+                query, self.user_id, product.get("workspace_id") or self.workspace_id, limit=MAX_CANDIDATES,
+                source_tag="image_sourcing")
         return site.search_hits_for(hits, root, product["name"], self._sibling_names(product))
 
     # ── candidates ──────────────────────────────────────────────────────────

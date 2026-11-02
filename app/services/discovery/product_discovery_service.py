@@ -5,6 +5,7 @@ import os
 import asyncio
 import re
 from typing import Callable, Dict, List, Any, Optional, Tuple
+from app.services.discovery.series_merge import absorb, name_series, series_key
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -2131,7 +2132,7 @@ class ProductDiscoveryService:
         all_certificates = []
         all_logos = []
         all_specifications = []
-        seen_product_names = set()
+        seen_product_names: Dict[str, ProductInfo] = {}
         catalog_factory: Optional[str] = None
         catalog_factory_group: Optional[str] = None
         page_classification: Dict[int, Any] = {}
@@ -2164,10 +2165,14 @@ class ProductDiscoveryService:
             # Count new products found in this batch
             new_products_count = 0
             for product in batch_catalog.products:
-                if product.name not in seen_product_names:
-                    all_products.append(product)
-                    seen_product_names.add(product.name)
-                    new_products_count += 1
+                name_series(product)
+                key = series_key(product.name)
+                if key in seen_product_names:
+                    absorb(seen_product_names[key], product)
+                    continue
+                all_products.append(product)
+                seen_product_names[key] = product
+                new_products_count += 1
 
             # Add other categories
             all_certificates.extend(batch_catalog.certificates)

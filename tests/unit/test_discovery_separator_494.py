@@ -74,6 +74,9 @@ def pds(monkeypatch):
     _stub(monkeypatch, "app.services.metadata.field_registry", field_registry=_Registry())
     _stub(monkeypatch, "app.services.utilities.prompt_templates", get_prompt_template_from_db=None)
     _stub(monkeypatch, "app.config", get_settings=lambda: _Settings())
+    _series = _load_path(_APP / "services" / "discovery" / "series_merge.py", "_series_merge_494")
+    _stub(monkeypatch, "app.services.discovery.series_merge",
+          **{k: getattr(_series, k) for k in ("absorb", "name_series", "series_key")})
     _stub(
         monkeypatch, "app.utils.pdf_to_images",
         analyze_pdf_layout=None, get_physical_page_text=None, PDFLayoutAnalysis=object,

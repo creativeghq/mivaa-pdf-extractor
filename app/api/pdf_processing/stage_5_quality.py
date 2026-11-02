@@ -29,6 +29,17 @@ async def _attach_catalogue_tables(document_id: str, logger: Any) -> Dict[str, A
         return {"error": str(attach_error)[:300]}
 
 
+async def _repair(document_id: str, logger: Any) -> Dict[str, Any]:
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        from app.services.pdf.post_ingestion_repair import repair_document
+
+        return await repair_document(document_id, get_supabase_client(), logger)
+    except Exception as repair_error:
+        logger.warning(f"⚠️ Post-ingestion repair could not run: {repair_error}")
+        return {"error": str(repair_error)[:300]}
+
+
 async def _run_audit(document_id: str, job_id: str, logger: Any) -> Dict[str, Any]:
     try:
         from app.config import get_settings
@@ -131,6 +142,7 @@ async def process_stage_5_quality(
         field_judgements = {'status': 'failed', 'error': str(judge_error)[:300]}
 
     catalogue_tables = await _attach_catalogue_tables(document_id, logger)
+    post_ingestion_repair = await _repair(document_id, logger)
     ingestion_audit = await _run_audit(document_id, job_id, logger)
 
     # Stage 5 progress: 85% → 100% (fixed when complete)
@@ -157,6 +169,7 @@ async def process_stage_5_quality(
         "claude_validations": validation_results.get('validated'),
         "claude_validation_status": validation_results.get('status'),
         "field_judgements": {k: v for k, v in field_judgements.items() if k != 'products'},
+        "post_ingestion_repair": post_ingestion_repair,
         "ingestion_audit": ingestion_audit,
         "catalogue_tables": catalogue_tables,
         "pages_processed": len(physical_pages),
