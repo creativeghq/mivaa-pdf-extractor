@@ -1,10 +1,9 @@
 """Link an image on a page several series share to the series its printed label names.
 
-Stage 3 links every image on a page to every product whose pages hold it, so a page showing
-four series gives each of them all four swatches. The label is read from the PDF text layer:
-the line printed under the image, else above it, else a caption bar inside it, else the half
-page's heading when every series named on that half is the same one. Anything else is
-undecided and keeps its links, and an image linked to exactly one product is never touched.
+Stage 3 links every image on a page to every product whose pages hold it. The label is read from
+the PDF text layer: the line under the image, else above it, else a caption bar inside it, else the
+half page's heading when it names one series. Anything else is undecided and keeps its links. An
+image linked to one product moves only when its half page names series and none is that product.
 """
 
 from __future__ import annotations
@@ -85,6 +84,12 @@ def label_for(bbox: Sequence[float], lines: Sequence[Line], series: Dict[str, Tu
     return next(iter(on_half)) if len(on_half) == 1 else None
 
 
+def names_only_others(lines: Sequence[Line], series: Dict[str, Tuple[str, ...]], own: Optional[str]) -> bool:
+    """The half page prints series names and none of them is the image's only product: another series' page."""
+    on_half = set().union(*(series_on(l.tokens, series) for l in lines)) if lines else set()
+    return own is not None and bool(on_half) and own not in on_half
+
+
 def half_lines(words: Sequence[Sequence[Any]], page_width: float, page_height: float, side: str,
                furniture: Set[Tuple[str, ...]]) -> List[Line]:
     """PyMuPDF words -> lines on one half (or the whole page), in 0..1 coordinates of that half."""
@@ -152,7 +157,7 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
         by_page[i["page_number"]] |= links.get(i["id"], set())
     shared = {p for p, prods in by_page.items() if len(prods) > 1}
     summary = {"shared_pages": len(shared), "images": 0, "confirmed": 0, "moved": 0, "undecided": 0}
-    if not shared:
+    if not by_page:
         return summary
 
     linked = sorted({pid for i in images for pid in links.get(i["id"], set())})
@@ -168,6 +173,7 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
         ids_by_name[tokens_of(p["name"])].add(p["id"])
     series = {" ".join(t): t for t, ids in ids_by_name.items() if t and len(ids) == 1}
     product_of = {" ".join(t): next(iter(ids)) for t, ids in ids_by_name.items() if t and len(ids) == 1}
+    name_of = {pid: name for name, pid in product_of.items()}
 
     with tempfile.NamedTemporaryFile(suffix=".pdf") as fh:
         fh.write(pdf_bytes)
@@ -182,18 +188,22 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
     furniture = furniture_lines(words)
 
     for img in images:
-        # One link is a settled decision (a product shot is often labelled by a heading elsewhere).
-        if img["page_number"] not in shared or len(links.get(img["id"], set())) == 1:
+        current = links.get(img["id"], set())
+        single = len(current) == 1
+        if not current or (img["page_number"] not in shared and not single):
             continue
         where = layout.physical_to_pdf_map.get(img["page_number"])
         if not where or where[0] >= len(words):
             continue
         pdf_idx, side = where
         width, height = sizes[pdf_idx]
+        lines = half_lines(words[pdf_idx], width, height, side, furniture)
+        # One link is settled (a product shot is often labelled elsewhere) unless its page prints only other series.
+        if single and not names_only_others(lines, series, name_of.get(next(iter(current)))):
+            continue
         summary["images"] += 1
-        name = label_for(img["bbox"], half_lines(words[pdf_idx], width, height, side, furniture), series)
+        name = label_for(img["bbox"], lines, series)
         target = product_of.get(name) if name else None
-        current = links.get(img["id"], set())
         if not target:
             summary["undecided"] += 1
             continue

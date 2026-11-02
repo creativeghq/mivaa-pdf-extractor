@@ -41,3 +41,11 @@ def test_a_line_repeated_on_every_page_is_furniture_and_never_a_label():
     assert ll.furniture_lines(pages) == {("barcelona", "arch")}
     lines = ll.half_lines(pages[0], 200, 100, "left", ll.furniture_lines(pages))
     assert [l.tokens for l in lines] == [("page0",)]
+
+
+def test_a_single_link_moves_only_off_a_page_that_prints_other_series_and_never_its_own():
+    others = [_line(0.1, 0.42, 0.35, 0.45, "ARDENZA 25x25"), _line(0.55, 0.42, 0.8, 0.45, "HABITAT 25x25")]
+    assert ll.names_only_others(others, SERIES, "calma")
+    assert not ll.names_only_others(others + [_line(0.1, 0.02, 0.5, 0.06, "CALMA")], SERIES, "calma")
+    assert not ll.names_only_others([_line(0.1, 0.9, 0.4, 0.93, "25x25 cm")], SERIES, "calma")
+    assert not ll.names_only_others(others, SERIES, None)
