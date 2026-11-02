@@ -40,6 +40,17 @@ async def _repair(document_id: str, logger: Any) -> Dict[str, Any]:
         return {"error": str(repair_error)[:300]}
 
 
+async def _contact_sheets(document_id: str, logger: Any) -> Dict[str, Any]:
+    try:
+        from app.services.core.supabase_client import get_supabase_client
+        from app.services.pdf.contact_sheet import build_contact_sheets
+
+        return await build_contact_sheets(get_supabase_client(), document_id)
+    except Exception as sheet_error:
+        logger.warning(f"⚠️ Contact sheet could not be built: {sheet_error}")
+        return {"error": str(sheet_error)[:300]}
+
+
 async def _run_audit(document_id: str, job_id: str, logger: Any) -> Dict[str, Any]:
     try:
         from app.config import get_settings
@@ -144,6 +155,7 @@ async def process_stage_5_quality(
     catalogue_tables = await _attach_catalogue_tables(document_id, logger)
     post_ingestion_repair = await _repair(document_id, logger)
     ingestion_audit = await _run_audit(document_id, job_id, logger)
+    contact_sheets = await _contact_sheets(document_id, logger)
 
     # Stage 5 progress: 85% → 100% (fixed when complete)
     await tracker.update_stage(
@@ -171,6 +183,7 @@ async def process_stage_5_quality(
         "field_judgements": {k: v for k, v in field_judgements.items() if k != 'products'},
         "post_ingestion_repair": post_ingestion_repair,
         "ingestion_audit": ingestion_audit,
+        "contact_sheets": contact_sheets,
         "catalogue_tables": catalogue_tables,
         "pages_processed": len(physical_pages),
         "pages_skipped": len([p for p in range(1, tracker.total_pages + 1) if p not in physical_pages]),

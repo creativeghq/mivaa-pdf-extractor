@@ -36,3 +36,12 @@ def test_a_different_page_size_or_hash_is_not_a_duplicate_and_retired_rows_are_i
         {"id": "f", "page_number": 4, "metadata": {"width": 900, "height": 600}, "has_slig_embedding": True},
     ]
     assert repair.duplicate_image_groups(rows) == []
+
+
+def test_crops_with_no_hash_cut_from_the_same_spot_are_one_group_and_a_hash_match_joins_it():
+    spot = [0.144, 0.796, 0.254, 0.128]
+    rows = [dict(_row(i, phash=None), bbox=spot, extraction_layer="region_crop") for i in ("a", "b", "c")]
+    rows.append(dict(_row("d", phash="ff00"), bbox=[0.6, 0.796, 0.252, 0.128], extraction_layer="region_crop"))
+    rows.append(dict(_row("e", phash="ff00"), bbox=None, extraction_layer="region_crop"))
+    groups = sorted(sorted(r["id"] for r in g) for g in repair.duplicate_image_groups(rows))
+    assert groups == [["a", "b", "c"], ["d", "e"]]

@@ -139,8 +139,8 @@ def _in_chunks(ids: List[str], size: int = 200):
         yield ids[i:i + size]
 
 
-async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, apply: bool = True) -> Dict[str, Any]:
-    from app.services.images.association_scores import PRINTED_LABEL_SCORE
+async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple[Any, int, List[Dict[str, Any]]]:
+    """Every image the printed labels have a say on, with the series its label names (or None)."""
     import fitz
     from app.utils.pdf_to_images import analyze_pdf_layout
 
@@ -156,9 +156,8 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
     for i in images:
         by_page[i["page_number"]] |= links.get(i["id"], set())
     shared = {p for p, prods in by_page.items() if len(prods) > 1}
-    summary = {"shared_pages": len(shared), "images": 0, "confirmed": 0, "moved": 0, "undecided": 0}
     if not by_page:
-        return summary
+        return db, 0, []
 
     linked = sorted({pid for i in images for pid in links.get(i["id"], set())})
     own = db.table("products").select("id, name, brand_company_id, workspace_id").eq("source_document_id", document_id).execute().data or []
@@ -166,8 +165,7 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
     brands = sorted({p["brand_company_id"] for p in seed if p.get("brand_company_id")})
     pool = list({p["id"]: p for p in seed}.values())
     if brands:
-        pool += db.table("products").select("id, name, brand_company_id, workspace_id").in_("brand_company_id", brands) \
-            .eq("workspace_id", seed[0]["workspace_id"]).execute().data or []
+        pool += db.table("products").select("id, name, brand_company_id, workspace_id").in_("brand_company_id", brands)             .eq("workspace_id", seed[0]["workspace_id"]).execute().data or []
     ids_by_name: Dict[Tuple[str, ...], Set[str]] = defaultdict(set)
     for p in pool:
         ids_by_name[tokens_of(p["name"])].add(p["id"])
@@ -187,6 +185,7 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
         doc.close()
     furniture = furniture_lines(words)
 
+    out: List[Dict[str, Any]] = []
     for img in images:
         current = links.get(img["id"], set())
         single = len(current) == 1
@@ -198,12 +197,24 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
         pdf_idx, side = where
         width, height = sizes[pdf_idx]
         lines = half_lines(words[pdf_idx], width, height, side, furniture)
+        own_name = name_of.get(next(iter(current))) if single else None
         # One link is settled (a product shot is often labelled elsewhere) unless its page prints only other series.
-        if single and not names_only_others(lines, series, name_of.get(next(iter(current)))):
+        if single and not names_only_others(lines, series, own_name):
             continue
-        summary["images"] += 1
         name = label_for(img["bbox"], lines, series)
-        target = product_of.get(name) if name else None
+        out.append({"image": img, "current": current, "name": name, "target": product_of.get(name) if name else None,
+                    "only_others": single, "product": own_name,
+                    "printed": sorted(set().union(*(series_on(l.tokens, series) for l in lines))) if single else []})
+    return db, len(shared), out
+
+
+async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, apply: bool = True) -> Dict[str, Any]:
+    from app.services.images.association_scores import PRINTED_LABEL_SCORE
+
+    db, shared, decisions = await _decisions(supabase, document_id, pdf_bytes)
+    summary = {"shared_pages": shared, "images": len(decisions), "confirmed": 0, "moved": 0, "undecided": 0}
+    for d in decisions:
+        img, current, target, name = d["image"], d["current"], d["target"], d["name"]
         if not target:
             summary["undecided"] += 1
             continue
@@ -221,3 +232,10 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
             if stale:
                 db.table("image_product_associations").delete().eq("image_id", img["id"]).in_("product_id", stale).execute()
     return summary
+
+
+async def other_series_images(supabase: Any, document_id: str, pdf_bytes: bytes) -> List[Dict[str, Any]]:
+    """Images held by one product on a half page that prints only other series' names."""
+    _, _, decisions = await _decisions(supabase, document_id, pdf_bytes)
+    return [{"image_id": d["image"]["id"], "page": d["image"]["page_number"], "product": d["product"],
+             "printed": d["printed"], "label": d["name"]} for d in decisions if d["only_others"]]

@@ -112,18 +112,37 @@ async def write_page_supplements(supabase: Any, document: Dict[str, Any], collec
 
 
 def duplicate_image_groups(rows: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-    """Live rows cut from the same page with the same perceptual hash and size, survivor first.
+    """Live rows that are one cut: same page and perceptual hash and size, or same page, layer and position.
 
-    A page shared by several products is cropped once per product, so it lands here once each.
-    The survivor is the embedded one, then the oldest.
+    A page shared by several products is cropped once per product, so it lands here once each, and
+    a crop with no hash is still caught by its position. The survivor is the embedded one, then the oldest.
     """
-    groups: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
-    for r in rows:
+    parent: Dict[str, str] = {}
+
+    def root(i: str) -> str:
+        while parent.setdefault(i, i) != i:
+            i = parent[i]
+        return i
+
+    keyed: Dict[tuple, str] = {}
+    live = [r for r in rows if "excluded_from_products" not in (r.get("metadata") or {})]
+    for r in live:
         m = r.get("metadata") or {}
         phash = (m.get("layer_info") or {}).get("perceptual_hash")
-        if "excluded_from_products" in m or not phash:
-            continue
-        groups[(r.get("page_number"), phash, m.get("width"), m.get("height"))].append(r)
+        bbox = r.get("bbox")
+        keys = []
+        if phash:
+            keys.append(("hash", r.get("page_number"), phash, m.get("width"), m.get("height")))
+        if isinstance(bbox, list) and len(bbox) == 4:
+            keys.append(("pos", r.get("page_number"), r.get("extraction_layer"), *(round(float(v), 3) for v in bbox)))
+        for k in keys:
+            if k in keyed:
+                parent[root(r["id"])] = root(keyed[k])
+            else:
+                keyed[k] = r["id"]
+    groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in live:
+        groups[root(r["id"])].append(r)
     return [sorted(g, key=lambda r: (not r.get("has_slig_embedding"), r.get("created_at") or ""))
             for g in groups.values() if len(g) > 1]
 
@@ -133,7 +152,7 @@ async def dedupe_document_images(supabase: Any, document_id: str, apply: bool = 
     from app.services.embeddings.vecs_service import get_vecs_service
     db = _db(supabase)
     rows = await asyncio.to_thread(_all, lambda: db.table("document_images")
-                                   .select("id, page_number, metadata, has_slig_embedding, created_at")
+                                   .select("id, page_number, bbox, extraction_layer, metadata, has_slig_embedding, created_at")
                                    .eq("document_id", document_id).order("id"))
     groups = duplicate_image_groups(rows)
     summary = {"groups": len(groups), "retired": sum(len(g) - 1 for g in groups), "links_moved": 0}

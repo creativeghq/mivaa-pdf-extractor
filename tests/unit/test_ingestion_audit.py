@@ -232,3 +232,30 @@ def test_a_low_res_image_sourcing_already_looked_at_is_not_reported():
     findings, metrics = [], {}
     ia.image_findings({"SAXA": [_img("k", verdict="low_res", embedded=True, sourcing="kept_source")]}, findings, metrics)
     assert not [f for f in findings if f.code == "images_low_res_embedded"]
+
+
+def _shot(id_, layer="region_crop", w=160, native=None, src=None, page=172, bbox=None):
+    m = {"width": w, "height": w, "image_quality": {"native_px": native} if native else {}}
+    if src:
+        m["source_native_px"] = src
+    return {"id": id_, "extraction_layer": layer, "page_number": page, "bbox": bbox, "metadata": m}
+
+
+def test_a_repair_enlarged_past_twice_its_source_fails_and_an_oversized_crop_only_warns():
+    findings, metrics = [], {}
+    imgs = {"Reality": [_shot("r", layer="restored", w=650, src=[94, 94]), _shot("c", w=400, native=[143, 143]),
+                        _shot("ok", layer="restored", w=180, src=[143, 72])]}
+    ia.image_integrity_findings(imgs, [], findings, metrics)
+    by = {f.code: f for f in findings}
+    assert by["images_upscaled"].severity == ia.FAIL and by["images_upscaled"].examples == ["r"]
+    assert by["crops_rendered_above_source"].severity == ia.WARN and by["crops_rendered_above_source"].examples == ["c"]
+
+
+def test_two_live_crops_from_one_spot_fail_and_an_image_on_another_series_page_fails():
+    spot = [0.144, 0.796, 0.254, 0.128]
+    findings, metrics = [], {}
+    other = [{"image_id": "x", "page": 172, "product": "calma", "printed": ["alberca", "amazonia"], "label": "amazonia"}]
+    ia.image_integrity_findings({"Calma": [_shot("a", bbox=spot), _shot("b", bbox=spot), _shot("c", bbox=[0.6, 0.8, 0.25, 0.13])]},
+                                other, findings, metrics)
+    assert {f.code for f in findings} == {"duplicate_images_same_position", "images_on_other_series_page"}
+    assert metrics["images_duplicated_position"] == 1 and metrics["images_on_other_series_page"] == 1

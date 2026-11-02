@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
@@ -281,6 +281,7 @@ def audit_document(
     source_state: str = "kept",
     web: Optional[Dict[str, Any]] = None,
     product_images: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    other_series: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> AuditResult:
     findings: List[Finding] = []
     metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase, "source_kind": source_kind}
@@ -302,6 +303,7 @@ def audit_document(
     product_findings(products, findings, metrics, phase)
     if phase != "pre_embed":
         image_findings(product_images or {}, findings, metrics)
+        image_integrity_findings(product_images or {}, other_series or [], findings, metrics)
     unrouted = sum(1 for p in pages if not p.get("route")) if source_kind == "pdf" else 0
     metrics["pages"] = len(pages)
     metrics["pages_never_checked_against_text_layer"] = unrouted
@@ -348,6 +350,63 @@ def image_findings(product_images: Dict[str, List[Dict[str, Any]]], findings: Li
         findings.append(Finding(WARN, "images_awaiting_sourcing", f"{len(awaiting)} image(s) are still waiting for the manufacturer-site search or repair", len(awaiting), awaiting))
     if weak_only:
         findings.append(Finding(WARN, "products_only_weak_images", f"{len(weak_only)} product(s) have only low-resolution or smoothed images and no manufacturer image", len(weak_only), weak_only))
+
+
+UPSCALE_LIMIT = 2.0
+
+
+def _longest(px: Any) -> Optional[float]:
+    try:
+        return float(max(int(px[0]), int(px[1])))
+    except (TypeError, ValueError, IndexError, KeyError):
+        return None
+
+
+def _upscale(img: Dict[str, Any]) -> Optional[float]:
+    """Stored size over the real pixels it came from: a repair over its source, a crop over the raster."""
+    m = img.get("metadata") or {}
+    stored = _longest([m.get("width"), m.get("height")])
+    if img.get("extraction_layer") == "restored":
+        real = _longest(m.get("source_native_px") or img.get("source_px"))
+    else:
+        real = _longest((m.get("image_quality") or {}).get("native_px"))
+    return stored / real if stored and real else None
+
+
+def _position(img: Dict[str, Any]) -> Optional[tuple]:
+    bbox = img.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        return None
+    return (img.get("page_number"), img.get("extraction_layer"), *(round(float(v), 3) for v in bbox))
+
+
+def image_integrity_findings(product_images: Dict[str, List[Dict[str, Any]]], other_series: Sequence[Dict[str, Any]],
+                             findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    """A repair enlarged past its source, one crop stored twice, an image on another series' page."""
+    live = {i["id"]: i for imgs in product_images.values() for i in imgs
+            if "excluded_from_products" not in (i.get("metadata") or {})}
+    upscaled_repairs, upscaled_crops = [], []
+    for i in live.values():
+        ratio = _upscale(i)
+        if ratio and ratio > UPSCALE_LIMIT:
+            (upscaled_repairs if i.get("extraction_layer") == "restored" else upscaled_crops).append(i["id"])
+    by_position: Dict[tuple, List[str]] = defaultdict(list)
+    for i in live.values():
+        key = _position(i)
+        if key:
+            by_position[key].append(i["id"])
+    duplicates = [ids for ids in by_position.values() if len(ids) > 1]
+    metrics.update({"images_upscaled_repairs": len(upscaled_repairs), "images_upscaled_crops": len(upscaled_crops),
+                    "images_duplicated_position": sum(len(d) - 1 for d in duplicates),
+                    "images_on_other_series_page": len(other_series)})
+    if upscaled_repairs:
+        findings.append(Finding(FAIL, "images_upscaled", f"{len(upscaled_repairs)} repaired image(s) are over {UPSCALE_LIMIT:g}x the size of the pixels they came from: enlarged, not repaired", len(upscaled_repairs), upscaled_repairs))
+    if upscaled_crops:
+        findings.append(Finding(WARN, "crops_rendered_above_source", f"{len(upscaled_crops)} crop(s) were rendered over {UPSCALE_LIMIT:g}x their source raster: a bigger file, no more detail", len(upscaled_crops), upscaled_crops))
+    if duplicates:
+        findings.append(Finding(FAIL, "duplicate_images_same_position", f"{sum(len(d) - 1 for d in duplicates)} extra image(s) were cut from the same spot on the same page", sum(len(d) - 1 for d in duplicates), duplicates))
+    if other_series:
+        findings.append(Finding(FAIL, "images_on_other_series_page", f"{len(other_series)} image(s) belong to a product but sit on a page that prints only other series' names", len(other_series), list(other_series)))
 
 
 def platform_numbers_for_page(layout_text: str, chunk_texts: Iterable[str], table_texts: Iterable[str]) -> Set[str]:

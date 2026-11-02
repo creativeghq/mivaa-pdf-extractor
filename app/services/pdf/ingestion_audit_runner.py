@@ -110,11 +110,21 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
         ))}
         for r in _rows(await asyncio.to_thread(
             db.table("image_product_associations")
-            .select("product_id, document_images!inner(id, extraction_layer, has_slig_embedding, metadata)")
+            .select("product_id, document_images!inner(id, page_number, bbox, extraction_layer, has_slig_embedding, metadata)")
             .in_("product_id", ids).execute
         )):
             images[r["product_id"]] = images.get(r["product_id"], 0) + 1
             product_images.setdefault(names.get(r["product_id"], r["product_id"]), []).append(r["document_images"])
+    sources = sorted({(i.get("metadata") or {}).get("restored_from") for imgs in product_images.values() for i in imgs
+                      if i.get("extraction_layer") == "restored" and not (i.get("metadata") or {}).get("source_native_px")} - {None})
+    source_px: Dict[str, Any] = {}
+    for ids in _batches(sources, ID_BATCH):
+        for r in _rows(await asyncio.to_thread(db.table("document_images").select("id, metadata").in_("id", ids).execute)):
+            source_px[r["id"]] = ((r.get("metadata") or {}).get("image_quality") or {}).get("native_px")
+    for imgs in product_images.values():
+        for i in imgs:
+            if (i.get("metadata") or {}).get("restored_from") in source_px:
+                i["source_px"] = source_px[i["metadata"]["restored_from"]]
     return {"products": products, "layout": layout, "chunks": chunks, "tables": tables, "embedded": embedded, "images": images,
             "product_images": product_images, "snapshots": snapshots}
 
@@ -233,6 +243,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         platform_text=platform_text,
         phase=phase,
         product_images=collected.get("product_images"),
+        other_series=collected.get("other_series"),
     )
 
 
@@ -291,6 +302,9 @@ async def run_ingestion_audit(
         document = found[0]
         collected = await _collect(db, document)
         pdf_bytes = await _download(db, document)
+        if pdf_bytes is not None and phase != "pre_embed":
+            from app.services.images.label_linking import other_series_images
+            collected["other_series"] = await other_series_images(supabase, document_id, pdf_bytes)
         web_texts = await _snapshot_texts(db, collected["snapshots"]) if pdf_bytes is None and collected["snapshots"] else None
         result = (await asyncio.to_thread(build_audit, document, collected, pdf_bytes, phase, web_texts)).as_dict()
         status = db_status(result["status"])
