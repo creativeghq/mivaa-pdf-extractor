@@ -458,8 +458,10 @@ def image_integrity_findings(product_images: Dict[str, List[Dict[str, Any]]], ot
         if key:
             by_position[key].append(i["id"])
     duplicates = [ids for ids in by_position.values() if len(ids) > 1]
-    for imgs in product_images.values():
-        duplicates += _hash_twins([i for i in imgs if i["id"] in live])
+    twins = [pair for imgs in product_images.values() for pair in _hash_twins([i for i in imgs if i["id"] in live])]
+    metrics.update({"images_hash_twins_across_documents": len(twins)})
+    if twins:
+        findings.append(Finding(WARN, "images_hash_twins_across_documents", f"{len(twins)} pair(s) of images from different PDFs look identical (a hash cannot tell plain colours apart)", len(twins), twins))
     metrics.update({"images_upscaled_repairs": len(upscaled_repairs), "images_upscaled_crops": len(upscaled_crops),
                     "images_duplicated_position": sum(len(d) - 1 for d in duplicates),
                     "images_on_other_series_page": len(other_series)})

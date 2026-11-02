@@ -303,5 +303,6 @@ def test_the_same_spot_in_two_pdfs_is_a_duplicate_only_when_the_pictures_match()
     findings, metrics = [], {}
     ia.image_integrity_findings({"Ardenza": [img("a", "actual", "afc989ec0ae1e0b6"), img("b", "innova", "a7c989ec0ae0f0be"),
                                              img("c", "actual", "bacd4ff6194a022d", (0.1, 0.1, 0.2, 0.2)), img("d", "innova", "ae720c26192fc4fb", (0.1, 0.1, 0.2, 0.2))]}, [], findings, metrics)
-    dup = next(f for f in findings if f.code == "duplicate_images_same_position")
-    assert dup.examples == [["a", "b"]]
+    twins = next(f for f in findings if f.code == "images_hash_twins_across_documents")
+    assert twins.severity == ia.WARN and twins.examples == [["a", "b"]]
+    assert "duplicate_images_same_position" not in {f.code for f in findings}
