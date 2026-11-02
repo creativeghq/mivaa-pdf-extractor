@@ -153,6 +153,29 @@ async def _snapshot_texts(db: Any, snapshots: List[Dict[str, Any]]) -> List[Dict
     return texts
 
 
+def series_coverage(collected: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Per product: maker-photographed variants it does not offer, and its own pages outside its range."""
+    from app.services.discovery import series_reconcile as sr
+
+    pages = {int(r["page_number"]): _element_text(r.get("layout_elements") or []) for r in collected["layout"]}
+    names = [p["name"] for p in collected["products"]]
+    out = []
+    for p in collected["products"]:
+        m, a = p.get("metadata") or {}, p.get("attributes") or {}
+        offered = set()
+        for v in (a.get("color"), m.get("color"), m.get("decorative_variant"), a.get("finish"), m.get("finish")):
+            for x in (v if isinstance(v, list) else [v]):
+                if isinstance(x, str):
+                    offered |= set(sr.fold(x).split())
+        urls = [(i.get("metadata") or {}).get("source_url") for i in (collected.get("product_images") or {}).get(p["name"], [])
+                if i.get("extraction_layer") == "manufacturer_original" and "excluded_from_products" not in (i.get("metadata") or {})]
+        missing = [v for v in sr.site_variant_names([u for u in urls if u], p["name"]) if not set(v.split()) & offered]
+        own = set(sr.series_pages(pages, p["name"], names))
+        outside = sorted(own - {n for n in (m.get("page_range") or []) if isinstance(n, int)})
+        out.append({"product": p["name"], "missing_variants": missing, "pages_outside": outside})
+    return out
+
+
 def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: Optional[bytes], phase: str, web_texts: Optional[List[Dict[str, Any]]] = None) -> AuditResult:
     layout = collected["layout"]
     chunks, tables = collected["chunks"], collected["tables"]
@@ -246,6 +269,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         phase=phase,
         product_images=collected.get("product_images"),
         other_series=collected.get("other_series"),
+        series_coverage=series_coverage(collected) if pdf_bytes else None,
     )
 
 

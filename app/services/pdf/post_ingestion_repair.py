@@ -218,6 +218,8 @@ async def repair_document(document_id: str, supabase: Any, log: Optional[logging
     if pdf is not None and codes & {"numbers_missing", "numbers_missing_few"}:
         await step("page_supplements", write_page_supplements(supabase, document, collected, pdf, findings))
     await step("duplicate_images", dedupe_document_images(supabase, document_id))
+    from app.services.discovery.series_reconcile import reconcile_document
+    await step("series_reconcile", reconcile_document(supabase, document_id))
     if pdf is not None:
         from app.services.images.label_linking import relink_by_labels
         await step("label_links", relink_by_labels(supabase, document_id, pdf))

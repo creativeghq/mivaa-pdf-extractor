@@ -295,6 +295,17 @@ def product_content_findings(products: Sequence[Dict[str, Any]], findings: List[
         findings.append(Finding(FAIL, "attributes_name_other_series", f"{len(leaks)} product(s) carry attribute values that name another series of this document", len(leaks), leaks))
 
 
+def series_coverage_findings(coverage: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    """A variant the maker photographed that the product does not offer, and the series' own pages outside its range."""
+    missing = [{"product": c["product"], "variants": c["missing_variants"]} for c in coverage if c.get("missing_variants")]
+    outside = [{"product": c["product"], "pages": c["pages_outside"]} for c in coverage if c.get("pages_outside")]
+    metrics.update({"products_missing_site_variants": len(missing), "products_with_own_pages_outside_range": len(outside)})
+    if missing:
+        findings.append(Finding(FAIL, "variants_missing_vs_sources", f"{len(missing)} product(s) lack a colour, decor or finish the maker's own photos name", len(missing), missing))
+    if outside:
+        findings.append(Finding(FAIL, "series_pages_outside_range", f"{len(outside)} product(s) have pages printing their name beside a size outside their page range", len(outside), outside))
+
+
 def audit_document(
     *,
     source_kept: bool,
@@ -311,6 +322,7 @@ def audit_document(
     web: Optional[Dict[str, Any]] = None,
     product_images: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     other_series: Optional[Sequence[Dict[str, Any]]] = None,
+    series_coverage: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> AuditResult:
     findings: List[Finding] = []
     metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase, "source_kind": source_kind}
@@ -331,6 +343,7 @@ def audit_document(
     chunk_findings(chunks, tables, findings, metrics, phase)
     product_findings(products, findings, metrics, phase)
     product_content_findings(products, findings, metrics)
+    series_coverage_findings(series_coverage or [], findings, metrics)
     if phase != "pre_embed":
         image_findings(product_images or {}, findings, metrics)
         image_integrity_findings(product_images or {}, other_series or [], findings, metrics)

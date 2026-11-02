@@ -279,10 +279,25 @@ class FirecrawlClient:
         Reads a search engine's index, not the target site, so it works where the site itself
         refuses automated fetches. Never raises: a failed search returns [] and is logged.
         """
+        return await self._search(query, "images", user_id, workspace_id, limit, source_tag)
+
+    async def search_web(
+        self,
+        query: str,
+        user_id: Optional[str],
+        workspace_id: Optional[str] = None,
+        limit: int = 5,
+        source_tag: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Web results [{url, title, description}]: the page's own summary, read from the index."""
+        return await self._search(query, "web", user_id, workspace_id, limit, source_tag)
+
+    async def _search(self, query: str, source: str, user_id: Optional[str], workspace_id: Optional[str],
+                      limit: int, source_tag: Optional[str]) -> List[Dict[str, Any]]:
         if not self.api_key:
             return []
         start = datetime.utcnow()
-        body = {"query": query, "limit": limit, "sources": ["images"]}
+        body = {"query": query, "limit": limit, "sources": [source]}
         try:
             response = await self._call_with_retry(body, endpoint="search")
         except FirecrawlError as e:
@@ -290,11 +305,11 @@ class FirecrawlClient:
                                  latency_ms=int((datetime.utcnow() - start).total_seconds() * 1000), success=False,
                                  error=str(e), source_tag=source_tag, operation_type="search")
             return []
-        hits = [h for h in ((response.get("data") or {}).get("images") or []) if isinstance(h, dict)]
+        hits = [h for h in ((response.get("data") or {}).get(source) or []) if isinstance(h, dict)]
         await self._log_call(user_id=user_id, workspace_id=workspace_id, url=f"search:{query}",
                              credits_used=int(response.get("creditsUsed") or 1),
                              latency_ms=int((datetime.utcnow() - start).total_seconds() * 1000), success=True,
-                             request_preview={"query": query, "limit": limit}, response_preview={"images": len(hits)},
+                             request_preview={"query": query, "limit": limit}, response_preview={source: len(hits)},
                              source_tag=source_tag, operation_type="search")
         return hits
 

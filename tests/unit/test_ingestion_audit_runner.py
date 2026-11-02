@@ -18,7 +18,7 @@ def _load(name, relative):
     return module
 
 
-for _pkg in ("app", "app.services", "app.services.pdf"):
+for _pkg in ("app", "app.services", "app.services.pdf", "app.services.discovery"):
     sys.modules.setdefault(_pkg, types.ModuleType(_pkg))
 flow_stub = types.ModuleType("app.services.flow_events")
 flow_stub.emit_flow_event = lambda event_type, data, url, key: sent.append((event_type, data)) or True
@@ -27,6 +27,7 @@ _load("app.services.pdf.ocr_completeness", "app/services/pdf/ocr_completeness.py
 _load("app.services.pdf.text_layer_extractor", "app/services/pdf/text_layer_extractor.py")
 _load("app.services.pdf.ingestion_audit", "app/services/pdf/ingestion_audit.py")
 _load("app.services.pdf.catalogue_tables", "app/services/pdf/catalogue_tables.py")
+sys.modules["app.services.discovery"].series_reconcile = _load("app.services.discovery.series_reconcile", "app/services/discovery/series_reconcile.py")
 runner = _load("ingestion_audit_runner_under_test", "app/services/pdf/ingestion_audit_runner.py")
 
 fitz = pytest.importorskip("fitz")

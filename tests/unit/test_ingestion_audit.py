@@ -276,3 +276,12 @@ def test_an_attribute_naming_another_series_of_the_document_fails_but_its_own_na
     ia.product_content_findings(products, findings, metrics)
     assert [f.code for f in findings] == ["attributes_name_other_series"]
     assert findings[0].examples == [{"product": "Saboya", "names": ["redstone"]}]
+
+
+def test_a_variant_the_maker_photographed_and_the_series_own_pages_outside_its_range_fail():
+    findings, metrics = [], {}
+    cov = [{"product": "Saboya", "missing_variants": ["gris"], "pages_outside": [257]},
+           {"product": "Calma", "missing_variants": [], "pages_outside": []}]
+    ia.series_coverage_findings(cov, findings, metrics)
+    assert {f.code for f in findings} == {"variants_missing_vs_sources", "series_pages_outside_range"}
+    assert metrics["products_missing_site_variants"] == 1 and metrics["products_with_own_pages_outside_range"] == 1
