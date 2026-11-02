@@ -226,3 +226,9 @@ def test_waiting_crops_warn_and_retired_images_are_ignored():
                              _img("old", verdict="low_res", embedded=True, retired=True)]}, findings, metrics)
     codes = {f.code for f in findings}
     assert "images_awaiting_sourcing" in codes and "images_low_res_embedded" not in codes
+
+
+def test_a_low_res_image_sourcing_already_looked_at_is_not_reported():
+    findings, metrics = [], {}
+    ia.image_findings({"SAXA": [_img("k", verdict="low_res", embedded=True, sourcing="kept_source")]}, findings, metrics)
+    assert not [f for f in findings if f.code == "images_low_res_embedded"]

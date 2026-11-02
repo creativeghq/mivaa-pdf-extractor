@@ -332,7 +332,9 @@ def image_findings(product_images: Dict[str, List[Dict[str, Any]]], findings: Li
         live = [i for i in imgs if "excluded_from_products" not in (i.get("metadata") or {})]
         for i in live:
             q = (i.get("metadata") or {}).get("image_quality") or {}
-            if i.get("extraction_layer") != "restored" and q.get("verdict") == "low_res" and i.get("has_slig_embedding"):
+            # Any sourcing state means it was looked at (kept_source: no better version, repair not faithful).
+            if (i.get("extraction_layer") != "restored" and q.get("verdict") == "low_res"
+                    and i.get("has_slig_embedding") and not q.get("sourcing")):
                 low_res_embedded.append(i["id"])
             if q.get("sourcing") == "pending":
                 awaiting.append(i["id"])
