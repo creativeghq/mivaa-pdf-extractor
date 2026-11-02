@@ -670,7 +670,8 @@ class MaterialVisualSearchService:
                 understanding_query_embedding=understanding_query_embedding,
                 limit=request.limit * 2,  # Get more results to filter
                 filters=filters,
-                include_metadata=True
+                include_metadata=True,
+                text_query=not (request.query_embedding or request.query_image),
             )
 
             vecs_results = multi_vector_results.get('results', [])
@@ -756,8 +757,7 @@ class MaterialVisualSearchService:
                                 filtered_results.append(match)
                                 existing_image_ids.add(match.get('image_id'))
 
-                        # Re-sort by combined score (multi-vector if available)
-                        filtered_results.sort(key=lambda x: x.get('combined_score', x.get('similarity_score', 0)), reverse=True)
+                        # Their scores are on another scale, so they follow the ranked vector results.
                         filtered_results = filtered_results[:request.limit]
 
                 except Exception as text_err:
@@ -770,7 +770,8 @@ class MaterialVisualSearchService:
                 workspace_id=request.workspace_id,
                 include_products=True,
                 include_chunks=True,
-                min_relevance=0.5
+                min_relevance=0.5,
+                rerank=False,
             )
 
             # ✅ Step 4: Format results as MaterialSearchResult objects
@@ -788,9 +789,9 @@ class MaterialVisualSearchService:
                 visual_score = item.get('similarity_score', 0.0)
                 multi_combined = item.get('combined_score', visual_score)
 
-                # Calculate final combined score: multi-vector (65%) + product relevance (35%)
+                # The order and the score are the multi-vector ranking; product relevance is shown, not blended.
                 product_relevance = primary_product.get('relevance_score', 0.0) if primary_product else 0.0
-                final_combined = multi_combined * 0.65 + product_relevance * 0.35
+                final_combined = multi_combined
 
                 search_results.append(MaterialSearchResult(
                     material_id=primary_product.get('product_id', item.get('image_id', '')) if primary_product else item.get('image_id', ''),

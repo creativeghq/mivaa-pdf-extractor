@@ -11,7 +11,7 @@ from vecs.collection import Collection, IndexMethod
 
 # Canonical fusion weights. weight_profiles imports nothing from `app`, so this is
 # safe at module level — no cycle with the search services that import vecs_service.
-from app.services.search.weight_profiles import image_only_weights
+from app.services.search.weight_profiles import image_only_weights, text_query_image_weights
 
 logger = logging.getLogger(__name__)
 
@@ -1048,7 +1048,8 @@ class VecsService:
         understanding_query_embedding: Optional[List[float]] = None,
         limit: int = 20,
         filters: Optional[Dict[str, Any]] = None,
-        include_metadata: bool = True
+        include_metadata: bool = True,
+        text_query: bool = False,
     ) -> Dict[str, Any]:
         """Search all VECS collections in parallel and return combined results with multi-vector scores.
 
@@ -1162,7 +1163,7 @@ class VecsService:
             # canonical `balanced` profile rather than restated here: this block used to
             # hardcode 0.30 / 0.20 / 0.50 beside a comment naming the doc it was copied
             # from, which is exactly how a copied number drifts from its source.
-            base_weights: Dict[str, float] = image_only_weights(
+            base_weights: Dict[str, float] = (text_query_image_weights if text_query else image_only_weights)(
                 has_understanding=has_understanding,
                 specialized_types=specialized_types_to_run,
             )

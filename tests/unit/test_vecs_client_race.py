@@ -34,6 +34,7 @@ def _load(created):
     collection.IndexMethod = types.SimpleNamespace(hnsw="hnsw", ivfflat="ivfflat")
     weights = types.ModuleType("app.services.search.weight_profiles")
     weights.image_only_weights = lambda *a, **k: {}
+    weights.text_query_image_weights = lambda *a, **k: {}
     for name in ("app", "app.services", "app.services.search"):
         sys.modules.setdefault(name, types.ModuleType(name))
     sys.modules["vecs"] = vecs

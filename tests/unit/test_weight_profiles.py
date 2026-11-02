@@ -252,3 +252,14 @@ def test_text_query_weights_leave_text_vector_aspects_out():
     w = weight_profiles.text_query_source_weights()
     assert all(w[a] == 0 for a in ("visual", "color", "texture", "style"))
     assert w["understanding"] == max(w.values())
+
+
+def test_a_text_query_ranks_the_image_fan_out_on_understanding_and_material_only():
+    w = weight_profiles.text_query_image_weights(True, ["color", "texture", "style", "material"])
+    assert sum(w.values()) == pytest.approx(1.0)
+    assert w["visual"] == w["color"] == w["texture"] == w["style"] == 0.0
+    assert w["understanding"] > w["material"] > 0.0
+
+
+def test_a_text_query_with_no_weighted_channel_falls_back_to_the_image_weights():
+    assert weight_profiles.text_query_image_weights(False, ["color"]) == image_only_weights(False, ["color"])

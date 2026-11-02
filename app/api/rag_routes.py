@@ -4956,13 +4956,29 @@ async def search_documents(
             # The 7-aspect → 9-source mapping lives in weight_profiles so this route
             # and /api/documents/query cannot drift apart (they held identical copies).
             from app.services.search.weight_profiles import (
+                DEFAULT_PROFILE,
+                get_profile,
                 profile_to_source_weights,
                 aspect_bias_weights,
                 text_query_source_weights,
             )
-            rag_weights = profile_to_source_weights(dynamic_weights) if dynamic_weights else None
+            query_image_b64 = getattr(request, 'image_base64', None)
+            if not query_image_b64 and getattr(request, 'image_url', None):
+                import base64 as _b64
+                from app.utils.ssrf_guard import MAX_IMAGE_BYTES, SSRFError, safe_fetch_bytes
+                try:
+                    fetched = await safe_fetch_bytes(request.image_url, max_bytes=MAX_IMAGE_BYTES)
+                except SSRFError as e:
+                    raise HTTPException(status_code=400, detail=f"image_url rejected: {e}")
+                except Exception as e:
+                    raise HTTPException(status_code=502, detail=f"image_url could not be fetched: {e}")
+                if fetched.status_code != 200 or not fetched.content:
+                    raise HTTPException(status_code=502, detail=f"image_url returned HTTP {fetched.status_code}")
+                query_image_b64 = _b64.b64encode(fetched.content).decode()
+            # Query understanding failed or timed out: the balanced profile, not rag_service's own defaults.
+            rag_weights = profile_to_source_weights(dynamic_weights or get_profile(DEFAULT_PROFILE))
             # Words and no picture: the measured text weighting, not the intent profile.
-            if not getattr(request, 'image_base64', None) and (query_to_use or '').strip():
+            if not query_image_b64 and (query_to_use or '').strip():
                 rag_weights = text_query_source_weights()
                 weight_profile = "text_query"
             material_filters = getattr(request, 'material_filters', None)
@@ -4994,7 +5010,7 @@ async def search_documents(
                 top_k=request.top_k,
                 material_filters=material_filters,
                 search_config=sc or None,
-                image_base64=getattr(request, 'image_base64', None),
+                image_base64=query_image_b64,
             )
 
         elif strategy == "material":
@@ -6024,13 +6040,14 @@ async def search_knowledge_base(
                 if request.categories:
                     material_filters['categories'] = request.categories
 
-                # Use the same multi_vector_search method as the main search endpoint
+                from app.services.search.weight_profiles import text_query_source_weights
                 product_results = await rag_service.multi_vector_search(
                     query=request.query,
                     workspace_id=request.workspace_id,
                     top_k=request.top_k,
                     material_filters=material_filters if material_filters else None,
-                    similarity_threshold=request.similarity_threshold
+                    similarity_threshold=request.similarity_threshold,
+                    search_config={"weights": text_query_source_weights()},
                 )
 
                 # Extract products from results
@@ -6041,7 +6058,7 @@ async def search_knowledge_base(
                             "name": result.get('product_name') or result.get('name'),
                             "description": result.get('description'),
                             "metadata": result.get('metadata', {}),
-                            "relevance_score": result.get('weighted_score', 0.0),
+                            "relevance_score": result.get('score', 0.0),
                             "type": "product",
                             "embeddings": {
                                 # Only product-level embedding column post-cleanup is text_embedding_1024.

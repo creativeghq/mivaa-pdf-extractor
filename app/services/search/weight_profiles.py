@@ -237,6 +237,15 @@ def text_query_source_weights() -> Dict[str, float]:
     return normalize({ch: TEXT_QUERY_SOURCE_WEIGHTS.get(ch, 0.0) for ch in SOURCE_CHANNELS})
 
 
+def text_query_image_weights(has_understanding: bool, specialized_types: Sequence[str]) -> Dict[str, float]:
+    """The image fan-out's weights for a text query: the text weighting over the channels it queried."""
+    queried = ["visual", *(["understanding"] if has_understanding else []), *(t for t in specialized_types if t in SPECIALIZED_ASPECTS)]
+    weights = {ch: TEXT_QUERY_SOURCE_WEIGHTS.get(ch, 0.0) for ch in queried}
+    if not any(weights.values()):
+        return image_only_weights(has_understanding, specialized_types)
+    return normalize(weights)
+
+
 def profile_names() -> Iterable[str]:
     """All known intent profile names."""
     return WEIGHT_PROFILES.keys()
