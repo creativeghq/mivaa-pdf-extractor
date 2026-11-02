@@ -1028,6 +1028,12 @@ async def process_stage_0_discovery(
 
         # Store product DB IDs in checkpoint for later stages
         checkpoint_data["product_db_ids"] = product_db_ids
+        try:
+            from app.services.discovery.site_manifest import build_manifest
+            checkpoint_data["site_manifest"] = await build_manifest(document_id, workspace_id, None, list(product_db_ids))
+        except Exception as manifest_error:  # noqa: BLE001 - the PDF path never depends on the site
+            logger.warning(f"⚠️ Site manifest could not be built: {manifest_error}")
+            checkpoint_data["site_manifest"] = {"error": str(manifest_error)[:300]}
         # Explicit failure marker (#214): downstream/monitoring can tell "quota
         # clamped this catalog" apart from "the catalog only had N products".
         checkpoint_data["products_skipped_quota"] = len(quota_skipped)

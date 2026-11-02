@@ -181,7 +181,8 @@ def series_coverage(collected: Dict[str, Any]) -> List[Dict[str, Any]]:
         missing = [v for v in site_names[p["name"]] if not set(v.split()) & offered and set(v.split()) - common]
         own = set(sr.series_pages(pages, p["name"], names))
         outside = sorted(own - {n for n in (m.get("page_range") or []) if isinstance(n, int)})
-        out.append({"product": p["name"], "missing_variants": missing, "pages_outside": outside})
+        out.append({"product": p["name"], "missing_variants": missing, "pages_outside": outside,
+                    "site_status": (m.get("site_manifest") or {}).get("status")})
     return out
 
 

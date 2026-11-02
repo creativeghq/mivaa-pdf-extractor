@@ -303,7 +303,11 @@ def series_coverage_findings(coverage: Sequence[Dict[str, Any]], findings: List[
     """A variant the maker photographed that the product does not offer, and the series' own pages outside its range."""
     missing = [{"product": c["product"], "variants": c["missing_variants"]} for c in coverage if c.get("missing_variants")]
     outside = [{"product": c["product"], "pages": c["pages_outside"]} for c in coverage if c.get("pages_outside")]
-    metrics.update({"products_missing_site_variants": len(missing), "products_with_own_pages_outside_range": len(outside)})
+    off_site = [c["product"] for c in coverage if c.get("site_status") == "not_found"]
+    metrics.update({"products_missing_site_variants": len(missing), "products_with_own_pages_outside_range": len(outside),
+                    "series_not_on_maker_site": len(off_site)})
+    if off_site:
+        findings.append(Finding(WARN, "series_not_on_maker_site", f"{len(off_site)} series were not found on the maker's site: their images and variants come from the PDF alone", len(off_site), off_site))
     if missing:
         findings.append(Finding(FAIL, "variants_missing_vs_sources", f"{len(missing)} product(s) lack a colour, decor or finish the maker's own photos name", len(missing), missing))
     if outside:

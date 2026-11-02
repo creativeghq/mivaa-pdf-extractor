@@ -585,6 +585,11 @@ async def _process_product_images(
         bbox_len = len(bbox) if isinstance(bbox, (list, tuple)) else 'N/A'
         logger.info(f"      Image {i}: {img.get('filename')}, bbox_len={bbox_len}, bbox={bbox[:4] if isinstance(bbox, (list, tuple)) and len(bbox) >= 4 else bbox}, id={id(img)}")
 
+    from app.services.discovery.site_manifest import drop_crops_the_site_shows
+    site_covered = len(regular_material_images)
+    regular_material_images = await drop_crops_the_site_shows(regular_material_images, product_db_id, workspace_id, logger)
+    site_covered -= len(regular_material_images)
+
     # ========================================================================
     # UPLOAD MATERIAL + ICON IMAGES TO STORAGE
     # ========================================================================
@@ -725,6 +730,7 @@ async def _process_product_images(
         'bundle_skip_reasons': {
             'icon_candidate_spec_path': len(icon_candidates),
             'classified_non_material': non_material_count,
+            'shown_by_maker_site': site_covered,
         },
         'vector_stats': vector_stats,
         'failed_images': failed_images,

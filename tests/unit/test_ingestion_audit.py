@@ -306,3 +306,11 @@ def test_the_same_spot_in_two_pdfs_is_a_duplicate_only_when_the_pictures_match()
     twins = next(f for f in findings if f.code == "images_hash_twins_across_documents")
     assert twins.severity == ia.WARN and twins.examples == [["a", "b"]]
     assert "duplicate_images_same_position" not in {f.code for f in findings}
+
+
+def test_a_series_the_makers_site_does_not_show_is_named():
+    findings, metrics = [], {}
+    ia.series_coverage_findings([{"product": "Padua", "missing_variants": [], "pages_outside": [], "site_status": "not_found"},
+                                 {"product": "Saboya", "missing_variants": [], "pages_outside": [], "site_status": "found"}], findings, metrics)
+    off = next(f for f in findings if f.code == "series_not_on_maker_site")
+    assert off.severity == ia.WARN and off.examples == ["Padua"]
