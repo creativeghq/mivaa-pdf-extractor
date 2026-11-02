@@ -26,7 +26,7 @@ from PIL import Image
 from app.services.core.supabase_client import get_supabase_client
 from app.services.images import manufacturer_site as site
 from app.services.images.image_matching import (
-    MatchScore, classical_cleanup, faces_in_crop, is_patterned, match_score, pick_match,
+    MatchScore, classical_cleanup, faces_in_crop, gallery_can_replace, is_patterned, match_score, pick_match,
     redundant_resized_copies, redundant_scale_renders, repair_is_faithful,
 )
 from app.utils.ssrf_guard import safe_fetch_bytes
@@ -576,6 +576,12 @@ class ImageSourcing:
                                        skip_ids: Set[str]) -> int:
         """Retire small or smoothed images only where a gallery photo SHOWS THE SAME THING. Returns the count."""
         gallery_thumbs = [(gid, _thumb(img)) for gid, img in gallery]
+        full = dict(gallery)
+
+        def replaceable(r: Dict[str, Any], img: Image.Image, gid: str) -> bool:
+            smoothed = r.get("extraction_layer") == "restored"
+            return gallery_can_replace(img, full[gid], _source_long_side(r) or max(img.size), smoothed)
+
         unmatched: List[Tuple[Dict[str, Any], Image.Image]] = []
         retired = 0
         for r in self._linked(product["id"]):
@@ -584,17 +590,19 @@ class ImageSourcing:
             if r["id"] in skip_ids or not (small_pdf or smoothed):
                 continue
             twin, img = await self._gallery_twin(r, gallery_thumbs)
-            if twin:
+            if twin and replaceable(r, img, twin):
                 await self._give_way_to_gallery(r, product["id"], twin, "pixels")
                 retired += 1
-            elif img is not None:
+            elif img is not None and not twin:
                 unmatched.append((r, img))
         # Pixels cannot compare a square swatch with a landscape room photo; a vision check can.
         if unmatched:
-            by_id = {r["id"]: r for r, _ in unmatched}
+            by_id = {r["id"]: (r, img) for r, img in unmatched}
             for rid, gid in (await self._gallery_covers(product, unmatched, gallery)).items():
-                await self._give_way_to_gallery(by_id[rid], product["id"], gid, "vision")
-                retired += 1
+                r, img = by_id[rid]
+                if replaceable(r, img, gid):
+                    await self._give_way_to_gallery(r, product["id"], gid, "vision")
+                    retired += 1
         return retired
 
     async def recheck_gallery(self, product_ids: Optional[List[str]] = None) -> Dict[str, int]:

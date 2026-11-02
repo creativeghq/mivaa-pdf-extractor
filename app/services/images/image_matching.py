@@ -267,6 +267,20 @@ def redundant_scale_renders(images: Sequence[Tuple[str, Image.Image]]) -> Dict[s
     return out
 
 
+#: A gallery photo may replace an image only in the same colour: calibrated on 22 reviewed pairs, the
+#: right ones measured dE <= 6.2 and pink-for-peach or swatch-for-room-scene >= 7.3.
+GALLERY_MAX_DELTA_E = 7.0
+
+
+def gallery_can_replace(image: Image.Image, gallery: Image.Image, image_long_side: int, smoothed: bool) -> bool:
+    """A judged match still needs the gallery photo to be the same colour and no smaller. A smoothed
+    repair was enlarged 2x from its source, so half its size is what the gallery must beat."""
+    need = image_long_side / 2 if smoothed else image_long_side
+    if max(content_box(gallery).shape[:2]) < need:
+        return False
+    return float(np.linalg.norm(np.subtract(content_profile(image).lab, content_profile(gallery).lab))) <= GALLERY_MAX_DELTA_E
+
+
 #: The same photo saved at two resolutions: same shape, same structure, same colour.
 RESIZED_COPY_MAX_ASPECT_GAP = 0.03
 RESIZED_COPY_MIN_SSIM = 0.95

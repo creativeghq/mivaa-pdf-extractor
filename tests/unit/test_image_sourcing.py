@@ -259,10 +259,30 @@ def test_a_small_image_gives_way_to_the_gallery_only_when_a_gallery_photo_matche
     assert len(calls) == 2
     for at in calls:
         block = src[max(0, at - 400):at]
-        assert ("await self._gallery_twin(" in block and "if twin:" in block) or "await self._gallery_covers(" in block
+        assert "await self._gallery_twin(" in block or "await self._gallery_covers(" in block
+        assert "if twin and replaceable(" in block or "if replaceable(" in block, "same colour and no smaller, every time"
     twin = src[src.index("async def _gallery_twin"):]
     twin = twin[:twin.index("\n    async def ")]
     assert "pick_match(" in twin and "match_score(" in twin
     covers = src[src.index("async def _gallery_covers"):]
     covers = covers[:covers.index("\n    def ")]
     assert "except Exception" in covers and "return {}" in covers, "a failed vision check must cover nothing"
+
+
+def test_a_gallery_photo_replaces_an_image_only_in_the_same_colour_and_no_smaller():
+    pytest.importorskip("cv2")
+    from PIL import Image as _Image
+    pink, peach = (236, 190, 190), (226, 180, 150)
+    swatch = _Image.new("RGB", (600, 600), pink)
+    assert _matching.gallery_can_replace(swatch, _Image.new("RGB", (900, 450), pink), 600, smoothed=False)
+    assert not _matching.gallery_can_replace(swatch, _Image.new("RGB", (900, 450), peach), 600, smoothed=False)
+    assert not _matching.gallery_can_replace(swatch, _render((500, 500), (120, 120), pink), 600, smoothed=False)
+
+
+def test_a_smoothed_repair_needs_a_gallery_photo_half_its_size():
+    pytest.importorskip("cv2")
+    from PIL import Image as _Image
+    grey = (180, 180, 182)
+    smear = _Image.new("RGB", (400, 110), grey)
+    assert _matching.gallery_can_replace(smear, _render((500, 500), (250, 62), grey), 400, smoothed=True)
+    assert not _matching.gallery_can_replace(smear, _render((500, 500), (150, 40), grey), 400, smoothed=True)
