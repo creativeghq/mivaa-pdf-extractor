@@ -73,7 +73,7 @@ def build_photo_cases(db: Any, workspace_id: str, limit: int) -> List[Case]:
 
 async def capture_case(rag: Any, case: Case, workspace_id: str, extra_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     from app.services.search.unified_search_service import UnifiedSearchService
-    from app.services.search.weight_profiles import profile_to_source_weights
+    from app.services.search.weight_profiles import text_query_source_weights
 
     query, filters, profile, weights = case.query, None, "balanced", None
     image_b64 = None
@@ -82,8 +82,8 @@ async def capture_case(rag: Any, case: Case, workspace_id: str, extra_config: Op
         async with httpx.AsyncClient(timeout=30) as http:
             image_b64 = degrade((await http.get(case.image_url)).content)
     else:
-        query, filters, profile, dyn = await UnifiedSearchService()._parse_query_with_ai(case.query, workspace_id=workspace_id)
-        weights = profile_to_source_weights(dyn) if dyn else None
+        query, filters, profile, _ = await UnifiedSearchService()._parse_query_with_ai(case.query, workspace_id=workspace_id)
+        weights = text_query_source_weights()  # what /api/rag/search uses for words with no image
     sc = {**({"weights": weights} if weights else {}), **(extra_config or {})} or None
     out = await rag.multi_vector_search(
         query=query, workspace_id=workspace_id, top_k=CAPTURE_POOL, material_filters=filters or None,

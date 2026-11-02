@@ -240,3 +240,15 @@ def test_normalize_preserves_ratios():
 
 def test_normalize_handles_all_zero_without_dividing_by_zero():
     assert normalize({"a": 0.0, "b": 0.0}) == {"a": 0.0, "b": 0.0}
+
+
+def test_text_query_weights_name_every_channel_and_sum_to_one():
+    w = weight_profiles.text_query_source_weights()
+    assert set(w) == set(weight_profiles.SOURCE_CHANNELS)
+    assert sum(w.values()) == pytest.approx(1.0)
+
+
+def test_text_query_weights_leave_text_vector_aspects_out():
+    w = weight_profiles.text_query_source_weights()
+    assert all(w[a] == 0 for a in ("visual", "color", "texture", "style"))
+    assert w["understanding"] == max(w.values())

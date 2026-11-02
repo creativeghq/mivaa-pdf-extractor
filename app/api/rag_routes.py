@@ -4941,8 +4941,13 @@ async def search_documents(
             from app.services.search.weight_profiles import (
                 profile_to_source_weights,
                 aspect_bias_weights,
+                text_query_source_weights,
             )
             rag_weights = profile_to_source_weights(dynamic_weights) if dynamic_weights else None
+            # Words and no picture: the measured text weighting, not the intent profile.
+            if not getattr(request, 'image_base64', None) and (query_to_use or '').strip():
+                rag_weights = text_query_source_weights()
+                weight_profile = "text_query"
             material_filters = getattr(request, 'material_filters', None)
             # Build search config with optional MMR and weight overrides
             sc = {}

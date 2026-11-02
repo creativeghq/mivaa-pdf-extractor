@@ -222,6 +222,21 @@ def aspect_bias_weights(aspect: str) -> Dict[str, float]:
     return normalize(weights)
 
 
+#: Source weights for a query with words and no image. The aspect collections and SLIG are
+#: searched with a TEXT vector here, and alone they put the right product first 0-17% of the
+#: time against understanding's 43% (search eval, 2026-11-02, 70 look-based queries): the
+#: intent profiles gave them 45-58% of the ranking. Measured 23% -> 44% hit@1.
+TEXT_QUERY_SOURCE_WEIGHTS: Dict[str, float] = {
+    "understanding": 0.45, "product": 0.20, "keyword": 0.10, "chunk": 0.10,
+    "page": 0.05, "material": 0.10, "visual": 0.0, "color": 0.0, "texture": 0.0, "style": 0.0,
+}
+
+
+def text_query_source_weights() -> Dict[str, float]:
+    """Every SOURCE_CHANNEL named, so none is silently scored at zero by omission."""
+    return normalize({ch: TEXT_QUERY_SOURCE_WEIGHTS.get(ch, 0.0) for ch in SOURCE_CHANNELS})
+
+
 def profile_names() -> Iterable[str]:
     """All known intent profile names."""
     return WEIGHT_PROFILES.keys()
