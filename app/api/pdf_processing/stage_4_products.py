@@ -26,6 +26,7 @@ from app.services.products.category_units import (
 )
 from app.utils.postgrest_filters import escape_like
 from app.utils.text_fold import fold_identity, fold_model_token
+from app.services.images.association_scores import PAGE_LINK_SCORE
 
 
 def _resolve_default_unit(material_category: Optional[str], supabase: Any) -> str:
@@ -1094,6 +1095,7 @@ async def create_single_product(
                 if image_ids:
                     rows = [
                         {'workspace_id': workspace_id, 'product_id': product_id, 'image_id': iid,
+                         'overall_score': PAGE_LINK_SCORE,
                          'metadata': {'association_method': 'stage_4_immediate_by_page'}}
                         for iid in image_ids
                     ]

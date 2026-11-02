@@ -29,6 +29,7 @@ from app.services.images.image_matching import (
     MatchScore, classical_cleanup, faces_in_crop, is_patterned, match_score, pick_match, repair_is_faithful,
 )
 from app.utils.ssrf_guard import safe_fetch_bytes
+from app.services.images.association_scores import PAGE_LINK_SCORE, SOURCED_MATCH_SCORE
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +274,7 @@ class ImageSourcing:
         saved = res.data[0]
         self.db.table("image_product_associations").upsert(
             {"workspace_id": row["workspace_id"], "product_id": product["id"], "image_id": saved["id"],
+             "overall_score": SOURCED_MATCH_SCORE if layer == "manufacturer_original" else PAGE_LINK_SCORE,
              "metadata": {"association_method": layer}},
             on_conflict="image_id,product_id",
         ).execute()

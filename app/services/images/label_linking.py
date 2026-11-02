@@ -135,6 +135,7 @@ def _in_chunks(ids: List[str], size: int = 200):
 
 
 async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, apply: bool = True) -> Dict[str, Any]:
+    from app.services.images.association_scores import PRINTED_LABEL_SCORE
     import fitz
     from app.utils.pdf_to_images import analyze_pdf_layout
 
@@ -203,6 +204,7 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
         if apply:
             db.table("image_product_associations").upsert(
                 {"workspace_id": img.get("workspace_id"), "product_id": target, "image_id": img["id"],
+                 "overall_score": PRINTED_LABEL_SCORE,
                  "metadata": {"association_method": "printed_label", "label": name}},
                 on_conflict="image_id,product_id").execute()
             stale = [pid for pid in current if pid != target]

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.images.association_scores import PAGE_LINK_SCORE
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,8 @@ def _link_new_images(db, document_id: str, workspace_id: str, products: List[Dic
         for product in products:
             if n.get("page_number") in pages_of[product["id"]]:
                 rows.append({"workspace_id": product.get("workspace_id") or workspace_id, "product_id": product["id"],
-                             "image_id": n["id"], "metadata": {"association_method": "image_redo"}})
+                             "image_id": n["id"], "overall_score": PAGE_LINK_SCORE,
+                             "metadata": {"association_method": "image_redo"}})
     for i in range(0, len(rows), 500):
         db.table("image_product_associations").upsert(rows[i:i + 500], on_conflict="image_id,product_id").execute()
     return len(rows)

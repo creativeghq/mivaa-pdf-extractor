@@ -129,6 +129,7 @@ def duplicate_image_groups(rows: List[Dict[str, Any]]) -> List[List[Dict[str, An
 
 
 async def dedupe_document_images(supabase: Any, document_id: str, apply: bool = True) -> Dict[str, Any]:
+    from app.services.images.association_scores import PAGE_LINK_SCORE
     from app.services.embeddings.vecs_service import get_vecs_service
     db = _db(supabase)
     rows = await asyncio.to_thread(_all, lambda: db.table("document_images")
@@ -140,12 +141,13 @@ async def dedupe_document_images(supabase: Any, document_id: str, apply: bool = 
         return summary
     for survivor, *losers in groups:
         loser_ids = [r["id"] for r in losers]
-        links = db.table("image_product_associations").select("workspace_id, product_id, image_id, metadata") \
+        links = db.table("image_product_associations").select("workspace_id, product_id, image_id, overall_score, metadata") \
             .in_("image_id", loser_ids).execute().data or []
         moved = {(l["product_id"]): l for l in links}
         if moved:
             db.table("image_product_associations").upsert(
                 [{"workspace_id": l["workspace_id"], "product_id": pid, "image_id": survivor["id"],
+                  "overall_score": l.get("overall_score") or PAGE_LINK_SCORE,
                   "metadata": {**(l.get("metadata") or {}), "deduplicated_from": l["image_id"]}} for pid, l in moved.items()],
                 on_conflict="image_id,product_id").execute()
             db.table("image_product_associations").delete().in_("image_id", loser_ids).execute()
