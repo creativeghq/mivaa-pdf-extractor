@@ -246,3 +246,33 @@ def redundant_scale_renders(profiles: Sequence[Tuple[str, ContentProfile]]) -> L
                 out.append(key)
                 break
     return out
+
+
+#: The same photo saved at two resolutions: same shape, same structure, same colour.
+RESIZED_COPY_MAX_ASPECT_GAP = 0.03
+RESIZED_COPY_MIN_SSIM = 0.95
+RESIZED_COPY_MAX_DELTA_E = 3.0
+
+
+def is_resized_copy(a: Image.Image, b: Image.Image) -> bool:
+    ra, rb = a.width / a.height, b.width / b.height
+    if abs(ra - rb) / max(ra, rb) > RESIZED_COPY_MAX_ASPECT_GAP:
+        return False
+    w, h = 96, max(8, round(96 / ra))
+    sa = cv2.resize(_rgb(a), (w, h), interpolation=cv2.INTER_AREA)
+    sb = cv2.resize(_rgb(b), (w, h), interpolation=cv2.INTER_AREA)
+    ssim = _ssim(cv2.cvtColor(sa, cv2.COLOR_RGB2GRAY), cv2.cvtColor(sb, cv2.COLOR_RGB2GRAY))
+    return ssim >= RESIZED_COPY_MIN_SSIM and _mean_delta_e(sa, sb) <= RESIZED_COPY_MAX_DELTA_E
+
+
+def redundant_resized_copies(images: Sequence[Tuple[str, Image.Image]]) -> List[str]:
+    """Keys of the smaller copies when the same photo is present at more than one resolution."""
+    ordered = sorted(images, key=lambda kv: kv[1].width * kv[1].height, reverse=True)
+    kept: List[Tuple[str, Image.Image]] = []
+    out = []
+    for key, img in ordered:
+        if any(is_resized_copy(img, k) for _, k in kept):
+            out.append(key)
+        else:
+            kept.append((key, img))
+    return out

@@ -27,7 +27,7 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.images import manufacturer_site as site
 from app.services.images.image_matching import (
     MatchScore, classical_cleanup, content_profile, faces_in_crop, is_patterned, match_score, pick_match,
-    redundant_scale_renders, repair_is_faithful,
+    redundant_resized_copies, redundant_scale_renders, repair_is_faithful,
 )
 from app.utils.ssrf_guard import safe_fetch_bytes
 from app.services.images.association_scores import PAGE_LINK_SCORE, SOURCED_MATCH_SCORE
@@ -256,7 +256,11 @@ class ImageSourcing:
                 continue
             seen_hash.add(h)
             cands[u] = (self._name_confirmed.get(u) or (pages[0] if pages else ""), data, img)
-        # A site draws each format to scale on a blank canvas: keep the largest picture of each surface.
+        # Keep the largest picture of each surface: one photo saved at several sizes, and formats a site
+        # draws to scale on a blank canvas, arrive as separate files.
+        for u in redundant_resized_copies([(u, v[2]) for u, v in cands.items()]):
+            del cands[u]
+            self.summary["resized_copies_skipped"] = self.summary.get("resized_copies_skipped", 0) + 1
         for u in redundant_scale_renders([(u, content_profile(v[2])) for u, v in cands.items()]):
             del cands[u]
             self.summary["scale_renders_skipped"] = self.summary.get("scale_renders_skipped", 0) + 1

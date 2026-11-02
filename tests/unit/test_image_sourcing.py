@@ -210,3 +210,14 @@ def test_a_different_colour_is_never_dropped_for_another():
         ("black_full", _matching.content_profile(_render((500, 250), (500, 250), (60, 60, 62)))),
     ]
     assert _matching.redundant_scale_renders(profiles) == []
+
+
+def test_the_same_photo_at_two_resolutions_keeps_only_the_larger():
+    pytest.importorskip("cv2")
+    import numpy as np
+    from PIL import Image as _Image
+    rng = np.random.default_rng(3)
+    full = _Image.fromarray((rng.random((250, 500, 3)) * 255).astype("uint8")).resize((500, 250))
+    small = full.resize((250, 125))
+    other = _Image.fromarray((rng.random((250, 500, 3)) * 255).astype("uint8"))
+    assert _matching.redundant_resized_copies([("full", full), ("small", small), ("other", other)]) == ["small"]
