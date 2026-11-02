@@ -17,7 +17,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
 import httpx
@@ -124,6 +124,7 @@ class ImageSourcing:
                  log: Optional[logging.Logger] = None, dry_run: bool = False, low_res_embedded: bool = False,
                  gallery_backfill: bool = False) -> None:
         self.dry_run = dry_run
+        self.gallery_pairs: List[Dict[str, Any]] = []
         # Also look up the maker's gallery for products that already went through sourcing without one.
         self.gallery_backfill = gallery_backfill
         # Also take crops already embedded with a low_res verdict, and products holding no image at all.
@@ -550,30 +551,9 @@ class ImageSourcing:
                     self.summary["manufacturer_images"] += 1
                     report["added"] += 1
 
-        gallery = {u: stored_id for u, stored_id in stored.items()}
+        gallery = [(gid, cands[u][2]) for u, gid in stored.items() if u in cands]
         if gallery:
-            # A small or smoothed image gives way only to a gallery photo that SHOWS THE SAME THING.
-            gallery_thumbs = [(gid, small[u]) for u, gid in gallery.items() if u in small]
-            pending_ids = {c["id"] for c, _, _ in loaded}
-            unmatched: List[Tuple[Dict[str, Any], Image.Image]] = []
-            for r in self._linked(product["id"]):
-                small_pdf = r.get("extraction_layer") in ("region_crop", "embedded") and _small_beside_gallery(r)
-                smoothed = r.get("extraction_layer") == "restored" and (r.get("metadata") or {}).get("restore_method") == "classical"
-                if r["id"] in pending_ids or not (small_pdf or smoothed):
-                    continue
-                twin, img = await self._gallery_twin(r, gallery_thumbs)
-                if twin:
-                    self._supersede(r, product["id"], [twin], "superseded_by_manufacturer_gallery")
-                    await self._retire_vectors(r)
-                elif img is not None:
-                    unmatched.append((r, img))
-            # Pixels cannot compare a square swatch with a landscape room photo; a vision check can.
-            if unmatched:
-                full = [(gid, cands[u][2]) for u, gid in gallery.items() if u in cands]
-                by_id = {r["id"]: r for r, _ in unmatched}
-                for rid, gid in (await self._gallery_covers(product, unmatched, full)).items():
-                    self._supersede(by_id[rid], product["id"], [gid], "superseded_by_manufacturer_gallery")
-                    await self._retire_vectors(by_id[rid])
+            await self._retire_shown_by_gallery(product, gallery, {c["id"] for c, _, _ in loaded})
         for c, data, img in loaded:
             hit_ids = [stored[u] for u, _ in matches.get(c["id"], []) if u in stored]
             if hit_ids:
@@ -583,6 +563,60 @@ class ImageSourcing:
                 await self._repair(product, c, img, data)
                 report["restored_or_kept"] += 1
         return report
+
+    async def _give_way_to_gallery(self, row: Dict[str, Any], product_id: str, gallery_id: str, judged_by: str) -> None:
+        self.gallery_pairs.append({"product": product_id, "drop": row["id"], "drop_url": row.get("image_url"),
+                                   "keep": gallery_id, "judged_by": judged_by})
+        if self.dry_run:
+            return
+        self._supersede(row, product_id, [gallery_id], "superseded_by_manufacturer_gallery")
+        await self._retire_vectors(row)
+
+    async def _retire_shown_by_gallery(self, product: Dict[str, Any], gallery: List[Tuple[str, Image.Image]],
+                                       skip_ids: Set[str]) -> int:
+        """Retire small or smoothed images only where a gallery photo SHOWS THE SAME THING. Returns the count."""
+        gallery_thumbs = [(gid, _thumb(img)) for gid, img in gallery]
+        unmatched: List[Tuple[Dict[str, Any], Image.Image]] = []
+        retired = 0
+        for r in self._linked(product["id"]):
+            small_pdf = r.get("extraction_layer") in ("region_crop", "embedded") and _small_beside_gallery(r)
+            smoothed = r.get("extraction_layer") == "restored" and (r.get("metadata") or {}).get("restore_method") == "classical"
+            if r["id"] in skip_ids or not (small_pdf or smoothed):
+                continue
+            twin, img = await self._gallery_twin(r, gallery_thumbs)
+            if twin:
+                await self._give_way_to_gallery(r, product["id"], twin, "pixels")
+                retired += 1
+            elif img is not None:
+                unmatched.append((r, img))
+        # Pixels cannot compare a square swatch with a landscape room photo; a vision check can.
+        if unmatched:
+            by_id = {r["id"]: r for r, _ in unmatched}
+            for rid, gid in (await self._gallery_covers(product, unmatched, gallery)).items():
+                await self._give_way_to_gallery(by_id[rid], product["id"], gid, "vision")
+                retired += 1
+        return retired
+
+    async def recheck_gallery(self, product_ids: Optional[List[str]] = None) -> Dict[str, int]:
+        """For products sourced earlier: retire what their stored gallery already shows."""
+        out: Dict[str, int] = {}
+        for product in self._products(product_ids):
+            rows = (self.db.table("image_product_associations")
+                    .select("document_images!inner(id,image_url,extraction_layer,metadata)")
+                    .eq("product_id", product["id"]).eq("document_images.extraction_layer", "manufacturer_original")
+                    .execute().data or [])
+            gallery = []
+            for row in rows:
+                di = row["document_images"]
+                if "excluded_from_products" in (di.get("metadata") or {}):
+                    continue
+                data = await _download(di.get("image_url") or "")
+                img = _open(data) if data else None
+                if img is not None:
+                    gallery.append((di["id"], img))
+            if gallery:
+                out[product["id"]] = await self._retire_shown_by_gallery(product, gallery, set())
+        return out
 
     async def run_all(self, product_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         reports = []

@@ -252,13 +252,14 @@ def test_a_small_image_gives_way_to_the_gallery_only_when_a_gallery_photo_matche
     budget = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(budget)
     src = budget.blank_comments((_ROOT / "app/services/images/image_sourcing.py").read_text(encoding="utf-8"))
-    gallery_supersedes = [m.start() for m in re.finditer(r'"superseded_by_manufacturer_gallery"', src)]
-    assert gallery_supersedes, "the gallery supersede path is gone"
-    for at in gallery_supersedes:
-        block = src[max(0, at - 600):at]
-        pixel_twin = "await self._gallery_twin(" in block and "if twin:" in block
-        vision_twin = "await self._gallery_covers(" in block
-        assert pixel_twin or vision_twin
+    assert src.count('"superseded_by_manufacturer_gallery"') == 1, "one place retires for the gallery"
+    helper = src[src.index("async def _give_way_to_gallery"):]
+    assert helper.index("if self.dry_run:") < helper.index("self._supersede("), "a dry run records, never retires"
+    calls = [m.start() for m in re.finditer(r"await self\._give_way_to_gallery\(", src)]
+    assert len(calls) == 2
+    for at in calls:
+        block = src[max(0, at - 400):at]
+        assert ("await self._gallery_twin(" in block and "if twin:" in block) or "await self._gallery_covers(" in block
     twin = src[src.index("async def _gallery_twin"):]
     twin = twin[:twin.index("\n    async def ")]
     assert "pick_match(" in twin and "match_score(" in twin
