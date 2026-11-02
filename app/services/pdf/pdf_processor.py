@@ -1248,6 +1248,7 @@ class PDFProcessor:
         # seen-hashes map by extraction_layer means cross-layer collisions are
         # kept (embedded preferred, region_crop preserved).
         seen_hashes_by_layer: Dict[str, Dict] = {}
+        areas: Dict[int, int] = {}
         duplicate_count = 0
         # Audit fix #29: corrupted images that fail hash computation are now
         # marked failed AND excluded from unique_images, instead of being
@@ -1266,6 +1267,7 @@ class PDFProcessor:
                 # Compute perceptual hash
                 with Image.open(image_path) as img:
                     phash = imagehash.phash(img)
+                    areas[id(img_info)] = img.width * img.height
 
                 # Per-layer dedup: only compare against same-layer hashes.
                 seen_hashes = seen_hashes_by_layer.setdefault(extraction_layer, {})
@@ -1277,8 +1279,16 @@ class PDFProcessor:
 
                     if hamming_distance <= threshold:
                         is_duplicate = True
-                        duplicate_of = existing_info.get('filename')
                         duplicate_count += 1
+                        # The same picture at two sizes keeps the LARGER copy, whichever came first.
+                        if areas[id(img_info)] > areas.get(id(existing_info), 0):
+                            unique_images[unique_images.index(existing_info)] = img_info
+                            seen_hashes[existing_hash] = img_info
+                            existing_info.update(is_duplicate=True, duplicate_of=img_info.get('filename'))
+                            img_info.update(is_duplicate=False, duplicate_of=None, perceptual_hash=str(phash))
+                            is_duplicate = None
+                            break
+                        duplicate_of = existing_info.get('filename')
 
                         self.logger.debug(
                             f"   🔄 [Job: {job_id}] Duplicate ({extraction_layer}): {img_info.get('filename')} "
@@ -1286,7 +1296,9 @@ class PDFProcessor:
                         )
                         break
 
-                if is_duplicate:
+                if is_duplicate is None:
+                    pass
+                elif is_duplicate:
                     img_info['is_duplicate'] = True
                     img_info['duplicate_of'] = duplicate_of
                     img_info['perceptual_hash'] = str(phash)
