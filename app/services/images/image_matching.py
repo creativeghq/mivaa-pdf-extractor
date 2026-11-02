@@ -4,7 +4,7 @@ low-resolution PDF crop, is a crop plain or patterned, and did a repair invent d
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -216,17 +216,21 @@ class ContentProfile:
     lab: Tuple[float, float, float]
 
 
-def content_profile(img: Image.Image) -> ContentProfile:
-    """The part of the picture that is not its flat background: how big, and what colour."""
+def content_box(img: Image.Image) -> np.ndarray:
+    """The part of the picture that is not its flat background."""
     a = _rgb(img)
-    h, w = a.shape[:2]
     bg = np.median(np.stack([a[0, 0], a[0, -1], a[-1, 0], a[-1, -1]]), axis=0)
     mask = np.abs(a.astype(np.int32) - bg.astype(np.int32)).sum(axis=2) > 30
     ys, xs = np.where(mask)
     if len(xs) == 0:
-        box = a
-    else:
-        box = a[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+        return a
+    return a[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+
+
+def content_profile(img: Image.Image) -> ContentProfile:
+    """How big the content is, and what colour."""
+    h, w = img.height, img.width
+    box = content_box(img)
     lab = cv2.cvtColor(box, cv2.COLOR_RGB2LAB).reshape(-1, 3).astype(np.float64).mean(axis=0)
     # OpenCV 8-bit Lab to CIE units, as in _mean_delta_e.
     lab = (lab[0] * 100 / 255, lab[1] - 128, lab[2] - 128)
@@ -234,16 +238,31 @@ def content_profile(img: Image.Image) -> ContentProfile:
     return ContentProfile(area, area / float(h * w), (float(lab[0]), float(lab[1]), float(lab[2])))
 
 
-def redundant_scale_renders(profiles: Sequence[Tuple[str, ContentProfile]]) -> List[str]:
-    """Keys of scale drawings that a larger same-colour picture of the same product already shows."""
-    out = []
-    for key, p in profiles:
+def _same_surface(small: np.ndarray, large: np.ndarray) -> bool:
+    """The small render's content matches a centre crop of the larger content cut to its shape."""
+    aspect = small.shape[1] / small.shape[0]
+    h, w = large.shape[:2]
+    if w / h > aspect:
+        cw = max(1, int(h * aspect))
+        crop = large[:, (w - cw) // 2:(w - cw) // 2 + cw]
+    else:
+        ch = max(1, int(w / aspect))
+        crop = large[(h - ch) // 2:(h - ch) // 2 + ch]
+    return match_score(Image.fromarray(small), Image.fromarray(np.ascontiguousarray(crop))).mode != "none"
+
+
+def redundant_scale_renders(images: Sequence[Tuple[str, Image.Image]]) -> Dict[str, str]:
+    """Scale drawing -> the larger picture that visibly shows the same surface. No match, no entry."""
+    profiles = [(k, content_profile(im), content_box(im)) for k, im in images]
+    out: Dict[str, str] = {}
+    for key, p, pbox in profiles:
         if p.share >= SCALE_RENDER_MAX_SHARE:
             continue
-        for other, q in profiles:
-            if other != key and q.area >= SCALE_RENDER_MIN_GAIN * p.area \
-                    and float(np.linalg.norm(np.subtract(p.lab, q.lab))) <= SCALE_RENDER_MAX_DELTA_E:
-                out.append(key)
+        for other, q, qbox in sorted(profiles, key=lambda t: t[1].area, reverse=True):
+            if other != key and other not in out and q.area >= SCALE_RENDER_MIN_GAIN * p.area \
+                    and float(np.linalg.norm(np.subtract(p.lab, q.lab))) <= SCALE_RENDER_MAX_DELTA_E \
+                    and _same_surface(pbox, qbox):
+                out[key] = other
                 break
     return out
 
@@ -265,14 +284,15 @@ def is_resized_copy(a: Image.Image, b: Image.Image) -> bool:
     return ssim >= RESIZED_COPY_MIN_SSIM and _mean_delta_e(sa, sb) <= RESIZED_COPY_MAX_DELTA_E
 
 
-def redundant_resized_copies(images: Sequence[Tuple[str, Image.Image]]) -> List[str]:
-    """Keys of the smaller copies when the same photo is present at more than one resolution."""
+def redundant_resized_copies(images: Sequence[Tuple[str, Image.Image]]) -> Dict[str, str]:
+    """Smaller copy -> the larger copy of the same photo it duplicates."""
     ordered = sorted(images, key=lambda kv: kv[1].width * kv[1].height, reverse=True)
     kept: List[Tuple[str, Image.Image]] = []
-    out = []
+    out: Dict[str, str] = {}
     for key, img in ordered:
-        if any(is_resized_copy(img, k) for _, k in kept):
-            out.append(key)
+        twin = next((k for k, im in kept if is_resized_copy(img, im)), None)
+        if twin:
+            out[key] = twin
         else:
             kept.append((key, img))
     return out

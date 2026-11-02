@@ -26,7 +26,7 @@ from PIL import Image
 from app.services.core.supabase_client import get_supabase_client
 from app.services.images import manufacturer_site as site
 from app.services.images.image_matching import (
-    MatchScore, classical_cleanup, content_profile, faces_in_crop, is_patterned, match_score, pick_match,
+    MatchScore, classical_cleanup, faces_in_crop, is_patterned, match_score, pick_match,
     redundant_resized_copies, redundant_scale_renders, repair_is_faithful,
 )
 from app.utils.ssrf_guard import safe_fetch_bytes
@@ -200,9 +200,18 @@ class ImageSourcing:
     def _linked(self, product_id: str) -> List[Dict[str, Any]]:
         ids = [r["image_id"] for r in (self.db.table("image_product_associations").select("image_id")
                                        .eq("product_id", product_id).execute().data or [])]
-        rows = (self.db.table("document_images").select("id,extraction_layer,metadata,has_slig_embedding")
+        rows = (self.db.table("document_images").select("id,image_url,extraction_layer,metadata,has_slig_embedding")
                 .in_("id", ids).execute().data or []) if ids else []
         return [r for r in rows if "excluded_from_products" not in (r.get("metadata") or {})]
+
+    async def _gallery_twin(self, row: Dict[str, Any], gallery_thumbs: List[Tuple[str, Image.Image]]) -> Optional[str]:
+        """The gallery image this one visually matches, or None (then it stays)."""
+        data = await _download(row.get("image_url") or "")
+        img = _open(data) if data else None
+        if img is None:
+            return None
+        best = pick_match([(gid, match_score(_thumb(img), g)) for gid, g in gallery_thumbs])
+        return best[0] if best else None
 
     def _has_layer(self, product_id: str, layer: str) -> bool:
         return any(r.get("extraction_layer") == layer for r in self._linked(product_id))
@@ -275,7 +284,7 @@ class ImageSourcing:
         for u in redundant_resized_copies([(u, v[2]) for u, v in cands.items()]):
             del cands[u]
             self.summary["resized_copies_skipped"] = self.summary.get("resized_copies_skipped", 0) + 1
-        for u in redundant_scale_renders([(u, content_profile(v[2])) for u, v in cands.items()]):
+        for u in redundant_scale_renders([(u, v[2]) for u, v in cands.items()]):
             del cands[u]
             self.summary["scale_renders_skipped"] = self.summary.get("scale_renders_skipped", 0) + 1
         return pages, cands
@@ -524,22 +533,24 @@ class ImageSourcing:
                     self.summary["manufacturer_images"] += 1
                     report["added"] += 1
 
-        gallery = list(stored.values())
+        gallery = {u: stored_id for u, stored_id in stored.items()}
         if gallery:
+            # A small or smoothed image gives way only to a gallery photo that SHOWS THE SAME THING.
+            gallery_thumbs = [(gid, small[u]) for u, gid in gallery.items() if u in small]
             pending_ids = {c["id"] for c, _, _ in loaded}
             for r in self._linked(product["id"]):
                 small_pdf = r.get("extraction_layer") in ("region_crop", "embedded") and _small_beside_gallery(r)
                 smoothed = r.get("extraction_layer") == "restored" and (r.get("metadata") or {}).get("restore_method") == "classical"
-                if r["id"] not in pending_ids and (small_pdf or smoothed):
-                    self._supersede(r, product["id"], gallery[:1], "superseded_by_manufacturer_gallery")
+                if r["id"] in pending_ids or not (small_pdf or smoothed):
+                    continue
+                twin = await self._gallery_twin(r, gallery_thumbs)
+                if twin:
+                    self._supersede(r, product["id"], [twin], "superseded_by_manufacturer_gallery")
                     await self._retire_vectors(r)
         for c, data, img in loaded:
             hit_ids = [stored[u] for u, _ in matches.get(c["id"], []) if u in stored]
             if hit_ids:
                 self._supersede(c, product["id"], hit_ids, "superseded_by_manufacturer_original")
-                await self._retire_vectors(c)
-            elif gallery and _small_beside_gallery(c):
-                self._supersede(c, product["id"], gallery[:1], "superseded_by_manufacturer_gallery")
                 await self._retire_vectors(c)
             else:
                 await self._repair(product, c, img, data)

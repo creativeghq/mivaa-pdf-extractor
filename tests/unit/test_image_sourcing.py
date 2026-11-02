@@ -195,21 +195,36 @@ def _render(canvas, content, colour, bg=(255, 255, 255)):
 def test_a_small_format_drawn_on_a_blank_canvas_is_dropped_for_the_full_surface():
     pytest.importorskip("cv2")
     black = (60, 60, 62)
-    profiles = [
-        ("10x30", _matching.content_profile(_render((500, 500), (125, 41), black))),
-        ("60x60", _matching.content_profile(_render((500, 500), (250, 250), black))),
-        ("120x120", _matching.content_profile(_render((500, 250), (500, 250), black))),
+    images = [
+        ("10x30", _render((500, 500), (125, 41), black)),
+        ("60x60", _render((500, 500), (250, 250), black)),
+        ("120x120", _render((500, 250), (500, 250), black)),
     ]
-    assert sorted(_matching.redundant_scale_renders(profiles)) == ["10x30", "60x60"]
+    assert _matching.redundant_scale_renders(images) == {"10x30": "120x120", "60x60": "120x120"}
 
 
 def test_a_different_colour_is_never_dropped_for_another():
     pytest.importorskip("cv2")
-    profiles = [
-        ("white_small", _matching.content_profile(_render((500, 500), (125, 125), (235, 232, 226)))),
-        ("black_full", _matching.content_profile(_render((500, 250), (500, 250), (60, 60, 62)))),
+    images = [
+        ("white_small", _render((500, 500), (125, 125), (235, 232, 226))),
+        ("black_full", _render((500, 250), (500, 250), (60, 60, 62))),
     ]
-    assert _matching.redundant_scale_renders(profiles) == []
+    assert _matching.redundant_scale_renders(images) == {}
+
+
+def test_a_render_is_kept_when_the_larger_picture_shows_a_different_surface_of_the_same_colour():
+    pytest.importorskip("cv2")
+    import numpy as np
+    from PIL import Image as _Image
+    stripes = np.zeros((250, 500, 3), dtype="uint8")
+    for x in range(0, 500, 40):
+        stripes[:, x:x + 20] = (40, 40, 41)
+        stripes[:, x + 20:x + 40] = (80, 80, 83)
+    images = [
+        ("flat_small", _render((500, 500), (125, 125), (60, 60, 62))),
+        ("striped_full", _Image.fromarray(stripes)),
+    ]
+    assert _matching.redundant_scale_renders(images) == {}
 
 
 def test_the_same_photo_at_two_resolutions_keeps_only_the_larger():
@@ -222,4 +237,20 @@ def test_the_same_photo_at_two_resolutions_keeps_only_the_larger():
     full = _Image.fromarray((rng.random((250, 500, 3)) * 255).astype("uint8")).filter(ImageFilter.GaussianBlur(6))
     small = full.resize((250, 125))
     other = _Image.fromarray((rng.random((250, 500, 3)) * 255).astype("uint8")).filter(ImageFilter.GaussianBlur(6))
-    assert _matching.redundant_resized_copies([("full", full), ("small", small), ("other", other)]) == ["small"]
+    assert _matching.redundant_resized_copies([("full", full), ("small", small), ("other", other)]) == {"small": "full"}
+
+
+def test_a_small_image_gives_way_to_the_gallery_only_when_a_gallery_photo_matches_it():
+    import re
+    spec = importlib.util.spec_from_file_location("comment_budget", _ROOT / "scripts" / "comment_budget.py")
+    budget = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(budget)
+    src = budget.blank_comments((_ROOT / "app/services/images/image_sourcing.py").read_text(encoding="utf-8"))
+    gallery_supersedes = [m.start() for m in re.finditer(r'"superseded_by_manufacturer_gallery"', src)]
+    assert gallery_supersedes, "the gallery supersede path is gone"
+    for at in gallery_supersedes:
+        block = src[max(0, at - 600):at]
+        assert "twin = await self._gallery_twin(" in block and "if twin:" in block
+    twin = src[src.index("async def _gallery_twin"):]
+    twin = twin[:twin.index("\n    def ") if "\n    def " in twin else len(twin)]
+    assert "pick_match(" in twin and "match_score(" in twin
