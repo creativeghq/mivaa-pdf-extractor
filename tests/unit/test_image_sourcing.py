@@ -125,3 +125,32 @@ def test_neighbouring_plain_colourways_do_not_match_and_a_plain_tile_has_no_regi
     room = _texture(5, size=(600, 400))
     room.paste(grey, (100, 100))
     assert match_score(grey, room).score == 0
+
+
+def _hit(page, img, w=1500, h=1000):
+    return {"url": page, "imageUrl": img, "imageWidth": w, "imageHeight": h}
+
+
+def test_search_hits_stay_on_the_maker_site_and_go_to_the_series_the_page_names():
+    up = "https://keros.com/en/wp-content/uploads/sites/2/2024/09/"
+    hits = [
+        _hit("https://keros.com/en/series/wood/", up + "WOOD_5-en-jw.jpg"),
+        _hit("https://keros.com/en/producto/wood-oak-3/", up + "WOOD-OAK-en-ab.jpg"),
+        _hit("https://keros.com/en/producto/wood-espiga-oak/", up + "WOOD-ESPIGA-OAK-en-LY.jpg"),
+        _hit("https://keros.com/en/producto/woodland-oak/", up + "WOODLAND-en-x.jpg"),
+        _hit("https://matcarrelage.com/gb/705826-wood-30x60-keros.html", "https://matcarrelage.com/wood.jpg"),
+        _hit("https://keros.com/en/series/wood/", "https://keros.com/en/logo-keros.png"),
+    ]
+    got = [img for img, _ in _site.search_hits_for(hits, "https://keros.com/", "Wood", ["Wood", "Wood Espiga", "Ardenza"])]
+    assert got == [up + "WOOD_5-en-jw.jpg", up + "WOOD-OAK-en-ab.jpg"]
+    espiga = [img for img, _ in _site.search_hits_for(hits, "https://keros.com/", "Wood Espiga", ["Wood", "Wood Espiga"])]
+    assert espiga == [up + "WOOD-ESPIGA-OAK-en-LY.jpg"]
+
+
+def test_a_wordpress_size_copy_collapses_to_the_largest_and_accents_fold():
+    up = "https://keros.com/en/wp-content/uploads/sites/2/2023/01/"
+    hits = [
+        _hit("https://keros.com/en/series/tiber/", up + "TIBER-en-Gt-1024x348.jpg", 1024, 348),
+        _hit("https://keros.com/en/series/tiber/", up + "TIBER-en-Gt.jpg", 3000, 1020),
+    ]
+    assert _site.search_hits_for(hits, "https://keros.com/", "Tíber") == [(up + "TIBER-en-Gt.jpg", "https://keros.com/en/series/tiber/")]

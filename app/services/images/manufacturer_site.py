@@ -8,8 +8,9 @@ image on it before anything from the page is attached.
 from __future__ import annotations
 
 import re
+import unicodedata
 from html.parser import HTMLParser
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin, urlparse
 
 from app.utils.ssrf_guard import safe_fetch_bytes
@@ -98,7 +99,8 @@ def parse_page(html: str, base_url: str) -> Tuple[List[Tuple[str, str]], List[st
 
 
 def _norm(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
+    folded = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", " ", folded.lower()).strip()
 
 
 def name_tokens(product_name: str) -> Tuple[List[str], List[str]]:
@@ -158,3 +160,46 @@ async def page_images(url: str) -> List[str]:
     if not page:
         return []
     return parse_page(page[1], page[0])[1]
+
+
+WP_SIZE_COPY = re.compile(r"-(?:\d{2,4}x\d{2,4}|scaled)(?=\.(?:jpe?g|png|webp)$)", re.I)
+
+
+def _slug_tokens(page_url: str) -> List[str]:
+    """'.../producto/ardenza-brillo-5/' -> ['ardenza', 'brillo']: the last path segment, numeric suffixes dropped."""
+    parts = [p for p in urlparse(page_url).path.split("/") if p]
+    tokens = _norm(parts[-1]).split() if parts else []
+    while tokens and tokens[-1].isdigit():
+        tokens.pop()
+    return tokens
+
+
+def search_hits_for(hits: Sequence[Dict[str, Any]], site_root: str, product_name: str,
+                    sibling_names: Sequence[str] = ()) -> List[Tuple[str, str]]:
+    """(image url, page url) for the image-search hits that are this product's, on its maker's own site.
+
+    A hit counts when the image and its page are on the maker's host and the page slug starts with
+    the product name. A sibling whose longer name also starts the slug takes the hit instead
+    ("Wood Espiga" pages are not "Wood"). WordPress size copies collapse to the largest.
+    """
+    host = _site_host(site_root)
+    tokens = _norm(product_name.split("(")[0]).split()
+    if not host or not tokens:
+        return []
+    longer = [t for t in (_norm(n.split("(")[0]).split() for n in sibling_names)
+              if len(t) > len(tokens) and t[:len(tokens)] == tokens]
+    best: Dict[str, Tuple[int, str, str]] = {}
+    for h in hits:
+        img, page = h.get("imageUrl") or "", h.get("url") or ""
+        if not IMAGE_EXT.search(img) or SKIP_IMAGE.search(img):
+            continue
+        if not all(_site_host(u) == host or _site_host(u).endswith("." + host) for u in (img, page)):
+            continue
+        slug = _slug_tokens(page)
+        if slug[:len(tokens)] != tokens or any(slug[:len(t)] == t for t in longer):
+            continue
+        area = int(h.get("imageWidth") or 0) * int(h.get("imageHeight") or 0)
+        key = WP_SIZE_COPY.sub("", img.split("?")[0])
+        if key not in best or area > best[key][0]:
+            best[key] = (area, img, page)
+    return [(img, page) for _, img, page in sorted(best.values(), key=lambda v: -v[0])]

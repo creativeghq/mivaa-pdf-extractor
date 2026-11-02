@@ -2192,6 +2192,8 @@ class ImageRedoRequest(BaseModel):
     product_ids: Optional[List[str]] = None
     allow_restore: bool = True
     sourcing_only: bool = False
+    # sourcing_only: also replace / repair crops embedded before sourcing existed, and fill products with no image.
+    low_res_embedded: bool = False
     # False: re-crop with the current Stage 3 only. No site lookups, no repairs, crops embed as usual.
     run_sourcing: bool = True
 
@@ -2220,7 +2222,8 @@ async def image_redo_endpoint(
     async def _run() -> None:
         try:
             if body.sourcing_only:
-                result = await run_image_sourcing(document_id, ws, uid, body.product_ids, body.allow_restore)
+                result = await run_image_sourcing(document_id, ws, uid, body.product_ids, body.allow_restore,
+                                                  low_res_embedded=body.low_res_embedded)
             else:
                 result = await run_image_redo(document_id, ws, uid, body.product_ids, body.allow_restore,
                                               run_sourcing=body.run_sourcing)

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, Dict, Generic, Optional, Type, TypeVar
+from typing import Any, Dict, Generic, List, Optional, Type, TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -266,7 +266,39 @@ class FirecrawlClient:
 
         return body
 
-    async def _call_with_retry(self, body: Dict[str, Any]) -> Dict[str, Any]:
+    async def search_images(
+        self,
+        query: str,
+        user_id: Optional[str],
+        workspace_id: Optional[str] = None,
+        limit: int = 20,
+        source_tag: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Image results for a web search: [{url (the page), imageUrl, imageWidth, imageHeight}].
+
+        Reads a search engine's index, not the target site, so it works where the site itself
+        refuses automated fetches. Never raises: a failed search returns [] and is logged.
+        """
+        if not self.api_key:
+            return []
+        start = datetime.utcnow()
+        body = {"query": query, "limit": limit, "sources": ["images"]}
+        try:
+            response = await self._call_with_retry(body, endpoint="search")
+        except FirecrawlError as e:
+            await self._log_call(user_id=user_id, workspace_id=workspace_id, url=f"search:{query}", credits_used=0,
+                                 latency_ms=int((datetime.utcnow() - start).total_seconds() * 1000), success=False,
+                                 error=str(e), source_tag=source_tag, operation_type="search")
+            return []
+        hits = [h for h in ((response.get("data") or {}).get("images") or []) if isinstance(h, dict)]
+        await self._log_call(user_id=user_id, workspace_id=workspace_id, url=f"search:{query}",
+                             credits_used=int(response.get("creditsUsed") or 1),
+                             latency_ms=int((datetime.utcnow() - start).total_seconds() * 1000), success=True,
+                             request_preview={"query": query, "limit": limit}, response_preview={"images": len(hits)},
+                             source_tag=source_tag, operation_type="search")
+        return hits
+
+    async def _call_with_retry(self, body: Dict[str, Any], endpoint: str = "scrape") -> Dict[str, Any]:
         """POST to Firecrawl with exponential backoff. Raises FirecrawlError
         if all attempts fail."""
         last_error: Optional[Exception] = None
@@ -278,7 +310,7 @@ class FirecrawlClient:
         async with httpx.AsyncClient(timeout=self.HTTP_TIMEOUT_S) as client:
             for attempt in range(self.max_retries):
                 try:
-                    resp = await client.post(f"{self.BASE_URL}/scrape", headers=headers, json=body)
+                    resp = await client.post(f"{self.BASE_URL}/{endpoint}", headers=headers, json=body)
                     if resp.status_code == 200:
                         result = resp.json()
                         if result.get("success"):
@@ -318,6 +350,7 @@ class FirecrawlClient:
         response_preview: Optional[Dict[str, Any]] = None,
         module_slug: Optional[str] = None,
         source_tag: Optional[str] = None,
+        operation_type: str = "scrape",
     ) -> None:
         try:
             # Ensure source_tag is visible in request_data even if caller didn't
@@ -327,7 +360,7 @@ class FirecrawlClient:
             await self.ai_logger.log_firecrawl_call(
                 user_id=user_id,
                 workspace_id=workspace_id,
-                operation_type="scrape",
+                operation_type=operation_type,
                 credits_used=credits_used,
                 latency_ms=latency_ms,
                 url=url,

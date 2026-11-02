@@ -94,8 +94,10 @@ def _site_root(url: Optional[str]) -> Optional[str]:
 
 class ImageSourcing:
     def __init__(self, document_id: str, workspace_id: str, user_id: Optional[str], allow_restore: bool = True,
-                 log: Optional[logging.Logger] = None, dry_run: bool = False) -> None:
+                 log: Optional[logging.Logger] = None, dry_run: bool = False, low_res_embedded: bool = False) -> None:
         self.dry_run = dry_run
+        # Also take crops already embedded with a low_res verdict, and products holding no image at all.
+        self.low_res_embedded = low_res_embedded
         self.document_id = document_id
         self.workspace_id = workspace_id
         self.user_id = user_id
@@ -105,6 +107,9 @@ class ImageSourcing:
         self.db = self.sb.client
         self._links: Dict[str, List[Tuple[str, str]]] = {}
         self._downloads: Dict[str, Optional[bytes]] = {}
+        self._siblings: Dict[str, List[str]] = {}
+        # Image url -> its page, for images found by search on a page whose slug IS the product name.
+        self._name_confirmed: Dict[str, str] = {}
         self.summary: Dict[str, Any] = {"products": 0, "pending_crops": 0, "matched_crops": 0,
                                         "manufacturer_images": 0, "restored": 0, "kept_source": 0,
                                         "rejected_non_product": 0, "errors": []}
@@ -139,19 +144,45 @@ class ImageSourcing:
         ids = [r["image_id"] for r in links]
         if not ids:
             return []
-        rows = self.db.table("document_images").select("id,image_url,page_number,document_id,metadata") \
+        rows = self.db.table("document_images").select("id,image_url,page_number,document_id,metadata,has_slig_embedding") \
             .in_("id", ids).execute().data or []
         out = []
         for r in rows:
             m = r.get("metadata") or {}
             if "excluded_from_products" in m:
                 continue
-            pending = (m.get("image_quality") or {}).get("sourcing") == "pending"
+            quality = m.get("image_quality") or {}
+            pending = quality.get("sourcing") == "pending" or (
+                self.low_res_embedded and quality.get("verdict") == "low_res" and not quality.get("sourcing"))
             # A dry run also previews crops made before the quality marker existed.
             legacy = self.dry_run and m.get("extraction_layer") == "region_crop" and m.get("region_type") in ("IMAGE", "FIGURE", None)
             if pending or legacy:
                 out.append(r)
         return out
+
+    def _has_images(self, product_id: str) -> bool:
+        links = self.db.table("image_product_associations").select("image_id").eq("product_id", product_id).execute().data or []
+        ids = [r["image_id"] for r in links]
+        rows = (self.db.table("document_images").select("metadata").in_("id", ids).execute().data or []) if ids else []
+        return any("excluded_from_products" not in (r.get("metadata") or {}) for r in rows)
+
+    def _sibling_names(self, product: Dict[str, Any]) -> List[str]:
+        key = product.get("brand_company_id") or f"doc:{self.document_id}"
+        if key not in self._siblings:
+            q = self.db.table("products").select("name").eq("workspace_id", product.get("workspace_id") or self.workspace_id)
+            q = q.eq("brand_company_id", key) if product.get("brand_company_id") else q.eq("source_document_id", self.document_id)
+            self._siblings[key] = [r["name"] for r in (q.execute().data or []) if r.get("name")]
+        return self._siblings[key]
+
+    async def _search(self, product: Dict[str, Any], root: str) -> List[Tuple[str, str]]:
+        """Image search for a site that refuses our HTML fetch (bot walls): its own files, by page slug."""
+        from app.services.integrations.firecrawl_client import get_firecrawl_client
+        host = (urlparse(root).hostname or "").removeprefix("www.")
+        hits: List[Dict[str, Any]] = []
+        for query in (f"site:{host} {product['name']}", f"{host.split('.')[0]} {product['name']}"):
+            hits += await get_firecrawl_client().search_images(
+                query, self.user_id, product.get("workspace_id") or self.workspace_id, source_tag="image_sourcing")
+        return site.search_hits_for(hits, root, product["name"], self._sibling_names(product))
 
     # ── candidates ──────────────────────────────────────────────────────────
 
@@ -168,6 +199,10 @@ class ImageSourcing:
             for u in await site.page_images(p):
                 if _same_site(u) not in {_same_site(x) for x in urls}:
                     urls.append(u)
+        if not urls and root:
+            for u, page in await self._search(product, root):
+                self._name_confirmed[u] = page
+                urls.append(u)
         cands: Dict[str, Tuple[str, bytes, Image.Image]] = {}
         seen_hash = set()
         # Supplier sites are slow per connection (cereuro.it ~160 KB/s): fetch in parallel, once per run.
@@ -188,7 +223,7 @@ class ImageSourcing:
             if h in seen_hash:
                 continue
             seen_hash.add(h)
-            cands[u] = (pages[0] if pages else "", data, img)
+            cands[u] = (self._name_confirmed.get(u) or (pages[0] if pages else ""), data, img)
         return pages, cands
 
     # ── writes ──────────────────────────────────────────────────────────────
@@ -241,6 +276,15 @@ class ImageSourcing:
             on_conflict="image_id,product_id",
         ).execute()
         return saved
+
+    async def _retire_vectors(self, crop: Dict[str, Any]) -> None:
+        """A crop embedded before it was superseded loses its vectors once no product holds it."""
+        if not crop.get("has_slig_embedding"):
+            return
+        if self.db.table("image_product_associations").select("image_id").eq("image_id", crop["id"]).limit(1).execute().data:
+            return
+        from app.services.embeddings.vecs_service import get_vecs_service
+        await get_vecs_service().delete_embeddings_by_image_ids([crop["id"]])
 
     def _supersede(self, crop: Dict[str, Any], product_id: str, by: List[str], reason: str) -> None:
         m = dict(crop.get("metadata") or {})
@@ -332,7 +376,8 @@ class ImageSourcing:
             fidelity = repair_is_faithful(crop_img, restored, native)[1]
         if restored is None:
             self._mark(crop, "kept_source")
-            await self._embed(crop, crop_bytes)
+            if not crop.get("has_slig_embedding"):
+                await self._embed(crop, crop_bytes)
             self.summary["kept_source"] += 1
             return
         cls = (crop.get("metadata") or {}).get("ai_classification")
@@ -340,10 +385,12 @@ class ImageSourcing:
                                   {"restored_from": crop["id"], "restore_method": method, "restore_fidelity": fidelity}, cls)
         if not saved:
             self._mark(crop, "kept_source")
-            await self._embed(crop, crop_bytes)
+            if not crop.get("has_slig_embedding"):
+                await self._embed(crop, crop_bytes)
             self.summary["kept_source"] += 1
             return
         self._supersede(crop, product["id"], [saved["id"]], "superseded_by_restored")
+        await self._retire_vectors(crop)
         await self._embed(saved, _jpeg(restored))
         self.summary["restored"] += 1
 
@@ -352,7 +399,8 @@ class ImageSourcing:
     async def run_product(self, product: Dict[str, Any]) -> Dict[str, Any]:
         crops = self._pending_crops(product["id"])
         report: Dict[str, Any] = {"product": product["name"], "pending": len(crops), "matched": 0, "added": 0, "restored_or_kept": 0}
-        if not crops:
+        imageless = self.low_res_embedded and not crops and not self._has_images(product["id"])
+        if not crops and not imageless:
             return report
         self.summary["pending_crops"] += len(crops)
         pages, cands = await self._candidates(product)
@@ -375,7 +423,8 @@ class ImageSourcing:
             hit = faces if faces else ([best] if best else [])
             if hit:
                 matches[c["id"]] = hit
-        confirmed = bool(matches)
+        # A page found by search is confirmed by its slug being the product's own name.
+        confirmed = bool(matches) or any(u in self._name_confirmed for u in cands)
         report["matched"] = len(matches)
         self.summary["matched_crops"] += len(matches)
         if self.dry_run:
@@ -397,9 +446,10 @@ class ImageSourcing:
                 how = next(({"mode": s.mode, "score": round(s.score, 3), "detail": s.detail, "crop": cid}
                             for cid, hits in matches.items() for hu, s in hits if hu == u), None)
                 page_no = next((c.get("page_number") for c, _, _ in loaded if how and c["id"] == how["crop"]), None)
+                confirmation = {"mode": "confirmed_page", "confirmed_by": sorted(matches)} if matches \
+                    else {"mode": "page_slug_is_product_name"}
                 saved = await self._store(product, img, page_no or 1, "manufacturer_original", "web_scraping",
-                                          {"source_url": u, "source_page": page,
-                                           "match": how or {"mode": "confirmed_page", "confirmed_by": sorted(matches)}},
+                                          {"source_url": u, "source_page": page, "match": how or confirmation},
                                           verdict)
                 if saved:
                     stored[u] = saved["id"]
@@ -411,6 +461,7 @@ class ImageSourcing:
             hit_ids = [stored[u] for u, _ in matches.get(c["id"], []) if u in stored]
             if hit_ids:
                 self._supersede(c, product["id"], hit_ids, "superseded_by_manufacturer_original")
+                await self._retire_vectors(c)
             else:
                 await self._repair(product, c, img, data)
                 report["restored_or_kept"] += 1
@@ -436,5 +487,7 @@ class ImageSourcing:
 
 async def run_image_sourcing(document_id: str, workspace_id: str, user_id: Optional[str] = None,
                              product_ids: Optional[List[str]] = None, allow_restore: bool = True,
-                             log: Optional[logging.Logger] = None, dry_run: bool = False) -> Dict[str, Any]:
-    return await ImageSourcing(document_id, workspace_id, user_id, allow_restore, log, dry_run).run_all(product_ids)
+                             log: Optional[logging.Logger] = None, dry_run: bool = False,
+                             low_res_embedded: bool = False) -> Dict[str, Any]:
+    return await ImageSourcing(document_id, workspace_id, user_id, allow_restore, log, dry_run,
+                               low_res_embedded).run_all(product_ids)
