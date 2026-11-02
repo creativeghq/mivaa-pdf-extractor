@@ -47,11 +47,13 @@ def _aspect_stale_filter(aspect: str) -> str:
 def stale_aspect_rows_filter(also: str = "") -> str:
     """Any aspect stale AND the row not quarantined (AND `also`, an or-member list) — one
     `or=` tree, applied before LIMIT."""
-    from app.services.embeddings.classification_backfill import NOT_AWAITING_SOURCING_FILTER, NOT_QUARANTINED_FILTER
+    from app.services.embeddings.classification_backfill import (
+        NOT_AWAITING_SOURCING_FILTER, NOT_QUARANTINED_FILTER, NOT_RETIRED_FILTER,
+    )
 
     any_stale = ",".join(_aspect_stale_filter(a) for a in ASPECT_NAMES)
     extra = f",or({also})" if also else ""
-    return f"and(or({NOT_QUARANTINED_FILTER}),or({NOT_AWAITING_SOURCING_FILTER}),or({any_stale}){extra})"
+    return f"and({NOT_RETIRED_FILTER},or({NOT_QUARANTINED_FILTER}),or({NOT_AWAITING_SOURCING_FILTER}),or({any_stale}){extra})"
 
 
 def _is_aspect_stale(row: Dict[str, Any], aspect: str) -> bool:

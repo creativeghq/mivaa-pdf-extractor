@@ -29,6 +29,8 @@ NOT_AWAITING_SOURCING_FILTER = (
     "metadata->image_quality->>sourcing.is.null,"
     "metadata->image_quality->>sourcing.neq.pending"
 )
+# A retired image has its vectors purged and flags cleared on purpose; re-embedding it puts it back in the index.
+NOT_RETIRED_FILTER = "metadata->excluded_from_products.is.null"
 NOT_QUARANTINED_FILTER = (
     "metadata->ai_classification->>classification_pending.is.null,"
     "metadata->ai_classification->>classification_pending.neq.true"
