@@ -2,7 +2,8 @@
 
 import logging
 import re
-from typing import Dict, Any, List, Optional
+import unicodedata
+from typing import Any, Dict, Iterable, List, Optional
 from datetime import datetime
 import json
 import os
@@ -135,6 +136,29 @@ MAX_NEW_FIELDS_PER_DOCUMENT = 25
 _RESERVED_KEYS = frozenset(CRITICAL_METADATA_SCHEMA) | {"description"}
 
 _NEW_FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,62}$")
+def fold_ascii(text: str) -> str:
+    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+
+
+_CODE_OR_SIZE_TOKEN_RE = re.compile(r"(^|_)([a-z]{1,2}\d{2,4}|\d+x\d+)(_|$)")
+
+
+def value_shaped_field_name(name: str, product_names: Iterable[str] = ()) -> bool:
+    """A key that names a VALUE, not a field: a product code or size in it, or the product's own name.
+
+    Keros produced `product_code_m188`, `sku_codes_m185_m187` and `ardenza_decorative_variants`;
+    each became a variant dropdown in the quote picker.
+    """
+    if _CODE_OR_SIZE_TOKEN_RE.search(name):
+        return True
+    words = set(name.split("_"))
+    for product in product_names:
+        tokens = [t for t in re.split(r"[^a-z0-9]+", fold_ascii(product)) if len(t) > 3]
+        if tokens and all(t in words for t in tokens):
+            return True
+    return False
+
+
 _UNIT_SUFFIX_RE = re.compile(r"_(mm|cm|m|m2|m3|kg|g|w|kw|v|a|l|pct|c|k|db|bar|h|s|deg)$")
 _NUMBER_RE = re.compile(r"^\s*[+-]?\d+(?:[.,]\d+)?\s*([a-z%°²³]*)\s*$", re.IGNORECASE)
 
@@ -532,7 +556,7 @@ class DynamicMetadataExtractor:
             extracted_data = normalized_data
 
             try:
-                registration = await self._register_and_classify_fields(extracted_data, category_hint)
+                registration = await self._register_and_classify_fields(extracted_data, category_hint, product_name)
             except Exception as reg_error:  # noqa: BLE001
                 self.logger.warning(f"Field registration crashed: {reg_error}")
                 registration = {"errors": [f"registration_crashed: {reg_error}"]}
@@ -668,7 +692,7 @@ class DynamicMetadataExtractor:
             data = next(iter(data.values()), None)
         return data if isinstance(data, str) and data.strip() else None
 
-    async def _register_and_classify_fields(self, extracted_data, category_hint=None):
+    async def _register_and_classify_fields(self, extracted_data, category_hint=None, product_name=None):
         """Register document-born fields and classify ONLY the rows this run inserted.
 
         Returns the registration report stamped into the extraction result. Never raises:
@@ -718,7 +742,7 @@ class DynamicMetadataExtractor:
                 report["already_registered"].append(key)
                 continue
             name = fold_field_key(key)
-            if not _NEW_FIELD_NAME_RE.match(name or ""):
+            if not _NEW_FIELD_NAME_RE.match(name or "") or value_shaped_field_name(name, [product_name] if product_name else []):
                 report["unregistrable"].append(key)
                 continue
             new_values.setdefault(name, value)

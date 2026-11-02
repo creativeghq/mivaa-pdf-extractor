@@ -443,3 +443,18 @@ def test_new_fields_per_document_are_capped(env):
         _extracted(**many), category_hint="lighting"))
     assert len(env.fake.inserted) == m.MAX_NEW_FIELDS_PER_DOCUMENT
     assert len(report["capped"]) == 5
+
+
+@pytest.mark.parametrize("name, product, junk", [
+    ("product_code_m188", "Redstone", True),
+    ("sku_codes_m185_m187", "Ardesia", True),
+    ("decorative_variant_m085_50x50", "Modula", True),
+    ("ardenza_decorative_variants", "Ardenza", True),
+    ("graphic_variants_austral_verde_designs", "Austral Verde", True),
+    ("peldano_extruded_step_size", "Peldaño Extrusionado", False),
+    ("slip_resistance", "Ardenza", False),
+    ("decorative_variant", "Ardenza", False),
+    ("rebar_diameter_mm", "B500", False),
+])
+def test_a_key_naming_a_code_size_or_the_product_itself_is_a_value_not_a_field(env, name, product, junk):
+    assert env.extractor_mod.value_shaped_field_name(name, [product]) is junk
