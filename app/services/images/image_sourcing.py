@@ -38,6 +38,8 @@ DOWNLOAD_CONCURRENCY = 8
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 # Swatch files are long strips (Ceramica Euro: 886x296), so the short side alone stays low.
 MIN_CANDIDATE_SHORT_SIDE = 200
+#: A crop whose real source is this small is a swatch thumbnail: no repair can be honest at product size.
+SWATCH_MAX_SOURCE_PX = 120
 GEMINI_ASPECTS = (1.0, 16 / 9, 3 / 2, 4 / 3, 9 / 16, 3 / 4, 4 / 5, 5 / 4, 21 / 9, 2 / 3)
 RESTORE_PROMPT = (
     "Restore this photo of a ceramic tile product. Remove the JPEG compression blocks, pixelation and colour "
@@ -93,10 +95,18 @@ def _site_root(url: Optional[str]) -> Optional[str]:
     return f"https://{p.hostname}/" if p.hostname else None
 
 
+def _is_swatch(crop: Dict[str, Any]) -> bool:
+    native = ((crop.get("metadata") or {}).get("image_quality") or {}).get("native_px") or []
+    return len(native) == 2 and min(int(native[0]), int(native[1])) < SWATCH_MAX_SOURCE_PX
+
+
 class ImageSourcing:
     def __init__(self, document_id: str, workspace_id: str, user_id: Optional[str], allow_restore: bool = True,
-                 log: Optional[logging.Logger] = None, dry_run: bool = False, low_res_embedded: bool = False) -> None:
+                 log: Optional[logging.Logger] = None, dry_run: bool = False, low_res_embedded: bool = False,
+                 gallery_backfill: bool = False) -> None:
         self.dry_run = dry_run
+        # Also look up the maker's gallery for products that already went through sourcing without one.
+        self.gallery_backfill = gallery_backfill
         # Also take crops already embedded with a low_res verdict, and products holding no image at all.
         self.low_res_embedded = low_res_embedded
         self.document_id = document_id
@@ -167,6 +177,21 @@ class ImageSourcing:
         rows = (self.db.table("document_images").select("metadata").in_("id", ids).execute().data or []) if ids else []
         return any("excluded_from_products" not in (r.get("metadata") or {}) for r in rows)
 
+    def _linked(self, product_id: str) -> List[Dict[str, Any]]:
+        ids = [r["image_id"] for r in (self.db.table("image_product_associations").select("image_id")
+                                       .eq("product_id", product_id).execute().data or [])]
+        rows = (self.db.table("document_images").select("id,extraction_layer,metadata,has_slig_embedding")
+                .in_("id", ids).execute().data or []) if ids else []
+        return [r for r in rows if "excluded_from_products" not in (r.get("metadata") or {})]
+
+    def _has_layer(self, product_id: str, layer: str) -> bool:
+        return any(r.get("extraction_layer") == layer for r in self._linked(product_id))
+
+    def _restored(self, product_id: str, method: str) -> List[Dict[str, Any]]:
+        """A classical repair can only be a smoothed enlargement; once the maker's own images are in, it goes."""
+        return [r for r in self._linked(product_id) if r.get("extraction_layer") == "restored"
+                and (r.get("metadata") or {}).get("restore_method") == method]
+
     def _sibling_names(self, product: Dict[str, Any]) -> List[str]:
         key = product.get("brand_company_id") or f"doc:{self.document_id}"
         if key not in self._siblings:
@@ -198,9 +223,12 @@ class ImageSourcing:
         pages = list(dict.fromkeys(_same_site(p) for p in pages))
         urls: List[str] = []
         for p in pages[:2]:
+            named = site.page_names_product(p, product["name"])
             for u in await site.page_images(p):
                 if _same_site(u) not in {_same_site(x) for x in urls}:
                     urls.append(u)
+                    if named:
+                        self._name_confirmed[u] = p
         if not urls and root:
             for u, page in await self._search(product, root):
                 self._name_confirmed[u] = page
@@ -403,7 +431,8 @@ class ImageSourcing:
         crops = self._pending_crops(product["id"])
         report: Dict[str, Any] = {"product": product["name"], "pending": len(crops), "matched": 0, "added": 0, "restored_or_kept": 0}
         imageless = self.low_res_embedded and not crops and not self._has_images(product["id"])
-        if not crops and not imageless:
+        backfill = self.gallery_backfill and not crops and not self._has_layer(product["id"], "manufacturer_original")
+        if not crops and not imageless and not backfill:
             return report
         self.summary["pending_crops"] += len(crops)
         pages, cands = await self._candidates(product)
@@ -460,10 +489,18 @@ class ImageSourcing:
                     self.summary["manufacturer_images"] += 1
                     report["added"] += 1
 
+        gallery = list(stored.values())
+        if gallery:
+            for r in self._restored(product["id"], "classical"):
+                self._supersede(r, product["id"], gallery[:1], "superseded_by_manufacturer_gallery")
+                await self._retire_vectors(r)
         for c, data, img in loaded:
             hit_ids = [stored[u] for u, _ in matches.get(c["id"], []) if u in stored]
             if hit_ids:
                 self._supersede(c, product["id"], hit_ids, "superseded_by_manufacturer_original")
+                await self._retire_vectors(c)
+            elif gallery and _is_swatch(c):
+                self._supersede(c, product["id"], gallery[:1], "superseded_by_manufacturer_gallery")
                 await self._retire_vectors(c)
             else:
                 await self._repair(product, c, img, data)
@@ -491,6 +528,6 @@ class ImageSourcing:
 async def run_image_sourcing(document_id: str, workspace_id: str, user_id: Optional[str] = None,
                              product_ids: Optional[List[str]] = None, allow_restore: bool = True,
                              log: Optional[logging.Logger] = None, dry_run: bool = False,
-                             low_res_embedded: bool = False) -> Dict[str, Any]:
+                             low_res_embedded: bool = False, gallery_backfill: bool = False) -> Dict[str, Any]:
     return await ImageSourcing(document_id, workspace_id, user_id, allow_restore, log, dry_run,
-                               low_res_embedded).run_all(product_ids)
+                               low_res_embedded, gallery_backfill).run_all(product_ids)

@@ -174,6 +174,17 @@ def _slug_tokens(page_url: str) -> List[str]:
     return tokens
 
 
+def page_names_product(page_url: str, product_name: str) -> bool:
+    """'/collezioni/51-docks' is DOCKS and '/52-spatula-30x90' is 'SPATULA (30x90 wall tile)': the
+    slug, its leading catalogue id dropped, spells exactly the name and its sizes. Exact, so a
+    sibling series ('spatula' vs 'spatula-30x90') never takes the other's page."""
+    tokens, sizes = name_tokens(product_name)
+    slug = _slug_tokens(page_url)
+    while slug and slug[0].isdigit():
+        slug.pop(0)
+    return bool(tokens) and "".join(slug) == "".join(tokens + sizes)
+
+
 def search_hits_for(hits: Sequence[Dict[str, Any]], site_root: str, product_name: str,
                     sibling_names: Sequence[str] = ()) -> List[Tuple[str, str]]:
     """(image url, page url) for the image-search hits that are this product's, on its maker's own site.

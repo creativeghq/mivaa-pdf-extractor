@@ -154,3 +154,18 @@ def test_a_wordpress_size_copy_collapses_to_the_largest_and_accents_fold():
         _hit("https://keros.com/en/series/tiber/", up + "TIBER-en-Gt.jpg", 3000, 1020),
     ]
     assert _site.search_hits_for(hits, "https://keros.com/", "Tíber") == [(up + "TIBER-en-Gt.jpg", "https://keros.com/en/series/tiber/")]
+
+
+def test_a_page_slug_that_spells_the_product_confirms_its_page():
+    base = "https://www.cereuro.it/it/collezioni-ceramiche-euro/"
+    assert _site.page_names_product(base + "51-docks", "DOCKS")
+    assert _site.page_names_product(base + "30-out-door", "OUTDOOR")
+    assert _site.page_names_product(base + "52-spatula-30x90", "SPATULA (30x90 wall tile)")
+    assert _site.page_names_product(base + "41-spatula", "SPATULA")
+
+
+def test_a_sibling_series_never_takes_the_other_page():
+    base = "https://www.cereuro.it/it/collezioni-ceramiche-euro/"
+    assert not _site.page_names_product(base + "52-spatula-30x90", "SPATULA")
+    assert not _site.page_names_product(base + "41-spatula", "SPATULA (30x90 wall tile)")
+    assert not _site.page_names_product(base + "42-sinfonie-dautore", "SINFONIE")
