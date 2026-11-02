@@ -295,6 +295,7 @@ REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("extraction", "consensus_extraction", "validation"),
     ("extraction", "facet_translation", "canonicalization"),
     ("extraction", "fast_product_classifier_system", "discovery"),
+    ("extraction", "gallery_coverage", "quality"),
     ("extraction", "icon_metadata", "image_analysis"),
     ("extraction", "legend_care", "discovery"),
     ("extraction", "legend_certifications", "discovery"),

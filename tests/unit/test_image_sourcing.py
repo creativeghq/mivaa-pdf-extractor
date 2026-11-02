@@ -256,7 +256,12 @@ def test_a_small_image_gives_way_to_the_gallery_only_when_a_gallery_photo_matche
     assert gallery_supersedes, "the gallery supersede path is gone"
     for at in gallery_supersedes:
         block = src[max(0, at - 600):at]
-        assert "twin = await self._gallery_twin(" in block and "if twin:" in block
+        pixel_twin = "await self._gallery_twin(" in block and "if twin:" in block
+        vision_twin = "await self._gallery_covers(" in block
+        assert pixel_twin or vision_twin
     twin = src[src.index("async def _gallery_twin"):]
-    twin = twin[:twin.index("\n    def ") if "\n    def " in twin else len(twin)]
+    twin = twin[:twin.index("\n    async def ")]
     assert "pick_match(" in twin and "match_score(" in twin
+    covers = src[src.index("async def _gallery_covers"):]
+    covers = covers[:covers.index("\n    def ")]
+    assert "except Exception" in covers and "return {}" in covers, "a failed vision check must cover nothing"

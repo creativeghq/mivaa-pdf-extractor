@@ -204,14 +204,31 @@ class ImageSourcing:
                 .in_("id", ids).execute().data or []) if ids else []
         return [r for r in rows if "excluded_from_products" not in (r.get("metadata") or {})]
 
-    async def _gallery_twin(self, row: Dict[str, Any], gallery_thumbs: List[Tuple[str, Image.Image]]) -> Optional[str]:
-        """The gallery image this one visually matches, or None (then it stays)."""
+    async def _gallery_twin(self, row: Dict[str, Any], gallery_thumbs: List[Tuple[str, Image.Image]]) -> Tuple[Optional[str], Optional[Image.Image]]:
+        """(the gallery image this one pixel-matches or None, the image itself)."""
         data = await _download(row.get("image_url") or "")
         img = _open(data) if data else None
         if img is None:
-            return None
+            return None, None
         best = pick_match([(gid, match_score(_thumb(img), g)) for gid, g in gallery_thumbs])
-        return best[0] if best else None
+        return (best[0] if best else None), img
+
+    async def _gallery_covers(self, product: Dict[str, Any], unmatched: List[Tuple[Dict[str, Any], Image.Image]],
+                              gallery: List[Tuple[str, Image.Image]]) -> Dict[str, str]:
+        """{image id: gallery id} the vision check says the gallery already shows. A failed check covers nothing."""
+        from app.services.core.claude_models import SONNET
+        from app.services.images.gallery_coverage import GALLERY_MAX, coverage, split_covered
+        from app.services.utilities.prompt_registry import load_prompt
+        try:
+            prompt = await load_prompt("extraction", "gallery_coverage", stage="quality")
+            hits = await coverage([img for _, img in unmatched], [img for _, img in gallery], product_name=product.get("name") or "",
+                                  model=SONNET, prompt=prompt, user_id=self.user_id,
+                                  workspace_id=product.get("workspace_id") or self.workspace_id, product_id=product["id"])
+        except Exception as e:
+            logger.warning(f"gallery coverage check failed for {product['id']}, keeping every image: {e}")
+            return {}
+        covered, _ = split_covered([r["id"] for r, _ in unmatched], hits, [gid for gid, _ in gallery[:GALLERY_MAX]])
+        return covered
 
     def _has_layer(self, product_id: str, layer: str) -> bool:
         return any(r.get("extraction_layer") == layer for r in self._linked(product_id))
@@ -538,15 +555,25 @@ class ImageSourcing:
             # A small or smoothed image gives way only to a gallery photo that SHOWS THE SAME THING.
             gallery_thumbs = [(gid, small[u]) for u, gid in gallery.items() if u in small]
             pending_ids = {c["id"] for c, _, _ in loaded}
+            unmatched: List[Tuple[Dict[str, Any], Image.Image]] = []
             for r in self._linked(product["id"]):
                 small_pdf = r.get("extraction_layer") in ("region_crop", "embedded") and _small_beside_gallery(r)
                 smoothed = r.get("extraction_layer") == "restored" and (r.get("metadata") or {}).get("restore_method") == "classical"
                 if r["id"] in pending_ids or not (small_pdf or smoothed):
                     continue
-                twin = await self._gallery_twin(r, gallery_thumbs)
+                twin, img = await self._gallery_twin(r, gallery_thumbs)
                 if twin:
                     self._supersede(r, product["id"], [twin], "superseded_by_manufacturer_gallery")
                     await self._retire_vectors(r)
+                elif img is not None:
+                    unmatched.append((r, img))
+            # Pixels cannot compare a square swatch with a landscape room photo; a vision check can.
+            if unmatched:
+                full = [(gid, cands[u][2]) for u, gid in gallery.items() if u in cands]
+                by_id = {r["id"]: r for r, _ in unmatched}
+                for rid, gid in (await self._gallery_covers(product, unmatched, full)).items():
+                    self._supersede(by_id[rid], product["id"], [gid], "superseded_by_manufacturer_gallery")
+                    await self._retire_vectors(by_id[rid])
         for c, data, img in loaded:
             hit_ids = [stored[u] for u, _ in matches.get(c["id"], []) if u in stored]
             if hit_ids:
