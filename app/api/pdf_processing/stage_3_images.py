@@ -3,6 +3,7 @@
 import os
 import asyncio
 import logging
+import shutil
 import tempfile
 from typing import Dict, Any, Optional, List
 
@@ -88,6 +89,7 @@ async def process_product_images(
 ) -> Dict[str, Any]:
     """Own the ``current_slow_operation`` marker across the whole stage."""
     operation = f"stage_3_images:{product.name}"
+    temp_dirs: List[str] = []
     if tracker is not None:
         try:
             await tracker.set_slow_operation(operation=operation, expected_max_seconds=600)
@@ -107,8 +109,11 @@ async def process_product_images(
             layout_regions=layout_regions,
             tracker=tracker,
             product_db_id=product_db_id,
+            temp_dirs=temp_dirs,
         )
     finally:
+        for d in temp_dirs:
+            shutil.rmtree(d, ignore_errors=True)
         if tracker is not None:
             try:
                 await tracker.clear_slow_operation(operation=operation)
@@ -129,6 +134,7 @@ async def _process_product_images(
     layout_regions: Optional[List[Any]] = None,  # layout regions with bbox data
     tracker: Optional[Any] = None,  # ProgressTracker for per-image progress events
     product_db_id: Optional[str] = None,  # `products.id` for ai_usage_logs cost attribution
+    temp_dirs: Optional[List[str]] = None,  # removed by the caller when the stage ends
 ) -> Dict[str, Any]:
     """
     Process images for a single product (product-centric pipeline).
@@ -409,6 +415,8 @@ async def _process_product_images(
         )
 
         region_crop_dir = tempfile.mkdtemp(prefix=f"region_crops_{document_id}_")
+        if temp_dirs is not None:
+            temp_dirs.append(region_crop_dir)
         region_crops = await extract_region_crops_for_physical_pages(
             file_content=file_content,
             physical_pages=sorted(set(physical_pages)),
