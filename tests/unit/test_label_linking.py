@@ -49,3 +49,10 @@ def test_a_single_link_moves_only_off_a_page_that_prints_other_series_and_never_
     assert not ll.names_only_others(others + [_line(0.1, 0.02, 0.5, 0.06, "CALMA")], SERIES, "calma")
     assert not ll.names_only_others([_line(0.1, 0.9, 0.4, 0.93, "25x25 cm")], SERIES, "calma")
     assert not ll.names_only_others(others, SERIES, None)
+
+
+def test_an_image_with_no_position_goes_to_the_one_series_its_page_prints():
+    titan = [_line(0.1, 0.1, 0.4, 0.13, "TITAN GREIGE 30X90 CM"), _line(0.5, 0.1, 0.9, 0.13, "DECORADO TITAN VERDE")]
+    series = {" ".join(t): t for t in map(ll.tokens_of, ["Tiber", "Titan"])}
+    assert ll.names_only_others(titan, series, "tiber") and ll.sole_series(titan, series) == "titan"
+    assert ll.sole_series(titan + [_line(0.1, 0.9, 0.4, 0.93, "TIBER 30X90")], series) is None

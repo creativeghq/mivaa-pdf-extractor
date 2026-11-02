@@ -84,6 +84,12 @@ def label_for(bbox: Sequence[float], lines: Sequence[Line], series: Dict[str, Tu
     return next(iter(on_half)) if len(on_half) == 1 else None
 
 
+def sole_series(lines: Sequence[Line], series: Dict[str, Tuple[str, ...]]) -> Optional[str]:
+    """The one series a half page names, for an image with no position on it (a raw embedded raster)."""
+    on_half = set().union(*(series_on(l.tokens, series) for l in lines)) if lines else set()
+    return next(iter(on_half)) if len(on_half) == 1 else None
+
+
 def names_only_others(lines: Sequence[Line], series: Dict[str, Tuple[str, ...]], own: Optional[str]) -> bool:
     """The half page prints series names and none of them is the image's only product: another series' page."""
     on_half = set().union(*(series_on(l.tokens, series) for l in lines)) if lines else set()
@@ -147,7 +153,7 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
     db = getattr(supabase, "client", supabase)
     images = await asyncio.to_thread(_all, lambda: db.table("document_images").select("id, page_number, bbox, metadata, workspace_id")
                                      .eq("document_id", document_id).order("id"))
-    images = [i for i in images if i.get("bbox") and "excluded_from_products" not in (i.get("metadata") or {})]
+    images = [i for i in images if "excluded_from_products" not in (i.get("metadata") or {})]
     links: Dict[str, Set[str]] = defaultdict(set)
     for chunk in _in_chunks([i["id"] for i in images]):
         for r in db.table("image_product_associations").select("image_id, product_id").in_("image_id", chunk).execute().data or []:
@@ -189,7 +195,7 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
     for img in images:
         current = links.get(img["id"], set())
         single = len(current) == 1
-        if not current or (img["page_number"] not in shared and not single):
+        if not current or (img["page_number"] not in shared and not single) or (not img.get("bbox") and not single):
             continue
         where = layout.physical_to_pdf_map.get(img["page_number"])
         if not where or where[0] >= len(words):
@@ -201,7 +207,7 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
         # One link is settled (a product shot is often labelled elsewhere) unless its page prints only other series.
         if single and not names_only_others(lines, series, own_name):
             continue
-        name = label_for(img["bbox"], lines, series)
+        name = label_for(img["bbox"], lines, series) if img.get("bbox") else sole_series(lines, series)
         out.append({"image": img, "current": current, "name": name, "target": product_of.get(name) if name else None,
                     "only_others": single, "product": own_name,
                     "printed": sorted(set().union(*(series_on(l.tokens, series) for l in lines))) if single else []})
