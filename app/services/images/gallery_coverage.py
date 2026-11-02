@@ -71,7 +71,7 @@ async def coverage(small: Sequence[Image.Image], gallery: Sequence[Image.Image],
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(numbered_sheet(batch, "S")).decode()}},
             {"type": "text", "text": render(prompt, product=product_name, n_gallery=str(len(gallery)), n_small=str(len(batch)))},
         ]
-        res = await call_with_schema(task=TASK, model=model, max_tokens=1500, user_id=user_id, workspace_id=workspace_id,
+        res = await call_with_schema(task=TASK, model=model, max_tokens=4000, user_id=user_id, workspace_id=workspace_id,
                                      product_id=product_id, messages=[{"role": "user", "content": content}],
                                      output_config={"format": {"type": "json_schema", "schema": SCHEMA}})
         for i, g in covered_indexes(res.data, len(batch), len(gallery)).items():
