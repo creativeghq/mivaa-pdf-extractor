@@ -4,7 +4,10 @@ import importlib.util
 import io
 from pathlib import Path
 
-from PIL import Image
+import pytest
+
+# CI installs pytest only; the contact sheet needs Pillow to render.
+Image = pytest.importorskip("PIL.Image")
 
 _ROOT = Path(__file__).resolve().parents[2]
 _spec = importlib.util.spec_from_file_location("contact_sheet_under_test", _ROOT / "app/services/pdf/contact_sheet.py")
