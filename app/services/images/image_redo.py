@@ -12,6 +12,7 @@ import logging
 import os
 import tempfile
 import types
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -50,7 +51,7 @@ async def run_image_redo(document_id: str, workspace_id: str, user_id: Optional[
     db = get_supabase_client().client
     doc = (db.table("documents").select("filename").eq("id", document_id).limit(1).execute().data or [{}])[0]
     row = db.table("background_jobs").insert({
-        "document_id": document_id, "workspace_id": workspace_id, "user_id": user_id,
+        "id": str(uuid.uuid4()), "document_id": document_id, "workspace_id": workspace_id, "user_id": user_id,
         "filename": doc.get("filename") or document_id, "status": "processing", "job_type": "image_redo",
         "metadata": {"product_ids": product_ids, "run_sourcing": run_sourcing, "allow_restore": allow_restore},
     }).execute().data[0]
