@@ -169,3 +169,16 @@ def test_a_sibling_series_never_takes_the_other_page():
     assert not _site.page_names_product(base + "52-spatula-30x90", "SPATULA")
     assert not _site.page_names_product(base + "41-spatula", "SPATULA (30x90 wall tile)")
     assert not _site.page_names_product(base + "42-sinfonie-dautore", "SINFONIE")
+
+
+def test_the_page_finder_takes_the_page_whose_slug_spells_the_product():
+    base = "https://www.cereuro.it/it/collezioni-ceramiche-euro/"
+    links = [(base + "?5", "Collezioni"), (base + "30-out-door", ""), (base + "2-area", "AREA")]
+    assert _site.candidate_pages(links, "OUTDOOR") == [base + "30-out-door"]
+
+
+def test_the_classical_cleanup_never_enlarges():
+    pytest.importorskip("cv2")
+    from PIL import Image as _Image
+    src = _Image.new("RGB", (51, 51), (90, 90, 95))
+    assert classical_cleanup(src).size == (51, 51)

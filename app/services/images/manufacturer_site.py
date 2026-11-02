@@ -16,7 +16,7 @@ from urllib.parse import urljoin, urlparse
 from app.utils.ssrf_guard import safe_fetch_bytes
 
 MAX_HTML_BYTES = 3 * 1024 * 1024
-MAX_LISTING_PAGES = 4
+MAX_LISTING_PAGES = 10
 LISTING_HINTS = ("collection", "collezion", "series", "serie", "product", "prodott", "catalog", "range", "gamma", "colecc", "kolle")
 IMAGE_EXT = re.compile(r"\.(jpe?g|png|webp)(\?|#|$)", re.I)
 NOT_A_PAGE = re.compile(r"\.(pdf|zip|rar|docx?|xlsx?|dwg|dxf|rfa|skp|gif|svg|mp4)(\?|#|$)", re.I)
@@ -146,6 +146,10 @@ async def site_links(site: str) -> List[Tuple[str, str]]:
 
 
 def candidate_pages(links: Sequence[Tuple[str, str]], product_name: str, limit: int = 2) -> List[str]:
+    # A page whose slug spells the product ('30-out-door' for OUTDOOR) wins outright.
+    exact = [u for u, _ in links if page_names_product(u, product_name)]
+    if exact:
+        return exact[:limit]
     tokens, sizes = name_tokens(product_name)
     scored = [(page_score(u, t, tokens, sizes), u) for u, t in links]
     scored = sorted((s for s in scored if s[0] > 0), reverse=True)

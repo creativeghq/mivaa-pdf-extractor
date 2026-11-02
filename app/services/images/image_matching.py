@@ -167,10 +167,10 @@ def is_patterned(img: Image.Image) -> bool:
 
 
 def classical_cleanup(img: Image.Image) -> Image.Image:
-    """Remove JPEG blocking without inventing anything: upscale, non-local-means, edge-preserving
-    smoothing on lightness, stronger smoothing on colour, faint grain so it does not look waxy."""
+    """Remove JPEG blocking without inventing anything, at the source's own size: non-local-means,
+    edge-preserving smoothing on lightness, stronger smoothing on colour, faint grain so it does
+    not look waxy. Never enlarged: a 2x upscale smoothed a 51 px swatch into a 670 px smear."""
     a = cv2.cvtColor(_rgb(img), cv2.COLOR_RGB2BGR)
-    a = cv2.resize(a, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
     a = cv2.fastNlMeansDenoisingColored(a, None, 7, 10, 7, 21)
     lab = cv2.cvtColor(a, cv2.COLOR_BGR2LAB)
     l, ca, cb = cv2.split(lab)
