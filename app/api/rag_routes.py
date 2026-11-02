@@ -4350,7 +4350,11 @@ async def process_document_with_discovery(
 
         if publish_on_complete:
             if products_failed == 0:
-                await asyncio.to_thread(_publish_job_products, job_id)
+                try:
+                    await asyncio.to_thread(_publish_job_products, job_id)
+                except Exception as publish_error:
+                    # products_refuse_publish_on_failed_audit: a failed audit keeps the catalogue draft.
+                    logger.warning(f"   ⚠️ publish_on_complete refused, catalog stays draft: {publish_error}")
             else:
                 logger.warning(
                     f"   ⚠️ publish_on_complete skipped: {products_failed} product(s) failed, "
