@@ -41,6 +41,8 @@ MAX_IMAGE_BYTES = 12 * 1024 * 1024
 MIN_CANDIDATE_SHORT_SIDE = 200
 #: A crop whose real source is this small is a swatch thumbnail: no repair can be honest at product size.
 SWATCH_MAX_SOURCE_PX = 120
+#: With the maker's own photos attached, a PDF image this small on its long side adds nothing next to them.
+GALLERY_SUPERSEDES_SOURCE_PX = 300
 GEMINI_ASPECTS = (1.0, 16 / 9, 3 / 2, 4 / 3, 9 / 16, 3 / 4, 4 / 5, 5 / 4, 21 / 9, 2 / 3)
 RESTORE_PROMPT = (
     "Restore this photo of a ceramic tile product. Remove the JPEG compression blocks, pixelation and colour "
@@ -94,6 +96,22 @@ def _site_root(url: Optional[str]) -> Optional[str]:
         return None
     p = urlparse(url)
     return f"https://{p.hostname}/" if p.hostname else None
+
+
+def _source_long_side(row: Dict[str, Any]) -> Optional[int]:
+    m = row.get("metadata") or {}
+    native = (m.get("image_quality") or {}).get("native_px") or []
+    if len(native) == 2:
+        return max(int(native[0]), int(native[1]))
+    try:
+        return max(int(m.get("width") or 0), int(m.get("height") or 0)) or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _small_beside_gallery(row: Dict[str, Any]) -> bool:
+    long_side = _source_long_side(row)
+    return long_side is not None and long_side < GALLERY_SUPERSEDES_SOURCE_PX
 
 
 def _is_swatch(crop: Dict[str, Any]) -> bool:
@@ -189,10 +207,6 @@ class ImageSourcing:
     def _has_layer(self, product_id: str, layer: str) -> bool:
         return any(r.get("extraction_layer") == layer for r in self._linked(product_id))
 
-    def _restored(self, product_id: str, method: str) -> List[Dict[str, Any]]:
-        """A classical repair can only be a smoothed enlargement; once the maker's own images are in, it goes."""
-        return [r for r in self._linked(product_id) if r.get("extraction_layer") == "restored"
-                and (r.get("metadata") or {}).get("restore_method") == method]
 
     def _sibling_names(self, product: Dict[str, Any]) -> List[str]:
         key = product.get("brand_company_id") or f"doc:{self.document_id}"
@@ -512,15 +526,19 @@ class ImageSourcing:
 
         gallery = list(stored.values())
         if gallery:
-            for r in self._restored(product["id"], "classical"):
-                self._supersede(r, product["id"], gallery[:1], "superseded_by_manufacturer_gallery")
-                await self._retire_vectors(r)
+            pending_ids = {c["id"] for c, _, _ in loaded}
+            for r in self._linked(product["id"]):
+                small_pdf = r.get("extraction_layer") in ("region_crop", "embedded") and _small_beside_gallery(r)
+                smoothed = r.get("extraction_layer") == "restored" and (r.get("metadata") or {}).get("restore_method") == "classical"
+                if r["id"] not in pending_ids and (small_pdf or smoothed):
+                    self._supersede(r, product["id"], gallery[:1], "superseded_by_manufacturer_gallery")
+                    await self._retire_vectors(r)
         for c, data, img in loaded:
             hit_ids = [stored[u] for u, _ in matches.get(c["id"], []) if u in stored]
             if hit_ids:
                 self._supersede(c, product["id"], hit_ids, "superseded_by_manufacturer_original")
                 await self._retire_vectors(c)
-            elif gallery and _is_swatch(c):
+            elif gallery and _small_beside_gallery(c):
                 self._supersede(c, product["id"], gallery[:1], "superseded_by_manufacturer_gallery")
                 await self._retire_vectors(c)
             else:
