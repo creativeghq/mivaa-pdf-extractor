@@ -23,6 +23,7 @@ BELOW_GAP = 0.06
 ABOVE_GAP = 0.05
 SIDE_SLACK = 0.02
 FURNITURE_PAGES = 10
+CROWDED_SERIES = 5
 
 
 @dataclass
@@ -91,9 +92,12 @@ def sole_series(lines: Sequence[Line], series: Dict[str, Tuple[str, ...]]) -> Op
 
 
 def names_only_others(lines: Sequence[Line], series: Dict[str, Tuple[str, ...]], own: Optional[str]) -> bool:
-    """The half page prints series names and none of them is the image's only product: another series' page."""
+    """The half page prints a few series names, none of them the image's only product: another series' page.
+
+    A page naming CROWDED_SERIES or more is an index or overview, not one series' page.
+    """
     on_half = set().union(*(series_on(l.tokens, series) for l in lines)) if lines else set()
-    return own is not None and bool(on_half) and own not in on_half
+    return own is not None and 0 < len(on_half) < CROWDED_SERIES and own not in on_half
 
 
 def half_lines(words: Sequence[Sequence[Any]], page_width: float, page_height: float, side: str,

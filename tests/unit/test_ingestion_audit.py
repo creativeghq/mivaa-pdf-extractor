@@ -285,3 +285,12 @@ def test_a_variant_the_maker_photographed_and_the_series_own_pages_outside_its_r
     ia.series_coverage_findings(cov, findings, metrics)
     assert {f.code for f in findings} == {"variants_missing_vs_sources", "series_pages_outside_range"}
     assert metrics["products_missing_site_variants"] == 1 and metrics["products_with_own_pages_outside_range"] == 1
+
+
+def test_a_series_name_that_is_the_products_own_colour_is_not_a_leak():
+    findings, metrics = [], {}
+    products = [{"name": "Titan", "attributes": {"color": ["greige", "oxido"]}}, {"name": "Oxido", "attributes": {}},
+                {"name": "Saboya", "attributes": {"slip_resistance": ["antislip m188 (redstone series)"]}}, {"name": "Redstone", "attributes": {}}]
+    ia.product_content_findings(products, findings, metrics)
+    leak = next(f for f in findings if f.code == "attributes_name_other_series")
+    assert [e["product"] for e in leak.examples] == ["Saboya"]

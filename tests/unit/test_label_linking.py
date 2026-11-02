@@ -56,3 +56,10 @@ def test_an_image_with_no_position_goes_to_the_one_series_its_page_prints():
     series = {" ".join(t): t for t in map(ll.tokens_of, ["Tiber", "Titan"])}
     assert ll.names_only_others(titan, series, "tiber") and ll.sole_series(titan, series) == "titan"
     assert ll.sole_series(titan + [_line(0.1, 0.9, 0.4, 0.93, "TIBER 30X90")], series) is None
+
+
+def test_a_page_naming_many_series_is_an_index_not_another_series_page():
+    many = [_line(0.1, 0.05 * i, 0.4, 0.05 * i + 0.03, n) for i, n in enumerate(["Ardenza", "Calma", "Wood", "Habitat", "Saboya"], 1)]
+    series = {" ".join(t): t for t in map(ll.tokens_of, ["Ardenza", "Calma", "Wood", "Habitat", "Saboya", "Amalfi"])}
+    assert not ll.names_only_others(many, series, "amalfi")
+    assert ll.names_only_others(many[:2], series, "amalfi")

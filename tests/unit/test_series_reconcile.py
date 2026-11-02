@@ -47,3 +47,10 @@ def test_the_description_is_built_from_kept_fields_and_the_makers_text_follows_i
     assert sr.compose_description(line, " Saboya evokes stone. ") == line + "\n\nSaboya evokes stone."
     assert sr.factual_line("Peldaño", None, ["stair"], [], [], []) == "Peldaño: tile."
     assert sr.REFUSAL.search("The source text contains only format and finish listings for the Saboya 33x33 tile")
+
+
+def test_sizes_single_letters_and_language_codes_in_a_photo_name_are_not_variants():
+    urls = ["https://keros.com/x/LIVORNO-30X90-G-en-AbCdEfGhIjKlMnOp.jpg", "https://keros.com/x/GALAXY-596X596-en-AbCdEfGhIjKlMnOp.jpg",
+            "https://keros.com/x/TECHNO-SQUARE-EN.jpg", "https://keros.com/x/LEGNO-OAK-en-AbCdEfGhIjKlMnOp.jpg"]
+    assert sr.site_variant_names(urls, "Livorno") == [] and sr.site_variant_names(urls, "Galaxy") == []
+    assert sr.site_variant_names(urls, "Techno") == ["square"] and sr.site_variant_names(urls, "Legno") == ["oak"]
