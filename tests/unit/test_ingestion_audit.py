@@ -259,3 +259,20 @@ def test_two_live_crops_from_one_spot_fail_and_an_image_on_another_series_page_f
                                 other, findings, metrics)
     assert {f.code for f in findings} == {"duplicate_images_same_position", "images_on_other_series_page"}
     assert metrics["images_duplicated_position"] == 1 and metrics["images_on_other_series_page"] == 1
+
+
+def test_a_description_that_is_the_model_refusing_fails_and_a_real_one_passes():
+    findings, metrics = [], {}
+    products = [{"name": "Saboya", "description": "The source text contains only format and finish listings, so there is no description to write."},
+                {"name": "Ardesia", "description": "A slate-inspired porcelain in Acero and Antracita."}, {"name": "Onix", "description": ""}]
+    ia.product_content_findings(products, findings, metrics)
+    assert [(f.code, f.examples) for f in findings] == [("description_is_model_refusal", ["Saboya"])]
+
+
+def test_an_attribute_naming_another_series_of_the_document_fails_but_its_own_name_does_not():
+    findings, metrics = [], {}
+    products = [{"name": "Saboya", "attributes": {"slip_resistance": ["antislip m188 (redstone series)"]}},
+                {"name": "Redstone", "attributes": {"collection": "Redstone"}}, {"name": "Peldaño", "attributes": {"note": "peldano"}}]
+    ia.product_content_findings(products, findings, metrics)
+    assert [f.code for f in findings] == ["attributes_name_other_series"]
+    assert findings[0].examples == [{"product": "Saboya", "names": ["redstone"]}]

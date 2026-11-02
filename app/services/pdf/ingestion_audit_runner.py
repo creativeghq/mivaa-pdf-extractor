@@ -77,7 +77,7 @@ def source_pages(pdf_bytes: bytes, layout_rows: List[Dict[str, Any]]) -> Dict[in
 
 async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
     doc_id = document["id"]
-    products = _rows(await asyncio.to_thread(db.table("products").select("id, name, metadata").eq("source_document_id", doc_id).execute))
+    products = _rows(await asyncio.to_thread(db.table("products").select("id, name, metadata, description, attributes").eq("source_document_id", doc_id).execute))
     product_ids = [p["id"] for p in products]
     layout: List[Dict[str, Any]] = []
     start = 0
@@ -213,6 +213,8 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
     product_rows = [
         {
             "name": p["name"],
+            "description": p.get("description"),
+            "attributes": p.get("attributes"),
             "n_tables": per_product_tables.get(p["id"], 0),
             "n_chunks": per_product_chunks.get(p["id"], 0),
             "has_embedding": p["id"] in collected["embedded"],

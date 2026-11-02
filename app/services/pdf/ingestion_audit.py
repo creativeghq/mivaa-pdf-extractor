@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
@@ -266,6 +268,33 @@ def product_findings(products: Sequence[Dict[str, Any]], findings: List[Finding]
             findings.append(Finding(severity, code, f"{len(missing)} product(s) have no {label}", len(missing), missing))
 
 
+MODEL_REFUSAL = re.compile(
+    r"^(the )?(source|catalogue|catalog)( text)?( for \S+)? (contains|does not|has|provides|offers|consists)"
+    r"|no (real |narrative )?description|there is no description|nothing to (write|describe)", re.I)
+
+
+def _fold(text: str) -> str:
+    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+
+
+def product_content_findings(products: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    """A description that is the model saying it had nothing to write, and attributes naming another series."""
+    refusals = [p.get("name") for p in products if MODEL_REFUSAL.search((p.get("description") or "").strip())]
+    names = {_fold(p.get("name") or "") for p in products}
+    leaks = []
+    for p in products:
+        own = _fold(p.get("name") or "")
+        attrs = _fold(json.dumps(p.get("attributes") or {}, ensure_ascii=False))
+        others = sorted(o for o in names if o != own and len(o) > 3 and re.search(r"\b" + re.escape(o) + r"\b", attrs))
+        if others:
+            leaks.append({"product": p.get("name"), "names": others})
+    metrics.update({"descriptions_model_refusal": len(refusals), "attributes_naming_other_series": len(leaks)})
+    if refusals:
+        findings.append(Finding(FAIL, "description_is_model_refusal", f"{len(refusals)} description(s) are the model explaining it had nothing to write", len(refusals), refusals))
+    if leaks:
+        findings.append(Finding(FAIL, "attributes_name_other_series", f"{len(leaks)} product(s) carry attribute values that name another series of this document", len(leaks), leaks))
+
+
 def audit_document(
     *,
     source_kept: bool,
@@ -301,6 +330,7 @@ def audit_document(
         catalogue_findings(catalogue["plans"], catalogue["unmatched"], tables, findings, metrics)
     chunk_findings(chunks, tables, findings, metrics, phase)
     product_findings(products, findings, metrics, phase)
+    product_content_findings(products, findings, metrics)
     if phase != "pre_embed":
         image_findings(product_images or {}, findings, metrics)
         image_integrity_findings(product_images or {}, other_series or [], findings, metrics)
