@@ -114,3 +114,10 @@ def test_the_vision_rollup_does_not_publish_page_text_on_the_product():
 def test_the_classification_model_is_declared_once():
     src = _blank("app/config.py")
     assert src.count("anthropic_model_classification: str") == 1
+
+
+def test_a_small_photo_region_crop_is_classified_not_skipped():
+    swatch = {"width": 51, "height": 51, "extraction_layer": "region_crop", "region_type": "IMAGE"}
+    assert not _below_minimum_size(swatch)
+    assert _below_minimum_size({**swatch, "region_type": "TEXT"})
+    assert _below_minimum_size({"width": 51, "height": 51, "extraction_layer": "embedded"})

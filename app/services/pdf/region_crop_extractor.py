@@ -12,7 +12,6 @@ from PIL import Image
 from app.api.pdf_processing.stage_1_layout_precompute import LAYOUT_RENDER_DPI, _render_physical_page
 from app.services.pdf.text_layer_extractor import LAYOUT_PROCESSING_VERSIONS, TEXT_LAYER_VERSION
 from app.services.images.sourcing_flag import sourcing_enabled
-from app.services.images.classification_verdict import MIN_CLASSIFY_SIDE_PX
 from app.services.pdf.region_geometry import (  # noqa: F401  (re-exported for callers)
     LOW_RES_MIN_SOURCE_PX, MAX_PHOTO_CROP_DPI, PHOTO_REGION_TYPES, UNBOXED_PHOTO_MIN_PAGE_SHARE,
     _covered_by, _embedded_images, _trim_printed_bands, assess_source_quality,
@@ -182,10 +181,8 @@ async def extract_region_crops_for_physical_pages(
                             native = [e["dpi"] for e in embedded if _covered_by(to_pdf(region), e["rect"], 0.5)]
                             if native:
                                 # The photo's own resolution, never above it: rendering a 51 px swatch
-                                # at 250 DPI stores an enlargement no repair can make honest again. The
-                                # floor is the classifier's minimum, below which the crop would be dropped.
-                                floor_dpi = MIN_CLASSIFY_SIDE_PX * 72 / max(clip.width, clip.height, 1)
-                                crop_dpi = min(MAX_PHOTO_CROP_DPI, max(max(native), floor_dpi))
+                                # at 250 DPI stores an enlargement no repair can make honest again.
+                                crop_dpi = min(MAX_PHOTO_CROP_DPI, max(native))
                             quality = assess_source_quality(clip, max(native) if native else None)
                             if not sourcing_enabled():
                                 quality.pop("sourcing", None)

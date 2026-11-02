@@ -81,4 +81,8 @@ def below_minimum_size(img_data: Dict[str, Any]) -> bool:
         return False
     if width <= 0 or height <= 0:
         return False
+    # A photo region the layout model boxed is a picture at its real size, however small (a 51 px
+    # colour swatch); the classifier decides on it. The size cut is for embedded icons and badges.
+    if img_data.get("extraction_layer") == "region_crop" and img_data.get("region_type") in ("IMAGE", "FIGURE"):
+        return False
     return max(width, height) < MIN_CLASSIFY_SIDE_PX
