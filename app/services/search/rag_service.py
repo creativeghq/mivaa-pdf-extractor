@@ -1108,10 +1108,11 @@ class RAGService:
 
                 for i in range(0, len(chunk_ids), batch_size):
                     batch_ids = chunk_ids[i:i + batch_size]
+                    # The table has no workspace_id; the hop is scoped through the product it points at.
                     rel_response = self.supabase_client.client.table('chunk_product_relationships')\
-                        .select('product_id, chunk_id, relevance_score')\
+                        .select('product_id, chunk_id, relevance_score, products!inner(workspace_id)')\
                         .in_('chunk_id', batch_ids)\
-                        .eq('workspace_id', workspace_id)\
+                        .eq('products.workspace_id', workspace_id)\
                         .execute()
                     if rel_response.data:
                         all_chunk_rels.extend(rel_response.data)

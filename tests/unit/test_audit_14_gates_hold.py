@@ -227,7 +227,8 @@ def test_product_rehydration_keeps_the_workspace_predicate():
     """MV-13. The initial vector search is scoped; the association hops were not, so a
     stale or crafted association row bridges a scoped hit into another tenant."""
     body = _strip_comments(_func(RAG, "multi_vector_search"))
-    assert body.count("eq('workspace_id', workspace_id)") >= 3, (
+    # A hop over a table with no workspace_id is scoped through an embedded parent: eq('products.workspace_id', …).
+    assert len(re.findall(r"eq\('(?:\w+\.)?workspace_id', workspace_id\)", body)) >= 3, (
         "an association/product rehydration hop dropped its workspace filter"
     )
 
