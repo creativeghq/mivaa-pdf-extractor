@@ -398,7 +398,9 @@ class ImageSourcing:
     async def _repair(self, product: Dict[str, Any], crop: Dict[str, Any], crop_img: Image.Image, crop_bytes: bytes) -> None:
         native = (crop.get("metadata") or {}).get("image_quality", {}).get("native_px")
         restored, method, fidelity = None, None, None
-        if self.allow_restore and is_patterned(crop_img):
+        # A swatch stays the size the PDF holds; there is nothing in 51 px for a repair to recover.
+        repairable = self.allow_restore and not _is_swatch(crop)
+        if repairable and is_patterned(crop_img):
             g = await self._gemini_restore(crop_img)
             if g is not None:
                 ok, fidelity = repair_is_faithful(crop_img, g, native)
@@ -406,9 +408,14 @@ class ImageSourcing:
                     restored, method = g, "gemini-3.1-flash-image"
                 else:
                     self.log.info(f"   ✖ Gemini repair redrew {crop['id']} (fidelity {fidelity}) — using the classical clean-up")
-        if restored is None and self.allow_restore:
-            restored, method = classical_cleanup(crop_img), "classical"
-            fidelity = repair_is_faithful(crop_img, restored, native)[1]
+        if restored is None and repairable:
+            cleaned = classical_cleanup(crop_img)
+            ok, fidelity = repair_is_faithful(crop_img, cleaned, native)
+            # Same gate as Gemini: a clean-up that is no longer the same picture is not kept.
+            if ok:
+                restored, method = cleaned, "classical"
+            else:
+                self.log.info(f"   ✖ Classical clean-up changed {crop['id']} too much (fidelity {fidelity}) — keeping the source")
         if restored is None:
             self._mark(crop, "kept_source")
             if not crop.get("has_slig_embedding"):
