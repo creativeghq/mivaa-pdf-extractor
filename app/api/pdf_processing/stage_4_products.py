@@ -2560,6 +2560,20 @@ async def enrich_products_from_chunks_and_vision(
 
         # Make them available to the per-product loop via closure-local vars
         layout_product_pages = (catalog_layout or {}).get("product_pages_by_name") or {}
+        catalogue_wide_pages: set = set()
+        if enable_spec_vision and pdf_path:
+            try:
+                from app.services.products.product_spec_vision_extractor import crowded_pages
+                _doc_names = [r.get("name") for r in (supabase.client.table("products").select("name")
+                              .eq("source_document_id", document_id).execute().data or [])]
+                catalogue_wide_pages = crowded_pages(
+                    pdf_path, [*_doc_names, *(p.get("name") for p in products), *layout_product_pages],
+                    document_id=document_id)
+                if catalogue_wide_pages:
+                    logger.info(f"   🗂 spec vision skips {len(catalogue_wide_pages)} catalogue-wide page(s): "
+                                f"{sorted(catalogue_wide_pages)[:20]}")
+            except Exception as crowd_err:
+                logger.warning(f"   ⚠️ catalogue-wide page scan failed (vision reads every page): {crowd_err}")
 
         # ── Fetch document chunks for the whole document ──────────────────
         # document_chunks has a direct `product_id` column AND stores
@@ -2750,6 +2764,7 @@ async def enrich_products_from_chunks_and_vision(
                         job_id=job_id,
                         enable_tier_b=True,
                         category=metadata.get("material_category"),
+                        vision_skip_pages=catalogue_wide_pages,
                     )
                     if spec_vision_candidates:
                         tiers = spec_vision_candidates.pop("_source_tiers", [])

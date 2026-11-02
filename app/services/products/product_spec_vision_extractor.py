@@ -4,7 +4,8 @@ import base64
 import io
 import logging
 import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import fitz  # PyMuPDF
 from PIL import Image
@@ -355,6 +356,34 @@ def _find_pages_by_name_in_texts(
     return out
 
 
+CROWDED_PAGE_NAMES = 5
+
+
+def crowded_pages(pdf_path: str, product_names: Iterable[str], document_id: Optional[str] = None,
+                  min_names: int = CROWDED_PAGE_NAMES) -> Set[int]:
+    """0-indexed pages naming `min_names` or more of the catalogue's products.
+
+    An index, packing or technical table page names every series on it, so the name scan
+    resolves it for each of them; rendering and sending it once per series is the cost,
+    and the per-series prompt reads one row of a table the deterministic tiers already parse.
+    """
+    names = sorted({n for n in (_normalize_for_match(x) for x in product_names) if len(n) >= 3})
+    if len(names) < min_names or not pdf_path or not os.path.exists(pdf_path):
+        return set()
+    patterns = [re.compile(r"(?<![A-Z0-9])" + re.escape(n) + r"(?![A-Z0-9])") for n in names]
+    cache = _load_cache_page_texts(document_id) if document_id else {}
+    out: Set[int] = set()
+    doc = fitz.open(pdf_path)
+    try:
+        for i in range(doc.page_count):
+            text = _normalize_for_match(doc[i].get_text() or cache.get(i, ""))
+            if sum(1 for p in patterns if p.search(text)) >= min_names:
+                out.add(i)
+    finally:
+        doc.close()
+    return out
+
+
 def _find_pdf_pages_by_text(
     pdf_path: str,
     product_name: str,
@@ -472,6 +501,7 @@ def extract_specs_from_pdf_pages(
     document_id: Optional[str] = None,
     model: Optional[str] = None,
     category: Optional[str] = None,
+    skip_pages: Optional[Set[int]] = None,
 ) -> Dict[str, Any]:
     """Extract a product's specifications from its PDF spec pages.
 
@@ -496,6 +526,14 @@ def extract_specs_from_pdf_pages(
         pdf_path, product_page_range, product_name=product_name,
         document_id=document_id,
     )
+    if skip_pages:
+        # A crowded page that is one of the product's own pages (a fitting that lists the series it fits) stays.
+        own_pages = {int(p) - 1 for p in (product_page_range or []) if str(p).isdigit()}
+        kept = [i for i in pdf_indices if i not in skip_pages or i in own_pages]
+        if len(kept) < len(pdf_indices):
+            logger.info(f"   ⏭  spec vision: {product_name} skips catalogue-wide page(s) "
+                        f"{sorted(set(pdf_indices) - set(kept))}")
+        pdf_indices = kept
     if not pdf_indices:
         logger.info(f"product_spec_vision_extractor: no valid pages for {product_name}")
         return {}

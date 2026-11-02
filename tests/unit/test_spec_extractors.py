@@ -233,3 +233,33 @@ def test_property_rows_decode_to_functional_metadata(mods):
     assert res.properties["waterMoistureResistance"] == {"frostResistance": True}
     assert res.properties["slipSafetyRatings"] == {"rValue": ["R10", "R11"]}
     assert res.category_confidence["mechanicalPropertiesExtended"] == 0.9
+
+
+class _FakeDoc:
+    def __init__(self, pages):
+        self.pages, self.page_count = pages, len(pages)
+
+    def __getitem__(self, i):
+        return self.pages[i]
+
+    def close(self):
+        pass
+
+
+def test_a_page_naming_many_series_is_found_once_and_vision_skips_it_unless_it_is_the_products_own(mods, monkeypatch, tmp_path):
+    pdf = tmp_path / "k.pdf"
+    pdf.write_bytes(b"%PDF")
+    names = ["ARDENZA", "AMALFI", "CALMA", "HABITAT", "PISA", "TIBER"]
+    texts = ["  ".join(names), "ARDENZA 60x120 Gold"]
+    pages = [types.SimpleNamespace(get_text=lambda t=t: t) for t in texts]
+    monkeypatch.setattr(mods.psve, "fitz", types.SimpleNamespace(open=lambda p: _FakeDoc(pages)))
+    assert mods.psve.crowded_pages(str(pdf), [n.title() for n in names]) == {0}
+    assert mods.psve.crowded_pages(str(pdf), names[:4]) == set()
+
+    sent = []
+    monkeypatch.setattr(mods.psve, "_resolve_pdf_pages_for_product", lambda *a, **k: [0, 1])
+    monkeypatch.setattr(mods.psve, "_render_page_under_limit", lambda p, i: sent.append(i) or b"img")
+    monkeypatch.setattr(mods.psve, "_call_claude_vision", lambda *a, **k: {"page_contains_target": True})
+    mods.psve.extract_specs_from_pdf_pages(str(pdf), [2], "Ardenza", skip_pages={0})
+    mods.psve.extract_specs_from_pdf_pages(str(pdf), [1], "Peldaño", skip_pages={0})
+    assert sent == [1, 0, 1]

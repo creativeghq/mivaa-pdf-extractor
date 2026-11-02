@@ -575,6 +575,7 @@ def _tier_b_opus(
     product_id: Optional[str] = None,
     document_id: Optional[str] = None,
     category: Optional[str] = None,
+    skip_pages: Optional[set] = None,
 ) -> Dict[str, Any]:
     """Fallback: delegate to the existing product_spec_vision_extractor
     but with the Claude Opus model override. Returns the same nested-metadata
@@ -601,6 +602,7 @@ def _tier_b_opus(
             document_id=document_id,
             model=OPUS_FALLBACK_MODEL,
             category=category,
+            skip_pages=skip_pages,
         )
     except Exception as e:
         logger.warning(
@@ -691,6 +693,7 @@ async def extract_product_spec(
     job_id: Optional[str] = None,
     enable_tier_b: bool = True,
     category: Optional[str] = None,
+    vision_skip_pages: Optional[set] = None,
 ) -> Dict[str, Any]:
     """Extract a product's spec block from the PDF using the 3-tier hybrid.
 
@@ -757,6 +760,7 @@ async def extract_product_spec(
                 product_id=product_id,
                 document_id=document_id,
                 category=category,
+                skip_pages=vision_skip_pages,
             )
             if tier_b_result.get("_tier_error"):
                 # Every page failed: a failure, not "no specs". Stage 4 counts it.
