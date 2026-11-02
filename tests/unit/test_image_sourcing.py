@@ -216,8 +216,10 @@ def test_the_same_photo_at_two_resolutions_keeps_only_the_larger():
     pytest.importorskip("cv2")
     import numpy as np
     from PIL import Image as _Image
+    from PIL import ImageFilter
     rng = np.random.default_rng(3)
-    full = _Image.fromarray((rng.random((250, 500, 3)) * 255).astype("uint8")).resize((500, 250))
+    # Photo-like: smooth structure survives a resize the way a real picture does; pixel noise does not.
+    full = _Image.fromarray((rng.random((250, 500, 3)) * 255).astype("uint8")).filter(ImageFilter.GaussianBlur(6))
     small = full.resize((250, 125))
-    other = _Image.fromarray((rng.random((250, 500, 3)) * 255).astype("uint8"))
+    other = _Image.fromarray((rng.random((250, 500, 3)) * 255).astype("uint8")).filter(ImageFilter.GaussianBlur(6))
     assert _matching.redundant_resized_copies([("full", full), ("small", small), ("other", other)]) == ["small"]
