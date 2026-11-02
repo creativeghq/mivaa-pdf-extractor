@@ -1,0 +1,887 @@
+{
+  "workspace_id": "ffafc28b-1b8b-4b0d-b226-9f9a6154004e",
+  "generated_at": "2026-11-02",
+  "cases": [
+    {
+      "id": "t001",
+      "kind": "pattern",
+      "query": "tropical palm leaf wall tile green",
+      "expected": [
+        "f1cea04e-cf4a-4b78-a144-f090f1777070"
+      ],
+      "acceptable": [
+        "e57fe865-47d8-4f8f-9bf7-b29eb5fabed9",
+        "a1234190-bc24-4865-be1e-33fda1180411",
+        "0a2598b9-f98e-4d62-ab30-6e9e1b85e4ae"
+      ],
+      "why": "square tiles printed with sage/forest green palm fronds"
+    },
+    {
+      "id": "t002",
+      "kind": "pattern",
+      "query": "chinoiserie birds and blossoms wall tile",
+      "expected": [
+        "e0aea041-eeab-4603-bb79-d80479c48264"
+      ],
+      "acceptable": [],
+      "why": "cream 30x90 wall tile with pink blossoms, foliage and perched birds"
+    },
+    {
+      "id": "t003",
+      "kind": "pattern",
+      "query": "moroccan star hexagon tile blue",
+      "expected": [
+        "b3fb880d-d095-4268-933c-c9bb01a13f98",
+        "f36b5d39-2673-4980-a3f1-80aaf58bac2e"
+      ],
+      "acceptable": [
+        "1118b261-0ce9-43bc-acf9-5fbf83120ddd"
+      ],
+      "why": "hexagons printed with Moorish interlocking star/rosette motifs in blue"
+    },
+    {
+      "id": "t004",
+      "kind": "pattern",
+      "query": "3d cube pattern hexagon tile",
+      "expected": [
+        "30c5e2eb-7f97-4152-afc9-da2daff7df75"
+      ],
+      "acceptable": [
+        "aff5acd6-9c71-4a60-afa4-82178ec8d079",
+        "0b7f249b-e497-4377-b01c-23042310e332"
+      ],
+      "why": "hexagons split into rhombus segments that read as 3D cubes"
+    },
+    {
+      "id": "t005",
+      "kind": "pattern",
+      "query": "multicolour paisley wall tile",
+      "expected": [
+        "9bf16cc2-5d27-4088-8a62-35ea5cc4ab39"
+      ],
+      "acceptable": [
+        "d5453e8b-1bc3-4cc2-9e11-4b384a51bdf7"
+      ],
+      "why": "dense all-over paisley motif in cobalt, rust, sage and ochre"
+    },
+    {
+      "id": "t006",
+      "kind": "pattern",
+      "query": "trencadis broken mosaic with blue majolica",
+      "expected": [
+        "131d1fbc-dbea-4ffd-b85b-38c3674dfff1"
+      ],
+      "acceptable": [],
+      "why": "decor mimics trencadis: white fragments mixed with cobalt majolica shards"
+    },
+    {
+      "id": "t007",
+      "kind": "pattern",
+      "query": "white terrazzo with colourful chips",
+      "expected": [
+        "cce681b1-5bf5-4295-b8f2-878e2d561f16",
+        "fd86f418-24b7-4cdb-82ca-ae043c7b4ac8"
+      ],
+      "acceptable": [
+        "f05ec674-5d7d-47e6-9dcc-fa049b15f560"
+      ],
+      "why": "white-ground terrazzo with black, ochre, terracotta and green chips"
+    },
+    {
+      "id": "t008",
+      "kind": "pattern",
+      "query": "grey terrazzo speckled hexagon",
+      "expected": [
+        "08769398-ab37-4fb3-92e2-c0979659cad8"
+      ],
+      "acceptable": [
+        "cce681b1-5bf5-4295-b8f2-878e2d561f16"
+      ],
+      "why": "mottled grey hexagons with fine white/dark terrazzo chips"
+    },
+    {
+      "id": "t009",
+      "kind": "pattern",
+      "query": "black and white victorian encaustic floor tile",
+      "expected": [
+        "154d6b23-7ec1-49fd-af1a-00ffb354f6b9",
+        "6e189615-e98a-4616-8b47-ec4584719422"
+      ],
+      "acceptable": [
+        "31ef0637-0eaf-4028-bdeb-f141913e7601",
+        "19183223-ade2-40e5-a22c-e60f9573d579",
+        "2b0e772f-05bb-4fdc-876c-ef8810e83c05",
+        "6131fda9-f89d-41c8-9fed-4f302bf2358b"
+      ],
+      "why": "black/grey/off-white quatrefoil and fleur cement-tile motif"
+    },
+    {
+      "id": "t010",
+      "kind": "pattern",
+      "query": "blue four petal flower cement tile",
+      "expected": [
+        "8d7ee577-01f8-4462-821d-4787d2323a73"
+      ],
+      "acceptable": [
+        "2b0e772f-05bb-4fdc-876c-ef8810e83c05",
+        "6131fda9-f89d-41c8-9fed-4f302bf2358b"
+      ],
+      "why": "off-white aged cement-look tiles with repeating blue four-petal flowers"
+    },
+    {
+      "id": "t011",
+      "kind": "pattern",
+      "query": "scattered blue leaf sprigs on white tile",
+      "expected": [
+        "6cc2f6a8-00c5-46fd-9fae-368914da7d63"
+      ],
+      "acceptable": [],
+      "why": "cream-white squares with scattered dusty-blue leaf sprigs"
+    },
+    {
+      "id": "t012",
+      "kind": "pattern",
+      "query": "faded patchwork cementine decor wall tile",
+      "expected": [
+        "1fe9e6d2-68e0-4b4b-993b-2a112e985c00",
+        "2237a9ae-b57f-46e2-b53d-b4ee0bd6a789"
+      ],
+      "acceptable": [
+        "c9f1e507-dd66-430e-af1c-d953cd1a08fe",
+        "a9e9da3a-7449-4fc8-9fba-7ec778914159",
+        "07521738-50f5-41b7-a9a7-f81e1ffcd6ba",
+        "0c2777d7-3b02-485c-b8a4-1963e7a05ba8",
+        "b3b50785-6ba1-44cf-8d52-9873e8667698",
+        "10433f98-56c1-4638-98ab-8ddfcb415610",
+        "19183223-ade2-40e5-a22c-e60f9573d579"
+      ],
+      "why": "30x90 wall decor with faded patchwork of cementine floral/geometric motifs"
+    },
+    {
+      "id": "t013",
+      "kind": "pattern",
+      "query": "navy and mustard yellow geometric cement tile",
+      "expected": [
+        "8105f8c5-91da-4c86-b437-cbd4f0ea3cf0"
+      ],
+      "acceptable": [
+        "e7f7d8ed-a91d-4d0d-9123-2be0077ff94d"
+      ],
+      "why": "navy/light-blue diamonds framed by mustard-yellow bands"
+    },
+    {
+      "id": "t014",
+      "kind": "pattern",
+      "query": "wood hexagon with white hexagon inlay",
+      "expected": [
+        "c05b6a85-75ad-4d47-bc42-cb668075598c"
+      ],
+      "acceptable": [],
+      "why": "oak wood-grain hexagons with white hexagon inlays and outlines"
+    },
+    {
+      "id": "t015",
+      "kind": "pattern",
+      "query": "hexagon tile with diagonal stripes",
+      "expected": [
+        "3d78507e-d795-4ba7-b3ec-bc2165b54a5c"
+      ],
+      "acceptable": [
+        "30c5e2eb-7f97-4152-afc9-da2daff7df75"
+      ],
+      "why": "hexagons half solid, half parallel diagonal stripes"
+    },
+    {
+      "id": "t016",
+      "kind": "pattern",
+      "query": "terrazzo floor with terracotta pebbles beige",
+      "expected": [
+        "f05ec674-5d7d-47e6-9dcc-fa049b15f560"
+      ],
+      "acceptable": [
+        "fd86f418-24b7-4cdb-82ca-ae043c7b4ac8"
+      ],
+      "why": "warm beige terrazzo floor with dense terracotta and cream aggregate"
+    },
+    {
+      "id": "t017",
+      "kind": "pattern",
+      "query": "rust effect tile with lace and herringbone decor",
+      "expected": [
+        "634f970f-68c5-48ba-ab77-4c093c3a195d",
+        "1d057979-01c1-45fa-b430-75b04d9b7a12"
+      ],
+      "acceptable": [
+        "d81cd8b6-f896-4256-b321-2c7477de1f4e"
+      ],
+      "why": "corten/rust tiles mixed with decor pieces printed in lace, herringbone, stripes"
+    },
+    {
+      "id": "t018",
+      "kind": "pattern",
+      "query": "black and grey geometric triangles cement floor",
+      "expected": [
+        "44cab54f-557d-49c1-9ddd-d45f09b096ef"
+      ],
+      "acceptable": [
+        "1118b261-0ce9-43bc-acf9-5fbf83120ddd"
+      ],
+      "why": "bold black/light-grey triangles and rectangles over mottled cement"
+    },
+    {
+      "id": "t019",
+      "kind": "pattern",
+      "query": "muted blue arches geometric porcelain slab",
+      "expected": [
+        "9f6eff11-8003-41aa-9eab-a7ad439c0d8d"
+      ],
+      "acceptable": [
+        "d5453e8b-1bc3-4cc2-9e11-4b384a51bdf7"
+      ],
+      "why": "large slabs printed with overlapping arches, half-discs and bars in blues/greys"
+    },
+    {
+      "id": "t020",
+      "kind": "pattern",
+      "query": "watercolour green leaves yellow flowers wall tile",
+      "expected": [
+        "2a492782-6b5c-4ff9-8455-b666ab1713ed"
+      ],
+      "acceptable": [
+        "b2cb26b9-1485-45e0-a176-2d1c087521a9"
+      ],
+      "why": "speckled stone wall tile printed with watercolour leaves and small yellow flowers"
+    },
+    {
+      "id": "t021",
+      "kind": "look",
+      "query": "black marble high gloss white veins",
+      "expected": [
+        "0508c0df-46ee-458e-b3c2-d98e664f1b50"
+      ],
+      "acceptable": [
+        "f8a7d102-c481-4971-b883-13c04a0d62f3"
+      ],
+      "why": "high-gloss black Nero Marquina effect with sharp white veining"
+    },
+    {
+      "id": "t022",
+      "kind": "look",
+      "query": "calacatta gold marble floor tile",
+      "expected": [
+        "95f9a50b-ff2c-4d0f-9d4a-88d2fd07a38f"
+      ],
+      "acceptable": [
+        "68b22779-6f37-46d6-8a3a-5157ce9960a3",
+        "bcdb9062-eb7b-4212-b6d6-443ab597c09a",
+        "18dd788d-eb82-4735-a1e3-86fff743d656"
+      ],
+      "why": "white marble look with fractured golden-ochre veining"
+    },
+    {
+      "id": "t023",
+      "kind": "look",
+      "query": "white statuario marble large format 60x120",
+      "expected": [
+        "826e3ef8-cb13-4db8-af62-7de1cffa39e2"
+      ],
+      "acceptable": [
+        "e0730f94-3dfd-46f7-a0d9-b07ac464d026",
+        "e23d572f-a639-4fc3-b6f5-dac9ddeb6291",
+        "c1a552ba-c7de-419b-bc7d-b81108e15776",
+        "18dd788d-eb82-4735-a1e3-86fff743d656",
+        "040733b1-e4fa-4486-9cf7-adb634791d36",
+        "f8a7d102-c481-4971-b883-13c04a0d62f3"
+      ],
+      "why": "60x120 white marble effect with fine grey veining on floor and walls"
+    },
+    {
+      "id": "t024",
+      "kind": "look",
+      "query": "dark breccia marble with gold veins",
+      "expected": [
+        "babf00ec-f6e1-4075-b3ed-eef47adc9141"
+      ],
+      "acceptable": [],
+      "why": "dark brown-black brecciated marble fractured by golden veins"
+    },
+    {
+      "id": "t025",
+      "kind": "look",
+      "query": "white onyx polished porcelain",
+      "expected": [
+        "a96734d9-bede-4fcd-b110-6ab5da4ad42e"
+      ],
+      "acceptable": [
+        "b2cb26b9-1485-45e0-a176-2d1c087521a9",
+        "0bf5edb1-0179-4e63-a7be-838b7ba7da95"
+      ],
+      "why": "polished white onyx with translucent grey-beige swirls"
+    },
+    {
+      "id": "t026",
+      "kind": "look",
+      "query": "crema marfil beige marble look",
+      "expected": [
+        "504ccffc-d3dd-44d4-99d7-8c7157cb3de5"
+      ],
+      "acceptable": [
+        "03574745-64a8-4b00-9603-402082edbd1f",
+        "1e61f8ed-44b3-4f04-9b69-0b5ea8388b2e"
+      ],
+      "why": "warm cream marble with fine irregular white veins"
+    },
+    {
+      "id": "t027",
+      "kind": "look",
+      "query": "vein cut travertine beige large tile",
+      "expected": [
+        "df75532c-09d5-44ee-97b3-31751e78f72f",
+        "520b7640-fbeb-4977-a0f8-f774eef69154"
+      ],
+      "acceptable": [
+        "c8b890c1-237b-49cb-9bf6-c51f04b330c7",
+        "825ed226-d240-4f47-af01-ae2a5b2561d8",
+        "d3355b93-35d6-48a9-adc0-5ab5d787720e"
+      ],
+      "why": "beige/ivory travertine with horizontal vein-cut banding"
+    },
+    {
+      "id": "t028",
+      "kind": "look",
+      "query": "multicolour slate rust and blue grey",
+      "expected": [
+        "e2891c10-996c-43dd-8318-54edcb70fac2",
+        "e5a38f1a-6ab2-48a6-9493-8279ce177615"
+      ],
+      "acceptable": [
+        "4e1ea7d4-7c09-45c3-9afa-69adf4443e0e",
+        "305ed520-5c7f-4d8c-938d-689579a244f6",
+        "c7113d5f-ca27-4eb3-bef1-11728f5919a5",
+        "2bbb8949-0d61-4d0c-8dee-da92bfdfe101"
+      ],
+      "why": "blue-grey slate faces streaked with rust/ochre oxidation"
+    },
+    {
+      "id": "t029",
+      "kind": "look",
+      "query": "dark charcoal slate porcelain",
+      "expected": [
+        "5046fa09-af58-4458-84af-245cbcdec52c"
+      ],
+      "acceptable": [
+        "94865f79-53e5-4bba-a9d1-2a129de52729",
+        "305ed520-5c7f-4d8c-938d-689579a244f6",
+        "76c0410c-56ab-40ac-a353-818e4d1a411d"
+      ],
+      "why": "dark charcoal slate with lighter cleft veining"
+    },
+    {
+      "id": "t030",
+      "kind": "look",
+      "query": "rustic terracotta floor mixed formats",
+      "expected": [
+        "e728a4fa-165e-46a2-9710-9837a5569fc6",
+        "582cbb07-9a3e-435b-bf6b-4f37cf2b3233"
+      ],
+      "acceptable": [
+        "541c93dd-afc3-4910-9179-a0f335e4bf2d",
+        "6bf7cdc7-3670-48fe-9ed2-f8667aa7fc5c",
+        "706d4d72-0721-406f-a633-85dc16de205c",
+        "54dd8fcb-6268-4601-a5e8-56370cd3a51d"
+      ],
+      "why": "weathered handmade terracotta in mixed square/rectangular sizes"
+    },
+    {
+      "id": "t031",
+      "kind": "look",
+      "query": "dry stacked ledgestone wall cladding",
+      "expected": [
+        "8c1ed2ee-17eb-4fcc-a8ea-258cb95a6b08"
+      ],
+      "acceptable": [
+        "9991baa5-5796-474f-8013-1a1b509dc0ee",
+        "b827bbdd-79a7-4a42-aff7-174e328bb085"
+      ],
+      "why": "wall tile imitating dry-stacked ledgestone strips in grey, beige, rust"
+    },
+    {
+      "id": "t032",
+      "kind": "look",
+      "query": "crazy paving flagstone pink beige",
+      "expected": [
+        "b827bbdd-79a7-4a42-aff7-174e328bb085"
+      ],
+      "acceptable": [
+        "9991baa5-5796-474f-8013-1a1b509dc0ee",
+        "8c1ed2ee-17eb-4fcc-a8ea-258cb95a6b08"
+      ],
+      "why": "embossed irregular flagstones in pink, beige, taupe with grey joints"
+    },
+    {
+      "id": "t033",
+      "kind": "look",
+      "query": "oxidised corten metal effect large format",
+      "expected": [
+        "b78af200-356f-490f-a0d6-baf7b7ce977e",
+        "d81cd8b6-f896-4256-b321-2c7477de1f4e"
+      ],
+      "acceptable": [
+        "634f970f-68c5-48ba-ab77-4c093c3a195d",
+        "1d057979-01c1-45fa-b430-75b04d9b7a12"
+      ],
+      "why": "60x120 rust-brown oxidised metal/corten effect"
+    },
+    {
+      "id": "t034",
+      "kind": "look",
+      "query": "whitewashed distressed wood plank",
+      "expected": [
+        "fb20ea18-b2f9-41e8-a715-9bfd144b6ae2"
+      ],
+      "acceptable": [
+        "89784b63-c5ab-4e93-aeaa-b351913318c1",
+        "ddfa1252-5da2-48d7-a0ff-f255594618ac"
+      ],
+      "why": "23x120 off-white whitewashed wood with distressed grain"
+    },
+    {
+      "id": "t035",
+      "kind": "look",
+      "query": "walnut wood effect plank",
+      "expected": [
+        "4fc539d9-9079-4713-a39c-8c5af94eec73"
+      ],
+      "acceptable": [
+        "8fa8e836-2f15-4b37-a66a-ede5dc916a58",
+        "b0ef843f-55c3-474a-8769-d90bea9a4e9f"
+      ],
+      "why": "20x120 plank in warm walnut brown with cathedral grain"
+    },
+    {
+      "id": "t036",
+      "kind": "look",
+      "query": "rustic knotty oak plank honey brown",
+      "expected": [
+        "b0ef843f-55c3-474a-8769-d90bea9a4e9f"
+      ],
+      "acceptable": [
+        "96b8f8be-d2fd-4a78-8556-a1f531441294",
+        "8fa8e836-2f15-4b37-a66a-ede5dc916a58",
+        "d7346191-78b9-4955-b641-e2e436965786",
+        "3df3c8de-c36d-437b-b9e6-35e798c5d5ea"
+      ],
+      "why": "honey-brown rustic oak with knots and weathered streaks"
+    },
+    {
+      "id": "t037",
+      "kind": "look",
+      "query": "grey oak wood look plank bathroom",
+      "expected": [
+        "7fb5e204-db23-4c2d-9560-8e44c22abccb"
+      ],
+      "acceptable": [
+        "7aeb3294-19ba-40ab-8785-1bdb8d58153c",
+        "5f3d7b8e-9aec-429a-8ed2-0811bb59cf95",
+        "7641e93a-3794-4b33-9291-062cdb426fe1"
+      ],
+      "why": "grey-taupe oak-grain planks on bathroom floor and wall"
+    },
+    {
+      "id": "t038",
+      "kind": "look",
+      "query": "dark bluestone limestone with fossils",
+      "expected": [
+        "e9f75ad9-b2d8-4482-aae3-70863f340506"
+      ],
+      "acceptable": [
+        "c4a5fc49-fba0-4be1-8632-a58a0a1a748c"
+      ],
+      "why": "dark charcoal limestone/bluestone with fossil inclusions"
+    },
+    {
+      "id": "t039",
+      "kind": "look",
+      "query": "light grey concrete large format floor and wall",
+      "expected": [
+        "dc7c4598-f028-4215-9691-81c9fc65ad3c"
+      ],
+      "acceptable": [
+        "13d45060-c195-4e40-8006-79ab9542e699",
+        "dcf3a10b-b007-40cc-9fe2-03594d2a9807",
+        "a9e9da3a-7449-4fc8-9fba-7ec778914159",
+        "438194ce-34f2-4578-a8e4-3bca1304104d",
+        "db6cea82-2425-4cf3-b88a-5d8ed2fa346f"
+      ],
+      "why": "large-format mottled concrete look, light grey walls and darker floor"
+    },
+    {
+      "id": "t040",
+      "kind": "look",
+      "query": "light grey quartzite outdoor tile",
+      "expected": [
+        "9a939403-6da9-42f2-9658-fedcb2cdfa9d",
+        "a42502ee-93dd-4e01-80fb-a223bec4b214"
+      ],
+      "acceptable": [
+        "95ce5bee-0552-4991-b062-5c76bfa60ef7",
+        "2066db3f-c3a5-4044-8ba9-8025afc29fb8"
+      ],
+      "why": "light quartzite-look tiles with pale veining on outdoor terraces"
+    },
+    {
+      "id": "t041",
+      "kind": "colour",
+      "query": "glossy mint green handmade wall tile 20x20",
+      "expected": [
+        "61ec23e2-7785-4136-857a-39dd4e67c38c"
+      ],
+      "acceptable": [
+        "bfab6617-9b81-4f46-b192-c0a42ba95da0",
+        "91d1b102-d5b4-4b02-a6a6-0ad7d50302e6"
+      ],
+      "why": "20x20 mint/sage tiles with uneven glossy artisanal glaze"
+    },
+    {
+      "id": "t042",
+      "kind": "colour",
+      "query": "glossy black bevelled metro tile",
+      "expected": [
+        "3cc60ab5-9d11-4444-9de2-55f8c1e98bce"
+      ],
+      "acceptable": [],
+      "why": "jet-black glazed bevelled subway tiles"
+    },
+    {
+      "id": "t043",
+      "kind": "colour",
+      "query": "jade green glossy tile with onyx veining",
+      "expected": [
+        "91d1b102-d5b4-4b02-a6a6-0ad7d50302e6"
+      ],
+      "acceptable": [
+        "61ec23e2-7785-4136-857a-39dd4e67c38c"
+      ],
+      "why": "glossy mottled sage/jade squares with onyx-like veining"
+    },
+    {
+      "id": "t044",
+      "kind": "colour",
+      "query": "olive green and petrol blue narrow wall tile",
+      "expected": [
+        "34588b8b-9af7-4063-9623-90d47dc41b95"
+      ],
+      "acceptable": [
+        "bfab6617-9b81-4f46-b192-c0a42ba95da0"
+      ],
+      "why": "7.5x30 olive and petrol-blue stacked wall tiles with brushed streaks"
+    },
+    {
+      "id": "t045",
+      "kind": "colour",
+      "query": "terracotta red watercolour wall tile",
+      "expected": [
+        "0a2598b9-f98e-4d62-ab30-6e9e1b85e4ae"
+      ],
+      "acceptable": [],
+      "why": "30x90 terracotta-red tiles with soft watercolour shading"
+    },
+    {
+      "id": "t046",
+      "kind": "colour",
+      "query": "champagne glossy handmade look wall tile",
+      "expected": [
+        "c8b890c1-237b-49cb-9bf6-c51f04b330c7"
+      ],
+      "acceptable": [
+        "9beeca9a-e01f-440c-88af-f52fd7f0ba63"
+      ],
+      "why": "narrow champagne-cream tiles with undulating glossy glaze"
+    },
+    {
+      "id": "t047",
+      "kind": "colour",
+      "query": "petrol blue painted wall slats",
+      "expected": [
+        "1aa12672-31b6-457f-b705-85fd60901145",
+        "1a421875-d6c1-45b0-a0c2-0a1f85c91972",
+        "ad5c70cc-8543-4d78-8b6b-c77a3e50a15d"
+      ],
+      "acceptable": [
+        "e5c59616-f7ee-4189-8753-e7c6f9e3b99d"
+      ],
+      "why": "MDF slats/boards in matte deep petrol-blue paint"
+    },
+    {
+      "id": "t048",
+      "kind": "colour",
+      "query": "matte black wood slat acoustic panel",
+      "expected": [
+        "e5c59616-f7ee-4189-8753-e7c6f9e3b99d",
+        "e3c32f86-cfe9-484f-92a1-0830ccfaf607"
+      ],
+      "acceptable": [
+        "1a421875-d6c1-45b0-a0c2-0a1f85c91972"
+      ],
+      "why": "evenly spaced matte black slats on dark felt backing"
+    },
+    {
+      "id": "t049",
+      "kind": "colour",
+      "query": "charcoal grey fluted wall panel",
+      "expected": [
+        "be526ba2-8368-4af7-b96c-dc90b122d1e4"
+      ],
+      "acceptable": [
+        "daf012ba-8232-4fcd-a30f-e8f5a231f47b"
+      ],
+      "why": "MDF panel with rounded vertical flutes in matte charcoal"
+    },
+    {
+      "id": "t050",
+      "kind": "colour",
+      "query": "black and orange floral encaustic porcelain floor",
+      "expected": [
+        "7ced054f-3522-401c-9e81-87344cf85905"
+      ],
+      "acceptable": [],
+      "why": "black four-leaf florals and ochre-orange rings on off-white ground"
+    },
+    {
+      "id": "t051",
+      "kind": "colour",
+      "query": "lead grey fabric effect tile",
+      "expected": [
+        "929933f5-d722-4313-9d51-7fe0b4252a47"
+      ],
+      "acceptable": [
+        "dc7c4598-f028-4215-9691-81c9fc65ad3c"
+      ],
+      "why": "uniform dark lead-grey surface with fine fabric-like streaks (PIOMBO)"
+    },
+    {
+      "id": "t052",
+      "kind": "colour",
+      "query": "dusty blue and rust distressed rug effect tile",
+      "expected": [
+        "bf5a0848-99f8-4c0c-a3fb-fff263df7205"
+      ],
+      "acceptable": [
+        "c9f1e507-dd66-430e-af1c-d953cd1a08fe"
+      ],
+      "why": "faded vintage rug effect in mottled blue, beige and rust"
+    },
+    {
+      "id": "t053",
+      "kind": "format",
+      "query": "pool coping bullnose grey concrete",
+      "expected": [
+        "13d45060-c195-4e40-8006-79ab9542e699"
+      ],
+      "acceptable": [
+        "438194ce-34f2-4578-a8e4-3bca1304104d"
+      ],
+      "why": "concrete-look pool deck with matching bullnose coping and steps"
+    },
+    {
+      "id": "t054",
+      "kind": "format",
+      "query": "stair tread with nosing multicolour slate",
+      "expected": [
+        "4e1ea7d4-7c09-45c3-9afa-69adf4443e0e",
+        "e5a38f1a-6ab2-48a6-9493-8279ce177615"
+      ],
+      "acceptable": [
+        "706d4d72-0721-406f-a633-85dc16de205c"
+      ],
+      "why": "step tiles with downturned nosing in multicolour slate look"
+    },
+    {
+      "id": "t055",
+      "kind": "format",
+      "query": "thin click oak plank flooring",
+      "expected": [
+        "48b7099e-93d7-4428-83d0-5c809aa219af"
+      ],
+      "acceptable": [],
+      "why": "oak plank shown with click installation, 5.5mm total thickness"
+    },
+    {
+      "id": "t056",
+      "kind": "format",
+      "query": "120x120 anthracite veined stone slab",
+      "expected": [
+        "b50e5d9e-44d6-486c-9e59-654368f8ad4c"
+      ],
+      "acceptable": [
+        "0b7f249b-e497-4377-b01c-23042310e332",
+        "7ced054f-3522-401c-9e81-87344cf85905"
+      ],
+      "why": "large-format anthracite slabs imitating veined stone"
+    },
+    {
+      "id": "t057",
+      "kind": "format",
+      "query": "beige stone outdoor patio mixed rectangles",
+      "expected": [
+        "2bbb8949-0d61-4d0c-8dee-da92bfdfe101"
+      ],
+      "acceptable": [
+        "ee88ddb5-bdd4-455c-9443-37a9bd0afbd2",
+        "b7b46718-ea99-4060-b0e5-5153e85a773e",
+        "aedd6360-f4eb-434d-9ec3-c67b6d8b42ef"
+      ],
+      "why": "matte beige stone-look in mixed formats on outdoor patio and wall"
+    },
+    {
+      "id": "t058",
+      "kind": "format",
+      "query": "multi-size cream limestone french pattern",
+      "expected": [
+        "67a3de88-ae50-4ccb-a630-8057145fedd7",
+        "f5ecb6c8-dd5e-4e5c-8d49-6430e752294d"
+      ],
+      "acceptable": [
+        "b7b46718-ea99-4060-b0e5-5153e85a773e",
+        "238c0b72-0110-4f6b-af2b-7e9c44d05448",
+        "e4982c0f-81dd-45f3-9678-93def525ec14",
+        "aedd6360-f4eb-434d-9ec3-c67b6d8b42ef"
+      ],
+      "why": "cream aged-limestone tiles laid in mixed square/rectangle modular pattern"
+    },
+    {
+      "id": "t059",
+      "kind": "format",
+      "query": "ribbed warm white wall tile 30x90",
+      "expected": [
+        "d5c148d0-02d2-4ceb-86c7-abf8d9be75eb"
+      ],
+      "acceptable": [
+        "db6cea82-2425-4cf3-b88a-5d8ed2fa346f",
+        "c1a552ba-c7de-419b-bc7d-b81108e15776"
+      ],
+      "why": "finely ribbed matte warm-white porcelain wall surface"
+    },
+    {
+      "id": "t060",
+      "kind": "format",
+      "query": "3d triangle relief white wall tile",
+      "expected": [
+        "8706f010-663a-4cfd-92d0-90d207ef30d6",
+        "2ed2cc87-84d0-4d28-86d9-e6017736b2ca"
+      ],
+      "acceptable": [
+        "2a492782-6b5c-4ff9-8455-b666ab1713ed",
+        "a24269fa-8020-444b-ab35-c80a423f590b",
+        "42bdcaf0-197f-44a1-b1b2-07bf9bae2000"
+      ],
+      "why": "white 30x90 wall tile with raised faceted triangle relief"
+    },
+    {
+      "id": "t061",
+      "kind": "format",
+      "query": "tongue and groove light oak wall panel",
+      "expected": [
+        "3f57ed71-ae63-4e1a-898a-942c7d586e10"
+      ],
+      "acceptable": [
+        "7fea2c2f-76ef-4ead-824d-2a906d4d3c24",
+        "be526ba2-8368-4af7-b96c-dc90b122d1e4"
+      ],
+      "why": "vertical tongue-and-groove MDF boards in light Sonoma oak"
+    },
+    {
+      "id": "t062",
+      "kind": "format",
+      "query": "walnut slat acoustic panel on black felt",
+      "expected": [
+        "6957e41d-c610-414a-aced-f6f147c2ba57",
+        "110df946-21fc-4137-b351-b21ea9ffac61"
+      ],
+      "acceptable": [
+        "e3c32f86-cfe9-484f-92a1-0830ccfaf607"
+      ],
+      "why": "narrow walnut-tone vertical slats over black acoustic felt"
+    },
+    {
+      "id": "t063",
+      "kind": "name",
+      "query": "ardenza",
+      "expected": [
+        "95f9a50b-ff2c-4d0f-9d4a-88d2fd07a38f"
+      ],
+      "acceptable": [],
+      "why": "name search"
+    },
+    {
+      "id": "t064",
+      "kind": "name",
+      "query": "sofia cement tile",
+      "expected": [
+        "8d7ee577-01f8-4462-821d-4787d2323a73"
+      ],
+      "acceptable": [],
+      "why": "name search"
+    },
+    {
+      "id": "t065",
+      "kind": "name",
+      "query": "alhambra",
+      "expected": [
+        "7af17b0f-2bd1-42c3-be5b-b653099a8846"
+      ],
+      "acceptable": [],
+      "why": "name search"
+    },
+    {
+      "id": "t066",
+      "kind": "name",
+      "query": "stella beats wall panel",
+      "expected": [
+        "be526ba2-8368-4af7-b96c-dc90b122d1e4"
+      ],
+      "acceptable": [],
+      "why": "name search"
+    },
+    {
+      "id": "t067",
+      "kind": "name",
+      "query": "sinfonie",
+      "expected": [
+        "d5453e8b-1bc3-4cc2-9e11-4b384a51bdf7"
+      ],
+      "acceptable": [],
+      "why": "name search"
+    },
+    {
+      "id": "t068",
+      "kind": "name",
+      "query": "galaxy terrazzo",
+      "expected": [
+        "fd86f418-24b7-4cdb-82ca-ae043c7b4ac8"
+      ],
+      "acceptable": [],
+      "why": "name search"
+    },
+    {
+      "id": "t069",
+      "kind": "name",
+      "query": "hayedo",
+      "expected": [
+        "96b8f8be-d2fd-4a78-8556-a1f531441294"
+      ],
+      "acceptable": [],
+      "why": "name search"
+    },
+    {
+      "id": "t070",
+      "kind": "name",
+      "query": "elysium",
+      "expected": [
+        "52b13a32-099e-4d98-a3df-fc7165dc985c"
+      ],
+      "acceptable": [],
+      "why": "name search"
+    }
+  ]
+}

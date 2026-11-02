@@ -1068,6 +1068,15 @@ class RAGService:
             # ============================================================================
             product_scores = {}  # Maps product_id -> {source_type: score}
 
+            # How sure we are an image belongs to a product is not how much the PICTURE matches.
+            # Candidates differ by 0.01-0.05 in similarity while link scores span 0.70-0.96, so a
+            # full multiplier let the linking method pick the winner (search eval, 2026-11-02).
+            link_weighting = config.get('link_weighting', 'mild')
+
+            def link_factor(overall_score: Any) -> float:
+                r = 1.0 if overall_score is None else max(0.0, min(1.0, float(overall_score)))
+                return r if link_weighting == 'full' else 0.9 + 0.1 * r
+
             # 3A: Map images to products via image_product_associations
             if image_scores:
                 image_ids = list(image_scores.keys())
@@ -1089,7 +1098,7 @@ class RAGService:
                 for rel in all_image_rels:
                     product_id = rel.get('product_id')
                     image_id = rel.get('image_id')
-                    relevance = rel.get('overall_score', 1.0)
+                    relevance = link_factor(rel.get('overall_score'))
 
                     if image_id in image_scores:
                         if product_id not in product_scores:
@@ -1192,7 +1201,7 @@ class RAGService:
                             key = image_to_page.get(rel.get('image_id'))
                             if not product_id or not key:
                                 continue
-                            score = page_scores.get(key, 0.0) * (rel.get('overall_score') or 1.0)
+                            score = page_scores.get(key, 0.0) * link_factor(rel.get('overall_score'))
                             if product_id not in product_scores:
                                 product_scores[product_id] = {}
                             # Best page wins: a product appearing on two pages should
@@ -1247,6 +1256,12 @@ class RAGService:
 
                 self.logger.info(f"📦 Fetched {len(all_products)} product details")
 
+                fusion = config.get('fusion', 'weighted_sum')
+                responsive_weight = sum(
+                    w for s, w in embedding_weights.items()
+                    if (s == 'keyword' and enable_keyword) or any(ps.get(s, 0.0) > 0 for ps in product_scores.values())
+                ) or 1.0
+
                 # Calculate HYBRID weighted scores
                 for product in all_products:
                     product_id = product['id']
@@ -1277,6 +1292,13 @@ class RAGService:
                     if active_weight_sum > 0:
                         weighted_score = weighted_score / active_weight_sum
 
+                    # Inclusion stays on the per-match quality above; ORDER is the weighted sum over
+                    # every channel that returned anything, so independent evidence adds up instead of
+                    # a weak extra match dragging a strong product below a single-channel one.
+                    if fusion == 'weighted_sum':
+                        rank_score = sum(scores.get(s, 0.0) * w for s, w in embedding_weights.items()) / responsive_weight
+                    else:
+                        rank_score = weighted_score
                     final_score = weighted_score
 
                     # Adaptive threshold: if most embedding sources failed/timed out,
@@ -1296,7 +1318,7 @@ class RAGService:
                             "category": product.get('category'),
                             "workspace_id": product.get('workspace_id'),
                             "source_document_id": product.get('source_document_id'),
-                            "score": final_score,
+                            "score": rank_score,
                             **score_breakdown,  # Include scores from all sources
                             "search_type": "hybrid_multi_source",
                             "sources_used": {
