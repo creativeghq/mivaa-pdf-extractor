@@ -268,6 +268,48 @@ class TestWalls:
         assert len(walls) == 1
         assert walls[0]["detail"]["length_m"] == pytest.approx(5.0, rel=1e-2)
 
+    def test_one_face_opposite_two_segments_counts_its_whole_length(self):
+        mpp = _mpp(50)
+        t = 0.1 / mpp
+        length = 5.0 / mpp
+
+        def build(p):
+            _text(p, (650, 570), "ΚΛΙΜΑΚΑ 1:50")
+            shape = p.new_shape()
+            shape.draw_line((100, 100), (100 + length, 100))
+            shape.finish(width=0.3)
+            shape.commit()
+            for x0, x1 in ((100, 100 + length / 2 - 1), (100 + length / 2 + 1, 100 + length)):
+                part = p.new_shape()
+                part.draw_line((x0, 100 + t), (x1, 100 + t))
+                part.finish(width=0.3)
+                part.commit()
+            _filler(p)
+        page = analyze_pdf(_pdf(build))["pages"][0]
+        walls = [x for x in page["proposals"] if x["element_type"] == "wall"]
+        assert len(walls) == 1
+        assert walls[0]["detail"]["length_m"] == pytest.approx(5.0, rel=1e-2)
+
+    def test_reshaped_curve_changes_the_fingerprint(self):
+        def build(bulge):
+            def draw(p):
+                shape = p.new_shape()
+                shape.draw_bezier((100, 100), (150, 100 + bulge), (250, 100 + bulge), (300, 100))
+                shape.finish(width=0.3)
+                shape.commit()
+                _filler(p)
+            return draw
+        a = analyze_pdf(_pdf(build(40)))["pages"][0]["fingerprint"]
+        b = analyze_pdf(_pdf(build(120)))["pages"][0]["fingerprint"]
+        assert a != b
+
+    def test_too_complex_page_is_refused_not_read_as_empty(self, monkeypatch):
+        monkeypatch.setattr(sys.modules["app.services.drawings.geometry"], "MAX_CONTENT_BYTES", 100)
+        page = analyze_pdf(_pdf(lambda p: _filler(p)))["pages"][0]
+        assert page["kind"] == "vector"
+        assert page["proposals"] == [] and page["fingerprint"] == []
+        assert any("measure it by hand" in n for n in page["notes"])
+
     def test_calibration_overrides(self):
         def build(p):
             shape = p.new_shape()

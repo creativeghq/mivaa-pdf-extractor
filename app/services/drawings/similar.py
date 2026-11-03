@@ -102,7 +102,9 @@ def find_similar(geom: PageGeometry, box_norm: Sequence[float]) -> dict:
     keys = [v for v, _ in lst]
     lo = bisect.bisect_left(keys, anchor[1] * (1 - ANCHOR_TOLERANCE))
     hi = bisect.bisect_right(keys, anchor[1] * (1 + ANCHOR_TOLERANCE))
-    candidates = [idx for _, idx in lst[lo:hi]][:MAX_ANCHORS]
+    candidates = [idx for _, idx in lst[lo:hi]]
+    capped = len(candidates) > MAX_ANCHORS
+    candidates = candidates[:MAX_ANCHORS]
 
     found = [(1.0, ex_bb)]
     example_ids = {id(it) for it in example}
@@ -147,6 +149,7 @@ def find_similar(geom: PageGeometry, box_norm: Sequence[float]) -> dict:
         found.append((score, bb))
         consumed.update(matched)
         if len(found) >= MAX_MATCHES:
+            capped = True
             break
 
     kept: List[tuple] = []
@@ -165,7 +168,7 @@ def find_similar(geom: PageGeometry, box_norm: Sequence[float]) -> dict:
             for score, bb in kept
         ],
         "example_items": total,
-        "reason": None,
+        "reason": "capped" if capped else None,
     }
 
 

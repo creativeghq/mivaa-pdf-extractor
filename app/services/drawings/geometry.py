@@ -19,6 +19,8 @@ BBox = Tuple[float, float, float, float]
 
 METRES_PER_PT = 25.4 / 72 / 1000
 COVERAGE_GRID = 64
+# A compressed page can expand to millions of path operators; past this we refuse to materialise them.
+MAX_CONTENT_BYTES = 40_000_000
 
 
 @dataclass
@@ -36,7 +38,9 @@ class PageGeometry:
     polygons: List[List[Point]] = field(default_factory=list)
     lines: List[TextLine] = field(default_factory=list)
     image_bboxes: List[BBox] = field(default_factory=list)
+    image_digests: List[str] = field(default_factory=list)
     item_count: int = 0
+    too_complex: bool = False
     image_coverage: float = 0.0
 
     @property
@@ -134,13 +138,22 @@ def _image_coverage(bboxes: List[BBox], width: float, height: float) -> float:
     return len(covered) / float(n * n)
 
 
+def _content_bytes(page: "fitz.Page") -> int:
+    """Decompressed size of the page's content streams, read before any path becomes a Python object."""
+    try:
+        return sum(len(page.parent.xref_stream(x) or b"") for x in page.get_contents())
+    except Exception:  # noqa: BLE001 — unreadable streams are treated as empty
+        return 0
+
+
 def extract_page(page: "fitz.Page", with_text: bool = True) -> PageGeometry:
     tp, tr = _transformer(page)
     rect = page.rect
     geom = PageGeometry(width=float(rect.width), height=float(rect.height))
 
     reader = getattr(page, "get_cdrawings", None) or page.get_drawings
-    for path in reader():
+    geom.too_complex = _content_bytes(page) > MAX_CONTENT_BYTES
+    for path in ([] if geom.too_complex else reader()):
         items = path.get("items") or []
         geom.item_count += len(items)
         chain: List[Point] = []
@@ -175,7 +188,7 @@ def extract_page(page: "fitz.Page", with_text: bool = True) -> PageGeometry:
             geom.polygons.append(chain[:-1])
 
     try:
-        infos = page.get_image_info()
+        infos = page.get_image_info(hashes=True)
     except Exception:  # noqa: BLE001 — a malformed image dictionary is no image
         infos = []
     for info in infos:
@@ -183,6 +196,8 @@ def extract_page(page: "fitz.Page", with_text: bool = True) -> PageGeometry:
         geom.image_bboxes.append(
             (max(0.0, bb[0]), max(0.0, bb[1]), min(geom.width, bb[2]), min(geom.height, bb[3]))
         )
+        digest = info.get("digest")
+        geom.image_digests.append(digest.hex() if isinstance(digest, (bytes, bytearray)) else "")
     geom.image_coverage = _image_coverage(geom.image_bboxes, geom.width, geom.height)
 
     if with_text:

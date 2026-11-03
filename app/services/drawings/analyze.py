@@ -18,6 +18,8 @@ FINGERPRINT_GRID = 16
 
 
 def classify(geom: PageGeometry) -> str:
+    if geom.too_complex:
+        return "vector"
     if geom.image_coverage >= SCAN_MIN_COVERAGE:
         return "scan"
     if geom.item_count >= VECTOR_MIN_ITEMS:
@@ -26,6 +28,8 @@ def classify(geom: PageGeometry) -> str:
 
 
 def fingerprint(geom: PageGeometry) -> List[str]:
+    if geom.too_complex:
+        return []
     n = FINGERPRINT_GRID
     cells: List[List[str]] = [[] for _ in range(n * n)]
     w, h = geom.width or 1.0, geom.height or 1.0
@@ -39,12 +43,14 @@ def fingerprint(geom: PageGeometry) -> List[str]:
         _cell_add((x0 + x1) / 2, (y0 + y1) / 2, f"l{x0 / w:.3f},{y0 / h:.3f},{x1 / w:.3f},{y1 / h:.3f}")
     for c in geom.curves:
         (x0, y0), (x3, y3) = c[0], c[3]
-        _cell_add((x0 + x3) / 2, (y0 + y3) / 2, f"c{x0 / w:.3f},{y0 / h:.3f},{x3 / w:.3f},{y3 / h:.3f}")
+        pts = ",".join(f"{x / w:.3f},{y / h:.3f}" for x, y in c)
+        _cell_add((x0 + x3) / 2, (y0 + y3) / 2, "c" + pts)
     for line in geom.lines:
         b = line.bbox
         _cell_add((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, "t" + line.text.strip())
-    for b in geom.image_bboxes:
-        _cell_add((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, f"i{b[0] / w:.2f},{b[1] / h:.2f},{b[2] / w:.2f},{b[3] / h:.2f}")
+    digests = geom.image_digests + [""] * (len(geom.image_bboxes) - len(geom.image_digests))
+    for b, d in zip(geom.image_bboxes, digests):
+        _cell_add((b[0] + b[2]) / 2, (b[1] + b[3]) / 2, f"i{b[0] / w:.2f},{b[1] / h:.2f},{b[2] / w:.2f},{b[3] / h:.2f},{d}")
 
     out = []
     for tokens in cells:
@@ -76,7 +82,9 @@ def analyze_page(page, units_per_page_width: Optional[float]) -> dict:
     proposals: List[dict] = []
     if geom.lines:
         proposals.extend(printed_rooms(geom, m_per_pt))
-    if kind == "vector":
+    if geom.too_complex:
+        notes.append("too many drawn lines to read on this page; measure it by hand")
+    elif kind == "vector":
         proposals.extend(detect_doors(geom, m_per_pt))
         if m_per_pt:
             walls, wall_notes = detect_walls(geom, m_per_pt)
@@ -125,7 +133,7 @@ def find_similar_in_pdf(data: bytes, page: int, bbox: Sequence[float]) -> dict:
         if page < 1 or page > doc.page_count:
             raise ValueError(f"page {page} is out of range; the file has {doc.page_count} pages")
         geom = extract_page(doc[page - 1], with_text=False)
-        reason = page_reason(classify(geom))
+        reason = "too_complex" if geom.too_complex else page_reason(classify(geom))
         if reason:
             return {"matches": [], "example_items": 0, "reason": reason}
         return find_similar(geom, bbox)

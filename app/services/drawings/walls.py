@@ -20,6 +20,21 @@ MAX_COMPARISONS = 12_000_000
 CHUNK_PAIRS = 1_000_000
 MAX_OUTPUT_SEGMENTS = 1500
 DUPLICATE_EPS_M = 0.01
+# A face may pair with several opposite segments, but no stretch of it is counted twice.
+SHARED_FACE = 0.1
+
+
+def _span(seg: np.ndarray, px: float, py: float, qx: float, qy: float) -> tuple:
+    """Where a pair's overlap lies along one of its faces, as a (start, end) distance from its first end."""
+    dx, dy = seg[2] - seg[0], seg[3] - seg[1]
+    n = math.hypot(dx, dy) or 1.0
+    a = ((px - seg[0]) * dx + (py - seg[1]) * dy) / n
+    b = ((qx - seg[0]) * dx + (qy - seg[1]) * dy) / n
+    return (min(a, b), max(a, b))
+
+
+def _claimed_length(spans: list, sp: tuple) -> float:
+    return sum(max(0.0, min(sp[1], e) - max(sp[0], s)) for s, e in spans)
 
 
 def _candidate_pairs(segs: np.ndarray, angles: np.ndarray, lengths: np.ndarray, tmin: float, tmax: float):
@@ -149,12 +164,13 @@ def detect_walls(geom: PageGeometry, m_per_pt: float) -> Tuple[List[dict], List[
         _, first = np.unique(key, return_index=True)
         found = found[first]
         found = found[np.argsort(-found[:, 2], kind="stable")]
-        used = set()
+        claimed: dict = defaultdict(list)
         for i, j, overlap, gap, px, py, qx, qy in found.tolist():
-            if i in used or j in used:
+            spans = [(k, _span(segs[int(k)], px, py, qx, qy)) for k in (i, j)]
+            if any(_claimed_length(claimed[k], sp) > SHARED_FACE * (sp[1] - sp[0]) for k, sp in spans):
                 continue
-            used.add(i)
-            used.add(j)
+            for k, sp in spans:
+                claimed[k].append(sp)
             cm = int(round(round(gap * m_per_pt / THICKNESS_STEP_M) * THICKNESS_STEP_M * 100))
             g = groups[cm]
             g["length"] += overlap
