@@ -28,6 +28,22 @@ def _batches(items: List[Any], size: int) -> List[List[Any]]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
+READ_PAGE = 1000
+
+
+async def _paged(make: Any, *order: str) -> List[Dict[str, Any]]:
+    """Every row of a query: PostgREST caps one response at 1000 rows and says nothing about the rest."""
+    rows: List[Dict[str, Any]] = []
+    while True:
+        query = make()
+        for col in order:
+            query = query.order(col)
+        batch = _rows(await asyncio.to_thread(query.range(len(rows), len(rows) + READ_PAGE - 1).execute))
+        rows.extend(batch)
+        if len(batch) < READ_PAGE:
+            return rows
+
+
 def _element_text(elements: List[Dict[str, Any]]) -> str:
     parts: List[str] = []
     for el in elements or []:
@@ -77,7 +93,7 @@ def source_pages(pdf_bytes: bytes, layout_rows: List[Dict[str, Any]]) -> Dict[in
 
 async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
     doc_id = document["id"]
-    products = _rows(await asyncio.to_thread(db.table("products").select("id, name, metadata, description, attributes").eq("source_document_id", doc_id).execute))
+    products = await _paged(lambda: db.table("products").select("id, name, metadata, description, attributes").eq("source_document_id", doc_id), "id")
     product_ids = [p["id"] for p in products]
     layout: List[Dict[str, Any]] = []
     start = 0
@@ -90,29 +106,23 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
         if len(batch) < PAGE_BATCH:
             break
         start += PAGE_BATCH
-    chunks = _rows(await asyncio.to_thread(
-        db.table("document_chunks").select("id, product_id, content, metadata, has_text_embedding").eq("document_id", doc_id).execute
-    ))
-    snapshots = _rows(await asyncio.to_thread(
-        db.table("source_snapshots").select("id, url, storage_bucket, storage_object_path").eq("document_id", doc_id).execute
-    ))
+    chunks = await _paged(lambda: db.table("document_chunks").select("id, product_id, content, metadata, has_text_embedding").eq("document_id", doc_id), "id")
+    snapshots = await _paged(lambda: db.table("source_snapshots").select("id, url, storage_bucket, storage_object_path").eq("document_id", doc_id), "id")
     tables: List[Dict[str, Any]] = []
     embedded: set = set()
     images: Dict[str, int] = {}
     names = {p["id"]: p.get("name") or p["id"] for p in products}
     product_images: Dict[str, List[Dict[str, Any]]] = {}
     for ids in _batches(product_ids, ID_BATCH):
-        tables.extend(_rows(await asyncio.to_thread(
-            db.table("product_tables").select("id, product_id, page_number, headers, table_data, extractor, metadata").in_("product_id", ids).execute
-        )))
+        tables.extend(await _paged(
+            lambda: db.table("product_tables").select("id, product_id, page_number, headers, table_data, extractor, metadata").in_("product_id", ids), "id"))
         embedded |= {r["id"] for r in _rows(await asyncio.to_thread(
             db.table("products").select("id").in_("id", ids).not_.is_("text_embedding_1024", "null").execute
         ))}
-        for r in _rows(await asyncio.to_thread(
-            db.table("image_product_associations")
+        for r in await _paged(
+            lambda: db.table("image_product_associations")
             .select("product_id, document_images!inner(id, document_id, page_number, bbox, extraction_layer, has_slig_embedding, metadata)")
-            .in_("product_id", ids).execute
-        )):
+            .in_("product_id", ids), "product_id", "image_id"):
             images[r["product_id"]] = images.get(r["product_id"], 0) + 1
             product_images.setdefault(names.get(r["product_id"], r["product_id"]), []).append(r["document_images"])
     sources = sorted({(i.get("metadata") or {}).get("restored_from") for imgs in product_images.values() for i in imgs
@@ -126,9 +136,9 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
             if (i.get("metadata") or {}).get("restored_from") in source_px:
                 i["source_px"] = source_px[i["metadata"]["restored_from"]]
     unresolved = _rows(await asyncio.to_thread(db.rpc("document_image_paths_unresolved", {"p_document_id": doc_id}).execute))
-    open_corrections = _rows(await asyncio.to_thread(
-        db.table("ingestion_corrections").select("id, code, outcome, message, count").eq("document_id", doc_id)
-        .is_("acknowledged_at", "null").neq("outcome", "corrected").execute))
+    open_corrections = await _paged(
+        lambda: db.table("ingestion_corrections").select("id, code, outcome, message, count").eq("document_id", doc_id)
+        .is_("acknowledged_at", "null").neq("outcome", "corrected"), "id")
     return {"products": products, "layout": layout, "chunks": chunks, "tables": tables, "embedded": embedded, "images": images,
             "product_images": product_images, "snapshots": snapshots, "unsettled_images": await _unsettled_images(db, doc_id),
             "unresolved_paths": unresolved, "open_corrections": open_corrections}
@@ -146,8 +156,8 @@ async def _unsettled_images(db: Any, doc_id: str) -> List[Dict[str, Any]]:
             break
     linked: set = set()
     for ids in _batches([r["id"] for r in rows], ID_BATCH):
-        linked |= {r["image_id"] for r in _rows(await asyncio.to_thread(
-            db.table("image_product_associations").select("image_id").in_("image_id", ids).execute))}
+        linked |= {r["image_id"] for r in await _paged(
+            lambda: db.table("image_product_associations").select("image_id").in_("image_id", ids), "image_id", "product_id")}
     return unsettled_images(rows, linked)
 
 

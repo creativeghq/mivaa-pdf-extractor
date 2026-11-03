@@ -185,3 +185,38 @@ def test_a_variant_the_maker_misspelt_is_not_missing():
     products = [{"id": "n", "name": "Nobu", "attributes": {"color": ["bone", "natural"]}, "metadata": {"page_range": [12]}}]
     images = {"Nobu": [{"extraction_layer": "manufacturer_original", "metadata": {"source_url": url}}]}
     assert runner.series_coverage({"layout": [], "products": products, "product_images": images})[0]["missing_variants"] == []
+
+
+class _PagedQuery:
+    def __init__(self, total):
+        self.total, self.ordered = total, []
+
+    def order(self, col):
+        self.ordered.append(col)
+        return self
+
+    def range(self, start, end):
+        rows = [{"n": i} for i in range(start, min(end + 1, self.total))]
+        return types.SimpleNamespace(execute=lambda: types.SimpleNamespace(data=rows))
+
+
+def test_a_read_past_the_1000_row_cap_returns_every_row():
+    made = []
+
+    def make():
+        made.append(_PagedQuery(2345))
+        return made[-1]
+
+    rows = asyncio.run(runner._paged(make, "product_id", "image_id"))
+    assert [r["n"] for r in rows] == list(range(2345))
+    assert len(made) == 3 and made[0].ordered == ["product_id", "image_id"]
+
+
+def test_every_read_scoped_to_a_document_or_its_products_pages():
+    src = (_ROOT / "app/services/pdf/ingestion_audit_runner.py").read_text(encoding="utf-8")
+    lines = src[src.index("async def _collect"):src.index("async def _download")].splitlines()
+    scoped = ('.eq("document_id"', '.eq("source_document_id"', '.in_("product_id"', '.in_("image_id"')
+    for n, line in enumerate(lines):
+        if any(s in line for s in scoped):
+            window = " ".join(lines[max(0, n - 3):n + 2])
+            assert "_paged(" in window or ".range(" in window, line.strip()
