@@ -27,7 +27,7 @@ from app.services.core.supabase_client import get_supabase_client
 from app.services.images import manufacturer_site as site
 from app.services.images.image_matching import (
     MatchScore, classical_cleanup, faces_in_crop, gallery_can_replace, is_patterned, match_score, pick_match,
-    redundant_resized_copies, redundant_scale_renders, repair_is_faithful,
+    redundant_resized_copies, redundant_scale_renders, repair_is_faithful, within_upscale,
 )
 from app.utils.ssrf_guard import safe_fetch_bytes
 from app.services.images.association_scores import PAGE_LINK_SCORE, SOURCED_MATCH_SCORE
@@ -472,6 +472,8 @@ class ImageSourcing:
                 await self._embed(crop, crop_bytes)
             self.summary["kept_source"] += 1
             return
+        from app.services.pdf.ingestion_audit import UPSCALE_LIMIT
+        restored = within_upscale(restored, native, UPSCALE_LIMIT)
         cls = (crop.get("metadata") or {}).get("ai_classification")
         saved = await self._store(product, restored, crop.get("page_number") or 1, "restored", "pdf_processing",
                                   {"restored_from": crop["id"], "restore_method": method, "restore_fidelity": fidelity,

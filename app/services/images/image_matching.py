@@ -182,6 +182,18 @@ def classical_cleanup(img: Image.Image) -> Image.Image:
     return Image.fromarray(cv2.cvtColor(a, cv2.COLOR_BGR2RGB))
 
 
+def within_upscale(img: Image.Image, native_px: Optional[Sequence[int]], limit: float) -> Image.Image:
+    """The repair scaled down to at most `limit` x its source's real pixels: past that it is enlargement, not detail."""
+    try:
+        cap = int(max(int(native_px[0]), int(native_px[1])) * limit)
+    except (TypeError, ValueError, IndexError):
+        return img
+    if cap <= 0 or max(img.size) <= cap:
+        return img
+    s = cap / max(img.size)
+    return img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), Image.LANCZOS)
+
+
 def repair_is_faithful(source: Image.Image, repaired: Image.Image, native_px: Optional[List[int]]) -> Tuple[bool, float]:
     """Shrink the repair back to the source's real resolution: if it is no longer the same picture,
     the model redrew it."""

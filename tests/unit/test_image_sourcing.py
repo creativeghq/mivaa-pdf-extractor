@@ -184,6 +184,22 @@ def test_the_classical_cleanup_never_enlarges():
     assert classical_cleanup(src).size == (51, 51)
 
 
+def test_a_repair_is_stored_at_most_the_audit_limit_over_its_real_pixels():
+    pytest.importorskip("cv2")
+    from PIL import Image as _Image
+    big = _Image.new("RGB", (595, 300), (90, 90, 95))
+    assert _matching.within_upscale(big, [150, 76], 2.0).size == (300, 151)
+    assert _matching.within_upscale(big, [400, 200], 2.0).size == (595, 300)
+    assert _matching.within_upscale(big, None, 2.0) is big
+
+
+def test_the_sourcing_repair_caps_its_size_before_storing_it():
+    budget = _load("comment_budget_for_sourcing", "scripts/comment_budget.py")
+    src = budget.blank_comments((_ROOT / "app/services/images/image_sourcing.py").read_text(encoding="utf-8"))
+    body = src[src.index("async def _repair"):src.index("async def run_product")]
+    assert body.index("within_upscale(restored, native, UPSCALE_LIMIT)") < body.index("await self._store(")
+
+
 def _render(canvas, content, colour, bg=(255, 255, 255)):
     from PIL import Image as _Image
     im = _Image.new("RGB", canvas, bg)
