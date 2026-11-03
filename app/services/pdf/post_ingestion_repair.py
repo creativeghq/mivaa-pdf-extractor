@@ -1,7 +1,7 @@
 """After an ingestion, apply the fixes the audit's findings have a deterministic answer for.
 
 Table chunks for products whose tables have none, the printed lines behind pages missing numbers,
-one row per duplicated image, and printed-label links on shared pages. Every step is idempotent; a failed step is recorded, never raised.
+one row per duplicated image, printed-label links on shared pages, and a decision for every unlinked image. Every step is idempotent; a failed step is recorded, never raised.
 """
 
 from __future__ import annotations
@@ -223,5 +223,7 @@ async def repair_document(document_id: str, supabase: Any, log: Optional[logging
     if pdf is not None:
         from app.services.images.label_linking import relink_by_labels
         await step("label_links", relink_by_labels(supabase, document_id, pdf))
+        from app.services.images.unlinked_images import settle_unlinked_images
+        await step("unlinked_images", settle_unlinked_images(supabase, document_id, pdf))
     log.info(f"   Post-ingestion repair: {', '.join(f'{k}={v}' for k, v in out.items())[:600]}")
     return out

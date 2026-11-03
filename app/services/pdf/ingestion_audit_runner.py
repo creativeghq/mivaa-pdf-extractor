@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.services.flow_events import emit_flow_event
-from app.services.pdf.ingestion_audit import AuditResult, audit_document, db_status, platform_numbers_for_page
+from app.services.pdf.ingestion_audit import AuditResult, audit_document, db_status, platform_numbers_for_page, unsettled_images
 from app.services.pdf.catalogue_tables import plan_catalogue_tables
 from app.services.pdf.ocr_completeness import numeric_tokens
 from app.services.pdf.text_layer_extractor import assess_text_layer, reference_numbers
@@ -126,7 +126,24 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
             if (i.get("metadata") or {}).get("restored_from") in source_px:
                 i["source_px"] = source_px[i["metadata"]["restored_from"]]
     return {"products": products, "layout": layout, "chunks": chunks, "tables": tables, "embedded": embedded, "images": images,
-            "product_images": product_images, "snapshots": snapshots}
+            "product_images": product_images, "snapshots": snapshots, "unsettled_images": await _unsettled_images(db, doc_id)}
+
+
+async def _unsettled_images(db: Any, doc_id: str) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    while True:
+        batch = _rows(await asyncio.to_thread(
+            db.table("document_images").select("id, page_number, image_type, metadata").eq("document_id", doc_id).order("id")
+            .range(len(rows), len(rows) + PAGE_BATCH - 1).execute
+        ))
+        rows.extend(batch)
+        if len(batch) < PAGE_BATCH:
+            break
+    linked: set = set()
+    for ids in _batches([r["id"] for r in rows], ID_BATCH):
+        linked |= {r["image_id"] for r in _rows(await asyncio.to_thread(
+            db.table("image_product_associations").select("image_id").in_("image_id", ids).execute))}
+    return unsettled_images(rows, linked)
 
 
 async def _download(db: Any, document: Dict[str, Any]) -> Optional[bytes]:
@@ -279,6 +296,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         phase=phase,
         product_images=collected.get("product_images"),
         other_series=collected.get("other_series"),
+        unsettled_images=collected.get("unsettled_images"),
         series_coverage=series_coverage(collected) if pdf_bytes else None,
     )
 

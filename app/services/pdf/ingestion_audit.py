@@ -330,6 +330,7 @@ def audit_document(
     web: Optional[Dict[str, Any]] = None,
     product_images: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     other_series: Optional[Sequence[Dict[str, Any]]] = None,
+    unsettled_images: Optional[Sequence[Dict[str, Any]]] = None,
     series_coverage: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> AuditResult:
     findings: List[Finding] = []
@@ -355,6 +356,7 @@ def audit_document(
     if phase != "pre_embed":
         image_findings(product_images or {}, findings, metrics)
         image_integrity_findings(product_images or {}, other_series or [], findings, metrics)
+        unsettled_image_findings(unsettled_images or [], findings, metrics)
     unrouted = sum(1 for p in pages if not p.get("route")) if source_kind == "pdf" else 0
     metrics["pages"] = len(pages)
     metrics["pages_never_checked_against_text_layer"] = unrouted
@@ -477,6 +479,27 @@ def image_integrity_findings(product_images: Dict[str, List[Dict[str, Any]]], ot
         findings.append(Finding(FAIL, "duplicate_images_same_position", f"{sum(len(d) - 1 for d in duplicates)} extra image(s) were cut from the same spot on the same page", sum(len(d) - 1 for d in duplicates), duplicates))
     if other_series:
         findings.append(Finding(FAIL, "images_on_other_series_page", f"{len(other_series)} image(s) belong to a product but sit on a page that prints only other series' names", len(other_series), list(other_series)))
+
+
+def owes_a_product(row: Dict[str, Any]) -> bool:
+    """A live material image: not retired, not a spec icon, not decorative, not classified as non-material."""
+    meta = row.get("metadata") or {}
+    if "excluded_from_products" in meta or meta.get("bundle_skipped_reason") or row.get("image_type") == "DECORATIVE":
+        return False
+    return (meta.get("ai_classification") or {}).get("is_material") is not False
+
+
+def unsettled_images(images: Sequence[Dict[str, Any]], linked_ids: Set[str]) -> List[Dict[str, Any]]:
+    """Live material images holding no link."""
+    return [{"image_id": i["id"], "page": i.get("page_number")} for i in images
+            if i["id"] not in linked_ids and owes_a_product(i)]
+
+
+def unsettled_image_findings(unsettled: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    """A live material image with no product and no exclusion: nothing decided what it is."""
+    metrics["images_unsettled"] = len(unsettled)
+    if unsettled:
+        findings.append(Finding(FAIL, "images_unsettled", f"{len(unsettled)} material image(s) are linked to no product and were never excluded", len(unsettled), list(unsettled)))
 
 
 def platform_numbers_for_page(layout_text: str, chunk_texts: Iterable[str], table_texts: Iterable[str]) -> Set[str]:

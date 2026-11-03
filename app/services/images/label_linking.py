@@ -149,29 +149,49 @@ def _in_chunks(ids: List[str], size: int = 200):
         yield ids[i:i + size]
 
 
-async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple[Any, int, List[Dict[str, Any]]]:
-    """Every image the printed labels have a say on, with the series its label names (or None)."""
+@dataclass
+class LabelContext:
+    db: Any
+    images: List[Dict[str, Any]]
+    links: Dict[str, Set[str]]
+    series: Dict[str, Tuple[str, ...]]
+    product_of: Dict[str, str]
+    layout: Any
+    words: List[Any]
+    sizes: List[Tuple[float, float]]
+    furniture: Set[Tuple[str, ...]]
+
+    def lines_for(self, page_number: int) -> Optional[Tuple[int, str, List[Line]]]:
+        """(pdf page index, side, the half page's lines) for a physical page, or None."""
+        where = self.layout.physical_to_pdf_map.get(page_number)
+        if not where or where[0] >= len(self.words):
+            return None
+        pdf_idx, side = where
+        width, height = self.sizes[pdf_idx]
+        return pdf_idx, side, half_lines(self.words[pdf_idx], width, height, side, self.furniture)
+
+
+async def label_context(supabase: Any, document_id: str, pdf_bytes: bytes) -> Optional[LabelContext]:
+    """The document's live images, their links, the series names in play and the PDF text layer."""
     import fitz
     from app.utils.pdf_to_images import analyze_pdf_layout
 
     db = getattr(supabase, "client", supabase)
-    images = await asyncio.to_thread(_all, lambda: db.table("document_images").select("id, page_number, bbox, metadata, workspace_id")
+    images = await asyncio.to_thread(_all, lambda: db.table("document_images").select("id, page_number, bbox, metadata, workspace_id, image_type")
                                      .eq("document_id", document_id).order("id"))
     images = [i for i in images if "excluded_from_products" not in (i.get("metadata") or {})]
+    if not images:
+        return None
     links: Dict[str, Set[str]] = defaultdict(set)
     for chunk in _in_chunks([i["id"] for i in images]):
         for r in db.table("image_product_associations").select("image_id, product_id").in_("image_id", chunk).execute().data or []:
             links[r["image_id"]].add(r["product_id"])
-    by_page: Dict[int, Set[str]] = defaultdict(set)
-    for i in images:
-        by_page[i["page_number"]] |= links.get(i["id"], set())
-    shared = {p for p, prods in by_page.items() if len(prods) > 1}
-    if not by_page:
-        return db, 0, []
 
     linked = sorted({pid for i in images for pid in links.get(i["id"], set())})
     own = db.table("products").select("id, name, brand_company_id, workspace_id").eq("source_document_id", document_id).execute().data or []
     seed = own + [r for c in _in_chunks(linked) for r in (db.table("products").select("id, name, brand_company_id, workspace_id").in_("id", c).execute().data or [])]
+    if not seed:
+        return None
     brands = sorted({p["brand_company_id"] for p in seed if p.get("brand_company_id")})
     pool = list({p["id"]: p for p in seed}.values())
     if brands:
@@ -181,7 +201,6 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
         ids_by_name[tokens_of(p["name"])].add(p["id"])
     series = {" ".join(t): t for t, ids in ids_by_name.items() if t and len(ids) == 1}
     product_of = {" ".join(t): next(iter(ids)) for t, ids in ids_by_name.items() if t and len(ids) == 1}
-    name_of = {pid: name for name, pid in product_of.items()}
 
     with tempfile.NamedTemporaryFile(suffix=".pdf") as fh:
         fh.write(pdf_bytes)
@@ -193,7 +212,20 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
         sizes = [(doc[i].rect.width, doc[i].rect.height) for i in range(doc.page_count)]
     finally:
         doc.close()
-    furniture = furniture_lines(words)
+    return LabelContext(db, images, links, series, product_of, layout, words, sizes, furniture_lines(words))
+
+
+async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple[Any, int, List[Dict[str, Any]]]:
+    """Every image the printed labels have a say on, with the series its label names (or None)."""
+    ctx = await label_context(supabase, document_id, pdf_bytes)
+    if ctx is None:
+        return getattr(supabase, "client", supabase), 0, []
+    images, links, series, product_of = ctx.images, ctx.links, ctx.series, ctx.product_of
+    by_page: Dict[int, Set[str]] = defaultdict(set)
+    for i in images:
+        by_page[i["page_number"]] |= links.get(i["id"], set())
+    shared = {p for p, prods in by_page.items() if len(prods) > 1}
+    name_of = {pid: name for name, pid in product_of.items()}
 
     out: List[Dict[str, Any]] = []
     for img in images:
@@ -201,12 +233,10 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
         single = len(current) == 1
         if not current or (img["page_number"] not in shared and not single) or (not img.get("bbox") and not single):
             continue
-        where = layout.physical_to_pdf_map.get(img["page_number"])
-        if not where or where[0] >= len(words):
+        half = ctx.lines_for(img["page_number"])
+        if not half:
             continue
-        pdf_idx, side = where
-        width, height = sizes[pdf_idx]
-        lines = half_lines(words[pdf_idx], width, height, side, furniture)
+        lines = half[2]
         own_name = name_of.get(next(iter(current))) if single else None
         # One link is settled (a product shot is often labelled elsewhere) unless its page prints only other series.
         if single and not names_only_others(lines, series, own_name):
@@ -215,7 +245,7 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
         out.append({"image": img, "current": current, "name": name, "target": product_of.get(name) if name else None,
                     "only_others": single, "product": own_name,
                     "printed": sorted(set().union(*(series_on(l.tokens, series) for l in lines))) if single else []})
-    return db, len(shared), out
+    return ctx.db, len(shared), out
 
 
 async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, apply: bool = True) -> Dict[str, Any]:

@@ -314,3 +314,29 @@ def test_a_series_the_makers_site_does_not_show_is_named():
                                  {"product": "Saboya", "missing_variants": [], "pages_outside": [], "site_status": "found"}], findings, metrics)
     off = next(f for f in findings if f.code == "series_not_on_maker_site")
     assert off.severity == ia.WARN and off.examples == ["Padua"]
+
+
+def test_an_image_nothing_linked_or_excluded_fails_the_audit():
+    findings, metrics = [], {}
+    ia.unsettled_image_findings([{"image_id": "a", "page": 4}], findings, metrics)
+    assert metrics["images_unsettled"] == 1
+    assert [(f.severity, f.code, f.count) for f in findings] == [(ia.FAIL, "images_unsettled", 1)]
+    findings, metrics = [], {}
+    ia.unsettled_image_findings([], findings, metrics)
+    assert findings == [] and metrics["images_unsettled"] == 0
+
+
+def test_only_a_live_material_image_is_owed_a_product():
+    owes = lambda meta, **row: ia.owes_a_product({"id": "x", "metadata": meta, **row})
+    assert owes({}) and owes({"ai_classification": {"is_material": True}})
+    assert not owes({"excluded_from_products": {"reason": "duplicate_image"}})
+    assert not owes({"bundle_skipped_reason": "icon_candidate_spec_path"})
+    assert not owes({"ai_classification": {"is_material": False}})
+    assert not owes({}, image_type="DECORATIVE")
+
+
+def test_unsettled_lists_live_material_images_with_no_link():
+    rows = [{"id": "a", "page_number": 1, "metadata": {}}, {"id": "b", "page_number": 2, "metadata": {}},
+            {"id": "c", "page_number": 3, "metadata": {"excluded_from_products": {}}},
+            {"id": "d", "page_number": 4, "metadata": {"bundle_skipped_reason": "icon_candidate_spec_path"}}]
+    assert ia.unsettled_images(rows, {"b"}) == [{"image_id": "a", "page": 1}]
