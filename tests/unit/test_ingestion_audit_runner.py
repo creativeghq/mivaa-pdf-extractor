@@ -178,3 +178,10 @@ def test_a_page_held_by_a_product_sharing_the_printed_name_is_not_outside_the_ra
     assert [c["pages_outside"] for c in cov] == [[], []]
     products[1]["metadata"]["page_range"] = [300]
     assert runner.series_coverage({"layout": layout, "products": products, "product_images": {}})[0]["pages_outside"] == [203]
+
+
+def test_a_variant_the_maker_misspelt_is_not_missing():
+    url = "https://keros.com/x/NOBU-NATUTAL-en-YUq06a9zqGjRyNgB.jpg"
+    products = [{"id": "n", "name": "Nobu", "attributes": {"color": ["bone", "natural"]}, "metadata": {"page_range": [12]}}]
+    images = {"Nobu": [{"extraction_layer": "manufacturer_original", "metadata": {"source_url": url}}]}
+    assert runner.series_coverage({"layout": [], "products": products, "product_images": images})[0]["missing_variants"] == []

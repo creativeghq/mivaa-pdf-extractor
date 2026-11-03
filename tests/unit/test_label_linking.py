@@ -80,3 +80,13 @@ def test_a_page_naming_many_series_is_an_index_not_another_series_page():
     series = {" ".join(t): t for t in map(ll.tokens_of, ["Ardenza", "Calma", "Wood", "Habitat", "Saboya", "Amalfi"])}
     assert not ll.names_only_others(many, series, "amalfi")
     assert ll.names_only_others(many[:2], series, "amalfi")
+
+
+def test_a_photo_from_the_makers_site_is_never_judged_by_a_page_it_was_not_on():
+    assert "manufacturer_original" in ll.OFF_PAGE_LAYERS
+    spec = importlib.util.spec_from_file_location("comment_budget_for_labels", _ROOT / "scripts/comment_budget.py")
+    budget = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(budget)
+    src = budget.blank_comments((_ROOT / "app/services/images/label_linking.py").read_text(encoding="utf-8"))
+    body = src[src.index("async def _decisions"):src.index("async def relink_by_labels")]
+    assert body.index("OFF_PAGE_LAYERS") < body.index("names_only_others(")

@@ -196,7 +196,8 @@ def series_coverage(collected: Dict[str, Any]) -> List[Dict[str, Any]]:
             for x in (v if isinstance(v, list) else [v]):
                 if isinstance(x, str):
                     offered |= set(sr.fold(x).split())
-        missing = [v for v in site_names[p["name"]] if not set(v.split()) & offered and set(v.split()) - common]
+        missing = [v for v in site_names[p["name"]]
+                   if not any(sr.one_slip(w, o) for w in v.split() for o in offered) and set(v.split()) - common]
         own = set(sr.series_pages(pages, p["name"], names))
         # A page in the range of a product sharing the printed name ("Alchemy 30x90") is that product's, not outside.
         ranged = [q for q in collected["products"] if q is p or shares_series(tokens_of(p["name"]), tokens_of(q["name"]))]

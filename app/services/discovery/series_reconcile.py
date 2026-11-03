@@ -78,6 +78,25 @@ def series_pages(pages: Dict[int, str], name: str, all_names: Sequence[str] = ()
     return out
 
 
+SLIP_MIN_LEN = 6
+
+
+def one_slip(a: str, b: str) -> bool:
+    """The same word but for one typed slip (a wrong, missing, extra or swapped letter): "natutal" is "natural".
+
+    Words under SLIP_MIN_LEN letters must match exactly; there a slip is as likely another colour.
+    """
+    if a == b:
+        return True
+    if min(len(a), len(b)) < SLIP_MIN_LEN or abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        return len(diff) == 1 or (len(diff) == 2 and diff[1] == diff[0] + 1 and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]])
+    short, long_ = sorted((a, b), key=len)
+    return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
+
+
 def site_variant_names(urls: Iterable[str], name: str) -> List[str]:
     """`SABOYA-OLAS-BEIGE-en-t6VT….jpg` -> "olas beige": what the maker calls the variant it photographed."""
     head = fold(name).split()

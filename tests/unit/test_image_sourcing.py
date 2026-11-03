@@ -302,3 +302,10 @@ def test_a_smoothed_repair_needs_a_gallery_photo_half_its_size():
     smear = _Image.new("RGB", (400, 110), grey)
     assert _matching.gallery_can_replace(smear, _render((500, 500), (250, 62), grey), 400, smoothed=True)
     assert not _matching.gallery_can_replace(smear, _render((500, 500), (150, 40), grey), 400, smoothed=True)
+
+
+def test_an_image_made_from_a_crop_is_filed_under_the_crops_own_document():
+    budget = _load("comment_budget_for_sourcing_docs", "scripts/comment_budget.py")
+    src = budget.blank_comments((_ROOT / "app/services/images/image_sourcing.py").read_text(encoding="utf-8"))
+    assert '"document_id": document_id,' in src and '"document_id": self.document_id,' not in src
+    assert 'cls, crop.get("document_id"))' in src and "verdict, crop_doc)" in src

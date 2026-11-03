@@ -319,15 +319,18 @@ class ImageSourcing:
         return None if classification_failed(verdict) else verdict
 
     async def _store(self, product: Dict[str, Any], img: Image.Image, page_number: int, layer: str,
-                     source_type: str, extra: Dict[str, Any], classification: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+                     source_type: str, extra: Dict[str, Any], classification: Optional[Dict[str, Any]],
+                     document_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """`document_id` is the PDF the page number belongs to: a crop linked from another catalogue keeps its own."""
+        document_id = document_id or self.document_id
         data = _jpeg(img)
-        up = await self.sb.upload_image_file(data, f"{layer}_{uuid.uuid4().hex[:12]}.jpg", self.document_id, page_number)
+        up = await self.sb.upload_image_file(data, f"{layer}_{uuid.uuid4().hex[:12]}.jpg", document_id, page_number)
         if not up.get("success"):
             self.summary["errors"].append(f"upload failed for {product['name']}")
             return None
         cls = classification or {}
         row = {
-            "document_id": self.document_id,
+            "document_id": document_id,
             "workspace_id": product.get("workspace_id") or self.workspace_id,
             "image_url": up["public_url"],
             "image_type": cls.get("classification") or "PRODUCT_IMAGE",
@@ -477,7 +480,7 @@ class ImageSourcing:
         cls = (crop.get("metadata") or {}).get("ai_classification")
         saved = await self._store(product, restored, crop.get("page_number") or 1, "restored", "pdf_processing",
                                   {"restored_from": crop["id"], "restore_method": method, "restore_fidelity": fidelity,
-                                   "source_native_px": native}, cls)
+                                   "source_native_px": native}, cls, crop.get("document_id"))
         if not saved:
             self._mark(crop, "kept_source")
             if not crop.get("has_slig_embedding"):
@@ -541,12 +544,13 @@ class ImageSourcing:
                     continue
                 how = next(({"mode": s.mode, "score": round(s.score, 3), "detail": s.detail, "crop": cid}
                             for cid, hits in matches.items() for hu, s in hits if hu == u), None)
-                page_no = next((c.get("page_number") for c, _, _ in loaded if how and c["id"] == how["crop"]), None)
+                crop = next((c for c, _, _ in loaded if how and c["id"] == how["crop"]), None)
+                page_no, crop_doc = (crop.get("page_number"), crop.get("document_id")) if crop else (None, None)
                 confirmation = {"mode": "confirmed_page", "confirmed_by": sorted(matches)} if matches \
                     else {"mode": "page_slug_is_product_name"}
                 saved = await self._store(product, img, page_no or 1, "manufacturer_original", "web_scraping",
                                           {"source_url": u, "source_page": page, "match": how or confirmation},
-                                          verdict)
+                                          verdict, crop_doc)
                 if saved:
                     stored[u] = saved["id"]
                     await self._embed(saved, data)

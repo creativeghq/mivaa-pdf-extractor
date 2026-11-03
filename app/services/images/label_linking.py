@@ -24,6 +24,8 @@ ABOVE_GAP = 0.05
 SIDE_SLACK = 0.02
 FURNITURE_PAGES = 10
 CROWDED_SERIES = 5
+# Photos fetched from the maker's site: their page number is a bookkeeping value, not a place on a page.
+OFF_PAGE_LAYERS = ("manufacturer_original",)
 
 
 @dataclass
@@ -218,7 +220,7 @@ async def label_context(supabase: Any, document_id: str, pdf_bytes: bytes) -> Op
     from app.utils.pdf_to_images import analyze_pdf_layout
 
     db = getattr(supabase, "client", supabase)
-    images = await asyncio.to_thread(_all, lambda: db.table("document_images").select("id, page_number, bbox, metadata, workspace_id, image_type")
+    images = await asyncio.to_thread(_all, lambda: db.table("document_images").select("id, page_number, bbox, metadata, workspace_id, image_type, extraction_layer")
                                      .eq("document_id", document_id).order("id"))
     images = [i for i in images if "excluded_from_products" not in (i.get("metadata") or {})]
     if not images:
@@ -272,6 +274,8 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
 
     out: List[Dict[str, Any]] = []
     for img in images:
+        if img.get("extraction_layer") in OFF_PAGE_LAYERS:
+            continue
         current = links.get(img["id"], set())
         single = len(current) == 1
         if not current or (img["page_number"] not in shared and not single) or (not img.get("bbox") and not single):

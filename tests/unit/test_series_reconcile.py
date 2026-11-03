@@ -54,3 +54,8 @@ def test_sizes_single_letters_and_language_codes_in_a_photo_name_are_not_variant
             "https://keros.com/x/TECHNO-SQUARE-EN.jpg", "https://keros.com/x/LEGNO-OAK-en-AbCdEfGhIjKlMnOp.jpg"]
     assert sr.site_variant_names(urls, "Livorno") == [] and sr.site_variant_names(urls, "Galaxy") == []
     assert sr.site_variant_names(urls, "Techno") == ["square"] and sr.site_variant_names(urls, "Legno") == ["oak"]
+
+
+def test_a_one_letter_slip_in_a_long_colour_name_is_the_same_colour_and_a_short_one_is_not():
+    assert sr.one_slip("natutal", "natural") and sr.one_slip("natrual", "natural") and sr.one_slip("naturl", "natural")
+    assert not sr.one_slip("gris", "grey") and not sr.one_slip("bone", "bona") and not sr.one_slip("natural", "neutral")
