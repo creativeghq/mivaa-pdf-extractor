@@ -118,11 +118,9 @@ class PaddleService:
             print(f"⚠️ paddle.set_device(gpu) failed: {e}")
         print(f"PADDLE device after set = {paddle.device.get_device()}")
 
-        # use_queues=False forces PaddleOCR-VL's SYNCHRONOUS single-thread path.
-        # The default config ships use_queues=True, which spawns a 3-thread
-        # producer/consumer pipeline whose VLM worker (_worker_vlm) deadlocks at
-        # startup on this GPU/container (queue_cv/queue_vlm block forever) — the
-        # root cause of the cold-start hang. The sync path has no worker thread.
+        # use_queues=False: the default 3-thread pipeline's VLM worker deadlocks at startup here.
+        # This does NOT cure the other cold-start hang: a native op inside the VLM decode that never
+        # returns (a GPU stall; see the warm-up recycle below).
         self.pipeline = PaddleOCRVL(
             device="gpu",
             use_queues=False,
@@ -131,8 +129,7 @@ class PaddleService:
 
         # Cold-start warmup. The first predict() is slow (>60s measured) and a recycle costs a ~9 min
         # Modal crash-loop back-off, so the budget is long; only a call that never returns recycles.
-        # The call is capped at WARMUP_MAX_NEW_TOKENS: an uncapped 2048-token generation on a blank
-        # synthetic image is the suspected cause of the original hang.
+        # A wedged predict cannot recover in-process, so a longer budget only delays the same recycle.
         import threading as _th, time as _t, tempfile
         from PIL import Image, ImageDraw
         WARMUP_BUDGET = int(os.environ.get("PADDLEOCR_WARMUP_BUDGET", "90"))
