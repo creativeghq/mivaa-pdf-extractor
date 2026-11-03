@@ -18,7 +18,7 @@ def _load(name, relative):
     return module
 
 
-for _pkg in ("app", "app.services", "app.services.pdf", "app.services.discovery"):
+for _pkg in ("app", "app.services", "app.services.pdf", "app.services.discovery", "app.services.images"):
     sys.modules.setdefault(_pkg, types.ModuleType(_pkg))
 flow_stub = types.ModuleType("app.services.flow_events")
 flow_stub.emit_flow_event = lambda event_type, data, url, key: sent.append((event_type, data)) or True
@@ -28,6 +28,7 @@ _load("app.services.pdf.text_layer_extractor", "app/services/pdf/text_layer_extr
 _load("app.services.pdf.ingestion_audit", "app/services/pdf/ingestion_audit.py")
 _load("app.services.pdf.catalogue_tables", "app/services/pdf/catalogue_tables.py")
 sys.modules["app.services.discovery"].series_reconcile = _load("app.services.discovery.series_reconcile", "app/services/discovery/series_reconcile.py")
+_load("app.services.images.label_linking", "app/services/images/label_linking.py")
 runner = _load("ingestion_audit_runner_under_test", "app/services/pdf/ingestion_audit_runner.py")
 
 fitz = pytest.importorskip("fitz")
@@ -167,3 +168,13 @@ def test_a_dry_run_stores_and_notifies_nobody():
     out = run(db, persist=False, notify=False)
     assert out["audit_id"] is None and out["notified"] == 0
     assert not [1 for n, _ in db.inserted if n == "ingestion_audits"] and sent == []
+
+
+def test_a_page_held_by_a_product_sharing_the_printed_name_is_not_outside_the_range():
+    layout = [{"page_number": n, "layout_elements": [{"text_content": "ALCHEMY WHITE 30x90 rectified", "metadata": {}}]} for n in (45, 203)]
+    products = [{"id": "a", "name": "ALCHEMY", "metadata": {"page_range": [45]}},
+                {"id": "w", "name": "ALCHEMY 30x90", "metadata": {"page_range": [203]}}]
+    cov = runner.series_coverage({"layout": layout, "products": products, "product_images": {}})
+    assert [c["pages_outside"] for c in cov] == [[], []]
+    products[1]["metadata"]["page_range"] = [300]
+    assert runner.series_coverage({"layout": layout, "products": products, "product_images": {}})[0]["pages_outside"] == [203]

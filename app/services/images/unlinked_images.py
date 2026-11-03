@@ -35,9 +35,13 @@ SCHEMA: Dict[str, Any] = {
 
 
 def page_candidates(page: int, printed: Set[str], product_of: Dict[str, str],
-                    pages_of: Dict[str, Set[int]]) -> List[str]:
+                    pages_of: Dict[str, Set[int]], siblings: Optional[Dict[str, List[str]]] = None) -> List[str]:
     """Product ids an image on `page` can belong to: series its half page prints, then series whose pages hold it."""
-    out = [product_of[n] for n in sorted(printed) if n in product_of]
+    out: List[str] = []
+    for n in sorted(printed):
+        for pid in (siblings or {}).get(n) or ([product_of[n]] if n in product_of else []):
+            if pid not in out:
+                out.append(pid)
     out += [pid for pid, pages in sorted(pages_of.items()) if page in pages and pid not in out]
     return out[:MAX_CANDIDATES]
 
@@ -159,12 +163,13 @@ async def settle_unlinked_images(supabase: Any, document_id: str, pdf_bytes: byt
         half = ctx.lines_for(img["page_number"])
         lines = half[2] if half else []
         name = (label_for(img["bbox"], lines, ctx.series) if img.get("bbox") else sole_series(lines, ctx.series)) if lines else None
-        if name and name in ctx.product_of:
-            link(img, ctx.product_of[name], "printed_label", label=name)
+        target = ctx.product_for(name, img["page_number"])
+        if target:
+            link(img, target, "printed_label", label=name)
             summary["linked_by_label"] += 1
             continue
         printed = set().union(*(series_on(l.tokens, ctx.series) for l in lines)) if lines else set()
-        candidates = page_candidates(img["page_number"], printed, ctx.product_of, pages_of)
+        candidates = page_candidates(img["page_number"], printed, ctx.product_of, pages_of, ctx.siblings)
         if not candidates:
             await exclude(img, "no_series_on_page")
         elif half is None:

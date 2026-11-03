@@ -14,7 +14,7 @@ import re
 import tempfile
 import unicodedata
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,28 @@ class Line:
 def tokens_of(text: str) -> Tuple[str, ...]:
     folded = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
     return tuple(t for t in re.split(r"[^a-z0-9]+", folded) if t)
+
+
+def shares_series(a: Sequence[str], b: Sequence[str]) -> bool:
+    """One name is the other plus a qualifier ("Alchemy" / "Alchemy 30x90"): the catalogue prints both as the shorter."""
+    n = min(len(a), len(b))
+    return n > 0 and len(a) != len(b) and tuple(a[:n]) == tuple(b[:n])
+
+
+def series_siblings(names: Dict[str, Tuple[str, ...]], product_of: Dict[str, str], own: Set[str]) -> Dict[str, List[str]]:
+    """{printed series: every product of this document it can mean} where more than one shares it.
+
+    Only this document's products have page ranges to tell them apart; others keep their one-name mapping.
+    """
+    out = {}
+    for s, st in names.items():
+        if product_of[s] not in own:
+            continue
+        sharing = [product_of[s]] + [product_of[t] for t, tt in names.items()
+                                     if product_of[t] in own and len(tt) > len(st) and shares_series(st, tt)]
+        if len(sharing) > 1:
+            out[s] = sharing
+    return out
 
 
 def _contains(hay: Sequence[str], needle: Sequence[str]) -> bool:
@@ -160,6 +182,25 @@ class LabelContext:
     words: List[Any]
     sizes: List[Tuple[float, float]]
     furniture: Set[Tuple[str, ...]]
+    pages_of: Dict[str, Set[int]] = field(default_factory=dict)
+    siblings: Dict[str, List[str]] = field(default_factory=dict)
+
+    def product_for(self, name: Optional[str], page: int) -> Optional[str]:
+        """The product a printed series name means on this page; shared by several, the one whose own pages hold it."""
+        if not name:
+            return None
+        sharing = self.siblings.get(name)
+        if not sharing:
+            return self.product_of.get(name)
+        holding = [pid for pid in sharing if page in self.pages_of.get(pid, set())]
+        return holding[0] if len(holding) == 1 else None
+
+    def printed_as(self, product_id: str) -> Optional[str]:
+        """The series name the catalogue prints for a product: the shared shorter name for a qualified sibling."""
+        for s, sharing in self.siblings.items():
+            if product_id in sharing:
+                return s
+        return next((n for n, pid in self.product_of.items() if pid == product_id), None)
 
     def lines_for(self, page_number: int) -> Optional[Tuple[int, str, List[Line]]]:
         """(pdf page index, side, the half page's lines) for a physical page, or None."""
@@ -188,7 +229,7 @@ async def label_context(supabase: Any, document_id: str, pdf_bytes: bytes) -> Op
             links[r["image_id"]].add(r["product_id"])
 
     linked = sorted({pid for i in images for pid in links.get(i["id"], set())})
-    own = db.table("products").select("id, name, brand_company_id, workspace_id").eq("source_document_id", document_id).execute().data or []
+    own = db.table("products").select("id, name, brand_company_id, workspace_id, metadata").eq("source_document_id", document_id).execute().data or []
     seed = own + [r for c in _in_chunks(linked) for r in (db.table("products").select("id, name, brand_company_id, workspace_id").in_("id", c).execute().data or [])]
     if not seed:
         return None
@@ -201,6 +242,8 @@ async def label_context(supabase: Any, document_id: str, pdf_bytes: bytes) -> Op
         ids_by_name[tokens_of(p["name"])].add(p["id"])
     series = {" ".join(t): t for t, ids in ids_by_name.items() if t and len(ids) == 1}
     product_of = {" ".join(t): next(iter(ids)) for t, ids in ids_by_name.items() if t and len(ids) == 1}
+    pages_of = {p["id"]: {int(n) for n in ((p.get("metadata") or {}).get("page_range") or [])
+                          if isinstance(n, (int, float)) and not isinstance(n, bool)} for p in own}
 
     with tempfile.NamedTemporaryFile(suffix=".pdf") as fh:
         fh.write(pdf_bytes)
@@ -212,7 +255,8 @@ async def label_context(supabase: Any, document_id: str, pdf_bytes: bytes) -> Op
         sizes = [(doc[i].rect.width, doc[i].rect.height) for i in range(doc.page_count)]
     finally:
         doc.close()
-    return LabelContext(db, images, links, series, product_of, layout, words, sizes, furniture_lines(words))
+    return LabelContext(db, images, links, series, product_of, layout, words, sizes, furniture_lines(words),
+                        pages_of, series_siblings(series, product_of, set(pages_of)))
 
 
 async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple[Any, int, List[Dict[str, Any]]]:
@@ -220,12 +264,11 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
     ctx = await label_context(supabase, document_id, pdf_bytes)
     if ctx is None:
         return getattr(supabase, "client", supabase), 0, []
-    images, links, series, product_of = ctx.images, ctx.links, ctx.series, ctx.product_of
+    images, links, series = ctx.images, ctx.links, ctx.series
     by_page: Dict[int, Set[str]] = defaultdict(set)
     for i in images:
         by_page[i["page_number"]] |= links.get(i["id"], set())
     shared = {p for p, prods in by_page.items() if len(prods) > 1}
-    name_of = {pid: name for name, pid in product_of.items()}
 
     out: List[Dict[str, Any]] = []
     for img in images:
@@ -237,12 +280,12 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
         if not half:
             continue
         lines = half[2]
-        own_name = name_of.get(next(iter(current))) if single else None
+        own_name = ctx.printed_as(next(iter(current))) if single else None
         # One link is settled (a product shot is often labelled elsewhere) unless its page prints only other series.
         if single and not names_only_others(lines, series, own_name):
             continue
         name = label_for(img["bbox"], lines, series) if img.get("bbox") else sole_series(lines, series)
-        out.append({"image": img, "current": current, "name": name, "target": product_of.get(name) if name else None,
+        out.append({"image": img, "current": current, "name": name, "target": ctx.product_for(name, img["page_number"]),
                     "only_others": single, "product": own_name,
                     "printed": sorted(set().union(*(series_on(l.tokens, series) for l in lines))) if single else []})
     return ctx.db, len(shared), out

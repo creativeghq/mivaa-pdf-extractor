@@ -20,6 +20,7 @@ def test_candidates_are_the_printed_series_then_the_series_whose_pages_hold_the_
     assert ui.page_candidates(7, {"calma", "saboya"}, product_of, pages_of) == ["p1", "p2", "p3"]
     assert ui.page_candidates(9, set(), product_of, pages_of) == ["p9"]
     assert ui.page_candidates(1, {"unknown"}, product_of, pages_of) == []
+    assert ui.page_candidates(1, {"calma"}, product_of, {}, {"calma": ["p1", "p1w"]}) == ["p1", "p1w"]
 
 
 def test_a_verdict_counts_only_when_it_names_a_real_image_and_a_real_series():

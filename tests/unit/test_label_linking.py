@@ -58,6 +58,23 @@ def test_an_image_with_no_position_goes_to_the_one_series_its_page_prints():
     assert ll.sole_series(titan + [_line(0.1, 0.9, 0.4, 0.93, "TIBER 30X90")], series) is None
 
 
+def test_a_series_printed_for_two_products_goes_to_the_one_whose_pages_hold_the_image():
+    names = {" ".join(t): t for t in map(ll.tokens_of, ["Alchemy", "Alchemy 30x90", "Spatula", "Habitat"])}
+    product_of = {"alchemy": "floor", "alchemy 30x90": "wall", "spatula": "sp", "habitat": "elsewhere"}
+    siblings = ll.series_siblings(names, product_of, {"floor", "wall", "sp"})
+    assert siblings == {"alchemy": ["floor", "wall"]}
+    ctx = ll.LabelContext(None, [], {}, names, product_of, None, [], [], set(),
+                          {"floor": set(range(42, 54)), "wall": set(range(200, 212)), "sp": {100}}, siblings)
+    assert (ctx.product_for("alchemy", 203), ctx.product_for("alchemy", 45), ctx.product_for("alchemy", 300)) == ("wall", "floor", None)
+    assert ctx.product_for("spatula", 999) == "sp" and ctx.printed_as("wall") == "alchemy"
+
+
+def test_a_name_shared_with_another_catalogue_keeps_its_one_product():
+    names = {" ".join(t): t for t in map(ll.tokens_of, ["Wood", "Wood Espiga"])}
+    assert ll.series_siblings(names, {"wood": "other_doc", "wood espiga": "mine"}, {"mine"}) == {}
+    assert not ll.shares_series(ll.tokens_of("Wood"), ll.tokens_of("Wood")) and not ll.shares_series((), ("a",))
+
+
 def test_a_page_naming_many_series_is_an_index_not_another_series_page():
     many = [_line(0.1, 0.05 * i, 0.4, 0.05 * i + 0.03, n) for i, n in enumerate(["Ardenza", "Calma", "Wood", "Habitat", "Saboya"], 1)]
     series = {" ".join(t): t for t in map(ll.tokens_of, ["Ardenza", "Calma", "Wood", "Habitat", "Saboya", "Amalfi"])}
