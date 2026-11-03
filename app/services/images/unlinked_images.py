@@ -124,7 +124,9 @@ async def settle_unlinked_images(supabase: Any, document_id: str, pdf_bytes: byt
     db = ctx.db
     todo = [i for i in ctx.images if not ctx.links.get(i["id"]) and owes_a_product(i)]
     summary["unlinked"] = len(todo)
-    if not todo:
+    decorative = [i for i in ctx.images if not ctx.links.get(i["id"]) and i.get("image_type") == "DECORATIVE"
+                  and "excluded_from_products" not in (i.get("metadata") or {})]
+    if not todo and not decorative:
         return {**summary, "excluded": {}}
 
     own = db.table("products").select("id, name, metadata").eq("source_document_id", document_id).execute().data or []
@@ -151,8 +153,7 @@ async def settle_unlinked_images(supabase: Any, document_id: str, pdf_bytes: byt
         db.table("document_images").update({"metadata": meta, **{f: False for f in VECTOR_FLAGS}}).eq("id", img["id"]).execute()
 
     halves: Dict[Tuple[int, str], List[Tuple[Dict[str, Any], List[str]]]] = defaultdict(list)
-    for img in [i for i in ctx.images if not ctx.links.get(i["id"]) and i.get("image_type") == "DECORATIVE"
-                and "excluded_from_products" not in (i.get("metadata") or {})]:
+    for img in decorative:
         await exclude(img, "decorative_image")
     for img in todo:
         half = ctx.lines_for(img["page_number"])

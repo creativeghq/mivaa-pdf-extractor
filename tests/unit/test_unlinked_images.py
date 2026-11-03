@@ -56,6 +56,13 @@ def test_an_excluded_image_loses_its_vectors_and_says_who_excluded_it():
     assert "delete_embeddings_by_image_ids" in body and "'by': EXCLUDED_BY" in body
 
 
+def test_decorative_images_are_settled_even_when_no_product_image_is_owed():
+    body = _body("settle_unlinked_images")
+    early_return = body.index("if not todo and")
+    assert "decorative" in body[early_return:body.index(":", early_return)]
+    assert body.index("decorative = ") < early_return
+
+
 def test_settling_runs_after_label_linking_in_the_repair():
     src = (_ROOT / "app/services/pdf/post_ingestion_repair.py").read_text(encoding="utf-8")
     assert src.index('step("label_links"') < src.index('step("unlinked_images"')
