@@ -149,6 +149,19 @@ class TestPrintedRooms:
         assert room["geometry"]["points"][0] == {"x": round(100 / 842, 5), "y": round(100 / 595, 5)}
         assert "ΚΟΥΖΙΝΑ" in room["source_ref"]
 
+    def test_label_on_furniture_takes_the_room_outline(self):
+        mpp = _mpp(50)
+
+        def build(p):
+            _text(p, (650, 570), "ΚΛΙΜΑΚΑ 1:50")
+            p.draw_rect(fitz.Rect(100, 100, 100 + 4 / mpp, 100 + 4 / mpp))
+            p.draw_rect(fitz.Rect(150, 150, 150 + 1.6 / mpp, 150 + 2.0 / mpp))
+            _text(p, (160, 180), "ΥΠΝΟΔΩΜΑΤΙΟ")
+            _text(p, (160, 195), "E=16.00 m²")
+        page = analyze_pdf(_pdf(build))["pages"][0]
+        room = next(x for x in page["proposals"] if x["element_type"] == "room")
+        assert room["detail"]["polygon_area_m2"] == pytest.approx(16.0, rel=1e-2)
+
     @pytest.mark.parametrize("text,value", [("E: 12.50m²", 12.5), ("Εμβ. 12,5 μ²", 12.5), ("12,50 m2", 12.5), ("8 τμ", 8.0)])
     def test_area_formats(self, text, value):
         page = analyze_pdf(_pdf(lambda p: _text(p, (300, 300), text)))["pages"][0]
@@ -234,6 +247,26 @@ class TestWalls:
         assert wall["value_norm"] == pytest.approx(length * 1.8 / 842, rel=1e-3)
         assert len(wall["geometry"]["segments"]) == 2
         assert wall["value_norm"] * page["scale"]["units_per_page_width"] == pytest.approx(9.0, rel=1e-3)
+
+    def test_outline_on_a_wall_face_is_not_a_second_wall(self):
+        mpp = _mpp(50)
+        t = 0.1 / mpp
+        length = 5.0 / mpp
+
+        def build(p):
+            _text(p, (650, 570), "ΚΛΙΜΑΚΑ 1:50")
+            shape = p.new_shape()
+            shape.draw_line((100, 100), (100 + length, 100))
+            shape.draw_line((100, 100 + t), (100 + length, 100 + t))
+            shape.draw_line((100, 100), (100 + length * 0.6, 100))
+            shape.draw_line((100, 100 + t), (100 + length * 0.6, 100 + t))
+            shape.finish(width=0.3)
+            shape.commit()
+            _filler(p)
+        page = analyze_pdf(_pdf(build))["pages"][0]
+        walls = [x for x in page["proposals"] if x["element_type"] == "wall"]
+        assert len(walls) == 1
+        assert walls[0]["detail"]["length_m"] == pytest.approx(5.0, rel=1e-2)
 
     def test_calibration_overrides(self):
         def build(p):

@@ -19,6 +19,7 @@ MAX_SEGMENTS = 150_000
 MAX_COMPARISONS = 12_000_000
 CHUNK_PAIRS = 1_000_000
 MAX_OUTPUT_SEGMENTS = 1500
+DUPLICATE_EPS_M = 0.01
 
 
 def _candidate_pairs(segs: np.ndarray, angles: np.ndarray, lengths: np.ndarray, tmin: float, tmax: float):
@@ -88,6 +89,32 @@ def _candidate_pairs(segs: np.ndarray, angles: np.ndarray, lengths: np.ndarray, 
     return np.concatenate(found), capped
 
 
+def _drop_covered(segs: np.ndarray, lengths: np.ndarray, eps: float) -> np.ndarray:
+    """Indices to keep: a line lying on top of a longer collinear one (a room outline on a wall face) is a copy."""
+    angles = np.degrees(np.arctan2(segs[:, 3] - segs[:, 1], segs[:, 2] - segs[:, 0])) % 180.0
+    rad = np.radians(angles)
+    ux, uy = np.cos(rad), np.sin(rad)
+    rho = -uy * (segs[:, 0] + segs[:, 2]) / 2 + ux * (segs[:, 1] + segs[:, 3]) / 2
+    groups: dict = defaultdict(list)
+    for i in np.argsort(-lengths, kind="stable").tolist():
+        groups[(int(round(angles[i] * 2)) % 360, int(round(rho[i] / eps)))].append(i)
+    keep = []
+    for (ab, rb), members in groups.items():
+        kept: list = []
+        for i in members:
+            a = ux[i] * segs[i, 0] + uy[i] * segs[i, 1]
+            b = ux[i] * segs[i, 2] + uy[i] * segs[i, 3]
+            t0, t1 = min(a, b), max(a, b)
+            covered = 0.0
+            for k0, k1 in kept:
+                covered += max(0.0, min(t1, k1) - max(t0, k0))
+            if covered >= 0.9 * (t1 - t0):
+                continue
+            kept.append((t0, t1))
+            keep.append(i)
+    return np.asarray(sorted(keep), dtype=np.int64)
+
+
 def detect_walls(geom: PageGeometry, m_per_pt: float) -> Tuple[List[dict], List[str]]:
     notes: List[str] = []
     if not geom.segments:
@@ -105,7 +132,11 @@ def detect_walls(geom: PageGeometry, m_per_pt: float) -> Tuple[List[dict], List[
         notes.append(f"wall search used the {MAX_SEGMENTS} longest lines only")
     if segs.shape[0] < 2:
         return [], notes
-    angles = np.degrees(np.arctan2(segs[:, 3] - segs[:, 1], segs[:, 2] - segs[:, 0])) % 180.0
+    keep = _drop_covered(segs, lengths, DUPLICATE_EPS_M / m_per_pt)
+    segs, lengths = segs[keep], lengths[keep]
+    if segs.shape[0] < 2:
+        return [], notes
+    angles =np.degrees(np.arctan2(segs[:, 3] - segs[:, 1], segs[:, 2] - segs[:, 0])) % 180.0
 
     found, capped = _candidate_pairs(segs, angles, lengths, tmin, tmax)
     if capped:

@@ -89,12 +89,16 @@ def printed_rooms(geom: PageGeometry, m_per_pt: Optional[float]) -> List[dict]:
             cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
             label_area = max((x1 - x0) * (y1 - y0), 1.0)
 
-            enclosing = None
-            for (bx0, by0, bx1, by1), poly, area in poly_index:
-                if not (bx0 <= cx <= bx1 and by0 <= cy <= by1) or area < 4 * label_area:
-                    continue
-                if (enclosing is None or area < enclosing[1]) and point_in_polygon(cx, cy, poly):
-                    enclosing = (poly, area)
+            candidates = [
+                (poly, area) for (bx0, by0, bx1, by1), poly, area in poly_index
+                if bx0 <= cx <= bx1 and by0 <= cy <= by1 and area >= 4 * label_area
+                and point_in_polygon(cx, cy, poly)
+            ]
+            # A label often sits on a bed or rug block: with a scale, the room is the outline nearest the printed area.
+            if candidates and m_per_pt:
+                enclosing = min(candidates, key=lambda c: abs(math.log(c[1] * m_per_pt ** 2 / value)))
+            else:
+                enclosing = min(candidates, key=lambda c: c[1]) if candidates else None
 
             detail: dict = {"printed_area": value}
             if enclosing:
