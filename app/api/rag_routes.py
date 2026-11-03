@@ -4905,20 +4905,12 @@ async def search_documents(
                 # If parser returned no filters and visual_query == original, it was a product-name search
                 qu_was_product_name = (not parsed_filters) and (visual_query == query_to_use)
 
-                # Update query to use visual query (core concept for embedding)
-                query_to_use = visual_query
-
-                # Merge parsed filters with existing material_filters (user filters take precedence)
-                existing_filters = getattr(request, 'material_filters', {})
-                if existing_filters:
-                    # User-provided filters override AI-parsed filters
-                    merged_filters = {**parsed_filters, **existing_filters}
-                else:
-                    merged_filters = parsed_filters
-
-                # Update request with merged filters
-                if merged_filters:
-                    request.material_filters = merged_filters
+                # Inferred filters are hard predicates, and an unresolved word ("petrol blue") admits
+                # no product: on the 70-query eval they emptied 10 searches and cut hit@10 from 97%
+                # to 79%. Only the material strategy, which ranks on filters alone, takes them.
+                if strategy == "material":
+                    query_to_use = visual_query
+                    request.material_filters = {**parsed_filters, **(getattr(request, 'material_filters', None) or {})}
 
                 logger.info(f"🧠 Query understanding: '{request.query}' → visual_query='{visual_query}', profile='{weight_profile}', filters={parsed_filters}")
 

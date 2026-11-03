@@ -35,3 +35,14 @@ def test_multi_vector_search_uses_an_image_url_through_the_ssrf_guard():
     assert "safe_fetch_bytes(request.image_url" in branch
     assert "image_base64=query_image_b64" in branch
     assert "get_profile(DEFAULT_PROFILE)" in branch
+
+
+def test_inferred_query_filters_reach_only_the_material_strategy():
+    src = _code("app/api/rag_routes.py")
+    start = src.index("_parse_query_with_ai(query_to_use")
+    qu = src[start:src.index("except asyncio.TimeoutError:", start)]
+    gate = qu.index('if strategy == "material":')
+    assert "query_to_use = visual_query" in qu[gate:]
+    assert "query_to_use = visual_query" not in qu[:gate]
+    assert "request.material_filters =" in qu[gate:]
+    assert "request.material_filters =" not in qu[:gate]

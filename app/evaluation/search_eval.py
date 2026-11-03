@@ -82,7 +82,7 @@ async def capture_case(rag: Any, case: Case, workspace_id: str, extra_config: Op
         async with httpx.AsyncClient(timeout=30) as http:
             image_b64 = degrade((await http.get(case.image_url)).content)
     else:
-        query, filters, profile, _ = await UnifiedSearchService()._parse_query_with_ai(case.query, workspace_id=workspace_id)
+        _, _, profile, _ = await UnifiedSearchService()._parse_query_with_ai(case.query, workspace_id=workspace_id)
         weights = text_query_source_weights()  # what /api/rag/search uses for words with no image
     sc = {**({"weights": weights} if weights else {}), **(extra_config or {})} or None
     out = await rag.multi_vector_search(
