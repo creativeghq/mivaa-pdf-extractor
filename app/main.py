@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -1543,13 +1543,9 @@ async def get_performance_summary() -> Dict[str, Any]:
     summary="Service Information",
     description="Service name, version and where the API is documented. Paths are listed in /openapi.json."
 )
-async def root() -> Dict[str, Any]:
+async def root(request: Request) -> Dict[str, Any]:
     settings = get_settings()
-    operations = sum(
-        len(getattr(route, "methods", None) or ())
-        for route in app.routes
-        if getattr(route, "include_in_schema", False)
-    )
+    operations = sum(len(item) for item in request.app.openapi().get("paths", {}).values())
     return {
         "service": settings.app_name,
         "version": settings.app_version,
@@ -1750,81 +1746,20 @@ def custom_openapi():
         tags=app.openapi_tags
     )
 
-    # Add custom security scheme
     openapi_schema["components"]["securitySchemes"] = {
         "BearerAuth": {
             "type": "http",
             "scheme": "bearer",
             "bearerFormat": "JWT",
-            "description": "JWT Bearer token authentication. All endpoints require a valid JWT token."
+            "description": "Supabase session JWT, or a kai_ API key on the Public API routes. Each route states and enforces its own access rule."
         }
     }
-
-    # Add global security requirement
     openapi_schema["security"] = [{"BearerAuth": []}]
 
-    # Add custom info (UPDATED - Multi-Vector Enhancement + Query Understanding)
-    openapi_schema["info"]["x-api-features"] = {
-        "api_consolidation": "Consolidated and organized endpoints with clear categorization",
-        "consolidated_upload": "/api/rag/documents/upload with modes (quick/standard/deep) + categories",
-        "consolidated_search": "/api/rag/search with multi_vector strategy (default and only supported)",
-        "multi_vector_enhanced": "🎯 ENHANCED: 6 specialized SLIG embeddings (text 20%, visual 20%, color 15%, texture 15%, style 15%, material 15%) + JSONB metadata filtering + query understanding",
-        "query_understanding": "✅ ENABLED BY DEFAULT: GPT-4o-mini auto-extracts filters from natural language ($0.0001/query)",
-        "consolidated_health": "/health for all services (database, storage, AI models)",
-        "pdf_processing": "14-stage AI pipeline with checkpoint recovery",
-        "product_discovery": "Products + Metadata extraction (inseparable) - Stage 0A",
-        "document_entities": "Certificates, logos, specifications as separate knowledge base - Stage 0B",
-        "metadata_management": "Dynamic metadata extraction with scope detection and override logic - Stage 4",
-        "prompt_enhancement": "Admin templates + agent prompt enhancement (PRESERVED)",
-        "category_extraction": "Products, certificates, logos, specifications (PRESERVED)",
-        "rag_system": "Retrieval-Augmented Generation with enhanced multi-vector search",
-        "vector_search": "7 specialized embedding types (text, visual, understanding, color, texture, style, material)",
-        "search_strategies": "10 strategies: multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type",
-        "ai_models": "Claude Opus, Sonnet 5.5, Haiku 5.5, GPT-4o-mini, SLIG, Voyage AI",
-        "material_recognition": "Claude Opus (Anthropic vision)",
-        "embedding_models": "Voyage AI voyage-4 (1024D text + understanding), SLIG SigLIP2 (768D) for 5 visual embeddings",
-        "performance": "95%+ product detection, 85%+ search accuracy, 250-350ms response time (with query understanding)",
-        "scalability": "5,000+ users, 99.5%+ uptime",
-        "agentic_queries": "Factory/group filtering for certificates, logos, specifications"
-    }
-
-    # Add custom paths info (UPDATED - Corrected endpoint counts after audit)
-    openapi_schema["info"]["x-endpoint-categories"] = {
-        "rag_routes": "/api/rag/* (25 endpoints) - Document upload, search, query, chat, embeddings, jobs, relationships, AI tracking",
-        "search_routes": "/api/search/* (16 endpoints) - Semantic, similarity, multimodal, image, material, color, texture, style search",
-        "price_monitoring_routes": "/api/v1/price-monitoring/* (13 endpoints) - Competitor price tracking, alerts, history, statistics",
-        "admin_routes": "/admin/* (10 endpoints) - Chunk quality, extraction config, prompts management",
-        "ai_services_routes": "/api/v1/ai-services/* (10 endpoints) - Classification, validation, boundary detection",
-        "internal_routes": "/api/internal/* (8 endpoints) - Modular pipeline stages (classify, upload, save, chunk, relationships, metadata)",
-        "images_routes": "/api/images/* (7 endpoints) - Image analysis, batch processing, search, upload, export, reclassify",
-        "health_routes": "/health/* (7 endpoints) - System health, database health, job monitor, metrics, circuit breakers",
-        "jobs_routes": "/api/jobs/* (7 endpoints) - Job progress, statistics, status tracking",
-        "document_entities_routes": "/api/document-entities/* (5 endpoints) - Certificates, logos, specifications",
-        "embeddings_routes": "/api/embeddings/* (4 endpoints) - CLIP text/image, material embeddings",
-        "ai_analysis_routes": "/api/semantic-analysis, /api/analyze/* (4 endpoints) - Claude vision, multimodal analysis",
-        "anthropic_routes": "/api/v1/anthropic/* (3 endpoints) - Claude image validation, product enrichment",
-        "products_routes": "/api/products/* (3 endpoints) - Product creation from chunks/layout",
-        "monitoring_routes": "/, /metrics, /performance/summary (3 endpoints)",
-        "ai_metrics_routes": "/api/v1/ai-metrics/* (2 endpoints) - Job metrics, summary",
-        "relationship_routes": "/api/rag/product-image-relationships, /api/rag/chunk-product-relationships (2 endpoints) - Relationship queries",
-        "module_routes": "/api/v1/modules/* (3 endpoints) - Module-system control (POST /_invalidate) + greek-marketplaces module (GET /status, POST /search) — gated by public.modules row"
-    }
-
-    # Add platform statistics (UPDATED - Corrected counts after audit)
-    openapi_schema["info"]["x-platform-stats"] = {
-        "total_endpoints": 128,  # web_scraping_routes (2) removed
-        "endpoint_categories": 17,  # web_scraping_routes removed
-        "ai_models": 13,
-        "processing_stages": 14,
-        "embedding_types": 6,
-        "search_strategies": 1,
-        "specialized_clip_embeddings": 6,
-        "users": "5,000+",
-        "uptime": "99.5%+",
-        "version": "2.4.0",
-        "last_updated": "2025-01-20",
-        "latest_enhancement": "System Health Monitoring - Database connection pool health, job monitor status, query performance metrics (95-98% faster with indexes), circuit breaker pattern, retry logic with exponential backoff."
-    }
+    for path_item in openapi_schema.get("paths", {}).values():
+        for operation in path_item.values():
+            if isinstance(operation, dict) and operation.get("tags"):
+                operation["tags"] = list(dict.fromkeys(operation["tags"]))
 
     app.openapi_schema = openapi_schema
     return app.openapi_schema

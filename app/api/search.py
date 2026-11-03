@@ -64,7 +64,7 @@ from ..utils.credit_metering import meter_operation, refund_operation
 logger = logging.getLogger(__name__)
 
 # Create router
-router = APIRouter(prefix="/api", tags=["Search", "Embeddings", "Chat"])
+router = APIRouter(prefix="/api", tags=["Search"])
 
 @router.post(
     "/search/semantic",

@@ -15,9 +15,9 @@ def _code(path: str) -> str:
 
 def test_the_root_endpoint_lists_no_paths_by_hand():
     src = _code("app/main.py")
-    root = src[src.index("async def root()"):src.index("from app.api.search import router as search_router")]
+    root = src[src.index("async def root("):src.index("from app.api.search import router as search_router")]
     assert "/api/" not in root
-    assert "app.routes" in root
+    assert "request.app.openapi()" in root
 
 
 def test_the_schema_version_is_the_one_setting():
@@ -30,3 +30,10 @@ def test_the_schema_version_is_the_one_setting():
 def test_a_module_router_keeps_its_own_tag_instead_of_gaining_a_second():
     src = _code("app/modules/__init__.py")
     assert "tags=None if router.tags else" in src
+
+
+def test_the_schema_carries_no_hand_written_counts_or_claims():
+    src = _code("app/main.py")
+    for block in ("x-api-features", "x-endpoint-categories", "x-platform-stats"):
+        assert block not in src
+    assert "dict.fromkeys(operation[\"tags\"])" in src
