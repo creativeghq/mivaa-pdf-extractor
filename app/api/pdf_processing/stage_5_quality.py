@@ -57,7 +57,9 @@ async def _run_audit(document_id: str, job_id: str, logger: Any) -> Dict[str, An
         from app.services.core.supabase_client import get_supabase_client
         from app.services.pdf.ingestion_audit_runner import run_ingestion_audit
 
-        outcome = await run_ingestion_audit(document_id, get_supabase_client(), get_settings(), job_id=job_id, phase="post_embed", trigger="pipeline")
+        from app.services.embeddings.embedding_deferral import embeddings_deferred
+        phase = "pre_embed" if embeddings_deferred() else "post_embed"
+        outcome = await run_ingestion_audit(document_id, get_supabase_client(), get_settings(), job_id=job_id, phase=phase, trigger="pipeline")
         logger.info(f"   Ingestion audit: {outcome['status']} ({len(outcome['findings'])} finding(s), {outcome['notified']} admin(s) notified)")
         return {"status": outcome["status"], "audit_id": outcome["audit_id"], "findings": len(outcome["findings"])}
     except Exception as audit_error:

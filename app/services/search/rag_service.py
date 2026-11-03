@@ -329,7 +329,8 @@ class RAGService:
                 except Exception as _slow_err:
                     self.logger.debug(f"set_slow_operation failed (non-fatal): {_slow_err}")
             try:
-                _doc_vectors = await self.embeddings_service.generate_contextualized_embeddings(
+                from app.services.embeddings.embedding_deferral import embeddings_deferred
+                _doc_vectors = [None] * len(_embeddable) if embeddings_deferred() else await self.embeddings_service.generate_contextualized_embeddings(
                     [c.content for c in _embeddable],
                     workspace_id=None if workspace_id == 'default' else workspace_id,
                     product_id=metadata.get('product_id'),
@@ -532,7 +533,8 @@ class RAGService:
             # lost half its chunks. `embeddings_failed` chunks are recoverable —
             # they persist with has_text_embedding=false and the chunk-embedding
             # backfill targets exactly that — but the loss must be VISIBLE.
-            embeddings_failed = max(0, chunks_created - total_embeddings_stored)
+            from app.services.embeddings.embedding_deferral import embeddings_deferred
+            embeddings_failed = 0 if embeddings_deferred() else max(0, chunks_created - total_embeddings_stored)
             if chunks_failed_insert or embeddings_failed:
                 self.logger.error(
                     f"❌ Indexing losses for document {document_id}: "

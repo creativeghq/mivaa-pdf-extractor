@@ -1432,6 +1432,14 @@ class ImageProcessingService:
                         'vision_analysis_source': VisionProvider.SKIPPED.value,
                     })
 
+                from app.services.embeddings.embedding_deferral import embeddings_deferred
+                if embeddings_deferred():
+                    return (True, False, "embedding_deferred", {
+                        'image_id': image_id, 'visual_slig': False, 'color_slig': False, 'texture_slig': False,
+                        'style_slig': False, 'material_slig': False, 'understanding': False,
+                        'vision_analysis_source': VisionProvider.SKIPPED.value,
+                    })
+
                 # A low-resolution source waits for image sourcing (a manufacturer original or a
                 # repair) and is embedded once, on whichever image wins; `run_image_sourcing` does it.
                 from app.services.images.sourcing_flag import sourcing_enabled

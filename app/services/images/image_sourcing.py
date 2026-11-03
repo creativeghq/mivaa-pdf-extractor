@@ -397,6 +397,9 @@ class ImageSourcing:
         crop["metadata"] = m
 
     async def _embed(self, row: Dict[str, Any], data: bytes) -> bool:
+        from app.services.embeddings.embedding_deferral import embeddings_deferred
+        if embeddings_deferred():
+            return False
         from app.services.embeddings.classification_backfill import _embed_confirmed_material
         from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
         from app.services.embeddings.vecs_service import get_vecs_service

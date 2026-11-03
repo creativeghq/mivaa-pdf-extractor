@@ -14,6 +14,7 @@ import uuid
 import httpx
 import sentry_sdk
 from typing import Any, Callable, Dict, List, Optional
+from app.services.embeddings.embedding_deferral import EmbeddingDeferred, embeddings_deferred
 
 from app.config import get_settings
 from app.services.metadata.metadata_normalizer import normalize_factory_keys, scale_value
@@ -996,6 +997,8 @@ async def create_single_product(
         # Builds a rich text from name + description + key metadata fields,
         # then embeds with Voyage AI (1024D) — same model as document_chunks.
         try:
+            if embeddings_deferred():
+                raise EmbeddingDeferred()
             # Shared with the product-embedding backfill — keep the text
             # construction identical so backfilled vectors live in the same
             # semantic space as inline-generated ones.
@@ -1067,6 +1070,9 @@ async def create_single_product(
                 )
                 embedding_failed = True
 
+        except EmbeddingDeferred:
+            embedding_failed = False
+            logger.info(f"   ⏸️ Text embedding for {product.name} deferred to the document's embed run")
         except Exception as emb_err:
             logger.error(f"   ❌ Product embedding generation crashed for {product.name}: {emb_err}")
             embedding_failed = True
@@ -1350,7 +1356,9 @@ async def reembed_product_text(
     known_spec_fields: List[str],
     logger: logging.Logger,
 ) -> bool:
-    """Rebuild + persist a product's text_embedding_1024 from its FINAL fields."""
+    """Rebuild + persist a product's text_embedding_1024 from its FINAL fields. Deferred: nothing to do yet."""
+    if embeddings_deferred():
+        return True
     try:
         page_body_text = await build_product_page_body_text(
             supabase, document_id, (metadata or {}).get("page_range"), logger,

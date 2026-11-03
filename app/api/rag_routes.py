@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import gc
 import json
+from app.services.embeddings.embedding_deferral import EmbeddingDeferred, defer_embeddings, embeddings_deferred
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from uuid import uuid4
@@ -648,6 +649,11 @@ async def upload_document(
         None,
         description="Dry run: create and process only the first N discovered products (1-500).",
     ),
+    defer_embedding: bool = Form(
+        False,
+        description="Build no vectors during the job; POST /documents/{document_id}/embed runs them once, after review. "
+                    "The products stay draft until then.",
+    ),
 
     edition_label: Optional[str] = Form(None, description="Catalogue edition, e.g. '2027'"),
     supersedes_document_id: Optional[str] = Form(
@@ -1041,6 +1047,7 @@ async def upload_document(
                 "multi_brand": multi_brand,
                 "review_discovery": review_discovery,
                 "product_limit": product_limit,
+                "defer_embedding": defer_embedding,
             }
             # documents + processed_documents + background_jobs in ONE transaction: three
             # commits left a document stuck at 'processing' when the second or third failed.
@@ -1646,6 +1653,37 @@ def _parked_job(supabase_client: Any, job_id: str) -> Dict[str, Any]:
     if not rows:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job {job_id} not found")
     return rows[0]
+
+
+@router.post(
+    "/documents/{document_id}/embed",
+    dependencies=[Depends(require_rag_resource_capability("catalog.import"))],
+)
+async def embed_document_route(document_id: str, background_tasks: BackgroundTasks,
+                               workspace_context=Depends(get_optional_workspace_context)):
+    """The one embed run of a document whose job deferred its vectors (#513). Runs in the background."""
+    from app.services.embeddings.document_embed_run import run_embed_step
+
+    client = get_supabase_client().client
+    doc = client.table('documents').select('id, workspace_id').eq('id', document_id).execute().data
+    if not doc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    jobs = client.table('background_jobs').select('id, status').eq('document_id', document_id)         .order('created_at', desc=True).limit(1).execute().data
+    if jobs and jobs[0].get('status') in ('pending', 'processing', 'retrying', 'awaiting_review'):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"The document's job is '{jobs[0]['status']}'; embed once it has finished")
+    user = getattr(workspace_context, 'user_id', None)
+    payer = user if user and user != SERVICE_SUBJECT else None
+
+    async def _run() -> None:
+        try:
+            result = await run_embed_step(document_id, doc[0]['workspace_id'], jobs[0]['id'] if jobs else None, payer)
+            logger.info(f"🧠 Embed run for {document_id}: {str(result)[:800]}")
+        except Exception:
+            logger.exception(f"❌ Embed run for {document_id} failed")
+
+    background_tasks.add_task(run_async_in_background(_run))
+    return {"accepted": True, "document_id": document_id}
 
 
 @router.get(
@@ -2832,6 +2870,13 @@ async def process_document_with_discovery(
     # Use default workspace ID from config if not provided
     workspace_id = workspace_id or get_settings().default_workspace_id
     start_time = datetime.utcnow()
+    try:
+        _job_meta = ((get_supabase_client().client.table('background_jobs').select('metadata').eq('id', job_id)
+                      .single().execute().data or {}).get('metadata') or {})
+    except Exception as _meta_err:
+        logger.error(f"job {job_id} options could not be read, embedding inline: {_meta_err}")
+        _job_meta = {}
+    defer_embeddings(bool(_job_meta.get('defer_embedding')))
 
     # ── Tenancy preflight ────────────────────────────────────────────────────────────
     # The three ids arrive independently and every stage below reads and writes by bare
@@ -4357,6 +4402,8 @@ async def process_document_with_discovery(
         # rule exists to prevent.
         try:
             from app.services.embeddings.page_embedding_service import get_page_embedding_service
+            if embeddings_deferred():
+                raise EmbeddingDeferred()
 
             with pipeline_stage_span("stage_4.7.page_embeddings"):
                 _page_result = await asyncio.wait_for(
@@ -4382,6 +4429,8 @@ async def process_document_with_discovery(
                 f"⏱️ Page embeddings for {document_id} exceeded 30min — abandoning; "
                 f"already-written pages are kept and the rest stay retryable"
             )
+        except EmbeddingDeferred:
+            logger.info("   ⏸️ Page embeddings deferred to the document's embed run")
         except Exception as _pe:
             logger.warning(f"⚠️ Page embeddings failed (non-blocking): {_pe}")
 
@@ -4464,6 +4513,12 @@ async def process_document_with_discovery(
         except Exception as edition_error:
             logger.warning(f"   ⚠️ edition diff not finalized: {edition_error}")
 
+        if embeddings_deferred():
+            from app.services.pdf.ingestion_corrections import NEEDS_DECISION, Correction, record
+            await record(get_supabase_client().client, document_id, workspace_id, "embedding", [Correction(
+                "ready_to_embed", NEEDS_DECISION,
+                "Extraction finished without vectors: review the products, then run the embed step", 1)], job_id)
+            publish_on_complete = False
         if publish_on_complete:
             if products_failed == 0:
                 try:
