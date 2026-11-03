@@ -115,7 +115,7 @@ class JobHeartbeat:
                 .select("status")\
                 .eq("id", self.job_id).single().execute()
             status = (resp.data or {}).get("status")
-            return status in ("completed", "failed", "cancelled")
+            return status in ("completed", "failed", "cancelled", "awaiting_review")
         except Exception:
             return False
 

@@ -24,6 +24,8 @@ class JobStatus(str, Enum):
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"
     RETRYING = "retrying"
+    # Parked after discovery until an operator approves the product list (#513). Neither active nor terminal.
+    AWAITING_REVIEW = "awaiting_review"
 
 
 # Convenience sets for downstream classification.

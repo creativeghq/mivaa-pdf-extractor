@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 import gc
+import json
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from uuid import uuid4
@@ -638,6 +639,16 @@ async def upload_document(
         description="Process the file even when this workspace already holds a live document with the same content",
     ),
 
+    review_discovery: bool = Form(
+        False,
+        description="Stop after discovery with the job at awaiting_review: no product, chunk or embedding is created "
+                    "until the list is approved at POST /documents/job/{job_id}/discovery-review.",
+    ),
+    product_limit: Optional[int] = Form(
+        None,
+        description="Dry run: create and process only the first N discovered products (1-500).",
+    ),
+
     edition_label: Optional[str] = Form(None, description="Catalogue edition, e.g. '2027'"),
     supersedes_document_id: Optional[str] = Form(
         None,
@@ -809,6 +820,12 @@ async def upload_document(
             extract_only_mode = True
             # The downstream orchestrator reads `category_list`; keeping it as
             # ['extract_only'] is the explicit signal to skip Stage 0 discovery.
+
+        from app.services.discovery.discovery_review import ReviewError, product_limit as _valid_product_limit
+        try:
+            product_limit = _valid_product_limit(product_limit)
+        except ReviewError as limit_error:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(limit_error))
 
         # Expand 'all' to all categories.
         # (The `focused_extraction` flag was removed 2026-05-24 — it was only
@@ -1022,6 +1039,8 @@ async def upload_document(
                 "test_single_product": test_single_product,
                 "publish_on_complete": publish_on_complete,
                 "multi_brand": multi_brand,
+                "review_discovery": review_discovery,
+                "product_limit": product_limit,
             }
             # documents + processed_documents + background_jobs in ONE transaction: three
             # commits left a document stuck at 'processing' when the second or third failed.
@@ -1608,6 +1627,90 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
 async def resume_job(job_id: str, background_tasks: BackgroundTasks):
     """Resume a job from its last checkpoint (alias for restart). Cron passes x-cron-secret."""
     return await restart_job_from_checkpoint(job_id, background_tasks)
+
+
+class DiscoveryReviewEdit(BaseModel):
+    name: str
+    action: str = Field(description="keep | drop | rename | merge_into")
+    new_name: Optional[str] = None
+    into: Optional[str] = None
+
+
+class DiscoveryReviewDecision(BaseModel):
+    decision: str = Field("approve", description="approve (create the edited list) | cancel (end the job, nothing created)")
+    edits: List[DiscoveryReviewEdit] = Field(default_factory=list)
+
+
+def _parked_job(supabase_client: Any, job_id: str) -> Dict[str, Any]:
+    rows = supabase_client.client.table('background_jobs').select('id, status, metadata').eq('id', job_id).execute().data
+    if not rows:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Job {job_id} not found")
+    return rows[0]
+
+
+@router.get(
+    "/documents/job/{job_id}/discovery-review",
+    dependencies=[Depends(require_rag_resource_capability("catalog.import"))],
+)
+async def get_discovery_review(job_id: str):
+    """The discovered product list a parked job waits on (#513)."""
+    job = _parked_job(get_supabase_client(), job_id)
+    review = (job.get('metadata') or {}).get('discovery_review') or {}
+    return {"job_id": job_id, "status": job.get('status'), "review": review}
+
+
+@router.post(
+    "/documents/job/{job_id}/discovery-review",
+    dependencies=[Depends(require_rag_resource_capability("catalog.import"))],
+)
+async def decide_discovery_review(
+    job_id: str,
+    body: DiscoveryReviewDecision,
+    background_tasks: BackgroundTasks,
+    workspace_context=Depends(get_optional_workspace_context),
+):
+    """Apply the operator's edits to the discovered list and resume, or cancel with nothing created."""
+    from app.services.discovery.discovery_review import ReviewError, apply_review, review_rows
+
+    supabase_client = get_supabase_client()
+    job = _parked_job(supabase_client, job_id)
+    if job.get('status') != 'awaiting_review':
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT,
+                            detail=f"Job {job_id} is '{job.get('status')}', not awaiting review")
+    meta = dict(job.get('metadata') or {})
+    review = dict(meta.get('discovery_review') or {})
+    nowiso = datetime.utcnow().isoformat()
+    who = getattr(workspace_context, 'user_id', None)
+    if body.decision == 'cancel':
+        review.update({'status': 'cancelled', 'decided_at': nowiso, 'decided_by': who})
+        done = supabase_client.client.table('background_jobs').update({
+            'status': 'cancelled', 'metadata': {**meta, 'discovery_review': review}, 'updated_at': nowiso,
+        }).eq('id', job_id).eq('status', 'awaiting_review').execute()
+        if not done.data:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The job changed while deciding")
+        return {"job_id": job_id, "status": "cancelled"}
+    if body.decision != 'approve':
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="decision must be approve or cancel")
+    cache = dict(meta.get('catalog_cache') or {})
+    if not cache.get('catalog'):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The discovered list is missing from the job; reprocess the document")
+    try:
+        edited, log = apply_review(cache['catalog'], [e.model_dump() for e in body.edits])
+    except ReviewError as bad_edit:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(bad_edit))
+    if not edited.get('products'):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="The edits leave no product; cancel instead")
+    review.update({'status': 'approved', 'approved_at': nowiso, 'decided_at': nowiso, 'decided_by': who,
+                   'applied': log, 'products': review_rows(edited['products'])})
+    claimed = supabase_client.client.table('background_jobs').update({
+        'status': 'pending', 'updated_at': nowiso,
+        'metadata': {**meta, 'catalog_cache': {**cache, 'catalog': edited}, 'discovery_review': review},
+    }).eq('id', job_id).eq('status', 'awaiting_review').execute()
+    if not claimed.data:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="The job changed while deciding")
+    resumed = await restart_job_from_checkpoint(job_id, background_tasks)
+    return {"job_id": job_id, "status": "resumed", "applied": log, "products": len(edited['products']),
+            "restart": json.loads(resumed.body) if hasattr(resumed, 'body') else None}
 
 
 @router.post("/documents/{document_id}/reprocess", dependencies=[Depends(require_rag_resource_capability("catalog.import"))])
@@ -3538,6 +3641,18 @@ async def process_document_with_discovery(
         page_count = stage_0_result["page_count"]
         file_size_mb = stage_0_result["file_size_mb"]
         temp_pdf_path = stage_0_result["temp_pdf_path"]
+
+        if stage_0_result.get("awaiting_review"):
+            # Parked by the review gate (#513): nothing exists yet but the discovered list.
+            _now_iso = datetime.utcnow().isoformat()
+            supabase.client.table('background_jobs').update({
+                'status': 'awaiting_review', 'updated_at': _now_iso,
+            }).eq('id', job_id).execute()
+            supabase.client.rpc('append_stage_history', {'p_job_id': job_id, 'p_event': {
+                'stage': 'discovery_review', 'status': 'awaiting_review', 'source': 'discovery_review',
+                'data': {'products_discovered': stage_0_result.get("products_discovered", 0)}, 'started_at': _now_iso,
+            }}).execute()
+            return
 
         # ============================================================================
         # ZERO-ENTITIES EARLY EXIT

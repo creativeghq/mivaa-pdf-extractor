@@ -752,6 +752,27 @@ async def process_stage_0_discovery(
         except Exception as _hist_err:
             logger.debug(f"   append_stage_history completed failed (non-fatal): {_hist_err}")
 
+    # Review gate (#513): park before any product, chunk or embedding exists; the approved
+    # edits land in catalog_cache, which the resumed run reads back above.
+    _job_meta = ((supabase.client.table('background_jobs').select('metadata').eq('id', job_id).single().execute().data
+                  or {}).get('metadata') or {})
+    _review = _job_meta.get('discovery_review') or {}
+    if _job_meta.get('review_discovery') and not _review.get('approved_at'):
+        import dataclasses as _dc
+        from app.services.discovery.discovery_review import review_rows
+        _rows_for_review = review_rows([_dc.asdict(p) if _dc.is_dataclass(p) else dict(p) for p in catalog.products])
+        supabase.client.rpc('merge_background_job_metadata', {'p_job_id': job_id, 'p_metadata': {'discovery_review': {
+            'status': 'awaiting', 'requested_at': datetime.utcnow().isoformat(), 'products': _rows_for_review,
+        }}}).execute()
+        logger.info(f"⏸️  [STAGE 0] Review gate: {len(_rows_for_review)} discovered product(s) wait for approval")
+        return {"awaiting_review": True, "catalog": catalog, "page_count": page_count, "file_size_mb": file_size_mb,
+                "temp_pdf_path": temp_pdf_path, "products_discovered": len(_rows_for_review)}
+    from app.services.discovery.discovery_review import product_limit as _product_limit
+    _limit = _product_limit(_job_meta.get('product_limit'))
+    if _limit and len(catalog.products) > _limit:
+        logger.info(f"🧪 [STAGE 0] Dry run: keeping the first {_limit} of {len(catalog.products)} discovered products")
+        catalog.products = catalog.products[:_limit]
+
     # ✅ CREATE PRODUCTS IN DATABASE IMMEDIATELY AFTER DISCOVERY
     # This creates the actual product records so all subsequent stages just update them
     if catalog.products:
