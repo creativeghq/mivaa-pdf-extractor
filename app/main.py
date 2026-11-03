@@ -788,199 +788,35 @@ def create_app() -> FastAPI:
     
     app = FastAPI(
         title=settings.app_name,
-        version="2.5.0",
+        version=settings.app_version,
         description="""
-**Production API v2.5.0** - AI-powered material recognition and knowledge management platform serving 5,000+ users.
+MIVAA is the Python backend of the Material KAI platform: PDF catalogue ingestion, product
+extraction, image analysis, embeddings and multi-vector search.
 
-## 🎯 Overview
+**This schema is generated from the running code**, so every path and parameter here exists.
+The Supabase edge-function API is documented separately at `/api/edge-swagger.html` on the app.
 
-MIVAA is the core backend service powering the Material Kai Vision Platform, providing comprehensive PDF processing, AI analysis, and multi-vector search capabilities.
+## Authentication
 
-## ✨ API Organization (v2.3.0)
+Send `Authorization: Bearer <token>` — a Supabase session JWT for user routes, or a `kai_` API key
+for the Public API routes. Cron and internal routes take `x-cron-secret` or the platform key and
+are not for external callers. Each route enforces its own workspace and role checks.
 
-**Comprehensive API with 125+ endpoints organized into 16 categories**
+## Search
 
-**Key Features:**
-- ✅ **Knowledge Base**: `/api/kb/*` - Document management with AI embeddings, semantic search, PDF extraction, categories, and product attachments (NEW)
-- ✅ **Consolidated Upload**: `/api/rag/documents/upload` with processing modes (quick/standard/deep) and categories
-- 🎯 **Enhanced Multi-Vector Search**: 6 specialized SLIG embeddings + JSONB filtering + query understanding (ENABLED BY DEFAULT)
-- ✅ **10 Search Strategies**: `/api/rag/search?strategy={strategy}` - multi_vector (⭐ default), semantic, vector, hybrid, material, keyword, color, texture, style, material_type
-- ✅ **Query Understanding**: GPT-4o-mini auto-extracts filters from natural language ($0.0001/query, enabled by default)
-- ✅ **Comprehensive Health**: `/health` for all services (database, storage, AI models)
-- ✅ **Well-Organized**: 16 endpoint categories covering RAG, documents, search, AI services, admin, knowledge base, and more
-- ✅ **Preserved**: Prompt enhancement system, category extraction, all processing modes
-
-### Key Capabilities
-- **PDF Processing**: 14-stage pipeline with PyMuPDF4LLM extraction
-- **Products + Metadata**: Inseparable extraction (Stage 0A) - all metadata stored in product.metadata JSONB
-- **Document Entities**: Certificates, logos, specifications as separate knowledge base (Stage 0B)
-- **AI Analysis**: 13 AI models across 7 pipeline stages
-- 🎯 **Enhanced Multi-Vector Search**: 7 specialized embeddings (text 15%, visual 15%, understanding 20%, color 12.5%, texture 12.5%, style 12.5%, material 12.5%) + JSONB metadata filtering + query understanding
-- **Query Understanding**: GPT-4o-mini parses natural language queries to auto-extract filters (enabled by default)
-- **Knowledge Base**: Semantic chunking, quality scoring, deduplication
-- **Image Analysis**: SLIG (SigLIP2 768D) + Claude Opus vision (cost-effective, high accuracy)
-- **Agentic Queries**: Factory/group filtering for certificates, logos, specifications
-
-### AI Models
-1. **Voyage AI**: voyage-4-large index / voyage-4 query (1024D), voyage-multimodal-3.5 pages; GPT-4o-mini (query understanding)
-2. **Anthropic**: Claude Haiku 5.5 (fast classification), Claude Opus (deep enrichment)
-3. **HuggingFace Endpoints**: SLIG (SigLIP2 768D), PaddleOCR-VL (structural pass: layout + OCR + figure boxes) — vision is on Anthropic Claude.
-4. **SigLIP2**: 5 specialized visual embeddings (visual, color, texture, style, material) - 768D each
-5. **Voyage AI**: voyage-4 (text + understanding embeddings, 1024D)
-
-### API Endpoints
-- **Total**: 125+ endpoints across 16 categories (18 legacy endpoints removed)
-- **Knowledge Base**: 15+ endpoints for document management, semantic search, PDF extraction, categories, product attachments (NEW)
-- **RAG System**: 27 endpoints for document upload, search, query, chat, embeddings, metadata
-- **AI Services**: 10 endpoints for classification, validation, boundary detection
-- **Admin**: 10 endpoints for chunk quality, extraction config, prompts
-- **Search**: 8 endpoints for semantic, image, material, multimodal search
-- **Jobs**: 7 endpoints for progress tracking, statistics, status
-- **Document Entities**: 5 endpoints for certificates, logos, specifications
-
-### Performance
-- **Search Accuracy**: 85%+ (90%+ with query understanding for complex queries)
-- **Processing Success**: 95%+
-- **Response Time**: 250-350ms (multi-vector with query understanding), 200-300ms (without), 1-4s (analysis)
-- **Query Understanding Cost**: $0.0001 per query (negligible)
-- **Uptime**: 99.5%+
-
-## 🔐 Authentication
-
-All API endpoints require JWT authentication:
-```
-Authorization: Bearer your-jwt-token
-```
-
-Get your token from the frontend application or Supabase authentication.
-
-## 📊 Latest Enhancements (November 2025)
-
-✅ **Knowledge Base System** - Complete documentation management with AI embeddings (NEW v2.3.0)
-  - Document CRUD with automatic embedding generation (1536D)
-  - Smart content change detection (only regenerate when needed)
-  - PDF text extraction using PyMuPDF
-  - Semantic search (vector similarity)
-  - Category hierarchy with parent/child relationships
-  - Product attachment system (link docs to products)
-  - Version history tracking
-  - Comments and suggestions system
-  - Search analytics tracking
-
-🎯 **Enhanced Multi-Vector Search** - MAJOR UPGRADE (v2.3.0, Nov 2025)
-  - **6 Specialized SLIG Embeddings**: text (20%), visual (20%), color (15%), texture (15%), style (15%), material (15%)
-  - **JSONB Metadata Filtering**: Property-based filtering (finish, properties, dimensions, etc.)
-  - **Query Understanding**: ✅ ENABLED BY DEFAULT - GPT-4o-mini auto-extracts filters from natural language
-  - **Performance**: ~250-350ms (with query understanding), ~200-300ms (without)
-  - **Accuracy**: 30-40% improvement for complex queries
-  - **Cost**: $0.0001 per query (negligible)
-  - **Example**: "waterproof ceramic tiles for outdoor patio, matte finish" → auto-extracts all filters
-
-✅ **10 Search Strategies** - Complete multi-strategy search system (100% implemented)
-  - Multi-Vector Search: ⭐ RECOMMENDED DEFAULT - 6 embeddings + filters + query understanding (~250ms)
-  - Semantic Search: Natural language with MMR diversity (<150ms)
-  - Vector Search: Pure similarity matching (<100ms)
-  - Hybrid Search: Semantic + PostgreSQL full-text (<180ms)
-  - Material Search: JSONB property filtering (<50ms)
-  - Image Search: Visual similarity with SLIG (SigLIP2) (<150ms)
-  - Color/Texture/Style/Material Type: Specialized SLIG embeddings (<150ms each)
-
-✅ **Product Detection Pipeline** - 60-70% false positive reduction with 4-layer validation
-✅ **Chunk Quality System** - Hash-based + semantic deduplication, quality scoring
-✅ **Two-Stage Classification** - 60% faster, 40% cost reduction
-✅ **Multi-Vector Embeddings** - 6 embedding types for 85%+ accuracy improvement
-✅ **Admin Dashboard** - Chunk quality monitoring and review workflow
-✅ **Metadata Synchronization** - 100% accuracy in job status reporting
-
-## 🚀 API Categories (125+ Endpoints)
-
-### 📚 Knowledge Base (`/api/kb/*`) - NEW v2.3.0
-- Document management with AI embeddings
-- Semantic search (vector similarity)
-- PDF text extraction (PyMuPDF)
-- Category hierarchy management
-- Product attachment system
-- Version history tracking
-- Comments and suggestions
-
-### 📄 PDF Processing (`/api/pdf/*`)
-- Extract markdown, tables, images from PDFs
-- PyMuPDF4LLM integration
-- Batch processing support
-
-### 🧠 RAG System (`/api/rag/*`)
-- Document upload and processing
-- Query and chat interfaces
-- Semantic search
-- Job monitoring with real-time progress
-
-### 🤖 AI Analysis (`/api/semantic-analysis`)
-- Vision model material analysis (configurable)
-- Multi-modal text + image processing
-- Entity extraction and classification
-
-### 🔍 Search APIs (`/api/search/*`)
-- Semantic search (text embeddings)
-- Vector search (multi-vector)
-- Hybrid search (combined)
-- Recommendations
-
-### 🔗 Embedding APIs (`/api/embeddings/*`)
-- Generate text embeddings (1024D Voyage AI)
-- Generate visual embeddings (768D SLIG)
-- Batch processing
-- Multi-vector generation (7 types)
-
-### 💬 Chat APIs (`/api/chat/*`)
-- Chat completions
-- Contextual responses
-- Conversation history
-
-### 📦 Products API (`/api/products/*`)
-- Two-stage product classification
-- Product enrichment
-- Product management
-- Health monitoring
-
-### 👨‍💼 Admin APIs (`/api/admin/*`)
-- Chunk quality dashboard
-- Quality statistics
-- Flagged chunks review
-- Metadata management
-
-### 🏷️ Metadata APIs (`/api/rag/metadata/*`)
-- Scope detection (product-specific vs catalog-general)
-- Metadata application with override logic
-- Metadata listing and filtering
-- Statistics and analytics
-
-### 🏥 Health & Monitoring
-- `/health` - Service health check
-- `/metrics` - Performance metrics
-- `/performance/summary` - Comprehensive stats
-
-## 📖 Documentation
-
-- **Interactive API Docs**: [/docs](/docs) (Swagger UI)
-- **Alternative Docs**: [/redoc](/redoc) (ReDoc)
-- **OpenAPI Schema**: [/openapi.json](/openapi.json)
-- **Complete Documentation**: https://basilakis.github.io
-
-## 🔗 Related Services
-
-- **Frontend**: https://materialshub.gr
-- **Documentation Site**: https://basilakis.github.io
-- **GitHub**: https://github.com/creativeghq/material-kai-vision-platform
-
+`POST /api/rag/search` (default strategy `multi_vector`) fuses text, visual
+(SigLIP2 768D), understanding, colour, texture, style, material (Voyage 1024D) and page vectors.
+Query understanding picks the weight profile; the filters it infers are applied only for
+`strategy=material`. Single-aspect image matching is `POST /api/search/by-{aspect}`.
         """,
         docs_url="/docs",  # Always enable docs
         redoc_url=None,  # Disable default ReDoc (we'll create custom one with stable CDN)
         openapi_tags=[
-            {"name": "RAG", "description": "Retrieval-Augmented Generation - Document upload (quick/standard/deep modes), 6-strategy search, prompt enhancement, job management, chunk/image/product/embedding/relevancy listing, workspace stats, and AI tracking."},
+            {"name": "RAG", "description": "Retrieval-Augmented Generation - Document upload and processing jobs, multi-vector search, knowledge-base search, chunk/image/product listing, workspace stats and AI tracking."},
             {"name": "Documents", "description": "Document lifecycle management - Job status polling, checkpoint inspection, restart/resume, content retrieval, and AI tracking per stage/model."},
-            {"name": "Search", "description": "Multi-strategy search - Strategies: semantic, vector, multi_vector (recommended), hybrid, material, image. 85-95% accuracy, <200ms latency."},
+            {"name": "Search", "description": "Single-aspect image search (`/api/search/by-color|texture|style|material`) and search helpers. Product search is `POST /api/rag/search`."},
             {"name": "Search Suggestions", "description": "Search UX helpers - Auto-complete, trending searches, typo correction, query expansion, popular searches, and personalized suggestions."},
-            {"name": "Embeddings", "description": "Multi-vector embedding generation - 7 types: text (1024D Voyage AI), visual (768D SLIG), understanding (1024D), color/texture/style/material (768D each)."},
+            {"name": "Embeddings", "description": "Embedding generation - visual 768D (SigLIP2 via SLIG on Modal); text, understanding and color/texture/style/material 1024D (Voyage); whole-page 1024D (voyage-multimodal-3.5)."},
             {"name": "Chat", "description": "AI chat interface - Contextual completions, conversation history, and intelligent material assistance."},
             {"name": "Products", "description": "Product management - Two-stage AI classification (Claude Haiku 5.5 + Opus), enrichment, metadata extraction, and product creation from chunks."},
             {"name": "Image Analysis", "description": "Image processing - Extraction, analysis, embedding generation, OCR, reclassification, and segmentation for material images."},
@@ -1015,19 +851,10 @@ Get your token from the frontend application or Supabase authentication.
             {"name": "modules:greek-marketplaces", "description": "Greek Marketplaces module — Skroutz/Bestprice/Shopflix discovery + admin status/test endpoints. Mounted at `/api/v1/modules/greek-marketplaces/*` only when the `greek-marketplaces` row in `public.modules` is enabled."},
         ],
         contact={
-            "name": "MIVAA Team",
-            "url": "https://github.com/MIVAA-ai/mivaa-pdf-extractor",
-            "email": "support@mivaa.ai"
-        },
-        license_info={
-            "name": "MIT License",
-            "url": "https://opensource.org/licenses/MIT"
+            "name": "Material KAI",
+            "url": "https://github.com/creativeghq/mivaa-pdf-extractor",
         },
         servers=[
-            {
-                "url": "http://localhost:8000",
-                "description": "Development server"
-            },
             {
                 "url": "https://v1api.materialshub.gr",
                 "description": "Production server"
@@ -1196,6 +1023,7 @@ _ai_health_cache_ttl = 3600  # 1 hour
 # Health check endpoint
 @app.get(
     "/health",
+    tags=["Health & Monitoring"],
     response_model=HealthResponse,
     summary="🏥 Unified Health Check - All Services",
     description="Comprehensive health check for all system services including database, storage, and AI models. Use ?force_refresh=true to bypass cache."
@@ -1662,6 +1490,7 @@ async def health_check(force_refresh: bool = False) -> HealthResponse:
 # Performance monitoring endpoints
 @app.get(
     "/metrics",
+    tags=["Health & Monitoring"],
     summary="Performance Metrics",
     description="Get current performance metrics and system status"
 )
@@ -1685,6 +1514,7 @@ async def get_metrics() -> Dict[str, Any]:
 
 @app.get(
     "/performance/summary",
+    tags=["Health & Monitoring"],
     summary="Performance Summary",
     description="Get performance summary with recommendations"
 )
@@ -1709,104 +1539,26 @@ async def get_performance_summary() -> Dict[str, Any]:
 # Root endpoint
 @app.get(
     "/",
+    tags=["Health & Monitoring"],
     summary="Service Information",
-    description="Get basic information about the PDF2Markdown microservice"
+    description="Service name, version and where the API is documented. Paths are listed in /openapi.json."
 )
 async def root() -> Dict[str, Any]:
-    """
-    Root endpoint providing basic service information.
-    
-    Returns:
-        Dict[str, Any]: Service metadata and available endpoints
-    """
     settings = get_settings()
-    
+    operations = sum(
+        len(getattr(route, "methods", None) or ())
+        for route in app.routes
+        if getattr(route, "include_in_schema", False)
+    )
     return {
         "service": settings.app_name,
         "version": settings.app_version,
         "status": "running",
         "timestamp": datetime.utcnow(),
-        "endpoints": {
-            # Health & Monitoring
-            "health": "/health",
-            "api_health": "/api/v1/health",
-            "metrics": "/metrics",
-            "performance": "/performance/summary",
-            "docs": "/docs",  # Always enabled
-            "redoc": "/redoc",  # Always enabled
-            "openapi": "/openapi.json",
-
-            # RAG System APIs
-            "rag_upload": "/api/v1/rag/documents/upload",
-            "rag_query": "/api/v1/rag/query",
-            "rag_chat": "/api/v1/rag/chat",
-            "rag_search": "/api/v1/rag/search",
-            "rag_documents": "/api/v1/rag/documents",
-            "rag_health": "/api/v1/rag/health",
-            "rag_stats": "/api/v1/rag/stats",
-
-            # AI Analysis APIs
-            "semantic_analysis": "/api/semantic-analysis",
-
-            # Search APIs
-            "search_recommendations": "/api/search/recommendations",
-            "search_analytics": "/api/analytics",
-
-            # Embedding APIs
-            "generate_embedding": "/api/embeddings/generate",
-            "batch_embeddings": "/api/embeddings/batch",
-            "clip_embeddings": "/api/embeddings/clip-generate",
-
-            # Chat APIs
-            "chat_completions": "/api/chat/completions",
-            "contextual_response": "/api/chat/contextual",
-
-            # Anthropic Claude APIs
-            "anthropic_image_validation": "/api/v1/anthropic/validate-image",
-            "anthropic_batch_validation": "/api/v1/anthropic/validate-images-batch",
-            "anthropic_product_enrichment": "/api/v1/anthropic/enrich-product",
-            "anthropic_batch_enrichment": "/api/v1/anthropic/enrich-products-batch",
-
-            # Products APIs
-            "products_create": "/api/products/create",
-            "products_status": "/api/products/status",
-
-            # Metadata APIs (RAG System)
-            "metadata_detect_scope": "/api/rag/metadata/detect-scope",
-            "metadata_apply": "/api/rag/metadata/apply-to-products",
-            "metadata_list": "/api/rag/metadata/list",
-            "metadata_statistics": "/api/rag/metadata/statistics",
-
-            # Price Monitoring APIs (NEW - December 2025)
-            "price_monitoring_start": "/api/v1/price-monitoring/start",
-            "price_monitoring_stop": "/api/v1/price-monitoring/stop",
-            "price_monitoring_check_now": "/api/v1/price-monitoring/check-now",
-            "price_monitoring_status": "/api/v1/price-monitoring/status/{product_id}",
-            "price_monitoring_history": "/api/v1/price-monitoring/history/{product_id}",
-            "price_monitoring_statistics": "/api/v1/price-monitoring/statistics/{product_id}",
-            "price_monitoring_sources": "/api/v1/price-monitoring/sources",
-            "price_monitoring_alerts": "/api/v1/price-monitoring/alerts",
-            "price_monitoring_jobs": "/api/v1/price-monitoring/jobs/{product_id}",
-        },
-        "api_info": {
-            "total_endpoints": 123,
-            "authentication": "JWT Bearer Token Required",
-            "embedding_model": "voyage-4 (1024 dimensions)",
-            "recent_enhancements": "Price Monitoring with Firecrawl (December 2025)",
-            "performance_improvements": "Competitor price scraping, alerts, scheduled monitoring"
-        },
-        "features": [
-            "PDF to Markdown conversion",
-            "Table extraction",
-            "Image extraction",
-            "RAG integration with Anthropic Claude vision",
-            "Document upload and processing",
-            "Semantic search and retrieval",
-            "Conversational Q&A",
-            "Supabase vector storage",
-            "Claude Opus vision (segmentation, classification, vision_analysis)",
-        ]
+        "documented_operations": operations,
+        "docs": {"swagger": "/docs", "redoc": "/redoc", "openapi": "/openapi.json"},
     }
+
 
 # Include API routes
 from app.api.search import router as search_router

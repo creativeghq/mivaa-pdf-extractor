@@ -48,7 +48,7 @@ def mount_module_routers(app: "FastAPI") -> None:
             )
             continue
 
-        app.include_router(router, tags=definition.tags or [definition.manifest.slug])
+        app.include_router(router, tags=None if router.tags else (definition.tags or [definition.manifest.slug]))
         logger.info("Mounted router for module %s", definition.manifest.slug)
 
 

@@ -4823,11 +4823,11 @@ async def search_documents(
     request: SearchRequest,
     strategy: Optional[str] = Query(
         "multi_vector",
-        description="Search strategy: 'multi_vector' (default and only supported strategy)"
+        description="Search strategy: 'multi_vector' (default, recommended), 'material' (ranks on filters alone) or 'image' (SigLIP2 visual vector alone)"
     ),
     enable_query_understanding: bool = Query(
-        True,  # ✅ ENABLED BY DEFAULT - Makes platform smarter with minimal cost ($0.0001/query)
-        description="🧠 AI query parsing to automatically extract filters from natural language (e.g., 'waterproof ceramic tiles for outdoor patio, matte finish' → auto-extracts material_type, properties, finish, etc.). Set to false to disable."
+        True,
+        description="AI query parsing (Claude Haiku). Picks the multi_vector weight profile; the filters and rewritten query it infers are applied only for strategy=material. Set to false to skip it."
     ),
     rag_service: RAGService = Depends(get_rag_service),
     claims: Dict[str, Any] = Depends(get_current_user),
