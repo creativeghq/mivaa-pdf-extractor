@@ -278,6 +278,14 @@ def test_an_attribute_naming_another_series_of_the_document_fails_but_its_own_na
     assert findings[0].examples == [{"product": "Saboya", "names": ["redstone"]}]
 
 
+def test_a_series_named_after_a_place_of_use_is_not_a_leak_when_it_is_where_the_product_goes():
+    findings, metrics = [], {}
+    products = [{"name": "Rebel", "attributes": {"room": ["bathroom", "outdoor"]}}, {"name": "Docks", "attributes": {"application": "Outdoor"}},
+                {"name": "Outdoor", "attributes": {}}, {"name": "Area", "attributes": {"notes": "matches the outdoor series"}}]
+    ia.product_content_findings(products, findings, metrics)
+    assert next(f for f in findings if f.code == "attributes_name_other_series").examples == [{"product": "Area", "names": ["outdoor"]}]
+
+
 def test_a_variant_the_maker_photographed_and_the_series_own_pages_outside_its_range_fail():
     findings, metrics = [], {}
     cov = [{"product": "Saboya", "missing_variants": ["gris"], "pages_outside": [257]},

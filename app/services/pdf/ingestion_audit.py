@@ -286,8 +286,8 @@ def product_content_findings(products: Sequence[Dict[str, Any]], findings: List[
         own = _fold(p.get("name") or "")
         a = p.get("attributes") or {}
         attrs = _fold(json.dumps(a, ensure_ascii=False))
-        # A series name that is also this product's own colour or decor ("Oxido", "Cotto") is not a leak.
-        own_words = {_fold(v) for k in ("color", "finish", "decorative_variant")
+        # A series name that is also this product's own colour, decor or place of use ("Oxido", "Outdoor") is not a leak.
+        own_words = {_fold(v) for k in ("color", "finish", "decorative_variant", "room", "application")
                      for v in (a.get(k) if isinstance(a.get(k), list) else [a.get(k)]) if isinstance(v, str)}
         others = sorted(o for o in names if o != own and len(o) > 3 and o not in own_words and re.search(r"\b" + re.escape(o) + r"\b", attrs))
         if others:
