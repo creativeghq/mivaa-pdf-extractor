@@ -1579,6 +1579,7 @@ from app.api.category_prototypes import router as category_prototypes_router
 from app.api.internal_routes import router as internal_router
 from app.api.extraction_eval_routes import router as extraction_eval_router  # noqa: E402 — router block, like its neighbours
 from app.api.tabular_routes import router as tabular_router  # noqa: E402
+from app.api.drawing_routes import router as drawing_router  # noqa: E402
 from app.api.catalog_routes import router as catalog_internal_router
 from app.api.text_routes import router as text_internal_router  # noqa: E402
 from app.api.prompt_templates import router as prompt_templates_router
@@ -1635,6 +1636,7 @@ app.include_router(category_prototypes_router)  # NEW: Category prototype manage
 app.include_router(internal_router)  # NEW: Internal modular endpoints for PDF processing pipeline stages
 app.include_router(extraction_eval_router)  # Golden-case scoring of what the pipeline extracted (docs/extraction-evaluation.md)
 app.include_router(tabular_router)  # A question about a spreadsheet attachment: validated read-only SQL over a locked DuckDB
+app.include_router(drawing_router)  # Drawing geometry: scale, printed room areas, doors, walls, count-by-example
 app.include_router(catalog_internal_router)  # NEW: Catalog rasterization helper (PDF page → PNG) for presentation_catalogs
 app.include_router(text_internal_router)  # Grammar matches from the local LanguageTool server
 app.include_router(prompt_templates_router)  # NEW: Customizable AI prompt templates for different industries
