@@ -4289,7 +4289,8 @@ async def process_document_with_discovery(
                 from app.services.images.image_sourcing import run_image_sourcing
                 with pipeline_stage_span("stage_4_9.image_sourcing"):
                     _sourcing = await asyncio.wait_for(
-                        run_image_sourcing(document_id, workspace_id, str(_job_user) if _job_user else None, log=logger),
+                        run_image_sourcing(document_id, workspace_id, str(_job_user) if _job_user else None, log=logger,
+                                           job_id=job_id),
                         timeout=3600,
                     )
                 _counts = {k: _sourcing.get(k, 0) for k in ('pending_crops', 'matched_crops', 'manufacturer_images',

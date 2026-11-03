@@ -348,3 +348,17 @@ def test_unsettled_lists_live_material_images_with_no_link():
             {"id": "c", "page_number": 3, "metadata": {"excluded_from_products": {}}},
             {"id": "d", "page_number": 4, "metadata": {"bundle_skipped_reason": "icon_candidate_spec_path"}}]
     assert ia.unsettled_images(rows, {"b"}) == [{"image_id": "a", "page": 1}]
+
+
+def test_an_image_that_does_not_resolve_to_its_file_fails():
+    r = run(unresolved_paths=[{"image_id": "i1", "problem": "url_disagrees_with_path"}])
+    assert r.status == ia.FAIL and "image_paths_unresolved" in codes(r) and r.metrics["images_path_unresolved"] == 1
+
+
+def test_an_open_degraded_or_undecided_correction_keeps_the_audit_in_review():
+    open_rows = [{"id": "c1", "code": "images_repaired_without_gemini", "outcome": "degraded", "count": 15, "message": "15 crops"},
+                 {"id": "c2", "code": "ai_work_unbilled", "outcome": "needs_decision", "count": 1, "message": "nobody to bill"}]
+    r = run(open_corrections=open_rows)
+    assert r.status == ia.WARN and {"corrections_degraded", "corrections_need_decision"} <= codes(r)
+    assert r.metrics["corrections_degraded_open"] == 15 and r.metrics["corrections_needing_decision"] == 1
+    assert run(open_corrections=[]).status == ia.PASS

@@ -29,12 +29,12 @@ async def _attach_catalogue_tables(document_id: str, logger: Any) -> Dict[str, A
         return {"error": str(attach_error)[:300]}
 
 
-async def _repair(document_id: str, logger: Any) -> Dict[str, Any]:
+async def _repair(document_id: str, job_id: str, logger: Any) -> Dict[str, Any]:
     try:
         from app.services.core.supabase_client import get_supabase_client
         from app.services.pdf.post_ingestion_repair import repair_document
 
-        return await repair_document(document_id, get_supabase_client(), logger)
+        return await repair_document(document_id, get_supabase_client(), logger, job_id=job_id)
     except Exception as repair_error:
         logger.warning(f"⚠️ Post-ingestion repair could not run: {repair_error}")
         return {"error": str(repair_error)[:300]}
@@ -153,7 +153,7 @@ async def process_stage_5_quality(
         field_judgements = {'status': 'failed', 'error': str(judge_error)[:300]}
 
     catalogue_tables = await _attach_catalogue_tables(document_id, logger)
-    post_ingestion_repair = await _repair(document_id, logger)
+    post_ingestion_repair = await _repair(document_id, job_id, logger)
     ingestion_audit = await _run_audit(document_id, job_id, logger)
     contact_sheets = await _contact_sheets(document_id, logger)
 

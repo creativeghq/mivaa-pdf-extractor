@@ -82,7 +82,7 @@ class AICallLogger:
             _JOB_PAYERS.pop(next(iter(_JOB_PAYERS)))
         return _JOB_PAYERS[job_id]
 
-    async def _debit(self, **kwargs) -> Tuple[Optional[str], Optional[str]]:
+    async def _debit(self, debit_fn: Any = None, **kwargs) -> Tuple[Optional[str], Optional[str]]:
         """Debit AI credits and DON'T silently swallow a failure.
 
         Returns `(unbilled_reason, usage_log_id)`. The reason is None when the debit
@@ -91,7 +91,7 @@ class AICallLogger:
         inserting a second one for the same invocation.
         """
         try:
-            result = await self.credits_service.debit_credits_for_ai_operation(**kwargs)
+            result = await (debit_fn or self.credits_service.debit_credits_for_ai_operation)(**kwargs)
         except Exception as e:  # noqa: BLE001 — never let billing logging break the AI path
             self.logger.error(
                 "[ai_call_logger] credit debit raised (UNBILLED) user=%s op=%s model=%s: %s",
@@ -791,18 +791,16 @@ class AICallLogger:
                 )
                 usage_log_id = None
             else:
+                # Priced per Firecrawl credit: the token debit charged every search 0.
                 _reason, usage_log_id = await self._debit(
+                    self.credits_service.debit_credits_for_firecrawl,
                     user_id=user_id,
                     workspace_id=workspace_id,
                     operation_type=f"firecrawl_{operation_type}",
-                    model_name="firecrawl-scrape",
-                    input_tokens=0,  # Firecrawl doesn't use tokens
-                    output_tokens=0,
-                    metadata={
-                        'credits_used': credits_used,
-                        'operation_details': operation_details,
-                        'api_provider': 'firecrawl'
-                    },
+                    credits_used=credits_used,
+                    url=url,
+                    pages_scraped=pages_scraped,
+                    metadata={'operation_details': operation_details},
                     module_slug=module_slug
                 )
 

@@ -122,8 +122,9 @@ def _is_swatch(crop: Dict[str, Any]) -> bool:
 class ImageSourcing:
     def __init__(self, document_id: str, workspace_id: str, user_id: Optional[str], allow_restore: bool = True,
                  log: Optional[logging.Logger] = None, dry_run: bool = False, low_res_embedded: bool = False,
-                 gallery_backfill: bool = False) -> None:
+                 gallery_backfill: bool = False, job_id: Optional[str] = None) -> None:
         self.dry_run = dry_run
+        self.job_id = job_id
         self.gallery_pairs: List[Dict[str, Any]] = []
         # Also look up the maker's gallery for products that already went through sourcing without one.
         self.gallery_backfill = gallery_backfill
@@ -131,11 +132,12 @@ class ImageSourcing:
         self.low_res_embedded = low_res_embedded
         self.document_id = document_id
         self.workspace_id = workspace_id
-        self.user_id = user_id
         self.allow_restore = allow_restore
         self.log = log or logger
         self.sb = get_supabase_client()
         self.db = self.sb.client
+        from app.services.integrations.billing_principal import billing_principal
+        self.user_id = user_id or billing_principal(self.db, workspace_id, document_id)
         self._links: Dict[str, List[Tuple[str, str]]] = {}
         self._downloads: Dict[str, Optional[bytes]] = {}
         self._siblings: Dict[str, List[str]] = {}
@@ -143,7 +145,10 @@ class ImageSourcing:
         self._name_confirmed: Dict[str, str] = {}
         self.summary: Dict[str, Any] = {"products": 0, "pending_crops": 0, "matched_crops": 0,
                                         "manufacturer_images": 0, "restored": 0, "kept_source": 0,
-                                        "rejected_non_product": 0, "errors": []}
+                                        "rejected_non_product": 0, "errors": [], "restored_ids": [],
+                                        "restored_without_gemini": [], "gemini_unavailable_reasons": [],
+                                        "kept_source_ids": [], "repairs_downscaled": [], "unbilled": not self.user_id}
+        self._gemini_failure: Optional[str] = None
 
     # ── data ────────────────────────────────────────────────────────────────
 
@@ -407,8 +412,13 @@ class ImageSourcing:
     # ── repair ──────────────────────────────────────────────────────────────
 
     async def _gemini_restore(self, crop_img: Image.Image) -> Optional[Image.Image]:
-        """Through the edge function (its key, its credit debit), padded to a ratio the model keeps."""
+        """Through the edge function (its key, its credit debit), padded to a ratio the model keeps.
+
+        When it cannot run, `self._gemini_failure` says why, so the fallback is reported as degraded.
+        """
+        self._gemini_failure = None
         if not self.user_id:
+            self._gemini_failure = "nobody to bill"
             return None
         ratio = crop_img.width / crop_img.height
         target = min(GEMINI_ASPECTS, key=lambda r: abs(r - ratio) / r)
@@ -422,6 +432,7 @@ class ImageSourcing:
             box = (ox / W, oy / H, (ox + w) / W, (oy + h) / H)
         tmp = await self.sb.upload_image_file(_jpeg(padded, 95), f"restore_in_{uuid.uuid4().hex[:10]}.jpg", self.document_id)
         if not tmp.get("success"):
+            self._gemini_failure = "upload of the crop failed"
             return None
         try:
             async with httpx.AsyncClient(timeout=170) as client:
@@ -436,12 +447,18 @@ class ImageSourcing:
             url = body.get("image_url") or body.get("imageUrl")
             if r.status_code != 200 or not url:
                 self.summary["errors"].append(f"gemini restore {r.status_code}: {str(body.get('error'))[:120]}")
+                self._gemini_failure = f"HTTP {r.status_code}: {str(body.get('error'))[:80]}"
                 return None
             out = _open(await _download(url) or b"")
+            if out is None:
+                self._gemini_failure = "result could not be downloaded"
             if out is not None and box:
                 W, H = out.size
                 out = out.crop((round(box[0] * W), round(box[1] * H), round(box[2] * W), round(box[3] * H)))
             return out
+        except httpx.HTTPError as e:
+            self._gemini_failure = type(e).__name__
+            return None
         finally:
             try:
                 self.db.storage.from_("pdf-tiles").remove([tmp["storage_path"]])
@@ -453,8 +470,10 @@ class ImageSourcing:
         restored, method, fidelity = None, None, None
         # A swatch stays the size the PDF holds; a repair has nothing at that size to recover.
         repairable = self.allow_restore and not _is_swatch(crop)
+        gemini_failed = None
         if repairable and is_patterned(crop_img):
             g = await self._gemini_restore(crop_img)
+            gemini_failed = self._gemini_failure
             if g is not None:
                 ok, fidelity = repair_is_faithful(crop_img, g, native)
                 if ok:
@@ -474,9 +493,13 @@ class ImageSourcing:
             if not crop.get("has_slig_embedding"):
                 await self._embed(crop, crop_bytes)
             self.summary["kept_source"] += 1
+            self.summary["kept_source_ids"].append(crop["id"])
             return
         from app.services.pdf.ingestion_audit import UPSCALE_LIMIT
+        before = restored.size
         restored = within_upscale(restored, native, UPSCALE_LIMIT)
+        if restored.size != before:
+            self.summary["repairs_downscaled"].append(crop["id"])
         cls = (crop.get("metadata") or {}).get("ai_classification")
         saved = await self._store(product, restored, crop.get("page_number") or 1, "restored", "pdf_processing",
                                   {"restored_from": crop["id"], "restore_method": method, "restore_fidelity": fidelity,
@@ -486,11 +509,16 @@ class ImageSourcing:
             if not crop.get("has_slig_embedding"):
                 await self._embed(crop, crop_bytes)
             self.summary["kept_source"] += 1
+            self.summary["kept_source_ids"].append(crop["id"])
             return
         self._supersede(crop, product["id"], [saved["id"]], "superseded_by_restored")
         await self._retire_vectors(crop)
         await self._embed(saved, _jpeg(restored))
         self.summary["restored"] += 1
+        self.summary["restored_ids"].append(crop["id"])
+        if gemini_failed and method == "classical":
+            self.summary["restored_without_gemini"].append(crop["id"])
+            self.summary["gemini_unavailable_reasons"].append(gemini_failed)
 
     # ── run ─────────────────────────────────────────────────────────────────
 
@@ -647,12 +675,17 @@ class ImageSourcing:
                 self.summary["errors"].append(f"{product.get('name')}: {str(e)[:160]}")
             await asyncio.sleep(0)
         self.summary["per_product"] = reports
+        if not self.dry_run:
+            from app.services.pdf.ingestion_corrections import record, sourcing_corrections
+            await record(self.db, self.document_id, self.workspace_id, "image_sourcing",
+                         sourcing_corrections(self.summary), self.job_id)
         return self.summary
 
 
 async def run_image_sourcing(document_id: str, workspace_id: str, user_id: Optional[str] = None,
                              product_ids: Optional[List[str]] = None, allow_restore: bool = True,
                              log: Optional[logging.Logger] = None, dry_run: bool = False,
-                             low_res_embedded: bool = False, gallery_backfill: bool = False) -> Dict[str, Any]:
+                             low_res_embedded: bool = False, gallery_backfill: bool = False,
+                             job_id: Optional[str] = None) -> Dict[str, Any]:
     return await ImageSourcing(document_id, workspace_id, user_id, allow_restore, log, dry_run,
-                               low_res_embedded, gallery_backfill).run_all(product_ids)
+                               low_res_embedded, gallery_backfill, job_id).run_all(product_ids)

@@ -1,8 +1,8 @@
 """Every live material image of a document ends linked to a product or excluded with a reason.
 
 The printed label decides first; then a vision model picks among the series that page belongs to,
-or says none; an image with no series to pick from is excluded. A failed vision call decides
-nothing and leaves the image for the audit to count.
+or says none; an image with no series to pick from is excluded. A room scene showing several
+series is linked to each. A failed vision call decides nothing and leaves the image for the audit.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 TASK = "shared_page_image_linking"
 MAX_CANDIDATES = 20
 MAX_IMAGES_PER_CALL = 16
+MAX_SERIES_PER_IMAGE = 3
 PAGE_PX = 1600
 KINDS = ("product", "decorative", "unclear")
 EXCLUDED_BY = "settle_unlinked_images"
@@ -28,8 +29,9 @@ VECTOR_FLAGS = ("has_slig_embedding", "has_understanding_embedding", "has_color_
 SCHEMA: Dict[str, Any] = {
     "type": "object", "additionalProperties": False, "required": ["images"],
     "properties": {"images": {"type": "array", "items": {
-        "type": "object", "additionalProperties": False, "required": ["image", "series", "kind"],
+        "type": "object", "additionalProperties": False, "required": ["image", "series", "also", "kind"],
         "properties": {"image": {"type": "integer"}, "series": {"type": ["integer", "null"]},
+                       "also": {"type": "array", "items": {"type": "integer"}},
                        "kind": {"type": "string", "enum": list(KINDS)}}}}},
 }
 
@@ -46,21 +48,26 @@ def page_candidates(page: int, printed: Set[str], product_of: Dict[str, str],
     return out[:MAX_CANDIDATES]
 
 
-def verdicts(answer: Dict[str, Any], n_images: int, n_candidates: int) -> Dict[int, Tuple[str, Optional[int]]]:
-    """{image index (0-based): (kind, candidate index or None)} for answers naming a real image.
+Verdict = Tuple[str, Optional[int], Tuple[int, ...]]
+
+
+def verdicts(answer: Dict[str, Any], n_images: int, n_candidates: int) -> Dict[int, Verdict]:
+    """{image index (0-based): (kind, candidate index or None, other candidates it also shows)}.
 
     `product` with no valid candidate is `unclear`: a product image the model could not place is
-    not attributable, and never a guess at the nearest series.
+    not attributable, and never a guess at the nearest series. `also` keeps only real, distinct candidates.
     """
-    out: Dict[int, Tuple[str, Optional[int]]] = {}
+    out: Dict[int, Verdict] = {}
     for a in answer.get("images") or []:
         i, s, kind = a.get("image"), a.get("series"), a.get("kind")
         if not isinstance(i, int) or not 1 <= i <= n_images or kind not in KINDS:
             continue
         if kind == "product" and isinstance(s, int) and 1 <= s <= n_candidates:
-            out[i - 1] = ("product", s - 1)
+            also = tuple(dict.fromkeys(x - 1 for x in a.get("also") or []
+                                       if isinstance(x, int) and 1 <= x <= n_candidates and x != s))
+            out[i - 1] = ("product", s - 1, also[:MAX_SERIES_PER_IMAGE - 1])
         else:
-            out[i - 1] = ("decorative" if kind == "decorative" else "unclear", None)
+            out[i - 1] = ("decorative" if kind == "decorative" else "unclear", None, ())
     return out
 
 
@@ -96,7 +103,7 @@ def _download(db: Any, row: Dict[str, Any]):
 
 
 async def _ask(page_png: bytes, crops: Sequence[Any], names: Sequence[str], prompt: str, model: str,
-               workspace_id: Optional[str]) -> Dict[int, Tuple[str, Optional[int]]]:
+               workspace_id: Optional[str], user_id: Optional[str]) -> Dict[int, Verdict]:
     from app.services.core.claude_tool_call import call_with_schema
     from app.services.images.gallery_coverage import numbered_sheet
     from app.services.utilities.prompt_registry import render
@@ -106,13 +113,14 @@ async def _ask(page_png: bytes, crops: Sequence[Any], names: Sequence[str], prom
         {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(numbered_sheet(crops, "I")).decode()}},
         {"type": "text", "text": render(prompt, candidates=listing, n_images=str(len(crops)))},
     ]
-    res = await call_with_schema(task=TASK, model=model, max_tokens=3000, workspace_id=workspace_id,
+    res = await call_with_schema(task=TASK, model=model, max_tokens=3000, workspace_id=workspace_id, user_id=user_id,
                                  messages=[{"role": "user", "content": content}],
                                  output_config={"format": {"type": "json_schema", "schema": SCHEMA}})
     return verdicts(res.data, len(crops), len(names))
 
 
-async def settle_unlinked_images(supabase: Any, document_id: str, pdf_bytes: bytes, apply: bool = True) -> Dict[str, Any]:
+async def settle_unlinked_images(supabase: Any, document_id: str, pdf_bytes: bytes, apply: bool = True,
+                                 user_id: Optional[str] = None, job_id: Optional[str] = None) -> Dict[str, Any]:
     """Link or exclude every unlinked live material or decorative image of the document; count each outcome."""
     from app.services.core.claude_models import SONNET
     from app.services.images.association_scores import PRINTED_LABEL_SCORE
@@ -121,7 +129,7 @@ async def settle_unlinked_images(supabase: Any, document_id: str, pdf_bytes: byt
     from app.services.utilities.prompt_registry import load_prompt
 
     summary: Dict[str, Any] = {"unlinked": 0, "linked_by_label": 0, "linked_by_vision": 0, "excluded": defaultdict(int),
-                               "undecided": 0, "failed_pages": []}
+                               "undecided": 0, "failed_pages": [], "multi_linked": []}
     ctx = await label_context(supabase, document_id, pdf_bytes)
     if ctx is None:
         return {**summary, "excluded": {}}
@@ -187,20 +195,28 @@ async def settle_unlinked_images(supabase: Any, document_id: str, pdf_bytes: byt
             for start in range(0, len(entries), MAX_IMAGES_PER_CALL):
                 batch = entries[start:start + MAX_IMAGES_PER_CALL]
                 crops = [await asyncio.to_thread(_download, db, img) for img, _ in batch]
-                answers = await _ask(page_png, crops, names, prompt, SONNET, batch[0][0].get("workspace_id"))
+                answers = await _ask(page_png, crops, names, prompt, SONNET, batch[0][0].get("workspace_id"), user_id)
                 for n, (img, _) in enumerate(batch):
                     if n not in answers:
                         summary["undecided"] += 1
                         continue
-                    kind, pick = answers[n]
+                    kind, pick, also = answers[n]
                     if kind == "product" and pick is not None:
-                        link(img, candidates[pick], "shared_page_vision", series=names[pick])
+                        for c in (pick, *also):
+                            link(img, candidates[c], "shared_page_vision", series=names[c], shows=[names[x] for x in (pick, *also)])
                         summary["linked_by_vision"] += 1
+                        if also:
+                            summary["multi_linked"].append(img["id"])
                     else:
                         await exclude(img, exclusion_reason(kind))
         except Exception as e:
             logger.warning(f"settling unlinked images on pdf page {pdf_idx} ({side}) of {document_id} failed: {e}")
             summary["failed_pages"].append({"pdf_page": pdf_idx, "side": side, "error": f"{type(e).__name__}: {e}"[:200]})
             summary["undecided"] += len(entries)
-    return {**summary, "excluded": dict(summary["excluded"])}
+    result = {**summary, "excluded": dict(summary["excluded"])}
+    if apply:
+        from app.services.pdf.ingestion_corrections import record, settle_corrections
+        await record(db, document_id, (ctx.images[0].get("workspace_id") if ctx.images else None),
+                     "unlinked_images", settle_corrections(result), job_id)
+    return result
 

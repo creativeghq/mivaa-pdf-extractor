@@ -258,6 +258,7 @@ class CreditsIntegrationService:
             'billed_cost_usd': costs['billed_cost_usd'],
             'new_balance': result.get('new_balance'),
             'transaction_id': result.get('transaction_id'),
+            'usage_log_id': result.get('usage_log_id'),
             'costs': costs,
         }
 
@@ -318,6 +319,7 @@ class CreditsIntegrationService:
             'firecrawl_credits': credits_used,
             'new_balance': result.get('new_balance'),
             'transaction_id': result.get('transaction_id'),
+            'usage_log_id': result.get('usage_log_id'),
             'cost_usd': float(cost_usd),
         }
 

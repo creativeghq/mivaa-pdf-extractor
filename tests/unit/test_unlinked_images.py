@@ -33,7 +33,17 @@ def test_a_verdict_counts_only_when_it_names_a_real_image_and_a_real_series():
         {"image": 5, "series": 1, "kind": "maybe"},
     ]}
     assert ui.verdicts(answer, n_images=5, n_candidates=2) == {
-        0: ("product", 1), 1: ("decorative", None), 2: ("unclear", None), 3: ("unclear", None)}
+        0: ("product", 1, ()), 1: ("decorative", None, ()), 2: ("unclear", None, ()), 3: ("unclear", None, ())}
+
+
+def test_a_room_scene_showing_several_series_names_each_real_one_once():
+    answer = {"images": [
+        {"image": 1, "series": 1, "also": [2, 2, 1, 9, 3], "kind": "product"},
+        {"image": 2, "series": None, "also": [1], "kind": "unclear"},
+    ]}
+    got = ui.verdicts(answer, n_images=2, n_candidates=3)
+    assert got[0] == ("product", 0, (1, 2)) and got[1] == ("unclear", None, ())
+    assert len(got[0][2]) < ui.MAX_SERIES_PER_IMAGE
 
 
 def test_each_non_link_outcome_has_a_stated_reason():

@@ -125,8 +125,13 @@ async def _collect(db: Any, document: Dict[str, Any]) -> Dict[str, Any]:
         for i in imgs:
             if (i.get("metadata") or {}).get("restored_from") in source_px:
                 i["source_px"] = source_px[i["metadata"]["restored_from"]]
+    unresolved = _rows(await asyncio.to_thread(db.rpc("document_image_paths_unresolved", {"p_document_id": doc_id}).execute))
+    open_corrections = _rows(await asyncio.to_thread(
+        db.table("ingestion_corrections").select("id, code, outcome, message, count").eq("document_id", doc_id)
+        .is_("acknowledged_at", "null").neq("outcome", "corrected").execute))
     return {"products": products, "layout": layout, "chunks": chunks, "tables": tables, "embedded": embedded, "images": images,
-            "product_images": product_images, "snapshots": snapshots, "unsettled_images": await _unsettled_images(db, doc_id)}
+            "product_images": product_images, "snapshots": snapshots, "unsettled_images": await _unsettled_images(db, doc_id),
+            "unresolved_paths": unresolved, "open_corrections": open_corrections}
 
 
 async def _unsettled_images(db: Any, doc_id: str) -> List[Dict[str, Any]]:
@@ -302,6 +307,8 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         other_series=collected.get("other_series"),
         unsettled_images=collected.get("unsettled_images"),
         series_coverage=series_coverage(collected) if pdf_bytes else None,
+        unresolved_paths=collected.get("unresolved_paths"),
+        open_corrections=collected.get("open_corrections"),
     )
 
 

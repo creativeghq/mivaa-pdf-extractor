@@ -332,6 +332,8 @@ def audit_document(
     other_series: Optional[Sequence[Dict[str, Any]]] = None,
     unsettled_images: Optional[Sequence[Dict[str, Any]]] = None,
     series_coverage: Optional[Sequence[Dict[str, Any]]] = None,
+    unresolved_paths: Optional[Sequence[Dict[str, Any]]] = None,
+    open_corrections: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> AuditResult:
     findings: List[Finding] = []
     metrics: Dict[str, Any] = {"source_kept": source_kept, "phase": phase, "source_kind": source_kind}
@@ -357,6 +359,8 @@ def audit_document(
         image_findings(product_images or {}, findings, metrics)
         image_integrity_findings(product_images or {}, other_series or [], findings, metrics)
         unsettled_image_findings(unsettled_images or [], findings, metrics)
+        image_path_findings(unresolved_paths or [], findings, metrics)
+    correction_findings(open_corrections or [], findings, metrics)
     unrouted = sum(1 for p in pages if not p.get("route")) if source_kind == "pdf" else 0
     metrics["pages"] = len(pages)
     metrics["pages_never_checked_against_text_layer"] = unrouted
@@ -500,6 +504,29 @@ def unsettled_image_findings(unsettled: Sequence[Dict[str, Any]], findings: List
     metrics["images_unsettled"] = len(unsettled)
     if unsettled:
         findings.append(Finding(FAIL, "images_unsettled", f"{len(unsettled)} material image(s) are linked to no product and were never excluded", len(unsettled), list(unsettled)))
+
+
+def image_path_findings(unresolved: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    """A live image whose stored path is absent, disagrees with its URL, or names no file in storage."""
+    metrics["images_path_unresolved"] = len(unresolved)
+    if unresolved:
+        kinds = sorted({u.get("problem") or "unknown" for u in unresolved})
+        findings.append(Finding(FAIL, "image_paths_unresolved", f"{len(unresolved)} live image(s) do not resolve to their stored file ({', '.join(kinds)})",
+                                len(unresolved), [{"image_id": u.get("image_id"), "problem": u.get("problem")} for u in unresolved]))
+
+
+def correction_findings(open_corrections: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    """Corrections the pipeline made worse than intended, or would not make, that nobody has acknowledged."""
+    degraded = [c for c in open_corrections if c.get("outcome") == "degraded"]
+    undecided = [c for c in open_corrections if c.get("outcome") == "needs_decision"]
+    metrics.update({"corrections_degraded_open": sum(int(c.get("count") or 0) for c in degraded),
+                    "corrections_needing_decision": sum(int(c.get("count") or 0) for c in undecided)})
+    for code, rows, label in (("corrections_degraded", degraded, "done worse than intended"),
+                              ("corrections_need_decision", undecided, "waiting for a decision")):
+        if rows:
+            findings.append(Finding(WARN, code, f"{sum(int(c.get('count') or 0) for c in rows)} pipeline correction(s) {label}: "
+                                    + "; ".join(c.get("message") or c.get("code") for c in rows)[:600],
+                                    len(rows), [{"correction_id": c.get("id"), "code": c.get("code")} for c in rows]))
 
 
 def platform_numbers_for_page(layout_text: str, chunk_texts: Iterable[str], table_texts: Iterable[str]) -> Set[str]:

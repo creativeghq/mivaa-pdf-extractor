@@ -181,7 +181,8 @@ async def dedupe_document_images(supabase: Any, document_id: str, apply: bool = 
     return summary
 
 
-async def repair_document(document_id: str, supabase: Any, log: Optional[logging.Logger] = None) -> Dict[str, Any]:
+async def repair_document(document_id: str, supabase: Any, log: Optional[logging.Logger] = None,
+                          job_id: Optional[str] = None) -> Dict[str, Any]:
     from app.services.pdf.ingestion_audit_runner import _collect, _download, build_audit
 
     log = log or logger
@@ -219,11 +220,13 @@ async def repair_document(document_id: str, supabase: Any, log: Optional[logging
         await step("page_supplements", write_page_supplements(supabase, document, collected, pdf, findings))
     await step("duplicate_images", dedupe_document_images(supabase, document_id))
     from app.services.discovery.series_reconcile import reconcile_document
-    await step("series_reconcile", reconcile_document(supabase, document_id))
+    from app.services.integrations.billing_principal import billing_principal
+    payer = billing_principal(db, document.get("workspace_id"), document_id)
+    await step("series_reconcile", reconcile_document(supabase, document_id, job_id=job_id, user_id=payer))
     if pdf is not None:
         from app.services.images.label_linking import relink_by_labels
         await step("label_links", relink_by_labels(supabase, document_id, pdf))
         from app.services.images.unlinked_images import settle_unlinked_images
-        await step("unlinked_images", settle_unlinked_images(supabase, document_id, pdf))
+        await step("unlinked_images", settle_unlinked_images(supabase, document_id, pdf, user_id=payer, job_id=job_id))
     log.info(f"   Post-ingestion repair: {', '.join(f'{k}={v}' for k, v in out.items())[:600]}")
     return out
