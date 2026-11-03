@@ -115,3 +115,47 @@ def test_firecrawl_is_charged_per_firecrawl_credit_not_per_token():
 def test_a_successful_debit_hands_back_the_usage_row_it_wrote(method):
     body = _func("app/services/integrations/credits_integration_service.py", method)
     assert "'usage_log_id': result.get('usage_log_id')" in body
+
+
+class _Query:
+    def __init__(self, rows, filters=None):
+        self.rows, self.filters = rows, dict(filters or {})
+
+    def select(self, *_):
+        return self
+
+    def eq(self, key, value):
+        return _Query(self.rows, {**self.filters, key: value})
+
+    def order(self, *_):
+        return self
+
+    def limit(self, *_):
+        return self
+
+    def execute(self):
+        data = [r for r in self.rows if all(r.get(k) == v for k, v in self.filters.items())]
+        return type("R", (), {"data": data})()
+
+
+class _Db:
+    def __init__(self, tables):
+        self.tables = tables
+
+    def table(self, name):
+        return _Query(self.tables.get(name, []))
+
+
+bp = _load("billing_principal_under_test", "app/services/integrations/billing_principal.py")
+
+
+def test_the_payer_is_the_uploader_then_the_owner_then_an_admin_of_the_documents_workspace():
+    members = [{"workspace_id": "w", "user_id": "adm", "status": "active", "role": "admin"},
+               {"workspace_id": "w", "user_id": "gone", "status": "suspended", "role": "owner"}]
+    db = _Db({"documents": [{"id": "d", "created_by": None, "workspace_id": "w"}], "workspace_members": members})
+    assert bp.billing_principal(db, None, "d") == "adm"
+    members.append({"workspace_id": "w", "user_id": "own", "status": "active", "role": "owner"})
+    assert bp.billing_principal(db, "w", "d") == "own"
+    db.tables["documents"][0]["created_by"] = "up"
+    assert bp.billing_principal(db, "w", "d") == "up"
+    assert bp.billing_principal(_Db({}), "w") is None
