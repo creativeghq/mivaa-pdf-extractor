@@ -49,6 +49,8 @@ def test_clause_keeps_images_without_a_document():
     ("classification_backfill.py", "backfill_pending_classifications"),
     ("aspect_backfill.py", "_fetch_stale_aspect_images"),
     ("aspect_backfill.py", "backfill_aspect_embeddings"),
+    ("visual_backfill.py", "_fetch_missing"),
+    ("visual_backfill.py", "backfill_visual_embeddings"),
 ])
 def test_an_explicit_repair_is_never_deferred_by_default(module, func):
     tree = ast.parse((EMB / module).read_text(encoding="utf-8"))

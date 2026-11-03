@@ -1973,6 +1973,29 @@ async def backfill_aspect_embeddings_endpoint(
     return JSONResponse(content=summary)
 
 
+class VisualBackfillRequest(BaseModel):
+    """Request body for the visual (SLIG) embedding backfill endpoint."""
+    max_images: int = 100
+    image_ids: Optional[List[str]] = None
+    skip_settling_documents: bool = False
+
+
+@router.post("/admin/visual-embeddings/backfill")
+async def backfill_visual_embeddings_endpoint(
+    request: VisualBackfillRequest,
+    user: User = Depends(require_admin),
+):
+    """Embed material images that have no visual vector."""
+    from app.services.embeddings.visual_backfill import backfill_visual_embeddings
+
+    summary = await backfill_visual_embeddings(
+        max_images=request.max_images,
+        image_ids=request.image_ids,
+        skip_settling_documents=request.skip_settling_documents,
+    )
+    return JSONResponse(content=summary)
+
+
 class ImageRebuildRequest(BaseModel):
     """Request body for per-image manual rebuild."""
     aspects: Optional[List[str]] = None
