@@ -313,7 +313,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         web = {"snapshots": web_texts, "products": [{"name": p["name"], "table_numbers": table_numbers_by_product.get(p["id"], set())} for p in collected["products"]]}
     plans, unmatched = plan_catalogue_tables(layout, collected["products"])
     # A table copied from another PDF (a technical guide) cannot be checked against this one.
-    tables = [{**t, "sourced_elsewhere": (t.get("metadata") or {}).get("document_id") not in (None, document.get("id"))} for t in tables]
+    tables = [{**t, "sourced_elsewhere": (t.get("metadata") or {}).get("sourced_elsewhere") or (t.get("metadata") or {}).get("document_id") not in (None, document.get("id"))} for t in tables]
     return audit_document(
         catalogue={"plans": plans, "unmatched": unmatched},
         web=web if web_mode else None,

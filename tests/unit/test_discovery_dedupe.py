@@ -146,3 +146,18 @@ def test_a_code_shared_across_a_range_names_a_format_not_a_model():
     products = [{"id": str(i), "name": f"S{i}", "metadata": {"product_codes": ["M125"]}} for i in range(5)]
     assert c.code_index(products) == {}
     assert c.table_owners({"table_data": {"rows": [["M125", "1"]]}}, c.code_index(products)) == set()
+
+
+def test_a_chunk_goes_to_the_one_model_it_names_and_range_text_stays():
+    c = _catalogue_tables()
+    index = c.code_index([{"id": "m", "name": "LINEAR MAX (KLM)"}, {"id": "t", "name": "LINEAR COMFORT (KLT)"}])
+    assert c.chunk_owner("KLT 700.450 heat output", index) == "t"
+    assert c.chunk_owner("KLM and KLT share a bracket", index) is None
+    assert c.chunk_owner("no code at all", index) is None
+
+
+def test_a_page_beside_the_series_pages_naming_no_product_is_a_web_only_candidate():
+    sm = _load("site_manifest_under_test", "app/services/discovery/site_manifest.py")
+    urls = ["https://k.com/koralux-linear-max", "https://k.com/koralux-rondo-booster", "https://k.com/news/koralux-award", "https://k.com/contact"]
+    found = sm.series_only_on_site(urls, ["https://k.com/koralux-linear-max"], ["KORALUX LINEAR MAX"])
+    assert found == ["https://k.com/koralux-rondo-booster"]

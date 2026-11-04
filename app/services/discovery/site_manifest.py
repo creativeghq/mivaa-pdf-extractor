@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import unicodedata
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -124,3 +126,65 @@ async def build_manifest(document_id: str, workspace_id: str, user_id: Optional[
     logger.info(f"   🌐 Site manifest: {summary['found']}/{summary['series']} series on the maker's site, "
                 f"{summary['not_found']} not found, {summary['no_site']} with no known site")
     return summary
+
+
+
+def fold_slug(text: str) -> str:
+    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode().lower()
+
+
+def slug_tokens(url: str) -> List[str]:
+    return [t for t in re.split(r"[^a-z0-9]+", fold_slug(url.rstrip("/").rsplit("/", 1)[-1])) if t]
+
+
+def series_only_on_site(sitemap_pages: Iterable[str], known_pages: Iterable[str], names: Iterable[str]) -> List[str]:
+    """Pages beside the series' own pages, sharing a word with the catalogue, naming no discovered product."""
+    known = [[t for t in re.split(r"[^a-z0-9]+", fold_slug(n)) if t] for n in names]
+    words = {t for tokens in known for t in tokens if len(t) > 3}
+    parents = {page.rstrip("/").rsplit("/", 1)[0] for page in known_pages}
+    out: List[str] = []
+    for url in sitemap_pages:
+        tokens = slug_tokens(url)
+        if url.rstrip("/").rsplit("/", 1)[0] not in parents or not set(tokens) & words:
+            continue
+        if any(t and all(w in tokens for w in t) for t in known) or url in out:
+            continue
+        out.append(url)
+    return out
+
+
+async def sitemap_pages(root: str, max_files: int = 6) -> List[str]:
+    """The site's page URLs, or nothing when it does not publish them to us."""
+    from app.utils.ssrf_guard import safe_fetch_bytes
+
+    pending, seen, pages = [root.rstrip("/") + "/sitemap.xml"], set(), []
+    while pending and len(seen) < max_files:
+        url = pending.pop(0)
+        seen.add(url)
+        try:
+            result = await safe_fetch_bytes(url, max_bytes=5_000_000, timeout=20.0)
+            text = result.content.decode("utf-8", "replace")
+        except Exception as e:  # noqa: BLE001 - a blocked or absent sitemap only means no suggestions
+            logger.info(f"sitemap {url} not read: {type(e).__name__}")
+            continue
+        for loc in re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", text):
+            (pending if loc.endswith(".xml") else pages).append(loc)
+    return pages
+
+
+async def report_site_only_series(db: Any, document_id: str, workspace_id: str, job_id: Optional[str] = None) -> Dict[str, Any]:
+    """Models the maker lists that the PDF does not print. Only named for a person to decide; never created."""
+    from app.services.pdf.ingestion_corrections import NEEDS_DECISION, Correction, record
+
+    rows = db.table("products").select("name, metadata").eq("source_document_id", document_id).execute().data or []
+    manifests = [(r.get("metadata") or {}).get("site_manifest") or {} for r in rows]
+    roots = {m.get("site_root") for m in manifests if m.get("site_root")}
+    pages = [page for m in manifests for page in (m.get("pages") or [])]
+    if len(roots) != 1 or not pages:
+        return {"site_only": []}
+    found = series_only_on_site(await sitemap_pages(next(iter(roots))), pages, [r["name"] for r in rows])
+    if found:
+        await record(db, document_id, workspace_id, "discovery", [Correction(
+            "series_only_on_maker_site", NEEDS_DECISION,
+            f"The maker's site lists {len(found)} page(s) beside these series that the PDF does not name", len(found), found[:50])], job_id)
+    return {"site_only": found}

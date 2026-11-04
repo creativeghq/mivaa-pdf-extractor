@@ -1060,6 +1060,8 @@ async def process_stage_0_discovery(
         try:
             from app.services.discovery.site_manifest import build_manifest
             checkpoint_data["site_manifest"] = await build_manifest(document_id, workspace_id, None, list(product_db_ids))
+            from app.services.discovery.site_manifest import report_site_only_series
+            await report_site_only_series(supabase.client, document_id, workspace_id, job_id)
         except Exception as manifest_error:  # noqa: BLE001 - the PDF path never depends on the site
             logger.warning(f"⚠️ Site manifest could not be built: {manifest_error}")
             checkpoint_data["site_manifest"] = {"error": str(manifest_error)[:300]}

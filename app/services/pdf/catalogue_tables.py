@@ -170,6 +170,14 @@ def table_owners(table: Dict[str, Any], index: Dict[str, Set[str]]) -> Set[str]:
     return owners
 
 
+def chunk_owner(text: str, index: Dict[str, Set[str]]) -> Optional[str]:
+    """The one product a text's model codes name. Text naming several is about the range and stays where it is."""
+    owners: Set[str] = set()
+    for token in CODE_TOKEN.findall(text or ""):
+        owners |= index.get(token, set())
+    return next(iter(owners)) if len(owners) == 1 else None
+
+
 async def route_tables_by_code(supabase: Any, document_id: str, *, apply: bool = True, job_id: Optional[str] = None) -> Dict[str, Any]:
     """A table whose model column names other products goes to them: a merged row must not own the range's tables."""
     from app.services.pdf.ingestion_corrections import CORRECTED, Correction, record
@@ -197,9 +205,22 @@ async def route_tables_by_code(supabase: Any, document_id: str, *, apply: bool =
             if apply and others:
                 copy = {k: v for k, v in table.items() if k not in ("id", "created_at", "updated_at", "product_id")}
                 db.table("product_tables").insert([{**copy, "product_id": other} for other in others]).execute()
-    if apply and (summary["moved"] or summary["copied"]):
+    summary["chunks_moved"] = 0
+    start = 0
+    while True:
+        chunks = await asyncio.to_thread(lambda: _rows(db.table("document_chunks").select("id, product_id, content").eq("document_id", document_id).order("id").range(start, start + 999).execute()))
+        for chunk in chunks:
+            owner = chunk_owner(chunk.get("content") or "", index)
+            if owner and owner != chunk.get("product_id"):
+                summary["chunks_moved"] += 1
+                if apply:
+                    db.table("document_chunks").update({"product_id": owner}).eq("id", chunk["id"]).execute()
+        if len(chunks) < 1000:
+            break
+        start += 1000
+    if apply and (summary["moved"] or summary["copied"] or summary["chunks_moved"]):
         await record(db, document_id, products[0].get("workspace_id"), "tables", [Correction(
             "tables_routed_by_model_code", CORRECTED,
-            f"{summary['moved']} table(s) moved and {summary['copied']} copied to the products their model codes name",
-            summary["moved"] + summary["copied"])], job_id)
+            f"{summary['moved']} table(s) moved, {summary['copied']} copied and {summary['chunks_moved']} chunk(s) moved to the products their model codes name",
+            summary["moved"] + summary["copied"] + summary["chunks_moved"])], job_id)
     return summary
