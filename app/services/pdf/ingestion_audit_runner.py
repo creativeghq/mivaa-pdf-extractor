@@ -279,9 +279,16 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
     for c in chunks:
         if c.get("product_id"):
             per_product_chunks[c["product_id"]] = per_product_chunks.get(c["product_id"], 0) + 1
+    from app.services.discovery import series_facts as sf
+    tables_of: Dict[str, List[Dict[str, Any]]] = {}
+    for t in tables:
+        tables_of.setdefault(t["product_id"], []).append(t)
     product_rows = [
         {
             "name": p["name"],
+            "fact_problems": sf.fact_problems(p, tables_of.get(p["id"], [])),
+            "has_packing": any(sf.is_packing_table(t) for t in tables_of.get(p["id"], [])),
+            "bad_table_rows": [f"{p['name']}: {row}" for t in tables_of.get(p["id"], []) for row in sf.table_cell_problems(t)],
             "description": p.get("description"),
             "attributes": p.get("attributes"),
             "n_tables": per_product_tables.get(p["id"], 0),

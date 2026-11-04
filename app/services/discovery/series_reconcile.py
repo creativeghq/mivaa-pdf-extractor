@@ -286,8 +286,7 @@ async def reconcile_document(supabase: Any, document_id: str, *, apply: bool = T
             if kept["finishes"]:
                 a["finish"] = m["finish"] = kept["finishes"]
             if kept["formats"]:
-                m["available_formats"] = kept["formats"]
-                m["available_sizes"] = sorted(set(m.get("available_sizes") or []) | {f"{f} cm" for f in kept["formats"]})
+                m["available_formats"] = list(dict.fromkeys((m.get("available_formats") or []) + kept["formats"]))
             new_pages = sorted(set(own) - set(m.get("page_range") or []))
             m["page_range"] = sorted(set(m.get("page_range") or []) | set(own))
             desc = p.get("description") or ""

@@ -3159,9 +3159,10 @@ async def process_document_with_discovery(
     # Background heartbeat (every JOB_HEARTBEAT_INTERVAL_SECONDS) so the
     # auto-recovery cron can detect a dead orchestrator even when a single
     # stage stalls for many minutes.
-    from app.services.tracking.job_heartbeat import JobHeartbeat
+    from app.services.tracking.job_heartbeat import JobHeartbeat, cancel_when_job_cancelled
     supabase = get_supabase_client()
     heartbeat = JobHeartbeat(job_id=job_id, supabase_client=supabase)
+    cancel_watch = asyncio.create_task(cancel_when_job_cancelled(job_id, supabase, asyncio.current_task()))
     await heartbeat.__aenter__()
     try:
         # ============================================================================
@@ -4700,6 +4701,7 @@ async def process_document_with_discovery(
             sentry_sdk.capture_exception(rollback_error)
 
     finally:
+        cancel_watch.cancel()
         # ============================================================================
         # CONSOLIDATED CLEANUP (Failure or Success)
         # ============================================================================

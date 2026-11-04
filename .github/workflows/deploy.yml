@@ -1026,8 +1026,19 @@ jobs:
 
             if [ "$READY" != "true" ]; then
               ACTIVE=$(echo "$DRAIN_RESP" | jq -r '.active_jobs // 0' 2>/dev/null || echo '0')
-              echo "⚠️ Drain did not complete cleanly (active_jobs=${ACTIVE})."
-              echo "   Continuing with restart — jobs will be auto-resumed by P1-2 hook."
+              if [ "${ACTIVE:-0}" -gt 0 ] 2>/dev/null; then
+                # An ingestion takes hours and a restart kills it: the host restarts when it ends.
+                echo "⏸️ ${ACTIVE} ingestion(s) running: restart deferred until they end. The new code is on disk."
+                curl -s -X POST -m 15 -H "X-Admin-Token: ${{ secrets.MIVAA_DEPLOY_TOKEN }}" http://localhost:8000/api/admin/resume-from-deploy >/dev/null || true
+                if ! sudo systemctl is-active --quiet mivaa-restart-when-idle; then
+                  sudo systemctl reset-failed mivaa-restart-when-idle 2>/dev/null || true
+                  sudo systemd-run --unit=mivaa-restart-when-idle --collect \
+                    --setenv=MIVAA_DEPLOY_TOKEN="${{ secrets.MIVAA_DEPLOY_TOKEN }}" \
+                    /bin/bash /var/www/mivaa-pdf-extractor/scripts/deploy/restart_when_idle.sh
+                fi
+                exit 0
+              fi
+              echo "⚠️ Drain did not complete cleanly (active_jobs=${ACTIVE}). Restarting."
             else
               echo "✅ Drain complete — safe to restart"
             fi

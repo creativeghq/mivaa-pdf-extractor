@@ -299,6 +299,36 @@ def product_content_findings(products: Sequence[Dict[str, Any]], findings: List[
         findings.append(Finding(FAIL, "attributes_name_other_series", f"{len(leaks)} product(s) carry attribute values that name another series of this document", len(leaks), leaks))
 
 
+FACT_MESSAGES = {
+    "colour_fields_disagree": "product(s) hold different colours in metadata and attributes, so the quote picker offers both",
+    "sizes_unverified": "product(s) hold a size no format list, packing table or printed line supports",
+    "description_missing": "product(s) have no description",
+    "description_size_unverified": "description(s) state a size the product does not hold",
+}
+
+
+def product_fact_findings(products: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
+    """What settling a product's facts should have left impossible, plus packing a product alone lacks."""
+    by_code: Dict[str, List[Any]] = {}
+    for p in products:
+        for code in p.get("fact_problems") or []:
+            by_code.setdefault(code, []).append(p.get("name"))
+    for code, message in FACT_MESSAGES.items():
+        names = by_code.get(code, [])
+        metrics[code] = len(names)
+        if names:
+            findings.append(Finding(WARN, code, f"{len(names)} {message}", len(names), names))
+    with_packing = sum(1 for p in products if p.get("has_packing"))
+    lacking = [p.get("name") for p in products if not p.get("has_packing")] if with_packing * 2 >= len(products) else []
+    metrics["products_without_packing"] = len(lacking)
+    if lacking:
+        findings.append(Finding(WARN, "products_without_packing", f"{len(lacking)} product(s) have no packing table though most of this document's do", len(lacking), lacking))
+    bad_rows = [row for p in products for row in (p.get("bad_table_rows") or [])]
+    metrics["table_rows_misaligned"] = len(bad_rows)
+    if bad_rows:
+        findings.append(Finding(WARN, "table_rows_misaligned", f"{len(bad_rows)} packing row(s) have text in a number column or m2 that do not follow from the boxes", len(bad_rows), bad_rows))
+
+
 def series_coverage_findings(coverage: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
     """A variant the maker photographed that the product does not offer, and the series' own pages outside its range."""
     missing = [{"product": c["product"], "variants": c["missing_variants"]} for c in coverage if c.get("missing_variants")]
@@ -354,6 +384,7 @@ def audit_document(
     chunk_findings(chunks, tables, findings, metrics, phase)
     product_findings(products, findings, metrics, phase)
     product_content_findings(products, findings, metrics)
+    product_fact_findings(products, findings, metrics)
     series_coverage_findings(series_coverage or [], findings, metrics)
     if phase != "pre_embed":
         image_findings(product_images or {}, findings, metrics)

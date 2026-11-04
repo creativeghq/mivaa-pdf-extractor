@@ -227,6 +227,8 @@ async def repair_document(document_id: str, supabase: Any, log: Optional[logging
     from app.services.integrations.billing_principal import billing_principal
     payer = billing_principal(db, document.get("workspace_id"), document_id)
     await step("series_reconcile", reconcile_document(supabase, document_id, job_id=job_id, user_id=payer))
+    from app.services.discovery.series_facts import settle_document
+    await step("series_facts", settle_document(supabase, document_id, job_id=job_id, embed=embed))
     if pdf is not None:
         from app.services.images.label_linking import relink_by_labels
         await step("label_links", relink_by_labels(supabase, document_id, pdf))

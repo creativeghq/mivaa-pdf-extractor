@@ -104,7 +104,7 @@ def test_work_outside_the_job_reads_the_documents_own_marker():
     body = src[src.index("async def reembed_product_text"):]
     assert body.index("document_deferred(supabase, document_id)") < body.index("build_product_page_body_text(")
     repair = _code("app/services/pdf/post_ingestion_repair.py")
-    assert "embed = not embeddings_deferred()" in repair and repair.count("embed=embed") == 2
+    assert "embed = not embeddings_deferred()" in repair and repair.count("embed=embed") == 3
     assert repair.count("if embed else") == 1 and "if ids and embed else" in repair
     run = _code("app/services/embeddings/document_embed_run.py")
     run = run[run.index("async def embed_document"):]

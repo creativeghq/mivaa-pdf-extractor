@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -137,3 +137,19 @@ class JobHeartbeat:
         if self._thread is not None:
             # Wait briefly for the thread to flush its final write.
             await asyncio.to_thread(self._thread.join, 5.0)
+
+
+async def cancel_when_job_cancelled(job_id: str, supabase: Any, task: "asyncio.Task", interval_seconds: float = 20) -> None:
+    """Stop a running job once its row says cancelled: the row alone stops nothing."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            rows = await asyncio.to_thread(
+                lambda: supabase.client.table("background_jobs").select("status").eq("id", job_id).limit(1).execute().data or [])
+        except Exception as e:
+            logger.warning(f"cancel watch for {job_id} could not read the job: {e}")
+            continue
+        if rows and rows[0].get("status") == "cancelled":
+            logger.warning(f"🛑 Job {job_id} was cancelled: stopping its run")
+            task.cancel()
+            return

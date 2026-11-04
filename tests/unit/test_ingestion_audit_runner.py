@@ -28,6 +28,7 @@ _load("app.services.pdf.text_layer_extractor", "app/services/pdf/text_layer_extr
 _load("app.services.pdf.ingestion_audit", "app/services/pdf/ingestion_audit.py")
 _load("app.services.pdf.catalogue_tables", "app/services/pdf/catalogue_tables.py")
 sys.modules["app.services.discovery"].series_reconcile = _load("app.services.discovery.series_reconcile", "app/services/discovery/series_reconcile.py")
+sys.modules["app.services.discovery"].series_facts = _load("app.services.discovery.series_facts", "app/services/discovery/series_facts.py")
 _load("app.services.images.label_linking", "app/services/images/label_linking.py")
 runner = _load("ingestion_audit_runner_under_test", "app/services/pdf/ingestion_audit_runner.py")
 
@@ -53,7 +54,7 @@ def collected(codes_saved):
     text = " ".join(f"{c} {100 + i} {200 + i}" for i, c in enumerate(codes_saved))
     chunks = [{"id": "c1", "product_id": "p1", "content": text, "has_text_embedding": True, "metadata": {"source": "table_block", "table_id": "t1", "page_number": 1}}]
     layout = [{"page_number": 1, "layout_elements": [{"text_content": text, "metadata": {}}], "analysis_metadata": {"pdf_idx": 0, "position": "single", "route": "text_layer"}}]
-    return {"products": [{"id": "p1", "name": "P"}], "layout": layout, "chunks": chunks, "tables": tables, "embedded": {"p1"}, "images": {"p1": 1}}
+    return {"products": [{"id": "p1", "name": "P", "description": "x"}], "layout": layout, "chunks": chunks, "tables": tables, "embedded": {"p1"}, "images": {"p1": 1}}
 
 
 def test_a_table_stored_under_another_page_number_still_counts_for_the_pages_its_product_owns():
