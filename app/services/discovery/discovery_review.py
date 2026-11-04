@@ -6,7 +6,10 @@ Stage 0 reuses on resume, so what the operator approved is exactly what gets cre
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+logger = logging.getLogger(__name__)
 
 ACTIONS = ("keep", "drop", "rename", "merge_into")
 MAX_PRODUCT_LIMIT = 500
@@ -106,3 +109,31 @@ def product_limit(value: Any) -> Optional[int]:
     if not 1 <= n <= MAX_PRODUCT_LIMIT:
         raise ReviewError(f"product_limit must be between 1 and {MAX_PRODUCT_LIMIT}")
     return n
+
+
+def notify_review_waiting(db: Any, job_id: str, document_id: str, workspace_id: Optional[str], discovered: int) -> int:
+    """Tell the operators a job is parked: without this it waits silently until someone asks. Never raises."""
+    try:
+        from app.config import get_settings
+        from app.services.flow_events import emit_flow_event
+
+        settings = get_settings()
+        role = db.table("roles").select("id").eq("name", "admin").execute().data or []
+        if not role:
+            logger.warning("review of job %s: no admin role, nobody was told", job_id)
+            return 0
+        admins = db.table("user_profiles").select("user_id").eq("role_id", role[0]["id"]).execute().data or []
+        found = db.table("documents").select("filename").eq("id", document_id).limit(1).execute().data or []
+        name = (found[0].get("filename") if found else None) or document_id
+        sent = 0
+        for admin in admins:
+            sent += 1 if emit_flow_event("ingestion_review_waiting", {
+                "workspace_id": workspace_id, "user_id": admin["user_id"],
+                "title": f"{name} is waiting for your review",
+                "body": f"Discovery found {discovered} product(s) and nothing has been created. Review it in the Catalogue Ingestion toolkit: job {job_id}.",
+                "type": "ingestion_review", "action_url": "/agent-hub", "job_id": job_id, "document_id": document_id,
+            }, settings.supabase_url, settings.supabase_service_role_key) else 0
+        return sent
+    except Exception as e:
+        logger.error("could not announce the review of job %s: %s", job_id, e)
+        return 0

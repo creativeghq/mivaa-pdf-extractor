@@ -143,7 +143,7 @@ def table_cell_numbers(tables: Sequence[Dict[str, Any]]) -> Set[str]:
 def unsupported_findings(tables: Sequence[Dict[str, Any]], reference: Set[str], findings: List[Finding], metrics: Dict[str, Any]) -> None:
     if not reference:
         return
-    stored = table_cell_numbers(tables)
+    stored = table_cell_numbers([t for t in tables if not t.get("sourced_elsewhere")])
     if not stored:
         return
     unsupported = sorted(stored - reference)

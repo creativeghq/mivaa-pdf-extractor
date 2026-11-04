@@ -3704,6 +3704,9 @@ async def process_document_with_discovery(
                 'stage': 'discovery_review', 'status': 'awaiting_review', 'source': 'discovery_review',
                 'data': {'products_discovered': stage_0_result.get("products_discovered", 0)}, 'started_at': _now_iso,
             }}).execute()
+            from app.services.discovery.discovery_review import notify_review_waiting
+            await asyncio.to_thread(notify_review_waiting, supabase.client, job_id, document_id, workspace_id,
+                                    stage_0_result.get("products_discovered", 0))
             return
 
         # ============================================================================

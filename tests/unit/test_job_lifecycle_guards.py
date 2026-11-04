@@ -88,3 +88,16 @@ def test_a_deploy_defers_its_restart_while_an_ingestion_runs():
     script = (_ROOT / "scripts/deploy/restart_when_idle.sh").read_text(encoding="utf-8")
     assert script.index("pause-for-deploy") < script.rindex('systemctl restart "$SERVICE"')
     assert "MAX_WAIT" in script and "resume-from-deploy" in script
+
+
+def test_a_parked_job_tells_the_operators():
+    src = _code("app/api/rag_routes.py")
+    parked = src[src.index("if stage_0_result.get(\"awaiting_review\"):"):]
+    assert parked.index("notify_review_waiting") < parked.index("return")
+    review = _code("app/services/discovery/discovery_review.py")
+    assert 'emit_flow_event("ingestion_review_waiting"' in review
+
+
+def test_a_table_copied_from_another_pdf_is_not_checked_against_this_one():
+    src = _code("app/services/pdf/ingestion_audit_runner.py")
+    assert "sourced_elsewhere" in src and "sourced_elsewhere" in _code("app/services/pdf/ingestion_audit.py")
