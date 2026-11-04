@@ -58,7 +58,8 @@ def table_mm_sizes(tables: Iterable[Dict[str, Any]]) -> List[str]:
     out: List[str] = []
     for table in tables:
         data = table.get("table_data") or {}
-        columns = [i for i, h in enumerate(data.get("headers") or []) if MM_SIZE_HEADER.search(str(h))]
+        headers = data.get("headers") or table.get("headers") or []
+        columns = [i for i, h in enumerate(headers) if MM_SIZE_HEADER.search(str(h))]
         for row in data.get("rows") or []:
             for i in columns:
                 match = MM_SIZE.match(str(row[i])) if i < len(row or []) and row[i] is not None else None
@@ -343,7 +344,7 @@ async def settle_document(supabase: Any, document_id: str, *, apply: bool = True
     changed_ids: List[str] = []
     for product in products:
         try:
-            tables = db.table("product_tables").select("table_data").eq("product_id", product["id"]).execute().data or []
+            tables = db.table("product_tables").select("table_data, headers").eq("product_id", product["id"]).execute().data or []
             result = settle_product(product, tables, printed_sizes(product["name"], pages), index.get(product["name"], ()))
             changes = result["changes"]
             if not changes:

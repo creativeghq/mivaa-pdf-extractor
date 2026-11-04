@@ -19,6 +19,11 @@ def test_sizes_come_from_the_column_headed_in_millimetres():
     assert sf.table_mm_sizes([TABLE]) == ["600×600×9 mm", "2780×600×9 mm"]
 
 
+def test_headers_held_beside_the_rows_count_too():
+    data = TABLE["table_data"]
+    assert sf.table_mm_sizes([{"headers": data["headers"], "table_data": {"rows": data["rows"]}}]) == ["600×600×9 mm", "2780×600×9 mm"]
+
+
 def test_a_table_with_no_millimetre_size_column_says_nothing():
     other = {"table_data": {"headers": ["Model", "Weight (kg)"], "rows": [["A", "600x600x9"]]}}
     assert sf.table_mm_sizes([other]) == []
