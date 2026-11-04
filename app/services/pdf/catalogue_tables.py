@@ -134,3 +134,72 @@ def describe(summary: Optional[Dict[str, Any]]) -> str:
     if not summary:
         return "none"
     return f"{summary.get('tables', 0)} table(s), {summary.get('rows_written', 0)} written, {len(summary.get('unmatched', []))} without a product"
+
+
+
+CODE_TOKEN = re.compile(r"\b[A-Z][A-Z0-9]{1,7}\b")
+CODE_SHARED_BY = 3
+
+
+def model_codes(product: Dict[str, Any]) -> Set[str]:
+    """The codes a product is known by: printed in its name's brackets or listed on it."""
+    meta = product.get("metadata") or {}
+    listed = meta.get("product_codes") if isinstance(meta.get("product_codes"), list) else []
+    out = {str(c).strip().upper() for c in listed if str(c).strip()}
+    for bracket in re.findall(r"\(([^)]*)\)", product.get("name") or ""):
+        out |= {t for t in CODE_TOKEN.findall(bracket.upper()) if len(t) >= 3}
+    return out
+
+
+def code_index(products: Sequence[Dict[str, Any]]) -> Dict[str, Set[str]]:
+    """Code to products. A code on more than a few products names a format or a range, not a model."""
+    index: Dict[str, Set[str]] = {}
+    for product in products:
+        for code in model_codes(product):
+            index.setdefault(code, set()).add(product["id"])
+    return {code: ids for code, ids in index.items() if len(ids) <= CODE_SHARED_BY}
+
+
+def table_owners(table: Dict[str, Any], index: Dict[str, Set[str]]) -> Set[str]:
+    """Products whose codes the table's model column names. A multi-model table belongs to each of them."""
+    owners: Set[str] = set()
+    for row in (table.get("table_data") or {}).get("rows") or []:
+        for cell in (row or [])[:2]:
+            for token in CODE_TOKEN.findall(str(cell or "").upper()):
+                owners |= index.get(token, set())
+    return owners
+
+
+async def route_tables_by_code(supabase: Any, document_id: str, *, apply: bool = True, job_id: Optional[str] = None) -> Dict[str, Any]:
+    """A table whose model column names other products goes to them: a merged row must not own the range's tables."""
+    from app.services.pdf.ingestion_corrections import CORRECTED, Correction, record
+
+    db = getattr(supabase, "client", supabase)
+    products = await asyncio.to_thread(lambda: _rows(db.table("products").select("id, name, metadata, workspace_id").eq("source_document_id", document_id).execute()))
+    summary: Dict[str, Any] = {"tables": 0, "moved": 0, "copied": 0}
+    index = code_index(products)
+    if not index:
+        return summary
+    ids = [p["id"] for p in products]
+    for start in range(0, len(ids), ID_BATCH):
+        for table in await asyncio.to_thread(lambda: _rows(db.table("product_tables").select("*").in_("product_id", ids[start:start + ID_BATCH]).execute())):
+            summary["tables"] += 1
+            owners = table_owners(table, index)
+            if not owners or owners == {table["product_id"]}:
+                continue
+            others = sorted(owners - {table["product_id"]})
+            if table["product_id"] not in owners:
+                summary["moved"] += 1
+                if apply:
+                    db.table("product_tables").update({"product_id": others[0]}).eq("id", table["id"]).execute()
+                others = others[1:]
+            summary["copied"] += len(others)
+            if apply and others:
+                copy = {k: v for k, v in table.items() if k not in ("id", "created_at", "updated_at", "product_id")}
+                db.table("product_tables").insert([{**copy, "product_id": other} for other in others]).execute()
+    if apply and (summary["moved"] or summary["copied"]):
+        await record(db, document_id, products[0].get("workspace_id"), "tables", [Correction(
+            "tables_routed_by_model_code", CORRECTED,
+            f"{summary['moved']} table(s) moved and {summary['copied']} copied to the products their model codes name",
+            summary["moved"] + summary["copied"])], job_id)
+    return summary

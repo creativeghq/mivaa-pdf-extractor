@@ -118,3 +118,31 @@ def test_a_photo_belongs_to_the_series_its_file_names():
     assert ll.series_in_file_name("https://x/ARCO_2-en-xHfcs81dQ.jpg", series) == "Arco"
     assert ll.series_in_file_name("https://x/CORDOBA-MIX-en-a.jpg", series) == "Córdoba"
     assert ll.series_in_file_name("https://x/SOMETHING-en-a.jpg", series) is None
+
+
+ct = None
+
+
+def _catalogue_tables():
+    global ct
+    if ct is None:
+        sys.modules.setdefault("app.services.pdf", types.ModuleType("app.services.pdf"))
+        _load("app.services.pdf.ocr_completeness", "app/services/pdf/ocr_completeness.py")
+        ct = _load("catalogue_tables_for_routing", "app/services/pdf/catalogue_tables.py")
+    return ct
+
+
+def test_a_table_belongs_to_every_product_its_model_column_names():
+    c = _catalogue_tables()
+    products = [{"id": "m", "name": "LINEAR MAX (KLM)"}, {"id": "mm", "name": "LINEAR MAX - M (KLMM)"}, {"id": "c", "name": "LINEAR COMFORT", "metadata": {"product_codes": ["KLT"]}}]
+    index = c.code_index(products)
+    koralux = {"table_data": {"rows": [["KLM\nKLMM", "700.450\n700.450", "690"], [None, None, "70/55"]]}}
+    assert c.table_owners(koralux, index) == {"m", "mm"}
+    assert c.table_owners({"table_data": {"rows": [["KLT", "1"]]}}, index) == {"c"}
+
+
+def test_a_code_shared_across_a_range_names_a_format_not_a_model():
+    c = _catalogue_tables()
+    products = [{"id": str(i), "name": f"S{i}", "metadata": {"product_codes": ["M125"]}} for i in range(5)]
+    assert c.code_index(products) == {}
+    assert c.table_owners({"table_data": {"rows": [["M125", "1"]]}}, c.code_index(products)) == set()

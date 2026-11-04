@@ -210,6 +210,8 @@ async def repair_document(document_id: str, supabase: Any, log: Optional[logging
             log.warning(f"⚠️ Post-ingestion repair step {name} failed: {e}")
             out[name] = {"error": f"{type(e).__name__}: {e}"[:300]}
 
+    from app.services.pdf.catalogue_tables import route_tables_by_code
+    await step("table_routing", route_tables_by_code(supabase, document_id, job_id=job_id))
     try:
         collected, pdf, codes, findings = await audit()
     except Exception as e:

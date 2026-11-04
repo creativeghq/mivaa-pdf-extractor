@@ -129,3 +129,41 @@ def test_two_printed_rows_run_together_are_caught_and_a_clean_row_is_not():
     table = packing(GOOD_ROW, shifted, short, wrong_maths)
     assert len(sf.table_cell_problems(table)) == 3
     assert sf.table_cell_problems(packing(GOOD_ROW)) == []
+
+
+def test_a_list_stored_as_a_string_and_a_size_stored_as_a_dict_are_normalised():
+    product = {"name": "Linear", "description": "x", "attributes": {"heating_mode": '["electric"]'},
+               "metadata": {"width_mm": {"value": 600, "unit": "mm"}, "note": "[not json]", "_raw": '["keep"]'}}
+    out = sf.settle_product(product, [])
+    assert out["attributes"]["heating_mode"] == ["electric"]
+    assert out["metadata"]["width_mm"] == 600 and out["metadata"]["note"] == "[not json]" and out["metadata"]["_raw"] == '["keep"]'
+
+
+def test_a_warranty_is_read_into_months_and_an_unclear_one_is_not():
+    assert sf.warranty_months("5 years") == 60 and sf.warranty_months("24 months") == 24
+    assert sf.warranty_months("lifetime") is None and sf.warranty_months(None) is None
+    out = sf.settle_product({"name": "L", "description": "x", "attributes": {}, "metadata": {}, "warranty": "5 years"}, [])
+    assert out["columns"] == {"default_warranty_months": 60}
+    assert sf.settle_product({"name": "L", "description": "x", "attributes": {}, "metadata": {}, "warranty": "5 years", "default_warranty_months": 24}, [])["columns"] == {}
+
+
+def test_a_warranty_is_the_brands_only_when_every_product_stating_one_agrees():
+    assert sf.brand_warranty([{"default_warranty_months": 60}, {"default_warranty_months": None}]) == 60
+    assert sf.brand_warranty([{"default_warranty_months": 60}, {"default_warranty_months": 24}]) is None
+
+
+INDEX_PAGE = "indice\n" + "\n".join(["30x90 cm / 11,8x35", "Agata", "Arco"] + [f"S{i}" for i in range(14)] + ["HEXA 23x27 cm", "Cento", "30x90 cm", "Cento"])
+
+
+def test_index_pages_give_each_series_the_sizes_above_it_and_other_pages_give_nothing():
+    names = ["Agata", "Arco", "Cento"] + [f"S{i}" for i in range(14)]
+    out = sf.formats_on_index_pages([INDEX_PAGE, "Agata\n60x60 cm"], names)
+    assert out["Agata"] == ["30x90"] and out["Cento"] == ["23x27", "30x90"]
+    assert sf.formats_on_index_pages(["Agata\n60x60 cm\nArco"], names) == {}
+
+
+def test_the_index_fills_a_gap_and_overrules_nothing():
+    bare = {"name": "A", "description": "x", "attributes": {}, "metadata": {}}
+    assert sf.settle_product(bare, [], (), ["30x90"])["metadata"]["available_formats"] == ["30x90"]
+    held = {"name": "A", "description": "x", "attributes": {}, "metadata": {"available_formats": ["60x60"]}}
+    assert sf.settle_product(held, [], (), ["30x90"])["metadata"]["available_formats"] == ["60x60"]

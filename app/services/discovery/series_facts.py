@@ -8,6 +8,7 @@ table holds it, or the series' own line prints it; colours are the same in metad
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -20,6 +21,11 @@ FORMAT_HEADERS = {"format", "formato", "size"}
 OTHER_UNIT = re.compile(r"\b(mm|in|inch|inches)\b|[\"”]", re.I)
 PRINTED_GAP = r"[^\n\d]{0,60}(?:\n[^\n\d]{0,30})?"
 REEMBED_BATCH = 100
+SIZE_FIELD = re.compile(r"(_mm|_cm|_m|_kg|^size|^width|^height|^depth|^length)$", re.I)
+WARRANTY = re.compile(r"\b(\d{1,3})\s*[-‐ ]?\s*(years?|yrs?|jahre?|anni|años|χρόνια|έτη|months?|monate?|mesi|meses|μήνες)\b", re.I)
+INDEX_SIZE = re.compile(r"^(?:hexa\s*)?(\d{1,3}(?:[.,]\d)?)\s*x\s*(\d{1,3}(?:[.,]\d)?)\s*cm\b")
+INDEX_WORD = re.compile(r"\b(indice|index|inhalt|sommario|sommaire|ευρετηριο)\b")
+INDEX_MIN_SERIES = 15
 
 
 def _reconcile() -> Any:
@@ -161,10 +167,47 @@ def _settle_description(product: Dict[str, Any], m: Dict[str, Any], verified: Se
     return sr.compose_description(line, site)
 
 
-def settle_product(product: Dict[str, Any], tables: Sequence[Dict[str, Any]], printed: Iterable[str] = ()) -> Dict[str, Any]:
+def _normalise_values(bag: Dict[str, Any]) -> List[str]:
+    """`["electric"]` stored as a string becomes a list; a size stored as {value, unit} becomes its number."""
+    changed: List[str] = []
+    for key, value in list(bag.items()):
+        if key.startswith("_"):
+            continue
+        if isinstance(value, str) and value.strip().startswith("[") and value.strip().endswith("]"):
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                continue
+            if isinstance(parsed, list):
+                bag[key] = parsed
+                changed.append(key)
+        elif SIZE_FIELD.search(key) and isinstance(value, dict) and isinstance(value.get("value"), (int, float)):
+            bag[key] = value["value"]
+            changed.append(key)
+    return changed
+
+
+def warranty_months(value: Any) -> Optional[int]:
+    """"5 years" is 60; a warranty stated any other way is not ours to read."""
+    match = WARRANTY.search(str(value or ""))
+    if not match:
+        return None
+    number = int(match.group(1))
+    return number * 12 if match.group(2).lower().startswith(("y", "j", "a", "χ", "έ")) else number
+
+
+def settle_product(product: Dict[str, Any], tables: Sequence[Dict[str, Any]], printed: Iterable[str] = (),
+                   index_formats: Iterable[str] = ()) -> Dict[str, Any]:
     """The settled metadata, attributes and description, and what changed. Settling twice changes nothing."""
     m, a = dict(product.get("metadata") or {}), dict(product.get("attributes") or {})
+    normalised = _normalise_values(m) + _normalise_values(a)
+    columns: Dict[str, Any] = {}
+    months = warranty_months(product.get("warranty") or m.get("warranty"))
+    if months and not product.get("default_warranty_months"):
+        columns["default_warranty_months"] = months
     verified = verified_formats(m, tables, printed)
+    if not verified:
+        verified = list(dict.fromkeys(index_formats))
     before = (m.get("available_sizes"), m.get("available_formats"), m.get("dimensions"))
     dropped = _settle_sizes(m, verified) if verified else []
     sizes_changed = before != (m.get("available_sizes"), m.get("available_formats"), m.get("dimensions"))
@@ -172,6 +215,10 @@ def settle_product(product: Dict[str, Any], tables: Sequence[Dict[str, Any]], pr
     description = _settle_description(product, m, verified)
     changed_description = description is not None and description != (product.get("description") or "")
     changes: Dict[str, Any] = {}
+    if normalised:
+        changes["normalised"] = normalised
+    if columns:
+        changes["columns"] = columns
     if sizes_changed:
         changes["sizes"] = {"dropped": dropped, "held": list(verified)}
     if colours:
@@ -183,7 +230,7 @@ def settle_product(product: Dict[str, Any], tables: Sequence[Dict[str, Any]], pr
         if changed_description:
             m["description_source"] = "reconcile"
     return {"metadata": m, "attributes": a, "description": description if changed_description else product.get("description"),
-            "changes": changes}
+            "columns": columns, "changes": changes}
 
 
 def fact_problems(product: Dict[str, Any], tables: Sequence[Dict[str, Any]]) -> List[str]:
@@ -259,15 +306,16 @@ async def settle_document(supabase: Any, document_id: str, *, apply: bool = True
         for row in _all(lambda: db.table("document_layout_analysis").select("page_number, layout_elements")
                         .eq("document_id", document_id).order("page_number")):
             pages.append("\n".join(e.get("text_content") or "" for e in (row.get("layout_elements") or [])))
-    products = _all(lambda: db.table("products").select("id, name, description, attributes, metadata, category_id")
+    products = _all(lambda: db.table("products").select("id, name, description, attributes, metadata, category_id, warranty, default_warranty_months")
                     .eq("source_document_id", document_id).order("id"))
+    index = formats_on_index_pages(pages, [p["name"] for p in products])
     summary: Dict[str, Any] = {"products": len(products), "changed": 0, "sizes_dropped": 0, "colours_changed": 0,
                                "descriptions": 0, "failed": [], "per_product": []}
     changed_ids: List[str] = []
     for product in products:
         try:
             tables = db.table("product_tables").select("table_data").eq("product_id", product["id"]).execute().data or []
-            result = settle_product(product, tables, printed_sizes(product["name"], pages))
+            result = settle_product(product, tables, printed_sizes(product["name"], pages), index.get(product["name"], ()))
             changes = result["changes"]
             if not changes:
                 continue
@@ -279,9 +327,15 @@ async def settle_document(supabase: Any, document_id: str, *, apply: bool = True
             changed_ids.append(product["id"])
             if apply:
                 db.table("products").update({"metadata": result["metadata"], "attributes": result["attributes"],
-                                             "description": result["description"]}).eq("id", product["id"]).execute()
+                                             "description": result["description"], **result["columns"]}).eq("id", product["id"]).execute()
+                product["default_warranty_months"] = result["columns"].get("default_warranty_months") or product.get("default_warranty_months")
         except Exception as e:
             summary["failed"].append(f"{product['name']}: {type(e).__name__}: {str(e)[:160]}")
+    warranty = brand_warranty(products)
+    lacking = [p["id"] for p in products if not p.get("default_warranty_months")] if warranty else []
+    summary["brand_warranty_filled"] = len(lacking)
+    if apply and lacking:
+        db.table("products").update({"default_warranty_months": warranty}).in_("id", lacking).execute()
     if apply and summary["changed"]:
         await record(db, document_id, document.get("workspace_id"), "series_facts", [Correction(
             "series_facts_settled", CORRECTED,
@@ -378,3 +432,30 @@ async def inherit_packing(supabase: Any, document_id: str, *, apply: bool = True
             f"{summary['inherited']} product(s) took packing from the same format in this brand's other series",
             summary["inherited"], [p["product"] for p in summary["per_product"]])], job_id)
     return summary
+
+
+
+def formats_on_index_pages(pages: Iterable[str], names: Iterable[str]) -> Dict[str, List[str]]:
+    """Series under each size heading of a catalogue's index. Keros: 222 agree, 10 extra, so it fills a gap and overrules nothing."""
+    sr = _reconcile()
+    by_key = {sr.fold(n): n for n in names}
+    out: Dict[str, List[str]] = {}
+    for page in pages:
+        text = sr.fold(sr.normalize_text(page))
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+        if not INDEX_WORD.search(text) or sum(1 for line in lines if line in by_key) < INDEX_MIN_SERIES:
+            continue
+        current = None
+        for line in lines:
+            size = INDEX_SIZE.match(line)
+            if size:
+                current = sr.size_key(*size.groups())
+            elif line in by_key and current and current not in out.setdefault(by_key[line], []):
+                out[by_key[line]].append(current)
+    return out
+
+
+def brand_warranty(products: Sequence[Dict[str, Any]]) -> Optional[int]:
+    """A warranty is the brand's when every product stating one agrees."""
+    stated = {p.get("default_warranty_months") for p in products if p.get("default_warranty_months")}
+    return stated.pop() if len(stated) == 1 else None
