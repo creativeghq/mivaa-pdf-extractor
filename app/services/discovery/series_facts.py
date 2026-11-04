@@ -26,6 +26,8 @@ WARRANTY = re.compile(r"\b(\d{1,3})\s*[-‐ ]?\s*(years?|yrs?|jahre?|anni|años|
 INDEX_SIZE = re.compile(r"^(?:hexa\s*)?(\d{1,3}(?:[.,]\d)?)\s*x\s*(\d{1,3}(?:[.,]\d)?)\s*cm\b")
 INDEX_WORD = re.compile(r"\b(indice|index|inhalt|sommario|sommaire|ευρετηριο)\b")
 INDEX_MIN_SERIES = 15
+MM_SIZE_HEADER = re.compile(r"\b(size|format|dimensions?)\b.*\bmm\b", re.I)
+MM_SIZE = re.compile(r"^\s*(\d+(?:[.,]\d+)?)\s*[x×]\s*(\d+(?:[.,]\d+)?)(?:\s*[x×]\s*(\d+(?:[.,]\d+)?))?\s*(?:mm)?\s*$", re.I)
 
 
 def _reconcile() -> Any:
@@ -47,6 +49,21 @@ def table_formats(tables: Iterable[Dict[str, Any]]) -> List[str]:
         for row in (table.get("table_data") or {}).get("rows") or []:
             for size in sorted(sr.sizes_in(str((row or [""])[0]))):
                 if size not in out:
+                    out.append(size)
+    return out
+
+
+def table_mm_sizes(tables: Iterable[Dict[str, Any]]) -> List[str]:
+    """Each size a table states under a column headed in millimetres, as `2780×600×9 mm`."""
+    out: List[str] = []
+    for table in tables:
+        data = table.get("table_data") or {}
+        columns = [i for i, h in enumerate(data.get("headers") or []) if MM_SIZE_HEADER.search(str(h))]
+        for row in data.get("rows") or []:
+            for i in columns:
+                match = MM_SIZE.match(str(row[i])) if i < len(row or []) and row[i] is not None else None
+                size = "×".join(g for g in match.groups() if g) + " mm" if match else None
+                if size and size not in out:
                     out.append(size)
     return out
 
@@ -102,6 +119,14 @@ def _settle_sizes(m: Dict[str, Any], verified: Sequence[str]) -> List[str]:
             m["dimensions"] = list(kept.values())
         else:
             m.pop("dimensions")
+    return dropped
+
+
+def _settle_mm_sizes(m: Dict[str, Any], sizes: Sequence[str]) -> List[str]:
+    """A bare `2750x119x16` in `dimensions` would read as centimetres, so the unit-bearing list replaces it."""
+    dropped = [e for e in _entries(m.get("available_sizes")) if e not in sizes]
+    m["available_sizes"] = m["available_formats"] = list(sizes)
+    m.pop("dimensions", None)
     return dropped
 
 
@@ -209,7 +234,8 @@ def settle_product(product: Dict[str, Any], tables: Sequence[Dict[str, Any]], pr
     if not verified:
         verified = list(dict.fromkeys(index_formats))
     before = (m.get("available_sizes"), m.get("available_formats"), m.get("dimensions"))
-    dropped = _settle_sizes(m, verified) if verified else []
+    mm_sizes = table_mm_sizes(tables) if not verified else []
+    dropped = _settle_sizes(m, verified) if verified else _settle_mm_sizes(m, mm_sizes) if mm_sizes else []
     sizes_changed = before != (m.get("available_sizes"), m.get("available_formats"), m.get("dimensions"))
     colours = _settle_colours(m, a)
     description = _settle_description(product, m, verified)
@@ -220,7 +246,7 @@ def settle_product(product: Dict[str, Any], tables: Sequence[Dict[str, Any]], pr
     if columns:
         changes["columns"] = columns
     if sizes_changed:
-        changes["sizes"] = {"dropped": dropped, "held": list(verified)}
+        changes["sizes"] = {"dropped": dropped, "held": list(verified or mm_sizes)}
     if colours:
         changes["colours"] = colours
     if changed_description:
@@ -243,6 +269,9 @@ def fact_problems(product: Dict[str, Any], tables: Sequence[Dict[str, Any]]) -> 
         out.append("colour_fields_disagree")
     verified = set(verified_formats(m, tables))
     if verified and (set(_cm_keys(m.get("available_sizes"))) | set(_cm_keys(m.get("dimensions")))) - verified:
+        out.append("sizes_unverified")
+    mm_sizes = table_mm_sizes(tables)
+    if mm_sizes and not verified and set(_entries(m.get("available_sizes"))) != set(mm_sizes):
         out.append("sizes_unverified")
     description = (product.get("description") or "").strip()
     if not description:
