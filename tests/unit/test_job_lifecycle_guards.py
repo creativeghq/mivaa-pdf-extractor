@@ -108,7 +108,7 @@ def test_a_merge_moves_records_in_one_transaction_and_never_deletes_a_product_it
     assert "rpc('merge_products_into'" in src and "rpc('drop_catalog_product'" in src
     assert "table('products').delete()" not in src
     body = src[src.index("async def merge_products"):]
-    assert body.index("merge_products_into") < body.index("table('products').update(")
+    assert body.index("_merge_product_data(") < body.index("merge_products_into") < body.index("table('products').update(")
 
 
 def test_a_job_whose_row_is_gone_stops_too():
@@ -123,3 +123,25 @@ def test_a_job_whose_row_is_gone_stops_too():
             await work
 
     asyncio.run(run())
+
+
+def test_merged_fields_are_only_what_changes_and_survive_empty_and_nested_values():
+    pkg = {n: types.ModuleType(n) for n in ("app.services.core.supabase_client",)}
+    pkg["app.services.core.supabase_client"].SupabaseClient = object
+    for name, module in pkg.items():
+        sys.modules.setdefault(name, module)
+    for name in ("app", "app.services", "app.services.core"):
+        sys.modules.setdefault(name, types.ModuleType(name))
+    spec = importlib.util.spec_from_file_location("product_merge_under_test", _ROOT / "app/services/products/product_merge_service.py")
+    pm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pm)
+    svc = pm.ProductMergeService.__new__(pm.ProductMergeService)
+    target = {"id": "t", "name": "T", "description": "", "metadata": None, "attributes": {"color": ["gris"]}, "workspace_id": "w"}
+    source = {"id": "s", "name": "S", "description": "From source", "attributes": {"color": ["gris", "beige"]},
+              "metadata": {"colour_options": [{"name": "Gris"}], "page_range": [1]}}
+    out = asyncio.run(svc._merge_product_data(target, [source]))
+    assert set(out) == {"description", "metadata", "attributes", "updated_at"}
+    assert out["description"] == "From source"
+    assert out["attributes"]["color"] == ["gris", "beige"]
+    assert out["metadata"]["colour_options"] == [{"name": "Gris"}]
+    assert out["metadata"]["merged_from"] == [{"id": "s", "name": "S"}]

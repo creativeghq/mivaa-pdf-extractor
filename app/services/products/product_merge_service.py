@@ -77,16 +77,16 @@ class ProductMergeService:
             if not source_products:
                 raise ValueError("No valid source products found")
             
-            # 3. Every record pointing at a source moves to the target in one transaction, or nothing does.
-            moved = self.supabase.client.rpc('merge_products_into', {
-                'p_target': target_product_id, 'p_sources': source_product_ids,
-            }).execute().data or {}
-
-            # 4. Merge data from source products into target
+            # 3. Worked out first: a failure here must leave every record where it was.
             merged_product = await self._merge_product_data(
                 target_product,
                 source_products
             )
+
+            # 4. Every record pointing at a source moves to the target in one transaction, or nothing does.
+            moved = self.supabase.client.rpc('merge_products_into', {
+                'p_target': target_product_id, 'p_sources': source_product_ids,
+            }).execute().data or {}
 
             # 5. Update target product in database
             update_response = self.supabase.client.table('products').update(
@@ -148,55 +148,33 @@ class ProductMergeService:
         target: Dict[str, Any],
         sources: List[Dict[str, Any]]
     ) -> Dict[str, Any]:
-        """Merge data from source products into target product."""
-        merged = target.copy()
-        
-        # Merge descriptions
-        descriptions = [target.get('description', '')]
+        """Only the fields a merge changes: the survivor's own values win and a source fills what it lacks."""
+        merged: Dict[str, Any] = {}
+        for field in ('description', 'long_description'):
+            filled = target.get(field) or next((p.get(field) for p in sources if p.get(field)), None)
+            if filled and filled != target.get(field):
+                merged[field] = filled
+        metadata = dict(target.get('metadata') or {})
+        attributes = dict(target.get('attributes') or {})
         for source in sources:
-            desc = source.get('description', '')
-            if desc and desc not in descriptions:
-                descriptions.append(desc)
-        
-        if len(descriptions) > 1:
-            merged['description'] = ' | '.join(filter(None, descriptions))
-        
-        # Merge long descriptions
-        long_descriptions = [target.get('long_description', '')]
-        for source in sources:
-            long_desc = source.get('long_description', '')
-            if long_desc and long_desc not in long_descriptions:
-                long_descriptions.append(long_desc)
-        
-        if len(long_descriptions) > 1:
-            merged['long_description'] = '\n\n'.join(filter(None, long_descriptions))
-        
-        # Merge metadata (union)
-        merged_metadata = target.get('metadata', {}).copy()
-        for source in sources:
-            source_metadata = source.get('metadata', {})
-            for key, value in source_metadata.items():
-                if key not in merged_metadata:
-                    merged_metadata[key] = value
-                elif isinstance(value, list) and isinstance(merged_metadata[key], list):
-                    # Merge lists (unique values)
-                    merged_metadata[key] = list(set(merged_metadata[key] + value))
-        
-        merged['metadata'] = merged_metadata
-        
-        # Merge source chunks
-        target_chunks = target.get('source_chunks', [])
-        for source in sources:
-            source_chunks = source.get('source_chunks', [])
-            target_chunks.extend(source_chunks)
-        
-        merged['source_chunks'] = list(set(target_chunks))  # Unique chunks
-        
-        # Update timestamp
+            self._union_into(metadata, source.get('metadata') or {})
+            self._union_into(attributes, source.get('attributes') or {})
+        metadata['merged_from'] = (metadata.get('merged_from') or []) + [
+            {'id': p['id'], 'name': p.get('name')} for p in sources]
+        merged['metadata'] = metadata
+        merged['attributes'] = attributes
         merged['updated_at'] = datetime.utcnow().isoformat()
-        
         return merged
-    
+
+    @staticmethod
+    def _union_into(into: Dict[str, Any], other: Dict[str, Any]) -> None:
+        for key, value in other.items():
+            if key not in into or into[key] in (None, '', [], {}):
+                into[key] = value
+            elif isinstance(value, list) and isinstance(into[key], list):
+                seen = {json.dumps(v, sort_keys=True, default=str) for v in into[key]}
+                into[key] = into[key] + [v for v in value if json.dumps(v, sort_keys=True, default=str) not in seen]
+
     async def _reembed(self, product: Dict[str, Any]) -> None:
         from app.services.embeddings.embedding_deferral import document_deferred
         from app.services.embeddings.text_embedding_backfill import backfill_product_text_embeddings
