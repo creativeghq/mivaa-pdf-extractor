@@ -2238,6 +2238,8 @@ class ImageProcessingService:
 
             if error == "awaiting_image_sourcing":
                 vector_stats['deferred_to_image_sourcing'] = vector_stats.get('deferred_to_image_sourcing', 0) + 1
+            elif error == "embedding_deferred":
+                vector_stats['deferred_to_embed_run'] = vector_stats.get('deferred_to_embed_run', 0) + 1
             elif error:
                 failed_images.append({
                     'index': global_idx,

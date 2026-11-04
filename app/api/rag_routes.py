@@ -2877,6 +2877,12 @@ async def process_document_with_discovery(
         logger.error(f"job {job_id} options could not be read, embedding inline: {_meta_err}")
         _job_meta = {}
     defer_embeddings(bool(_job_meta.get('defer_embedding')))
+    if _job_meta.get('defer_embedding'):
+        from app.services.embeddings.embedding_deferral import mark_document
+        try:
+            mark_document(get_supabase_client().client, document_id, True)
+        except Exception as _mark_err:
+            logger.error(f"document {document_id} not marked deferred; work outside this job may embed: {_mark_err}")
 
     # ── Tenancy preflight ────────────────────────────────────────────────────────────
     # The three ids arrive independently and every stage below reads and writes by bare

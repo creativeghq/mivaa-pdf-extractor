@@ -46,7 +46,9 @@ async def embed_document(document_id: str, workspace_id: str, job_id: Optional[s
     )
     from app.services.embeddings.vecs_service import get_vecs_service
 
+    from app.services.embeddings.embedding_deferral import mark_document
     db = get_supabase_client().client
+    await asyncio.to_thread(mark_document, db, document_id, False)
     out: Dict[str, Any] = {"document_id": document_id, "products": {"embedded": 0, "failed": 0},
                            "chunks": {"embedded": 0, "failed": 0}, "images": {"embedded": 0, "failed": 0, "failed_ids": []},
                            "pages": None, "errors": []}
@@ -132,5 +134,5 @@ async def run_embed_step(document_id: str, workspace_id: str, job_id: Optional[s
         "acknowledged_at": datetime.now(timezone.utc).isoformat(), "acknowledged_by": user_id,
     }).eq("document_id", document_id).eq("code", "ready_to_embed").is_("acknowledged_at", "null").execute())
     result["audit"] = await run_ingestion_audit(document_id, get_supabase_client(), get_settings(), job_id=job_id,
-                                                phase="post_embed", trigger="embed_run")
+                                                phase="post_embed", trigger="pipeline")
     return result

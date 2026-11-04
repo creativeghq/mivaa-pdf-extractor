@@ -2,12 +2,14 @@
 
 The orchestrator sets it once from the job's `defer_embedding`; asyncio tasks and `to_thread` copy
 the context, so every embedding site in that run sees it without a parameter threaded through.
-The vectors come later from `embed_document`, in one pass.
+Work the job hands to another request (factory enrichment over HTTP) cannot see a context, so the
+document also carries `metadata.embedding_deferred` until `embed_document` clears it.
 """
 
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
+from typing import Any, Optional
 
 _DEFERRED: ContextVar[bool] = ContextVar("embedding_deferred", default=False)
 
@@ -22,3 +24,24 @@ def defer_embeddings(on: bool) -> Token:
 
 def embeddings_deferred() -> bool:
     return _DEFERRED.get()
+
+
+def document_deferred(db: Any, document_id: Optional[str]) -> bool:
+    """The document's own marker, for work running outside the job's context."""
+    if not document_id:
+        return False
+    db = getattr(db, "client", db)
+    rows = db.table("documents").select("metadata").eq("id", document_id).limit(1).execute().data or []
+    return bool(rows and (rows[0].get("metadata") or {}).get("embedding_deferred"))
+
+
+def mark_document(db: Any, document_id: str, deferred: bool) -> None:
+    """Set or clear the document's marker (read-modify-write of documents.metadata)."""
+    db = getattr(db, "client", db)
+    rows = db.table("documents").select("metadata").eq("id", document_id).limit(1).execute().data or []
+    meta = dict((rows[0].get("metadata") if rows else None) or {})
+    if deferred:
+        meta["embedding_deferred"] = True
+    else:
+        meta.pop("embedding_deferred", None)
+    db.table("documents").update({"metadata": meta}).eq("id", document_id).execute()

@@ -1357,7 +1357,8 @@ async def reembed_product_text(
     logger: logging.Logger,
 ) -> bool:
     """Rebuild + persist a product's text_embedding_1024 from its FINAL fields. Deferred: nothing to do yet."""
-    if embeddings_deferred():
+    from app.services.embeddings.embedding_deferral import document_deferred
+    if embeddings_deferred() or document_deferred(supabase, document_id):
         return True
     try:
         page_body_text = await build_product_page_body_text(

@@ -91,3 +91,54 @@ def test_the_embed_run_takes_only_live_linked_images_without_a_vector():
     assert not er.owes_image_vector({**row, "metadata": {"image_quality": {"sourcing": "pending"}}}, {"a"})
     assert not er.owes_image_vector({**row, "metadata": {"excluded_from_products": {}}}, {"a"})
     assert not er.owes_image_vector({**row, "image_type": "DECORATIVE"}, {"a"})
+
+
+def test_a_deferred_image_is_counted_as_deferred_not_as_a_failed_save():
+    src = _code("app/services/images/image_processing_service.py")
+    tally = src[src.index('if error == "awaiting_image_sourcing":'):]
+    assert tally.index('elif error == "embedding_deferred":') < tally.index("elif error:")
+
+
+def test_work_outside_the_job_reads_the_documents_own_marker():
+    src = _code("app/api/pdf_processing/stage_4_products.py")
+    body = src[src.index("async def reembed_product_text"):]
+    assert body.index("document_deferred(supabase, document_id)") < body.index("build_product_page_body_text(")
+    repair = _code("app/services/pdf/post_ingestion_repair.py")
+    assert "embed = not embeddings_deferred()" in repair and repair.count("embed=embed") == 2
+    assert repair.count("if embed else") == 1 and "if ids and embed else" in repair
+    run = _code("app/services/embeddings/document_embed_run.py")
+    run = run[run.index("async def embed_document"):]
+    assert run.index("mark_document, db, document_id, False") < run.index("backfill_product_text_embeddings(")
+
+
+def test_the_documents_marker_is_set_and_cleared_without_touching_other_keys():
+    writes = []
+
+    class Q:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def select(self, *_):
+            return self
+
+        def eq(self, *_):
+            return self
+
+        def limit(self, *_):
+            return self
+
+        def update(self, payload):
+            writes.append(payload)
+            return self
+
+        def execute(self):
+            return types.SimpleNamespace(data=self.rows)
+
+    db = types.SimpleNamespace(table=lambda _: Q([{"metadata": {"title": "x"}}]))
+    ed.mark_document(db, "d", True)
+    assert writes[-1] == {"metadata": {"title": "x", "embedding_deferred": True}}
+    db = types.SimpleNamespace(table=lambda _: Q([{"metadata": {"title": "x", "embedding_deferred": True}}]))
+    assert ed.document_deferred(db, "d") is True
+    ed.mark_document(db, "d", False)
+    assert writes[-1] == {"metadata": {"title": "x"}}
+    assert ed.document_deferred(db, None) is False

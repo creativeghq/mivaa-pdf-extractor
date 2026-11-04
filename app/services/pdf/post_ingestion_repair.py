@@ -49,7 +49,7 @@ def plan_table_chunks(product_name: str, tables: List[Dict[str, Any]]) -> Dict[s
     return {"chunks": chunks, "tables_used": len({c["metadata"]["table_id"] for c in chunks}), "codes": codes}
 
 
-async def rebuild_table_chunks(supabase: Any, document_id: str, apply: bool = True) -> Dict[str, Any]:
+async def rebuild_table_chunks(supabase: Any, document_id: str, apply: bool = True, embed: bool = True) -> Dict[str, Any]:
     from app.services.chunking import table_chunks as tc
     db = _db(supabase)
     products = await asyncio.to_thread(lambda: db.table("products").select("id, name, workspace_id")
@@ -63,7 +63,8 @@ async def rebuild_table_chunks(supabase: Any, document_id: str, apply: bool = Tr
                                        "chunks": len(plan["chunks"]), "codes": len(plan["codes"])})
         if apply and plan["chunks"]:
             ids = await tc.write_table_chunks(supabase, product["workspace_id"], document_id, product["id"], plan["chunks"])
-            result = await tc.embed_chunks_once(supabase, ids, workspace_id=product["workspace_id"])
+            result = (await tc.embed_chunks_once(supabase, ids, workspace_id=product["workspace_id"])
+                      if embed else {"embedded": 0, "failed": []})
             summary["written"] += len(ids)
             summary["embedded"] += result["embedded"]
             summary["failed"].extend(result["failed"])
@@ -71,7 +72,7 @@ async def rebuild_table_chunks(supabase: Any, document_id: str, apply: bool = Tr
 
 
 async def write_page_supplements(supabase: Any, document: Dict[str, Any], collected: Dict[str, Any], pdf: bytes,
-                                 findings: List[Dict[str, Any]], apply: bool = True) -> Dict[str, Any]:
+                                 findings: List[Dict[str, Any]], apply: bool = True, embed: bool = True) -> Dict[str, Any]:
     """One chunk per page holding the printed lines whose numbers the layout pass dropped."""
     from app.services.chunking.table_chunks import embed_chunks_once
     from app.services.pdf.ingestion_audit import numeric_tokens
@@ -106,7 +107,8 @@ async def write_page_supplements(supabase: Any, document: Dict[str, Any], collec
     ids = [r["id"] for r in (db.table("document_chunks").insert(rows).execute().data or [])] if rows else []
     if old:
         db.table("document_chunks").delete().in_("id", old).execute()
-    out = await embed_chunks_once(db, ids, workspace_id=document["workspace_id"]) if ids else {"embedded": 0, "failed": []}
+    out = (await embed_chunks_once(db, ids, workspace_id=document["workspace_id"])
+           if ids and embed else {"embedded": 0, "failed": []})
     summary.update(written=len(ids), replaced=len(old), embedded=out["embedded"], failed=out["failed"])
     return summary
 
@@ -183,8 +185,10 @@ async def dedupe_document_images(supabase: Any, document_id: str, apply: bool = 
 
 async def repair_document(document_id: str, supabase: Any, log: Optional[logging.Logger] = None,
                           job_id: Optional[str] = None) -> Dict[str, Any]:
+    from app.services.embeddings.embedding_deferral import embeddings_deferred
     from app.services.pdf.ingestion_audit_runner import _collect, _download, build_audit
 
+    embed = not embeddings_deferred()
     log = log or logger
     db = _db(supabase)
     out: Dict[str, Any] = {}
@@ -211,13 +215,13 @@ async def repair_document(document_id: str, supabase: Any, log: Optional[logging
     except Exception as e:
         return {"error": f"audit failed: {type(e).__name__}: {e}"[:300]}
     if codes & {"tables_without_chunks"}:
-        await step("table_chunks", rebuild_table_chunks(supabase, document_id))
+        await step("table_chunks", rebuild_table_chunks(supabase, document_id, embed=embed))
         try:
             collected, pdf, codes, findings = await audit()
         except Exception as e:
             out["re_audit_error"] = str(e)[:300]
     if pdf is not None and codes & {"numbers_missing", "numbers_missing_few"}:
-        await step("page_supplements", write_page_supplements(supabase, document, collected, pdf, findings))
+        await step("page_supplements", write_page_supplements(supabase, document, collected, pdf, findings, embed=embed))
     await step("duplicate_images", dedupe_document_images(supabase, document_id))
     from app.services.discovery.series_reconcile import reconcile_document
     from app.services.integrations.billing_principal import billing_principal
