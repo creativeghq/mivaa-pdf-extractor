@@ -32,6 +32,7 @@ def review_rows(products: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "dimensions": (meta.get("dimensions") or [])[:12],
             "variants": len(variants) if isinstance(variants, list) else 0,
             "confidence": p.get("confidence"),
+            "suggestion": meta.get("discovery_suggestion"),
         })
     return out
 

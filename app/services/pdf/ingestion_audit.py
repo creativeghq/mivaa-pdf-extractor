@@ -336,6 +336,10 @@ def series_coverage_findings(coverage: Sequence[Dict[str, Any]], findings: List[
     off_site = [c["product"] for c in coverage if c.get("site_status") == "not_found"]
     metrics.update({"products_missing_site_variants": len(missing), "products_with_own_pages_outside_range": len(outside),
                     "series_not_on_maker_site": len(off_site)})
+    foreign = [{"product": c["product"], "named": c["foreign_site_photos"]} for c in coverage if c.get("foreign_site_photos")]
+    metrics["products_with_another_series_site_photos"] = len(foreign)
+    if foreign:
+        findings.append(Finding(WARN, "site_photo_names_another_series", f"{len(foreign)} product(s) hold a maker photo whose file names another series", len(foreign), foreign))
     if off_site:
         findings.append(Finding(WARN, "series_not_on_maker_site", f"{len(off_site)} series were not found on the maker's site: their images and variants come from the PDF alone", len(off_site), off_site))
     if missing:

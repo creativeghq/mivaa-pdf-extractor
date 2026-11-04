@@ -640,6 +640,10 @@ async def upload_document(
         description="Process the file even when this workspace already holds a live document with the same content",
     ),
 
+    exclude_names: Optional[str] = Form(
+        None,
+        description="Job rule: comma-separated words; a discovered product whose name contains one is left out.",
+    ),
     review_discovery: bool = Form(
         False,
         description="Stop after discovery with the job at awaiting_review: no product, chunk or embedding is created "
@@ -1046,6 +1050,7 @@ async def upload_document(
                 "publish_on_complete": publish_on_complete,
                 "multi_brand": multi_brand,
                 "review_discovery": review_discovery,
+                "recipe": {"exclude_names": [n.strip() for n in (exclude_names or "").split(",") if n.strip()]},
                 "product_limit": product_limit,
                 "defer_embedding": defer_embedding,
             }
@@ -1535,7 +1540,7 @@ async def restart_job_from_checkpoint(job_id: str, background_tasks: BackgroundT
             'status': 'processing',
             'last_heartbeat': nowiso,
             'updated_at': nowiso,
-        }).eq('id', job_id).in_('status', ['pending', 'interrupted']).execute()
+        }).eq('id', job_id).in_('status', ['pending', 'interrupted', 'failed']).execute()
 
         if not claim_result.data:
             row_check = supabase_client.client.table('background_jobs').select('id, status').eq('id', job_id).execute()
@@ -3159,10 +3164,11 @@ async def process_document_with_discovery(
     # Background heartbeat (every JOB_HEARTBEAT_INTERVAL_SECONDS) so the
     # auto-recovery cron can detect a dead orchestrator even when a single
     # stage stalls for many minutes.
-    from app.services.tracking.job_heartbeat import JobHeartbeat, cancel_when_job_cancelled
+    from app.services.tracking.job_heartbeat import JobHeartbeat, cancel_when_job_cancelled, record_code_version
     supabase = get_supabase_client()
     heartbeat = JobHeartbeat(job_id=job_id, supabase_client=supabase)
     cancel_watch = asyncio.create_task(cancel_when_job_cancelled(job_id, supabase, asyncio.current_task()))
+    record_code_version(job_id, supabase)
     await heartbeat.__aenter__()
     try:
         # ============================================================================

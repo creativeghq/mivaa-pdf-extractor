@@ -757,6 +757,14 @@ async def process_stage_0_discovery(
     _job_meta = ((supabase.client.table('background_jobs').select('metadata').eq('id', job_id).single().execute().data
                   or {}).get('metadata') or {})
     _review = _job_meta.get('discovery_review') or {}
+    if catalog.products and not _review.get('approved_at'):
+        from app.services.discovery.discovery_dedupe import dedupe_discovered
+        from app.services.integrations.billing_principal import billing_principal
+        _dedupe = await dedupe_discovered(
+            catalog.products, reviewed=bool(_job_meta.get('review_discovery')),
+            exclude_names=(_job_meta.get('recipe') or {}).get('exclude_names') or [], job_id=job_id,
+            user_id=billing_principal(supabase.client, workspace_id, document_id), workspace_id=workspace_id)
+        supabase.client.rpc('merge_background_job_metadata', {'p_job_id': job_id, 'p_metadata': {'discovery_dedupe': _dedupe}}).execute()
     if _job_meta.get('review_discovery') and not _review.get('approved_at'):
         import dataclasses as _dc
         from app.services.discovery.discovery_review import review_rows

@@ -229,6 +229,10 @@ async def repair_document(document_id: str, supabase: Any, log: Optional[logging
     await step("series_reconcile", reconcile_document(supabase, document_id, job_id=job_id, user_id=payer))
     from app.services.discovery.series_facts import settle_document
     await step("series_facts", settle_document(supabase, document_id, job_id=job_id, embed=embed))
+    from app.services.discovery.series_facts import inherit_packing
+    await step("packing_by_format", inherit_packing(supabase, document_id, job_id=job_id, embed=embed))
+    from app.services.images.label_linking import reattribute_site_photos
+    await step("site_photos", reattribute_site_photos(supabase, document_id, job_id=job_id))
     if pdf is not None:
         from app.services.images.label_linking import relink_by_labels
         await step("label_links", relink_by_labels(supabase, document_id, pdf))

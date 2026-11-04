@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import os
+import subprocess
 import threading
 import time
 from datetime import datetime, timezone
@@ -153,3 +155,22 @@ async def cancel_when_job_cancelled(job_id: str, supabase: Any, task: "asyncio.T
             logger.warning(f"🛑 Job {job_id} was cancelled or deleted: stopping its run")
             task.cancel()
             return
+
+
+
+def code_version() -> Optional[str]:
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=5,
+                              cwd=os.path.dirname(os.path.abspath(__file__))).stdout.strip() or None
+    except Exception:
+        return None
+
+
+def record_code_version(job_id: str, supabase: Any) -> None:
+    """Which code each run of a job used: a resumed job can straddle a deploy. Never raises."""
+    try:
+        supabase.client.rpc("append_stage_history", {"p_job_id": job_id, "p_event": {
+            "stage": "run_started", "status": "in_progress", "source": "code_version", "data": {"code_version": code_version()},
+            "started_at": datetime.now(timezone.utc).isoformat()}}).execute()
+    except Exception as e:
+        logger.warning(f"could not record the code version of job {job_id}: {e}")

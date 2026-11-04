@@ -297,3 +297,84 @@ async def settle_document(supabase: Any, document_id: str, *, apply: bool = True
             done = await backfill_product_text_embeddings(max_products=REEMBED_BATCH, product_ids=batch)
             summary["reembedded"] += (done or {}).get("embedded", 0)
     return summary
+
+
+
+def packing_rows_by_format(tables: Iterable[Dict[str, Any]]) -> Dict[str, List[List[Any]]]:
+    """Each format's distinct packing rows: a maker packs a size the same way whichever series it is."""
+    sr = _reconcile()
+    out: Dict[str, List[List[Any]]] = {}
+    for table in tables:
+        if not is_packing_table(table):
+            continue
+        for row in (table.get("table_data") or {}).get("rows") or []:
+            for size in sr.sizes_in(str((row or [""])[0])):
+                rows = out.setdefault(size, [])
+                if row not in rows:
+                    rows.append(row)
+    return out
+
+
+def inherited_packing(product: Dict[str, Any], own_tables: Sequence[Dict[str, Any]], by_format: Dict[str, List[List[Any]]],
+                      headers: Sequence[str]) -> Optional[Dict[str, Any]]:
+    """The packing table a product without one takes from its own formats, or None when no sibling has them."""
+    if any(is_packing_table(t) for t in own_tables):
+        return None
+    formats = verified_formats(product.get("metadata") or {}, own_tables)
+    rows = [row for size in formats for row in by_format.get(size, [])]
+    if not rows:
+        return None
+    return {"rows": rows, "headers": list(headers), "formats": [s for s in formats if s in by_format]}
+
+
+async def inherit_packing(supabase: Any, document_id: str, *, apply: bool = True, job_id: Optional[str] = None, embed: bool = True) -> Dict[str, Any]:
+    """Give a series with no packing table the rows of the same format from the brand's other series."""
+    from app.services.chunking import table_chunks as tc
+    from app.services.pdf.ingestion_corrections import CORRECTED, Correction, record
+    from app.services.pdf.post_ingestion_repair import plan_table_chunks
+
+    db = getattr(supabase, "client", supabase)
+    columns = "id, name, workspace_id, brand_company_id, metadata"
+    products = _all(lambda: db.table("products").select(columns).eq("source_document_id", document_id).order("id"))
+    summary: Dict[str, Any] = {"products": len(products), "inherited": 0, "still_without": [], "per_product": []}
+    if not products:
+        return summary
+    workspace = products[0].get("workspace_id")
+    siblings = list(products)
+    for brand in {p["brand_company_id"] for p in products if p.get("brand_company_id")}:
+        siblings += _all(lambda: db.table("products").select(columns).eq("workspace_id", workspace).eq("brand_company_id", brand).order("id"))
+    tables_of: Dict[str, List[Dict[str, Any]]] = {}
+    for start in range(0, len({p["id"] for p in siblings}), 100):
+        batch = sorted({p["id"] for p in siblings})[start:start + 100]
+        for row in db.table("product_tables").select("product_id, table_data").in_("product_id", batch).limit(1000).execute().data or []:
+            tables_of.setdefault(row["product_id"], []).append(row)
+    every = [t for rows in tables_of.values() for t in rows]
+    by_format = packing_rows_by_format(every)
+    headers = next(((t["table_data"] or {}).get("headers") for t in every if is_packing_table(t)), None)
+    for product in products:
+        own = tables_of.get(product["id"], [])
+        planned = inherited_packing(product, own, by_format, headers or [])
+        if planned is None:
+            if not any(is_packing_table(t) for t in own):
+                summary["still_without"].append(product["name"])
+            continue
+        summary["inherited"] += 1
+        summary["per_product"].append({"product": product["name"], "formats": planned["formats"]})
+        if not apply:
+            continue
+        db.table("product_tables").insert({
+            "product_id": product["id"], "page_number": 1, "headers": planned["headers"], "table_type": "specifications",
+            "confidence": 0.8, "extractor": "packing-by-format",
+            "table_data": {"rows": planned["rows"], "headers": planned["headers"]},
+            "metadata": {"title": "Packing Per Format", "source": "Same format in this brand's other series", "inherited_by_format": True},
+        }).execute()
+        fresh = db.table("product_tables").select("*").eq("product_id", product["id"]).execute().data or []
+        ids = await tc.write_table_chunks(supabase, product["workspace_id"], document_id, product["id"], plan_table_chunks(product["name"], fresh)["chunks"])
+        if embed:
+            await tc.embed_chunks_once(supabase, ids, workspace_id=product["workspace_id"])
+    if apply and summary["inherited"]:
+        await record(db, document_id, workspace, "series_facts", [Correction(
+            "packing_inherited_by_format", CORRECTED,
+            f"{summary['inherited']} product(s) took packing from the same format in this brand's other series",
+            summary["inherited"], [p["product"] for p in summary["per_product"]])], job_id)
+    return summary

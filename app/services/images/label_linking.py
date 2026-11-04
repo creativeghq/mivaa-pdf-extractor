@@ -326,3 +326,64 @@ async def other_series_images(supabase: Any, document_id: str, pdf_bytes: bytes)
     _, _, decisions = await _decisions(supabase, document_id, pdf_bytes)
     return [{"image_id": d["image"]["id"], "page": d["image"]["page_number"], "product": d["product"],
              "printed": d["printed"], "label": d["name"]} for d in decisions if d["only_others"]]
+
+
+
+def series_in_file_name(url: str, series: Dict[str, Tuple[str, ...]]) -> Optional[str]:
+    """The series a maker's photo is named after: `CHEZ-COCO-STAR-en-x.jpg` is Chez Coco. Longest name wins."""
+    slug = re.split(r"[-_]+", tokens_slug(url))
+    best: Optional[str] = None
+    for name, tokens in series.items():
+        if tokens and tuple(slug[:len(tokens)]) == tuple(tokens) and (best is None or len(tokens) > len(series[best])):
+            best = name
+    return best
+
+
+def tokens_slug(url: str) -> str:
+    stem = (url or "").rsplit("/", 1)[-1].rsplit(".", 1)[0]
+    normalized = unicodedata.normalize("NFKD", stem).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9_-]+", "-", normalized)
+
+
+async def reattribute_site_photos(supabase: Any, document_id: str, *, apply: bool = True, job_id: Optional[str] = None) -> Dict[str, Any]:
+    """A maker's photo named after another series of this brand belongs to that series, not where it was linked."""
+    from app.services.images.association_scores import PRINTED_LABEL_SCORE
+    from app.services.pdf.ingestion_corrections import CORRECTED, Correction, record
+
+    db = getattr(supabase, "client", supabase)
+    products = _all(lambda: db.table("products").select("id, name, workspace_id, brand_company_id").eq("source_document_id", document_id).order("id"))
+    summary: Dict[str, Any] = {"moved": 0, "per_image": []}
+    if not products:
+        return summary
+    workspace = products[0]["workspace_id"]
+    known = list(products)
+    for brand in {p["brand_company_id"] for p in products if p.get("brand_company_id")}:
+        known += _all(lambda: db.table("products").select("id, name, workspace_id, brand_company_id").eq("workspace_id", workspace).eq("brand_company_id", brand).order("id"))
+    ids = {p["name"]: p["id"] for p in known}
+    series = {name: tuple(tokens_slug(name).replace("_", "-").split("-")) for name in ids}
+    moved_images: List[str] = []
+    for product in products:
+        links = _all(lambda: db.table("image_product_associations").select("image_id, document_images!inner(id, extraction_layer, metadata)")
+                     .eq("product_id", product["id"]).eq("document_images.extraction_layer", "manufacturer_original").order("image_id"))
+        for link in links:
+            meta = link["document_images"].get("metadata") or {}
+            named = series_in_file_name(meta.get("source_url") or "", series)
+            own = series.get(product["name"]) or ()
+            # BONN-PELDANO on the Peldaño series is a step piece of Bonn: it names both, and stays.
+            on_own = _contains(re.split(r"[-_]+", tokens_slug(meta.get("source_url") or "")), own)
+            if not named or named == product["name"] or on_own or "excluded_from_products" in meta:
+                continue
+            summary["moved"] += 1
+            summary["per_image"].append({"image": link["image_id"], "from": product["name"], "to": named})
+            moved_images.append(link["image_id"])
+            if apply:
+                db.table("image_product_associations").upsert(
+                    {"workspace_id": workspace, "product_id": ids[named], "image_id": link["image_id"], "overall_score": PRINTED_LABEL_SCORE,
+                     "metadata": {"association_method": "site_file_name", "label": named}},
+                    on_conflict="image_id,product_id").execute()
+                db.table("image_product_associations").delete().eq("image_id", link["image_id"]).eq("product_id", product["id"]).execute()
+    if apply and summary["moved"]:
+        await record(db, document_id, workspace, "image_linking", [Correction(
+            "site_photos_moved_to_named_series", CORRECTED,
+            f"{summary['moved']} maker photo(s) moved to the series their file names", summary["moved"], moved_images)], job_id)
+    return summary

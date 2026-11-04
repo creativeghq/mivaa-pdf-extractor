@@ -64,7 +64,7 @@ def test_a_bad_edit_applies_nothing(edits):
 
 def test_the_review_row_shows_what_spots_a_duplicate():
     row = dr.review_rows(CATALOG["products"])[0]
-    assert row == {"name": "LINEAR MAX", "page_range": [4, 5], "category": None, "dimensions": [], "variants": 2, "confidence": None}
+    assert row == {"name": "LINEAR MAX", "page_range": [4, 5], "category": None, "dimensions": [], "variants": 2, "suggestion": None, "confidence": None}
 
 
 def test_a_dry_run_cap_is_a_small_whole_number():

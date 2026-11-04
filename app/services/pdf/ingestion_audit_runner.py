@@ -188,7 +188,7 @@ async def _snapshot_texts(db: Any, snapshots: List[Dict[str, Any]]) -> List[Dict
 def series_coverage(collected: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Per product: maker-photographed variants it does not offer, and its own pages outside its range."""
     from app.services.discovery import series_reconcile as sr
-    from app.services.images.label_linking import shares_series, tokens_of
+    from app.services.images.label_linking import series_in_file_name, shares_series, tokens_of, tokens_slug
 
     pages = {int(r["page_number"]): _element_text(r.get("layout_elements") or []) for r in collected["layout"]}
     names = [p["name"] for p in collected["products"]]
@@ -217,7 +217,12 @@ def series_coverage(collected: Dict[str, Any]) -> List[Dict[str, Any]]:
         # A page in the range of a product sharing the printed name ("Alchemy 30x90") is that product's, not outside.
         ranged = [q for q in collected["products"] if q is p or shares_series(tokens_of(p["name"]), tokens_of(q["name"]))]
         outside = sorted(own - {n for q in ranged for n in ((q.get("metadata") or {}).get("page_range") or []) if isinstance(n, int)})
-        out.append({"product": p["name"], "missing_variants": missing, "pages_outside": outside,
+        slugs = {n: tuple(tokens_slug(n).replace("_", "-").split("-")) for n in names}
+        foreign = sorted({named for i in (collected.get("product_images") or {}).get(p["name"], [])
+                          if i.get("extraction_layer") == "manufacturer_original" and "excluded_from_products" not in (i.get("metadata") or {})
+                          for named in [series_in_file_name((i.get("metadata") or {}).get("source_url") or "", slugs)]
+                          if named and named != p["name"]})
+        out.append({"product": p["name"], "missing_variants": missing, "pages_outside": outside, "foreign_site_photos": foreign,
                     "site_status": (m.get("site_manifest") or {}).get("status")})
     return out
 
