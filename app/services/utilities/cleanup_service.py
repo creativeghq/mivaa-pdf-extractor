@@ -560,6 +560,13 @@ class CleanupService:
 
             if bucket and path:
                 try:
+                    others = supabase_client.client.table('documents').select('id')\
+                        .eq('storage_bucket', bucket).eq('storage_object_path', path)\
+                        .neq('id', document_id).limit(1).execute()
+                    # A failed lookup raises into the except below, which also keeps the file.
+                    if others.data:
+                        self.logger.warning(f"Kept {bucket}/{path}: document {others.data[0]['id']} still uses it")
+                        return total
                     supabase_client.client.storage.from_(bucket).remove([path])
                     total += 1
                     self.logger.info(f"✅ Deleted original file {bucket}/{path}")
