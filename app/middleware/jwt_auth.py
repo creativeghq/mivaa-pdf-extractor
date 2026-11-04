@@ -199,7 +199,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
                 return self._unauthorized_response("Token has been revoked")
             
             # Extract workspace context
-            workspace_context = await self._extract_workspace_context(claims)
+            workspace_context = await self._extract_workspace_context(claims, request.headers.get("X-Workspace-Id"))
             if not workspace_context:
                 return self._forbidden_response("Invalid workspace context")
 
@@ -660,7 +660,7 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
         # For now, return False (no blacklist check)
         return False
     
-    async def _extract_workspace_context(self, claims: Dict[str, Any]) -> Optional[WorkspaceContext]:
+    async def _extract_workspace_context(self, claims: Dict[str, Any], requested_workspace: Optional[str] = None) -> Optional[WorkspaceContext]:
         """
         Extract workspace context from JWT claims.
         
@@ -692,13 +692,16 @@ class JWTAuthMiddleware(BaseHTTPMiddleware):
             is_test_user = self._is_test_user(claims)
 
             if not is_test_user and not await self._validate_workspace_access(user_id, workspace_id):
-                # The claim is a default, not a choice; a user with exactly one
-                # active membership has an unambiguous workspace.
+                # The claim is a default, not a choice: the workspace the caller named
+                # wins if they belong to it, and one active membership is unambiguous.
                 memberships = await self._active_workspace_ids(user_id)
-                if len(memberships) != 1:
+                if requested_workspace and str(requested_workspace) in memberships:
+                    workspace_id = str(requested_workspace)
+                elif len(memberships) == 1:
+                    workspace_id = memberships[0]
+                else:
                     logger.warning(f"User {user_id} does not have access to workspace {workspace_id}")
                     return None
-                workspace_id = memberships[0]
             elif is_test_user:
                 logger.info(f"Bypassing workspace validation for test user in {self.settings.environment} environment")
             
