@@ -149,7 +149,7 @@ async def cancel_when_job_cancelled(job_id: str, supabase: Any, task: "asyncio.T
         except Exception as e:
             logger.warning(f"cancel watch for {job_id} could not read the job: {e}")
             continue
-        if rows and rows[0].get("status") == "cancelled":
-            logger.warning(f"🛑 Job {job_id} was cancelled: stopping its run")
+        if not rows or rows[0].get("status") == "cancelled":
+            logger.warning(f"🛑 Job {job_id} was cancelled or deleted: stopping its run")
             task.cancel()
             return

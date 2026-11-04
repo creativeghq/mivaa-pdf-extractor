@@ -101,3 +101,25 @@ def test_a_parked_job_tells_the_operators():
 def test_a_table_copied_from_another_pdf_is_not_checked_against_this_one():
     src = _code("app/services/pdf/ingestion_audit_runner.py")
     assert "sourced_elsewhere" in src and "sourced_elsewhere" in _code("app/services/pdf/ingestion_audit.py")
+
+
+def test_a_merge_moves_records_in_one_transaction_and_never_deletes_a_product_itself():
+    src = _code("app/services/products/product_merge_service.py")
+    assert "rpc('merge_products_into'" in src and "rpc('drop_catalog_product'" in src
+    assert "table('products').delete()" not in src
+    body = src[src.index("async def merge_products"):]
+    assert body.index("merge_products_into") < body.index("table('products').update(")
+
+
+def test_a_job_whose_row_is_gone_stops_too():
+    class Gone(_Rows):
+        def execute(self):
+            return types.SimpleNamespace(data=[])
+
+    async def run():
+        work = asyncio.create_task(asyncio.sleep(30))
+        await hb.cancel_when_job_cancelled("j", types.SimpleNamespace(client=Gone([])), work, interval_seconds=0)
+        with pytest.raises(asyncio.CancelledError):
+            await work
+
+    asyncio.run(run())

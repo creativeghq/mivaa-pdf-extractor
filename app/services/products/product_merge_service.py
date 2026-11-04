@@ -77,34 +77,30 @@ class ProductMergeService:
             if not source_products:
                 raise ValueError("No valid source products found")
             
-            # 3. Merge data from source products into target
+            # 3. Every record pointing at a source moves to the target in one transaction, or nothing does.
+            moved = self.supabase.client.rpc('merge_products_into', {
+                'p_target': target_product_id, 'p_sources': source_product_ids,
+            }).execute().data or {}
+
+            # 4. Merge data from source products into target
             merged_product = await self._merge_product_data(
                 target_product,
                 source_products
             )
-            
-            # 4. Update target product in database
+
+            # 5. Update target product in database
             update_response = self.supabase.client.table('products').update(
                 merged_product
             ).eq('id', target_product_id).execute()
-            
+
             if not update_response.data:
                 raise ValueError("Failed to update target product")
-            
+
             target_after_merge = update_response.data[0]
-            
-            # 5. Transfer relationships (chunks, images, etc.)
-            await self._transfer_relationships(
-                source_product_ids,
-                target_product_id
-            )
-            
-            # 6. Delete source products
-            for source_id in source_product_ids:
-                self.supabase.client.table('products').delete().eq(
-                    'id', source_id
-                ).execute()
-            
+
+            # 6. The survivor's text changed, so its vector did: unless its catalogue is waiting on its embed run.
+            await self._reembed(target_after_merge)
+
             # 7. Record merge in history
             history_data = {
                 'workspace_id': workspace_id,
@@ -132,6 +128,7 @@ class ProductMergeService:
             )
             
             return {
+                'moved': moved,
                 'success': True,
                 'history_id': history_id,
                 'target_product': target_after_merge,
@@ -200,65 +197,22 @@ class ProductMergeService:
         
         return merged
     
-    async def _transfer_relationships(
-        self,
-        source_product_ids: List[str],
-        target_product_id: str
-    ) -> None:
-        """Transfer all relationships from source products to target product."""
-        try:
-            # Transfer product-image relationships.
-            for source_id in source_product_ids:
-                # Get existing relationships
-                rel_response = self.supabase.client.table('image_product_associations').select(
-                    '*'
-                ).eq('product_id', source_id).execute()
+    async def _reembed(self, product: Dict[str, Any]) -> None:
+        from app.services.embeddings.embedding_deferral import document_deferred
+        from app.services.embeddings.text_embedding_backfill import backfill_product_text_embeddings
 
-                if rel_response.data:
-                    for rel in rel_response.data:
-                        # Check if relationship already exists for target
-                        existing = self.supabase.client.table('image_product_associations').select(
-                            'id'
-                        ).eq('product_id', target_product_id).eq(
-                            'image_id', rel['image_id']
-                        ).execute()
+        if document_deferred(self.supabase, product.get('source_document_id')):
+            return
+        self.supabase.client.table('products').update({'text_embedding_1024': None}).eq('id', product['id']).execute()
+        await backfill_product_text_embeddings(max_products=1, product_ids=[product['id']])
 
-                        if not existing.data:
-                            new_rel = {
-                                # Carried from the source row (#25 M12-4). The column is
-                                # NOT NULL now, and the composite FK re-checks it against
-                                # the TARGET product — so merging two products that sit
-                                # in different workspaces is refused by Postgres rather
-                                # than quietly moving images across a tenant boundary.
-                                'workspace_id': rel['workspace_id'],
-                                'product_id': target_product_id,
-                                'image_id': rel['image_id'],
-                                'spatial_score': rel.get('spatial_score', 0.0),
-                                'caption_score': rel.get('caption_score', 0.0),
-                                # No 0.0 default: NULL means the visual signal did not
-                                # participate, and defaulting it here would invent a
-                                # measurement the merge never made.
-                                'clip_score': rel.get('clip_score'),
-                                'overall_score': rel.get('overall_score', 0.5),
-                                'confidence': rel.get('confidence', 0.5),
-                                'reasoning': rel.get('reasoning', 'merged'),
-                                'metadata': rel.get('metadata', {})
-                            }
-                            self.supabase.client.table('image_product_associations').insert(
-                                new_rel
-                            ).execute()
+    async def drop_product(self, product_id: str, workspace_id: str) -> Dict[str, Any]:
+        """Remove a product discovery should not have made; its text stays with the document."""
+        found = self.supabase.client.table('products').select('id').eq('id', product_id).eq('workspace_id', workspace_id).execute().data
+        if not found:
+            raise ValueError('Product not found')
+        return self.supabase.client.rpc('drop_catalog_product', {'p_product': product_id}).execute().data or {}
 
-                    # Delete old relationships
-                    self.supabase.client.table('image_product_associations').delete().eq(
-                        'product_id', source_id
-                    ).execute()
-            
-            # Transfer product-document relationships (if exists)
-            # Similar pattern for other relationship tables
-            
-        except Exception as e:
-            self.logger.error(f"Error transferring relationships: {e}")
-    
     async def undo_merge(
         self,
         history_id: str,

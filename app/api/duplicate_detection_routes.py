@@ -326,6 +326,29 @@ async def merge_products(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class DropProductRequest(BaseModel):
+    """Request to remove one product discovery should not have made."""
+    product_id: str = Field(..., description="Product to remove")
+    workspace_id: str = Field(..., description="Workspace ID")
+
+
+@router.post("/drop")
+async def drop_product(
+    request: DropProductRequest,
+    service: ProductMergeService = Depends(get_merge_service),
+    workspace: WorkspaceContext = Depends(get_current_workspace_context),
+):
+    """Remove a product and keep its text on the document; refused while anything commercial uses it."""
+    _reconcile_ws(workspace, request.workspace_id)
+    try:
+        return await service.drop_product(request.product_id, request.workspace_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Product not found")
+    except Exception as e:
+        logger.error(f"Error dropping product: {e}")
+        raise HTTPException(status_code=409, detail=str(e))
+
+
 @router.post("/undo-merge", responses={200: {"model": MergeResponse}})
 async def undo_merge(
     request: UndoMergeRequest,
