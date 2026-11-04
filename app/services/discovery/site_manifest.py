@@ -145,7 +145,7 @@ def series_only_on_site(sitemap_pages: Iterable[str], known_pages: Iterable[str]
     out: List[str] = []
     for url in sitemap_pages:
         tokens = slug_tokens(url)
-        if url.rstrip("/").rsplit("/", 1)[0] not in parents or not set(tokens) & words:
+        if "?" in url or url.rstrip("/").rsplit("/", 1)[0] not in parents or not set(tokens) & words:
             continue
         if any(t and all(w in tokens for w in t) for t in known) or url in out:
             continue
@@ -186,5 +186,5 @@ async def report_site_only_series(db: Any, document_id: str, workspace_id: str, 
     if found:
         await record(db, document_id, workspace_id, "discovery", [Correction(
             "series_only_on_maker_site", NEEDS_DECISION,
-            f"The maker's site lists {len(found)} page(s) beside these series that the PDF does not name", len(found), found[:50])], job_id)
+            f"The maker's site has {len(found)} page(s) beside these series that the PDF does not name. Some may be models it omits, others accessories or general pages", len(found), found[:50])], job_id)
     return {"site_only": found}

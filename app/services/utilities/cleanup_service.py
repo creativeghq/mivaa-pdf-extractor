@@ -973,6 +973,7 @@ class CleanupService:
                 for table_name, column, stat_key in [
                     ('document_entities', 'source_document_id', 'document_entities_deleted'),
                     ('processed_documents', 'pdf_document_id', 'processed_documents_deleted'),
+                    ('paddleocr_metrics', 'document_id', 'paddleocr_metrics_deleted'),
                 ]:
                     try:
                         resp = supabase_client.client.table(table_name).delete().eq(column, document_id).execute()
@@ -980,6 +981,9 @@ class CleanupService:
                     except Exception as e:
                         self.logger.warning(f"Failed to clean {table_name}: {e}")
                         stats['errors'].append(f"{table_name} deletion failed: {str(e)}")
+
+                for suffix in ('', '_images'):
+                    shutil.rmtree(f'/tmp/pdf_processor_{document_id}{suffix}', ignore_errors=True)
 
             # 8. Delete the document ROW first, then the storage bytes.
             if document_id:

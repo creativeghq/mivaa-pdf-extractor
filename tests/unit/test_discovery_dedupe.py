@@ -158,6 +158,6 @@ def test_a_chunk_goes_to_the_one_model_it_names_and_range_text_stays():
 
 def test_a_page_beside_the_series_pages_naming_no_product_is_a_web_only_candidate():
     sm = _load("site_manifest_under_test", "app/services/discovery/site_manifest.py")
-    urls = ["https://k.com/koralux-linear-max", "https://k.com/koralux-rondo-booster", "https://k.com/news/koralux-award", "https://k.com/contact"]
+    urls = ["https://k.com/koralux-linear-max", "https://k.com/koralux-rondo-booster", "https://k.com/news/koralux-award", "https://k.com/contact", "https://k.com/downloads?category=koralux"]
     found = sm.series_only_on_site(urls, ["https://k.com/koralux-linear-max"], ["KORALUX LINEAR MAX"])
     assert found == ["https://k.com/koralux-rondo-booster"]
