@@ -646,11 +646,7 @@ class PriceAlertDispatcher:
         return [c for c in chans if c in CHANNEL_CREDIT_COST]
 
     def _build_action_url(self, product_id: Optional[str], tracked_query_id: Optional[str]) -> str:
-        if product_id:
-            return f"/admin/price-monitoring/products/{product_id}"
-        if tracked_query_id:
-            return f"/admin/price-monitoring/tracked/{tracked_query_id}"
-        return "/admin/price-monitoring"
+        return "/admin/monitoring?tab=price"
 
     def _is_duplicate(self, cand: AlertCandidate) -> bool:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=DEDUPE_WINDOW_HOURS)).isoformat()

@@ -447,11 +447,7 @@ class MentionAlertDispatcher:
         return [c for c in chans if c in CHANNEL_CREDIT_COST]
 
     def _build_action_url(self, product_id: Optional[str], tracked_mention_id: Optional[str]) -> str:
-        if product_id:
-            return f"/admin/mention-monitoring/products/{product_id}"
-        if tracked_mention_id:
-            return f"/admin/mention-monitoring/tracked/{tracked_mention_id}"
-        return "/admin/mention-monitoring"
+        return "/mention-monitoring"
 
     def _is_duplicate(self, cand: AlertCandidate) -> bool:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=DEDUPE_WINDOW_HOURS)).isoformat()

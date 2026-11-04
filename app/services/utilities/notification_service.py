@@ -81,7 +81,7 @@ class NotificationService:
             data={
                 'job_id': job_id,
                 'job_type': job_type,
-                'action_url': f"/admin/async-jobs?job={job_id}"
+                'action_url': "/admin/operations?tab=performance"
             },
             channels=['push']
         )
@@ -115,7 +115,7 @@ class NotificationService:
                 'job_type': job_type,
                 'duration': duration,
                 'stats': stats,
-                'action_url': f"/admin/async-jobs?job={job_id}"
+                'action_url': "/admin/operations?tab=performance"
             }
         )
     
@@ -138,7 +138,7 @@ class NotificationService:
                 'job_id': job_id,
                 'job_type': job_type,
                 'error': error,
-                'action_url': f"/admin/async-jobs?job={job_id}"
+                'action_url': "/admin/operations?tab=performance"
             }
         )
     

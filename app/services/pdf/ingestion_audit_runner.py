@@ -344,7 +344,7 @@ def _notify(settings: Any, db: Any, document: Dict[str, Any], status: str, resul
     admins = _rows(db.table("user_profiles").select("user_id").eq("role_id", admin_role[0]["id"]).execute())
     codes = ", ".join(f["code"] for f in result["findings"][:6]) or "no detail"
     title = f"Ingestion audit: {document.get('filename')} is {status.replace('_', ' ')}"
-    body = f"{len(result['findings'])} finding(s): {codes}. Open Operations > Catalog to review."
+    body = f"{len(result['findings'])} finding(s): {codes}. Open Operations > Catalogs to review."
     sent = 0
     for admin in admins:
         ok = emit_flow_event(
@@ -355,7 +355,7 @@ def _notify(settings: Any, db: Any, document: Dict[str, Any], status: str, resul
                 "title": title,
                 "body": body,
                 "type": "ingestion_audit",
-                "action_url": "/admin/operations?tab=catalog",
+                "action_url": "/admin/operations?tab=catalogs",
                 "document_id": document["id"],
                 "job_id": job_id,
                 "audit_id": audit_id,
