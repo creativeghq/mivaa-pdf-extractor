@@ -685,6 +685,84 @@ class ImageSourcing:
         return self.summary
 
 
+async def redo_repairs_with_gemini(document_id: str, workspace_id: str, user_id: Optional[str] = None,
+                                   log: Optional[logging.Logger] = None) -> Dict[str, Any]:
+    """Redo a document's plain clean-ups of patterned crops with Gemini, once it is available again.
+
+    Stops at the first failure to run: the next call would fail the same way and nothing is lost.
+    A redraw keeps the clean-up. A replaced repair keeps its row, excluded, like any superseded image.
+    """
+    from app.services.pdf.ingestion_audit import UPSCALE_LIMIT
+    from app.services.pdf.ingestion_corrections import CORRECTED, DEGRADED, Correction, record
+
+    s = ImageSourcing(document_id, workspace_id, user_id, log=log)
+    db = s.db
+    cols = "id, document_id, workspace_id, page_number, image_url, metadata, has_slig_embedding, extraction_layer"
+    rows: List[Dict[str, Any]] = []
+    while True:
+        batch = (db.table("document_images").select(cols).eq("document_id", document_id).eq("extraction_layer", "restored")
+                 .order("id").range(len(rows), len(rows) + 999).execute().data or [])
+        rows.extend(batch)
+        if len(batch) < 1000:
+            break
+    out: Dict[str, Any] = {"considered": 0, "replaced": [], "kept_redrawn": [], "failed_to_run": None}
+    for old in rows:
+        meta = old.get("metadata") or {}
+        if meta.get("restore_method") != "classical" or "excluded_from_products" in meta:
+            continue
+        found = db.table("document_images").select(cols).eq("id", meta.get("restored_from")).limit(1).execute().data
+        if not found:
+            continue
+        source = found[0]
+        src_meta = source.get("metadata") or {}
+        src_img = _open(db.storage.from_(src_meta["storage_bucket"]).download(src_meta["storage_path"]))
+        if src_img is None or not is_patterned(src_img):
+            continue
+        out["considered"] += 1
+        repaired = await s._gemini_restore(src_img)
+        if repaired is None:
+            out["failed_to_run"] = s._gemini_failure or "unknown"
+            break
+        native = (src_meta.get("image_quality") or {}).get("native_px")
+        ok, fidelity = repair_is_faithful(src_img, repaired, native)
+        if not ok:
+            out["kept_redrawn"].append(old["id"])
+            continue
+        repaired = within_upscale(repaired, native, UPSCALE_LIMIT)
+        links = db.table("image_product_associations").select("product_id").eq("image_id", old["id"]).execute().data or []
+        products = (db.table("products").select("id, name, workspace_id").in_("id", [r["product_id"] for r in links]).execute().data or []) if links else []
+        if not products:
+            continue
+        saved = await s._store(products[0], repaired, old.get("page_number") or 1, "restored", "pdf_processing",
+                               {"restored_from": source["id"], "restore_method": "gemini-3.1-flash-image", "restore_fidelity": fidelity,
+                                "source_native_px": native, "replaces_repair": old["id"]}, meta.get("ai_classification"), old["document_id"])
+        if not saved:
+            continue
+        for extra in products[1:]:
+            db.table("image_product_associations").upsert(
+                {"workspace_id": extra["workspace_id"], "product_id": extra["id"], "image_id": saved["id"],
+                 "overall_score": PAGE_LINK_SCORE, "metadata": {"association_method": "restored"}},
+                on_conflict="image_id,product_id").execute()
+        for product in products:
+            s._supersede(old, product["id"], [saved["id"]], "superseded_by_gemini_repair")
+        await s._retire_vectors(old)
+        await s._embed(saved, _jpeg(repaired))
+        out["replaced"].append(old["id"])
+    corrections = []
+    if out["replaced"]:
+        corrections.append(Correction("images_repaired", CORRECTED, f"{len(out['replaced'])} plain clean-up(s) redone with Gemini",
+                                      len(out["replaced"]), out["replaced"]))
+    if out["kept_redrawn"]:
+        corrections.append(Correction("images_repaired_without_gemini", DEGRADED,
+                                      f"{len(out['kept_redrawn'])} Gemini repair(s) redrew the picture, so the plain clean-up stays",
+                                      len(out["kept_redrawn"]), out["kept_redrawn"]))
+    if out["failed_to_run"]:
+        corrections.append(Correction("gemini_redo_stopped", DEGRADED,
+                                      f"The Gemini redo stopped: {out['failed_to_run'][:160]}; run it again once Gemini is available", 1))
+    await record(db, document_id, workspace_id, "image_sourcing", corrections)
+    return out
+
+
 async def run_image_sourcing(document_id: str, workspace_id: str, user_id: Optional[str] = None,
                              product_ids: Optional[List[str]] = None, allow_restore: bool = True,
                              log: Optional[logging.Logger] = None, dry_run: bool = False,

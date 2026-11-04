@@ -309,3 +309,13 @@ def test_an_image_made_from_a_crop_is_filed_under_the_crops_own_document():
     src = budget.blank_comments((_ROOT / "app/services/images/image_sourcing.py").read_text(encoding="utf-8"))
     assert '"document_id": document_id,' in src and '"document_id": self.document_id,' not in src
     assert 'cls, crop.get("document_id"))' in src and "verdict, crop_doc)" in src
+
+
+def test_the_gemini_redo_stops_when_gemini_cannot_run_and_passes_the_fidelity_gate_first():
+    budget = _load("comment_budget_for_redo", "scripts/comment_budget.py")
+    src = budget.blank_comments((_ROOT / "app/services/images/image_sourcing.py").read_text(encoding="utf-8"))
+    body = src[src.index("async def redo_repairs_with_gemini"):src.index("async def run_image_sourcing")]
+    stop = body.index('out["failed_to_run"] = ')
+    assert "break" in body[stop:stop + 90]
+    assert body.index("repair_is_faithful(") < body.index("s._store(") < body.index("s._supersede(")
+    assert body.index("is_patterned(") < body.index("s._gemini_restore(")

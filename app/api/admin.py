@@ -2258,6 +2258,33 @@ async def image_redo_endpoint(
     return {"accepted": True, "document_id": document_id, "sourcing_only": body.sourcing_only}
 
 
+@router.post("/admin/documents/{document_id}/redo-gemini-repairs")
+async def redo_gemini_repairs_endpoint(
+    document_id: str,
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    current_user: User = Depends(require_admin),
+):
+    """Redo a document's plain clean-ups of patterned crops with Gemini. Runs in the background; billed to the caller."""
+    import asyncio as _asyncio
+    from ..services.images.image_sourcing import redo_repairs_with_gemini
+
+    supabase = SupabaseClient()
+    found = supabase.client.table("documents").select("workspace_id").eq("id", document_id).execute().data or []
+    if not found or found[0].get("workspace_id") != workspace_context.workspace_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    ws, uid = workspace_context.workspace_id, current_user_id(current_user)
+
+    async def _run() -> None:
+        try:
+            result = await redo_repairs_with_gemini(document_id, ws, uid)
+            logger.info(f"🖼️ Gemini redo for {document_id}: {str(result)[:800]}")
+        except Exception:
+            logger.exception(f"❌ Gemini redo for {document_id} failed")
+
+    _asyncio.create_task(_run())
+    return {"accepted": True, "document_id": document_id}
+
+
 class UpgradeLayoutRequest(BaseModel):
     dry_run: bool = True
 
