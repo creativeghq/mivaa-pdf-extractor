@@ -39,6 +39,10 @@ async def _fetch_products_missing_embedding(
         query = query.is_("text_embedding_1024", "null").neq("item_type", "service")
     if workspace_id:
         query = query.eq("workspace_id", workspace_id)
+    from app.services.embeddings.embedding_deferral import deferred_document_ids, outside_documents
+    deferred = await asyncio.to_thread(deferred_document_ids, client)
+    if deferred:
+        query = query.or_(outside_documents("source_document_id", deferred))
     response = await asyncio.to_thread(query.execute)
     return response.data or []
 
@@ -58,12 +62,17 @@ async def _fetch_chunks_missing_embedding(
     rows sat at the head of every page and the backfill never got past them.
     """
     client = get_supabase_client().client
+    from app.services.embeddings.embedding_deferral import deferred_document_ids, outside_documents
+    deferred = await asyncio.to_thread(deferred_document_ids, client)
+    missing = "or(has_text_embedding.is.null,has_text_embedding.eq.false)"
+    # One `or` body: PostgREST takes a single `or` per request here.
+    wanted = f"and({missing},or({outside_documents('document_id', deferred)}))" if deferred else missing
 
     def build(ids: Optional[List[str]]) -> Any:
         query = (
             client.table("document_chunks")
             .select("id, content, workspace_id")
-            .or_("has_text_embedding.is.null,has_text_embedding.eq.false")
+            .or_(wanted)
             .not_.is_("content", "null")
             .neq("content", "")
             .order("id")

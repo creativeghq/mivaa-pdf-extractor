@@ -9,7 +9,7 @@ document also carries `metadata.embedding_deferred` until `embed_document` clear
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 _DEFERRED: ContextVar[bool] = ContextVar("embedding_deferred", default=False)
 
@@ -33,6 +33,18 @@ def document_deferred(db: Any, document_id: Optional[str]) -> bool:
     db = getattr(db, "client", db)
     rows = db.table("documents").select("metadata").eq("id", document_id).limit(1).execute().data or []
     return bool(rows and (rows[0].get("metadata") or {}).get("embedding_deferred"))
+
+
+def deferred_document_ids(db: Any) -> List[str]:
+    """Documents waiting on their embed run: no backfill may reach them first."""
+    db = getattr(db, "client", db)
+    rows = db.table("documents").select("id").eq("metadata->>embedding_deferred", "true").execute().data or []
+    return [r["id"] for r in rows]
+
+
+def outside_documents(column: str, ids: List[str]) -> str:
+    """A PostgREST `or` body keeping rows with no document or a document not in `ids`."""
+    return f"{column}.is.null,{column}.not.in.({','.join(ids)})"
 
 
 def mark_document(db: Any, document_id: str, deferred: bool) -> None:

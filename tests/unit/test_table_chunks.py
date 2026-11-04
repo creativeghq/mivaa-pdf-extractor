@@ -309,6 +309,8 @@ def _load_backfill(monkeypatch, query_log):
         "app.services.core": types.ModuleType("app.services.core"),
         "app.services.core.supabase_client": types.SimpleNamespace(get_supabase_client=lambda: stub_client),
         "app.services.embeddings": types.ModuleType("app.services.embeddings"),
+        "app.services.embeddings.embedding_deferral": types.SimpleNamespace(
+            deferred_document_ids=lambda _c: [], outside_documents=lambda _col, _ids: ""),
         "app.services.embeddings.real_embeddings_service": types.SimpleNamespace(RealEmbeddingsService=object),
     }
     for key, value in stubs.items():

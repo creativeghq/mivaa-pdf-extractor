@@ -111,6 +111,15 @@ def test_work_outside_the_job_reads_the_documents_own_marker():
     assert run.index("mark_document, db, document_id, False") < run.index("backfill_product_text_embeddings(")
 
 
+def test_no_backfill_reaches_a_document_waiting_on_its_embed_run():
+    src = _code("app/services/embeddings/text_embedding_backfill.py")
+    products = src[src.index("async def _fetch_products_missing_embedding"):src.index("async def _fetch_chunks_missing_embedding")]
+    assert 'outside_documents("source_document_id", deferred)' in products
+    chunks = src[src.index("async def _fetch_chunks_missing_embedding"):src.index("async def backfill_product_text_embeddings")]
+    assert "outside_documents('document_id', deferred)" in chunks and ".or_(wanted)" in chunks
+    assert ed.outside_documents("document_id", ["a", "b"]) == "document_id.is.null,document_id.not.in.(a,b)"
+
+
 def test_the_documents_marker_is_set_and_cleared_without_touching_other_keys():
     writes = []
 
