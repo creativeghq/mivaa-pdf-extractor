@@ -34,6 +34,13 @@ import httpx
 
 from app.modules._core.registry import is_module_enabled
 from app.services.core.supabase_client import get_supabase_client
+from app.services.utilities.monitoring_conversation import (
+    absolute_url,
+    agent_hub_path,
+    alert_path,
+    ensure_conversation,
+    post_alert,
+)
 from app.services.integrations.credit_router import (
     debit_credits as _router_debit_credits,
     refund_credits as _router_refund_credits,
@@ -366,6 +373,21 @@ class PriceAlertDispatcher:
             skipped: List[str] = []
             credits_total = 0
 
+            # The thread is resolved first so the bell and the email open it.
+            if channels:
+                source_url = cand.action_url
+                conversation_id = ensure_conversation(
+                    self.supabase.client, table="tracked_queries", tracked_id=cand.tracked_query_id,
+                    user_id=cand.user_id, title_prefix="Price monitoring", label_columns=("search_query",),
+                )
+                if conversation_id:
+                    cand.action_url = alert_path(conversation_id, "price", cand.tracked_query_id)
+                    if post_alert(
+                        self.supabase.client, conversation_id=conversation_id, title=cand.title, body=cand.body,
+                        kind="price", tracked_id=cand.tracked_query_id, source_url=source_url,
+                    ):
+                        fired.append("chat")
+
             for channel in channels:
                 cost = CHANNEL_CREDIT_COST.get(channel, 0)
                 charged_for_channel = 0
@@ -408,7 +430,7 @@ class PriceAlertDispatcher:
                     "alert_type": cand.alert_type,
                     "retailer_name": cand.retailer_name,
                     "retailer_domain": cand.retailer_domain,
-                    "payload": cand.payload,
+                    "payload": {**cand.payload, "title": cand.title, "body": cand.body, "action_url": cand.action_url},
                     "channels_fired": fired,
                     "channels_skipped": skipped,
                     "credits_charged": credits_total,
@@ -489,7 +511,7 @@ class PriceAlertDispatcher:
             "body": cand.body,
             "retailer_name": cand.retailer_name or "",
             "retailer_domain": cand.retailer_domain or "",
-            "action_url": cand.action_url,
+            "action_url": absolute_url(cand.action_url),
             "alert_type": cand.alert_type,
             **{k: ("" if v is None else str(v)) for k, v in cand.payload.items()},
         }
@@ -517,9 +539,9 @@ class PriceAlertDispatcher:
                         # seeded yet — email-api will use these fields directly.
                         "html": (
                             f"<h2>{cand.title}</h2><p>{cand.body}</p>"
-                            f'<p><a href="{cand.action_url}">Open in Material KAI</a></p>'
+                            f'<p><a href="{absolute_url(cand.action_url)}">Open in Material KAI</a></p>'
                         ),
-                        "text": f"{cand.title}\n\n{cand.body}\n\nOpen: {cand.action_url}",
+                        "text": f"{cand.title}\n\n{cand.body}\n\nOpen: {absolute_url(cand.action_url)}",
                         "tags": [
                             {"name": "category", "value": "price_alert"},
                             {"name": "alert_type", "value": cand.alert_type},
@@ -646,7 +668,7 @@ class PriceAlertDispatcher:
         return [c for c in chans if c in CHANNEL_CREDIT_COST]
 
     def _build_action_url(self, product_id: Optional[str], tracked_query_id: Optional[str]) -> str:
-        return "/admin/monitoring?tab=price"
+        return agent_hub_path()
 
     def _is_duplicate(self, cand: AlertCandidate) -> bool:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=DEDUPE_WINDOW_HOURS)).isoformat()

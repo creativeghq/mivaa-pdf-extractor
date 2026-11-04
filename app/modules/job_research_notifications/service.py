@@ -473,7 +473,11 @@ class JobDigestDispatcher:
     def _build_action_path(self, tracked_job: Dict[str, Any], *, conversation_id: Optional[str] = None) -> str:
         """The in-app destination, as a PATH."""
         if conversation_id:
-            return "/agent-hub?" + urlencode({"agent": "kai", "conversation": conversation_id})
+            return "/agent-hub?" + urlencode({
+                "agent": "kai",
+                "conversation": conversation_id,
+                "alert": f"job:{tracked_job['id']}",
+            })
         label = (tracked_job.get("label") or "").strip() or "my job search"
         return "/agent-hub?" + urlencode({
             "agent": "kai",
