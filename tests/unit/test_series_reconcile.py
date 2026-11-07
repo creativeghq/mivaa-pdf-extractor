@@ -87,7 +87,19 @@ def test_a_decimal_comma_followed_by_a_space_is_read_as_one_number():
     assert sr.sizes_in("30,3x60,6") == {"30.3x60.6"}
 
 
+def test_a_list_of_sizes_is_not_read_as_decimals():
+    # "60, 60" is the end of one size and the start of the next, never 60.6.
+    assert sr.sizes_in("made in 30 x 60, 60 x 60, 60.6 x 60.6 and 60 x 120 cm") == {"30x60", "60x60", "60.6x60.6", "60x120"}
+
+
 def test_the_rounded_name_of_a_printed_actual_size_is_not_a_second_format():
     corpus = "Pietra\n45 × 45 cm\nm2/pallet\n45, 6 × 45, 6 cm\nalso 60 × 60 cm"
     kept = sr.verify({"formats": ["45x45", "45.6x45.6", "60x60"]}, corpus, [])
     assert kept["formats"] == ["45.6x45.6", "60x60"]
+
+
+def test_room_shot_and_frame_markers_are_not_variants():
+    # Izida names room shots "moonlight-60x60-amb.1" and frames "-f10": neither is a colour.
+    urls = ["https://x.gr/u/moonlight-60x60-amb.1-scaled.jpg", "https://x.gr/u/moonlight-beige-30x60-f10.jpg",
+            "https://x.gr/u/moonlight-beige-60x120-2-copy-scaled.jpg", "https://x.gr/u/moonlight-beige-60x120-amb-300dpi-retouch.jpg"]
+    assert sr.site_variant_names(urls, "Moonlight") == ["beige"]

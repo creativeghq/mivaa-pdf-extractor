@@ -17,11 +17,11 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 logger = logging.getLogger(__name__)
 
 TASK = "series_reconcile"
-SIZE = re.compile(r"(\d{1,3}(?:[.,] ?\d)?)\s*[x×X]\s*(\d{1,3}(?:[.,] ?\d)?)")
+SIZE = re.compile(r"(\d{1,3}(?:[.,] ?\d(?!\d))?)\s*[x×X]\s*(\d{1,3}(?:[.,] ?\d(?!\d))?)")
 LATEX_SIZE = re.compile(r"\$\s*([\d.,]+)\s*\\+times\s*([\d.,]+)\s*\$")
 CORPUS_LIMIT = 12000
 CROWDED_PAGE_SERIES = 5
-SLUG_NOISE = r"\d+|\d+x\d+|[a-z]|[a-z0-9]{12,}|en|es|fr|de|it|pt"
+SLUG_NOISE = r"\d+|\d+x\d+|[a-z]|[a-z0-9]{12,}|en|es|fr|de|it|pt|amb|ambi|ambient|f\d+|copy|scaled|retouch|\d+dpi"
 REFUSAL = re.compile(
     r"^(the )?(source|catalogue|catalog)( text)?( for \S+)? (contains|does not|has|provides|offers|consists)"
     r"|no (real |narrative )?description|there is no description|nothing to (write|describe)", re.I)
@@ -134,7 +134,7 @@ def site_variant_names(urls: Iterable[str], name: str) -> List[str]:
         slug = fold((url or "").rsplit("/", 1)[-1])
         slug = re.sub(r"\.\w+$", "", slug)
         slug = re.sub(r"-(en|es|fr|de|it)-[a-z0-9]{8,}$|-\d+x\d+$|-scaled$", "", slug)
-        parts = [p for p in re.split(r"[-_]+", slug) if p and not re.fullmatch(SLUG_NOISE, p)]
+        parts = [p for p in re.split(r"[-_.]+", slug) if p and not re.fullmatch(SLUG_NOISE, p)]
         if parts[:len(head)] == head and len(parts) > len(head):
             out.append(" ".join(parts[len(head):]))
     return sorted(set(out))
