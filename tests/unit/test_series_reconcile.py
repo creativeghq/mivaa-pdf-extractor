@@ -78,3 +78,16 @@ def test_the_fallback_never_takes_an_index_page_or_a_page_outside_the_range():
     names = ["Arena", "Calacata", "Thasos", "Athens", "Atlanta"]
     assert set(sr.own_pages(IZIDA_PAGES, "Arena", names, [15, 41])) == {41}
     assert sr.own_pages(IZIDA_PAGES, "Arena", names, []) == {}
+
+
+def test_a_decimal_comma_followed_by_a_space_is_read_as_one_number():
+    # Izida prints "30, 3 × 60, 6 cm"; reading "3 × 60" put a 3x60 cm tile into 40 descriptions.
+    assert sr.sizes_in("m2/pallet\n30, 3 × 60, 6 cm") == {"30.3x60.6"}
+    assert sr.sizes_in("45, 6 × 45, 6 cm") == {"45.6x45.6"}
+    assert sr.sizes_in("30,3x60,6") == {"30.3x60.6"}
+
+
+def test_the_rounded_name_of_a_printed_actual_size_is_not_a_second_format():
+    corpus = "Pietra\n45 × 45 cm\nm2/pallet\n45, 6 × 45, 6 cm\nalso 60 × 60 cm"
+    kept = sr.verify({"formats": ["45x45", "45.6x45.6", "60x60"]}, corpus, [])
+    assert kept["formats"] == ["45.6x45.6", "60x60"]

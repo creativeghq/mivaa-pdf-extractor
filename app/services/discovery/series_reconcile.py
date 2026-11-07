@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 logger = logging.getLogger(__name__)
 
 TASK = "series_reconcile"
-SIZE = re.compile(r"(\d{1,3}(?:[.,]\d)?)\s*[x×X]\s*(\d{1,3}(?:[.,]\d)?)")
+SIZE = re.compile(r"(\d{1,3}(?:[.,] ?\d)?)\s*[x×X]\s*(\d{1,3}(?:[.,] ?\d)?)")
 LATEX_SIZE = re.compile(r"\$\s*([\d.,]+)\s*\\+times\s*([\d.,]+)\s*\$")
 CORPUS_LIMIT = 12000
 CROWDED_PAGE_SERIES = 5
@@ -49,10 +49,16 @@ def normalize_text(text: str) -> str:
 
 
 def size_key(a: str, b: str) -> str:
-    x, y = float(a.replace(",", ".")), float(b.replace(",", "."))
+    x, y = (float(v.replace(" ", "").replace(",", ".")) for v in (a, b))
     lo, hi = sorted((x, y))
     fmt = lambda v: str(int(v)) if v == int(v) else str(v)
     return f"{fmt(lo)}x{fmt(hi)}"
+
+
+def nominal_of(size: str, other: str) -> bool:
+    """"30x60" beside the printed actual "30.3x60.6": the same tile under its rounded name."""
+    a, b = [float(v) for v in size.split("x")], [float(v) for v in other.split("x")]
+    return size != other and all(v == int(v) for v in a) and all(abs(x - y) < 1 for x, y in zip(a, b))
 
 
 def sizes_in(text: str) -> Set[str]:
@@ -152,6 +158,7 @@ def verify(result: Dict[str, Any], corpus: str, site_names: Sequence[str]) -> Di
         for s in sizes_in(v):
             if s in printed_sizes and s not in formats:
                 formats.append(s)
+    formats = [f for f in formats if not any(nominal_of(f, other) for other in formats)]
     return {"colours": present(result.get("colours")), "decors": present(result.get("decors")),
             "finishes": present(result.get("finishes")), "formats": formats,
             "uses": [u for u in (result.get("uses") or []) if u in ("floor", "wall", "outdoor", "stair")]}
