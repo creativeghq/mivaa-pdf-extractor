@@ -109,11 +109,12 @@ def annotated_leaf(page: Any, leaf: Rect, regions: Sequence[Dict[str, Any]]) -> 
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=fitz.Rect(*leaf), colorspace=fitz.csRGB, alpha=False)
     img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
     draw = ImageDraw.Draw(img)
+    write = draw.text
     for n, reg in enumerate(regions, start=1):
         x0, y0, x1, y1 = [(v - leaf[k % 2]) * zoom for k, v in enumerate(reg["visible"])]
         draw.rectangle((x0, y0, x1, y1), outline=(230, 0, 0), width=3)
         draw.rectangle((x0, y0, x0 + 34, y0 + 24), fill=(230, 0, 0))
-        draw.text((x0 + 6, y0 + 5), str(n), fill=(255, 255, 255))
+        write((x0 + 6, y0 + 5), str(n), fill=(255, 255, 255))
     out = io.BytesIO()
     img.save(out, "PNG")
     return out.getvalue()
