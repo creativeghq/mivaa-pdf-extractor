@@ -78,6 +78,29 @@ def series_pages(pages: Dict[int, str], name: str, all_names: Sequence[str] = ()
     return out
 
 
+def own_pages(pages: Dict[int, str], name: str, all_names: Sequence[str], page_range: Iterable[Any] = ()) -> Dict[int, str]:
+    """The series' own pages: by name-then-size, else the discovered range's pages that name it.
+
+    A catalogue that sets the name as a heading and the sizes in a table further down prints no size
+    beside the name, so the first test finds nothing and every series would be skipped.
+    """
+    found = series_pages(pages, name, all_names)
+    if found:
+        return found
+    word = _word(name)
+    others = [_word(n) for n in all_names if len(fold(n)) > 3]
+    out = {}
+    for pg in page_range or ():
+        try:
+            pg = int(pg)
+        except (TypeError, ValueError):
+            continue
+        folded = fold(normalize_text(pages.get(pg, "")))
+        if word.search(folded) and sum(1 for o in others if o.search(folded)) < CROWDED_PAGE_SERIES:
+            out[pg] = pages[pg]
+    return out
+
+
 SLIP_MIN_LEN = 6
 
 
@@ -254,7 +277,7 @@ async def reconcile_document(supabase: Any, document_id: str, *, apply: bool = T
             continue
         summary["products"] += 1
         try:
-            own = series_pages(pages, p["name"], names)
+            own = own_pages(pages, p["name"], names, (p.get("metadata") or {}).get("page_range") or [])
             corpus = "\n\n".join(f"[page {pg}]\n{normalize_text(t)}" for pg, t in sorted(own.items()))
             site_urls = [((r["document_images"].get("metadata") or {}).get("source_url"))
                          for r in db.table("image_product_associations").select("document_images!inner(extraction_layer, metadata)")

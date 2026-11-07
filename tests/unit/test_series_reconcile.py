@@ -59,3 +59,22 @@ def test_sizes_single_letters_and_language_codes_in_a_photo_name_are_not_variant
 def test_a_one_letter_slip_in_a_long_colour_name_is_the_same_colour_and_a_short_one_is_not():
     assert sr.one_slip("natutal", "natural") and sr.one_slip("natrual", "natural") and sr.one_slip("naturl", "natural")
     assert not sr.one_slip("gris", "grey") and not sr.one_slip("bone", "bona") and not sr.one_slip("natural", "neutral")
+
+
+IZIDA_PAGES = {
+    41: "MARBLE\nArena\nCOLORS\nTECHNICAL SPECIFICATIONS\nPACKAGING DETAILS\nSIZES AND CODES\n\n\nSOFT LIGHT\nsize m2/box\n60 × 120 cm",
+    42: "",
+    15: "Index Arena 36 Calacata 38 Thasos 64 Athens 66 Atlanta 67",
+}
+
+
+def test_a_heading_with_its_sizes_further_down_falls_back_to_the_discovered_range():
+    names = ["Arena", "Calacata", "Thasos", "Athens", "Atlanta"]
+    assert sr.series_pages(IZIDA_PAGES, "Arena", names) == {}
+    assert set(sr.own_pages(IZIDA_PAGES, "Arena", names, [41, 42])) == {41}
+
+
+def test_the_fallback_never_takes_an_index_page_or_a_page_outside_the_range():
+    names = ["Arena", "Calacata", "Thasos", "Athens", "Atlanta"]
+    assert set(sr.own_pages(IZIDA_PAGES, "Arena", names, [15, 41])) == {41}
+    assert sr.own_pages(IZIDA_PAGES, "Arena", names, []) == {}
