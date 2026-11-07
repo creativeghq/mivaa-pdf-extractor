@@ -55,7 +55,7 @@ def measure_product(name: str, options: List[Dict[str, Any]], samples: List[Dict
 
 
 async def _locate_by_vision(results: List[Dict[str, Any]], pdf_bytes: bytes, workspace_id: Optional[str],
-                            checked_at: str, job_id: Optional[str]) -> Dict[str, Any]:
+                            checked_at: str, job_id: Optional[str], user_id: Optional[str] = None) -> Dict[str, Any]:
     """Second pass over colours no caption could place: the model picks the tile, we measure it.
 
     Mutates each result in place. A failed or unconfigured vision call leaves the stated reason.
@@ -98,7 +98,8 @@ async def _locate_by_vision(results: List[Dict[str, Any]], pdf_bytes: bytes, wor
                 try:
                     stats["calls"] += 1
                     picked = await V.locate(page, leaf, regions, series=p["name"], colours=colours, prompt=prompt,
-                                            model=SONNET, workspace_id=workspace_id, product_id=p["id"], job_id=job_id)
+                                            model=SONNET, workspace_id=workspace_id, product_id=p["id"], job_id=job_id,
+                                            user_id=user_id)
                 except Exception as e:
                     stats["errors"].append(f"{p['name']} p{n}: {type(e).__name__}: {e}"[:200])
                     continue
@@ -130,7 +131,8 @@ def _physical_map(pdf_bytes: bytes) -> Dict[int, Any]:
 
 
 async def sample_document_swatches(supabase: Any, document_id: str, pdf_bytes: Optional[bytes], *,
-                                   apply: bool = True, job_id: Optional[str] = None) -> Dict[str, Any]:
+                                   apply: bool = True, job_id: Optional[str] = None,
+                                   user_id: Optional[str] = None) -> Dict[str, Any]:
     """Fill `colour_options[].hex` for every product of a document from the catalogue pages."""
     from datetime import datetime, timezone
 
@@ -213,7 +215,8 @@ async def sample_document_swatches(supabase: Any, document_id: str, pdf_bytes: O
         results = await asyncio.to_thread(measure)
     except Exception as e:
         return {**summary, "error": f"{type(e).__name__}: {e}"[:300]}
-    summary["vision"] = await _locate_by_vision(results, pdf_bytes, document.get("workspace_id"), checked_at, job_id)
+    summary["vision"] = await _locate_by_vision(results, pdf_bytes, document.get("workspace_id"), checked_at, job_id,
+                                                user_id)
     measured_names: List[str] = []
     unmeasured_names: List[str] = []
     for r in results:

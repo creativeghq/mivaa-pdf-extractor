@@ -131,7 +131,7 @@ def measure(page: Any, rect: Rect) -> Dict[str, Any]:
 
 async def locate(page: Any, leaf: Rect, regions: Sequence[Dict[str, Any]], *, series: str, colours: Sequence[str],
                  prompt: str, model: str, workspace_id: Optional[str], product_id: Optional[str],
-                 job_id: Optional[str] = None) -> Dict[str, List[int]]:
+                 job_id: Optional[str] = None, user_id: Optional[str] = None) -> Dict[str, List[int]]:
     from app.services.core.claude_tool_call import call_with_schema
     from app.services.utilities.prompt_registry import render
 
@@ -140,7 +140,7 @@ async def locate(page: Any, leaf: Rect, regions: Sequence[Dict[str, Any]], *, se
         {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": base64.b64encode(png).decode()}},
         {"type": "text", "text": render(prompt, series=series, colours=", ".join(colours), n_regions=str(len(regions)))},
     ]
-    res = await call_with_schema(task=TASK, model=model, max_tokens=2000, workspace_id=workspace_id,
+    res = await call_with_schema(task=TASK, model=model, max_tokens=2000, workspace_id=workspace_id, user_id=user_id,
                                  product_id=product_id, job_id=job_id,
                                  messages=[{"role": "user", "content": content}],
                                  output_config={"format": {"type": "json_schema", "schema": SCHEMA}})
