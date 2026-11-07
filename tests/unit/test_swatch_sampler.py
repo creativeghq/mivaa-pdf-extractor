@@ -159,3 +159,8 @@ def test_series_mode_rejects_another_series_and_two_colour_captions():
 def test_series_mode_folds_accents():
     new, _ = S.merge_hex_into_colour_options([{"name": "Avena"}], [sample("ABADIA AVENA", "#c8b89a")], series="Abadía")
     assert new[0]["hex"] == "#c8b89a"
+
+
+def test_square_a4_tile_is_a_swatch():
+    infos = [{"bbox": (41, 213, 218, 391)}, {"bbox": (-1, -1, 560, 843)}]
+    assert [c["rect"] for c in S._swatch_candidates(infos)] == [(41, 213, 218, 391)]
