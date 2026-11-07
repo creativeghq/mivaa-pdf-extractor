@@ -1,9 +1,35 @@
+import importlib.util
 import sys
+import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+_PRODUCTS = Path(__file__).resolve().parents[2] / "app" / "services" / "products"
 
-from app.services.products import colour_swatches as C  # noqa: E402
+
+def _load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Loaded by path, like test_swatch_sampler: CI does not import `app` as a package. The stub
+# modules are removed again so no later test sees them.
+_STUBS = ("app", "app.services", "app.services.products", "app.services.products.swatch_sampler")
+_saved = {k: sys.modules.get(k) for k in _STUBS}
+try:
+    _pkg = types.ModuleType("app.services.products")
+    _pkg.swatch_sampler = _load("swatch_sampler_for_colour_test", _PRODUCTS / "swatch_sampler.py")
+    sys.modules.update({"app": types.ModuleType("app"), "app.services": types.ModuleType("app.services"),
+                        "app.services.products": _pkg,
+                        "app.services.products.swatch_sampler": _pkg.swatch_sampler})
+    C = _load("colour_swatches_under_test", _PRODUCTS / "colour_swatches.py")
+finally:
+    for _k, _v in _saved.items():
+        if _v is None:
+            sys.modules.pop(_k, None)
+        else:
+            sys.modules[_k] = _v
 
 
 def s(label, hexv, page):
