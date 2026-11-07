@@ -410,6 +410,32 @@ def expand_endpoint_page_ranges(
     return out
 
 
+def anchored_start_ranges(
+    entries: List[Tuple[int, int, Optional[int]]],
+    offset: int,
+    total_pages: int,
+    section_end_after: Callable[[int], int],
+) -> Dict[int, List[int]]:
+    """Ranges for products placed by start_page, when the model's start pages are off by a consensus offset.
+
+    entries are (index, start_page, page where the product's own heading was found). The offset is a
+    majority, not a fact about every product: a start the model already had right must not move onto
+    its neighbour's page, so a heading within one page of the shifted start wins.
+    """
+    firsts: Dict[int, int] = {}
+    for i, start, own in entries:
+        shifted = start + offset
+        firsts[i] = own if own is not None and abs(own - shifted) <= 1 else shifted
+    out: Dict[int, List[int]] = {}
+    for i, first in firsts.items():
+        later = [f for f in firsts.values() if f > first]
+        end = (min(later) - 1) if later else section_end_after(first)
+        end = min(max(end, first), total_pages)
+        if 1 <= first <= total_pages:
+            out[i] = list(range(first, end + 1))
+    return out
+
+
 class ProductDiscoveryService:
     """
     Analyzes PDF to discover products BEFORE processing.
@@ -1603,7 +1629,8 @@ class ProductDiscoveryService:
             # unnumbered front-matter (covers/intro spreads) the folio is shifted from
             # the physical page.
             self._reconcile_folio_start_pages_to_physical(
-                catalog.products, pages_content, pdf_page_count, all_product_names, toc_pages
+                catalog.products, pages_content, pdf_page_count, all_product_names, toc_pages,
+                catalog.content_classification,
             )
 
             # Phase 2 page trimming REMOVED - user wants ALL information kept and attached to products
@@ -2356,12 +2383,14 @@ class ProductDiscoveryService:
         total_pages: int,
         all_product_names: List[str],
         toc_pages: Optional[set] = None,
+        content_classification: Optional[Dict[int, Any]] = None,
     ) -> int:
         """Correct the folio→physical page offset for start_page-derived ranges (S0-4)."""
         if toc_pages is None:
             toc_pages = self._detect_toc_pages(pages_content, all_product_names)
         offsets: List[int] = []
-        for product in products:
+        anchors: List[Tuple[int, int, Optional[int]]] = []
+        for index, product in enumerate(products):
             folio_start = product.metadata.get("_start_page") if product.metadata else None
             if not folio_start:
                 continue
@@ -2372,9 +2401,12 @@ class ProductDiscoveryService:
                 all_product_names=all_product_names,
                 toc_pages=toc_pages,
             )
-            if physical_pages:
+            own_page = int(physical_pages[0]) if physical_pages else None
+            if own_page is not None:
                 # physical_pages[0] is the headline (section start) physical page.
-                offsets.append(int(physical_pages[0]) - int(folio_start))
+                offsets.append(own_page - int(folio_start))
+            if product.page_range and min(product.page_range) == int(folio_start):
+                anchors.append((index, int(folio_start), own_page))
 
         if not offsets:
             return 0
@@ -2398,8 +2430,14 @@ class ProductDiscoveryService:
             f"(consensus {count}/{len(offsets)} anchored products) — shifting page ranges "
             f"so they address real physical pages."
         )
-        for product in products:
-            if product.page_range:
+        anchored = anchored_start_ranges(
+            anchors, offset, total_pages,
+            lambda first: self._section_end_after(first, total_pages, content_classification),
+        )
+        for index, product in enumerate(products):
+            if index in anchored:
+                product.page_range = anchored[index]
+            elif product.page_range:
                 product.page_range = [
                     p + offset for p in product.page_range
                     if 1 <= (p + offset) <= total_pages
