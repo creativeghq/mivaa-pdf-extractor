@@ -164,7 +164,10 @@ def merge_hex_into_colour_options(options, samples, series=None):
         keys = {k.strip().lower() for k in (opt.get("name"), opt.get("catalogue_name")) if k and k.strip()}
         verdict = _decide(opt, keys, samples, series)
         if verdict.get("hex"):
-            new_options.append({**opt, "hex": verdict["hex"], "hex_source": HEX_SOURCE})
+            entry = {**opt, "hex": verdict["hex"], "hex_source": HEX_SOURCE}
+            if verdict.get("alternates"):
+                entry["hex_alternates"] = verdict["alternates"]
+            new_options.append(entry)
             report.append({"name": name, "status": "applied", "hex": verdict["hex"],
                            "spread": verdict["spread"], "layout": verdict.get("layout")})
         else:
@@ -182,14 +185,21 @@ def _decide(opt, keys, samples, series=None) -> dict:
     usable = [c for c in cands if c.get("hex")]
     if not usable:
         return {"reason": cands[0].get("reason") or "no_sample"}
-    if any(not _hex_close(usable[0]["hex"], c["hex"]) for c in usable[1:]):
-        return {"reason": "ambiguous"}
-    best = usable[0]
-    if best.get("reason"):
-        return {"reason": best["reason"]}
-    if best.get("spread", 0.0) > MAX_SPREAD:
-        return {"reason": "patterned"}
-    return best
+    clean = [c for c in usable if not c.get("reason") and c.get("spread", 0.0) <= MAX_SPREAD]
+    if not clean:
+        return {"reason": usable[0].get("reason") or "patterned"}
+    # Several swatches of one colour (a tone per size, a shot per finish) are all kept, so a
+    # search by any of their hexes finds the colour; the first in reading order leads.
+    return {**clean[0], "alternates": distinct_hexes([c["hex"] for c in clean[1:]], exclude=[clean[0]["hex"]])}
+
+
+def distinct_hexes(hexes, exclude=()):
+    """Hexes in order, dropping any within TIE_TOLERANCE of one already kept or excluded."""
+    kept: list = []
+    for h in hexes:
+        if not any(_hex_close(h, k) for k in [*exclude, *kept]):
+            kept.append(h)
+    return kept
 
 
 def leaf_scale(page_width: float, page_height: float) -> float:

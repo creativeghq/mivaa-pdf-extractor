@@ -11,6 +11,8 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 from app.services.products import swatch_sampler as S
 
 ROLLUP_LIMIT = 200
+# Reasons a vision pass can resolve; a patterned decor or a name with no page cannot be.
+VISION_REASONS = frozenset({"no_sample", "shared_page", "ambiguous"})
 
 
 def product_pages(metadata: Dict[str, Any]) -> List[int]:
@@ -52,6 +54,81 @@ def measure_product(name: str, options: List[Dict[str, Any]], samples: List[Dict
     return {"colour_options": out, "applied": applied, "unmeasured": [o["name"] for o in out if not o.get("hex")]}
 
 
+async def _locate_by_vision(results: List[Dict[str, Any]], pdf_bytes: bytes, workspace_id: Optional[str],
+                            checked_at: str, job_id: Optional[str]) -> Dict[str, Any]:
+    """Second pass over colours no caption could place: the model picks the tile, we measure it.
+
+    Mutates each result in place. A failed or unconfigured vision call leaves the stated reason.
+    """
+    import fitz
+
+    from app.services.core.claude_models import SONNET
+    from app.services.products import swatch_vision as V
+    from app.services.utilities.prompt_registry import load_prompt
+
+    pending = [r for r in results if any(not o.get("hex") and o.get("hex_status") in VISION_REASONS
+                                         for o in r["colour_options"])]
+    stats: Dict[str, Any] = {"products": len(pending), "colours_located": 0, "calls": 0, "errors": []}
+    if not pending:
+        return stats
+    try:
+        prompt = await load_prompt("extraction", "colour_swatch_locate", stage="quality")
+    except Exception as e:
+        stats["errors"].append(f"prompt: {type(e).__name__}: {e}"[:200])
+        return stats
+    physical = await asyncio.to_thread(_physical_map, pdf_bytes)
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        for r in pending:
+            p = r["product"]
+            measured: Dict[str, List[Dict[str, Any]]] = {}
+            for n in [n for n in product_pages(p.get("metadata") or {}) if n in physical]:
+                colours = [o["name"] for o in r["colour_options"]
+                           if not o.get("hex") and o.get("hex_status") in VISION_REASONS
+                           and not measured.get(o["name"])]
+                if not colours:
+                    break
+                idx, side = physical[n]
+                page = doc[idx]
+                w, h = page.rect.width, page.rect.height
+                leaf = {"left": (0.0, 0.0, w / 2, h), "right": (w / 2, 0.0, w, h)}.get(side, (0.0, 0.0, w, h))
+                regions = V.candidate_regions([tuple(i["bbox"]) for i in page.get_image_info()], leaf)
+                if not regions:
+                    continue
+                try:
+                    stats["calls"] += 1
+                    picked = await V.locate(page, leaf, regions, series=p["name"], colours=colours, prompt=prompt,
+                                            model=SONNET, workspace_id=workspace_id, product_id=p["id"], job_id=job_id)
+                except Exception as e:
+                    stats["errors"].append(f"{p['name']} p{n}: {type(e).__name__}: {e}"[:200])
+                    continue
+                for colour, idxs in picked.items():
+                    measured.setdefault(colour, []).extend(
+                        m for m in (V.measure(page, regions[i]["visible"]) for i in idxs) if m)
+            before = sum(1 for o in r["colour_options"] if o.get("hex"))
+            r["colour_options"] = [o if o.get("hex") or o.get("hex_status") != "patterned"
+                                   else {**o, "hex_checked_at": checked_at}
+                                   for o in V.apply_located(r["colour_options"], measured)]
+            gained = sum(1 for o in r["colour_options"] if o.get("hex")) - before
+            stats["colours_located"] += gained
+            r["applied"] += gained
+            r["unmeasured"] = [o["name"] for o in r["colour_options"] if not o.get("hex")]
+    finally:
+        doc.close()
+    return stats
+
+
+def _physical_map(pdf_bytes: bytes) -> Dict[int, Any]:
+    import tempfile
+
+    from app.utils.pdf_to_images import analyze_pdf_layout
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
+        tmp.write(pdf_bytes)
+        tmp.flush()
+        return analyze_pdf_layout(tmp.name).physical_to_pdf_map
+
+
 async def sample_document_swatches(supabase: Any, document_id: str, pdf_bytes: Optional[bytes], *,
                                    apply: bool = True, job_id: Optional[str] = None) -> Dict[str, Any]:
     """Fill `colour_options[].hex` for every product of a document from the catalogue pages."""
@@ -86,15 +163,8 @@ async def sample_document_swatches(supabase: Any, document_id: str, pdf_bytes: O
     names = [S.fold(p["name"]) for p in products if p.get("name")]
 
     def measure() -> List[Dict[str, Any]]:
-        import tempfile
-
-        from app.utils.pdf_to_images import analyze_pdf_layout
-
         # Product pages are PHYSICAL (printed) pages; on a spread PDF two of them share one PDF page.
-        with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
-            tmp.write(pdf_bytes)
-            tmp.flush()
-            physical = analyze_pdf_layout(tmp.name).physical_to_pdf_map
+        physical = _physical_map(pdf_bytes)
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         by_pdf_page: Dict[int, List[Dict[str, Any]]] = {}
         cache: Dict[int, List[Dict[str, Any]]] = {}
@@ -143,6 +213,7 @@ async def sample_document_swatches(supabase: Any, document_id: str, pdf_bytes: O
         results = await asyncio.to_thread(measure)
     except Exception as e:
         return {**summary, "error": f"{type(e).__name__}: {e}"[:300]}
+    summary["vision"] = await _locate_by_vision(results, pdf_bytes, document.get("workspace_id"), checked_at, job_id)
     measured_names: List[str] = []
     unmeasured_names: List[str] = []
     for r in results:

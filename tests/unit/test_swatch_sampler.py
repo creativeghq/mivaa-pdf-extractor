@@ -88,9 +88,17 @@ def test_merge_reasons():
     ]
     new, report = S.merge_hex_into_colour_options(options, samples)
     assert [r.get("reason") for r in report] == [
-        "pattern_name", "patterned", "ambiguous", "no_sample", "patterned"
+        "pattern_name", "patterned", None, "no_sample", "patterned"
     ]
-    assert all(not o.get("hex") for o in new)
+    assert [bool(o.get("hex")) for o in new] == [False, False, True, False, False]
+
+
+def test_merge_keeps_every_distinct_swatch_as_an_alternate():
+    samples = [sample("BLUE", "#0000ff"), sample("BLUE", "#0202ff"), sample("BLUE", "#2020ff"),
+               sample("BLUE", "#999999", spread=80.0)]
+    new, _ = S.merge_hex_into_colour_options(opts("Blue"), samples)
+    assert new[0]["hex"] == "#0000ff"
+    assert new[0]["hex_alternates"] == ["#2020ff"]
 
 
 def test_merge_tie_within_tolerance_picks_first():
