@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from html.parser import HTMLParser
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 from app.utils.ssrf_guard import safe_fetch_bytes
@@ -167,6 +167,40 @@ async def page_images(url: str) -> List[str]:
 
 
 WP_SIZE_COPY = re.compile(r"-(?:\d{2,4}x\d{2,4}|scaled)(?=\.(?:jpe?g|png|webp)$)", re.I)
+
+
+def image_key(url: str) -> str:
+    """One key per picture: host without www, no query, WordPress size copies folded."""
+    u = urlparse(url.split("?")[0])
+    return WP_SIZE_COPY.sub("", u._replace(netloc=(u.netloc or "").lower().removeprefix("www.")).geturl()).lower()
+
+
+def page_furniture(own: Sequence[str], others: Sequence[Sequence[str]], markers: Iterable[str] = ()) -> Set[str]:
+    """Images a product page shares with the home page or another product's page: menu, banner, blog and footer pictures.
+
+    Izida's series pages carried 47 such files (another brand's tiles, blog photos, colour-filter chips)
+    and each was attached to 33-95 series. A file named for this product (its name or an item code in
+    `markers`) stays even when a neighbour shows it as a related product.
+    """
+    marks = [m for m in (_norm(x).replace(" ", "") for x in markers) if len(m) >= 4]
+
+    def named(key: str) -> bool:
+        return any(m in _norm(key.rsplit("/", 1)[-1]).replace(" ", "") for m in marks)
+
+    mine = {image_key(u) for u in own}
+    return {k for other in others for k in (image_key(u) for u in other) if k in mine and not named(k)}
+
+
+def reference_pages(links: Sequence[Tuple[str, str]], page: str, limit: int = 2) -> List[str]:
+    """Pages beside `page` (same parent path, another slug): what the site puts on every product page."""
+    parent = page.rstrip("/").rsplit("/", 1)[0]
+    out = []
+    for u, _ in links:
+        if u.rstrip("/").rsplit("/", 1)[0] == parent and u.rstrip("/") != page.rstrip("/") and u not in out:
+            out.append(u)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def _slug_tokens(page_url: str) -> List[str]:

@@ -319,3 +319,28 @@ def test_the_gemini_redo_stops_when_gemini_cannot_run_and_passes_the_fidelity_ga
     assert "break" in body[stop:stop + 90]
     assert body.index("repair_is_faithful(") < body.index("s._store(") < body.index("s._supersede(")
     assert body.index("is_patterned(") < body.index("s._gemini_restore(")
+
+
+def test_a_picture_the_series_page_shares_with_another_page_is_page_furniture():
+    # Izida: one Cerdisa tile and one blog photo rode on every series page and landed on ~95 series each.
+    up = "https://www.izida1894.gr/wp-content/uploads/2025/"
+    greco = [up + "08/126cc11_06.jpg", up + "10/cerdisa_deep_powder_60x120-900x450.webp", up + "05/amb-04-rodeno-haya-900x450.jpg"]
+    home = ["https://izida1894.gr/wp-content/uploads/2025/10/cerdisa_deep_powder_60x120.webp"]
+    athens = [up + "05/amb-04-rodeno-haya-900x450.jpg", up + "08/9032b11_01.jpg"]
+    shared = _site.page_furniture(greco, [home, athens], ["Greco", "126CC11"])
+    assert {k.rsplit("/", 1)[-1] for k in shared} == {"cerdisa_deep_powder_60x120.webp", "amb-04-rodeno-haya.jpg"}
+
+
+def test_a_file_named_for_the_series_survives_a_neighbour_showing_it_as_related():
+    up = "https://www.izida1894.gr/wp-content/uploads/2025/08/"
+    own = [up + "126cc11_06.jpg", up + "greco-ivory-60x60-amb.jpg"]
+    neighbour = [up + "126cc11_06-300x300.jpg", up + "greco-ivory-60x60-amb-600x600.jpg"]
+    assert _site.page_furniture(own, [neighbour], ["Greco", "126CC11"]) == set()
+    assert len(_site.page_furniture(own, [neighbour], [])) == 2
+
+
+def test_reference_pages_are_siblings_under_the_same_parent():
+    links = [("https://x.gr/en/product/greco/", ""), ("https://x.gr/en/product/athens/", ""),
+             ("https://x.gr/en/about/", ""), ("https://x.gr/en/product/arena/", "")]
+    assert _site.reference_pages(links, "https://x.gr/en/product/greco/") == ["https://x.gr/en/product/athens/",
+                                                                             "https://x.gr/en/product/arena/"]

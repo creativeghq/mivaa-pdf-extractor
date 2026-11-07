@@ -143,6 +143,7 @@ class ImageSourcing:
         self._siblings: Dict[str, List[str]] = {}
         # Image url -> its page, for images found by search on a page whose slug IS the product name.
         self._name_confirmed: Dict[str, str] = {}
+        self._page_imgs: Dict[str, List[str]] = {}
         self.summary: Dict[str, Any] = {"products": 0, "pending_crops": 0, "matched_crops": 0,
                                         "manufacturer_images": 0, "restored": 0, "kept_source": 0,
                                         "rejected_non_product": 0, "errors": [], "restored_ids": [],
@@ -261,6 +262,18 @@ class ImageSourcing:
 
     # ── candidates ──────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _markers(product: Dict[str, Any]) -> List[str]:
+        m = product.get("metadata") or {}
+        codes = m.get("product_codes") if isinstance(m.get("product_codes"), list) else []
+        skus = list((m.get("sku_codes") or {}).values()) if isinstance(m.get("sku_codes"), dict) else []
+        return [product.get("name") or ""] + [str(c) for c in codes + skus if c]
+
+    async def _images_on(self, page: str) -> List[str]:
+        if page not in self._page_imgs:
+            self._page_imgs[page] = await site.page_images(page)
+        return self._page_imgs[page]
+
     async def _candidates(self, product: Dict[str, Any]) -> Tuple[List[str], Dict[str, Tuple[str, bytes, Image.Image]]]:
         root, known_page = self._site_for(product)
         pages: List[str] = [known_page] if known_page else []
@@ -272,7 +285,13 @@ class ImageSourcing:
         urls: List[str] = []
         for p in pages[:2]:
             named = site.page_names_product(p, product["name"])
-            for u in await site.page_images(p):
+            own = await self._images_on(p)
+            others = [await self._images_on(o) for o in ([root] if root else []) + site.reference_pages(self._links.get(root) or [], p)]
+            furniture = site.page_furniture(own, others, self._markers(product))
+            self.summary["page_furniture_skipped"] = self.summary.get("page_furniture_skipped", 0) + len(furniture)
+            for u in own:
+                if site.image_key(u) in furniture:
+                    continue
                 if _same_site(u) not in {_same_site(x) for x in urls}:
                     urls.append(u)
                     if named:
