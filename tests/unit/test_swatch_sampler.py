@@ -128,3 +128,34 @@ def test_sample_page_in_memory_pdf():
     assert samples["DARK"]["hex"] == "#333f4c"
     assert samples["X4"]["hex"] == "#b42828"
     assert "reason" not in samples["WHITE"]
+
+
+def test_leaf_scale_keeps_a4_and_grows_for_spreads():
+    assert S.leaf_scale(595, 842) == 1.0
+    assert S.leaf_scale(842, 595) == pytest.approx(842 / 595)
+    assert S.leaf_scale(1683.78, 666.14) == pytest.approx(841.89 / 595)
+
+
+def test_spread_admits_keros_sized_tiles_and_not_full_page_photos():
+    scale = S.leaf_scale(1683.78, 666.14)
+    infos = [{"bbox": (903, 105, 1243, 218)}, {"bbox": (-1, -1, 843, 667)}]
+    assert [c["rect"] for c in S._swatch_candidates(infos, scale)] == [(903, 105, 1243, 218)]
+    assert S._swatch_candidates(infos) == []
+
+
+def test_series_mode_rejects_another_series_and_two_colour_captions():
+    options = [{"name": "Gris"}, {"name": "Beige"}]
+    samples = [
+        sample("Ferrara Gris", "#ecedea"),
+        sample("Amalfi Beige | Gris", "#dbd7d2"),
+        sample("Beige", "#d8cfc4"),
+        sample("Amalfi Beige", "#d9d0c5"),
+    ]
+    new, report = S.merge_hex_into_colour_options(options, samples, series="Amalfi")
+    assert not new[0].get("hex") and report[0]["reason"] == "no_sample"
+    assert new[1]["hex"] == "#d8cfc4"
+
+
+def test_series_mode_folds_accents():
+    new, _ = S.merge_hex_into_colour_options([{"name": "Avena"}], [sample("ABADIA AVENA", "#c8b89a")], series="Abadía")
+    assert new[0]["hex"] == "#c8b89a"

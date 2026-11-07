@@ -7,6 +7,7 @@ Top-level imports are stdlib only; fitz is imported inside sample_page.
 
 import re
 import statistics
+import unicodedata
 from typing import Optional
 
 HEX_SOURCE = "median of catalogue photo (estimate)"
@@ -18,6 +19,8 @@ DPI = 100
 MIN_SIDE = 10.0
 MAX_WIDTH = 270.0
 MAX_HEIGHT = 130.0
+REFERENCE_LEAF = 595.0
+SPREAD_ASPECT = 1.9
 
 _SIZE_TOKEN = re.compile(r"^\d+([x×]\d+)?")
 
@@ -110,7 +113,30 @@ def _hex_close(a: str, b: str, tol: int = TIE_TOLERANCE) -> bool:
     return all(abs(((ra >> s) & 255) - ((rb >> s) & 255)) <= tol for s in (16, 8, 0))
 
 
-def _candidates(keys, samples):
+def fold(text: str) -> str:
+    """Lowercase, accents stripped, punctuation to spaces, whitespace collapsed."""
+    t = unicodedata.normalize("NFKD", text or "")
+    t = "".join(c for c in t if not unicodedata.combining(c)).lower()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", t).split())
+
+
+def _series_caption(label: str, keys, series: str) -> bool:
+    """A caption names THIS colour of THIS series: removing the colour leaves nothing or the series.
+
+    On a page holding several series "Ferrara Gris" must never colour Amalfi, and a caption naming
+    two colours ("Amalfi Beige | Gris") is one photo of both, so it colours neither.
+    """
+    low = fold(label)
+    for k in sorted({fold(k) for k in keys}, key=len, reverse=True):
+        if k and re.search(r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])", low):
+            rest = " ".join(re.sub(r"(?<![a-z0-9])" + re.escape(k) + r"(?![a-z0-9])", " ", low).split())
+            return rest in ("", fold(series))
+    return False
+
+
+def _candidates(keys, samples, series=None):
+    if series:
+        return [s for s in samples if _series_caption(s.get("label") or "", keys, series)]
     exact = [s for s in samples if (s.get("label") or "").strip().lower() in keys]
     if exact:
         return exact
@@ -122,8 +148,11 @@ def _candidates(keys, samples):
     return found
 
 
-def merge_hex_into_colour_options(options, samples):
-    """Return (new_options, report). Entries that already have a hex are never touched."""
+def merge_hex_into_colour_options(options, samples, series=None):
+    """Return (new_options, report). Entries that already have a hex are never touched.
+
+    With `series`, a sample counts only when its caption is that series' own caption for the colour.
+    """
     new_options = []
     report = []
     for opt in options or []:
@@ -133,7 +162,7 @@ def merge_hex_into_colour_options(options, samples):
             report.append({"name": name, "status": "skipped", "reason": "has_hex"})
             continue
         keys = {k.strip().lower() for k in (opt.get("name"), opt.get("catalogue_name")) if k and k.strip()}
-        verdict = _decide(opt, keys, samples)
+        verdict = _decide(opt, keys, samples, series)
         if verdict.get("hex"):
             new_options.append({**opt, "hex": verdict["hex"], "hex_source": HEX_SOURCE})
             report.append({"name": name, "status": "applied", "hex": verdict["hex"],
@@ -144,10 +173,10 @@ def merge_hex_into_colour_options(options, samples):
     return new_options, report
 
 
-def _decide(opt, keys, samples) -> dict:
+def _decide(opt, keys, samples, series=None) -> dict:
     if any(is_pattern_name(k) for k in keys):
         return {"reason": "pattern_name"}
-    cands = _candidates(keys, samples)
+    cands = _candidates(keys, samples, series)
     if not cands:
         return {"reason": "no_sample"}
     usable = [c for c in cands if c.get("hex")]
@@ -163,12 +192,18 @@ def _decide(opt, keys, samples) -> dict:
     return best
 
 
-def _swatch_candidates(infos):
+def leaf_scale(page_width: float, page_height: float) -> float:
+    """How much larger than an A4 leaf this page is; a double-page spread counts as two leaves."""
+    leaf = page_width / 2.0 if page_height and page_width > SPREAD_ASPECT * page_height else page_width
+    return max(1.0, leaf / REFERENCE_LEAF)
+
+
+def _swatch_candidates(infos, scale: float = 1.0):
     out = []
     for info in infos:
         x0, y0, x1, y1 = info["bbox"]
         w, h = x1 - x0, y1 - y0
-        if MIN_SIDE <= w <= MAX_WIDTH and 8.0 <= h <= MAX_HEIGHT:
+        if MIN_SIDE <= w <= MAX_WIDTH * scale and 8.0 <= h <= MAX_HEIGHT * scale:
             out.append({"rect": (x0, y0, x1, y1)})
     return out
 
@@ -205,7 +240,8 @@ def sample_page(pdf_path, page_number: int, doc=None) -> list:
     doc = doc or fitz.open(str(pdf_path))
     try:
         page = doc[page_number - 1]
-        images = _dedupe(_swatch_candidates(page.get_image_info()))
+        scale = leaf_scale(page.rect.width, page.rect.height)
+        images = _dedupe(_swatch_candidates(page.get_image_info(), scale))
         words = [{"text": w[4], "rect": (w[0], w[1], w[2], w[3])} for w in page.get_text("words")]
         paired = [(p, "containment") for p in pair_by_containment(words, images)]
         taken = {id(p["image"]) for p, _ in paired}
