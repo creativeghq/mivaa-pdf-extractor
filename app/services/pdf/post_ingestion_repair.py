@@ -233,6 +233,8 @@ async def repair_document(document_id: str, supabase: Any, log: Optional[logging
     await step("series_facts", settle_document(supabase, document_id, job_id=job_id, embed=embed))
     from app.services.discovery.series_facts import inherit_packing
     await step("packing_by_format", inherit_packing(supabase, document_id, job_id=job_id, embed=embed))
+    from app.services.discovery.packing_defaults import fill_packing_defaults
+    await step("packing_defaults", fill_packing_defaults(supabase, document_id, job_id=job_id))
     from app.services.products.colour_swatches import sample_document_swatches
     await step("colour_swatches", sample_document_swatches(supabase, document_id, pdf, job_id=job_id, user_id=payer))
     from app.services.images.label_linking import reattribute_site_photos
