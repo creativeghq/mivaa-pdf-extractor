@@ -35,6 +35,27 @@ def _all(make: Any) -> List[Dict[str, Any]]:
             return rows
 
 
+async def reroll_products(document_id: str, product_ids: List[str]) -> Dict[str, int]:
+    """Stage 4.7 per product with every model-calling tier off: the image rollup only."""
+    from app.api.pdf_processing.stage_4_products import enrich_products_from_chunks_and_vision
+    from app.services.core.supabase_client import get_supabase_client
+    out = {"checked": 0, "updated": 0, "failed": 0}
+    for pid in product_ids:
+        try:
+            stats = await enrich_products_from_chunks_and_vision(
+                document_id=document_id, supabase=get_supabase_client(), logger=logger, target_product_id=pid,
+                enable_spec_vision=False, enable_description_writer=False,
+                enable_layout_analyzer=False, enable_legend_extractor=False,
+            )
+            out["checked"] += 1
+            out["updated"] += int(stats.get("products_updated") or 0)
+            out["failed"] += int(bool(stats.get("error") or stats.get("per_product_failures")))
+        except Exception as e:
+            logger.warning(f"rollup failed for product {pid}: {e}")
+            out["failed"] += 1
+    return out
+
+
 async def embed_document(document_id: str, workspace_id: str, job_id: Optional[str] = None,
                          user_id: Optional[str] = None) -> Dict[str, Any]:
     from app.services.core.supabase_client import get_supabase_client
@@ -55,14 +76,6 @@ async def embed_document(document_id: str, workspace_id: str, job_id: Optional[s
 
     product_ids = [r["id"] for r in await asyncio.to_thread(
         _all, lambda: db.table("products").select("id").eq("source_document_id", document_id))]
-    for start in range(0, len(product_ids), ID_BATCH):
-        ids = product_ids[start:start + ID_BATCH]
-        try:
-            r = await backfill_product_text_embeddings(max_products=len(ids), workspace_id=workspace_id, product_ids=ids)
-            out["products"]["embedded"] += int(r.get("embedded") or 0)
-            out["products"]["failed"] += int(r.get("failed") or 0)
-        except Exception as e:
-            out["errors"].append(f"products: {type(e).__name__}: {e}"[:300])
 
     for _ in range(MAX_CHUNK_ROUNDS):
         try:
@@ -97,6 +110,20 @@ async def embed_document(document_id: str, workspace_id: str, job_id: Optional[s
         out["images"]["embedded" if ok else "failed"] += 1
         if not ok:
             out["images"]["failed_ids"].append(row["id"])
+
+    # Image analysis lands in this run, after Stage 4.7 already rolled up an empty set.
+    out["rollup"] = await reroll_products(document_id, product_ids)
+    if out["rollup"]["failed"]:
+        out["errors"].append(f"rollup: {out['rollup']['failed']} product(s) not rolled up")
+
+    for start in range(0, len(product_ids), ID_BATCH):
+        ids = product_ids[start:start + ID_BATCH]
+        try:
+            r = await backfill_product_text_embeddings(max_products=len(ids), workspace_id=workspace_id, product_ids=ids)
+            out["products"]["embedded"] += int(r.get("embedded") or 0)
+            out["products"]["failed"] += int(r.get("failed") or 0)
+        except Exception as e:
+            out["errors"].append(f"products: {type(e).__name__}: {e}"[:300])
 
     try:
         out["pages"] = await get_page_embedding_service().embed_document_pages(

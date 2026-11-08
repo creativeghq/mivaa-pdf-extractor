@@ -111,6 +111,19 @@ def test_work_outside_the_job_reads_the_documents_own_marker():
     assert run.index("mark_document, db, document_id, False") < run.index("backfill_product_text_embeddings(")
 
 
+def test_image_analysis_written_after_stage_4_7_still_reaches_the_product():
+    run = _code("app/services/embeddings/document_embed_run.py")
+    run = run[run.index("async def embed_document"):]
+    images = run.index("_embed_confirmed_material(")
+    rollup = run.index("reroll_products(document_id, product_ids)")
+    assert images < rollup < run.index("backfill_product_text_embeddings(")
+    stage = _code("app/api/pdf_processing/stage_4_products.py")
+    assert "product_vision = linked_vision.get(product_id) or" in stage
+    sourcing = _code("app/services/images/image_sourcing.py")
+    body = sourcing[sourcing.index("async def run_all"):]
+    assert "reroll_products(self.document_id, analysed)" in body and "not embeddings_deferred()" in body
+
+
 def test_no_backfill_reaches_a_document_waiting_on_its_embed_run():
     src = _code("app/services/embeddings/text_embedding_backfill.py")
     products = src[src.index("async def _fetch_products_missing_embedding"):src.index("async def _fetch_chunks_missing_embedding")]

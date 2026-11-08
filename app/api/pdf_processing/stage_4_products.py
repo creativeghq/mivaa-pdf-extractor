@@ -2129,6 +2129,34 @@ def _dedupe_pretty(values: List[str], cap: int) -> List[str]:
     return [repr_by_fold[k] for k, _ in fold_counts.most_common(cap)]
 
 
+def _linked_vision_rows(supabase: Any, product_ids: List[str], logger: logging.Logger) -> Dict[str, List[Dict[str, Any]]]:
+    """Analysed, live images each product holds, from any document."""
+    from app.services.pdf.ingestion_audit import owes_a_product
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    try:
+        rows: List[Dict[str, Any]] = []
+        for start in range(0, len(product_ids), 100):
+            taken = 0
+            while True:
+                page = supabase.client.table("image_product_associations") \
+                    .select("product_id, image_id, document_images!inner(id, page_number, image_type, metadata, vision_analysis)") \
+                    .in_("product_id", product_ids[start:start + 100]) \
+                    .not_.is_("document_images.vision_analysis", "null") \
+                    .order("image_id").order("product_id").range(taken, taken + 999) \
+                    .execute().data or []
+                rows.extend(page)
+                taken += len(page)
+                if len(page) < 1000:
+                    break
+        for row in rows:
+                di = row.get("document_images") or {}
+                if row.get("product_id") and di.get("vision_analysis") and owes_a_product(di):
+                    out.setdefault(row["product_id"], []).append(di)
+    except Exception as e:
+        logger.warning(f"   ⚠️ linked-image vision unavailable, page scope only: {e}")
+    return out
+
+
 def _rollup_vision_analysis(vision_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Pure function: majority-vote rollup of per-image vision_analysis into
     product-level fields.
@@ -2636,6 +2664,8 @@ async def enrich_products_from_chunks_and_vision(
             logger.warning(f"   ⚠️ image→product page fallback unavailable: {e}")
             product_to_image_pages = {}
 
+        linked_vision = _linked_vision_rows(supabase, [p["id"] for p in products], logger)
+
         # ── Per-product enrichment ────────────────────────────────────────
         # Each per-stage call is locally try/except-wrapped so a sub-stage
         # failure can't escape the loop. The merge + DB-write block at the
@@ -2738,10 +2768,11 @@ async def enrich_products_from_chunks_and_vision(
                 c.get("content", "") for c in product_chunks if c.get("content")
             )
 
-            # ── Scope vision rows by page_range ──────────────────────────
-            product_vision = [
+            # The product's own images first: a page holds several products, and a sourced
+            # photo carries a placeholder page. Page scope only when nothing linked is analysed.
+            product_vision = linked_vision.get(product_id) or ([
                 v for v in all_vision if v.get("page_number") in page_set
-            ] if page_set else []
+            ] if page_set else [])
 
             chunk_candidates = _extract_fields_from_chunk_text(combined_text)
             vision_candidates = _rollup_vision_analysis(product_vision)

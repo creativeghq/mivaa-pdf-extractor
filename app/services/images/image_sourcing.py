@@ -684,12 +684,15 @@ class ImageSourcing:
 
     async def run_all(self, product_ids: Optional[List[str]] = None) -> Dict[str, Any]:
         reports = []
+        analysed: List[str] = []
         products = self._products(product_ids)
         for n, product in enumerate(products, 1):
             self.summary["products"] += 1
             try:
                 reports.append(await self.run_product(product))
                 r = reports[-1]
+                if r.get("added"):
+                    analysed.append(product["id"])
                 self.log.info(f"🖼️ Image sourcing {n}/{len(products)} {product['name']}: {r.get('pending', 0)} low-res, "
                               f"{r.get('matched', 0)} matched, {r.get('added', 0)} manufacturer images added")
             except Exception as e:
@@ -697,6 +700,10 @@ class ImageSourcing:
                 self.summary["errors"].append(f"{product.get('name')}: {str(e)[:160]}")
             await asyncio.sleep(0)
         self.summary["per_product"] = reports
+        from app.services.embeddings.embedding_deferral import embeddings_deferred
+        if analysed and not self.dry_run and not embeddings_deferred():
+            from app.services.embeddings.document_embed_run import reroll_products
+            self.summary["rollup"] = await reroll_products(self.document_id, analysed)
         if not self.dry_run:
             from app.services.pdf.ingestion_corrections import record, sourcing_corrections
             await record(self.db, self.document_id, self.workspace_id, "image_sourcing",
