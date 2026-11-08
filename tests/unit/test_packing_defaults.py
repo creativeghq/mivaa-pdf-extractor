@@ -62,3 +62,29 @@ def test_a_format_with_no_row_gets_one_and_a_complete_product_is_left_alone():
     pool = pd.sibling_pool([product(f"s{i}", dict(IZIDA_60X120)) for i in range(3)])
     assert pd.plan_product(product("new"), ["60x120"], pool)[0]["boxes_per_pallet"] == 36
     assert pd.plan_product(product("done", dict(IZIDA_60X120)), ["60x120"], pool) is None
+
+
+def test_flat_packing_on_a_one_size_product_is_evidence_and_is_filled_in_place():
+    flat = {"id": "keros", "metadata": {"packaging": {"m2_per_box": "1,44", "pieces_per_box": 3}}}
+    assert pd.packing_rows(flat, ["40x120"]) == [{"format": "40x120", "m2_per_box": 1.44, "pieces_per_box": 3}]
+    assert pd.packing_rows(flat, ["40x120", "30x90"]) == []
+    pool = pd.sibling_pool([dict(flat, id=f"k{i}", metadata={"packaging": {"m2_per_box": 1.44, "boxes_per_pallet": 20}}) for i in range(3)],
+                           lambda p: ["40x120"])
+    row = pd.plan_product(flat, ["40x120"], pool)[0]
+    assert row["boxes_per_pallet"] == 20 and row["pieces_per_box"] == 3
+
+
+def test_one_series_is_one_vote_and_mixed_pallets_fill_no_pallet_figure():
+    white = product("white", {"format": "30x60", "pallet": "108x108", "m2_per_box": 1.44, "boxes_per_pallet": 48},
+                    {"format": "30x60", "pallet": "80x120", "m2_per_box": 1.44, "boxes_per_pallet": 40})
+    alone = pd.plan_product(product("alma", {"format": "30x60", "pieces_per_box": 8}), [], pd.sibling_pool([white]))[0]
+    assert alone["m2_per_box"] == 1.44 and "boxes_per_pallet" not in alone and "series" not in alone["estimated"]["basis"]
+    pool = pd.sibling_pool([white, product("b", {"format": "30x60", "pallet": "108x108", "m2_per_box": 1.44, "boxes_per_pallet": 48})])
+    row = pd.plan_product(product("alma", {"format": "30x60", "pieces_per_box": 8}), [], pool)[0]
+    assert "boxes_per_pallet" not in row and row["m2_per_box"] == 1.44
+
+
+def test_a_filled_box_weight_is_listed_as_estimated():
+    pool = pd.sibling_pool([product(f"t{i}", {"format": "30x90", "m2_per_box": 1.35, "weight_per_box_kg": 23}) for i in range(3)])
+    row = pd.plan_product(product("tebas", {"format": "30x90", "m2_per_box": 1.35}), [], pool)[0]
+    assert row["weight_per_box_kg"] == 23 and "weight_per_box_kg" in row["estimated"]["fields"]

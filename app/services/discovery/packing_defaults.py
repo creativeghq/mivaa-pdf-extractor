@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 SIBLING_KEYS = ("pieces_per_box", "m2_per_box", "weight_per_box_kg", "boxes_per_pallet", "weight_per_pallet_kg")
+PALLET_KEYS = ("boxes_per_pallet", "weight_per_pallet_kg")
 REPORTED_KEYS = ("pieces_per_box", "m2_per_box", "boxes_per_pallet", "m2_per_pallet", "weight_per_pallet_kg")
 MIN_SOURCES = 2
 MIN_SHARE = 0.75
@@ -54,11 +55,22 @@ def _stated(row: Dict[str, Any], key: str) -> Optional[float]:
     return _num(row.get(key))
 
 
-def sibling_pool(products: Iterable[Dict[str, Any]]) -> List[Tuple[str, Dict[str, Any], str]]:
+def packing_rows(product: Dict[str, Any], formats: Sequence[str] = ()) -> List[Dict[str, Any]]:
+    """Per-format rows; flat packing on a product with exactly one format is that format's row."""
+    metadata = product.get("metadata") or {}
+    packaging = metadata.get("packaging") or {}
+    rows = [dict(r) for r in packaging.get("per_variant") or [] if isinstance(r, dict)]
+    if rows or len(formats) != 1:
+        return rows
+    flat = {k: v for k in (*SIBLING_KEYS, "m2_per_pallet") if (v := packaging.get(k, metadata.get(k))) is not None and _num(v) is not None}
+    return [{"format": formats[0], **{k: _num(v) for k, v in flat.items()}}] if flat else []
+
+
+def sibling_pool(products: Iterable[Dict[str, Any]], formats_of=lambda p: ()) -> List[Tuple[str, Dict[str, Any], str]]:
     pool = []
     for product in products:
-        for row in ((product.get("metadata") or {}).get("packaging") or {}).get("per_variant") or []:
-            fmt = format_key(row.get("format")) if isinstance(row, dict) else None
+        for row in packing_rows(product, formats_of(product)):
+            fmt = format_key(row.get("format"))
             if fmt:
                 pool.append((fmt, row, product["id"]))
     return pool
@@ -88,20 +100,26 @@ def plan_row(fmt: str, row: Dict[str, Any], pool: Sequence[Tuple[str, Dict[str, 
                 _fill("pieces_per_box", n, f"pieces per box: {_clean(m2)} m² ÷ {round(area, 4)} m² per {fmt} tile")
 
     geometry()
-    same = [r for f, r, pid in pool if pid != own_id and same_size(f, fmt)]
+    same = [(r, pid) for f, r, pid in pool if pid != own_id and same_size(f, fmt)]
     m2 = _num(new.get("m2_per_box"))
     if m2 is not None and "m2_per_box" not in filled:
-        narrowed = [r for r in same if _stated(r, "m2_per_box") == m2]
+        narrowed = [(r, pid) for r, pid in same if _stated(r, "m2_per_box") == m2]
         same = narrowed or same
     for key in SIBLING_KEYS:
         if _num(new.get(key)) is not None:
             continue
-        values = [v for v in (_stated(r, key) for r in same) if v is not None]
+        votes: Dict[str, set] = {}
+        for r, pid in same:
+            if _stated(r, key) is not None:
+                votes.setdefault(pid, set()).add((_stated(r, key), r.get("pallet")))
+        if key in PALLET_KEYS and len({pallet for vs in votes.values() for _, pallet in vs}) > 1:
+            continue
+        values = [next(iter(vs))[0] for vs in votes.values() if len({v for v, _ in vs}) == 1]
         if len(values) < MIN_SOURCES:
             continue
         top, count = Counter(values).most_common(1)[0]
         if count / len(values) >= MIN_SHARE:
-            _fill(key, top, f"{key.replace('_', ' ')}: {count} of {len(values)} same-brand {fmt} rows")
+            _fill(key, top, f"{key.replace('_', ' ')}: {count} of {len(values)} same-brand {fmt} series")
     geometry()
     box, boxes = _num(new.get("m2_per_box")), _num(new.get("boxes_per_pallet"))
     if _num(new.get("m2_per_pallet")) is None and box and boxes and {"m2_per_box", "boxes_per_pallet"} & set(filled):
@@ -111,7 +129,7 @@ def plan_row(fmt: str, row: Dict[str, Any], pool: Sequence[Tuple[str, Dict[str, 
 
 def plan_product(product: Dict[str, Any], formats: Sequence[str], pool: Sequence[Tuple[str, Dict[str, Any], str]]) -> Optional[List[Dict[str, Any]]]:
     """The product's per-format packing with gaps filled, or None when nothing changes."""
-    rows = [dict(r) for r in ((product.get("metadata") or {}).get("packaging") or {}).get("per_variant") or [] if isinstance(r, dict)]
+    rows = packing_rows(product, formats)
     have = {format_key(r.get("format")) for r in rows}
     rows += [{"format": f} for f in formats if not any(h and same_size(h, f) for h in have)]
     changed = False
@@ -126,7 +144,7 @@ def plan_product(product: Dict[str, Any], formats: Sequence[str], pool: Sequence
             out.append(row)
             continue
         prior = row.get("estimated") or {}
-        fields = list(dict.fromkeys(list(prior.get("fields") or []) + [k for k in new if k in REPORTED_KEYS and new.get(k) != row.get(k)]))
+        fields = list(dict.fromkeys(list(prior.get("fields") or []) + [k for k in new if k in (*SIBLING_KEYS, *REPORTED_KEYS) and new.get(k) != row.get(k)]))
         new["estimated"] = {"fields": fields, "basis": "; ".join(filter(None, [prior.get("basis"), *basis])),
                             "method": "tile geometry, then the same brand's identical size",
                             "at": datetime.now(timezone.utc).isoformat()}
@@ -156,12 +174,15 @@ async def fill_packing_defaults(supabase: Any, document_id: str, *, apply: bool 
     for brand in {p["brand_company_id"] for p in products if p.get("brand_company_id")}:
         for p in _all(lambda: db.table("products").select(columns).eq("workspace_id", workspace).eq("brand_company_id", brand).order("id")):
             siblings.setdefault(p["id"], p)
+    def formats_of(p: Dict[str, Any]) -> List[str]:
+        return verified_formats(p.get("metadata") or {}, [])
+
     pool_by_brand: Dict[Any, List[Tuple[str, Dict[str, Any], str]]] = {}
     for p in siblings.values():
-        pool_by_brand.setdefault(p.get("brand_company_id"), []).extend(sibling_pool([p]))
+        pool_by_brand.setdefault(p.get("brand_company_id"), []).extend(sibling_pool([p], formats_of))
     for product in products:
-        pool = pool_by_brand.get(product.get("brand_company_id"), []) if product.get("brand_company_id") else sibling_pool([product])
-        planned = plan_product(product, verified_formats(product.get("metadata") or {}, []), pool)
+        pool = pool_by_brand.get(product.get("brand_company_id"), []) if product.get("brand_company_id") else []
+        planned = plan_product(product, formats_of(product), pool)
         if planned is None:
             continue
         summary["filled"] += 1
