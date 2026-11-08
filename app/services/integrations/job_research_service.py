@@ -166,6 +166,7 @@ class JobResearchService:
         refresh_interval_hours: int = 24,
         max_age_days: int = 14,
         source_conversation_id: Optional[str] = None,
+        auto_refresh: bool = False,
         run_first_refresh: bool = True,
         # External (api_key) flow: the tracked_job itself is api_key-owned
         # (user_id NULL), but we still attribute a background_agents row to the
@@ -237,7 +238,8 @@ class JobResearchService:
             "refresh_interval_hours": max(24, int(refresh_interval_hours)),
             "max_age_days": max(1, min(365, int(max_age_days))),
             "source_conversation_id": source_conversation_id,
-            "next_check_at": _iso(_utcnow()),  # eligible immediately
+            "auto_refresh": bool(auto_refresh),
+            "next_check_at": _iso(_utcnow()),
         }
         res = self.sb.table("tracked_jobs").insert(row).execute()
         if not res.data:
@@ -402,7 +404,7 @@ class JobResearchService:
             # and from here — so with a column default of false the guard could never be
             # false-y and the whole branch was unreachable. (audit #305)
             "alert_on_burst", "burst_threshold",
-            "refresh_interval_hours", "max_age_days", "auto_expand_keywords", "is_active",
+            "refresh_interval_hours", "max_age_days", "auto_expand_keywords", "is_active", "auto_refresh",
         }
         # NOTE `v is not None` means a nullable field cannot be CLEARED through this path —
         # digest_day_of_week can be set to a weekday but not reset back to daily. Left as-is

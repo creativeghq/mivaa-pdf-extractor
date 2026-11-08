@@ -185,6 +185,7 @@ class UpdateRequest(BaseModel):
     alert_on_llm_visibility_change: Optional[bool] = None
     alert_webhook_url: Optional[str] = None
     is_active: Optional[bool] = None
+    auto_refresh: Optional[bool] = None
 
 
 class RefreshRequest(BaseModel):
@@ -322,9 +323,8 @@ async def refresh_product(
         )
     if str(existing.get("user_id")) != current_user_id(user) and not _is_admin(sb, current_user_id(user)):
         raise HTTPException(status_code=403, detail="not the owner")
+    # The owner pays for a pressed refresh through the metered door, so forcing it past the schedule is theirs to do.
     force = bool(body.force) if body else False
-    if force and not _is_admin(sb, current_user_id(user)):
-        raise HTTPException(status_code=403, detail="force_refresh requires admin")
     async with metered_door(
         user_id=current_user_id(user),
         workspace_id=existing.get("workspace_id"),
@@ -452,10 +452,13 @@ async def probe_product_llm(
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _require_admin(user)
     svc = get_tracked_mentions_service()
     existing = svc.find_for_product(product_id)
-    if not existing:
+    # The owner of a monitored product may probe it on demand (metered below); creating a subject here stays admin.
+    if existing:
+        existing = _check_owner_or_admin(sb, tracked_mention_id=existing["id"], user_id=current_user_id(user))
+    else:
+        _require_admin(user)
         product = _resolve_product(sb, product_id)
         existing = await svc.find_or_create_for_product(
             product_id=product_id,
@@ -491,7 +494,7 @@ async def probe_product_llm(
         res = await get_llm_mention_probe_service().probe(
             tracked_mention_id=existing["id"],
             facets=facets,
-            models=(body.models if body else None),
+            models=(body.models if body and _is_admin(sb, current_user_id(user)) else None),
             attribution=probe_attribution,
             homepage_domain=existing.get("homepage_domain"),
             tier=(existing.get("probe_tier") or "cheap"),
@@ -754,7 +757,6 @@ async def probe_tracked_llm(
     user: Dict[str, Any] = Depends(get_current_user),
 ):
     sb = get_supabase_client().client
-    _require_admin(user)
     row = _check_owner_or_admin(sb, tracked_mention_id=tracked_mention_id, user_id=current_user_id(user))
     facets = SubjectFacets.from_dict(row.get("subject_facets") or {
         "label": row.get("subject_label"),
@@ -779,7 +781,7 @@ async def probe_tracked_llm(
         res = await get_llm_mention_probe_service().probe(
             tracked_mention_id=tracked_mention_id,
             facets=facets,
-            models=(body.models if body else None),
+            models=(body.models if body and _is_admin(sb, current_user_id(user)) else None),
             attribution=probe_attribution,
             homepage_domain=row.get("homepage_domain"),
             tier=(row.get("probe_tier") or "cheap"),

@@ -58,6 +58,7 @@ class CreateTrackedJobRequest(BaseModel):
     max_age_days: int = Field(14, ge=1, le=365, description="Recency gate: drop listings older than this (and undated aggregator listings). Default 14.")
     source_conversation_id: Optional[str] = Field(None, description="agent_chat_conversations.id where the user set up the search; daily digest will chat-post into it.")
     run_first_refresh: bool = Field(True, description="If true, run discovery + classifier synchronously so the response includes real listings.")
+    auto_refresh: bool = Field(False, description="Background refresh runs only when true; otherwise the search refreshes on demand.")
 
 
 class UpdateTrackedJobRequest(BaseModel):
@@ -88,6 +89,7 @@ class UpdateTrackedJobRequest(BaseModel):
     refresh_interval_hours: Optional[int] = Field(None, ge=1, le=168)
     max_age_days: Optional[int] = Field(None, ge=1, le=365)
     is_active: Optional[bool] = None
+    auto_refresh: Optional[bool] = None
 
 
 class ExcludeRequest(BaseModel):

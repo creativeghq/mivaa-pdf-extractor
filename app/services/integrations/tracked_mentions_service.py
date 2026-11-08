@@ -203,7 +203,7 @@ class TrackedMentionsService:
             "recency_days", "homepage_domain", "probe_tier",
             "alert_channels", "alert_on_spike", "alert_on_negative_sentiment",
             "alert_on_new_outlet", "alert_on_llm_visibility_change",
-            "alert_webhook_url", "is_active", "auto_expand_aliases",
+            "alert_webhook_url", "is_active", "auto_expand_aliases", "auto_refresh",
         }
         payload = {k: v for k, v in fields.items() if k in allowed and v is not None}
         if not payload:
