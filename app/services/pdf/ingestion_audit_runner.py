@@ -207,7 +207,9 @@ def series_coverage(collected: Dict[str, Any]) -> List[Dict[str, Any]]:
     for p in collected["products"]:
         m, a = p.get("metadata") or {}, p.get("attributes") or {}
         offered = set()
-        for v in (a.get("color"), m.get("color"), m.get("decorative_variant"), a.get("finish"), m.get("finish")):
+        options = [o for o in m.get("colour_options") or [] if isinstance(o, dict)]
+        aliases = [x for o in options for x in [o.get("name"), *(o.get("aliases") or [])]]
+        for v in (a.get("color"), m.get("color"), m.get("decorative_variant"), a.get("finish"), m.get("finish"), aliases):
             for x in (v if isinstance(v, list) else [v]):
                 if isinstance(x, str):
                     offered |= set(sr.fold(x).split())

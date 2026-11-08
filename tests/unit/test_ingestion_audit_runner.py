@@ -188,6 +188,15 @@ def test_a_variant_the_maker_misspelt_is_not_missing():
     assert runner.series_coverage({"layout": [], "products": products, "product_images": images})[0]["missing_variants"] == []
 
 
+def test_a_maker_typo_recorded_as_a_colour_alias_is_not_missing():
+    url = "https://www.izida1894.gr/x/SKYATOS-GOLS-60X120_60X60-AMB-scaled.jpg"
+    images = {"Skyatos": [{"extraction_layer": "manufacturer_original", "metadata": {"source_url": url}}]}
+    products = [{"id": "s", "name": "Skyatos", "metadata": {"colour_options": [{"name": "Gold"}], "page_range": [5]}}]
+    assert runner.series_coverage({"layout": [], "products": products, "product_images": images})[0]["missing_variants"] == ["gols"]
+    products[0]["metadata"]["colour_options"][0]["aliases"] = ["gols"]
+    assert runner.series_coverage({"layout": [], "products": products, "product_images": images})[0]["missing_variants"] == []
+
+
 class _PagedQuery:
     def __init__(self, total):
         self.total, self.ordered = total, []

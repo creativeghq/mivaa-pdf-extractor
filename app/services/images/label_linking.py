@@ -115,13 +115,15 @@ def sole_series(lines: Sequence[Line], series: Dict[str, Tuple[str, ...]]) -> Op
     return next(iter(on_half)) if len(on_half) == 1 else None
 
 
-def names_only_others(lines: Sequence[Line], series: Dict[str, Tuple[str, ...]], own: Optional[str]) -> bool:
+def names_only_others(lines: Sequence[Line], series: Dict[str, Tuple[str, ...]], own: Any) -> bool:
     """The half page prints a few series names, none of them the image's only product: another series' page.
 
-    A page naming CROWDED_SERIES or more is an index or overview, not one series' page.
+    `own` is every name that product goes by (its own and the shared printed one). A page naming
+    CROWDED_SERIES or more is an index or overview, not one series' page.
     """
+    owns = {own} if isinstance(own, str) else {o for o in (own or ()) if o}
     on_half = set().union(*(series_on(l.tokens, series) for l in lines)) if lines else set()
-    return own is not None and 0 < len(on_half) < CROWDED_SERIES and own not in on_half
+    return bool(owns) and 0 < len(on_half) < CROWDED_SERIES and not owns & on_half
 
 
 def half_lines(words: Sequence[Sequence[Any]], page_width: float, page_height: float, side: str,
@@ -285,8 +287,9 @@ async def _decisions(supabase: Any, document_id: str, pdf_bytes: bytes) -> Tuple
             continue
         lines = half[2]
         own_name = ctx.printed_as(next(iter(current))) if single else None
+        own_names = {own_name, *(n for n, pid in ctx.product_of.items() if pid in current)} if single else set()
         # One link is settled (a product shot is often labelled elsewhere) unless its page prints only other series.
-        if single and not names_only_others(lines, series, own_name):
+        if single and not names_only_others(lines, series, own_names):
             continue
         name = label_for(img["bbox"], lines, series) if img.get("bbox") else sole_series(lines, series)
         out.append({"image": img, "current": current, "name": name, "target": ctx.product_for(name, img["page_number"]),

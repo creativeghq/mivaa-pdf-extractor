@@ -90,3 +90,10 @@ def test_a_photo_from_the_makers_site_is_never_judged_by_a_page_it_was_not_on():
     src = budget.blank_comments((_ROOT / "app/services/images/label_linking.py").read_text(encoding="utf-8"))
     body = src[src.index("async def _decisions"):src.index("async def relink_by_labels")]
     assert body.index("OFF_PAGE_LAYERS") < body.index("names_only_others(")
+
+
+def test_a_page_printing_the_products_own_longer_name_is_its_own_page():
+    series = {" ".join(t): t for t in map(ll.tokens_of, ["Fenix", "Fenix Terra", "Ardenza"])}
+    page = [_line(0.1, 0.42, 0.4, 0.45, "FENIX TERRA 30x60"), _line(0.55, 0.42, 0.8, 0.45, "ARDENZA 25x25")]
+    assert ll.names_only_others(page, series, "fenix")
+    assert not ll.names_only_others(page, series, {"fenix", "fenix terra"})
