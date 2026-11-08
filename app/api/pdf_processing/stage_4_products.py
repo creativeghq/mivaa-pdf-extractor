@@ -2942,7 +2942,8 @@ async def enrich_products_from_chunks_and_vision(
                 if filled or any(k.endswith("._not_nested") for k in extraction_meta):
                     new_metadata["_extraction_metadata"] = extraction_meta
 
-            markers_changed = False
+            # A degraded canonicalization is retried even when nothing new was filled.
+            markers_changed = "facet_canonicalization" in new_metadata
             if spec_status is not None:
                 new_metadata["_spec_extraction"] = spec_status
                 markers_changed = True

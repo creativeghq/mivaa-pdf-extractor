@@ -119,6 +119,7 @@ def test_image_analysis_written_after_stage_4_7_still_reaches_the_product():
     assert images < rollup < run.index("backfill_product_text_embeddings(")
     stage = _code("app/api/pdf_processing/stage_4_products.py")
     assert "product_vision = linked_vision.get(product_id) or" in stage
+    assert 'markers_changed = "facet_canonicalization" in new_metadata' in stage
     sourcing = _code("app/services/images/image_sourcing.py")
     body = sourcing[sourcing.index("async def run_all"):]
     assert "reroll_products(self.document_id, analysed)" in body and "not embeddings_deferred()" in body
