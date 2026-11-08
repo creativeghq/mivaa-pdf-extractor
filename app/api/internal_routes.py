@@ -1883,6 +1883,7 @@ class EnrichExistingProductResponse(BaseModel):
 @router.post("/enrich-existing-product/{product_id}", response_model=EnrichExistingProductResponse)
 async def enrich_existing_product(
     product_id: str,
+    rollup_only: bool = False,
     _trusted: Optional[Dict[str, Any]] = Depends(require_trusted_service),
 ) -> EnrichExistingProductResponse:
     """
@@ -1926,6 +1927,9 @@ async def enrich_existing_product(
             supabase=supabase,
             logger=logger,
             target_product_id=product_id,
+            # `rollup_only`: re-read the chunks and image analysis with no paid spec/description tier.
+            enable_spec_vision=not rollup_only,
+            enable_description_writer=not rollup_only,
         )
 
         if stats.get("error"):
