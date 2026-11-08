@@ -73,7 +73,7 @@ def plan_row(fmt: str, row: Dict[str, Any], pool: Sequence[Tuple[str, Dict[str, 
     filled: List[str] = []
     basis: List[str] = []
 
-    def put(key: str, value: float, why: str) -> None:
+    def _fill(key: str, value: float, why: str) -> None:
         new[key] = _clean(value)
         filled.append(key)
         basis.append(why)
@@ -81,11 +81,11 @@ def plan_row(fmt: str, row: Dict[str, Any], pool: Sequence[Tuple[str, Dict[str, 
     def geometry() -> None:
         pieces, m2 = _num(new.get("pieces_per_box")), _num(new.get("m2_per_box"))
         if m2 is None and pieces:
-            put("m2_per_box", round(pieces * area, 2), f"m² per box: {_clean(pieces)} pieces × {round(area, 4)} m² per {fmt} tile")
+            _fill("m2_per_box", round(pieces * area, 2), f"m² per box: {_clean(pieces)} pieces × {round(area, 4)} m² per {fmt} tile")
         elif pieces is None and m2:
             n = round(m2 / area)
             if n >= 1 and abs(n * area - m2) / m2 <= GEOMETRY_TOLERANCE:
-                put("pieces_per_box", n, f"pieces per box: {_clean(m2)} m² ÷ {round(area, 4)} m² per {fmt} tile")
+                _fill("pieces_per_box", n, f"pieces per box: {_clean(m2)} m² ÷ {round(area, 4)} m² per {fmt} tile")
 
     geometry()
     same = [r for f, r, pid in pool if pid != own_id and same_size(f, fmt)]
@@ -101,11 +101,11 @@ def plan_row(fmt: str, row: Dict[str, Any], pool: Sequence[Tuple[str, Dict[str, 
             continue
         top, count = Counter(values).most_common(1)[0]
         if count / len(values) >= MIN_SHARE:
-            put(key, top, f"{key.replace('_', ' ')}: {count} of {len(values)} same-brand {fmt} rows")
+            _fill(key, top, f"{key.replace('_', ' ')}: {count} of {len(values)} same-brand {fmt} rows")
     geometry()
     box, boxes = _num(new.get("m2_per_box")), _num(new.get("boxes_per_pallet"))
     if _num(new.get("m2_per_pallet")) is None and box and boxes and {"m2_per_box", "boxes_per_pallet"} & set(filled):
-        put("m2_per_pallet", round(box * boxes, 2), "m² per pallet: m² per box × boxes per pallet")
+        _fill("m2_per_pallet", round(box * boxes, 2), "m² per pallet: m² per box × boxes per pallet")
     return new, basis if filled else []
 
 
