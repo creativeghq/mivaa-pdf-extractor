@@ -18,6 +18,9 @@ from app.services.integrations.credits_integration_service import get_credits_se
 from app.dependencies import get_current_user, is_service_caller
 from app.utils.credit_metering import refund_operation
 from app.schemas.api_responses import InteriorDesignResponse
+from app.services.generation.interior_roster import (  # noqa: F401 — re-exported for callers
+    ALL_MODELS, IMAGE_TO_IMAGE_MODELS, TEXT_TO_IMAGE_MODELS, _build_model_input,
+)
 
 import logging
 
@@ -31,6 +34,7 @@ _ROOM_NAMES: dict = {
     "bathroom": "bathroom", "dining_room": "dining room", "home_office": "home office",
     "hallway": "hallway", "studio": "studio apartment", "outdoor": "outdoor terrace",
     "kids_room": "children's room", "basement": "basement lounge",
+    "outdoor_kitchen": "outdoor kitchen",
 }
 
 # Style → descriptive vocabulary for image generation models
@@ -50,132 +54,30 @@ _STYLE_VOCAB: dict = {
 }
 
 
-def _build_generation_prompt(
+async def _build_generation_prompt(
     prompt: str,
     room_type: Optional[str],
     style: Optional[str],
     is_image_to_image: bool,
 ) -> str:
-    """
-    Build a rich, model-optimised generation prompt from user inputs.
+    """The spec inside the DB template (`tool/interior_generation_*`), never quality filler."""
+    from app.services.utilities.prompt_registry import load_prompt, render
 
-    Text-to-image: full descriptive sentence + quality boosters.
-    Image-to-image: concise style directive (avoids overriding the reference image).
-    """
-    room = _ROOM_NAMES.get(room_type or "", room_type or "interior space")
-    style_name = style or "contemporary"
-    style_tags = _STYLE_VOCAB.get(style or "", style_name)
-
-    if is_image_to_image:
-        # Transformation prompts should be directive and concise so the model
-        # focuses on style transfer rather than ignoring the reference image.
-        parts = [
-            f"{style_name} style redesign of a {room},",
-            prompt.rstrip(".") + ",",
-            style_tags + ",",
-            "professional interior design, high quality rendering",
-        ]
-    else:
-        # Text-to-image benefits from rich natural language + quality anchors.
-        parts = [
-            f"Professional interior design photograph of a beautifully designed {style_name} {room},",
-            prompt.rstrip(".") + ",",
-            style_tags + ",",
-            "soft natural and ambient lighting, photorealistic render,",
-            "architectural photography, wide-angle lens, sharp focus, high detail, 8K resolution",
-        ]
-    return " ".join(parts)
-
-# Model configurations
-# Text-to-Image Models (for prompts without reference images)
-# The three `gemini_edge` entries below are ONE upstream (the generate-interior-gemini
-# edge function) reached with three different `model_tier` values, which is what selects
-# the model that actually runs: fast → gemini-3.1-flash-image, pro → gemini-3-pro-image,
-# grok → grok-aurora.
-TEXT_TO_IMAGE_MODELS = [
-    {"id": "gemini-interior", "registry_id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "fast"},
-    {"id": "gemini-interior-pro", "registry_id": "gemini-3-pro-image", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "pro"},
-    {"id": "grok-aurora-interior", "registry_id": "xai-aurora", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "text-to-image", "cost_per_generation": 0.0, "model_tier": "grok"},
-    {"id": "seedream-4", "registry_id": "seedream-4", "name": "Seedream 4", "provider": "replicate",
-     "model": "bytedance/seedream-4", "capability": "text-to-image", "cost_per_generation": 0.03,
-     "input_schema": "seedream"},
-    {"id": "z-image-turbo", "registry_id": "z-image-turbo", "name": "Z-Image Turbo", "provider": "replicate",
-     "model": "prunaai/z-image-turbo", "capability": "text-to-image", "cost_per_generation": 0.01,
-     "input_schema": "z_image"},
-    {"id": "flux-2-pro", "name": "FLUX.2 Pro", "provider": "replicate", "model": "black-forest-labs/flux-2-pro", "capability": "text-to-image", "cost_per_generation": 0.05},
-    {"id": "playground-v2.5", "name": "Playground v2.5", "provider": "replicate", "model": "playgroundai/playground-v2.5-1024px-aesthetic", "version": "a45f82a1382bed5c7aeb861dac7c7d191b0fdf74d8d57c4a0e6ed7d4d0bf7d24", "capability": "text-to-image", "cost_per_generation": 0.01, "input_schema": "playground_v25"},
-    # sd3 was RETIRED 2026-08-17 — `generation_models` carries it as status='dead',
-    # enabled=false, and its ai_model_pricing row is deactivated. It stayed here because
-    # this roster is hardcoded and never consulted the registry; a queued dead model is
-    # just a guaranteed failure tile.
-]
-
-# Image-to-Image Models (for interior design transformation with reference images)
-IMAGE_TO_IMAGE_MODELS = [
-    {"id": "gemini-interior", "registry_id": "gemini-3.1-flash-image", "name": "Gemini 3.1 Flash", "provider": "gemini", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "fast"},
-    {"id": "gemini-interior-pro", "registry_id": "gemini-3-pro-image", "name": "Gemini 3 Pro", "provider": "gemini", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "pro"},
-    {"id": "grok-aurora-interior", "registry_id": "xai-aurora", "name": "Grok Aurora", "provider": "xai", "route": "gemini_edge", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.0, "model_tier": "grok"},
-    {"id": "comfyui-interior-remodel", "name": "ComfyUI Interior Remodel", "provider": "replicate", "model": "jschoormans/comfyui-interior-remodel", "version": "2a360362540e1f6cfe59c9db4aa8aa9059233d40e638aae0cdeb6b41f3d0dcce", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02, "input_schema": "comfyui_interior"},
-    {"id": "interiorly-gen1-dev", "name": "Interiorly Gen1 Dev", "provider": "replicate", "model": "julian-at/interiorly-gen1-dev", "version": "5e3080d1b308e80197b32f0ce638daa8a329d0cf42068739723d8259e44b445e", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.015,
-     "input_schema": "flux_lora_interior"},
-    {"id": "designer-architecture", "name": "Designer Architecture", "provider": "replicate", "model": "davisbrown/designer-architecture", "version": "0d6f0893b05f14500ce03e45f54290cbffb907d14db49699f2823d0fd35def46", "capability": "image-to-image", "status": "working", "cost_per_generation": 0.018},
-    # Versioned endpoint required — no-version requests return 404.
-    {"id": "interior-v2", "name": "Interior V2", "provider": "replicate",
-     "model": "jschoormans/interior-v2",
-     "version": "8372bd24c6011ea957a0861f0146671eed615e375f038c13259c1882e3c8bac7",
-     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
-     "input_schema": "interior_v2"},
-    # Versioned endpoint required — no-version requests return 404.
-    {"id": "adirik-interior-design", "name": "Adirik Interior Design", "provider": "replicate",
-     "model": "adirik/interior-design",
-     "version": "76604baddc85b1b4616e1c6475eca080da339c8875bd4996705440484a6eac38",
-     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
-     "input_schema": "adirik_interior"},
-    # Restored: was timing out with 50 steps — reduced to 30 (model still live, image param is "input" not "image")
-    {"id": "erayyavuz-interior-ai", "name": "Interior AI", "provider": "replicate",
-     "model": "erayyavuz/interior-ai",
-     "version": "e299c531485aac511610a878ef44b554381355de5ee032d109fcae5352f39fa9",
-     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.02,
-     "input_schema": "interior_ai"},
-    # Flux LoRA interior models
-    {"id": "interor-2", "name": "Interior 2 (Flux)", "provider": "replicate", "model": "doobls-ai/interor-2",
-     "version": "91f2ef63c76a73d2ec4c67cf7b2a9672e074046cf4fde1d98e46a5829f7ea68b",
-     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.014,
-     "input_schema": "flux_lora_interior"},
-    {"id": "colourful-interiors", "name": "Colourful Interiors (Flux)", "provider": "replicate", "model": "rihan-a/colourful_interiors",
-     "version": "ba0425bc2e4bebafa8bd918519fdf3b5a022969a6a7c8ba0746b807bb5b541a3",
-     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.014,
-     "input_schema": "flux_lora_interior", "trigger_word": "INTR"},
-    # The one dual-direction model here: same id and adapter as its text-to-image row, which
-    # is why `registry_id` matters — one registry row, two rosters.
-    {"id": "seedream-4", "registry_id": "seedream-4", "name": "Seedream 4", "provider": "replicate",
-     "model": "bytedance/seedream-4", "capability": "image-to-image", "status": "working",
-     "cost_per_generation": 0.03, "input_schema": "seedream"},
-    # 648,561 lifetime runs, the second-most-used interior model on Replicate after adirik,
-    # and it was simply missing from this roster. Proven 2026-08-22 against its real adapter:
-    # succeeded in 5.6s, and its output differs from every model we already run by 35-43 mean
-    # abs pixel diff against a 17-23 same-model noise floor — i.e. it adds a genuinely
-    # different take rather than a duplicate tile.
-    {"id": "stabledesign-interior", "registry_id": "stabledesign-interior",
-     "name": "StableDesign", "provider": "replicate", "model": "melgor/stabledesign_interiordesign",
-     "version": "5e13482ea317670bfc797bb18bace359860a721a39b5bbcaa1ffcd241d62bca0",
-     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
-     "input_schema": "stabledesign"},
-    # SD-based img2img models
-    {"id": "stable-interiors-v2-yz", "name": "Stable Interiors V2 (Fast)", "provider": "replicate", "model": "youzu/stable-interiors-v2",
-     "version": "4836eb257a4fb8b87bac9eacbef9292ee8e1a497398ab96207067403a4be2daf",
-     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.011,
-     "input_schema": "stable_interiors"},
-    # SDXL interior — requires reference image for depth/ControlNet
-    {"id": "interior-design-sdxl", "name": "Interior Design SDXL", "provider": "replicate",
-     "model": "rocketdigitalai/interior-design-sdxl",
-     "version": "a3c091059a25590ce2d5ea13651fab63f447f21760e50c358d4b850e844f59ee",
-     "capability": "image-to-image", "status": "working", "cost_per_generation": 0.14,
-     "input_schema": "sdxl_interior"},
-]
-
-# Combined list
-ALL_MODELS = TEXT_TO_IMAGE_MODELS + IMAGE_TO_IMAGE_MODELS
+    room = _ROOM_NAMES.get(room_type or "") or (room_type or "interior space").replace("_", " ")
+    style_name = (style or "contemporary").replace("_", " ")
+    template = (
+        await load_prompt("tool", "interior_generation_image_to_image")
+        if is_image_to_image
+        else await load_prompt("tool", "interior_generation_text_to_image")
+    )
+    spec = prompt.strip()
+    return render(
+        template,
+        room=room,
+        style=style_name,
+        spec=spec if spec.endswith(".") else spec + ".",
+        style_tags=_STYLE_VOCAB.get(style or "", style_name),
+    )
 
 class InteriorRequest(BaseModel):
     prompt: str = Field(..., description="Interior design description")
@@ -188,179 +90,6 @@ class InteriorRequest(BaseModel):
     workspace_id: Optional[str] = Field(None, description="Workspace ID")
     width: int = Field(1024, description="Image width")
     height: int = Field(1024, description="Image height")
-
-
-_VIRTUAL_STAGING_ROOM_MAP: dict = {
-    "living_room": "Living Room", "bedroom": "Bedroom", "kitchen": "Kitchen",
-    "bathroom": "Bathroom", "dining_room": "Dining Room", "home_office": "Office",
-    "outdoor": "Garden", "hallway": "Living Room", "studio": "Living Room",
-    "kids_room": "Bedroom", "basement": "Living Room",
-}
-
-_VIRTUAL_STAGING_STYLE_MAP: dict = {
-    "modern": "Modern", "minimalist": "Modern", "scandinavian": "Scandinavian",
-    "industrial": "Urban Industrial", "luxury": "Transitional Luxury",
-    "bohemian": "Modern Organic", "traditional": "Traditional",
-    "mediterranean": "Modern Organic", "japandi": "Scandinavian Oasis",
-    "art_deco": "Mid-Century Modern", "rustic": "Farmhouse", "coastal": "Coastal",
-}
-
-
-def _build_model_input(
-    model: dict,
-    prompt: str,
-    width: int,
-    height: int,
-    image_url: Optional[str],
-    room_type: Optional[str] = None,
-    style: Optional[str] = None,
-    api_token: Optional[str] = None,
-) -> dict:
-    """
-    Build model-specific input parameters.
-
-    Each Replicate model has its own schema — sending unsupported params causes 422 errors.
-    We use the 'input_schema' key on the model config to select the right builder.
-    Models without an explicit schema fall back to the safe generic builder.
-    """
-    schema = model.get("input_schema", "generic")
-
-    if schema == "comfyui_interior":
-        # jschoormans/comfyui-interior-remodel: ComfyUI workflow — only accepts image + prompt.
-        # Sending standard SD params (strength, guidance_scale, num_inference_steps) causes 422.
-        if not image_url:
-            raise ValueError("comfyui-interior-remodel requires a reference image")
-        return {"image": image_url, "prompt": prompt}
-
-    if schema == "adirik_interior":
-        # adirik/interior-design: uses prompt_strength (not strength), no num_outputs
-        data: dict = {"prompt": prompt, "num_inference_steps": 25, "guidance_scale": 7.5, "prompt_strength": 0.8}
-        if image_url:
-            data["image"] = image_url
-        return data
-
-    if schema == "interior_ai":
-        # erayyavuz/interior-ai: image param is 'input' (not 'image'), supports strength/guidance/steps
-        # Reduced to 30 steps (was 50) to avoid Replicate polling timeout
-        data = {"prompt": prompt, "num_inference_steps": 30, "guidance_scale": 7.5, "strength": 0.8}
-        if image_url:
-            data["input"] = image_url  # NOTE: 'input', not 'image'
-        return data
-
-    if schema == "seedream":
-        # bytedance/seedream-4 — the only model in this roster that serves BOTH directions.
-        # The reference goes in `image_input`, an ARRAY (it accepts several), and only
-        # `prompt` is required, so the same adapter covers text-to-image by omitting it.
-        # Verified 2026-08-22: with the image it lands 42.3 mean abs diff from the source
-        # photo, without it 61.6 — i.e. it is genuinely conditioned on the reference rather
-        # than quietly ignoring it.
-        data = {"prompt": prompt, "size": "2K"}
-        if image_url:
-            data["image_input"] = [image_url]
-        else:
-            data["aspect_ratio"] = "4:3"
-        return data
-
-    if schema == "z_image":
-        # prunaai/z-image-turbo — TEXT-TO-IMAGE ONLY. Its schema has no image parameter at
-        # all, and Replicate silently DROPS unknown keys rather than rejecting them: passing
-        # an image returns 200 with a pure text-to-image result (measured 61.8 from the source
-        # vs 60.2 for the same call with no image — statistically identical). Never put this
-        # model in IMAGE_TO_IMAGE_MODELS: it would report success while ignoring the room.
-        # 8 steps is the turbo default and what makes it the cheap fast tile.
-        data = {"prompt": prompt, "aspect_ratio": "4:3", "num_inference_steps": 8}
-        return data
-
-    if schema == "stabledesign":
-        # melgor/stabledesign_interiordesign: the image param is `image_base` (not `image`,
-        # not `input`) and it is REQUIRED alongside `prompt` — a prompt-only call 422s. Its
-        # `strength`/`num_steps`/`guidance_scale` defaults (0.9/50/10) are the ones the model
-        # card publishes, and it returns in ~6s at those settings, so they are kept as-is.
-        data = {"prompt": prompt, "strength": 0.9, "num_steps": 50, "guidance_scale": 10, "img_size": 640}
-        if image_url:
-            data["image_base"] = image_url  # NOTE: 'image_base'
-        return data
-
-    if schema == "interior_v2":
-        # jschoormans/interior-v2: minimal schema, only prompt + image
-        data = {"prompt": prompt}
-        if image_url:
-            data["image"] = image_url
-        return data
-
-    if schema == "flux_lora_interior":
-        # julian-at/interiorly-gen1-dev, doobls-ai/interor-2, rihan-a/colourful_interiors
-        # Flux LoRA base — prompt_strength for img2img, aspect_ratio for text-to-image
-        trigger = model.get("trigger_word", "")
-        final_prompt = f"{trigger} {prompt}" if trigger and trigger not in prompt else prompt
-        data = {"prompt": final_prompt, "num_inference_steps": 28, "guidance_scale": 3}
-        if image_url:
-            data["image"] = image_url
-            data["prompt_strength"] = 0.8
-        else:
-            data["aspect_ratio"] = "16:9"
-        return data
-
-    if schema == "stable_interiors":
-        # pointblack/stable-interiors-v2, youzu/stable-interiors-v2
-        # SD-based img2img: requires image; skip gracefully when none provided
-        if not image_url:
-            raise ValueError(f"{model['name']} requires a reference image")
-        return {"prompt": prompt, "image": image_url, "num_inference_steps": 50, "guidance_scale": 15, "prompt_strength": 0.8}
-
-    if schema == "virtual_staging":
-        # proplabs/virtual-staging: structured room + furniture_style enums, requires api_key as input
-        room = _VIRTUAL_STAGING_ROOM_MAP.get(room_type or "", "Living Room")
-        furniture_style = _VIRTUAL_STAGING_STYLE_MAP.get(style or "", "Default (AI decides)")
-        data = {
-            "image": image_url,
-            "room": room,
-            "furniture_style": furniture_style,
-        }
-        if api_token:
-            data["replicate_api_key"] = api_token
-        return data
-
-    if schema == "sdxl_interior":
-        # rocketdigitalai/interior-design-sdxl: requires image for depth/ControlNet
-        if not image_url:
-            raise ValueError(f"{model['name']} requires a reference image")
-        return {
-            "prompt": prompt,
-            "image": image_url,
-            "num_inference_steps": 50,
-            "guidance_scale": 7.5,
-            "depth_strength": 0.8,
-            "promax_strength": 0.8,
-            "refiner_strength": 0.4,
-        }
-
-    if schema == "playground_v25":
-        # playgroundai/playground-v2.5-1024px-aesthetic
-        # Recommended guidance_scale is 3.0 (much lower than SD defaults) — higher values
-        # cause harsh edges and over-saturation. Negative prompt softens the output.
-        data = {
-            "prompt": prompt,
-            "width": width,
-            "height": height,
-            "num_outputs": 1,
-            "num_inference_steps": 50,
-            "guidance_scale": 3.0,
-            "scheduler": "DPMSolver++",
-            "negative_prompt": "dark, harsh shadows, heavy contrast, gritty, low quality, blurry, overexposed, sharp hard edges, ugly",
-        }
-        return data
-
-    # Generic fallback — used by working models that do support these standard params
-    data = {"prompt": prompt, "num_inference_steps": 25, "guidance_scale": 7.5}
-    if model["capability"] == "text-to-image":
-        data["width"] = width
-        data["height"] = height
-        data["num_outputs"] = 1
-    if model["capability"] == "image-to-image" and image_url:
-        data["image"] = image_url
-        data["strength"] = 0.8
-    return data
 
 
 async def generate_with_replicate(model: dict, prompt: str, width: int, height: int, image_url: Optional[str], api_token: str, max_retries: int = 3, room_type: Optional[str] = None, style: Optional[str] = None) -> str:
@@ -884,8 +613,7 @@ async def create_interior_design(
             ),
         )
 
-    # Build rich generation prompt
-    enhanced_prompt = _build_generation_prompt(
+    enhanced_prompt = await _build_generation_prompt(
         prompt=request.prompt,
         room_type=request.room_type,
         style=request.style,

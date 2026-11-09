@@ -343,6 +343,8 @@ REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("search", "query_structuring", None),
     ("tool", "price_monitor_facets", None),
     ("tool", "price_monitor_match", None),
+    ("tool", "interior_generation_text_to_image", None),
+    ("tool", "interior_generation_image_to_image", None),
 )
 
 

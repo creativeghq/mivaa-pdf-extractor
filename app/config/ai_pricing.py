@@ -901,7 +901,11 @@ class AIPricingConfig:
 
     @classmethod
     def is_per_generation_model(cls, model: str) -> bool:
-        """Check if a model uses per-generation billing (Replicate)."""
+        """Check if a model uses per-generation billing (Replicate). The DB table wins: a model
+        priced only in ai_model_pricing was billed a flat $0.01 when this read the dict alone."""
+        db_row = cls._db_lookup(model)
+        if db_row is not None and db_row.get("cost_per_generation"):
+            return True
         return model in cls.REPLICATE_PRICING and cls.REPLICATE_PRICING[model].get("billing_type") == "per_generation"
 
     @classmethod
