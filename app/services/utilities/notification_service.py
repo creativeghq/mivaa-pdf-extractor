@@ -81,7 +81,7 @@ class NotificationService:
             data={
                 'job_id': job_id,
                 'job_type': job_type,
-                'action_url': "/admin/operations?tab=performance"
+                'action_url': "/admin/async-queue-monitor"
             },
             channels=['push']
         )
@@ -115,7 +115,7 @@ class NotificationService:
                 'job_type': job_type,
                 'duration': duration,
                 'stats': stats,
-                'action_url': "/admin/operations?tab=performance"
+                'action_url': "/admin/async-queue-monitor"
             }
         )
     
@@ -138,7 +138,7 @@ class NotificationService:
                 'job_id': job_id,
                 'job_type': job_type,
                 'error': error,
-                'action_url': "/admin/operations?tab=performance"
+                'action_url': "/admin/async-queue-monitor"
             }
         )
     
