@@ -72,30 +72,21 @@ def test_no_sku_map_at_all_is_silent(sku_correlated):
     assert sku_correlated({}) == set()
 
 
-@pytest.mark.parametrize(
-    "value,fires",
-    [
-        (["60x60", "30x60"], True),   # enumerated for ONE product -> a choice
-        (["60x60"], False),           # a single-element list is one value, not a choice
-        ("IV", False),                # a scalar is a property already chosen
-        ([], False),
-        ([None, ""], False),          # blanks are not values
-        (["60x60", ""], False),       # one real value after filtering
-    ],
-)
-def test_plurality_rule_shape(value, fires):
-    """The plurality branch: more than one non-empty value in a list means a variant axis."""
-    assert (isinstance(value, (list, tuple))
-            and len([v for v in value if v not in (None, "")]) > 1) is fires
-
-
-def test_plurality_branch_still_exists_in_source():
-    """The parametrised rule above mirrors the branch; pin that the branch is still there."""
+def test_a_list_alone_never_decides_identity():
+    """Rooms, certifications and packaging figures are lists of facts, not choices."""
     src = _SRC.read_text(encoding="utf-8")
-    assert 'signal, role, confidence = "plurality", "identity", 1.0' in src
+    assert '"plurality", "identity"' not in src
     assert 'signal, role, confidence = "sku_correlation", "identity", 1.0' in src
-    # The verdict must go through the RPC, never a direct role write — one ladder, one veto.
+    # The verdict must go through the RPC, never a direct role write: one ladder, one veto.
     assert 'supabase.client.rpc("classify_field_role"' in src
+
+
+def test_a_weak_model_verdict_is_not_written():
+    """Below the bar the field stays descriptive on the seed signal, listed for a person."""
+    body = _llm_body(_SRC.read_text(encoding="utf-8"))
+    assert "if confidence < MIN_LLM_ROLE_CONFIDENCE:" in body
+    guard = body.index("if confidence < MIN_LLM_ROLE_CONFIDENCE:")
+    assert guard < body.index('supabase.client.rpc("classify_field_role"')
 
 
 def test_llm_tier_uses_forced_tool_use_and_no_salvage():

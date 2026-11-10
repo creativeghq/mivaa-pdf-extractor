@@ -419,9 +419,9 @@ def test_a_role_verdict_on_an_existing_field_is_a_proposal_never_a_write(env):
         _extracted(finish=["matte", "gloss"], beam_angles=["24", "36"]), category_hint="lighting"))
 
     written = [p["p_field_name"] for name, p in env.fake.rpcs if name == "classify_field_role"]
-    assert written == ["beam_angles"], "only the field inserted in THIS run is classified"
-    assert report["role_proposals"] == [
-        {"field_name": "finish", "role": "identity", "signal": "plurality"}]
+    assert written == [], "a list alone decides nothing; the new field waits for the model"
+    assert report["role_proposals"] == [], "an existing field is never re-roled from a list"
+    assert any("field_role_llm" in e for e in report["errors"]), "the new list field reached the model tier"
 
 
 def test_a_lost_insert_race_is_already_registered_not_an_error(env):

@@ -131,6 +131,7 @@ def _determine_property_category(property_key: str) -> str:
 #: Ceiling on registry rows one document may create. Past it, keys stay on the product
 #: and are listed under `field_registration.capped` instead of becoming global fields.
 MAX_NEW_FIELDS_PER_DOCUMENT = 25
+MIN_LLM_ROLE_CONFIDENCE = 0.6
 
 #: The extractor's own fixed outputs. They are not fields a document can introduce.
 _RESERVED_KEYS = frozenset(CRITICAL_METADATA_SCHEMA) | {"description"}
@@ -814,12 +815,11 @@ class DynamicMetadataExtractor:
 
         residual = {}
         for key, value in verdict_values.items():
+            # A list alone is not an axis: rooms, certifications and packaging figures are lists
+            # of facts. List-valued new fields go to the model, which sees the values.
             if key in sku_varying:
                 signal, role, confidence = "sku_correlation", "identity", 1.0
                 reason = "Varies across the catalogue's variant -> SKU map."
-            elif isinstance(value, (list, tuple)) and len([v for v in value if v not in (None, "")]) > 1:
-                signal, role, confidence = "plurality", "identity", 1.0
-                reason = "Catalogue enumerates %d values for one product." % len(value)
             else:
                 if key in inserted:
                     residual[key] = value
@@ -870,7 +870,7 @@ class DynamicMetadataExtractor:
         return None
 
     async def _classify_residual_fields_with_llm(self, supabase, residual):
-        """Classify what plurality and SKU correlation could not (#347 phase 4.3)."""
+        """Classify what SKU correlation could not (#347 phase 4.3)."""
         import json
         import os
 
@@ -959,12 +959,18 @@ class DynamicMetadataExtractor:
             role = verdict.get("role")
             if name not in residual or role not in ("identity", "descriptive"):
                 continue
+            confidence = float(verdict.get("confidence") or 0.0)
+            if confidence < MIN_LLM_ROLE_CONFIDENCE:
+                # Left descriptive on the seed signal, so the Field Roles screen lists it for a person.
+                self.logger.info("field-role classifier: %s -> %s at %.2f is below the bar; not written"
+                                 % (name, role, confidence))
+                continue
             try:
                 supabase.client.rpc("classify_field_role", {
                     "p_field_name": name,
                     "p_role": role,
                     "p_signal": "llm",
-                    "p_confidence": float(verdict.get("confidence") or 0.0),
+                    "p_confidence": confidence,
                     "p_reason": (verdict.get("reasoning") or "")[:500],
                 }).execute()
             except Exception as e:
