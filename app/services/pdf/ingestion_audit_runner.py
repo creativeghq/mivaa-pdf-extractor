@@ -234,7 +234,7 @@ def series_coverage(collected: Dict[str, Any]) -> List[Dict[str, Any]]:
         foreign = sorted({named for i in (collected.get("product_images") or {}).get(p["name"], [])
                           if i.get("extraction_layer") == "manufacturer_original" and "excluded_from_products" not in (i.get("metadata") or {})
                           for named in [series_in_file_name((i.get("metadata") or {}).get("source_url") or "", slugs)]
-                          if named and named != p["name"]})
+                          if named and named != p["name"] and not shares_series(tokens_of(p["name"]), tokens_of(named))})
         out.append({"product": p["name"], "missing_variants": missing, "pages_outside": outside, "foreign_site_photos": foreign,
                     "site_status": (m.get("site_manifest") or {}).get("status")})
     return out

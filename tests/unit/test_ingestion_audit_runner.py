@@ -238,3 +238,14 @@ def test_a_clean_mark_carries_forward_only_while_nothing_new_or_bigger_appears()
     assert runner.covered_by_clean(same, cleaned)
     assert not runner.covered_by_clean([{"code": "products_without_tables", "severity": "warn", "count": 3}], cleaned)
     assert not runner.covered_by_clean([{"code": "images_unsettled", "severity": "fail", "count": 1}], cleaned)
+
+
+def test_a_photo_named_after_the_same_series_in_another_size_is_not_foreign():
+    url = "https://euro.it/x/SPATULA-white-1.jpg"
+    products = [{"id": "a", "name": "SPATULA", "metadata": {"page_range": [100]}},
+                {"id": "b", "name": "SPATULA 30x90", "metadata": {"page_range": [212]}},
+                {"id": "c", "name": "ALCHEMY", "metadata": {"page_range": [42]}}]
+    images = {"SPATULA 30x90": [{"extraction_layer": "manufacturer_original", "metadata": {"source_url": url}}],
+              "ALCHEMY": [{"extraction_layer": "manufacturer_original", "metadata": {"source_url": url}}]}
+    cov = {c["product"]: c["foreign_site_photos"] for c in runner.series_coverage({"layout": [], "products": products, "product_images": images})}
+    assert cov["SPATULA 30x90"] == [] and cov["ALCHEMY"] == ["SPATULA"]
