@@ -48,6 +48,8 @@ def _log_paddleocr_gpu_cost(
             "product_id": product_id,
             "image_id": image_id,
             "module_slug": "pdf_pipeline",
+            # Written with no user, so no debit is ever attempted; say so like ai_call_logger does.
+            "unbilled_reason": "no_principal",
             "metadata": {
                 "latency_ms": latency_ms,
                 "billing": "time_based",
