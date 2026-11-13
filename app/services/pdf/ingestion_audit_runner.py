@@ -207,7 +207,7 @@ def series_coverage(collected: Dict[str, Any]) -> List[Dict[str, Any]]:
     for p in collected["products"]:
         urls = [(i.get("metadata") or {}).get("source_url") for i in (collected.get("product_images") or {}).get(p["name"], [])
                 if i.get("extraction_layer") == "manufacturer_original" and "excluded_from_products" not in (i.get("metadata") or {})]
-        site_names[p["name"]] = sr.site_variant_names([u for u in urls if u], p["name"])
+        site_names[p["name"]] = sr.site_variant_names([u for u in urls if u and not sr.is_room_scene(u)], p["name"])
     # A word in two or more series' photo names is the maker's collection or language word, not a variant.
     spread: Dict[str, int] = {}
     for variants in site_names.values():

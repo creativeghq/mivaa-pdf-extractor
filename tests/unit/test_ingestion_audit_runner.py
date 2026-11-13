@@ -249,3 +249,13 @@ def test_a_photo_named_after_the_same_series_in_another_size_is_not_foreign():
               "ALCHEMY": [{"extraction_layer": "manufacturer_original", "metadata": {"source_url": url}}]}
     cov = {c["product"]: c["foreign_site_photos"] for c in runner.series_coverage({"layout": [], "products": products, "product_images": images})}
     assert cov["SPATULA 30x90"] == [] and cov["ALCHEMY"] == ["SPATULA"]
+
+
+def test_a_room_photo_name_is_not_a_missing_variant():
+    urls = ["https://cereuro.it/upload/serie/ambienti/43/AMB_XS_METAFISICO_PALETTE_ROUGE_XS.jpg",
+            "https://cereuro.it/upload/serie/ambienti/13/amb_sogno_bianco_grigio_758448805.png"]
+    products = [{"id": "x", "name": "XS", "attributes": {"color": ["x1"]}, "metadata": {"page_range": [20]}},
+                {"id": "s", "name": "SOGNO", "attributes": {"color": ["white"]}, "metadata": {"page_range": [232]}}]
+    images = {"XS": [{"extraction_layer": "manufacturer_original", "metadata": {"source_url": urls[0]}}],
+              "SOGNO": [{"extraction_layer": "manufacturer_original", "metadata": {"source_url": urls[1]}}]}
+    assert all(c["missing_variants"] == [] for c in runner.series_coverage({"layout": [], "products": products, "product_images": images}))

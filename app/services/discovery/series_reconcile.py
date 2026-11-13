@@ -126,6 +126,20 @@ def one_slip(a: str, b: str) -> bool:
     return any(long_[:i] + long_[i + 1:] == short for i in range(len(long_)))
 
 
+ROOM_SCENE_MARKERS = {"amb", "ambi", "ambient", "ambiente", "ambienti"}
+
+
+def is_room_scene(url: str) -> bool:
+    """A room photo TITLED as one (`.../ambienti/AMB_XS_METAFISICO...jpg`): the rest of its name is the scene, not a variant.
+
+    A trailing marker (`SKYATOS-GOLS-60X120-AMB.jpg`) still names the variant first, so it is not this.
+    """
+    path = fold(url or "").split("?", 1)[0]
+    folders = set(re.split(r"[/]+", path.rsplit("/", 1)[0]))
+    head = re.split(r"[-_.]+", path.rsplit("/", 1)[-1])[0]
+    return head in ROOM_SCENE_MARKERS or bool(folders & ROOM_SCENE_MARKERS)
+
+
 def site_variant_names(urls: Iterable[str], name: str) -> List[str]:
     """`SABOYA-OLAS-BEIGE-en-t6VT….jpg` -> "olas beige": what the maker calls the variant it photographed."""
     head = fold(name).split()

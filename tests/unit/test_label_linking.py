@@ -97,3 +97,11 @@ def test_a_page_printing_the_products_own_longer_name_is_its_own_page():
     page = [_line(0.1, 0.42, 0.4, 0.45, "FENIX TERRA 30x60"), _line(0.55, 0.42, 0.8, 0.45, "ARDENZA 25x25")]
     assert ll.names_only_others(page, series, "fenix")
     assert not ll.names_only_others(page, series, {"fenix", "fenix terra"})
+
+
+def test_a_word_that_is_another_documents_series_on_the_products_own_page_is_not_another_series_page():
+    own = [{"id": "g", "name": "GRAVITY", "metadata": {"page_range": [4, 14, 16]}}, {"id": "s", "name": "STONE", "metadata": {"page_range": [20]}}]
+    outdoor = {"current": {"g"}, "image": {"page_number": 14}, "printed": ["outdoor"]}
+    assert ll.on_own_page(outdoor, own)
+    assert not ll.on_own_page({**outdoor, "printed": ["stone"]}, own)
+    assert not ll.on_own_page({**outdoor, "image": {"page_number": 20}}, own)

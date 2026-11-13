@@ -326,9 +326,21 @@ async def relink_by_labels(supabase: Any, document_id: str, pdf_bytes: bytes, ap
 
 async def other_series_images(supabase: Any, document_id: str, pdf_bytes: bytes) -> List[Dict[str, Any]]:
     """Images held by one product on a half page that prints only other series' names."""
-    _, _, decisions = await _decisions(supabase, document_id, pdf_bytes)
+    db, _, decisions = await _decisions(supabase, document_id, pdf_bytes)
+    flagged = [d for d in decisions if d["only_others"]]
+    if not flagged:
+        return []
+    own = _all(lambda: db.table("products").select("id, name, metadata").eq("source_document_id", document_id).order("id"))
     return [{"image_id": d["image"]["id"], "page": d["image"]["page_number"], "product": d["product"],
-             "printed": d["printed"], "label": d["name"]} for d in decisions if d["only_others"]]
+             "printed": d["printed"], "label": d["name"]} for d in flagged if not on_own_page(d, own)]
+
+
+def on_own_page(decision: Dict[str, Any], own: Sequence[Dict[str, Any]]) -> bool:
+    """The image's page is in its product's range and names no series of THIS document ("OUTDOOR FLOOR" is a word)."""
+    ranges = {p["id"]: set((p.get("metadata") or {}).get("page_range") or []) for p in own}
+    here = {" ".join(tokens_of(p["name"])) for p in own}
+    pid = next(iter(decision["current"]))
+    return decision["image"]["page_number"] in ranges.get(pid, set()) and not here & set(decision["printed"])
 
 
 
