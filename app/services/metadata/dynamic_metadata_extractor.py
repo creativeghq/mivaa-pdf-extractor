@@ -828,9 +828,21 @@ class DynamicMetadataExtractor:
             if key not in inserted:
                 # A verdict on a field this run did not create is a PROPOSAL: one document must
                 # not flip a role every tenant's variant selector reads.
+                # Recorded for the Field Roles screen, where a person decides it.
                 report["role_proposals"].append({"field_name": key, "role": role, "signal": signal})
-                self.logger.info("Role proposal (not written) for existing field %s: %s via %s"
-                                 % (key, role, signal))
+                try:
+                    supabase.client.rpc("record_field_role_proposal", {
+                        "p_field_name": key,
+                        "p_role": role,
+                        "p_signal": signal,
+                        "p_confidence": confidence,
+                        "p_reason": reason,
+                        "p_category": observed_category,
+                        "p_job_id": self.job_id,
+                    }).execute()
+                except Exception as e:  # noqa: BLE001
+                    self.logger.warning("record_field_role_proposal(%s) failed: %s" % (key, e))
+                    report["errors"].append(f"proposal:{key}: {e}")
                 continue
             try:
                 supabase.client.rpc("classify_field_role", {

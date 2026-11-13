@@ -137,6 +137,30 @@ def test_a_category_scoped_alias_wins_only_inside_its_category(env):
     assert env.registry.resolve_field_key("thickness_mm", "tiles") == "thickness_mm"
 
 
+# (name, key) pairs checked against SQL public.field_name_compact_key on 2026-11-13.
+COMPACT_KEY_CASES = [
+    ("din_55_900_compliance", "din55900compliance"), ("din_55900_compliance", "din55900compliance"),
+    ("patterns_count", "patterncount"), ("factory_name", "factoryname"), ("factory", "factory"),
+    ("slip_resistance_rating", "slipresistance"), ("impact_resistance_value", "impactresistance"),
+    ("glass_thickness_mm", "glassthicknessmm"), ("series", "sery"), ("gas", "gas"),
+    ("Pieces-per Box", "pieceperbox"), ("name", "name"), ("v_rating", "v"), ("", ""),
+]
+
+
+@pytest.mark.parametrize("name,key", COMPACT_KEY_CASES)
+def test_the_compact_key_matches_the_sql_index(env, name, key):
+    mod = sys.modules["app.services.metadata.field_registry"]
+    assert mod.field_compact_key(name) == key
+
+
+def test_a_spelling_twin_resolves_to_the_registered_field(env):
+    assert env.registry.resolve_field_key("colors_label") == "color"
+    assert env.registry.resolve_field_key("color_name") is None, "a _name field is its own field"
+    assert env.registry.resolve_field_key("applications_text") == "application"
+    assert env.registry.resolve_field_key("grout_color_code") == "grout_color_codes"
+    assert env.registry.resolve_field_key("v_ratings", "tiles") == "v_rating"
+
+
 def test_one_retired_name_split_by_category_is_ambiguous_without_one(env):
     assert env.registry.resolve_field_key("shade_variation", "tiles") == "v_rating"
     assert env.registry.resolve_field_key("shade_variation", "wood") == "color_variation"

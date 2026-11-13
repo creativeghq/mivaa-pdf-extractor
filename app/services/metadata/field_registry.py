@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import unicodedata
 from dataclasses import dataclass, field as dc_field
@@ -115,6 +116,30 @@ def field_key_candidates(name: Any) -> List[str]:
         for variant in _plural_variants(base):
             add(variant)
     return seen
+
+
+#: Not `name`: `factory` (the maker container) and `factory_name` are different things.
+_COMPACT_DROP_LAST = frozenset({"value", "rating", "text", "label"})
+
+
+def field_compact_key(name: Any) -> str:
+    """Spelling-insensitive name; byte-for-byte the SQL `field_name_compact_key`.
+
+    The DB holds a unique index on it, so a name with the same key as an active field (or one of
+    its aliases) is the same field: `patterns_count`, `din_55_900_compliance`, `slip_resistance_rating`.
+    """
+    s = re.sub(r"[^a-z0-9]+", "_", str(name or "").lower()).strip("_")
+    tokens = [t for t in s.split("_") if t != ""] if s else []
+    if len(tokens) > 1 and tokens[-1] in _COMPACT_DROP_LAST:
+        tokens = tokens[:-1]
+    out = []
+    for tok in tokens:
+        if tok.endswith("ies") and len(tok) > 4:
+            tok = tok[:-3] + "y"
+        elif tok.endswith("s") and not tok.endswith("ss") and len(tok) > 3:
+            tok = tok[:-1]
+        out.append(tok)
+    return "".join(out)
 
 
 def _parse_aliases(raw: Any) -> List[tuple]:
@@ -217,6 +242,8 @@ class _Cache:
     loaded_at: float = 0.0
     #: lowercased alias -> [(field_name, factor)], every field that claims it.
     alias_index: Dict[str, List[tuple]] = dc_field(default_factory=dict)
+    #: field_compact_key -> field names whose name or unscaled alias has that key.
+    compact_index: Dict[str, List[str]] = dc_field(default_factory=dict)
 
 
 class FieldRegistry:
@@ -334,6 +361,13 @@ class FieldRegistry:
             for alias in spec.aliases:
                 factor = (spec.alias_factors or {}).get(alias, 1.0)
                 alias_index.setdefault(alias, []).append((spec.name, factor))
+        compact_index: Dict[str, List[str]] = {}
+        for spec in fields.values():
+            names = [spec.name] + [a for a in spec.aliases if (spec.alias_factors or {}).get(a, 1.0) == 1.0]
+            for n in names:
+                ck = field_compact_key(n)
+                if ck and spec.name not in compact_index.get(ck, ()):
+                    compact_index.setdefault(ck, []).append(spec.name)
         categories = {
             r["category_key"]: CategorySpec(
                 key=r["category_key"],
@@ -357,6 +391,7 @@ class FieldRegistry:
             fallback_category=fallback,
             loaded_at=time.monotonic(),
             alias_index=alias_index,
+            compact_index=compact_index,
         )
         logger.info(
             "📋 Field registry loaded: %d fields (%d identity, %d canonicalizable, "
@@ -434,6 +469,13 @@ class FieldRegistry:
             hits = set(cache.alias_index.get(cand, ()))
             if len(hits) == 1:
                 return next(iter(hits))
+        names = cache.compact_index.get(field_compact_key(key), ())
+        if category:
+            scoped = [n for n in names if cache.fields[n].applies_to(category)]
+            if len(scoped) == 1:
+                return scoped[0], 1.0
+        if len(names) == 1:
+            return names[0], 1.0
         return None
 
     def resolve_field_key(self, key: Any, category_key: Optional[str] = None) -> Optional[str]:

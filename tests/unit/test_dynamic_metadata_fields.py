@@ -424,6 +424,22 @@ def test_a_role_verdict_on_an_existing_field_is_a_proposal_never_a_write(env):
     assert any("field_role_llm" in e for e in report["errors"]), "the new list field reached the model tier"
 
 
+def test_an_sku_verdict_on_an_existing_field_is_recorded_for_a_person(env):
+    m = env.extractor_mod
+    extractor = m.DynamicMetadataExtractor(workspace_id="ws-1", job_id="job-9")
+    data = {"critical": {"material_category": {"value": "table_lamp"}},
+            "unknown": {"finish": ["matte", "gloss"],
+                        "sku_codes": {"Lamp matte": "A1", "Lamp gloss": "A2"}}}
+    report = asyncio.run(extractor._register_and_classify_fields(data, category_hint="lighting"))
+
+    assert [p["p_field_name"] for n, p in env.fake.rpcs if n == "classify_field_role"
+            and p["p_field_name"] == "finish"] == [], "an existing field is never re-roled by a document"
+    recorded = [p for n, p in env.fake.rpcs if n == "record_field_role_proposal"]
+    assert [(p["p_field_name"], p["p_role"], p["p_signal"], p["p_job_id"]) for p in recorded] == [
+        ("finish", "identity", "sku_correlation", "job-9")]
+    assert report["role_proposals"] == [{"field_name": "finish", "role": "identity", "signal": "sku_correlation"}]
+
+
 def test_a_lost_insert_race_is_already_registered_not_an_error(env):
     env.fake.tables["material_metadata_fields"].append(_field("lumens", status="candidate"))
     m = env.extractor_mod
