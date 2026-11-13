@@ -573,7 +573,7 @@ class AIPricingConfig:
         Get pricing for a specific model.
 
         Args:
-            model: Model name (e.g., 'claude-haiku-4-5', 'claude-opus-5', 'voyage-4')
+            model: Model name (e.g., 'claude-haiku-5-5', 'claude-opus-5-5', 'voyage-4')
             provider: Optional provider hint ('anthropic', 'openai', 'huggingface', 'firecrawl')
 
         Returns:

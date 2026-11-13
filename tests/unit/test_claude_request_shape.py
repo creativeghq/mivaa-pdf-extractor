@@ -58,7 +58,6 @@ def test_block_system_prompt_gets_the_instruction_appended_as_a_block() -> None:
     assert out["system"][0] == system[0] and len(out["system"]) == 2
 
 
-def test_only_the_previous_haiku_accepts_sampling() -> None:
-    assert cm.accepts_sampling_params("claude-haiku-4-5")
+def test_no_current_model_accepts_sampling() -> None:
     for model in (cm.OPUS, cm.SONNET, cm.HAIKU):
         assert not cm.accepts_sampling_params(model)

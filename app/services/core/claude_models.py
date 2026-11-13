@@ -19,7 +19,7 @@ _BETWEEN_TOOLS = ("claude-sonnet-5-5",)
 #: Thinks by default where its predecessor did not, so an unset `thinking` is turned off.
 _THINKING_OFF_UNLESS_ASKED = ("claude-haiku-5-5",)
 #: The only models still accepting `temperature` / `top_p` / `top_k`.
-_ACCEPTS_SAMPLING = ("claude-haiku-4-5",)
+_ACCEPTS_SAMPLING = ()
 
 _THINKING_OFF_EFFORTS = (None, "low", "medium", "high")
 
