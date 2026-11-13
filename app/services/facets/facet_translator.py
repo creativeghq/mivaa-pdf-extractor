@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import time
+import unicodedata
 from typing import Dict, List, Tuple
 
 
@@ -147,7 +148,8 @@ async def translate_facet_values_with_status(
         rv = entry.get("raw")
         en = entry.get("english")
         if isinstance(fk, str) and isinstance(rv, str) and isinstance(en, str) and en.strip():
-            translated = en.strip().lower()
+            # Fold accents: a proper noun the model keeps ("peldaño") is still an English answer.
+            translated = unicodedata.normalize('NFKD', en.strip().lower()).encode('ascii', 'ignore').decode()
             if is_ascii_english(translated):
                 by_key[(fk, rv)] = translated
 

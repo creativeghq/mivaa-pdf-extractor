@@ -73,9 +73,11 @@ def _replay_source(product: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(raw, dict) or not raw:
         return dict(meta)
 
-    source: Dict[str, Any] = {
-        k: list(v) if isinstance(v, list) else v for k, v in raw.items()
-    }
+    source: Dict[str, Any] = {}
+    for k, v in raw.items():
+        kept = _raw_strings(v)
+        if kept:
+            source[k] = kept
     for key, value in meta.items():
         if not isinstance(key, str) or key.startswith('_') or not is_canonicalizable(key):
             continue

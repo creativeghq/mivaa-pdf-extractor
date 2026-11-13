@@ -23,6 +23,10 @@ _THRESHOLD = 0.92
 _MAX_RAW_VALUE_CHARS = 300
 
 
+#: A Python/JSON repr of a mapping or list stored as text by an older writer — never a facet value.
+_SERIALIZED_CONTAINER_RE = re.compile(r"^\s*(\{.*:.*\}|\[.*\])\s*$", re.S)
+
+
 def _raw_strings(value: Any) -> List[str]:
     """The replayable raw strings in a metadata value: scalars and lists of scalars only."""
     items = value if isinstance(value, (list, tuple)) else [value]
@@ -31,6 +35,8 @@ def _raw_strings(value: Any) -> List[str]:
         if item is None or isinstance(item, (dict, list, tuple)):
             continue
         text = str(item).strip()
+        if _SERIALIZED_CONTAINER_RE.match(text):
+            continue
         if text and len(text) <= _MAX_RAW_VALUE_CHARS and text not in out:
             out.append(text)
     return out

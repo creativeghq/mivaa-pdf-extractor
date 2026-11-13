@@ -147,3 +147,10 @@ def test_force_mode_exists_and_disables_reuse(facets):
     assert "force: bool = False" in src
     assert "reuse_existing=not force" in src
     assert "q.lte('facet_canonicalization_version', target_version)" in src
+
+
+def test_a_mapping_stored_as_text_is_never_a_raw_value(facets):
+    raw = facets.canon.collect_raw_attributes({
+        "slip_resistance": ["{'30×120 cm': 'R10', '20×120 cm': 'R11'}", "R10", "['a', 'b']"],
+    })
+    assert raw == {"slip_resistance": ["R10"]}
