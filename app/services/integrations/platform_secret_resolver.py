@@ -75,7 +75,7 @@ def require_secret(key: str) -> str:
     if not r.value:
         raise RuntimeError(
             f'Secret "{key}" is not configured. Set it via env var or '
-            f'/admin/operations → Keys.'
+            f'/admin/modules?tab=platform-keys.'
         )
     return r.value
 

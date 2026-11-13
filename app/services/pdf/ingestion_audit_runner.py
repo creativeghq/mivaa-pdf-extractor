@@ -376,7 +376,7 @@ def _notify(settings: Any, db: Any, document: Dict[str, Any], status: str, resul
                 "title": title,
                 "body": body,
                 "type": "ingestion_audit",
-                "action_url": "/admin/operations?tab=catalogs",
+                "action_url": "/admin/ingestion-quality",
                 "document_id": document["id"],
                 "job_id": job_id,
                 "audit_id": audit_id,
