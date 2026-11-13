@@ -19,6 +19,10 @@ _MODEL = "claude-haiku-5-5"
 _ASCII_ONLY_RE = re.compile(r'^[\x00-\x7f]+$')
 
 
+def _token_budget(items: List[Tuple[str, str]]) -> int:
+    return min(4096, 60 + sum(40 + len(fk) + len(rv) for fk, rv in items))
+
+
 def _fold(value: str) -> str:
     return unicodedata.normalize('NFKD', (value or '').strip().lower()).encode('ascii', 'ignore').decode()
 
@@ -134,7 +138,8 @@ async def translate_facet_values_with_status(
         result = await call_with_tool(
             task="facet_translation",
             model=_MODEL,
-            max_tokens=min(4096, 60 + 40 * len(needs_translation)),
+            # Each answer echoes the raw value AND translates it, so the budget scales with its length.
+            max_tokens=_token_budget(needs_translation),
             messages=[{"role": "user", "content": user_prompt}],
             tool=_TRANSLATE_TOOL,
         )

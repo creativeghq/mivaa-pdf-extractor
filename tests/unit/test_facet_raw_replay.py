@@ -177,3 +177,10 @@ def test_a_translation_whose_echo_drops_an_accent_still_counts(facets, monkeypat
         facets.translator.translate_facet_values_with_status([("slip_resistance", raw)]))
     assert degraded is False
     assert out == {("slip_resistance", raw): "antislip p260 (extruded step)"}
+
+
+def test_the_token_budget_covers_echoing_a_long_value(facets):
+    raw = "Antislip P260 (Peldaño Extrusionado, Redstone series)"
+    # 100 tokens was the old fixed budget for one item, and this value never fit in it.
+    assert facets.translator._token_budget([("slip_resistance", raw)]) > 100 + len(raw)
+    assert facets.translator._token_budget([("c", "x" * 300)] * 50) == 4096
