@@ -19,6 +19,10 @@ _MODEL = "claude-haiku-5-5"
 _ASCII_ONLY_RE = re.compile(r'^[\x00-\x7f]+$')
 
 
+def _fold(value: str) -> str:
+    return unicodedata.normalize('NFKD', (value or '').strip().lower()).encode('ascii', 'ignore').decode()
+
+
 def is_ascii_english(value: str) -> bool:
     return bool(_ASCII_ONLY_RE.match(value or ""))
 
@@ -149,11 +153,17 @@ async def translate_facet_values_with_status(
         en = entry.get("english")
         if isinstance(fk, str) and isinstance(rv, str) and isinstance(en, str) and en.strip():
             # Fold accents: a proper noun the model keeps ("peldaño") is still an English answer.
-            translated = unicodedata.normalize('NFKD', en.strip().lower()).encode('ascii', 'ignore').decode()
+            translated = _fold(en)
             if is_ascii_english(translated):
                 by_key[(fk, rv)] = translated
 
-    out.update(by_key)
+    # The model may echo `raw` with accents or case changed; match on the folded echo too.
+    by_folded = {(fk, _fold(rv)): en for (fk, rv), en in by_key.items()}
+    for fk, rv in needs_translation:
+        if (fk, rv) not in by_key and (fk, _fold(rv)) in by_folded:
+            by_key[(fk, rv)] = by_folded[(fk, _fold(rv))]
+
+    out.update({pair: by_key[pair] for pair in needs_translation if pair in by_key})
     missing = [pair for pair in needs_translation if pair not in by_key]
     if missing:
         logger.warning("facet-translator: %d of %d value(s) came back untranslated (degraded)",

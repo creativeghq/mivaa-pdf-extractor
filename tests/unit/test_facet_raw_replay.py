@@ -154,3 +154,26 @@ def test_a_mapping_stored_as_text_is_never_a_raw_value(facets):
         "slip_resistance": ["{'30×120 cm': 'R10', '20×120 cm': 'R11'}", "R10", "['a', 'b']"],
     })
     assert raw == {"slip_resistance": ["R10"]}
+
+
+def test_a_translation_whose_echo_drops_an_accent_still_counts(facets, monkeypatch):
+    raw = "Antislip P260 (Peldaño Extrusionado)"
+    monkeypatch.setattr(sys.modules["app.services.integrations.platform_secret_resolver"],
+                        "resolve_secret", lambda key: types.SimpleNamespace(value="k", source="env"))
+
+    async def _prompt(_items):
+        return "p"
+    monkeypatch.setattr(facets.translator, "_build_user_prompt", _prompt)
+
+    async def _call(**_kw):
+        return types.SimpleNamespace(data={"translations": [
+            {"facet_key": "slip_resistance", "raw": "antislip p260 (peldano extrusionado)",
+             "english": "antislip p260 (extruded step)"}]})
+    tool_mod = types.ModuleType("app.services.core.claude_tool_call")
+    tool_mod.call_with_tool = _call
+    monkeypatch.setitem(sys.modules, "app.services.core.claude_tool_call", tool_mod)
+
+    out, degraded = asyncio.run(
+        facets.translator.translate_facet_values_with_status([("slip_resistance", raw)]))
+    assert degraded is False
+    assert out == {("slip_resistance", raw): "antislip p260 (extruded step)"}
