@@ -11,6 +11,9 @@ from typing import Any, Dict, List, NamedTuple, Optional
 
 import httpx
 
+from app.services.core.gemini_models import (
+    GEMINI_FRONTIER, GEMINI_TEXT, gemini_output_tokens, gemini_thinking_config,
+)
 from app.services.core.supabase_client import get_supabase_client
 from app.services.integrations.llm_probe_templates import build_probes
 from app.services.integrations.llm_visibility_math import (
@@ -58,13 +61,13 @@ OPENAI_API = "https://api.openai.com/v1/chat/completions"
 
 # Cheap tier — Haiku uses the dated form because we hit Anthropic's HTTP API directly
 HAIKU = "claude-haiku-5-5"
-GEMINI_FLASH = "gemini-2.0-flash"
+GEMINI_FLASH = GEMINI_TEXT
 SONAR = "sonar"
 GPT_MINI = "gpt-5-mini"
 
 # Frontier tier (#349 A7) — the models a person is actually answered by.
 OPUS = "claude-opus-5-5"
-GEMINI_PRO = "gemini-3.1-pro"
+GEMINI_PRO = GEMINI_FRONTIER
 SONAR_PRO = "sonar-pro"
 GPT = "gpt-5"
 
@@ -111,7 +114,7 @@ TIER_MODELS: Dict[str, List[str]] = {
 # Token-cost in USD per 1K tokens (input, output) — for ai_usage_logs
 COST_TABLE: Dict[str, Dict[str, float]] = {
     HAIKU: {"input": 0.0001, "output": 0.0005},
-    GEMINI_FLASH: {"input": 0.00010, "output": 0.0004},
+    GEMINI_FLASH: {"input": 0.0015, "output": 0.0075},
     SONAR: {"input": 0.0010, "output": 0.0010},
     GPT_MINI: {"input": 0.00025, "output": 0.002},
     # Frontier. These are a LOCAL ESTIMATE for the `total_cost_usd` the probe reports back
@@ -119,7 +122,7 @@ COST_TABLE: Dict[str, Dict[str, float]] = {
     # `ai_model_pricing` by `log_llm_probe_call`, which is the platform's single USD
     # source. Two numbers with two jobs — do not let this one become a second ledger.
     OPUS: {"input": 0.005, "output": 0.025},
-    GEMINI_PRO: {"input": 0.00125, "output": 0.010},
+    GEMINI_PRO: {"input": 0.004, "output": 0.020},
     SONAR_PRO: {"input": 0.003, "output": 0.015},
     GPT: {"input": 0.00125, "output": 0.010},
 }
@@ -671,7 +674,10 @@ class LlmMentionProbeService:
                 headers={"Content-Type": "application/json"},
                 json={
                     "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                    "generationConfig": {"maxOutputTokens": 1500},
+                    "generationConfig": {
+                        "maxOutputTokens": 4000,
+                        "thinkingConfig": gemini_thinking_config(model),
+                    },
                     "tools": [{"google_search": {}}],
                 },
             )
@@ -684,7 +690,7 @@ class LlmMentionProbeService:
             return ModelReply(
                 text.strip(),
                 int(u.get("promptTokenCount") or 0),
-                int(u.get("candidatesTokenCount") or 0),
+                gemini_output_tokens(u),
                 int((time.time() - start) * 1000),
                 None,
                 dedupe_urls(gemini_citation_urls(cands[0] if cands else {})),
