@@ -19,6 +19,7 @@ from app.models.vision_analysis import (
 )
 from app.config import get_settings
 from app.services.images.vision_prompt import load_material_analyzer_prompt
+from app.services.images.vision_provider import VisionProvider
 from app.services.core.supabase_client import get_supabase_client
 from app.services.embeddings.real_embeddings_service import RealEmbeddingsService
 from app.services.embeddings.vecs_service import get_vecs_service
@@ -230,7 +231,11 @@ async def _persist_vision_analysis(image_id: str, va: VisionAnalysis) -> bool:
             lambda: client.table("document_images")
             # No understanding_schema_version here: the vector upsert stamps it, so a
             # failed embed leaves the row stale and the next run retries it.
-            .update({"vision_analysis": va.model_dump()})
+            .update({
+                "vision_analysis": va.model_dump(),
+                "vision_provider": VisionProvider.CLAUDE.value,
+                "vision_model": get_settings().anthropic_model_validation,
+            })
             .eq("id", image_id)
             .execute()
         )
