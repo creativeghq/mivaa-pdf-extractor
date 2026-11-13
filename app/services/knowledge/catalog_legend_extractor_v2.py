@@ -27,6 +27,7 @@ from app.services.core.anthropic_error_reporter import report_anthropic_failure
 from app.services.utilities.prompt_registry import load_prompt
 
 from app.utils.tenancy import assert_document_in_workspace
+from app.services.metadata.metadata_shape import take_certifications
 
 logger = logging.getLogger(__name__)
 
@@ -449,24 +450,11 @@ async def extract_catalog_legends(
                 md = row.get("metadata") or {}
                 if not isinstance(md, dict):
                     md = {}
-                compliance = md.get("compliance") or {}
-                if not isinstance(compliance, dict):
-                    compliance = {}
-                existing = compliance.get("certifications") or []
-                if not isinstance(existing, list):
-                    existing = []
-                merged = _dedupe_norm([*existing, *all_certifications])
-                compliance["certifications"] = merged
-                compliance["certifications_source"] = "catalog_legend"
-                md["compliance"] = compliance
-                # Provenance tag
-                em = md.get("_extraction_metadata") or {}
-                if isinstance(em, dict):
-                    em["compliance.certifications"] = {
-                        "source": "catalog_legend",
-                        "confidence": 0.9,
-                    }
-                    md["_extraction_metadata"] = em
+                merged = _dedupe_norm([*take_certifications(md), *all_certifications])
+                md["certifications"] = merged
+                em = md.get("_extraction_metadata") if isinstance(md.get("_extraction_metadata"), dict) else {}
+                em["certifications"] = {"source": "catalog_legend", "confidence": 0.9}
+                md["_extraction_metadata"] = em
                 try:
                     (
                         supabase.client.table("products")

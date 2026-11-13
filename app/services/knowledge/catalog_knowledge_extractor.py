@@ -15,6 +15,7 @@ from app.services.core.anthropic_error_reporter import report_anthropic_failure
 from app.services.utilities.prompt_registry import load_prompt
 
 from app.utils.tenancy import assert_products_in_document
+from app.services.metadata.metadata_shape import take_certifications
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +218,7 @@ async def extract_catalog_knowledge_from_pdf(
     # Aggregate every certification/standard spotted across the catalog-wide
     # knowledge pages. The catalog-level set applies to every product in the
     # document — after we've built this set we write it to each product's
-    # metadata.compliance.certifications so the UI can render it as chips.
+    # metadata.certifications so the UI can render it as chips.
     catalog_certifications: List[str] = []
     seen_cert_norms: set = set()
 
@@ -407,7 +408,7 @@ async def extract_catalog_knowledge_from_pdf(
     # ─── Propagate catalog certifications to every product ──────────────
     # Certifications at the catalog level (ISO / CE / LEED / EN standards)
     # apply to every product in the document. We write them to each
-    # product's metadata.compliance.certifications, merging with anything
+    # product's metadata.certifications, merging with anything
     # the product already has. Rendered as chips in the product detail UI.
     if catalog_certifications:
         log.info(
@@ -425,15 +426,7 @@ async def extract_catalog_knowledge_from_pdf(
                     md = row.get("metadata") or {}
                     if not isinstance(md, dict):
                         md = {}
-                    compliance = md.get("compliance") or {}
-                    if not isinstance(compliance, dict):
-                        compliance = {}
-
-                    # Merge with what's already there (per-product vision may
-                    # have found product-specific certifications too).
-                    existing_certs = compliance.get("certifications") or []
-                    if not isinstance(existing_certs, list):
-                        existing_certs = []
+                    existing_certs = take_certifications(md)
                     merged_norms = {
                         str(c).lower().replace(" ", "").replace("-", "")
                         for c in existing_certs if isinstance(c, str)
@@ -445,10 +438,10 @@ async def extract_catalog_knowledge_from_pdf(
                             merged_list.append(cert)
                             merged_norms.add(norm)
 
-                    compliance["certifications"] = merged_list
-                    # Trace where these came from for debugging/backfills.
-                    compliance["certifications_source"] = "catalog_knowledge"
-                    md["compliance"] = compliance
+                    md["certifications"] = merged_list
+                    em = md.get("_extraction_metadata") if isinstance(md.get("_extraction_metadata"), dict) else {}
+                    em["certifications"] = {"source": "catalog_knowledge", "confidence": 0.9}
+                    md["_extraction_metadata"] = em
 
                     supabase.client.table("products").update({
                         "metadata": md,

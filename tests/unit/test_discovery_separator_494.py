@@ -291,6 +291,7 @@ def legend(monkeypatch):
     _stub(monkeypatch, "app.services.core.anthropic_error_reporter", report_anthropic_failure=lambda *a, **k: None)
     _stub(monkeypatch, "app.services.utilities.prompt_registry", load_prompt=None)
     _stub(monkeypatch, "app.utils.tenancy", assert_document_in_workspace=lambda *a: None)
+    _stub(monkeypatch, "app.services.metadata.metadata_shape", take_certifications=lambda md: [])
     return _load_path(_LEGEND, "_legend_494")
 
 

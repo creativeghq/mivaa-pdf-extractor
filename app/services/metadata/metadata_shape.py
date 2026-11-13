@@ -20,3 +20,18 @@ def flatten_extracted_metadata(extracted: Dict[str, Any]) -> Dict[str, Any]:
             flat[section] = fields
     flat.update(extracted.get("critical") or {})
     return flat
+
+
+def take_certifications(md: Dict[str, Any]) -> list:
+    """Return the product's certifications and drop any legacy `compliance.certifications` copy."""
+    top = md.get("certifications")
+    certs = list(top) if isinstance(top, list) else []
+    compliance = md.get("compliance")
+    if isinstance(compliance, dict):
+        nested = compliance.pop("certifications", None)
+        compliance.pop("certifications_source", None)
+        if isinstance(nested, list):
+            certs.extend(c for c in nested if c not in certs)
+        if not compliance:
+            md.pop("compliance", None)
+    return certs
