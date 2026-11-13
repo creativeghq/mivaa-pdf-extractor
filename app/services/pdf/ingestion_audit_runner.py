@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import tempfile
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -58,6 +59,14 @@ def _table_text(table: Dict[str, Any]) -> str:
     return " | ".join([str(h) for h in (table.get("headers") or [])] + cells)
 
 
+SPLIT_DECIMAL = re.compile(r"(\d)([.,])\s+(\d)")
+
+
+def loose_reference(words: List[Any]) -> set:
+    """Numbers the text layer splits across words ("58," "88"): only ever used to SUPPORT a stored value."""
+    return numeric_tokens(SPLIT_DECIMAL.sub(r"\1\2\3", " ".join(w[4] for w in words)))
+
+
 def source_pages(pdf_bytes: bytes, layout_rows: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
     import fitz
 
@@ -80,10 +89,12 @@ def source_pages(pdf_bytes: bytes, layout_rows: List[Dict[str, Any]]) -> Dict[in
                 clip = fitz.Rect(0, 0, half, page.rect.height) if position == "left" else fitz.Rect(half, 0, page.rect.width, page.rect.height)
             words = [(w[0], w[1], w[2], w[3], w[4]) for w in page.get_text("words", clip=clip)]
             verdict = assess_text_layer(words, 0.0)
+            usable = verdict.usable or len(words) >= 25
             out[int(row["page_number"])] = {
                 "words": words,
-                "usable": verdict.usable or len(words) >= 25,
-                "reference": reference_numbers(words) if (verdict.usable or len(words) >= 25) else set(),
+                "usable": usable,
+                "reference": reference_numbers(words) if usable else set(),
+                "loose": loose_reference(words) if usable else set(),
             }
         doc.close()
     finally:
@@ -269,6 +280,7 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
             "page": number,
             "route": meta.get("route"),
             "reference_numbers": source.get("reference") or set(),
+            "loose_reference_numbers": source.get("loose") or set(),
             "platform_numbers": platform_numbers_for_page(_element_text(row.get("layout_elements") or []), chunks_by_page.get(number, []), tables_by_page.get(number, []))
             | set().union(*(numbers_by_product.get(pid, set()) for pid in owners.get(number, [])))
             | (unowned_numbers if number not in owners else set()),
@@ -336,6 +348,13 @@ def build_audit(document: Dict[str, Any], collected: Dict[str, Any], pdf_bytes: 
         unresolved_paths=collected.get("unresolved_paths"),
         open_corrections=collected.get("open_corrections"),
     )
+
+
+def covered_by_clean(findings: List[Dict[str, Any]], cleaned: List[Dict[str, Any]]) -> bool:
+    """Every finding that needs someone was already marked clean, at the same count or lower."""
+    before = {f.get("code"): int(f.get("count") or 0) for f in cleaned}
+    return all(f.get("code") in before and int(f.get("count") or 0) <= before[f.get("code")]
+               for f in findings if f.get("severity") in ("warn", "fail"))
 
 
 def _notify(settings: Any, db: Any, document: Dict[str, Any], status: str, result: Dict[str, Any], audit_id: Optional[str], job_id: Optional[str]) -> int:
@@ -410,6 +429,16 @@ async def run_ingestion_audit(
             "workspace_id": document["workspace_id"], "document_id": document_id, "job_id": job_id, "status": status, "phase": phase,
             "trigger": trigger, "metrics": result["metrics"], "findings": result["findings"], "code_version": CODE_VERSION,
         }
+        if status != "passed":
+            try:
+                cleaned = _rows(await asyncio.to_thread(
+                    db.table("ingestion_audits").select("findings, acknowledged_at, acknowledged_by").eq("document_id", document_id)
+                    .not_.is_("acknowledged_at", "null").order("created_at", desc=True).limit(1).execute))
+                if cleaned and covered_by_clean(result["findings"], cleaned[0].get("findings") or []):
+                    row.update(acknowledged_at=cleaned[0]["acknowledged_at"], acknowledged_by=cleaned[0].get("acknowledged_by"))
+                    notify = False
+            except Exception as exc:
+                log.warning("audit of %s could not read its last clean mark: %s", document_id, exc)
         try:
             saved = _rows(await asyncio.to_thread(db.table("ingestion_audits").insert(row).execute))
             audit_id = saved[0]["id"] if saved else None
@@ -431,3 +460,20 @@ async def run_ingestion_audit(
         except Exception as exc:
             log.warning("audit of %s could not notify anyone: %s", document_id, exc)
     return {"status": status, "audit_id": audit_id, "notified": notified, "metrics": result["metrics"], "findings": result["findings"]}
+
+
+async def recheck_documents(supabase: Any, settings: Any, workspace_id: str, document_ids: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Re-audit documents against what the platform holds NOW, so a finding a later fix closed stops showing."""
+    db = supabase.client
+    if document_ids:
+        rows = _rows(await asyncio.to_thread(db.table("documents").select("id").eq("workspace_id", workspace_id).in_("id", document_ids).execute))
+    else:
+        rows = _rows(await asyncio.to_thread(
+            db.table("ingestion_audit_latest").select("document_id").eq("workspace_id", workspace_id).execute))
+        rows = [{"id": r["document_id"]} for r in rows]
+    out: Dict[str, Any] = {"checked": 0, "statuses": {}}
+    for r in rows:
+        res = await run_ingestion_audit(r["id"], supabase, settings, trigger="manual", notify=False)
+        out["checked"] += 1
+        out["statuses"][res["status"]] = out["statuses"].get(res["status"], 0) + 1
+    return out

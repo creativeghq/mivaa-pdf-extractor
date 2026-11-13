@@ -11,6 +11,8 @@ from app.services.pdf.ocr_completeness import numeric_tokens
 
 PASS = "pass"
 WARN = "warn"
+# A fact worth showing that needs nobody: it never moves the status off pass.
+INFO = "info"
 FAIL = "fail"
 UNVERIFIABLE = "unverifiable"
 
@@ -131,12 +133,25 @@ def code_findings(tables: Sequence[Dict[str, Any]], pdf_text: Optional[str], pla
 UNSUPPORTED_WARN = 0.05
 
 
+PROVENANCE_HEADER = re.compile(r"^\s*((catalog(ue)?\s+)?pages?|sources?)\s*$", re.I)
+WEB_SOURCE = re.compile(r"[a-z0-9-]+\.[a-z]{2,}", re.I)
+
+
 def table_cell_numbers(tables: Sequence[Dict[str, Any]]) -> Set[str]:
+    """Numbers the tables state as product facts: not the page/source columns we add, not rows a website supplied."""
     out: Set[str] = set()
     for t in tables:
+        headers = [str(h or "") for h in (t.get("headers") or [])]
+        skip = {i for i, h in enumerate(headers) if PROVENANCE_HEADER.match(h)}
+        source_col = next((i for i, h in enumerate(headers) if re.match(r"^\s*sources?\s*$", h, re.I)), None)
         for row in ((t.get("table_data") or {}).get("rows") or []):
-            for cell in row or []:
-                out |= numeric_tokens(str(cell))
+            row = row or []
+            origin = str(row[source_col]) if source_col is not None and source_col < len(row) and row[source_col] else ""
+            if origin and "catalog" not in origin.lower() and WEB_SOURCE.search(origin):
+                continue
+            for i, cell in enumerate(row):
+                if i not in skip:
+                    out |= numeric_tokens(str(cell))
     return out
 
 
@@ -162,7 +177,7 @@ def catalogue_findings(plans: Sequence[Dict[str, Any]], unmatched: Sequence[Dict
     if missing:
         findings.append(Finding(WARN, "catalogue_tables_not_attached", f"{len(missing)} table(s) on pages that belong to no product are not attached to the products their heading names", len(missing), missing))
     if unmatched:
-        findings.append(Finding(WARN, "catalogue_tables_without_product", f"{len(unmatched)} table(s) on catalogue-wide pages have a heading that names no product", len(unmatched), unmatched))
+        findings.append(Finding(INFO, "catalogue_tables_without_product", f"{len(unmatched)} table(s) on catalogue-wide pages have a heading that names no product", len(unmatched), unmatched))
 
 
 GENERIC_WORDS = {"stella", "acoustic", "panels", "panel", "wall", "mdf", "interior", "slats", "slat", "for", "the", "and", "profile", "plate", "mounting"}
@@ -381,7 +396,8 @@ def audit_document(
     else:
         coverage_findings(pages, findings, metrics)
         code_findings(tables, pdf_text, platform_text, findings, metrics)
-        unsupported_findings(tables, set().union(*(p.get("reference_numbers") or set() for p in pages)) if pages else set(), findings, metrics)
+        reference = set().union(*((p.get("reference_numbers") or set()) | (p.get("loose_reference_numbers") or set()) for p in pages)) if pages else set()
+        unsupported_findings(tables, reference, findings, metrics)
     table_findings(tables, findings, metrics)
     if catalogue:
         catalogue_findings(catalogue["plans"], catalogue["unmatched"], tables, findings, metrics)
@@ -506,14 +522,14 @@ def image_integrity_findings(product_images: Dict[str, List[Dict[str, Any]]], ot
     twins = [pair for imgs in product_images.values() for pair in _hash_twins([i for i in imgs if i["id"] in live])]
     metrics.update({"images_hash_twins_across_documents": len(twins)})
     if twins:
-        findings.append(Finding(WARN, "images_hash_twins_across_documents", f"{len(twins)} pair(s) of images from different PDFs look identical (a hash cannot tell plain colours apart)", len(twins), twins))
+        findings.append(Finding(INFO, "images_hash_twins_across_documents", f"{len(twins)} pair(s) of images from different PDFs look identical (a hash cannot tell plain colours apart)", len(twins), twins))
     metrics.update({"images_upscaled_repairs": len(upscaled_repairs), "images_upscaled_crops": len(upscaled_crops),
                     "images_duplicated_position": sum(len(d) - 1 for d in duplicates),
                     "images_on_other_series_page": len(other_series)})
     if upscaled_repairs:
         findings.append(Finding(FAIL, "images_upscaled", f"{len(upscaled_repairs)} repaired image(s) are over {UPSCALE_LIMIT:g}x the size of the pixels they came from: enlarged, not repaired", len(upscaled_repairs), upscaled_repairs))
     if upscaled_crops:
-        findings.append(Finding(WARN, "crops_rendered_above_source", f"{len(upscaled_crops)} crop(s) were rendered over {UPSCALE_LIMIT:g}x their source raster: a bigger file, no more detail", len(upscaled_crops), upscaled_crops))
+        findings.append(Finding(INFO, "crops_rendered_above_source", f"{len(upscaled_crops)} crop(s) were rendered over {UPSCALE_LIMIT:g}x their source raster: a bigger file, no more detail", len(upscaled_crops), upscaled_crops))
     if duplicates:
         findings.append(Finding(FAIL, "duplicate_images_same_position", f"{sum(len(d) - 1 for d in duplicates)} extra image(s) were cut from the same spot on the same page", sum(len(d) - 1 for d in duplicates), duplicates))
     if other_series:
@@ -550,16 +566,24 @@ def image_path_findings(unresolved: Sequence[Dict[str, Any]], findings: List[Fin
                                 len(unresolved), [{"image_id": u.get("image_id"), "problem": u.get("problem")} for u in unresolved]))
 
 
+# Degraded outcomes that are the pipeline's final answer, each carrying its reason on the record.
+SETTLED_DEGRADED = {"colour_hex_unmeasured", "images_kept_low_resolution", "images_repaired_without_gemini"}
+
+
 def correction_findings(open_corrections: Sequence[Dict[str, Any]], findings: List[Finding], metrics: Dict[str, Any]) -> None:
     """Corrections the pipeline made worse than intended, or would not make, that nobody has acknowledged."""
     degraded = [c for c in open_corrections if c.get("outcome") == "degraded"]
+    settled = [c for c in degraded if c.get("code") in SETTLED_DEGRADED]
+    degraded = [c for c in degraded if c.get("code") not in SETTLED_DEGRADED]
     undecided = [c for c in open_corrections if c.get("outcome") == "needs_decision"]
     metrics.update({"corrections_degraded_open": sum(int(c.get("count") or 0) for c in degraded),
+                    "corrections_settled_degraded": sum(int(c.get("count") or 0) for c in settled),
                     "corrections_needing_decision": sum(int(c.get("count") or 0) for c in undecided)})
-    for code, rows, label in (("corrections_degraded", degraded, "done worse than intended"),
-                              ("corrections_need_decision", undecided, "waiting for a decision")):
+    for severity, code, rows, label in ((WARN, "corrections_degraded", degraded, "done worse than intended"),
+                                        (INFO, "corrections_settled", settled, "kept as the best available, with the reason recorded"),
+                                        (WARN, "corrections_need_decision", undecided, "waiting for a decision")):
         if rows:
-            findings.append(Finding(WARN, code, f"{sum(int(c.get('count') or 0) for c in rows)} pipeline correction(s) {label}: "
+            findings.append(Finding(severity, code, f"{sum(int(c.get('count') or 0) for c in rows)} pipeline correction(s) {label}: "
                                     + "; ".join(c.get("message") or c.get("code") for c in rows)[:600],
                                     len(rows), [{"correction_id": c.get("id"), "code": c.get("code")} for c in rows]))
 

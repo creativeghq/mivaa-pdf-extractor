@@ -248,7 +248,7 @@ def test_a_repair_enlarged_past_twice_its_source_fails_and_an_oversized_crop_onl
     ia.image_integrity_findings(imgs, [], findings, metrics)
     by = {f.code: f for f in findings}
     assert by["images_upscaled"].severity == ia.FAIL and by["images_upscaled"].examples == ["r"]
-    assert by["crops_rendered_above_source"].severity == ia.WARN and by["crops_rendered_above_source"].examples == ["c"]
+    assert by["crops_rendered_above_source"].severity == ia.INFO and by["crops_rendered_above_source"].examples == ["c"]
 
 
 def test_two_live_crops_from_one_spot_fail_and_an_image_on_another_series_page_fails():
@@ -312,7 +312,7 @@ def test_the_same_spot_in_two_pdfs_is_a_duplicate_only_when_the_pictures_match()
     ia.image_integrity_findings({"Ardenza": [img("a", "actual", "afc989ec0ae1e0b6"), img("b", "innova", "a7c989ec0ae0f0be"),
                                              img("c", "actual", "bacd4ff6194a022d", (0.1, 0.1, 0.2, 0.2)), img("d", "innova", "ae720c26192fc4fb", (0.1, 0.1, 0.2, 0.2))]}, [], findings, metrics)
     twins = next(f for f in findings if f.code == "images_hash_twins_across_documents")
-    assert twins.severity == ia.WARN and twins.examples == [["a", "b"]]
+    assert twins.severity == ia.INFO and twins.examples == [["a", "b"]]
     assert "duplicate_images_same_position" not in {f.code for f in findings}
 
 
@@ -358,7 +358,28 @@ def test_an_image_that_does_not_resolve_to_its_file_fails():
 def test_an_open_degraded_or_undecided_correction_keeps_the_audit_in_review():
     open_rows = [{"id": "c1", "code": "images_repaired_without_gemini", "outcome": "degraded", "count": 15, "message": "15 crops"},
                  {"id": "c2", "code": "ai_work_unbilled", "outcome": "needs_decision", "count": 1, "message": "nobody to bill"}]
+    open_rows.append({"id": "c3", "code": "embedding_incomplete", "outcome": "degraded", "count": 2, "message": "re-run the embed step"})
     r = run(open_corrections=open_rows)
-    assert r.status == ia.WARN and {"corrections_degraded", "corrections_need_decision"} <= codes(r)
-    assert r.metrics["corrections_degraded_open"] == 15 and r.metrics["corrections_needing_decision"] == 1
+    assert r.status == ia.WARN and {"corrections_degraded", "corrections_settled", "corrections_need_decision"} <= codes(r)
+    assert r.metrics["corrections_degraded_open"] == 2 and r.metrics["corrections_settled_degraded"] == 15
+    assert r.metrics["corrections_needing_decision"] == 1
     assert run(open_corrections=[]).status == ia.PASS
+
+
+def test_info_findings_never_move_the_status_off_pass():
+    settled = [{"id": "c1", "code": "colour_hex_unmeasured", "outcome": "degraded", "count": 4, "message": "no swatch"}]
+    r = run(open_corrections=settled)
+    assert r.status == ia.PASS and next(f for f in r.findings if f.code == "corrections_settled").severity == ia.INFO
+
+
+def test_page_and_source_columns_and_website_rows_are_not_checked_against_the_pdf():
+    t = {"id": "t", "extractor": "x", "headers": ["Item code", "m2 per box", "Catalogue page", "Source"],
+         "table_data": {"rows": [["9067A11", 1.84, 152, "catalogue 2026"], ["9086A11", 0.9, None, "izida1894.gr"],
+                                 ["9009B11", 1.25, 85, "catalogue 2026 + izida1894.gr"]]}}
+    assert ia.table_cell_numbers([t]) == {"9067", "1,84", "9009", "1,25"}
+
+
+def test_a_number_the_text_layer_splits_still_supports_the_stored_value():
+    bad = dict(TABLE, table_data={"rows": [[f"80{i:05d}", "x", "58,88"] for i in range(10)]})
+    loose = [dict(GOOD_PAGES[0], loose_reference_numbers={"58,88"})]
+    assert "numbers_not_in_source" not in codes(run(tables=[bad], pages=loose))

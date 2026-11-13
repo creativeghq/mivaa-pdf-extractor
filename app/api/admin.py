@@ -2211,6 +2211,26 @@ async def audit_document_endpoint(
     )
 
 
+class AuditRecheckRequest(BaseModel):
+    document_ids: Optional[List[str]] = None
+
+
+@router.post("/admin/ingestion-audits/recheck", status_code=202)
+async def recheck_ingestion_audits(
+    body: AuditRecheckRequest,
+    background_tasks: BackgroundTasks,
+    workspace_context: WorkspaceContext = Depends(get_workspace_context),
+    current_user: User = Depends(require_admin),
+):
+    """Re-audit the workspace's documents (or the ones named) in the background, against what is stored now."""
+    from ..config import get_settings
+    from ..services.pdf.ingestion_audit_runner import recheck_documents
+
+    ids = [str(d) for d in (body.document_ids or [])][:200] or None
+    background_tasks.add_task(recheck_documents, SupabaseClient(), get_settings(), str(workspace_context.workspace_id), ids)
+    return {"queued": True, "document_ids": ids}
+
+
 class ImageRedoRequest(BaseModel):
     product_ids: Optional[List[str]] = None
     allow_restore: bool = True

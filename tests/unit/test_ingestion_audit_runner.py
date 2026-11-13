@@ -230,3 +230,11 @@ def test_every_read_scoped_to_a_document_or_its_products_pages():
         if any(s in line for s in scoped):
             window = " ".join(lines[max(0, n - 3):n + 2])
             assert "_paged(" in window or ".range(" in window, line.strip()
+
+
+def test_a_clean_mark_carries_forward_only_while_nothing_new_or_bigger_appears():
+    cleaned = [{"code": "products_without_tables", "severity": "warn", "count": 2}]
+    same = [{"code": "products_without_tables", "severity": "warn", "count": 2}, {"code": "crops_rendered_above_source", "severity": "info", "count": 9}]
+    assert runner.covered_by_clean(same, cleaned)
+    assert not runner.covered_by_clean([{"code": "products_without_tables", "severity": "warn", "count": 3}], cleaned)
+    assert not runner.covered_by_clean([{"code": "images_unsettled", "severity": "fail", "count": 1}], cleaned)
