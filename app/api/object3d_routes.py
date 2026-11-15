@@ -34,6 +34,7 @@ class GenerateBody(BaseModel):
     image_path: str
     out_path: str
     refund: Optional[Dict[str, Any]] = None
+    link_object_id: Optional[str] = None
 
 
 def _idol_endpoint() -> tuple[str, str]:
@@ -139,6 +140,11 @@ async def _run(body: GenerateBody) -> None:
                 "status": "ready", "storage_path": body.out_path, "file_size_bytes": len(cleaned),
                 "generator": "idol", "generator_version": IDOL_SDK, "quality": quality, "error": None,
             })
+            if body.link_object_id:
+                _mark("scene_object", body.link_object_id, {
+                    "model_status": "ready", "model_storage_path": body.out_path, "model_error": None,
+                    "model_updated_at": datetime.now(timezone.utc).isoformat(),
+                })
         else:
             _mark("scene_object", body.row_id, {
                 "model_status": "ready", "model_storage_path": body.out_path, "model_error": None,
@@ -151,6 +157,8 @@ async def _run(body: GenerateBody) -> None:
         _refund(body.refund, msg, body.target, body.row_id)
         if body.target == "product":
             _mark("product", body.row_id, {"status": "failed", "error": msg})
+            if body.link_object_id:
+                _mark("scene_object", body.link_object_id, {"model_status": "failed", "model_error": msg})
         else:
             _mark("scene_object", body.row_id, {"model_status": "failed", "model_error": msg})
 
