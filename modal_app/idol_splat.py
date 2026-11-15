@@ -52,6 +52,7 @@ image = (
     .pip_install(f"git+https://github.com/speridlabs/idol-sdk@{SDK_COMMIT}")
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
     .run_function(_download_models, secrets=[modal.Secret.from_name("huggingface-token")])
+    .run_commands("rm -f /root/idol.py")
     .env({"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "IDOL_DEVICE": "cuda"})
 )
 
