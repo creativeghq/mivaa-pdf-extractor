@@ -113,5 +113,5 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
         run: |
           set -uo pipefail
-          if [ "${{ inputs.idol_action }}" = "stop" ]; then modal app stop idol; echo "Idol stopped"; exit 0; fi
+          if [ "${{ inputs.idol_action }}" = "stop" ]; then modal app stop idol --yes; echo "Idol stopped"; exit 0; fi
           timeout 150 modal app logs idol || true
