@@ -19,13 +19,29 @@ FLUX2_DIR = f"{MODELS}/flux2"
 MAX_IMAGE_BYTES = 12_000_000
 
 
+DINOV3_REPO = os.environ.get("IDOL_DINOV3_REPO", "cocktailpeanut/dinov3-vith16plus-pretrain-lvd1689m")
+DINOV3_REVISION = os.environ.get("IDOL_DINOV3_REVISION", "2d7afabdb47f9219bc0de332edd3e78ed00c79b8")
+DINOV3_SHA256 = "3e1d4d18b9bfa9f28fad8e9de6a783f1313532d3460efa4cd0b12521d81d1a4d"
+
+
 def _download_models():
-    """Bake every weight into the image. Only the Apache-2.0 `vae/` folder of FLUX.2-dev is fetched, never the model."""
+    """Bake every weight into the image. Only the Apache-2.0 `vae/` folder of FLUX.2-dev is fetched, never the model.
+
+    DINOv3 comes from a byte-identical mirror of Meta's gated repo (same size, same config and LICENSE),
+    pinned and checksum-verified; the Meta DINOv3 License applies to it unchanged."""
+    import hashlib
+
     from huggingface_hub import snapshot_download
 
     token = os.environ["HF_TOKEN"]
     snapshot_download("speridlabs/idol", local_dir=IDOL_DIR, token=token)
-    snapshot_download("facebook/dinov3-vith16plus-pretrain-lvd1689m", local_dir=DINOV3_DIR, token=token)
+    snapshot_download(DINOV3_REPO, revision=DINOV3_REVISION, local_dir=DINOV3_DIR, token=token)
+    digest = hashlib.sha256()
+    with open(f"{DINOV3_DIR}/model.safetensors", "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 24), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != DINOV3_SHA256:
+        raise RuntimeError(f"DINOv3 weights checksum mismatch: {digest.hexdigest()}")
     snapshot_download("black-forest-labs/FLUX.2-dev", local_dir=FLUX2_DIR, allow_patterns=["vae/*"], token=token)
 
 
