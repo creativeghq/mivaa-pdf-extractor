@@ -82,3 +82,16 @@ jobs:
           modal secret create huggingface-token HF_TOKEN="$HF_TOKEN" --force >/dev/null
           modal deploy modal_app/idol.py
           echo "Deployed \`modal_app/idol.py\` (app \`idol\`) to Modal." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 🩺 Idol health check (prints container logs on failure)
+        continue-on-error: true
+        env:
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+        run: |
+          set -uo pipefail
+          URL="https://basilakis--idol-idolservice-web.us-east.modal.run/health"
+          if curl -sf -m 600 "$URL"; then echo; echo "✅ Idol serving"; exit 0; fi
+          echo "❌ Idol did not answer /health within 10 minutes — container logs:"
+          timeout 120 modal app logs idol || true
+          exit 1
