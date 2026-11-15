@@ -17,6 +17,7 @@ on:
       - '.gitignore'
       - 'LICENSE'
       - 'modal_app/**'
+      - '.github/workflows/deploy-modal.yml'
   workflow_dispatch:
     inputs:
       deployment_reason:
