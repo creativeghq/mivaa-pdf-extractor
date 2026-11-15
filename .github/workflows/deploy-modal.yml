@@ -88,8 +88,8 @@ jobs:
           set -euo pipefail
           if [ -z "${HF_TOKEN:-}" ]; then echo "❌ HUGGING_FACE_ACCESS_TOKEN is not set"; exit 1; fi
           modal secret create huggingface-token HF_TOKEN="$HF_TOKEN" --force >/dev/null
-          modal deploy modal_app/idol.py
-          echo "Deployed \`modal_app/idol.py\` (app \`idol\`) to Modal." >> "$GITHUB_STEP_SUMMARY"
+          modal deploy modal_app/idol_splat.py
+          echo "Deployed \`modal_app/idol_splat.py\` (app \`idol\`) to Modal." >> "$GITHUB_STEP_SUMMARY"
 
       - name: 🩺 Idol health check (prints container logs on failure)
         if: github.event_name != 'workflow_dispatch' || inputs.idol_action == 'deploy'
@@ -100,7 +100,8 @@ jobs:
         run: |
           set -uo pipefail
           URL="https://basilakis--idol-idolservice-web.us-east.modal.run/health"
-          if curl -sf -m 600 "$URL"; then echo; echo "✅ Idol serving"; exit 0; fi
+          BODY=$(curl -s -m 600 "$URL" || true); echo "$BODY"
+          if echo "$BODY" | grep -q '"model":"idol"'; then echo "✅ Idol serving"; exit 0; fi
           echo "❌ Idol did not answer /health within 10 minutes — container logs:"
           timeout 120 modal app logs idol || true
           exit 1
