@@ -70,13 +70,13 @@ def answer_schema(colours: Sequence[str]) -> Dict[str, Any]:
 def numbered_sheet(images: Sequence[Image.Image]) -> bytes:
     rows = max(1, -(-len(images) // COLS))
     sheet = Image.new("RGB", (COLS * CELL, rows * CELL), "white")
-    draw = ImageDraw.Draw(sheet)
+    write = ImageDraw.Draw(sheet).text
     for n, img in enumerate(images):
         tile = img.convert("RGB").copy()
         tile.thumbnail((CELL - 8, CELL - 28))
         x, y = (n % COLS) * CELL, (n // COLS) * CELL
         sheet.paste(tile, (x + 4, y + 24))
-        draw.text((x + 6, y + 4), f"I{n + 1}", fill=(200, 0, 0))
+        write((x + 6, y + 4), f"I{n + 1}", fill=(200, 0, 0))
     out = io.BytesIO()
     sheet.save(out, "PNG")
     return out.getvalue()
