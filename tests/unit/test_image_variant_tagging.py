@@ -1,11 +1,18 @@
-from app.services.images.image_variant_tagging import (
-    NOT_A_COLOUR,
-    SHOT_TYPES,
-    answer_schema,
-    association_update,
-    colour_list,
-    parse_answers,
-)
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+pytest.importorskip("PIL.Image")
+
+_ROOT = Path(__file__).resolve().parents[2]
+_spec = importlib.util.spec_from_file_location("image_variant_tagging_under_test", _ROOT / "app/services/images/image_variant_tagging.py")
+ivt = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(ivt)
+
+NOT_A_COLOUR, SHOT_TYPES = ivt.NOT_A_COLOUR, ivt.SHOT_TYPES
+answer_schema, association_update, colour_list, parse_answers = (
+    ivt.answer_schema, ivt.association_update, ivt.colour_list, ivt.parse_answers)
 
 
 def test_colour_list_prefers_colour_options_and_keeps_hex():
