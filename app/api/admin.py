@@ -1790,6 +1790,32 @@ async def backfill_understanding_embeddings_endpoint(
     return JSONResponse(content=summary)
 
 
+class ImageVariantTaggingRequest(BaseModel):
+    """Tag which colour each product image shows and whether it is a swatch or a scene."""
+    workspace_id: Optional[str] = None
+    product_ids: Optional[List[str]] = None
+    document_id: Optional[str] = None
+    retag: bool = False
+    dry_run: bool = True
+    max_products: Optional[int] = None
+
+
+@router.post("/admin/image-variant-tagging")
+async def image_variant_tagging_endpoint(
+    request: ImageVariantTaggingRequest,
+    user: User = Depends(require_admin),
+):
+    """Paid vision pass, on demand. `dry_run` (the default) returns the products, images and calls it would make."""
+    from app.services.images.image_variant_tagging import tag_product_images
+
+    summary = await tag_product_images(
+        product_ids=request.product_ids, document_id=request.document_id, workspace_id=request.workspace_id,
+        user_id=str(getattr(user, "id", "") or "") or None, retag=request.retag, dry_run=request.dry_run,
+        max_products=request.max_products,
+    )
+    return JSONResponse(content=summary)
+
+
 class ProductEdgesBackfillRequest(BaseModel):
     """Request body for the product-relationship-edges backfill."""
     workspace_id: Optional[str] = None

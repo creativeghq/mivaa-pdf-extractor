@@ -51,6 +51,16 @@ async def _contact_sheets(document_id: str, logger: Any) -> Dict[str, Any]:
         return {"error": str(sheet_error)[:300]}
 
 
+async def _tag_images(document_id: str, job_id: str, workspace_id: str, logger: Any) -> Dict[str, Any]:
+    try:
+        from app.services.images.image_variant_tagging import tag_product_images
+
+        return await tag_product_images(document_id=document_id, workspace_id=workspace_id, job_id=job_id, log=logger)
+    except Exception as tag_error:
+        logger.warning(f"⚠️ Image colour/shot tagging could not run: {tag_error}")
+        return {"error": str(tag_error)[:300]}
+
+
 async def _run_audit(document_id: str, job_id: str, logger: Any) -> Dict[str, Any]:
     try:
         from app.config import get_settings
@@ -156,6 +166,7 @@ async def process_stage_5_quality(
 
     catalogue_tables = await _attach_catalogue_tables(document_id, logger)
     post_ingestion_repair = await _repair(document_id, job_id, logger)
+    image_tags = await _tag_images(document_id, job_id, workspace_id, logger)
     ingestion_audit = await _run_audit(document_id, job_id, logger)
     contact_sheets = await _contact_sheets(document_id, logger)
 
@@ -184,6 +195,7 @@ async def process_stage_5_quality(
         "claude_validation_status": validation_results.get('status'),
         "field_judgements": {k: v for k, v in field_judgements.items() if k != 'products'},
         "post_ingestion_repair": post_ingestion_repair,
+        "image_tags": image_tags,
         "ingestion_audit": ingestion_audit,
         "contact_sheets": contact_sheets,
         "catalogue_tables": catalogue_tables,
