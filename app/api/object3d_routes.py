@@ -29,12 +29,13 @@ _TASKS: set = set()
 
 
 class GenerateBody(BaseModel):
-    target: Literal["product", "scene_object"]
+    target: Literal["product", "variant", "scene_object"]
     row_id: str
     image_path: str
     out_path: str
     refund: Optional[Dict[str, Any]] = None
     link_object_id: Optional[str] = None
+    model_finish: Optional[str] = None
 
 
 def _idol_endpoint() -> tuple[str, str]:
@@ -92,6 +93,8 @@ def _mark(target: str, row_id: str, fields: Dict[str, Any]) -> None:
     sb = get_supabase_client().client
     if target == "product":
         sb.table("product_3d_models").update(fields).eq("id", row_id).execute()
+    elif target == "variant":
+        sb.table("product_3d_model_variants").update(fields).eq("id", row_id).execute()
     else:
         sb.table("floor_plan_objects").update(fields).eq("id", row_id).execute()
 
@@ -135,28 +138,28 @@ async def _run(body: GenerateBody) -> None:
             {"content-type": "application/x-ply", "upsert": "true"},
         )
         quality = {**stats, "gpu_s": res.headers.get("X-Idol-Seconds"), "wall_s": round(time.time() - started, 1)}
-        if body.target == "product":
-            _mark("product", body.row_id, {
+        if body.target in ("product", "variant"):
+            _mark(body.target, body.row_id, {
                 "status": "ready", "storage_path": body.out_path, "file_size_bytes": len(cleaned),
                 "generator": "idol", "generator_version": IDOL_SDK, "quality": quality, "error": None,
             })
             if body.link_object_id:
                 _mark("scene_object", body.link_object_id, {
                     "model_status": "ready", "model_storage_path": body.out_path, "model_error": None,
-                    "model_updated_at": datetime.now(timezone.utc).isoformat(),
+                    "model_finish": body.model_finish, "model_updated_at": datetime.now(timezone.utc).isoformat(),
                 })
         else:
             _mark("scene_object", body.row_id, {
                 "model_status": "ready", "model_storage_path": body.out_path, "model_error": None,
-                "model_updated_at": datetime.now(timezone.utc).isoformat(),
+                "model_finish": body.model_finish, "model_updated_at": datetime.now(timezone.utc).isoformat(),
             })
         logger.info("object3d %s %s ready %s", body.target, body.row_id, quality)
     except Exception as e:  # noqa: BLE001
         logger.warning("object3d %s %s failed: %r", body.target, body.row_id, e)
         msg = str(e)[:500]
         _refund(body.refund, msg, body.target, body.row_id)
-        if body.target == "product":
-            _mark("product", body.row_id, {"status": "failed", "error": msg})
+        if body.target in ("product", "variant"):
+            _mark(body.target, body.row_id, {"status": "failed", "error": msg})
             if body.link_object_id:
                 _mark("scene_object", body.link_object_id, {"model_status": "failed", "model_error": msg})
         else:
