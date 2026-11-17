@@ -1017,7 +1017,11 @@ class EntityLinkingService:
             current_metadata = dict(row.get('metadata') or {})
 
             if table_metadata.get('available_sizes'):
-                current_metadata['available_sizes'] = table_metadata['available_sizes']
+                held = current_metadata.get('available_sizes')
+                held = [held] if isinstance(held, str) else list(held or [])
+                current_metadata['available_sizes'] = held + [
+                    s for s in table_metadata['available_sizes'] if s not in held
+                ]
             if table_metadata.get('thickness'):
                 material_props = current_metadata.get('material_properties')
                 if not isinstance(material_props, dict):
