@@ -2395,13 +2395,6 @@ def _merge_enriched_fields_into_metadata(
         new_metadata["dimensions"] = chunk_dims
         extraction_meta["dimensions"] = {"source": "chunk_regex", "confidence": 0.95}
         filled.append("dimensions")
-        # When we fill chunk dimensions, also drop the stale AI-hallucinated
-        # `available_sizes` so the UI sidebar (which prefers available_sizes
-        # over dimensions) shows the real value. Only drop it if we just
-        # filled dimensions — don't touch it on unrelated enrichment runs.
-        if "available_sizes" in new_metadata:
-            new_metadata.pop("available_sizes", None)
-            filled.append("(dropped stale available_sizes)")
 
     # If we filled `designers` (plural array, correct full name), drop any
     # stale scalar `designer` leftover from the old AI extractor. Both existing
