@@ -136,7 +136,7 @@ def _select(client: Any, prompt_type: str, category: str, stage: Optional[str],
             workspace_id: str, subcategory: Optional[str], is_custom: Optional[bool]):
     query = (
         client.table("prompts")
-        .select("prompt_text, system_prompt, version, name, is_custom")
+        .select("id, prompt_text, system_prompt, version, name, is_custom")
         .eq("prompt_type", prompt_type)
         .eq("category", category)
         .eq("workspace_id", workspace_id)
@@ -149,6 +149,16 @@ def _select(client: Any, prompt_type: str, category: str, stage: Optional[str],
     if is_custom is not None:
         query = query.eq("is_custom", is_custom)
     return query.order("version", desc=True).limit(1).execute()
+
+
+def _stamp_read(client: Any, prompt_id: Optional[str]) -> None:
+    """Feeds ops.prompt_never_read, as the edge loader does. Best effort: never raises."""
+    if not prompt_id:
+        return
+    try:
+        client.rpc("stamp_prompt_read", {"p_prompt_id": prompt_id}).execute()
+    except Exception as exc:  # noqa: BLE001 — a missed stamp must never fail the prompt load
+        logger.warning("stamp_prompt_read failed for %s: %s", prompt_id, exc)
 
 
 def _resolve_blocking(prompt_type: str, category: str, stage: Optional[str],
@@ -175,6 +185,7 @@ def _resolve_blocking(prompt_type: str, category: str, stage: Optional[str],
             if rows and (rows[0].get(field) or "").strip():
                 logger.info("Prompt %s/%s/%s resolved via %s (v%s)",
                             prompt_type, stage or "-", target_cat, label, rows[0].get("version"))
+                _stamp_read(client, rows[0].get("id"))
                 return rows[0][field]
     except Exception as exc:  # noqa: BLE001 — re-raised as a typed error below
         # NOT swallowed into "not found". A reachability failure and a missing row need
