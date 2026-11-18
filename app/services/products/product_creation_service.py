@@ -1483,28 +1483,15 @@ class ProductCreationService:
 
             # Through the tracked helper (#33 item 2). Sync `messages.create` from an
             # `async def`, with the cost row written by hand afterwards — so a call that
-            # raised was billed and recorded nowhere. The confidence blend below is four
-            # CONSTANTS, so nothing here is post-hoc and it passes straight through.
+            # raised was billed and recorded nowhere. Nothing measures a confidence here,
+            # so none is recorded.
             from app.services.core.claude_helper import tracked_claude_call_async
 
-            confidence_breakdown = {
-                "model_confidence": 0.85,  # Haiku is fast but reliable
-                "completeness": 0.80,  # Stage 1 is preliminary
-                "consistency": 0.90,  # Haiku is consistent
-                "validation": 0.75   # Stage 1 needs Stage 2 validation
-            }
             response = await tracked_claude_call_async(
                 task="product_classification_stage1",
                 model=settings.anthropic_model_classification,
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
-                confidence_score=(
-                    0.30 * confidence_breakdown["model_confidence"] +
-                    0.30 * confidence_breakdown["completeness"] +
-                    0.25 * confidence_breakdown["consistency"] +
-                    0.15 * confidence_breakdown["validation"]
-                ),
-                confidence_breakdown=confidence_breakdown,
                 action="use_ai_result",
                 job_id=job_id,
                 request_data={"prompt_length": len(prompt)},
@@ -1528,8 +1515,8 @@ class ProductCreationService:
                 output_tokens=0,
                 cost=0.0,
                 latency_ms=latency_ms,
-                confidence_score=0.0,
-                confidence_breakdown={"model_confidence": 0, "completeness": 0, "consistency": 0, "validation": 0},
+                confidence_score=None,
+                confidence_breakdown=None,
                 action="fallback_to_rules",
                 job_id=job_id,
                 fallback_reason=f"API error: {str(e)}",
@@ -1556,24 +1543,11 @@ class ProductCreationService:
             # restated model name eventually costs.
             from app.services.core.claude_helper import tracked_claude_call_async
 
-            confidence_breakdown = {
-                "model_confidence": 0.95,  # Opus is highly accurate
-                "completeness": 0.90,  # Stage 2 is comprehensive
-                "consistency": 0.95,  # Opus is very consistent
-                "validation": 0.85   # Stage 2 provides validation
-            }
             response = await tracked_claude_call_async(
                 task="product_enrichment_stage2",
                 model=settings.anthropic_model_enrichment,
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
-                confidence_score=(
-                    0.30 * confidence_breakdown["model_confidence"] +
-                    0.30 * confidence_breakdown["completeness"] +
-                    0.25 * confidence_breakdown["consistency"] +
-                    0.15 * confidence_breakdown["validation"]
-                ),
-                confidence_breakdown=confidence_breakdown,
                 action="use_ai_result",
                 job_id=job_id,
                 request_data={"prompt_length": len(prompt)},
@@ -1597,8 +1571,8 @@ class ProductCreationService:
                 output_tokens=0,
                 cost=0.0,
                 latency_ms=latency_ms,
-                confidence_score=0.0,
-                confidence_breakdown={"model_confidence": 0, "completeness": 0, "consistency": 0, "validation": 0},
+                confidence_score=None,
+                confidence_breakdown=None,
                 action="fallback_to_rules",
                 job_id=job_id,
                 fallback_reason=f"API error: {str(e)}",

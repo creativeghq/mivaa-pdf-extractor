@@ -967,8 +967,8 @@ class ProductDiscoveryService:
                 model=model_to_use,
                 max_tokens=8000,
                 messages=[{"role": "user", "content": content_blocks}],
-                confidence_score=0.0,
-                confidence_breakdown={},
+                confidence_score=None,
+                confidence_breakdown=None,
                 action="vision_fallback",
                 job_id=job_id,
                 extra_kwargs={

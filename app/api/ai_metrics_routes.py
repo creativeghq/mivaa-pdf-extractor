@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
@@ -13,6 +13,12 @@ from app.dependencies import require_admin
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+
+def _mean_confidence(rows: List[Dict[str, Any]]) -> Optional[float]:
+    """Mean over rows that MEASURED a confidence; None when none did (never 0)."""
+    vals = [float(r["confidence_score"]) for r in rows if r.get("confidence_score") is not None]
+    return round(sum(vals) / len(vals), 2) if vals else None
 
 # Pentest #250 D33/D34: every endpoint here exposes cross-tenant data (all-workspace AI
 # spend, per-user credits, per-job metrics by arbitrary job_id) and had no role gate.
@@ -29,7 +35,7 @@ class AIMetricsSummary(BaseModel):
     total_cost: float
     total_tokens: int
     average_latency_ms: float
-    average_confidence: float
+    average_confidence: Optional[float]
     fallback_rate: float
     time_period: str
 
@@ -40,7 +46,7 @@ class ModelUsageStats(BaseModel):
     total_cost: float
     total_tokens: int
     average_latency_ms: float
-    average_confidence: float
+    average_confidence: Optional[float]
     fallback_count: int
 
 
@@ -48,7 +54,7 @@ class TaskBreakdown(BaseModel):
     task: str
     call_count: int
     total_cost: float
-    average_confidence: float
+    average_confidence: Optional[float]
     models_used: List[str]
 
 
@@ -238,7 +244,7 @@ async def get_ai_metrics_summary(
                     total_cost=0.0,
                     total_tokens=0,
                     average_latency_ms=0.0,
-                    average_confidence=0.0,
+                    average_confidence=None,
                     fallback_rate=0.0,
                     time_period=time_period
                 ),
@@ -256,7 +262,7 @@ async def get_ai_metrics_summary(
             for log in logs
         )
         average_latency = sum(log.get("latency_ms", 0) or 0 for log in logs) / total_calls
-        average_confidence = sum(float(log.get("confidence_score", 0) or 0) for log in logs) / total_calls
+        average_confidence = _mean_confidence(logs)
         fallback_count = sum(1 for log in logs if log.get("action") == "fallback_to_rules")
         fallback_rate = fallback_count / total_calls if total_calls > 0 else 0.0
         
@@ -265,7 +271,7 @@ async def get_ai_metrics_summary(
             total_cost=round(total_cost, 4),
             total_tokens=total_tokens,
             average_latency_ms=round(average_latency, 2),
-            average_confidence=round(average_confidence, 2),
+            average_confidence=average_confidence,
             fallback_rate=round(fallback_rate, 2),
             time_period=time_period
         )
@@ -280,7 +286,7 @@ async def get_ai_metrics_summary(
                     "total_cost": 0.0,
                     "total_tokens": 0,
                     "total_latency": 0,
-                    "total_confidence": 0.0,
+                    "rows": [],
                     "fallback_count": 0
                 }
             
@@ -290,7 +296,7 @@ async def get_ai_metrics_summary(
                 (log.get("input_tokens", 0) or 0) + (log.get("output_tokens", 0) or 0)
             )
             model_stats[model]["total_latency"] += log.get("latency_ms", 0) or 0
-            model_stats[model]["total_confidence"] += float(log.get("confidence_score", 0) or 0)
+            model_stats[model]["rows"].append(log)
             if log.get("action") == "fallback_to_rules":
                 model_stats[model]["fallback_count"] += 1
         
@@ -301,7 +307,7 @@ async def get_ai_metrics_summary(
                 total_cost=round(stats["total_cost"], 4),
                 total_tokens=stats["total_tokens"],
                 average_latency_ms=round(stats["total_latency"] / stats["call_count"], 2),
-                average_confidence=round(stats["total_confidence"] / stats["call_count"], 2),
+                average_confidence=_mean_confidence(stats["rows"]),
                 fallback_count=stats["fallback_count"]
             )
             for model, stats in model_stats.items()
@@ -316,13 +322,13 @@ async def get_ai_metrics_summary(
                 task_stats[task] = {
                     "call_count": 0,
                     "total_cost": 0.0,
-                    "total_confidence": 0.0,
+                    "rows": [],
                     "models": set()
                 }
             
             task_stats[task]["call_count"] += 1
             task_stats[task]["total_cost"] += float(log.get("cost", 0) or 0)
-            task_stats[task]["total_confidence"] += float(log.get("confidence_score", 0) or 0)
+            task_stats[task]["rows"].append(log)
             task_stats[task]["models"].add(log.get("model", "unknown"))
         
         task_breakdown = [
@@ -330,7 +336,7 @@ async def get_ai_metrics_summary(
                 task=task,
                 call_count=stats["call_count"],
                 total_cost=round(stats["total_cost"], 4),
-                average_confidence=round(stats["total_confidence"] / stats["call_count"], 2),
+                average_confidence=_mean_confidence(stats["rows"]),
                 models_used=list(stats["models"])
             )
             for task, stats in task_stats.items()
@@ -346,8 +352,8 @@ async def get_ai_metrics_summary(
             "0.8-1.0": 0
         }
         
-        for log in logs:
-            confidence = float(log.get("confidence_score", 0) or 0)
+        scored = [float(log["confidence_score"]) for log in logs if log.get("confidence_score") is not None]
+        for confidence in scored:
             if confidence < 0.2:
                 confidence_ranges["0.0-0.2"] += 1
             elif confidence < 0.4:
@@ -363,7 +369,7 @@ async def get_ai_metrics_summary(
             ConfidenceDistribution(
                 range=range_name,
                 count=count,
-                percentage=round((count / total_calls) * 100, 1) if total_calls > 0 else 0.0
+                percentage=round((count / len(scored)) * 100, 1) if scored else 0.0
             )
             for range_name, count in confidence_ranges.items()
         ]

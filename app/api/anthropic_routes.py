@@ -318,15 +318,6 @@ async def test_claude_integration(
                     }
                 ]
             }],
-            confidence_score=(
-                0.30 * 0.95 + 0.30 * 0.90 + 0.25 * 0.93 + 0.15 * 0.88
-            ),
-            confidence_breakdown={
-                "model_confidence": 0.95,
-                "completeness": 0.90,
-                "consistency": 0.93,
-                "validation": 0.88,
-            },
             action="use_ai_result",
             system_initiated=True,
         )
@@ -355,13 +346,8 @@ async def test_claude_integration(
             output_tokens=0,
             cost=0.0,
             latency_ms=latency_ms,
-            confidence_score=0.0,
-            confidence_breakdown={
-                "model_confidence": 0.0,
-                "completeness": 0.0,
-                "consistency": 0.0,
-                "validation": 0.0
-            },
+            confidence_score=None,
+            confidence_breakdown=None,
             action="fallback_to_rules",
             job_id=None,
             fallback_reason=f"Claude API error: {str(e)}",

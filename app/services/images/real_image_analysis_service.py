@@ -396,18 +396,10 @@ class RealImageAnalysisService:
                 },
             }
 
-            # `completeness` is the confidence the MODEL reports inside its own reply, so
-            # it cannot be passed at call time. The callable keeps the exact weighted
-            # blend that was logged before; passing the 0.9 default instead would have
-            # replaced a measured signal with an assumed one.
-            def _blended_confidence(_resp) -> float:
-                inner = extract_tool_input(_resp, _VALIDATION_TOOL["name"])
-                return (
-                    0.30 * 0.95
-                    + 0.30 * float(inner.get("confidence", 0.90))
-                    + 0.25 * 0.93
-                    + 0.15 * 0.88
-                )
+            # The only measured signal is the confidence the MODEL reports in its reply;
+            # absent, the row records none rather than an assumed value.
+            def _model_confidence(_resp) -> Optional[float]:
+                return extract_tool_input(_resp, _VALIDATION_TOOL["name"]).get("confidence")
 
             response = await tracked_claude_call_async(
                 task="image_vision_validation",
@@ -425,12 +417,7 @@ class RealImageAnalysisService:
                         ],
                     }
                 ],
-                confidence_score=_blended_confidence,
-                confidence_breakdown={
-                    "model_confidence": 0.95,
-                    "consistency": 0.93,
-                    "validation": 0.88,
-                },
+                confidence_score=_model_confidence,
                 action="use_ai_result",
                 job_id=job_id,
                 extra_kwargs={
@@ -465,13 +452,8 @@ class RealImageAnalysisService:
                 output_tokens=0,
                 cost=0.0,
                 latency_ms=latency_ms,
-                confidence_score=0.0,
-                confidence_breakdown={
-                    "model_confidence": 0.0,
-                    "completeness": 0.0,
-                    "consistency": 0.0,
-                    "validation": 0.0
-                },
+                confidence_score=None,
+                confidence_breakdown=None,
                 action="fallback_to_rules",
                 job_id=job_id,
                 fallback_reason=f"Claude API error: {str(e)}",

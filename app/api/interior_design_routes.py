@@ -188,7 +188,7 @@ async def generate_with_replicate(model: dict, prompt: str, width: int, height: 
                                     task="interior_design_generation",
                                     model=_model_key,
                                     latency_ms=_replicate_latency_ms,
-                                    confidence_score=0.9,
+                                    confidence_score=None,
                                 )
                             except Exception as _log_err:
                                 print(f"⚠️ Replicate logging failed (non-fatal): {_log_err}")

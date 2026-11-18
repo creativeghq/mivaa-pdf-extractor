@@ -133,8 +133,8 @@ class AICallLogger:
         output_tokens: int,
         cost: float,
         latency_ms: int,
-        confidence_score: float,
-        confidence_breakdown: Dict[str, float],
+        confidence_score: Optional[float],
+        confidence_breakdown: Optional[Dict[str, float]],
         action: str,
         job_id: Optional[str] = None,
         fallback_reason: Optional[str] = None,
@@ -163,7 +163,8 @@ class AICallLogger:
             output_tokens: Number of output tokens
             cost: Cost in USD
             latency_ms: Latency in milliseconds
-            confidence_score: Calculated confidence score (0.0-1.0)
+            confidence_score: Measured confidence (0.0-1.0), or None when nothing
+                measured one. Never a constant: a fixed value ranks nothing.
             confidence_breakdown: Dict with model_confidence, completeness, consistency, validation
             action: 'use_ai_result' or 'fallback_to_rules'
             job_id: Optional job ID for tracking
@@ -203,8 +204,8 @@ class AICallLogger:
                 "output_tokens": output_tokens,
                 "cost": float(cost),  # Convert to float for JSON serialization
                 "latency_ms": latency_ms,
-                "confidence_score": round(confidence_score, 2),  # Use float instead of Decimal
-                "confidence_breakdown": json_dumps(confidence_breakdown),  # Use custom encoder
+                "confidence_score": None if confidence_score is None else round(confidence_score, 2),
+                "confidence_breakdown": json_dumps(confidence_breakdown) if confidence_breakdown else None,
                 "action": action,
                 "fallback_reason": fallback_reason,
                 "request_data": json_dumps(request_data) if request_data else None,  # Use custom encoder
@@ -243,7 +244,7 @@ class AICallLogger:
 
                 self.logger.info(
                     f"✅ AI call logged: {task} | {model} | "
-                    f"confidence={confidence_score:.2f} | action={action} | "
+                    f"confidence={'-' if confidence_score is None else f'{confidence_score:.2f}'} | action={action} | "
                     f"cost=${cost:.4f} | latency={latency_ms}ms"
                 )
             else:
@@ -295,7 +296,7 @@ class AICallLogger:
                 "unbilled_reason": unbilled_reason,
                 "metadata": {
                     "action": action,
-                    "confidence_score": round(confidence_score, 2),
+                    **({} if confidence_score is None else {"confidence_score": round(confidence_score, 2)}),
                     "latency_ms": latency_ms,
                     "fallback_reason": fallback_reason,
                     # DECLARE THE OUTCOME. `ops.silent_zero_provider` judges a provider
@@ -420,8 +421,8 @@ class AICallLogger:
         model: str,
         response: Any,
         latency_ms: int,
-        confidence_score: float,
-        confidence_breakdown: Dict[str, float],
+        confidence_score: Optional[float],
+        confidence_breakdown: Optional[Dict[str, float]],
         action: str,
         job_id: Optional[str] = None,
         fallback_reason: Optional[str] = None,
@@ -529,7 +530,7 @@ class AICallLogger:
             reply_failure = claude_reply_failure(response, request_data)
             if reply_failure:
                 action = "invalid_output"
-                confidence_score = 0.0
+                confidence_score = None
 
             return await self.log_ai_call(
                 task=task,
@@ -574,7 +575,7 @@ class AICallLogger:
         latency_ms: int,
         cost_per_generation_usd: Optional[float] = None,
         action: str = "use_ai_result",
-        confidence_score: float = 0.9,
+        confidence_score: Optional[float] = None,
         confidence_breakdown: Optional[Dict[str, float]] = None,
         job_id: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -623,7 +624,7 @@ class AICallLogger:
                 cost=cost,
                 latency_ms=latency_ms,
                 confidence_score=confidence_score,
-                confidence_breakdown=confidence_breakdown or {},
+                confidence_breakdown=confidence_breakdown,
                 action=action,
                 job_id=job_id,
                 request_data=request_data,
@@ -645,7 +646,7 @@ class AICallLogger:
         model: str,
         latency_ms: int,
         action: str = "use_ai_result",
-        confidence_score: float = 0.9,
+        confidence_score: Optional[float] = None,
         confidence_breakdown: Optional[Dict[str, float]] = None,
         job_id: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -699,7 +700,7 @@ class AICallLogger:
                 cost=cost,
                 latency_ms=latency_ms,
                 confidence_score=confidence_score,
-                confidence_breakdown=confidence_breakdown or {},
+                confidence_breakdown=confidence_breakdown,
                 action=action,
                 job_id=job_id,
                 request_data=request_data,

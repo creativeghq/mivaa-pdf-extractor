@@ -21,32 +21,25 @@ logger = logging.getLogger(__name__)
 _ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 _ANTHROPIC_VERSION = "2023-06-01"
 
-#: What we record when the caller did not measure a confidence. Named rather than
-#: inlined because it is now used in three places and a fallback that disagrees with
-#: the documented default is the kind of drift this module exists to prevent.
-_DEFAULT_CONFIDENCE = 0.9
+#: An unmeasured confidence is recorded as NONE, never as a constant: a fixed 0.9 on
+#: every row is a series no threshold can rank (extraction.confidence_uninformative).
+_DEFAULT_CONFIDENCE: Optional[float] = None
 
 
-def _resolve_confidence(confidence: Union[float, Callable[[Any], float]], response: Any) -> float:
-    """A float, or a callable applied to the response once it has arrived."""
+def _resolve_confidence(
+    confidence: Union[None, float, Callable[[Any], Optional[float]]], response: Any
+) -> Optional[float]:
+    """A float, None, or a callable applied to the response once it has arrived."""
+    if confidence is None:
+        return None
     if not callable(confidence):
         return float(confidence)
     try:
-        return float(confidence(response))
+        value = confidence(response)
+        return None if value is None else float(value)
     except Exception:
-        logger.warning(
-            "confidence callable raised; recording the default instead",
-            exc_info=True,
-        )
-        return _DEFAULT_CONFIDENCE
-
-
-_DEFAULT_CONFIDENCE_BREAKDOWN: Dict[str, float] = {
-    "model_confidence": 0.9,
-    "completeness": 0.9,
-    "consistency": 0.9,
-    "validation": 0.9,
-}
+        logger.warning("confidence callable raised; recording no confidence", exc_info=True)
+        return None
 
 # Callers can keep passing temperature; it is dropped for models that reject it.
 def _model_supports_temperature(model: str) -> bool:
@@ -329,12 +322,6 @@ def _resolve_user_from_job(job_id: Optional[str]) -> tuple[Optional[str], Option
 #: AND removes the failure data you most want when a model starts erroring: the
 #: task, the model, and when it began. Audit #12: neither tracked wrapper had a
 #: try/except, so every failed call vanished without a row.
-_FAILED_CONFIDENCE_BREAKDOWN = {
-    "model_confidence": 0.0,
-    "completeness": 0.0,
-    "consistency": 0.0,
-    "validation": 0.0,
-}
 
 
 async def _log_failed_claude_call_async(
@@ -355,8 +342,6 @@ async def _log_failed_claude_call_async(
             cost=0.0,
             unbilled_reason="billable_attempt_failed",
             latency_ms=latency_ms,
-            confidence_score=0.0,
-            confidence_breakdown=_FAILED_CONFIDENCE_BREAKDOWN,
             action="call_failed",
             job_id=job_id,
             user_id=user_id,
@@ -388,8 +373,6 @@ def _log_failed_claude_call_sync(
             cost=0.0,
             unbilled_reason="billable_attempt_failed",
             latency_ms=latency_ms,
-            confidence_score=0.0,
-            confidence_breakdown=_FAILED_CONFIDENCE_BREAKDOWN,
             action="call_failed",
             job_id=job_id,
             user_id=user_id,
@@ -425,7 +408,7 @@ async def tracked_claude_call_async(
     # A float, OR a callable applied to the response once it arrives — see
     # `_resolve_confidence`. The model's own reported confidence lives INSIDE the
     # reply and is therefore not knowable at call time.
-    confidence_score: Union[float, Callable[[Any], float]] = _DEFAULT_CONFIDENCE,
+    confidence_score: Union[None, float, Callable[[Any], Optional[float]]] = _DEFAULT_CONFIDENCE,
     confidence_breakdown: Optional[Dict[str, float]] = None,
     # Diagnostic metadata forwarded verbatim to `log_claude_call` (e.g.
     # `{"prompt_length": ...}`). Added so migrating sites do not have to drop the field
@@ -487,7 +470,7 @@ async def tracked_claude_call_async(
         response=response,
         latency_ms=latency_ms,
         confidence_score=_resolve_confidence(confidence_score, response),
-        confidence_breakdown=confidence_breakdown or _DEFAULT_CONFIDENCE_BREAKDOWN,
+        confidence_breakdown=confidence_breakdown or None,
         request_data=request_data,
         action=action,
         job_id=job_id,
@@ -511,7 +494,7 @@ async def tracked_claude_stream_async(
     job_id: Optional[str] = None,
     user_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
-    confidence_score: Union[float, Callable[[Any], float]] = _DEFAULT_CONFIDENCE,
+    confidence_score: Union[None, float, Callable[[Any], Optional[float]]] = _DEFAULT_CONFIDENCE,
     confidence_breakdown: Optional[Dict[str, float]] = None,
     request_data: Optional[Dict[str, Any]] = None,
     action: str = "use_ai_result",
@@ -637,7 +620,7 @@ async def tracked_claude_stream_async(
         response=response,
         latency_ms=latency_ms,
         confidence_score=_resolve_confidence(confidence_score, response),
-        confidence_breakdown=confidence_breakdown or _DEFAULT_CONFIDENCE_BREAKDOWN,
+        confidence_breakdown=confidence_breakdown or None,
         request_data=request_data,
         action=action,
         job_id=job_id,
@@ -669,7 +652,7 @@ def tracked_claude_call(
     # A float, OR a callable applied to the response once it arrives — see
     # `_resolve_confidence`. The model's own reported confidence lives INSIDE the
     # reply and is therefore not knowable at call time.
-    confidence_score: Union[float, Callable[[Any], float]] = _DEFAULT_CONFIDENCE,
+    confidence_score: Union[None, float, Callable[[Any], Optional[float]]] = _DEFAULT_CONFIDENCE,
     confidence_breakdown: Optional[Dict[str, float]] = None,
     # Diagnostic metadata forwarded verbatim to `log_claude_call` (e.g.
     # `{"prompt_length": ...}`). Added so migrating sites do not have to drop the field
@@ -732,7 +715,7 @@ def tracked_claude_call(
         response=response,
         latency_ms=latency_ms,
         confidence_score=_resolve_confidence(confidence_score, response),
-        confidence_breakdown=confidence_breakdown or _DEFAULT_CONFIDENCE_BREAKDOWN,
+        confidence_breakdown=confidence_breakdown or None,
         request_data=request_data,
         action=action,
         job_id=job_id,

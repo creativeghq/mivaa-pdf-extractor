@@ -2170,8 +2170,8 @@ class RAGService:
                 model="claude-opus-5-5",
                 max_tokens=2048,
                 messages=[{"role": "user", "content": prompt}],
-                confidence_score=0.85,
-                confidence_breakdown={},
+                confidence_score=None,
+                confidence_breakdown=None,
                 action="use_ai_result",
             )
 

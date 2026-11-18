@@ -44,10 +44,9 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-#: Mirrors `claude_helper._DEFAULT_CONFIDENCE`. Imported lazily at call time would be
-#: cleaner, but this module is deliberately import-light at module scope so it can be
-#: loaded by a source-based guard test with no app dependencies installed.
-_DEFAULT_CONFIDENCE = 0.9
+#: Mirrors `claude_helper._DEFAULT_CONFIDENCE` (no measured confidence). Kept local so
+#: this module stays import-light for the source-based guard test.
+_DEFAULT_CONFIDENCE = None
 
 
 @dataclass(frozen=True)
@@ -163,7 +162,7 @@ async def call_with_tool(
             task=task,
             model=model,
             confidence_score=(
-                (lambda r: float(extract_tool_input(r, tool["name"]).get(confidence_key)))
+                (lambda r: extract_tool_input(r, tool["name"]).get(confidence_key))
                 if confidence_key
                 else _DEFAULT_CONFIDENCE
             ),
@@ -409,7 +408,7 @@ async def stream_with_tool(
         task=task,
         model=model,
         confidence_score=(
-            (lambda r: float(extract_tool_input(r, tool["name"]).get(confidence_key)))
+            (lambda r: extract_tool_input(r, tool["name"]).get(confidence_key))
             if confidence_key
             else _DEFAULT_CONFIDENCE
         ),

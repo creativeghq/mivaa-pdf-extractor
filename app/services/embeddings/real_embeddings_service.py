@@ -476,12 +476,8 @@ class RealEmbeddingsService:
                     model="slig-768d",
                     latency_ms=int((time.time() - start_time) * 1000),
                     action=action,
-                    confidence_score=0.95 if action == "use_ai_result" else 0.0,
+                    confidence_score=None,
                     confidence_breakdown={
-                        "model_confidence": 0.98 if action == "use_ai_result" else 0.0,
-                        "completeness": 1.0 if action == "use_ai_result" else 0.0,
-                        "consistency": 0.95 if action == "use_ai_result" else 0.0,
-                        "validation": 0.90 if action == "use_ai_result" else 0.0,
                         "vectors_generated": 1 if action == "use_ai_result" else 0,
                         "vector_kind": "visual_query",
                         **({"failure": failure} if failure else {}),
@@ -786,12 +782,8 @@ class RealEmbeddingsService:
                     output_tokens=0,
                     cost=float(costs["raw_cost_usd"]),
                     latency_ms=latency_ms,
-                    confidence_score=0.95,
+                    confidence_score=None,
                     confidence_breakdown={
-                        "model_confidence": 0.98,
-                        "completeness": 1.0,
-                        "consistency": 0.95,
-                        "validation": 0.90,
                         "vectors_generated": 1,
                         "vector_dimension": expected_dim,
                         "vector_kind": "page",
@@ -835,11 +827,8 @@ class RealEmbeddingsService:
                     output_tokens=0,
                     cost=0.0,
                     latency_ms=latency_ms,
-                    confidence_score=0.0,
-                    confidence_breakdown={
-                        "model_confidence": 0.0, "completeness": 0.0,
-                        "consistency": 0.0, "validation": 0.0,
-                    },
+                    confidence_score=None,
+                    confidence_breakdown=None,
                     # NOT "fallback_to_rules": nothing falls back here by design, and
                     # logging a fallback that does not exist would make the dashboards
                     # read as "handled" on a path where the page simply has no vector.
@@ -1064,12 +1053,8 @@ class RealEmbeddingsService:
                         output_tokens=0,
                         cost=cost,
                         latency_ms=latency_ms,
-                        confidence_score=0.95,
+                        confidence_score=None,
                         confidence_breakdown={
-                            "model_confidence": 0.98,
-                            "completeness": 1.0,
-                            "consistency": 0.95,
-                            "validation": 0.90,
                             "batch_size": len(texts)
                         },
                         action="use_ai_result",
@@ -1107,12 +1092,8 @@ class RealEmbeddingsService:
                     output_tokens=0,
                     cost=0.0,
                     latency_ms=latency_ms,
-                    confidence_score=0.0,
+                    confidence_score=None,
                     confidence_breakdown={
-                        "model_confidence": 0.0,
-                        "completeness": 0.0,
-                        "consistency": 0.0,
-                        "validation": 0.0,
                         "batch_size": len(texts)
                     },
                     # NOT "fallback_to_rules" - nothing falls back. See the
@@ -1182,7 +1163,7 @@ class RealEmbeddingsService:
                 output_tokens=0,
                 cost=self._voyage_cost_usd(model, tokens) if error is None else 0.0,
                 latency_ms=int((time.time() - start_time) * 1000),
-                confidence_score=0.95 if error is None else 0.0,
+                confidence_score=None,
                 confidence_breakdown={"batch_size": sum(len(w) for w in req)},
                 action="use_ai_result" if error is None else "fallback_failed",
                 job_id=job_id,
@@ -1365,12 +1346,8 @@ class RealEmbeddingsService:
                             output_tokens=0,
                             cost=cost,
                             latency_ms=latency_ms,
-                            confidence_score=0.95,
+                            confidence_score=None,
                             confidence_breakdown={
-                                "model_confidence": 0.98,
-                                "completeness": 1.0,
-                                "consistency": 0.95,
-                                "validation": 0.90,
                                 "rate_limit_retries": rate_limit_attempt,
                                 "throttled_ms": throttled_ms,
                             },
@@ -1404,13 +1381,8 @@ class RealEmbeddingsService:
                     output_tokens=0,
                     cost=0.0,
                     latency_ms=latency_ms,
-                    confidence_score=0.0,
-                    confidence_breakdown={
-                        "model_confidence": 0.0,
-                        "completeness": 0.0,
-                        "consistency": 0.0,
-                        "validation": 0.0
-                    },
+                    confidence_score=None,
+                    confidence_breakdown=None,
                     # NOT "fallback_to_rules": nothing falls back. Reporting a
                     # fallback that does not exist makes the dashboards read as
                     # "handled" on a path where the caller simply gets no vector.
@@ -1617,12 +1589,8 @@ class RealEmbeddingsService:
                             model="slig-768d",
                             latency_ms=latency_ms,
                             action="fallback_failed",
-                            confidence_score=0.0,
+                            confidence_score=None,
                             confidence_breakdown={
-                                "model_confidence": 0.0,
-                                "completeness": 0.0,
-                                "consistency": 0.0,
-                                "validation": 0.0,
                                 "vectors_generated": 0,
                                 "attempts": 3,
                                 "failure": "dimension_mismatch",
@@ -1650,12 +1618,8 @@ class RealEmbeddingsService:
                         task="visual_embedding_generation",
                         model="slig-768d",
                         latency_ms=latency_ms,
-                        confidence_score=0.95,
+                        confidence_score=None,
                         confidence_breakdown={
-                            "model_confidence": 0.98,
-                            "completeness": 1.0,
-                            "consistency": 0.95,
-                            "validation": 0.90,
                             # Each visual call yields ONE 768D vector. The 4
                             # per-aspect Voyage embeddings (color/texture/style/
                             # material) are logged separately by
@@ -1686,12 +1650,8 @@ class RealEmbeddingsService:
                             model="slig-768d",
                             latency_ms=int((time.time() - start_time) * 1000),
                             action="fallback_failed",
-                            confidence_score=0.0,
+                            confidence_score=None,
                             confidence_breakdown={
-                                "model_confidence": 0.0,
-                                "completeness": 0.0,
-                                "consistency": 0.0,
-                                "validation": 0.0,
                                 "vectors_generated": 0,
                                 "failure": type(e).__name__,
                                 "endpoint_model": self.slig_model_name,
@@ -1842,15 +1802,12 @@ class RealEmbeddingsService:
                 output_tokens=0,
                 cost=0.0,  # cost rolled up by Voyage account-level billing
                 latency_ms=0,
-                confidence_score=0.95,
+                confidence_score=None,
                 confidence_breakdown={
-                    "model_confidence": 0.98,
-                    "completeness": 1.0 if not any_failure else 0.7,
-                    "consistency": 1.0,
-                    "validation": 1.0,
                     "vectors_generated": len(embeddings),
                     "vector_dimension": 1024,
                     "vector_kinds": list(embeddings.keys()),
+                    "any_aspect_failed": any_failure,
                     "schema_version": SCHEMA_VERSION,
                 },
                 action="use_ai_result",
