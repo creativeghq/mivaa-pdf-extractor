@@ -674,6 +674,8 @@ class RAGService:
             # If any fail or timeout, search continues with remaining sources.
             # ============================================================================
             EMBEDDING_TIMEOUT = 10  # seconds — prevents search from hanging
+            # A text query's SLIG vector is one channel of five; a Modal cold start must not hold the rest.
+            VISUAL_TEXT_TIMEOUT = 4
 
             # Does the caller actually have words, or only a picture?
             #
@@ -827,7 +829,7 @@ class RAGService:
             # Run all embedding generations in parallel, each with its own timeout.
             # Per-task timeouts ensure completed tasks are preserved even if one hangs.
             visual_result, text_result, understanding_result, page_result = await asyncio.gather(
-                asyncio.wait_for(_get_visual_embedding(), timeout=EMBEDDING_TIMEOUT),
+                asyncio.wait_for(_get_visual_embedding(), timeout=EMBEDDING_TIMEOUT if image_base64 else VISUAL_TEXT_TIMEOUT),
                 asyncio.wait_for(_get_text_embedding(), timeout=EMBEDDING_TIMEOUT),
                 asyncio.wait_for(_get_understanding_embedding(), timeout=EMBEDDING_TIMEOUT),
                 asyncio.wait_for(_get_page_embedding(), timeout=EMBEDDING_TIMEOUT),
