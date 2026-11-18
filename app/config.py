@@ -1229,7 +1229,7 @@ def configure_logging():
         supabase_handler = SupabaseLoggingHandler(
             batch_size=10,
             flush_interval=5.0,
-            level=logging.INFO  # Only log INFO and above to database
+            level=logging.WARNING  # every system_logs reader filters to WARNING+
         )
         root_logger.addHandler(supabase_handler)
 

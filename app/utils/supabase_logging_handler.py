@@ -54,7 +54,7 @@ class SupabaseLoggingHandler(logging.Handler):
         self,
         batch_size: int = 10,
         flush_interval: float = 5.0,
-        level: int = logging.INFO
+        level: int = logging.WARNING
     ):
         """
         Initialize the Supabase logging handler.

@@ -361,12 +361,6 @@ class LogsResponse(BaseModel):
     logs: List[Dict[str, Any]] = Field(default_factory=list)
     count: int = 0
 
-class LogStatsResponse(BaseModel):
-    """Log statistics."""
-    success: bool = True
-    stats: Dict[str, Any] = Field(default_factory=dict)
-
-
 # ── Background Agents ────────────────────────────────────────────────────────
 
 class AgentCatalogResponse(BaseModel):
