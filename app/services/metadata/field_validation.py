@@ -436,10 +436,34 @@ def validate_value(spec: "FieldSpec", value: Any) -> Verdict:
     return _apply_rules(spec, value, None, text) or Verdict(OK, value, derived=derived or None)
 
 
+_COMPOUND_SPLIT_RE = re.compile(r"\s*(?:,|;|/|\||&|\+|\band\b|\bor\b|\bή\b|\bκαι\b)\s*", re.IGNORECASE)
+
+
+def _split_compound_option(spec: "FieldSpec", value: str) -> Optional[List[Any]]:
+    """`Non-rectified and Rectified` is two options, not an unknown one. Every part must match."""
+    if spec.field_type != "dropdown" or not spec.dropdown_options:
+        return None
+    parts = [p for p in _COMPOUND_SPLIT_RE.split(value) if p and p.strip()]
+    if len(parts) < 2:
+        return None
+    out: List[Any] = []
+    for part in parts:
+        verdict = validate_value(spec, part)
+        if verdict.status != OK:
+            return None
+        if verdict.value not in out:
+            out.append(verdict.value)
+    return out if len(out) > 1 else None
+
+
 def _validate_one(spec: "FieldSpec", value: Any) -> Tuple[Any, Verdict]:
     """Handle the scalar-or-list shape. A list's verdict is its worst element's."""
     if not isinstance(value, list):
         verdict = validate_value(spec, value)
+        if verdict.status == OUT_OF_ENUM and isinstance(value, str):
+            split = _split_compound_option(spec, value)
+            if split is not None:
+                return split, Verdict(OK, split, normalized_from=str(value).strip())
         return verdict.value, verdict
 
     kept: List[Any] = []

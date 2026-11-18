@@ -444,6 +444,7 @@ def test_a_lost_insert_race_is_already_registered_not_an_error(env):
     env.fake.tables["material_metadata_fields"].append(_field("lumens", status="candidate"))
     m = env.extractor_mod
     extractor = m.DynamicMetadataExtractor(workspace_id="ws-1")
+    _vetted(extractor, {})
     report = asyncio.run(extractor._register_and_classify_fields(
         _extracted(lumens=800), category_hint="lighting"))
     assert report["registered"] == []
@@ -474,3 +475,66 @@ def test_new_fields_per_document_are_capped(env):
 ])
 def test_a_key_naming_a_code_size_or_the_product_itself_is_a_value_not_a_field(env, name, product, junk):
     assert env.extractor_mod.value_shaped_field_name(name, [product]) is junk
+
+
+# ── Vetting before insert: twins become aliases, every new field gets a section ──────────────
+
+def _vetted(extractor, verdicts):
+    async def _vet(new_values, category):
+        return {n: v for n, v in verdicts.items() if n in new_values}, []
+    extractor._vet_new_fields_with_llm = _vet
+
+
+def test_a_twin_of_an_existing_field_becomes_its_alias_not_a_new_row(env):
+    m = env.extractor_mod
+    extractor = m.DynamicMetadataExtractor(workspace_id="ws-1")
+    _vetted(extractor, {"surface_sheen": {"same_as": "finish", "section": "appearance",
+                                          "audience": "public", "role": "descriptive",
+                                          "confidence": 0.9, "reasoning": ""}})
+    report = asyncio.run(extractor._register_and_classify_fields(
+        _extracted(surface_sheen="matte"), category_hint="lighting"))
+    assert env.fake.inserted == []
+    assert ("add_metadata_field_alias", {"p_field_name": "finish", "p_alias": "surface_sheen"}) in env.fake.rpcs
+    assert report["aliased"] == [{"field_name": "surface_sheen", "same_as": "finish"}]
+
+
+def test_a_low_confidence_twin_verdict_registers_the_field(env):
+    m = env.extractor_mod
+    extractor = m.DynamicMetadataExtractor(workspace_id="ws-1")
+    _vetted(extractor, {"surface_sheen": {"same_as": "finish", "section": "appearance",
+                                          "audience": "public", "role": "descriptive",
+                                          "confidence": 0.3, "reasoning": ""}})
+    asyncio.run(extractor._register_and_classify_fields(
+        _extracted(surface_sheen="matte"), category_hint="lighting"))
+    assert [r["field_name"] for r in env.fake.inserted] == ["surface_sheen"]
+    assert not any(n == "add_metadata_field_alias" for n, _ in env.fake.rpcs)
+
+
+def test_a_new_field_carries_a_registered_section_and_its_audience(env):
+    m = env.extractor_mod
+    extractor = m.DynamicMetadataExtractor(workspace_id="ws-1")
+    _vetted(extractor, {"catalogue_page": {"same_as": None, "section": "appearance",
+                                           "audience": "internal", "role": "descriptive",
+                                           "confidence": 0.9, "reasoning": ""}})
+    asyncio.run(extractor._register_and_classify_fields(
+        _extracted(catalogue_page="12", lumens=800), category_hint="lighting"))
+    rows = {r["field_name"]: r for r in env.fake.inserted}
+    assert rows["catalogue_page"]["section"] == "appearance"
+    assert rows["catalogue_page"]["sensitivity"] == "internal"
+    # Not vetted and the reply's own section ("specs") is not a registered one: never NULL.
+    assert rows["lumens"]["section"] == "other"
+
+
+def test_the_extraction_schema_does_not_grow_with_the_registry(env):
+    schema = env.extractor_mod._extraction_output_config()["format"]["schema"]
+
+    def count(o):
+        n = 0
+        if isinstance(o, dict):
+            n += len(o.get("properties") or {})
+            n += sum(count(v) for v in o.values())
+        elif isinstance(o, list):
+            n += sum(count(v) for v in o)
+        return n
+    # Registry fields travel as rows (`discovered`), so the property count is fixed by code.
+    assert count(schema) < 100

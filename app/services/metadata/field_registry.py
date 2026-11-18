@@ -608,6 +608,11 @@ class FieldRegistry:
         order = self._require().section_order
         return order.get(section, max(order.values(), default=0) + 1)
 
+    def section_keys(self) -> List[str]:
+        """Every section `material_field_sections` defines, in display order."""
+        order = self._require().section_order
+        return sorted(order, key=lambda k: (order[k], k))
+
     def priority_fields_prompt(self, category_key: str) -> str:
         """The PRIORITY FIELDS block. Format matches the retired Python builder."""
         cat = self.category(category_key)

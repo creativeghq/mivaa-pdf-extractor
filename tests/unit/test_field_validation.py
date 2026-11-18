@@ -535,3 +535,21 @@ def test_a_derived_part_that_breaks_its_own_field_rules_is_kept_out():
     assert out["joint_width_min_mm"] == 2
     assert "joint_width_max_mm" not in out
     assert out["_extraction_metadata"]["joint_width_max_mm"]["rejected"]["status"] != fv.OK
+
+
+EDGE = Spec("dropdown", ("Rectified", "Non-rectified", "Beveled"))
+
+
+@pytest.mark.parametrize("value", ["Non-rectified and Rectified", "rectified / non-rectified",
+                                   "Rectified, Non-rectified"])
+def test_a_compound_dropdown_value_is_the_list_of_its_options(value):
+    kept, verdict = fv._validate_one(EDGE, value)
+    assert verdict.status == fv.OK
+    assert sorted(kept) == ["Non-rectified", "Rectified"]
+    assert verdict.normalized_from == value
+
+
+def test_a_compound_with_one_unknown_part_stays_out_of_enum():
+    kept, verdict = fv._validate_one(EDGE, "Rectified and Polished")
+    assert verdict.status == fv.OUT_OF_ENUM
+    assert kept == "Rectified and Polished"

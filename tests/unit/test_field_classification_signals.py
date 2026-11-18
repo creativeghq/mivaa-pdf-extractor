@@ -28,7 +28,7 @@ def sku_correlated():
 
 def _llm_body(src: str) -> str:
     """The LLM tier's body only — split on the DEFINITION, since the call site comes first."""
-    marker = "async def _classify_residual_fields_with_llm"
+    marker = "async def _vet_new_fields_with_llm"
     assert marker in src, "the LLM tier is gone — this guard is stale"
     return src.split(marker, 1)[1].split("def _sku_correlated_fields", 1)[0]
 
@@ -103,10 +103,9 @@ def test_llm_tier_uses_forced_tool_use_and_no_salvage():
     # built its own httpx POST. It now goes through `call_with_tool`, which FORCES the
     # tool from `tool["name"]` — so the string moved into the shared helper and this
     # test was pinning the implementation rather than the property.
-    assert "call_with_tool(" in body, (
-        "the field-role classifier no longer forces its tool call (invariant 9)"
+    assert "call_with_schema(" in body and '"json_schema"' in body, (
+        "the field vetting call no longer constrains its output by the server (invariant 9)"
     )
-    assert 'tool=classify_tool' in body
     assert "ToolCallNotReturned" in body, (
         "a missing tool block is no longer handled explicitly — it must leave the field "
         "unclassified, not fall through to a guess"
@@ -135,4 +134,4 @@ def test_residual_reaches_the_llm_rather_than_being_dropped():
     """The scalar branch must ROUTE to the model, not silently assert descriptive."""
     src = _SRC.read_text(encoding="utf-8")
     assert "residual[key] = value" in src
-    assert "await self._classify_residual_fields_with_llm(supabase, residual)" in src
+    assert "self._write_llm_roles(supabase, residual, vetted, report)" in src
