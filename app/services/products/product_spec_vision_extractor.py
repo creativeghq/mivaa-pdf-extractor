@@ -229,8 +229,8 @@ def _call_claude_vision(
             messages=[{
                 "role": "user",
                 "content": [
+                    {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}},
                     {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": b64}},
-                    {"type": "text", "text": prompt},
                 ],
             }],
             job_id=job_id,

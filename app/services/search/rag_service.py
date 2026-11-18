@@ -2577,6 +2577,9 @@ class RAGService:
                     messages=[{
                         'role': 'user',
                         'content': [
+                            # Cached prompt BEFORE the image — a breakpoint after a per-call
+                            # image writes a fresh entry every call and never reads one.
+                            {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
                             {
                                 'type': 'image',
                                 'source': {
@@ -2585,9 +2588,6 @@ class RAGService:
                                     'data': image_base64,
                                 },
                             },
-                            # cache_control preserved: the prompt is identical for every
-                            # image in a batch.
-                            {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
                         ],
                     }],
                     required=["classification"],

@@ -263,11 +263,12 @@ class ImageProcessingService:
                         model=classification_model,
                         max_tokens=1024,
                         tool=classify_tool,
-                        # `cache_control` rides on the prompt block inside `messages`, so
-                        # the batch-wide prompt cache is preserved verbatim.
+                        # The cached prompt goes BEFORE the image: caching is a prefix match,
+                        # so a breakpoint after a per-call image writes a new entry every call.
                         messages=[{
                             'role': 'user',
                             'content': [
+                                {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
                                 {
                                     'type': 'image',
                                     'source': {
@@ -276,7 +277,6 @@ class ImageProcessingService:
                                         'data': image_base64,
                                     },
                                 },
-                                {'type': 'text', 'text': self.classification_prompt, 'cache_control': {'type': 'ephemeral'}},
                             ],
                         }],
                         required=["classification"],

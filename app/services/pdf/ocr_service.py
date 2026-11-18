@@ -570,14 +570,21 @@ class OCRService:
             .replace("{category}", category or "unknown")
             .replace("{allowed_fields}", ", ".join(sorted(set(field_names))))
         )
-        prompt = prompt.replace("{ocr_tokens}", fenced) if "{ocr_tokens}" in prompt else f"{prompt}\n\n{fenced}"
+        # Split at the per-call OCR tokens so everything before them is a cacheable prefix.
+        head, sep, tail = prompt.partition("{ocr_tokens}")
+        if not head.strip():  # placeholder leads the template: put the tokens after it instead
+            head, sep, tail = tail, "", ""
+        content = [
+            {"type": "text", "text": head, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": f"{fenced}{tail}" if sep else f"\n\n{fenced}"},
+        ]
 
         try:
             call = await call_with_schema(
                 task="ocr_icon_metadata_extraction",
                 model=get_settings().anthropic_model_classification,
                 max_tokens=2048,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": content}],
                 output_config=_icon_output_config(field_names),
                 job_id=job_id,
                 workspace_id=workspace_id,

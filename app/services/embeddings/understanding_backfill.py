@@ -167,6 +167,12 @@ async def _analyze_one(
                 messages=[{
                     "role": "user",
                     "content": [
+                        # The SAME prompt row ingestion uses, cached ahead of the per-call image.
+                        {
+                            "type": "text",
+                            "text": load_material_analyzer_prompt()[0],
+                            "cache_control": {"type": "ephemeral"},
+                        },
                         {
                             "type": "image",
                             "source": {
@@ -174,15 +180,6 @@ async def _analyze_one(
                                 "media_type": sniff_media_type(image_bytes),
                                 "data": image_b64,
                             },
-                        },
-                        {
-                            "type": "text",
-                            # The SAME prompt row ingestion uses, not a hardcoded twin.
-                            # This said "Use the emit_vision_analysis tool to return a
-                            # structured catalog-grade material analysis for this image"
-                            # — a different instruction from the one every ingested image
-                            # received, writing into the same embedding collection.
-                            "text": load_material_analyzer_prompt()[0],
                         },
                     ],
                 }],
