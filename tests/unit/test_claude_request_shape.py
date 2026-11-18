@@ -24,7 +24,7 @@ def _forced(model: str, **extra):
 def test_forced_tool_becomes_auto_with_an_instruction(model: str) -> None:
     out = cm.shape_request(_forced(model, system="Extract."))
     assert out["tool_choice"] == {"type": "auto"}
-    assert "`record` tool" in out["system"]
+    assert "`record` tool" in " ".join(b["text"] for b in out["system"])
 
 
 def test_haiku_keeps_its_forced_tool_and_runs_without_thinking() -> None:
@@ -61,3 +61,26 @@ def test_block_system_prompt_gets_the_instruction_appended_as_a_block() -> None:
 def test_no_current_model_accepts_sampling() -> None:
     for model in (cm.OPUS, cm.SONNET, cm.HAIKU):
         assert not cm.accepts_sampling_params(model)
+
+
+def test_the_system_prompt_ends_the_cached_prefix() -> None:
+    out = cm.shape_request({"model": cm.OPUS, "system": "Stable.", "messages": [], "tools": [{"name": "t"}]})
+    assert out["system"] == [{"type": "text", "text": "Stable.", "cache_control": {"type": "ephemeral"}}]
+    assert "cache_control" not in out["tools"][0]
+
+
+def test_with_no_system_the_last_tool_ends_the_cached_prefix() -> None:
+    out = cm.shape_request({"model": cm.HAIKU, "messages": [], "tools": [{"name": "a"}, {"name": "b"}]})
+    assert "cache_control" not in out["tools"][0]
+    assert out["tools"][1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_a_caller_placed_breakpoint_is_left_alone() -> None:
+    msgs = [{"role": "user", "content": [{"type": "text", "text": "p", "cache_control": {"type": "ephemeral"}}]}]
+    out = cm.shape_request({"model": cm.OPUS, "system": "Stable.", "messages": msgs})
+    assert out["system"] == "Stable."
+
+
+def test_a_plain_message_only_request_is_unchanged() -> None:
+    out = cm.shape_request({"model": cm.SONNET, "messages": [{"role": "user", "content": "hi"}]})
+    assert "system" not in out and "cache_control" not in out

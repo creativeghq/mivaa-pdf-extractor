@@ -90,4 +90,37 @@ def shape_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             f"Answer by calling the `{name}` tool. Do not reply in text."
             if name else "Answer by calling one of the provided tools. Do not reply in text.",
         )
+    return mark_stable_prefix(payload)
+
+
+_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _has_cache_marker(node: Any) -> bool:
+    if isinstance(node, dict):
+        return "cache_control" in node or any(_has_cache_marker(v) for v in node.values())
+    if isinstance(node, list):
+        return any(_has_cache_marker(v) for v in node)
+    return False
+
+
+def mark_stable_prefix(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Put one cache breakpoint at the end of the request's fixed part: system, else tools.
+
+    Caching is a prefix match (tools → system → messages), so this caches whatever is
+    identical across calls. A prefix under the model's minimum is silently not cached and
+    costs nothing. A caller that placed its own breakpoint is left alone.
+    """
+    if "cache_control" in payload or _has_cache_marker(
+        [payload.get("system"), payload.get("tools"), payload.get("messages")]
+    ):
+        return payload
+    system = payload.get("system")
+    if isinstance(system, str) and system.strip():
+        payload["system"] = [{"type": "text", "text": system, "cache_control": dict(_EPHEMERAL)}]
+    elif isinstance(system, list) and system and isinstance(system[-1], dict) and system[-1].get("text"):
+        payload["system"] = [*system[:-1], {**system[-1], "cache_control": dict(_EPHEMERAL)}]
+    elif isinstance(payload.get("tools"), list) and payload["tools"] and isinstance(payload["tools"][-1], dict):
+        tools = payload["tools"]
+        payload["tools"] = [*tools[:-1], {**tools[-1], "cache_control": dict(_EPHEMERAL)}]
     return payload
