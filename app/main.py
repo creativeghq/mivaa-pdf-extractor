@@ -1568,7 +1568,6 @@ from app.api.embeddings import router as embeddings_router
 from app.api.monitoring_routes import router as monitoring_router
 from app.api.ai_metrics_routes import router as ai_metrics_router
 from app.api.ai_services_routes import router as ai_services_router
-from app.api.admin_prompts import router as admin_prompts_router, config_router as extraction_config_router
 from app.api.saved_searches_routes import router as saved_searches_router
 from app.api.duplicate_detection_routes import router as duplicate_detection_router
 from app.api.suggestions import router as suggestions_router
@@ -1582,7 +1581,6 @@ from app.api.tabular_routes import router as tabular_router  # noqa: E402
 from app.api.drawing_routes import router as drawing_router  # noqa: E402
 from app.api.catalog_routes import router as catalog_internal_router
 from app.api.text_routes import router as text_internal_router  # noqa: E402
-from app.api.prompt_templates import router as prompt_templates_router
 from app.api.user_feedback import router as user_feedback_router
 from app.api.interior_design_routes import router as interior_design_router
 from app.api.health import router as health_router
@@ -1625,8 +1623,6 @@ app.include_router(embeddings_router)
 app.include_router(monitoring_router)
 app.include_router(ai_metrics_router)
 app.include_router(ai_services_router)
-app.include_router(admin_prompts_router)  # Admin prompts management
-app.include_router(extraction_config_router)  # Extraction configuration
 app.include_router(saved_searches_router)  # NEW: Saved searches with AI deduplication
 app.include_router(duplicate_detection_router)  # NEW: Duplicate detection and product merging (same factory only)
 app.include_router(suggestions_router)  # NEW: Search suggestions, auto-complete, trending, typo correction
@@ -1640,7 +1636,6 @@ app.include_router(tabular_router)  # A question about a spreadsheet attachment:
 app.include_router(drawing_router)  # Drawing geometry: scale, printed room areas, doors, walls, count-by-example
 app.include_router(catalog_internal_router)  # NEW: Catalog rasterization helper (PDF page → PNG) for presentation_catalogs
 app.include_router(text_internal_router)  # Grammar matches from the local LanguageTool server
-app.include_router(prompt_templates_router)  # NEW: Customizable AI prompt templates for different industries
 app.include_router(user_feedback_router)  # NEW: User feedback with AI sentiment analysis (aspect-based, trends)
 app.include_router(interior_design_router)  # NEW: Interior design generation with streaming progress
 app.include_router(chunk_quality_router)  # NEW: Chunk quality metrics and flagged content management

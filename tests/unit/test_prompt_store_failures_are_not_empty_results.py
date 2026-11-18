@@ -11,8 +11,6 @@ APP = ROOT / "app"
 
 PROMPT_SERVICES = [
     APP / "services" / "utilities" / "unified_prompt_service.py",
-    APP / "services" / "utilities" / "admin_prompt_service.py",
-    APP / "services" / "utilities" / "prompt_template_service.py",
 ]
 REGISTRY = APP / "services" / "utilities" / "prompt_registry.py"
 RAG = APP / "api" / "rag_routes.py"
