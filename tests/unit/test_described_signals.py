@@ -77,6 +77,13 @@ def test_the_quote_check_tolerates_typography_and_elisions_but_not_invention():
     assert not rules.quote_is_in_item("Upload pick tickets to HubSpot", item)
 
 
+def test_an_elided_quote_cannot_be_stitched_from_scattered_words():
+    item = "We are hiring a new store manager. Our showroom team is growing. Based in Greece, travel required."
+    assert not rules.quote_is_in_item("new ... showroom ... Greece", item)
+    assert not rules.quote_is_in_item("hiring a new ... showroom team ... Based in Greece ... travel required", item)
+    assert rules.quote_is_in_item("hiring a new store manager ... showroom team is growing", item)
+
+
 def test_schemas_are_closed_and_require_every_field():
     for schema in (rules.COMPILE_SCHEMA, rules.JUDGE_SCHEMA):
         assert schema["additionalProperties"] is False
@@ -86,7 +93,7 @@ def test_schemas_are_closed_and_require_every_field():
 
 def _run_one_body() -> str:
     src = budget.blank_comments(_SERVICE.read_text(encoding="utf-8"))
-    start = src.index("async def _run_one(")
+    start = src.index("async def _judge_claimed(")
     end = src.index("\nasync def ", start + 10)
     return src[start:end]
 
@@ -99,10 +106,16 @@ def test_a_judgement_is_claimed_before_the_charge_and_charged_before_the_model_c
     assert claim < charge < judge
 
 
-def test_a_failed_check_is_refunded():
+def test_a_failed_check_is_refunded_what_the_ledger_took():
     body = _run_one_body()
     failed = body.index('verdict["status"] == "failed"')
-    assert body.index("await _refund(", failed) > failed
+    assert body.index("await _refund(ws, paid,", failed) > failed
+
+
+def test_a_reclaimed_judgement_that_was_already_paid_is_not_charged_again():
+    body = _run_one_body()
+    assert body.index('claim.get("prepaid")') < body.index("if paid <= 0:") < body.index("await _charge(")
+    assert body.index("await _charge(") < body.index('"set_described_judgement_charge"') < body.index("await judge_item(")
 
 
 def test_no_prompt_text_lives_in_the_service():

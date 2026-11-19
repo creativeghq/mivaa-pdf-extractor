@@ -10,7 +10,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.core.claude_models import HAIKU, SONNET
 from app.services.integrations.described_signals_rules import (
@@ -34,7 +34,11 @@ JUDGE_CRON_KEY = "signals-described-judge"
 BACKTEST_DAYS = 30
 BACKTEST_JUDGE_SAMPLE = 10
 PER_SIGNAL_RUN_CAP = 25
+FIRST_RUN_LOOKBACK_DAYS = 7
+JUDGE_CONCURRENCY = 5
+SIGNAL_CONCURRENCY = 3
 EMBED_BATCH = 64
+EMBED_CONCURRENCY = 8
 
 
 def _sb():
@@ -113,12 +117,19 @@ async def judge_item(spec: Dict[str, Any], row: Dict[str, Any], *, workspace_id:
 
 
 async def _candidates(workspace_id: str, signal_id: Optional[str], spec: Dict[str, Any], qvec: Optional[str],
-                      crm_only: bool, days: int, limit: int) -> List[Dict[str, Any]]:
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+                      crm_only: bool, since: datetime, limit: int, spec_hash: Optional[str] = None) -> List[Dict[str, Any]]:
     return await _rpc("signals_described_candidates", {
         "p_workspace_id": workspace_id, "p_signal_id": signal_id, "p_spec": spec,
-        "p_query_embedding": qvec, "p_crm_only": crm_only, "p_since": since, "p_limit": limit,
+        "p_query_embedding": qvec, "p_crm_only": crm_only, "p_since": since.isoformat(), "p_limit": limit,
+        "p_spec_hash": spec_hash,
     }) or []
+
+
+def _parse_ts(value: Any) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
 
 
 async def backtest(description: str, spec: Dict[str, Any], *, crm_only: bool, workspace_id: str,
@@ -127,7 +138,8 @@ async def backtest(description: str, spec: Dict[str, Any], *, crm_only: bool, wo
     spec = clean_spec(spec)
     emb = await _embed(description, workspace_id=workspace_id, user_id=user_id, input_type="query")
     qvec = _vec_literal(emb) if emb else None
-    rows = await _candidates(workspace_id, None, spec, qvec, crm_only, BACKTEST_DAYS, 500)
+    now = datetime.now(timezone.utc)
+    rows = await _candidates(workspace_id, None, spec, qvec, crm_only, now - timedelta(days=BACKTEST_DAYS), 500)
     sample = rows[:BACKTEST_JUDGE_SAMPLE]
     verdicts = await asyncio.gather(*(judge_item(spec, r, workspace_id=workspace_id, user_id=user_id) for r in sample))
     judged = []
@@ -138,6 +150,8 @@ async def backtest(description: str, spec: Dict[str, Any], *, crm_only: bool, wo
             "keyword_hits": r.get("keyword_hits"), "similarity": r.get("similarity"), **v,
         })
     per_week = round(len(rows) / BACKTEST_DAYS * 7)
+    first_cut = now - timedelta(days=FIRST_RUN_LOOKBACK_DAYS)
+    first_run = sum(1 for r in rows if (_parse_ts(r.get("observed_at")) or now) > first_cut)
     return {
         "candidates_30d": len(rows),
         "candidates_capped": len(rows) >= 500,
@@ -147,12 +161,14 @@ async def backtest(description: str, spec: Dict[str, Any], *, crm_only: bool, wo
         "failed_in_sample": sum(1 for j in judged if j["status"] == "failed"),
         "estimate": {"items_per_week": per_week,
                      "credits_per_week": min(per_week, PER_SIGNAL_RUN_CAP * 24 * 7),
+                     "first_run_credits": first_run,
+                     "first_run_days": FIRST_RUN_LOOKBACK_DAYS,
                      "credit_per_item": 1},
     }
 
 
-async def _charge(workspace_id: str, user_id: Optional[str], subject: Dict[str, Any]) -> str:
-    """'ok' | 'no_credits' | 'error'. Distinguishes an empty wallet (pause) from a transport fault (retry)."""
+async def _charge(workspace_id: str, user_id: Optional[str], subject: Dict[str, Any]) -> Tuple[str, float]:
+    """('ok', charged) | ('no_credits', 0) | ('error', 0). `charged` is what the ledger took: 0 on a free pass."""
     try:
         data = await _rpc("cron_charge_workspace", {
             "p_workspace_id": workspace_id, "p_cron_key": JUDGE_CRON_KEY, "p_units": 1,
@@ -160,22 +176,30 @@ async def _charge(workspace_id: str, user_id: Optional[str], subject: Dict[str, 
         })
     except Exception as e:  # noqa: BLE001
         logger.warning("described signals: charge failed (%s); skipping, not pausing", e)
-        return "error"
+        return "error", 0.0
     row = data[0] if isinstance(data, list) and data else data if isinstance(data, dict) else None
     if not row:
-        return "error"
-    return "ok" if row.get("allowed", False) else "no_credits"
+        return "error", 0.0
+    if not row.get("allowed", False):
+        return "no_credits", 0.0
+    return "ok", float(row.get("charged") or 0)
 
 
-async def _refund(workspace_id: str, reason: str) -> bool:
-    try:
-        await _rpc("cron_refund_workspace", {
-            "p_workspace_id": workspace_id, "p_cron_key": JUDGE_CRON_KEY, "p_amount": 1,
-            "p_description": f"Described signal: refund, {reason}"[:200]})
+async def _refund(workspace_id: str, amount: float, reason: str) -> bool:
+    """True only when the ledger confirms it: cron_refund_workspace returns false rather than raising."""
+    if amount <= 0:
         return True
+    try:
+        ok = await _rpc("cron_refund_workspace", {
+            "p_workspace_id": workspace_id, "p_cron_key": JUDGE_CRON_KEY, "p_amount": amount,
+            "p_description": f"Described signal: refund, {reason}"[:200]})
     except Exception as e:  # noqa: BLE001
         logger.warning("described signals: refund failed (%s)", e)
         return False
+    if ok is not True:
+        logger.warning("described signals: refund of %s refused for workspace %s", amount, workspace_id)
+        return False
+    return True
 
 
 async def embed_pending_observations(budget_s: float) -> Dict[str, int]:
@@ -185,9 +209,19 @@ async def embed_pending_observations(budget_s: float) -> Dict[str, int]:
         batch = await _rpc("claim_observations_to_embed", {"p_limit": EMBED_BATCH}) or []
         if not batch:
             break
+        sem = asyncio.Semaphore(EMBED_CONCURRENCY)
+
+        async def one(text: str) -> Optional[List[float]]:
+            async with sem:
+                try:
+                    return await _embed(text, workspace_id=None, user_id=None, input_type="document")
+                except Exception as e:  # noqa: BLE001 — recorded as a failed embedding and retried later
+                    logger.warning("described signals: embedding failed (%s)", e)
+                    return None
+
+        embs = await asyncio.gather(*(one(r["text_to_embed"]) for r in batch))
         updates = []
-        for row in batch:
-            emb = await _embed(row["text_to_embed"], workspace_id=None, user_id=None, input_type="document")
+        for row, emb in zip(batch, embs):
             if emb:
                 updates.append({"id": row["id"], "embedding": _vec_literal(emb), "error": None})
                 done += 1
@@ -196,6 +230,35 @@ async def embed_pending_observations(budget_s: float) -> Dict[str, int]:
                 failed += 1
         await _rpc("set_observation_embeddings", {"p_rows": updates})
     return {"embedded": done, "embedding_failed": failed}
+
+
+async def _judge_claimed(sig: Dict[str, Any], spec: Dict[str, Any], row: Dict[str, Any]) -> Dict[str, Any]:
+    """Claim, charge (unless a crashed run already paid), judge, refund a failure, finish."""
+    ws, uid, sid = sig["workspace_id"], sig.get("created_by"), sig["id"]
+    claim = await _rpc("claim_described_judgement", {
+        "p_signal_id": sid, "p_spec_hash": sig["spec_hash"], "p_observation_id": row["id"]})
+    if not claim:
+        return {"outcome": "skipped"}
+    jid = claim["id"]
+    paid = float(claim.get("prepaid") or 0)
+    if paid <= 0:
+        charge, paid = await _charge(ws, uid, {"signal_id": sid, "observation_id": row["id"]})
+        if charge != "ok":
+            await _rpc("finish_described_judgement", {
+                "p_judgement_id": jid, "p_status": "skipped_no_credits" if charge == "no_credits" else "failed",
+                "p_confidence": None, "p_evidence_quote": None, "p_reason": None,
+                "p_error": "insufficient credits" if charge == "no_credits" else "credit charge failed", "p_credits": 0})
+            return {"outcome": charge}
+        await _rpc("set_described_judgement_charge", {"p_judgement_id": jid, "p_credits": paid})
+    verdict = await judge_item(spec, row, workspace_id=ws, user_id=uid)
+    credits = paid
+    if verdict["status"] == "failed" and await _refund(ws, paid, "the AI check failed"):
+        credits = 0
+    matched = await _rpc("finish_described_judgement", {
+        "p_judgement_id": jid, "p_status": verdict["status"], "p_confidence": verdict.get("confidence"),
+        "p_evidence_quote": verdict.get("evidence_quote"), "p_reason": verdict.get("reason"),
+        "p_error": verdict.get("error"), "p_credits": credits})
+    return {"outcome": verdict["status"], "matched": bool(matched)}
 
 
 async def _run_one(sig: Dict[str, Any], deadline: float) -> Dict[str, Any]:
@@ -207,37 +270,27 @@ async def _run_one(sig: Dict[str, Any], deadline: float) -> Dict[str, Any]:
         if emb:
             await _rpc("set_signal_description_embedding", {"p_signal_id": sid, "p_embedding": _vec_literal(emb)})
     qvec = await _rpc("signals_described_embedding", {"p_signal_id": sid})
-    rows = await _candidates(ws, sid, spec, qvec, bool(filt.get("crm_only")), BACKTEST_DAYS, PER_SIGNAL_RUN_CAP)
+    now = datetime.now(timezone.utc)
+    created = _parse_ts(sig.get("created_at")) or now
+    since = max(now - timedelta(days=BACKTEST_DAYS), created - timedelta(days=FIRST_RUN_LOOKBACK_DAYS))
+    rows = await _candidates(ws, sid, spec, qvec, bool(filt.get("crm_only")), since, PER_SIGNAL_RUN_CAP,
+                             spec_hash=sig["spec_hash"])
 
     new_matches = judged = failed = 0
     paused: Optional[str] = None
-    for row in rows:
+    for i in range(0, len(rows), JUDGE_CONCURRENCY):
         if time.monotonic() > deadline:
             break
-        jid = await _rpc("claim_described_judgement", {
-            "p_signal_id": sid, "p_spec_hash": sig["spec_hash"], "p_observation_id": row["id"]})
-        if not jid:
-            continue
-        charge = await _charge(ws, uid, {"signal_id": sid, "observation_id": row["id"]})
-        if charge != "ok":
-            await _rpc("finish_described_judgement", {
-                "p_judgement_id": jid, "p_status": "skipped_no_credits" if charge == "no_credits" else "failed",
-                "p_confidence": None, "p_evidence_quote": None, "p_reason": None,
-                "p_error": "insufficient credits" if charge == "no_credits" else "credit charge failed", "p_credits": 0})
-            if charge == "no_credits":
-                paused = "no_credits"
+        results = await asyncio.gather(*(_judge_claimed(sig, spec, r) for r in rows[i:i + JUDGE_CONCURRENCY]))
+        for r in results:
+            judged += 1 if r["outcome"] in ("match", "no_match", "failed") else 0
+            failed += 1 if r["outcome"] == "failed" else 0
+            new_matches += 1 if r.get("matched") else 0
+        if any(r["outcome"] == "no_credits" for r in results):
+            paused = "no_credits"
             break
-        verdict = await judge_item(spec, row, workspace_id=ws, user_id=uid)
-        judged += 1
-        credits = 1
-        if verdict["status"] == "failed":
-            failed += 1
-            credits = 0 if await _refund(ws, "the AI check failed") else 1
-        matched = await _rpc("finish_described_judgement", {
-            "p_judgement_id": jid, "p_status": verdict["status"], "p_confidence": verdict.get("confidence"),
-            "p_evidence_quote": verdict.get("evidence_quote"), "p_reason": verdict.get("reason"),
-            "p_error": verdict.get("error"), "p_credits": credits})
-        new_matches += 1 if matched else 0
+        if any(r["outcome"] == "error" for r in results):
+            break
 
     await _rpc("record_described_signal_run", {"p_signal_id": sid, "p_new_matches": new_matches, "p_paused_reason": paused})
     return {"signal_id": sid, "candidates": len(rows), "judged": judged, "failed": failed,
@@ -250,15 +303,19 @@ async def run_described(limit: int = 20, budget_s: float = 110.0) -> Dict[str, A
     deadline = started + budget_s
     embedding = await embed_pending_observations(budget_s=min(30.0, budget_s / 3))
     due = await _rpc("signals_described_due", {"p_limit": limit}) or []
-    outcomes: List[Dict[str, Any]] = []
-    for sig in due:
-        if time.monotonic() > deadline:
-            break
-        try:
-            outcomes.append(await _run_one(sig, deadline))
-        except Exception as e:  # noqa: BLE001 — one signal failing must not stop the others; recorded below
-            logger.error("described signal %s run failed: %s", sig.get("id"), e)
-            outcomes.append({"signal_id": sig.get("id"), "error": f"{type(e).__name__}: {str(e)[:200]}"})
+    sem = asyncio.Semaphore(SIGNAL_CONCURRENCY)
+
+    async def guarded(sig: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        async with sem:
+            if time.monotonic() > deadline:
+                return None
+            try:
+                return await _run_one(sig, deadline)
+            except Exception as e:  # noqa: BLE001 — one signal failing must not stop the others; recorded below
+                logger.error("described signal %s run failed: %s", sig.get("id"), e)
+                return {"signal_id": sig.get("id"), "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+    outcomes = [o for o in await asyncio.gather(*(guarded(s) for s in due)) if o is not None]
     return {"embedding": embedding, "due": len(due), "ran": len(outcomes),
             "new_matches": sum(int(o.get("new_matches") or 0) for o in outcomes),
             "errors": sum(1 for o in outcomes if "error" in o), "outcomes": outcomes}

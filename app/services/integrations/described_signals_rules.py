@@ -87,12 +87,18 @@ def _norm(text: str) -> str:
     return _WS.sub(" ", unicodedata.normalize("NFKC", text or "").translate(_PUNCT)).strip().lower()
 
 
+MAX_QUOTE_FRAGMENTS = 3
+MIN_FRAGMENT_CHARS = 10
+
+
 def quote_is_in_item(quote: str, item_text: str) -> bool:
     """A match must quote the item (case, whitespace, curly quotes, dashes and "..." elisions aside)."""
     item = _norm(item_text)
     parts = [p.strip(" .,;:-") for p in _norm(quote).split("...")]
     parts = [p for p in parts if p]
-    if sum(len(p) for p in parts) < 8:
+    if not parts or len(parts) > MAX_QUOTE_FRAGMENTS or sum(len(p) for p in parts) < 8:
+        return False
+    if len(parts) > 1 and any(len(p) < MIN_FRAGMENT_CHARS for p in parts):
         return False
     at = 0
     for p in parts:
