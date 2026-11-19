@@ -8,6 +8,7 @@ import asyncio
 import base64
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -1790,14 +1791,16 @@ class DataForSEOUnifiedClient:
         self, *, keyword: str, country_code: Optional[str] = None,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
-        body = [{
-            "keyword": keyword,
-            "location_code": country_to_location(country_code),
-            "priority": 2,
-        }]
-        return await self._call("/business_data/trustpilot/search/task_post", body,
-                                attribution=attribution, log_kind="labs",
-                                operation=f"business.trustpilot.search:{keyword}")
+        """Trustpilot company pages for a keyword, via a live `site:` SERP (the task_post
+        endpoint answered nothing synchronously, so every search read as zero)."""
+        res = await self._site_search(keyword=keyword, site="trustpilot.com/review", country_code=country_code,
+                                      attribution=attribution, operation=f"business.trustpilot.search:{keyword}")
+        for it in res.items:
+            m = re.search(r"trustpilot\.com/review/([^/?#]+)", it.get("url") or "")
+            it["domain"] = m.group(1) if m else None
+            it["rating"] = it.pop("_rating", None)
+            it["reviews_count"] = it.pop("_votes", None)
+        return res
 
     async def business_trustpilot_reviews(
         self, *, domain: str, country_code: Optional[str] = None,
@@ -1829,19 +1832,56 @@ class DataForSEOUnifiedClient:
         self, *, keyword: str, country_code: Optional[str] = None,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
-        body = [{"keyword": keyword, "location_code": country_to_location(country_code)}]
-        return await self._call("/business_data/social_media/pinterest/live", body,
-                                attribution=attribution, log_kind="labs",
-                                operation=f"business.pinterest:{keyword}")
+        """Pins and boards for a keyword, via a live `site:pinterest.com` SERP. The
+        social_media/pinterest endpoint is keyed by URL, not keyword, and returned nothing."""
+        res = await self._site_search(keyword=keyword, site="pinterest.com", country_code=country_code,
+                                      attribution=attribution, operation=f"business.pinterest:{keyword}")
+        for it in res.items:
+            it.pop("_rating", None), it.pop("_votes", None)
+            it["author"] = None
+        return res
 
     async def business_reddit(
         self, *, keyword: str, country_code: Optional[str] = None,
         attribution: Optional[CostAttribution] = None,
     ) -> DataForSEOResult:
-        body = [{"keyword": keyword, "location_code": country_to_location(country_code)}]
-        return await self._call("/business_data/social_media/reddit/live", body,
-                                attribution=attribution, log_kind="labs",
-                                operation=f"business.reddit:{keyword}")
+        """Reddit threads for a keyword, via a live `site:reddit.com` SERP. The
+        social_media/reddit endpoint is keyed by URL, not keyword, and returned nothing."""
+        res = await self._site_search(keyword=keyword, site="reddit.com", country_code=country_code,
+                                      attribution=attribution, operation=f"business.reddit:{keyword}")
+        for it in res.items:
+            it.pop("_rating", None), it.pop("_votes", None)
+            m = re.search(r"reddit\.com/r/([^/?#]+)", it.get("url") or "")
+            it["subreddit"] = f"r/{m.group(1)}" if m else None
+        return res
+
+    async def _site_search(
+        self, *, keyword: str, site: str, country_code: Optional[str],
+        attribution: Optional[CostAttribution], operation: str,
+    ) -> DataForSEOResult:
+        """Google organic results restricted to one site, as {title, url, description}."""
+        try:
+            task = serp_targeting.organic_task(
+                keyword=f"site:{site} {keyword}", country_location=country_to_location(country_code),
+                language_code="en", depth=20, paa_depth=0, device=None, location_code=None,
+            )
+        except ValueError as e:
+            return DataForSEOResult(ok=False, error=str(e), status_code=400)
+        res = await self._call("/serp/google/organic/live/advanced", [task],
+                               attribution=attribution, log_kind="serp", operation=operation)
+        if not res.ok:
+            return res
+        out: List[Dict[str, Any]] = []
+        for it in res.items:
+            if it.get("type") != "organic" or not it.get("url"):
+                continue
+            rating = it.get("rating") if isinstance(it.get("rating"), dict) else {}
+            out.append({
+                "title": it.get("title"), "url": it.get("url"), "description": it.get("description"),
+                "_rating": rating.get("rating_value"), "_votes": rating.get("votes_count"),
+            })
+        res.items = out
+        return res
 
     async def business_listings_search(
         self, *, keyword: str, country_code: Optional[str] = None,
