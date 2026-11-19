@@ -69,6 +69,14 @@ def test_the_quote_must_be_a_passage_of_the_item():
     assert not rules.quote_is_in_item("new", item)
 
 
+def test_the_quote_check_tolerates_typography_and_elisions_but_not_invention():
+    item = "Duties — “Upload pick tickets to Salesforce” and related work orders, daily."
+    assert rules.quote_is_in_item('"Upload pick tickets to Salesforce" and related work orders.', item)
+    assert rules.quote_is_in_item("Duties - Upload pick tickets ... work orders", item)
+    assert not rules.quote_is_in_item("work orders ... Upload pick tickets", item)
+    assert not rules.quote_is_in_item("Upload pick tickets to HubSpot", item)
+
+
 def test_schemas_are_closed_and_require_every_field():
     for schema in (rules.COMPILE_SCHEMA, rules.JUDGE_SCHEMA):
         assert schema["additionalProperties"] is False

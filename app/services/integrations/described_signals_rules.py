@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Dict, List
 
 _WS = re.compile(r"\s+")
@@ -78,7 +79,25 @@ def clean_spec(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_PUNCT = str.maketrans({"‘": "", "’": "", "“": "", "”": "", "'": "", '"': "",
+                        "–": "-", "—": "-", " ": " ", "…": "..."})
+
+
+def _norm(text: str) -> str:
+    return _WS.sub(" ", unicodedata.normalize("NFKC", text or "").translate(_PUNCT)).strip().lower()
+
+
 def quote_is_in_item(quote: str, item_text: str) -> bool:
-    """A match must quote the item verbatim (whitespace and case aside) — the quote IS the evidence."""
-    q = _WS.sub(" ", (quote or "").strip()).lower()
-    return len(q) >= 8 and q in _WS.sub(" ", item_text or "").lower()
+    """A match must quote the item (case, whitespace, curly quotes, dashes and "..." elisions aside)."""
+    item = _norm(item_text)
+    parts = [p.strip(" .,;:-") for p in _norm(quote).split("...")]
+    parts = [p for p in parts if p]
+    if sum(len(p) for p in parts) < 8:
+        return False
+    at = 0
+    for p in parts:
+        at = item.find(p, at)
+        if at < 0:
+            return False
+        at += len(p)
+    return True
