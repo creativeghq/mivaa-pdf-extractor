@@ -23,7 +23,8 @@ used_bytes() { df -B1 --output=used / | tail -1 | tr -d ' '; }
 signed_post() { # $1 action, $2 json body file
   local ts sig
   ts=$(date +%s)
-  sig=$(printf '%s.%s' "$ts" "$(cat "$2")" | openssl dgst -sha256 -hmac "$MAINT_SECRET" -hex | awk '{print $NF}')
+  # Sign the file's exact bytes: $(cat) would drop the trailing newline that curl still sends.
+  sig=$( { printf '%s.' "$ts"; cat "$2"; } | openssl dgst -sha256 -hmac "$MAINT_SECRET" -hex | awk '{print $NF}')
   curl -sS -m 60 -X POST "$MAINT_REPORT_URL?server=$MAINT_SERVER&action=$1" \
     -H 'Content-Type: application/json' -H "x-kai-timestamp: $ts" -H "x-kai-signature: $sig" \
     --data-binary @"$2"
