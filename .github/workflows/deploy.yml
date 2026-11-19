@@ -940,7 +940,7 @@ jobs:
           # drain runs first (pause-for-deploy default 300s), then systemd
           # gives the lifespan hook this window before SIGKILL.
           Environment=MIVAA_DRAIN_MAX_SECONDS=300
-          ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
+          ExecStart=/var/www/mivaa-pdf-extractor/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
           Restart=always
           RestartSec=3
           # Fix B: give the lifespan shutdown hook up to 10 min to drain
