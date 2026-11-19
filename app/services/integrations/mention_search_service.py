@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import os
 import re
 import time
 import defusedxml.ElementTree as ET  # pentest #250 I1: DTD/entity-expansion-safe RSS parse
@@ -30,6 +29,7 @@ from app.services.integrations.perplexity_agent_client import (
     call_agent,
     web_search_tool,
 )
+from app.services.integrations.platform_secret_resolver import resolve_secret
 
 logger = logging.getLogger(__name__)
 
@@ -197,14 +197,25 @@ def classify_outlet_type(host: Optional[str]) -> str:
 class MentionSearchService:
     def __init__(self) -> None:
         self.supabase = get_supabase_client()
-        self.perplexity_key = os.getenv("PERPLEXITY_API_KEY") or ""
-        self.dataforseo_b64 = os.getenv("DATAFORSEO_BASE64") or ""
-        if not self.dataforseo_b64:
-            login = os.getenv("DATAFORSEO_LOGIN") or ""
-            pwd = os.getenv("DATAFORSEO_PASSWORD") or ""
-            if login and pwd:
-                self.dataforseo_b64 = base64.b64encode(f"{login}:{pwd}".encode()).decode()
-        self.youtube_key = os.getenv("YOUTUBE_DATA_API_KEY") or ""
+
+    @property
+    def perplexity_key(self) -> str:
+        return resolve_secret("PERPLEXITY_API_KEY").value or ""
+
+    @property
+    def dataforseo_b64(self) -> str:
+        pre_encoded = resolve_secret("DATAFORSEO_BASE64").value or ""
+        if pre_encoded:
+            return pre_encoded
+        login = resolve_secret("DATAFORSEO_LOGIN").value or ""
+        pwd = resolve_secret("DATAFORSEO_PASSWORD").value or ""
+        if login and pwd:
+            return base64.b64encode(f"{login}:{pwd}".encode()).decode()
+        return ""
+
+    @property
+    def youtube_key(self) -> str:
+        return resolve_secret("YOUTUBE_DATA_API_KEY").value or ""
 
     # ───── Top-level ─────
 

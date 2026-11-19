@@ -7,7 +7,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from app.services.core.supabase_client import get_supabase_client
 
@@ -15,6 +15,19 @@ logger = logging.getLogger(__name__)
 
 ANONYMOUS_DAILY_QUOTA = 2
 CACHE_TTL_HOURS = 24
+
+#: Outcomes that spend a slot. `pending` is a reservation taken before the upstream call,
+#: so two concurrent requests cannot both pass a count that neither has written to yet.
+#: A failed upstream does not spend a slot: the reservation is moved off `pending`.
+COUNTED_OUTCOMES = ("success", "pending")
+
+#: The scans this budget meters. The table is shared with the edge `public-project-plan`
+#: (`kitchen_lead`, `project_plan`), whose rows must not spend a visitor's scans here.
+COUNTED_SCAN_TYPES = ("price", "mention", "product")
+
+
+class QuotaUnavailable(RuntimeError):
+    """The quota could not be read or reserved. An unanswerable count is not a zero."""
 
 
 @dataclass
@@ -26,6 +39,12 @@ class QuotaStatus:
     reset_at: datetime  # UTC timestamp for when oldest scan ages out
 
 
+@dataclass
+class Reservation:
+    id: str
+    created_at: str
+
+
 def normalize_query(text: str) -> str:
     """Lower-case + collapse whitespace + strip — so 'BLUM Cabinet ' and
     'blum cabinet' hash to the same cache key."""
@@ -34,33 +53,35 @@ def normalize_query(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
 
 
-def query_hash(scan_type: str, query: str, country_code: Optional[str] = None) -> str:
-    """Stable hash for cache keys + log dedupe."""
+def query_hash(
+    scan_type: str,
+    query: str,
+    country_code: Optional[str] = None,
+    aliases: Optional[Iterable[str]] = None,
+) -> str:
+    """Stable hash for cache keys + log dedupe. Aliases are order- and case-insensitive."""
     parts = [scan_type, normalize_query(query), (country_code or "").upper()]
+    alias_keys = sorted({normalize_query(a) for a in (aliases or []) if a and a.strip()})
+    if alias_keys:
+        parts.append(",".join(alias_keys))
     return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()
 
 
-def check_quota(*, ip_address: Optional[str], user_id: Optional[str]) -> QuotaStatus:
-    """Return current quota usage for this IP (or user_id)."""
-    sb = get_supabase_client().client
-    since = datetime.now(timezone.utc) - timedelta(hours=24)
-    since_iso = since.isoformat()
+def check_quota(
+    *,
+    ip_address: Optional[str],
+    user_id: Optional[str],
+    created_up_to: Optional[str] = None,
+) -> QuotaStatus:
+    """Return current quota usage for this IP (or user_id). Raises QuotaUnavailable.
 
-    # cache_hit rows are free (served from public_lookup_cache with zero upstream cost),
-    # so they must NOT count against the daily quota — only real upstream-spending scans do.
-    q = (
-        sb.table("public_lookup_log")
-        .select("created_at", count="exact")
-        .eq("outcome", "success")
-        .eq("cache_hit", False)
-        .gte("created_at", since_iso)
-    )
-    if user_id:
-        q = q.eq("user_id", user_id)
-    elif ip_address:
-        q = q.eq("ip_address", ip_address)
-    else:
-        # No identity — treat as exhausted to avoid abuse
+    `created_up_to` counts only rows created at or before that instant — a reservation
+    re-checks against the rows that were ahead of it, so the earliest of two racing
+    requests wins rather than both losing.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    if not user_id and not ip_address:
         return QuotaStatus(
             allowed=False,
             used=ANONYMOUS_DAILY_QUOTA,
@@ -70,36 +91,102 @@ def check_quota(*, ip_address: Optional[str], user_id: Optional[str]) -> QuotaSt
         )
 
     try:
+        sb = get_supabase_client().client
+        # cache_hit rows are free (no upstream spend), so they never count.
+        q = (
+            sb.table("public_lookup_log")
+            .select("created_at", count="exact")
+            .in_("outcome", list(COUNTED_OUTCOMES))
+            .in_("scan_type", list(COUNTED_SCAN_TYPES))
+            .eq("cache_hit", False)
+            .gte("created_at", since.isoformat())
+        )
+        if created_up_to:
+            q = q.lte("created_at", created_up_to)
+        q = q.eq("user_id", user_id) if user_id else q.eq("ip_address", ip_address)
         resp = q.order("created_at", desc=False).execute()
         rows = resp.data or []
         used = resp.count if resp.count is not None else len(rows)
     except Exception as e:
-        logger.warning(f"quota check failed (treat as 0 used): {e}")
-        rows = []
-        used = 0
+        logger.warning(f"quota check failed — refusing (fail closed): {e}")
+        raise QuotaUnavailable(str(e)) from e
 
     limit = ANONYMOUS_DAILY_QUOTA
     remaining = max(0, limit - used)
-    allowed = remaining > 0
 
-    # reset_at = when the oldest scan in the window ages out
+    reset_at = datetime.now(timezone.utc) + timedelta(hours=24)
     if rows:
         try:
             oldest = rows[0]["created_at"]
-            oldest_dt = datetime.fromisoformat(str(oldest).replace("Z", "+00:00"))
-            reset_at = oldest_dt + timedelta(hours=24)
+            reset_at = datetime.fromisoformat(str(oldest).replace("Z", "+00:00")) + timedelta(hours=24)
         except Exception:
-            reset_at = datetime.now(timezone.utc) + timedelta(hours=24)
-    else:
-        reset_at = datetime.now(timezone.utc) + timedelta(hours=24)
+            pass
 
     return QuotaStatus(
-        allowed=allowed,
+        allowed=remaining > 0,
         used=used,
         limit=limit,
         remaining=remaining,
         reset_at=reset_at,
     )
+
+
+def reserve_scan(
+    *,
+    scan_type: str,
+    ip_address: Optional[str],
+    user_id: Optional[str],
+    qhash: str,
+    query_text: str,
+    user_agent: Optional[str] = None,
+) -> Reservation:
+    """Insert the `pending` row that holds one quota slot. Raises QuotaUnavailable."""
+    try:
+        sb = get_supabase_client().client
+        resp = sb.table("public_lookup_log").insert({
+            "scan_type": scan_type,
+            "ip_address": ip_address,
+            "user_id": user_id,
+            "query_hash": qhash,
+            "query_text": query_text[:500],
+            "cache_hit": False,
+            "upstream_cost_usd": 0,
+            "latency_ms": 0,
+            "outcome": "pending",
+            "user_agent": (user_agent or "")[:500] or None,
+        }).execute()
+        row = (resp.data or [None])[0] if isinstance(resp.data, list) else resp.data
+    except Exception as e:
+        logger.warning(f"quota reservation insert failed — refusing (fail closed): {e}")
+        raise QuotaUnavailable(str(e)) from e
+    if not isinstance(row, dict) or not row.get("id") or not row.get("created_at"):
+        logger.warning("quota reservation insert returned no row — refusing (fail closed)")
+        raise QuotaUnavailable("reservation insert returned no row")
+    return Reservation(id=str(row["id"]), created_at=str(row["created_at"]))
+
+
+def finalize_scan(
+    reservation: Reservation,
+    *,
+    outcome: str,
+    upstream_cost_usd: float = 0,
+    latency_ms: int = 0,
+    error_message: Optional[str] = None,
+) -> bool:
+    """Move a reservation to its final outcome. On failure the row stays `pending`, which
+    keeps counting — the visitor loses a slot rather than the platform losing the cap."""
+    try:
+        sb = get_supabase_client().client
+        sb.table("public_lookup_log").update({
+            "outcome": outcome,
+            "upstream_cost_usd": float(upstream_cost_usd or 0),
+            "latency_ms": int(latency_ms or 0),
+            "error_message": (error_message or "")[:500] or None,
+        }).eq("id", reservation.id).execute()
+        return True
+    except Exception as e:
+        logger.warning(f"public_lookup_log reservation {reservation.id} not finalised ({outcome}): {e}")
+        return False
 
 
 def read_cache(*, scan_type: str, qhash: str) -> Optional[dict[str, Any]]:
@@ -161,7 +248,8 @@ def log_scan(
     outcome: str,
     error_message: Optional[str] = None,
     user_agent: Optional[str] = None,
-) -> None:
+) -> bool:
+    """Analytics row. Never the anonymous quota counter — that is `reserve_scan`."""
     sb = get_supabase_client().client
     try:
         sb.table("public_lookup_log").insert({
@@ -177,5 +265,7 @@ def log_scan(
             "error_message": (error_message or "")[:500] or None,
             "user_agent": (user_agent or "")[:500] or None,
         }).execute()
+        return True
     except Exception as e:
         logger.warning(f"public_lookup_log insert failed: {e}")
+        return False

@@ -212,6 +212,9 @@ class PriceHit(BaseModel):
     )
 
 
+PRIMARY_PRICE_SOURCES = ("perplexity", "dataforseo")
+
+
 class PriceSearchResult(BaseModel):
     success: bool
     hits: List[PriceHit] = []
@@ -226,6 +229,11 @@ class PriceSearchResult(BaseModel):
     throttle_until: Optional[datetime] = None
     error: Optional[str] = None
     debug_reasoning: Optional[str] = None
+    # Source name -> why it could not answer. A source listed here is unknown, not zero.
+    source_errors: Dict[str, str] = Field(default_factory=dict)
+
+    def all_primary_sources_failed(self) -> bool:
+        return all(src in self.source_errors for src in PRIMARY_PRICE_SOURCES)
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -366,7 +374,16 @@ class PerplexityPriceSearchService:
 
         if isinstance(perplexity_result, BaseException):
             logger.warning(f"Perplexity call raised: {perplexity_result}")
-            return PriceSearchResult(success=False, error=f"perplexity: {perplexity_result}")
+            return PriceSearchResult(
+                success=False,
+                error=f"perplexity: {perplexity_result}",
+                source_errors={"perplexity": str(perplexity_result)[:300]},
+            )
+
+        if not perplexity_result.success:
+            perplexity_result.source_errors.setdefault(
+                "perplexity", (perplexity_result.error or "perplexity call failed")[:300]
+            )
 
         if not isinstance(dataforseo_result, BaseException) and dataforseo_result.success:
             perplexity_result.hits = self._merge_with_dataforseo(
@@ -378,12 +395,19 @@ class PerplexityPriceSearchService:
             perplexity_result.cost_usd = (perplexity_result.cost_usd or 0.0) + dataforseo_result.cost_usd
         elif isinstance(dataforseo_result, BaseException):
             logger.warning(f"DataForSEO call raised (non-fatal): {dataforseo_result}")
+            perplexity_result.source_errors["dataforseo"] = str(dataforseo_result)[:300]
+        else:
+            logger.warning(f"DataForSEO search failed (non-fatal): {dataforseo_result.error}")
+            perplexity_result.source_errors["dataforseo"] = (
+                dataforseo_result.error or "dataforseo search failed"
+            )[:300]
 
         # Merge Greek Marketplaces hits last — they're first-party retailer
         # data and override both Perplexity snippets and DataForSEO feed rows
         # for the same domain.
         if isinstance(greek_hits, BaseException):
             logger.warning(f"Greek marketplaces call raised (non-fatal): {greek_hits}")
+            perplexity_result.source_errors["greek_marketplaces"] = str(greek_hits)[:300]
         elif greek_hits:
             perplexity_result.hits = self._merge_with_greek_marketplaces(
                 existing=perplexity_result.hits,
@@ -396,6 +420,7 @@ class PerplexityPriceSearchService:
         # since the merchant URLs come back as the actual retailer host.
         if isinstance(idealo_hits, BaseException):
             logger.warning(f"Idealo call raised (non-fatal): {idealo_hits}")
+            perplexity_result.source_errors["idealo"] = str(idealo_hits)[:300]
         elif idealo_hits:
             perplexity_result.hits = self._merge_with_greek_marketplaces(
                 existing=perplexity_result.hits,
@@ -729,7 +754,11 @@ class PerplexityPriceSearchService:
                 error=reply.error or "perplexity call failed",
             )
 
-        hits, summary, debug_reasoning = self._extract(reply.text)
+        hits, summary, debug_reasoning, parse_error = self._extract(reply.text)
+        source_errors: Dict[str, str] = {}
+        if parse_error:
+            logger.warning("perplexity price search: %s", parse_error)
+            source_errors["perplexity"] = parse_error
 
         input_tokens = reply.input_tokens
         output_tokens = reply.output_tokens
@@ -779,6 +808,7 @@ class PerplexityPriceSearchService:
             web_searches=search_requests,
             cost_usd=cost_usd,
             debug_reasoning=debug_reasoning if not hits else None,
+            source_errors=source_errors,
         )
 
     def check_throttle(
@@ -976,28 +1006,23 @@ class PerplexityPriceSearchService:
 
     def _extract(
         self, content: str
-    ) -> Tuple[List[PriceHit], Optional[str], Optional[str]]:
-        """Parse the answer text into (hits, summary, debug_reasoning).
+    ) -> Tuple[List[PriceHit], Optional[str], Optional[str], Optional[str]]:
+        """Parse the answer text into (hits, summary, debug_reasoning, parse_error).
 
-        Takes the text rather than the envelope: the Agent API returns it as an
-        `output_text` block inside `output[]`, and the walk belongs in one place.
+        The reply is constrained by a strict schema, so text that is not that JSON
+        object is a failed answer (`parse_error` set), never a salvage target.
         """
         content = content or ""
         if not content.strip():
-            return [], None, None
+            return [], None, None, "perplexity returned an empty reply"
         debug = content
 
-        # content is JSON per our response_format. Parse, fall back to text scan.
-        payload: Dict[str, Any] = {}
         try:
-            payload = json.loads(content) if content.strip().startswith("{") else {}
+            payload = json.loads(content)
         except json.JSONDecodeError:
-            m = re.search(r"\{[\s\S]+\}", content)
-            if m:
-                try:
-                    payload = json.loads(m.group(0))
-                except Exception:
-                    payload = {}
+            return [], None, debug, "perplexity reply was not valid JSON"
+        if not isinstance(payload, dict):
+            return [], None, debug, "perplexity reply was not a JSON object"
 
         raw_list = payload.get("retailers") or []
         summary = payload.get("summary")
@@ -1017,7 +1042,7 @@ class PerplexityPriceSearchService:
             seen_domains.add(domain)
             hits.append(hit)
         hits.sort(key=lambda h: (h.price if h.price is not None else float("inf")))
-        return hits, summary, debug
+        return hits, summary, debug, None
 
     @staticmethod
     def _domain_of(url: str) -> str:

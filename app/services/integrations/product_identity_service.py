@@ -19,7 +19,9 @@ from app.utils.text_fold import (
 )
 from app.services.core.supabase_client import get_supabase_client
 
+from app.services.core.claude_tool_call import ToolCallNotReturned, call_with_schema
 from app.services.utilities.prompt_registry import load_prompt
+from app.utils.untrusted_content import as_untrusted_data
 
 logger = logging.getLogger(__name__)
 
@@ -294,19 +296,52 @@ def facets_from_catalog(product_row: Optional[Dict[str, Any]]) -> Optional[Query
 # Anthropic Haiku client — query decomposition + batched classifier
 # ────────────────────────────────────────────────────────────────────────────
 
-def _response_to_body(response) -> dict:
-    """Shape a ClaudeResponse like the raw /v1/messages JSON this file already parses.
+MATCH_KINDS = ("exact", "variant", "family", "mismatch", "unverifiable")
 
-    `_extract_json_content` reads `body["content"][i]["text"]`. Rewriting it to walk the
-    SDK-shaped object would touch the parser AND the two call sites in one change; this
-    keeps the parser untouched so the migration is only about WHERE the call goes.
-    """
-    return {
-        "content": [
-            {"type": getattr(b, "type", "text"), "text": getattr(b, "text", "")}
-            for b in (getattr(response, "content", None) or [])
-        ]
-    }
+FACETS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "brand": {"type": "string"},
+        "model": {"type": "string"},
+        "product_type": {"type": "string"},
+        "variants": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"name": {"type": "string"}, "value": {"type": "string"}},
+                "required": ["name", "value"],
+            },
+        },
+        "sku_tokens": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["brand", "model", "product_type", "variants", "sku_tokens"],
+}
+
+MATCH_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "verdicts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "match_kind": {"type": "string", "enum": list(MATCH_KINDS)},
+                    "match_score": {"type": "integer"},
+                    "variant_diffs": {"type": "array", "items": {"type": "string"}},
+                    "match_note": {"type": "string"},
+                },
+                "required": ["match_kind", "match_score", "variant_diffs", "match_note"],
+            },
+        },
+    },
+    "required": ["verdicts"],
+}
+
+
 _MODEL = "claude-haiku-5-5"
 _ANTHROPIC_VERSION = "2023-06-01"
 
@@ -361,8 +396,7 @@ class ProductIdentityService:
         # with `cache_control` pass through verbatim, so prompt caching is preserved —
         # dropping it would have made this migration cost money rather than save it.
         try:
-            from app.services.core.claude_helper import tracked_claude_call_async
-            body = _response_to_body(await tracked_claude_call_async(
+            result = await call_with_schema(
                 task="price_monitor_facets",
                 model=_MODEL,
                 max_tokens=500,
@@ -373,22 +407,31 @@ class ProductIdentityService:
                         "cache_control": {"type": "ephemeral"},
                     },
                 ],
-                messages=[{"role": "user", "content": user_prompt}],
-            ))
+                messages=[{
+                    "role": "user",
+                    "content": as_untrusted_data(user_prompt, source="product search query"),
+                }],
+                output_config={"format": {"type": "json_schema", "schema": FACETS_SCHEMA}},
+            )
+        except ToolCallNotReturned as e:
+            logger.warning(f"Haiku facet extraction returned no usable reply for '{query}': {e}")
+            return None
         except Exception as e:
             logger.warning(f"Haiku facet extraction failed for '{query}': {e}")
             return None
 
-        parsed = _extract_json_content(body)
-        if not parsed:
-            return None
+        parsed = result.data or {}
 
         # Build QueryFacets with normalized tokens. Honor explicit
         # manufacturer_hint — it overrides Haiku's guess because the caller
         # knows better.
         brand = manufacturer_hint or parsed.get("brand") or None
         model = parsed.get("model") or None
-        variants = {k: v for k, v in (parsed.get("variants") or {}).items() if v}
+        variants = {
+            str(item.get("name")).strip(): str(item.get("value")).strip()
+            for item in (parsed.get("variants") or [])
+            if isinstance(item, dict) and item.get("name") and item.get("value")
+        }
 
         required_tokens: List[str] = []
         if brand:
@@ -414,7 +457,7 @@ class ProductIdentityService:
         return QueryFacets(
             brand=brand,
             model=model,
-            product_type=parsed.get("product_type"),
+            product_type=parsed.get("product_type") or None,
             variants=variants,
             required_tokens=[t for t in required_tokens if t],
             variant_tokens=[t for t in variant_tokens if t],
@@ -478,7 +521,7 @@ class ProductIdentityService:
                 cleaned.append({"match_kind": "unverifiable", "match_score": 50, "variant_diffs": [], "match_note": None})
                 continue
             kind = v.get("match_kind")
-            if kind not in ("exact", "variant", "family", "mismatch", "unverifiable"):
+            if kind not in MATCH_KINDS:
                 kind = "unverifiable"
             try:
                 score = int(v.get("match_score", 0))
@@ -489,7 +532,8 @@ class ProductIdentityService:
                 "match_kind": kind,
                 "match_score": score,
                 "variant_diffs": v.get("variant_diffs") or [],
-                "match_note": v.get("match_note"),
+                "match_note": v.get("match_note") or None,
+                "from_model": v.get("from_model") is True,
             })
         return cleaned
 
@@ -501,17 +545,16 @@ class ProductIdentityService:
     ) -> List[Dict[str, Any]]:
         """
         One Haiku call for a (small) batch. Returns sanitized verdicts aligned
-        with `candidates`. Falls back to rule-based when JSON parse / shape
-        fails. Output is NOT yet log-audited — caller logs once after merging
-        all chunks.
+        with `candidates`. A refused, unparseable or misshapen reply is a failed
+        classification: the chunk gets rule-based verdicts with `from_model=False`,
+        which are never written to the verdict cache.
         """
         user_payload = {
             "query_facets": facets.to_dict(),
             "pages": candidates,
         }
         try:
-            from app.services.core.claude_helper import tracked_claude_call_async
-            body = _response_to_body(await tracked_claude_call_async(
+            result = await call_with_schema(
                 task="price_monitor_match",
                 model=_MODEL,
                 # 3000 leaves comfortable headroom for ~12 verdicts of ~80 tokens
@@ -528,16 +571,19 @@ class ProductIdentityService:
                 messages=[
                     {
                         "role": "user",
-                        "content": json.dumps(user_payload, ensure_ascii=False),
+                        "content": as_untrusted_data(
+                            json.dumps(user_payload, ensure_ascii=False),
+                            source="query facets and scraped retailer product pages",
+                        ),
                     }
                 ],
-            ))
+                output_config={"format": {"type": "json_schema", "schema": MATCH_SCHEMA}},
+            )
         except Exception as e:
             logger.warning(f"Haiku classifier chunk failed: {e}. Falling back to rule-based.")
             return [self._rule_based_verdict(facets, c) for c in candidates]
 
-        parsed = _extract_json_content(body)
-        verdicts = (parsed or {}).get("verdicts") if isinstance(parsed, dict) else None
+        verdicts = (result.data or {}).get("verdicts")
         # Strict shape check: list of N verdicts.
         if not isinstance(verdicts, list) or len(verdicts) != len(candidates):
             logger.warning(
@@ -546,7 +592,9 @@ class ProductIdentityService:
             )
             return [self._rule_based_verdict(facets, c) for c in candidates]
 
-        return self._sanitize_verdicts(verdicts)
+        return self._sanitize_verdicts(
+            [{**v, "from_model": True} if isinstance(v, dict) else v for v in verdicts]
+        )
 
     # ── Verdict cache (PR-C #4) ──
     # 7-day TTL per (URL, facets_hash). Skips Haiku when we've already
@@ -602,7 +650,7 @@ class ProductIdentityService:
         expires = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
         rows = []
         for url, v in zip(product_urls, verdicts):
-            if not url:
+            if not url or v.get("from_model") is not True:
                 continue
             rows.append({
                 "product_url": url,
@@ -766,75 +814,6 @@ class ProductIdentityService:
         }
 
     # ── Usage logging ──
-
-
-def _extract_json_content(anthropic_body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Pull the JSON object out of an Anthropic messages API response.
-    Haiku usually returns clean JSON; tolerate the occasional code fence
-    AND tolerate JSON that the model truncated mid-array by walking the
-    string left-to-right and parsing the largest valid prefix.
-    """
-    try:
-        blocks = anthropic_body.get("content") or []
-        text = ""
-        for b in blocks:
-            if isinstance(b, dict) and b.get("type") == "text":
-                text += b.get("text") or ""
-        if not text:
-            return None
-        # Strip markdown fences if the model wrapped the JSON
-        fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
-        if fence:
-            text = fence.group(1)
-        else:
-            # Grab the first balanced JSON object
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                text = text[start : end + 1]
-
-        # Fast path: clean JSON parses on the first try.
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-
-        # Salvage path: model truncated or trailed garbage. Walk back from
-        # the end character-by-character looking for a position where the
-        # accumulated brace/bracket depth drops to zero with a valid parse.
-        depth = 0
-        in_string = False
-        escape = False
-        last_balanced_idx = -1
-        for i, ch in enumerate(text):
-            if escape:
-                escape = False
-                continue
-            if ch == "\\" and in_string:
-                escape = True
-                continue
-            if ch == '"':
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch in "{[":
-                depth += 1
-            elif ch in "}]":
-                depth -= 1
-                if depth == 0:
-                    last_balanced_idx = i
-        if last_balanced_idx > 0:
-            try:
-                return json.loads(text[: last_balanced_idx + 1])
-            except json.JSONDecodeError:
-                pass
-        logger.warning("Failed to parse Haiku JSON response: malformed even after salvage")
-        return None
-    except Exception as e:
-        logger.warning(f"Failed to parse Haiku JSON response: {e}")
-        return None
 
 
 # Module-level singleton

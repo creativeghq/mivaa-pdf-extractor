@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
+from dataclasses import dataclass
 from datetime import timezone
 from typing import List, Optional
 
@@ -20,10 +22,14 @@ from app.services.integrations.mention_search_service import MentionSearchServic
 from app.services.integrations.platform_secret_resolver import resolve_secret
 from app.services.integrations.public_lookup_service import (
     QuotaStatus,
+    QuotaUnavailable,
+    Reservation,
     check_quota,
+    finalize_scan,
     log_scan,
     query_hash,
     read_cache,
+    reserve_scan,
     write_cache,
 )
 from app.services.integrations.turnstile_verifier import verify_token
@@ -176,17 +182,19 @@ PublicProductSearchResponse.model_rebuild()
 # Helpers
 # ============================================================================
 
+QUOTA_UNAVAILABLE_MESSAGE = "Quota service unavailable. Try again in a few minutes."
+CREDITS_UNAVAILABLE_MESSAGE = "Credit service unavailable. Try again in a few minutes."
+
+_INSUFFICIENT_RE = re.compile(r"insufficient|member_limit_exceeded", re.IGNORECASE)
+
+
 def _extract_ip(request: Request) -> Optional[str]:
     """Resolve the client IP for quota keying.
 
-    Pentest #250 H3: only trust `cf-connecting-ip` (set by Cloudflare, our fronting proxy)
-    — NEVER the client-controllable left-most `X-Forwarded-For` entry, which let an attacker
-    mint a fresh 'IP' per request to bypass the anonymous 2/day cap. Fall back to the direct
-    socket peer.
+    The socket peer as uvicorn reports it: it runs with proxy headers behind our own nginx,
+    which sets X-Real-IP / X-Forwarded-For, so `request.client.host` is the real client.
+    Nothing fronts nginx, so a `cf-connecting-ip` header is caller-supplied and never read.
     """
-    cf = request.headers.get("cf-connecting-ip")
-    if cf:
-        return cf.strip()
     if request.client:
         return request.client.host
     return None
@@ -214,7 +222,7 @@ def _resolve_user_id(request: Request) -> Optional[str]:
 
 
 def _read_credit_balance(user_id: str) -> Optional[int]:
-    """Return the user's credit balance, or None if no row exists."""
+    """The user's credit balance; 0 when no row exists, None when it could not be read."""
     sb = get_supabase_client().client
     try:
         resp = (
@@ -224,20 +232,16 @@ def _read_credit_balance(user_id: str) -> Optional[int]:
             .maybe_single()
             .execute()
         )
-        if resp and resp.data:
-            return int(resp.data.get("balance") or 0)
     except Exception as e:
         logger.warning(f"public-tools: credit balance read failed for {user_id}: {e}")
+        return None
+    if resp and resp.data:
+        return int(resp.data.get("balance") or 0)
     return 0
 
 
 def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: str, cost: int = SCAN_CREDIT_COST) -> tuple[bool, Optional[int], Optional[str]]:
-    """Debit for one public scan. Returns (success, new_balance, error).
-
-    Goes through `credit_router.debit_row` (#30 M16-1). The balance is why this one
-    reads the row rather than the boolean: the public tools surface shows the caller
-    what they have left.
-    """
+    """Debit for one public scan through `credit_router.debit_row`. Returns (success, new_balance, error)."""
     row = debit_row(
         user_id=user_id,
         amount=cost,
@@ -252,9 +256,13 @@ def _debit_credits(user_id: str, *, operation_type: str, qhash: str, scan_type: 
     return success, balance, row.get("error_message")
 
 
+def _is_insufficient_balance(error_message: Optional[str]) -> bool:
+    """True for the RPC's own refusal of a short balance; anything else is a server fault."""
+    return bool(error_message) and bool(_INSUFFICIENT_RE.search(error_message or ""))
+
+
 def _refund_credits(user_id: str, *, qhash: str, scan_type: str, cost: int = SCAN_CREDIT_COST) -> None:
-    """Best-effort refund (pentest #250 H4/H5): credits are debited BEFORE the paid upstream
-    call; if that call produces no result we return the credit."""
+    """Best-effort refund of a debit taken before a paid upstream call that produced no result."""
     sb = get_supabase_client().client
     try:
         sb.rpc("refund_credits", {
@@ -289,6 +297,213 @@ def _quota_to_response(
     )
 
 
+def _quota_or_503(*, ip: Optional[str], user_id: Optional[str]) -> QuotaStatus:
+    try:
+        return check_quota(ip_address=ip, user_id=user_id)
+    except QuotaUnavailable:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=QUOTA_UNAVAILABLE_MESSAGE)
+
+
+def _display_quota(*, ip: Optional[str], user_id: Optional[str], fallback: QuotaStatus) -> QuotaStatus:
+    """Quota for a response body once the work is done — display only, so a read
+    failure here must not throw away a result the caller already paid for."""
+    try:
+        return check_quota(ip_address=ip, user_id=user_id)
+    except QuotaUnavailable:
+        return fallback
+
+
+@dataclass
+class _Admission:
+    """What the gate let through: the quota seen, and what to settle afterwards."""
+
+    q: QuotaStatus
+    balance_before: Optional[int] = None
+    balance_after: Optional[int] = None
+    reservation: Optional[Reservation] = None
+
+
+def _admit(
+    *,
+    scan_type: str,
+    operation_type: str,
+    ip: Optional[str],
+    user_id: Optional[str],
+    qhash: str,
+    query_text: str,
+    user_agent: Optional[str],
+    start: float,
+    cost: int,
+) -> _Admission:
+    """Gate a fresh (non-cached) scan BEFORE any upstream spend.
+
+    Signed-in: debit `cost` credits (402 on a short balance, 503 when the debit itself
+    failed). Anonymous: reserve a `pending` quota row, then re-count the rows ahead of it,
+    so concurrent requests cannot both spend the last slot (429), and an unreadable or
+    unwritable quota refuses (503).
+    """
+    def _log(outcome: str, error: Optional[str] = None) -> None:
+        log_scan(
+            scan_type=scan_type, ip_address=ip, user_id=user_id, qhash=qhash,
+            query_text=query_text, cache_hit=False, upstream_cost_usd=0,
+            latency_ms=int((time.time() - start) * 1000), outcome=outcome,
+            error_message=error, user_agent=user_agent,
+        )
+
+    q = _quota_or_503(ip=ip, user_id=user_id)
+
+    if user_id:
+        balance_before = _read_credit_balance(user_id)
+
+        def _insufficient() -> HTTPException:
+            return HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail={
+                    "message": "Insufficient credits.",
+                    "quota": _quota_to_response(
+                        q, is_authenticated=True, credits_balance=balance_before, cost=cost,
+                    ).model_dump(mode="json"),
+                },
+            )
+
+        # An unreadable balance (None) is not a short one: the atomic debit decides.
+        if balance_before is not None and balance_before < cost:
+            _log("rate_limited", "insufficient_credits")
+            raise _insufficient()
+        debited, new_balance, derr = _debit_credits(
+            user_id, operation_type=operation_type, qhash=qhash, scan_type=scan_type, cost=cost,
+        )
+        if not debited:
+            if _is_insufficient_balance(derr):
+                _log("rate_limited", derr)
+                raise _insufficient()
+            logger.warning(f"public-tools: {scan_type} debit failed (not a balance refusal): {derr}")
+            _log("failed", f"debit_failed: {derr or 'unknown'}")
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=CREDITS_UNAVAILABLE_MESSAGE)
+        if new_balance is not None:
+            balance_after = new_balance
+        elif balance_before is not None:
+            balance_after = balance_before - cost
+        else:
+            balance_after = None
+        return _Admission(q=q, balance_before=balance_before, balance_after=balance_after)
+
+    def _quota_exceeded(qs: QuotaStatus) -> HTTPException:
+        return HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "message": "Daily scan quota reached.",
+                "quota": _quota_to_response(qs, is_authenticated=False, cost=cost).model_dump(mode="json"),
+            },
+        )
+
+    if not q.allowed:
+        _log("rate_limited")
+        raise _quota_exceeded(q)
+
+    try:
+        reservation = reserve_scan(
+            scan_type=scan_type, ip_address=ip, user_id=None, qhash=qhash,
+            query_text=query_text, user_agent=user_agent,
+        )
+    except QuotaUnavailable:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=QUOTA_UNAVAILABLE_MESSAGE)
+
+    try:
+        q_reserved = check_quota(ip_address=ip, user_id=None, created_up_to=reservation.created_at)
+    except QuotaUnavailable:
+        finalize_scan(reservation, outcome="failed", error_message="quota_unavailable")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=QUOTA_UNAVAILABLE_MESSAGE)
+    if q_reserved.used > q_reserved.limit:
+        finalize_scan(
+            reservation, outcome="rate_limited", error_message="quota_exceeded",
+            latency_ms=int((time.time() - start) * 1000),
+        )
+        raise _quota_exceeded(q_reserved)
+    return _Admission(q=q_reserved, reservation=reservation)
+
+
+def _settle(
+    admission: _Admission,
+    *,
+    succeeded: bool,
+    scan_type: str,
+    ip: Optional[str],
+    user_id: Optional[str],
+    qhash: str,
+    query_text: str,
+    user_agent: Optional[str],
+    latency_ms: int,
+    upstream_cost_usd: float = 0,
+    error_message: Optional[str] = None,
+    cost: int = SCAN_CREDIT_COST,
+) -> None:
+    """Record the final outcome. A failed scan refunds the debit and releases the
+    anonymous slot — an honest failure never eats a visitor's daily scans."""
+    outcome = "success" if succeeded else "failed"
+    if not succeeded and user_id:
+        _refund_credits(user_id, qhash=qhash, scan_type=scan_type, cost=cost)
+        admission.balance_after = admission.balance_before
+    if admission.reservation is not None:
+        finalize_scan(
+            admission.reservation, outcome=outcome, upstream_cost_usd=upstream_cost_usd,
+            latency_ms=latency_ms, error_message=error_message,
+        )
+        return
+    log_scan(
+        scan_type=scan_type, ip_address=ip, user_id=user_id, qhash=qhash,
+        query_text=query_text, cache_hit=False, upstream_cost_usd=upstream_cost_usd,
+        latency_ms=latency_ms, outcome=outcome, error_message=error_message,
+        user_agent=user_agent,
+    )
+
+
+def _serve_cached(
+    *,
+    scan_type: str,
+    ip: Optional[str],
+    user_id: Optional[str],
+    qhash: str,
+    query_text: str,
+    user_agent: Optional[str],
+    start: float,
+    cost: int,
+) -> Optional[dict]:
+    """A cached result with its quota attached, or None. Free: no gate, no debit, no slot."""
+    cached = read_cache(scan_type=scan_type, qhash=qhash)
+    if not cached:
+        return None
+    q = _quota_or_503(ip=ip, user_id=user_id)
+    balance = _read_credit_balance(user_id) if user_id else None
+    log_scan(
+        scan_type=scan_type, ip_address=ip, user_id=user_id, qhash=qhash,
+        query_text=query_text, cache_hit=True, upstream_cost_usd=0,
+        latency_ms=int((time.time() - start) * 1000), outcome="success",
+        user_agent=user_agent,
+    )
+    cached["from_cache"] = True
+    cached["quota"] = _quota_to_response(
+        q, is_authenticated=bool(user_id), credits_balance=balance, cost=cost,
+    ).model_dump(mode="json")
+    return cached
+
+
+def _captcha_failed(
+    verdict, *, scan_type: str, ip: Optional[str], user_id: Optional[str], qhash: str,
+    query_text: str, user_agent: Optional[str], start: float,
+) -> HTTPException:
+    log_scan(
+        scan_type=scan_type, ip_address=ip, user_id=user_id, qhash=qhash,
+        query_text=query_text, cache_hit=False, upstream_cost_usd=0,
+        latency_ms=int((time.time() - start) * 1000), outcome="captcha_failed",
+        error_message=",".join(verdict.error_codes), user_agent=user_agent,
+    )
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Captcha verification failed: {','.join(verdict.error_codes) or 'unknown'}",
+    )
+
+
 def _compute_stats(hits: List[InternalPriceHit]) -> PublicMarketStats:
     priced = [h for h in hits if h.price is not None]
     if not priced:
@@ -308,6 +523,10 @@ def _compute_stats(hits: List[InternalPriceHit]) -> PublicMarketStats:
     )
 
 
+def _mention_alias_list(aliases: Optional[List[str]]) -> List[str]:
+    return [a.strip() for a in (aliases or []) if a and a.strip()]
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -322,7 +541,7 @@ async def get_quota(request: Request, scan_type: Optional[str] = None) -> Public
     # price/mention=2). Defaults to the standard cost for back-compat with existing callers.
     user_id = _resolve_user_id(request)
     ip = _extract_ip(request) if not user_id else None
-    q = check_quota(ip_address=ip, user_id=user_id)
+    q = _quota_or_503(ip=ip, user_id=user_id)
     balance = _read_credit_balance(user_id) if user_id else None
     cost = SCAN_COST_BY_TYPE.get((scan_type or "").lower(), SCAN_CREDIT_COST)
     return _quota_to_response(q, is_authenticated=bool(user_id), credits_balance=balance, cost=cost)
@@ -335,11 +554,12 @@ async def get_quota(request: Request, scan_type: Optional[str] = None) -> Public
 )
 async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPriceScanResponse:
     start = time.time()
+    cost = SCAN_COST_BY_TYPE["price"]
     user_id = _resolve_user_id(request)
     ip = _extract_ip(request) if not user_id else None
     user_agent = request.headers.get("user-agent")
+    ctx = dict(scan_type="price", ip=ip, user_id=user_id, user_agent=user_agent)
 
-    # 1. Verify Turnstile FIRST. Cheapest filter — bots fail here.
     verdict = await verify_token(
         body.turnstile_token,
         remote_ip=ip,
@@ -347,95 +567,17 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
     )
     qhash = query_hash("price", f"{body.manufacturer or ''} {body.product_name} {body.dimensions or ''}", body.country_code)
     if not verdict.success:
-        log_scan(
-            scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="captcha_failed",
-            error_message=",".join(verdict.error_codes), user_agent=user_agent,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Captcha verification failed: {','.join(verdict.error_codes) or 'unknown'}",
-        )
+        raise _captcha_failed(verdict, qhash=qhash, query_text=body.product_name, start=start, **ctx)
 
-    # 2. Quota check
-    #    Anonymous → 2/day cap. Authenticated → must have ≥ SCAN_CREDIT_COST credits.
-    q = check_quota(ip_address=ip, user_id=user_id)
-    balance_before = _read_credit_balance(user_id) if user_id else None
-    if user_id:
-        # Authenticated path: skip the 2/day cap, gate on credits.
-        if (balance_before or 0) < SCAN_CREDIT_COST:
-            log_scan(
-                scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                error_message="insufficient_credits", user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={
-                    "message": "Insufficient credits.",
-                    "quota": _quota_to_response(q, is_authenticated=True, credits_balance=balance_before).model_dump(mode="json"),
-                },
-            )
-    else:
-        # Anonymous path: 2/day cap
-        if not q.allowed:
-            log_scan(
-                scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail={
-                    "message": "Daily scan quota reached.",
-                    "quota": _quota_to_response(q, is_authenticated=False).model_dump(mode="json"),
-                },
-            )
-
-    # 3. Cache lookup — identical query within 24h serves from cache (no quota burn, no debit, no upstream spend)
-    cached = read_cache(scan_type="price", qhash=qhash)
+    cached = _serve_cached(qhash=qhash, query_text=body.product_name, start=start, cost=cost, **ctx)
     if cached:
-        log_scan(
-            scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.product_name, cache_hit=True, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="success",
-            user_agent=user_agent,
-        )
-        cached["from_cache"] = True
-        cached["quota"] = _quota_to_response(
-            q, is_authenticated=bool(user_id), credits_balance=balance_before
-        ).model_dump(mode="json")
         return PublicPriceScanResponse(**cached)
 
-    # 3b. Pentest #250 H4/H5: DEBIT BEFORE the paid upstream call. The debit RPC is atomic,
-    #     so two concurrent requests can't both get a scan for one credit (the 2nd fails),
-    #     and a scan result is never returned when the debit didn't land. Refunded below if
-    #     the scan fails. (Authenticated path only; anonymous is capped by the 2/day quota.)
-    balance_after = balance_before
-    if user_id:
-        _debited, _new_balance, _derr = _debit_credits(
-            user_id, operation_type="public_price_scan", qhash=qhash, scan_type="price",
-        )
-        if not _debited:
-            log_scan(
-                scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                error_message=_derr or "debit_failed", user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={
-                    "message": "Insufficient credits.",
-                    "quota": _quota_to_response(check_quota(ip_address=ip, user_id=user_id), is_authenticated=True, credits_balance=balance_before).model_dump(mode="json"),
-                },
-            )
-        balance_after = _new_balance if _new_balance is not None else balance_before
+    admission = _admit(
+        operation_type="public_price_scan", qhash=qhash, query_text=body.product_name,
+        start=start, cost=cost, **ctx,
+    )
 
-    # 4. Fresh scan
     query_text = body.product_name.strip()
     if body.manufacturer and body.manufacturer.lower() not in query_text.lower():
         query_text = f"{body.manufacturer} {query_text}".strip()
@@ -456,39 +598,38 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
         )
     except Exception as e:
         logger.warning(f"public price-scan failed: {e}")
-        if user_id:
-            _refund_credits(user_id, qhash=qhash, scan_type="price")  # H4/H5: scan failed → refund
-        log_scan(
-            scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="failed",
-            error_message=str(e)[:500], user_agent=user_agent,
+        _settle(
+            admission, succeeded=False, qhash=qhash, query_text=body.product_name,
+            latency_ms=int((time.time() - start) * 1000), error_message=str(e)[:500],
+            cost=cost, **ctx,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Price scan upstream failed. Try again in a few minutes.",
         )
 
-    if not result.success:
-        if user_id:
-            _refund_credits(user_id, qhash=qhash, scan_type="price")  # H4/H5: no result → refund
-            balance_after = balance_before
-        log_scan(
-            scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.product_name, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=result.latency_ms or int((time.time() - start) * 1000),
-            outcome="failed", error_message=(result.error or "")[:500],
-            user_agent=user_agent,
+    source_errors = dict(result.source_errors or {})
+    if source_errors:
+        logger.warning(f"public price-scan: sources failed: {source_errors}")
+
+    if not result.hits and (not result.success or result.all_primary_sources_failed()):
+        error = result.error if not result.success and result.error else (
+            "No price source could be searched right now. Try again in a few minutes."
         )
-        q_after = check_quota(ip_address=ip, user_id=user_id)
+        _settle(
+            admission, succeeded=False, qhash=qhash, query_text=body.product_name,
+            latency_ms=result.latency_ms or int((time.time() - start) * 1000),
+            error_message=(error + (f" | {source_errors}" if source_errors else ""))[:500],
+            cost=cost, **ctx,
+        )
+        q_after = _display_quota(ip=ip, user_id=user_id, fallback=admission.q)
         return PublicPriceScanResponse(
             success=False, query=query_text, country_code=body.country_code,
             results=[], stats=PublicMarketStats(count=0, verified_count=0),
-            from_cache=False, error=result.error or "scan failed",
-            quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_before),
+            from_cache=False, error=error,
+            quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=admission.balance_after, cost=cost),
         )
 
-    # 5. Format response
     public_hits = [
         PublicPriceResult(
             retailer_name=h.retailer_name,
@@ -515,19 +656,20 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
         "from_cache": False,
     }
 
-    write_cache(scan_type="price", qhash=qhash, result=response_payload)
-    log_scan(
-        scan_type="price", ip_address=ip, user_id=user_id, qhash=qhash,
-        query_text=body.product_name, cache_hit=False,
-        upstream_cost_usd=(result.credits_used or 0) / 1000.0,
-        latency_ms=result.latency_ms, outcome="success", user_agent=user_agent,
+    # A partial answer is served but never cached: the next caller should get a full try.
+    if result.success and not source_errors:
+        write_cache(scan_type="price", qhash=qhash, result=response_payload)
+    _settle(
+        admission, succeeded=True, qhash=qhash, query_text=body.product_name,
+        latency_ms=result.latency_ms, upstream_cost_usd=(result.credits_used or 0) / 1000.0,
+        error_message=f"partial: {source_errors}"[:500] if source_errors else None,
+        cost=cost, **ctx,
     )
 
-    # Credits were already debited up-front (pentest #250 H4/H5); balance_after is set.
-    q_after = check_quota(ip_address=ip, user_id=user_id)
+    q_after = _display_quota(ip=ip, user_id=user_id, fallback=admission.q)
     return PublicPriceScanResponse(
         **response_payload,
-        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_after),
+        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=admission.balance_after, cost=cost),
     )
 
 
@@ -538,78 +680,28 @@ async def price_scan(body: PublicPriceScanRequest, request: Request) -> PublicPr
 )
 async def mention_scan(body: PublicMentionScanRequest, request: Request) -> PublicMentionScanResponse:
     start = time.time()
+    cost = SCAN_COST_BY_TYPE["mention"]
     user_id = _resolve_user_id(request)
     ip = _extract_ip(request) if not user_id else None
     user_agent = request.headers.get("user-agent")
+    ctx = dict(scan_type="mention", ip=ip, user_id=user_id, user_agent=user_agent)
 
     verdict = await verify_token(
         body.turnstile_token,
         remote_ip=ip,
         expected_action="mention_scan",
     )
-    qhash = query_hash("mention", body.subject_label, body.country_code)
+    label = body.subject_label.strip()
+    aliases = _mention_alias_list(body.aliases)
+    qhash = query_hash("mention", body.subject_label, body.country_code, aliases=aliases)
     if not verdict.success:
-        log_scan(
-            scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="captcha_failed",
-            error_message=",".join(verdict.error_codes), user_agent=user_agent,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Captcha verification failed: {','.join(verdict.error_codes) or 'unknown'}",
-        )
+        raise _captcha_failed(verdict, qhash=qhash, query_text=body.subject_label, start=start, **ctx)
 
-    q = check_quota(ip_address=ip, user_id=user_id)
-    balance_before = _read_credit_balance(user_id) if user_id else None
-    if user_id:
-        if (balance_before or 0) < SCAN_CREDIT_COST:
-            log_scan(
-                scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                error_message="insufficient_credits", user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={
-                    "message": "Insufficient credits.",
-                    "quota": _quota_to_response(q, is_authenticated=True, credits_balance=balance_before).model_dump(mode="json"),
-                },
-            )
-    else:
-        if not q.allowed:
-            log_scan(
-                scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail={
-                    "message": "Daily scan quota reached.",
-                    "quota": _quota_to_response(q, is_authenticated=False).model_dump(mode="json"),
-                },
-            )
-
-    cached = read_cache(scan_type="mention", qhash=qhash)
+    cached = _serve_cached(qhash=qhash, query_text=body.subject_label, start=start, cost=cost, **ctx)
     if cached:
-        log_scan(
-            scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.subject_label, cache_hit=True, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="success",
-            user_agent=user_agent,
-        )
-        cached["from_cache"] = True
-        cached["quota"] = _quota_to_response(
-            q, is_authenticated=bool(user_id), credits_balance=balance_before
-        ).model_dump(mode="json")
         return PublicMentionScanResponse(**cached)
 
-    # Build facets deterministically — no LLM call, no Anthropic dependency
-    label = body.subject_label.strip()
-    aliases = [a.strip() for a in (body.aliases or []) if a and a.strip()]
+    # Facets are built deterministically — no LLM call.
     facets = SubjectFacets(
         label=label,
         aliases=aliases,
@@ -619,33 +711,13 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
         competitor_brands=[],
         language_codes=["en"],
     )
-
     sources_enabled = {"news": True, "blogs": True, "rss": False, "youtube": False}
     country_codes = [body.country_code.upper()] if body.country_code else []
 
-    # Pentest #250 H4/H5: debit BEFORE the paid upstream call (atomic → no double-scan for
-    # one credit; a result is never returned when the debit didn't land). Refunded in the
-    # except below.
-    balance_after = balance_before
-    if user_id:
-        _debited, _new_balance, _derr = _debit_credits(
-            user_id, operation_type="public_mention_scan", qhash=qhash, scan_type="mention",
-        )
-        if not _debited:
-            log_scan(
-                scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                error_message=_derr or "debit_failed", user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={
-                    "message": "Insufficient credits.",
-                    "quota": _quota_to_response(check_quota(ip_address=ip, user_id=user_id), is_authenticated=True, credits_balance=balance_before).model_dump(mode="json"),
-                },
-            )
-        balance_after = _new_balance if _new_balance is not None else balance_before
+    admission = _admit(
+        operation_type="public_mention_scan", qhash=qhash, query_text=body.subject_label,
+        start=start, cost=cost, **ctx,
+    )
 
     search_service = MentionSearchService()
     try:
@@ -660,17 +732,34 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
         )
     except Exception as e:
         logger.warning(f"public mention-scan failed: {e}")
-        if user_id:
-            _refund_credits(user_id, qhash=qhash, scan_type="mention")  # H4/H5: scan failed → refund
-        log_scan(
-            scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.subject_label, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="failed",
-            error_message=str(e)[:500], user_agent=user_agent,
+        _settle(
+            admission, succeeded=False, qhash=qhash, query_text=body.subject_label,
+            latency_ms=int((time.time() - start) * 1000), error_message=str(e)[:500],
+            cost=cost, **ctx,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Mention scan upstream failed. Try again in a few minutes.",
+        )
+
+    source_errors = dict(result.errors or {})
+    if source_errors:
+        logger.warning(f"public mention-scan: sources failed: {source_errors}")
+
+    # `by_source` only carries sources that answered, so empty + errors = nobody answered.
+    if not result.hits and source_errors and not result.by_source:
+        error = "No mention source could be searched right now. Try again in a few minutes."
+        _settle(
+            admission, succeeded=False, qhash=qhash, query_text=body.subject_label,
+            latency_ms=result.latency_ms or int((time.time() - start) * 1000),
+            error_message=f"{error} | {source_errors}"[:500], cost=cost, **ctx,
+        )
+        q_after = _display_quota(ip=ip, user_id=user_id, fallback=admission.q)
+        return PublicMentionScanResponse(
+            success=False, subject_label=label,
+            country_code=(body.country_code or "").upper() or None,
+            results=[], total_results=0, top_outlets=[], from_cache=False, error=error,
+            quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=admission.balance_after, cost=cost),
         )
 
     public_hits: List[PublicMentionResult] = []
@@ -705,19 +794,19 @@ async def mention_scan(body: PublicMentionScanRequest, request: Request) -> Publ
         "from_cache": False,
     }
 
-    write_cache(scan_type="mention", qhash=qhash, result=response_payload)
-    log_scan(
-        scan_type="mention", ip_address=ip, user_id=user_id, qhash=qhash,
-        query_text=body.subject_label, cache_hit=False,
-        upstream_cost_usd=(result.credits_used or 0) / 1000.0,
-        latency_ms=result.latency_ms, outcome="success", user_agent=user_agent,
+    if not source_errors:
+        write_cache(scan_type="mention", qhash=qhash, result=response_payload)
+    _settle(
+        admission, succeeded=True, qhash=qhash, query_text=body.subject_label,
+        latency_ms=result.latency_ms, upstream_cost_usd=(result.credits_used or 0) / 1000.0,
+        error_message=f"partial: {source_errors}"[:500] if source_errors else None,
+        cost=cost, **ctx,
     )
 
-    # Credits were already debited up-front (pentest #250 H4/H5); balance_after is set.
-    q_after = check_quota(ip_address=ip, user_id=user_id)
+    q_after = _display_quota(ip=ip, user_id=user_id, fallback=admission.q)
     return PublicMentionScanResponse(
         **response_payload,
-        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_after),
+        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=admission.balance_after, cost=cost),
     )
 
 
@@ -739,8 +828,8 @@ async def product_search(body: PublicProductSearchRequest, request: Request) -> 
     user_id = _resolve_user_id(request)
     ip = _extract_ip(request) if not user_id else None
     user_agent = request.headers.get("user-agent")
+    ctx = dict(scan_type="product", ip=ip, user_id=user_id, user_agent=user_agent)
 
-    # 1. Turnstile first — cheapest bot filter.
     verdict = await verify_token(
         body.turnstile_token,
         remote_ip=ip,
@@ -748,89 +837,17 @@ async def product_search(body: PublicProductSearchRequest, request: Request) -> 
     )
     qhash = query_hash("product", body.query)
     if not verdict.success:
-        log_scan(
-            scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.query, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="captcha_failed",
-            error_message=",".join(verdict.error_codes), user_agent=user_agent,
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Captcha verification failed: {','.join(verdict.error_codes) or 'unknown'}",
-        )
+        raise _captcha_failed(verdict, qhash=qhash, query_text=body.query, start=start, **ctx)
 
-    # 2. Quota / credit gate.
-    q = check_quota(ip_address=ip, user_id=user_id)
-    balance_before = _read_credit_balance(user_id) if user_id else None
-    if user_id:
-        if (balance_before or 0) < cost:
-            log_scan(
-                scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.query, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                error_message="insufficient_credits", user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={
-                    "message": "Insufficient credits.",
-                    "quota": _quota_to_response(q, is_authenticated=True, credits_balance=balance_before, cost=cost).model_dump(mode="json"),
-                },
-            )
-    else:
-        if not q.allowed:
-            log_scan(
-                scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.query, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail={
-                    "message": "Daily scan quota reached.",
-                    "quota": _quota_to_response(q, is_authenticated=False, cost=cost).model_dump(mode="json"),
-                },
-            )
-
-    # 3. Cache lookup — identical query within 24h serves free (no quota burn, no debit).
-    cached = read_cache(scan_type="product", qhash=qhash)
+    cached = _serve_cached(qhash=qhash, query_text=body.query, start=start, cost=cost, **ctx)
     if cached:
-        log_scan(
-            scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.query, cache_hit=True, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="success",
-            user_agent=user_agent,
-        )
-        cached["from_cache"] = True
-        cached["quota"] = _quota_to_response(
-            q, is_authenticated=bool(user_id), credits_balance=balance_before, cost=cost
-        ).model_dump(mode="json")
         return PublicProductSearchResponse(**cached)
 
-    # 3b. Debit BEFORE the work (pentest #250 H4/H5) so a result is never returned unpaid.
-    balance_after = balance_before
-    if user_id:
-        _debited, _new_balance, _derr = _debit_credits(
-            user_id, operation_type="public_product_search", qhash=qhash, scan_type="product", cost=cost,
-        )
-        if not _debited:
-            log_scan(
-                scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
-                query_text=body.query, cache_hit=False, upstream_cost_usd=0,
-                latency_ms=int((time.time() - start) * 1000), outcome="rate_limited",
-                error_message=_derr or "debit_failed", user_agent=user_agent,
-            )
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={
-                    "message": "Insufficient credits.",
-                    "quota": _quota_to_response(check_quota(ip_address=ip, user_id=user_id), is_authenticated=True, credits_balance=balance_before, cost=cost).model_dump(mode="json"),
-                },
-            )
-        balance_after = _new_balance if _new_balance is not None else balance_before
+    admission = _admit(
+        operation_type="public_product_search", qhash=qhash, query_text=body.query,
+        start=start, cost=cost, **ctx,
+    )
 
-    # 4. Run the search (cheap DB RPC — root-workspace public catalog only).
     query_text = body.query.strip()
     sb = get_supabase_client().client
     try:
@@ -838,13 +855,10 @@ async def product_search(body: PublicProductSearchRequest, request: Request) -> 
         rows = resp.data or []
     except Exception as e:
         logger.warning(f"public product-search failed: {e}")
-        if user_id:
-            _refund_credits(user_id, qhash=qhash, scan_type="product", cost=cost)
-        log_scan(
-            scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
-            query_text=body.query, cache_hit=False, upstream_cost_usd=0,
-            latency_ms=int((time.time() - start) * 1000), outcome="failed",
-            error_message=str(e)[:500], user_agent=user_agent,
+        _settle(
+            admission, succeeded=False, qhash=qhash, query_text=body.query,
+            latency_ms=int((time.time() - start) * 1000), error_message=str(e)[:500],
+            cost=cost, **ctx,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -871,15 +885,13 @@ async def product_search(body: PublicProductSearchRequest, request: Request) -> 
     }
 
     write_cache(scan_type="product", qhash=qhash, result=response_payload)
-    log_scan(
-        scan_type="product", ip_address=ip, user_id=user_id, qhash=qhash,
-        query_text=body.query, cache_hit=False, upstream_cost_usd=0,
-        latency_ms=int((time.time() - start) * 1000), outcome="success",
-        user_agent=user_agent,
+    _settle(
+        admission, succeeded=True, qhash=qhash, query_text=body.query,
+        latency_ms=int((time.time() - start) * 1000), cost=cost, **ctx,
     )
 
-    q_after = check_quota(ip_address=ip, user_id=user_id)
+    q_after = _display_quota(ip=ip, user_id=user_id, fallback=admission.q)
     return PublicProductSearchResponse(
         **response_payload,
-        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=balance_after, cost=cost),
+        quota=_quota_to_response(q_after, is_authenticated=bool(user_id), credits_balance=admission.balance_after, cost=cost),
     )
