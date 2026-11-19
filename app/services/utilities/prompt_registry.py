@@ -328,6 +328,8 @@ REQUIRED_PROMPTS: Tuple[Tuple[str, str, Optional[str]], ...] = (
     ("extraction", "price_search_system", "price_monitoring"),
     ("extraction", "price_search_user", "price_monitoring"),
     ("classification", "llm_mention_probe", "mention_monitoring"),
+    ("classification", "signals_describe_compile", "signals"),
+    ("classification", "signals_describe_judge", "signals"),
     ("extraction", "inpaint_prompt_writer", "image_analysis"),
     ("extraction", "job_board_domains", "job_research"),
     ("extraction", "job_page_all", "job_research"),
