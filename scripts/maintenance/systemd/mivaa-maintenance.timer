@@ -1,0 +1,9 @@
+[Unit]
+Description=MIVAA weekly maintenance, Sunday 23:00 Athens time
+
+[Timer]
+OnCalendar=Sun *-*-* 23:00:00 Europe/Athens
+Persistent=true
+
+[Install]
+WantedBy=timers.target

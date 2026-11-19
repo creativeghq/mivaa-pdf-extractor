@@ -1,0 +1,8 @@
+[Unit]
+Description=Ask the platform whether a maintenance run was requested (#590)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /var/www/mivaa-pdf-extractor/scripts/maintenance/weekly.sh poll
+TimeoutStartSec=2min

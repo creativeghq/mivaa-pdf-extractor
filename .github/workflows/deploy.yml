@@ -1105,6 +1105,25 @@ jobs:
           echo ""
           echo "✅ Service restarted and confirmed active"
 
+      # Weekly self-maintenance units (#590). Idempotent; never restarts MIVAA. Its secret lives in
+      # /etc/mivaa-maintenance.env on the server only, so a run without it exits 78 and Agent Ops reports no run.
+      - name: 🧹 Install server maintenance timer
+        run: |
+          ssh -o StrictHostKeyChecking=no root@${{ env.MIVAA_HOST }} '
+          set -e
+          SRC=/var/www/mivaa-pdf-extractor/scripts/maintenance/systemd
+          CHANGED=0
+          for f in "$SRC"/*; do
+            dst=/etc/systemd/system/$(basename "$f")
+            cmp -s "$f" "$dst" || { install -m 644 "$f" "$dst"; CHANGED=1; }
+          done
+          [ "$CHANGED" = 1 ] && systemctl daemon-reload
+          systemctl enable --now mivaa-maintenance.timer mivaa-maintenance-poll.timer >/dev/null
+          systemctl enable mivaa-maintenance-resume.service >/dev/null
+          [ -r /etc/mivaa-maintenance.env ] || echo "::warning::/etc/mivaa-maintenance.env is missing; maintenance runs will not report"
+          systemctl list-timers mivaa-maintenance.timer --no-pager | head -2
+          '
+
       # 6. Health Check & Diagnostics
       - name: 🏥 Health Check & Diagnostics
         run: |
@@ -1321,7 +1340,7 @@ jobs:
               echo "  • Service file exists: ✅"
               echo "  • Working Directory: $(grep WorkingDirectory /etc/systemd/system/mivaa-pdf-extractor.service || echo '\''Not set'\'')"
               echo "  • ExecStart: $(grep ExecStart /etc/systemd/system/mivaa-pdf-extractor.service || echo '\''Not set'\'')"
-              echo "  • Environment: $(grep Environment /etc/systemd/system/mivaa-pdf-extractor.service || echo '\''Not set'\'')"
+              echo "  • Environment: $(grep -c ^Environment= /etc/systemd/system/mivaa-pdf-extractor.service) variables (values not printed: this repo is public)"
             else
               echo "  • Service file exists: ❌"
             fi

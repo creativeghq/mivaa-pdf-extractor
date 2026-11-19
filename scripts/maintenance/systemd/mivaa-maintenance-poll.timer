@@ -1,0 +1,9 @@
+[Unit]
+Description=Poll Agent Ops for a maintenance request every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+
+[Install]
+WantedBy=timers.target
