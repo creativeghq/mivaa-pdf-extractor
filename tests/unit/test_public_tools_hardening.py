@@ -11,8 +11,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import HTTPException
-from starlette.requests import Request
+
+pytest.importorskip("fastapi")
+from fastapi import HTTPException  # noqa: E402
+from starlette.requests import Request  # noqa: E402
 
 APP = Path(__file__).resolve().parents[2] / "app"
 

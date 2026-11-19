@@ -57,6 +57,13 @@ def harness(monkeypatch):
         monkeypatch.setitem(sys.modules, name, dep)
         dep_spec.loader.exec_module(dep)
 
+    # CI installs pytest alone; every model call goes through the stubbed call_with_schema.
+    if importlib.util.find_spec("httpx") is None:
+        stub = types.ModuleType("httpx")
+        stub.Timeout = lambda *a, **k: None
+        stub.AsyncClient = object
+        monkeypatch.setitem(sys.modules, "httpx", stub)
+
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     spec = importlib.util.spec_from_file_location(
         "identity_under_test", APP / "services" / "integrations" / "product_identity_service.py")
