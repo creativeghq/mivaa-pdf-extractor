@@ -35,16 +35,19 @@ def organic_task(
     *, keyword: str, country_location: int, language_code: str, depth: int, paa_depth: int,
     device: Optional[str] = None, location_code: Any = None,
 ) -> Dict[str, Any]:
-    """A city `location_code` replaces the country one; it never combines with it."""
+    """A city `location_code` replaces the country one; it never combines with it.
+    DataForSEO accepts a PAA click depth of 1-4 only, so 0 omits the field (40501 otherwise)."""
     city = normalize_location_code(location_code)
-    return {
+    task = {
         "keyword": keyword,
         "location_code": city if city is not None else country_location,
         "language_code": language_code,
         "device": normalize_device(device),
         "depth": depth,
-        "people_also_ask_click_depth": paa_depth,
     }
+    if paa_depth and paa_depth > 0:
+        task["people_also_ask_click_depth"] = min(int(paa_depth), 4)
+    return task
 
 
 def locations_path(country_code: Optional[str]) -> str:

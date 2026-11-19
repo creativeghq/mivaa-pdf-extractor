@@ -42,6 +42,7 @@ def test_reddit_uses_a_site_restricted_live_serp():
     assert res.ok and len(res.items) == 2, "only organic results that carry a url"
     assert res.items[0]["subreddit"] == "r/HomeImprovement"
     assert "_rating" not in res.items[0]
+    assert "people_also_ask_click_depth" not in body[0], "DataForSEO refuses a PAA depth of 0 with 40501"
 
 
 def test_pinterest_uses_a_site_restricted_live_serp():
@@ -67,3 +68,11 @@ def test_a_failed_serp_is_returned_as_a_failure_not_zero_results():
     c._call = failing
     res = asyncio.run(c.business_reddit(keyword="x"))
     assert not res.ok and res.error
+
+
+def test_organic_task_sends_a_paa_depth_only_in_range():
+    from app.services.integrations.dataforseo_serp_targeting import organic_task
+    base = dict(keyword="k", country_location=2300, language_code="en", depth=10)
+    assert "people_also_ask_click_depth" not in organic_task(**base, paa_depth=0)
+    assert organic_task(**base, paa_depth=2)["people_also_ask_click_depth"] == 2
+    assert organic_task(**base, paa_depth=9)["people_also_ask_click_depth"] == 4
