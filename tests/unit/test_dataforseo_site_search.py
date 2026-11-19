@@ -39,7 +39,7 @@ def test_reddit_uses_a_site_restricted_live_serp():
     path, body = captured[0]
     assert path == "/serp/google/organic/live/advanced"
     assert body[0]["keyword"] == "site:reddit.com floor tiles"
-    assert res.ok and len(res.items) == 2, "only organic results that carry a url"
+    assert res.ok and len(res.items) == 1, "only organic results on reddit that carry a url"
     assert res.items[0]["subreddit"] == "r/HomeImprovement"
     assert "_rating" not in res.items[0]
     assert "people_also_ask_click_depth" not in body[0], "DataForSEO refuses a PAA depth of 0 with 40501"
@@ -76,3 +76,34 @@ def test_organic_task_sends_a_paa_depth_only_in_range():
     assert "people_also_ask_click_depth" not in organic_task(**base, paa_depth=0)
     assert organic_task(**base, paa_depth=2)["people_also_ask_click_depth"] == 2
     assert organic_task(**base, paa_depth=9)["people_also_ask_click_depth"] == 4
+
+
+GOTO_ITEMS = [
+    {"type": "organic", "title": "Ceramic or porcelain?", "url": "https://google.com/goto?url=CAESyg&gsessionid=x",
+     "domain": "google.com", "website_name": "Reddit · r/Tile", "breadcrumb": "7 comments · 1 year ago"},
+    {"type": "organic", "title": "Keros", "url": "https://google.com/goto?url=CAESab", "domain": "google.com",
+     "website_name": "Trustpilot", "breadcrumb": "https://www.trustpilot.com › review › keros.es"},
+    {"type": "organic", "title": "Floor tiles blog", "url": "https://google.com/goto?url=CAESzz", "domain": "google.com",
+     "website_name": "tellidis.gr", "breadcrumb": "https://www.tellidis.gr › Blog"},
+]
+
+
+def _goto_client():
+    c = client_mod.DataForSEOUnifiedClient(sandbox=True)
+
+    async def fake_call(path, body=None, **kw):
+        return client_mod.DataForSEOResult(ok=True, items=[dict(i) for i in GOTO_ITEMS])
+
+    c._call = fake_call
+    return c
+
+
+def test_a_google_redirect_url_still_names_the_subreddit_and_drops_off_site_results():
+    res = asyncio.run(_goto_client().business_reddit(keyword="tiles"))
+    assert [i["subreddit"] for i in res.items] == ["r/Tile"], "Google ignores site: sometimes; tellidis.gr is not Reddit"
+    assert "_where" not in res.items[0]
+
+
+def test_a_google_redirect_url_still_names_the_trustpilot_domain():
+    res = asyncio.run(_goto_client().business_trustpilot_search(keyword="tiles"))
+    assert [i["domain"] for i in res.items] == ["keros.es"]

@@ -1796,7 +1796,7 @@ class DataForSEOUnifiedClient:
         res = await self._site_search(keyword=keyword, site="trustpilot.com/review", country_code=country_code,
                                       attribution=attribution, operation=f"business.trustpilot.search:{keyword}")
         for it in res.items:
-            m = re.search(r"trustpilot\.com/review/([^/?#]+)", it.get("url") or "")
+            m = re.search(r"trustpilot\.com\s*(?:/|›)\s*review\s*(?:/|›)\s*([^\s/?#›]+)", it.pop("_where", ""))
             it["domain"] = m.group(1) if m else None
             it["rating"] = it.pop("_rating", None)
             it["reviews_count"] = it.pop("_votes", None)
@@ -1837,7 +1837,7 @@ class DataForSEOUnifiedClient:
         res = await self._site_search(keyword=keyword, site="pinterest.com", country_code=country_code,
                                       attribution=attribution, operation=f"business.pinterest:{keyword}")
         for it in res.items:
-            it.pop("_rating", None), it.pop("_votes", None)
+            it.pop("_rating", None), it.pop("_votes", None), it.pop("_where", None)
             it["author"] = None
         return res
 
@@ -1851,7 +1851,7 @@ class DataForSEOUnifiedClient:
                                       attribution=attribution, operation=f"business.reddit:{keyword}")
         for it in res.items:
             it.pop("_rating", None), it.pop("_votes", None)
-            m = re.search(r"reddit\.com/r/([^/?#]+)", it.get("url") or "")
+            m = re.search(r"(?:reddit\.com/|\W)r/([A-Za-z0-9_]+)", it.pop("_where", ""))
             it["subreddit"] = f"r/{m.group(1)}" if m else None
         return res
 
@@ -1871,14 +1871,19 @@ class DataForSEOUnifiedClient:
                                attribution=attribution, log_kind="serp", operation=operation)
         if not res.ok:
             return res
+        host = site.split("/")[0].lower()
+        brand = host.split(".")[0]
         out: List[Dict[str, Any]] = []
         for it in res.items:
             if it.get("type") != "organic" or not it.get("url"):
                 continue
+            where = " ".join(str(it.get(k) or "") for k in ("url", "domain", "website_name", "breadcrumb"))
+            if host not in where.lower() and brand not in str(it.get("website_name") or "").lower():
+                continue
             rating = it.get("rating") if isinstance(it.get("rating"), dict) else {}
             out.append({
                 "title": it.get("title"), "url": it.get("url"), "description": it.get("description"),
-                "_rating": rating.get("rating_value"), "_votes": rating.get("votes_count"),
+                "_where": where, "_rating": rating.get("rating_value"), "_votes": rating.get("votes_count"),
             })
         res.items = out
         return res
