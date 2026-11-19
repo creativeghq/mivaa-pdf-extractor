@@ -107,3 +107,14 @@ def test_a_google_redirect_url_still_names_the_subreddit_and_drops_off_site_resu
 def test_a_google_redirect_url_still_names_the_trustpilot_domain():
     res = asyncio.run(_goto_client().business_trustpilot_search(keyword="tiles"))
     assert [i["domain"] for i in res.items] == ["keros.es"]
+
+
+def test_all_results_off_site_is_a_failure_not_zero_threads():
+    c = client_mod.DataForSEOUnifiedClient(sandbox=True)
+
+    async def fake_call(path, body=None, **kw):
+        return client_mod.DataForSEOResult(ok=True, items=[dict(GOTO_ITEMS[2])])
+
+    c._call = fake_call
+    res = asyncio.run(c.business_reddit(keyword="tiles"))
+    assert not res.ok and "unknown, not zero" in res.error

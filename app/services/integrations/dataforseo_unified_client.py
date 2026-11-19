@@ -1874,9 +1874,11 @@ class DataForSEOUnifiedClient:
         host = site.split("/")[0].lower()
         brand = host.split(".")[0]
         out: List[Dict[str, Any]] = []
+        organic = 0
         for it in res.items:
             if it.get("type") != "organic" or not it.get("url"):
                 continue
+            organic += 1
             where = " ".join(str(it.get(k) or "") for k in ("url", "domain", "website_name", "breadcrumb"))
             if host not in where.lower() and brand not in str(it.get("website_name") or "").lower():
                 continue
@@ -1885,6 +1887,10 @@ class DataForSEOUnifiedClient:
                 "title": it.get("title"), "url": it.get("url"), "description": it.get("description"),
                 "_where": where, "_rating": rating.get("rating_value"), "_votes": rating.get("votes_count"),
             })
+        if organic and not out:
+            return DataForSEOResult(ok=False, status_code=502, error=(
+                f"Google ignored the site:{site} restriction ({organic} results, none on {host}); "
+                "the answer is unknown, not zero"))
         res.items = out
         return res
 
