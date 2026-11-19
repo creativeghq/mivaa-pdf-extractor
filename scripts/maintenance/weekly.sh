@@ -171,7 +171,8 @@ clean() {
   out+=$(find /var/log -type f \( -name '*.[0-9]' -o -name '*.gz' -o -name '*.old' \) -not -path '*/journal/*' -mtime +7 -print -delete 2>&1)
   out+=$(find /tmp /var/tmp -mindepth 1 -maxdepth 1 -mtime +7 ! -name 'systemd-private-*' ! -name 'snap-private-tmp' ! -name 'hsperfdata_*' -print -exec rm -rf {} + 2>&1)
   rm -rf /root/.cache/pip
-  if [ -d "$APP/.venv_old" ] && [ -n "$(find "$APP/.venv_old" -maxdepth 0 -mtime +14)" ]; then rm -rf "$APP/.venv_old"; out+=$'\n'"$APP/.venv_old"; fi
+  # ctime, not mtime: the deploy's swap is a rename, which keeps the old mtime of a venv it just retired.
+  if [ -d "$APP/.venv_old" ] && [ -n "$(find "$APP/.venv_old" -maxdepth 0 -ctime +14)" ]; then rm -rf "$APP/.venv_old"; out+=$'\n'"$APP/.venv_old"; fi
   after=$(used_bytes)
   set_run ".freed_bytes = $((before - after))"
   record clean ok "Freed $(( (before - after) / 1048576 )) MB." "$out" 0
