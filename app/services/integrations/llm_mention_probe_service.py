@@ -38,7 +38,7 @@ from app.services.integrations.dataforseo_unified_client import (
     DataForSEOUnifiedClient, PROMPT_MAX_CHARS,
 )
 from app.services.integrations.dataforseo_ai_parsing import (
-    first_ai_result, response_text, response_urls, response_usage,
+    first_ai_result, response_search_results, response_text, response_urls, response_usage,
     scraper_source_urls, scraper_text,
 )
 from app.services.integrations.platform_secret_resolver import resolve_secret
@@ -168,6 +168,7 @@ class ModelReply(NamedTuple):
     error: Optional[str]
     citations: List[str]
     cost_usd: float = 0.0
+    retrieved: Optional[List[str]] = None  # None = engine did not report what it read
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -376,6 +377,11 @@ class LlmMentionProbeService:
                     "brand_cited": (
                         any(domain_is_ours(u, homepage_domain) for u in cited_urls)
                         if homepage_domain else None
+                    ),
+                    "retrieved_urls": reply.retrieved,
+                    "brand_retrieved": (
+                        any(domain_is_ours(u, homepage_domain) for u in reply.retrieved)
+                        if homepage_domain and reply.retrieved is not None else None
                     ),
                     "input_tokens": reply.input_tokens,
                     "output_tokens": reply.output_tokens,
@@ -762,6 +768,7 @@ class LlmMentionProbeService:
             None,
             response_urls(row),
             float(result.cost_usd or 0.0),
+            response_search_results(row),
         )
 
     async def _call_llm_scraper(

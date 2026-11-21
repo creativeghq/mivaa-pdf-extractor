@@ -373,3 +373,16 @@ class TestTheMarketKeywordScope:
         assert 'kw_entity["search_scope"] = scope' in builder
         assert "in LLM_KEYWORD_SCOPES" in builder
         assert '"brand_entities"' in src.split("LLM_KEYWORD_SCOPES =")[1].split("\n")[0]
+
+
+def test_search_results_are_what_the_engine_read_not_what_it_cited():
+    row = {"search_results": [
+        {"title": None, "url": "https://studio.fshome.gr/?utm_source=openai", "date": None, "snippet": None},
+        {"url": "https://materialshub.gr/plakakia"}, {"url": "https://materialshub.gr/plakakia/"}, {"url": "ftp://x"},
+    ]}
+    assert _p.response_search_results(row) == ["https://studio.fshome.gr/", "https://materialshub.gr/plakakia"]
+
+
+def test_no_search_results_key_is_unknown_not_empty():
+    assert _p.response_search_results({"items": []}) is None
+    assert _p.response_search_results({"search_results": []}) == []

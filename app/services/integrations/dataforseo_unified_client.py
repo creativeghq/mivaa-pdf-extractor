@@ -487,6 +487,7 @@ class DataForSEOUnifiedClient:
         self, *, keyword: str, country_code: Optional[str] = None, language_code: str = "en",
         depth: int = 30, paa_depth: int = 1, device: Optional[str] = None,
         location_code: Optional[int] = None, attribution: Optional[CostAttribution] = None,
+        resolve_poisoned: bool = False,
     ) -> DataForSEOResult:
         """Google organic SERP (live/advanced) — full block surface (PAA + AI Overview
         + featured snippet + related searches + organic + videos + news + KG +
@@ -495,7 +496,7 @@ class DataForSEOUnifiedClient:
             task = serp_targeting.organic_task(
                 keyword=keyword, country_location=country_to_location(country_code),
                 language_code=language_code, depth=depth, paa_depth=paa_depth,
-                device=device, location_code=location_code,
+                device=device, location_code=location_code, resolve_poisoned=bool(resolve_poisoned),
             )
         except ValueError as e:
             return DataForSEOResult(ok=False, error=str(e), status_code=400)

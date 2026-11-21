@@ -9,6 +9,7 @@ __all__ = [
     "response_text",
     "response_annotations",
     "response_urls",
+    "response_search_results",
     "response_usage",
     "response_fan_out_queries",
     "mentions_rows",
@@ -121,6 +122,26 @@ def response_urls(result: Any) -> List[str]:
             continue
         seen.add(key)
         urls.append(a["url"])
+    return urls
+
+
+def response_search_results(result: Any) -> Optional[List[str]]:
+    """Every page the engine RETRIEVED, cited or not. None when the engine did not report
+    retrieval (Gemini, or no web search) - unknown, never "retrieved nothing"."""
+    raw = (result or {}).get("search_results")
+    if not isinstance(raw, list):
+        return None
+    seen: set = set()
+    urls: List[str] = []
+    for r in raw:
+        u = str((r or {}).get("url") or "").strip() if isinstance(r, dict) else ""
+        if not u.lower().startswith(("http://", "https://")):
+            continue
+        u = u.replace("?utm_source=openai", "").replace("&utm_source=openai", "")
+        key = u.rstrip("/").lower()
+        if key not in seen:
+            seen.add(key)
+            urls.append(u[:600])
     return urls
 
 

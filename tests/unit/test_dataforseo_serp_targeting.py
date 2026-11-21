@@ -43,6 +43,14 @@ class TestDevice:
             _task(device="tablet")
 
 
+class TestPoisonedResults:
+    def test_off_unless_asked(self):
+        assert "resolve_poisoned_results" not in _task()
+
+    def test_sent_when_asked(self):
+        assert _task(resolve_poisoned=True)["resolve_poisoned_results"] is True
+
+
 class TestLocation:
     def test_country_level_when_no_city(self):
         assert _task()["location_code"] == 2300

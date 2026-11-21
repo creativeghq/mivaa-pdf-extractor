@@ -33,7 +33,7 @@ def normalize_location_code(location_code: Any) -> Optional[int]:
 
 def organic_task(
     *, keyword: str, country_location: int, language_code: str, depth: int, paa_depth: int,
-    device: Optional[str] = None, location_code: Any = None,
+    device: Optional[str] = None, location_code: Any = None, resolve_poisoned: bool = False,
 ) -> Dict[str, Any]:
     """A city `location_code` replaces the country one; it never combines with it.
     DataForSEO accepts a PAA click depth of 1-4 only, so 0 omits the field (40501 otherwise)."""
@@ -47,6 +47,9 @@ def organic_task(
     }
     if paa_depth and paa_depth > 0:
         task["people_also_ask_click_depth"] = min(int(paa_depth), 4)
+    if resolve_poisoned:
+        # Restores organic listings Google swapped for automated requests; +1 page charge.
+        task["resolve_poisoned_results"] = True
     return task
 
 
