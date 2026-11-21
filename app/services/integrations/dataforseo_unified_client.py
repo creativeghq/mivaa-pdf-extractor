@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
-from app.services.integrations import dataforseo_envelope
+from app.services.integrations import dataforseo_envelope, dataforseo_goto
 from app.services.integrations import dataforseo_serp_targeting as serp_targeting
 from app.services.integrations.dataforseo_ai_parsing import pick_llm_model
 from app.services.integrations.mention_cost_logger import (
@@ -331,6 +331,9 @@ class DataForSEOUnifiedClient:
                            success=False, error=f"json parse: {e}")
             self._refund_call(attribution, operation, charged)
             return DataForSEOResult(ok=False, error=f"json parse: {e}", latency_ms=elapsed)
+
+        if path.startswith("/serp/"):
+            dataforseo_goto.normalize_in_place(data)
 
         # HTTP 2xx is not success. A rejected task returns 200 with a non-20000 body
         # code and an empty `tasks` walk, which fell through to ok=True/items=[] --
@@ -1876,7 +1879,8 @@ class DataForSEOUnifiedClient:
         out: List[Dict[str, Any]] = []
         organic = 0
         for it in res.items:
-            if it.get("type") != "organic" or not it.get("url"):
+            link = it.get("url") or it.get("goto_url")
+            if it.get("type") != "organic" or not link:
                 continue
             organic += 1
             where = " ".join(str(it.get(k) or "") for k in ("url", "domain", "website_name", "breadcrumb"))
@@ -1884,7 +1888,7 @@ class DataForSEOUnifiedClient:
                 continue
             rating = it.get("rating") if isinstance(it.get("rating"), dict) else {}
             out.append({
-                "title": it.get("title"), "url": it.get("url"), "description": it.get("description"),
+                "title": it.get("title"), "url": link, "description": it.get("description"),
                 "_where": where, "_rating": rating.get("rating_value"), "_votes": rating.get("votes_count"),
             })
         if organic and not out:

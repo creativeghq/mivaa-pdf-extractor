@@ -34,7 +34,7 @@ from app.services.integrations.platform_secret_resolver import resolve_secret
 logger = logging.getLogger(__name__)
 
 
-from app.services.integrations import dataforseo_envelope
+from app.services.integrations import dataforseo_envelope, dataforseo_goto
 
 DATAFORSEO_NEWS_API = "https://api.dataforseo.com/v3/serp/google/news/live/advanced"
 YOUTUBE_API = "https://www.googleapis.com/youtube/v3"
@@ -384,39 +384,45 @@ class MentionSearchService:
 
         # Iterate (alias × language). With 1 alias + 1 language = 1 call (default
         # case). With 3 aliases + 2 languages = 6 calls worst case, ~$0.004.
+        async def _fetch(query: str, language_code: str):
+            # resolve_goto_urls: Google hides result URLs behind google.com/goto, ~50s to resolve.
+            body = [{
+                "keyword": query,
+                "depth": MAX_RESULTS_PER_SOURCE,
+                "location_code": _country_to_dfs_location(country) if country else 2840,
+                "language_code": language_code,
+                "resolve_goto_urls": True,
+            }]
+            call_start = time.time()
+            try:
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    resp = await client.post(
+                        DATAFORSEO_NEWS_API,
+                        headers={"Authorization": f"Basic {self.dataforseo_b64}",
+                                 "Content-Type": "application/json"},
+                        json=body,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                dataforseo_goto.normalize_in_place(data)
+                # A rejected task comes back 200 with a non-20000 body code (#18 M5-8).
+                dataforseo_envelope.assert_ok(data)
+                return data, call_start, None
+            except Exception as e:
+                return None, call_start, e
+
         for query in queries:
-            for language_code in languages:
-                body = [{
-                    "keyword": query,
-                    "depth": MAX_RESULTS_PER_SOURCE,
-                    "location_code": _country_to_dfs_location(country) if country else 2840,
-                    "language_code": language_code,
-                }]
-                call_start = time.time()
-                try:
-                    async with httpx.AsyncClient(timeout=20.0) as client:
-                        resp = await client.post(
-                            DATAFORSEO_NEWS_API,
-                            headers={"Authorization": f"Basic {self.dataforseo_b64}",
-                                     "Content-Type": "application/json"},
-                            json=body,
-                        )
-                        resp.raise_for_status()
-                        data = resp.json()
-                    # raise_for_status() only clears the HTTP layer. A rejected task
-                    # comes back 200 with a non-20000 body code, and the `tasks` walk
-                    # below then yields nothing — which logged as a clean zero-hit
-                    # search, identical to a query that really found none (#18 M5-8).
-                    dataforseo_envelope.assert_ok(data)
-                    credits += 1
-                except Exception as e:
-                    logger.warning(f"dataforseo_news: request '{query}' [{language_code}] failed: {e}")
+            fetched = await asyncio.gather(*[_fetch(query, lc) for lc in languages])
+            for language_code, (data, call_start, err) in zip(languages, fetched):
+                if err is not None:
+                    logger.warning(f"dataforseo_news: request '{query}' [{language_code}] failed: {err}")
                     log_dataforseo_news_call(
                         attribution=attribution, query=f"{query} [{language_code}]", hits_returned=0,
                         latency_ms=int((time.time() - call_start) * 1000),
-                        success=False, error_message=str(e),
+                        success=False, error_message=str(err),
                     )
                     continue
+                credits += 1
 
                 query_hits = 0
                 for task in (data.get("tasks") or []):

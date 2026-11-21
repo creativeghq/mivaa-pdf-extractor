@@ -29,7 +29,7 @@ def _by_path(name, file):
 def _load_client():
     """Load the client by path: the package __init__ pulls in supabase, absent in CI."""
     saved = {k: sys.modules.get(k) for k in ("app", "app.services", _PKG, f"{_PKG}.dataforseo_envelope",
-                                              f"{_PKG}.dataforseo_serp_targeting", f"{_PKG}.mention_cost_logger",
+                                              f"{_PKG}.dataforseo_serp_targeting", f"{_PKG}.dataforseo_goto", f"{_PKG}.mention_cost_logger",
                                               f"{_PKG}.dataforseo_ai_parsing")}
     try:
         for name in ("app", "app.services", _PKG):
@@ -39,6 +39,7 @@ def _load_client():
         sys.modules[_PKG].dataforseo_envelope = _by_path(f"{_PKG}.dataforseo_envelope", _INT / "dataforseo_envelope.py")
         sys.modules[_PKG].dataforseo_serp_targeting = _by_path(
             f"{_PKG}.dataforseo_serp_targeting", _INT / "dataforseo_serp_targeting.py")
+        sys.modules[_PKG].dataforseo_goto = _by_path(f"{_PKG}.dataforseo_goto", _INT / "dataforseo_goto.py")
         _by_path(f"{_PKG}.dataforseo_ai_parsing", _INT / "dataforseo_ai_parsing.py")
         logger = types.ModuleType(f"{_PKG}.mention_cost_logger")
         logger.CostAttribution = object

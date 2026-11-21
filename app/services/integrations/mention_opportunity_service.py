@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from app.services.core.supabase_client import get_supabase_client
+from app.services.integrations import dataforseo_goto
 from app.services.integrations.mention_identity_service import (
     normalize_text,
 )
@@ -956,6 +957,7 @@ class MentionOpportunityService:
                     )
                     resp.raise_for_status()
                     data = resp.json()
+                dataforseo_goto.normalize_in_place(data)
             except Exception as e:
                 logger.warning(f"opportunity: DataForSEO SERP '{seed}' failed: {e}")
                 log_dataforseo_serp_call(

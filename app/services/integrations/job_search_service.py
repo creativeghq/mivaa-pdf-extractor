@@ -394,7 +394,7 @@ def content_hash(canonical_url: str, title: Optional[str], company: Optional[str
 # Source 1 — DataForSEO Google Jobs
 # ────────────────────────────────────────────────────────────────────────────
 
-from app.services.integrations import dataforseo_envelope
+from app.services.integrations import dataforseo_envelope, dataforseo_goto
 
 _DATAFORSEO_BASE = "https://api.dataforseo.com/v3"
 
@@ -628,10 +628,11 @@ async def search_via_dataforseo_serp(
                 "language_code": "en",
                 "location_name": location_name,
                 "depth": min(max(limit_per_query, 10), 30),
+                "resolve_goto_urls": True,
             }]
             if country_code:
                 body[0]["location_country_code"] = country_code.upper()
-            async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=8.0)) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=8.0)) as client:
                 resp = await client.post(
                     f"{_DATAFORSEO_BASE}/serp/google/organic/live/advanced",
                     headers={"Authorization": auth, "Content-Type": "application/json"},
@@ -639,6 +640,7 @@ async def search_via_dataforseo_serp(
                 )
                 resp.raise_for_status()
                 data = resp.json()
+            dataforseo_goto.normalize_in_place(data)
 
             # M3-10 (#16): DataForSEO answers 200 OK and reports the real outcome
             # in the BODY. Without these checks a provider-side failure - bad
