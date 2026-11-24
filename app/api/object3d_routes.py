@@ -89,6 +89,39 @@ def clean_splat(data: bytes) -> tuple[bytes, Dict[str, int]]:
     return _write_ply(header, arr[keep]), {"total": int(len(arr)), "kept": int(keep.sum())}
 
 
+SH_C0 = 0.28209479177387814
+
+
+def to_spz(data: bytes, fractional_bits: int = 12) -> bytes:
+    """A degree-0 splat PLY as SPZ v3, byte-for-byte what Spark's SpzWriter writes (about 7x smaller)."""
+    import gzip
+
+    _, props, arr = _read_ply(data)
+    col = lambda name: arr[:, props.index(name)].astype(np.float64)  # noqa: E731
+    n = len(arr)
+    pos = np.stack([col("x"), col("y"), col("z")], 1)
+    fixed = np.clip(np.floor(0.5 + pos * (1 << fractional_bits)), -8388607, 8388607).astype(np.int32)
+    xyz = np.stack([(fixed >> s) & 255 for s in (0, 8, 16)], 2).astype(np.uint8).reshape(n, 9)
+    alpha = np.clip(np.floor(0.5 + 255 / (1 + np.exp(-col("opacity")))), 0, 255).astype(np.uint8)
+    rgb = np.stack([col(f"f_dc_{i}") for i in range(3)], 1)
+    rgb = np.clip(np.floor(0.5 + (rgb * SH_C0 / (SH_C0 / 0.15) + 0.5) * 255), 0, 255).astype(np.uint8)
+    scale = np.clip(np.floor(0.5 + (np.stack([col(f"scale_{i}") for i in range(3)], 1) + 10) * 16), 0, 255).astype(np.uint8)
+    q = np.stack([col("rot_1"), col("rot_2"), col("rot_3"), col("rot_0")], 1)
+    q /= np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-12)
+    largest = np.argmax(np.abs(q), 1)
+    negate = q[np.arange(n), largest] < 0
+    comp = largest.astype(np.uint64)
+    for i in range(4):
+        other = largest != i
+        neg = ((q[:, i] < 0) ^ negate).astype(np.uint64)
+        mag = np.floor(511 * (np.abs(q[:, i]) / np.sqrt(0.5)) + 0.5).astype(np.uint64)
+        comp = np.where(other, (comp << np.uint64(10)) | (neg << np.uint64(9)) | mag, comp)
+    rot = np.stack([(comp >> np.uint64(s)) & np.uint64(255) for s in (0, 8, 16, 24)], 1).astype(np.uint8)
+    header = np.array([1347635022, 3, n], dtype="<u4").tobytes() + bytes([0, fractional_bits, 1, 0])
+    body = xyz.tobytes() + alpha.tobytes() + rgb.tobytes() + scale.tobytes() + rot.tobytes()
+    return gzip.compress(header + body, compresslevel=9)
+
+
 def _mark(target: str, row_id: str, fields: Dict[str, Any]) -> None:
     sb = get_supabase_client().client
     if target == "product":
@@ -133,9 +166,12 @@ async def _run(body: GenerateBody) -> None:
         if res.status_code != 200:
             raise RuntimeError(f"Idol HTTP {res.status_code}: {res.text[:300]}")
         cleaned, stats = await asyncio.to_thread(clean_splat, res.content)
+        spz = body.out_path.endswith(".spz")
+        if spz:
+            cleaned = await asyncio.to_thread(to_spz, cleaned)
         await asyncio.to_thread(
             sb.storage.from_(BUCKET).upload, body.out_path, cleaned,
-            {"content-type": "application/x-ply", "upsert": "true"},
+            {"content-type": "application/x-spz" if spz else "application/x-ply", "upsert": "true"},
         )
         quality = {**stats, "gpu_s": res.headers.get("X-Idol-Seconds"), "wall_s": round(time.time() - started, 1)}
         if body.target in ("product", "variant"):
