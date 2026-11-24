@@ -107,7 +107,7 @@ def to_spz(data: bytes, fractional_bits: int = 12) -> bytes:
     rgb = np.clip(np.floor(0.5 + (rgb * SH_C0 / (SH_C0 / 0.15) + 0.5) * 255), 0, 255).astype(np.uint8)
     scale = np.clip(np.floor(0.5 + (np.stack([col(f"scale_{i}") for i in range(3)], 1) + 10) * 16), 0, 255).astype(np.uint8)
     q = np.stack([col("rot_1"), col("rot_2"), col("rot_3"), col("rot_0")], 1)
-    q /= np.maximum(np.linalg.norm(q, axis=1, keepdims=True), 1e-12)
+    q /= np.maximum(np.sqrt(np.einsum('ij,ij->i', q, q)), 1e-12)[:, None]
     largest = np.argmax(np.abs(q), 1)
     negate = q[np.arange(n), largest] < 0
     comp = largest.astype(np.uint64)
