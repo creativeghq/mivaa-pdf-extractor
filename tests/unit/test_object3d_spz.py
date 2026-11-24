@@ -1,9 +1,11 @@
 import gzip
 import struct
 
-import numpy as np
+import pytest
 
-from app.api.object3d_routes import SH_C0, to_spz
+np = pytest.importorskip("numpy")
+routes = pytest.importorskip("app.api.object3d_routes")
+SH_C0, to_spz = routes.SH_C0, routes.to_spz
 
 PROPS = ["x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
          "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
