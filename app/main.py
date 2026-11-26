@@ -1654,7 +1654,7 @@ app.include_router(logs_router)  # NEW: System logs API (fetch, filter, clear lo
 app.include_router(admin_linking_router)  # NEW: Admin entity linking (manual chunk-product linking for debugging)
 app.include_router(facet_router)  # NEW: Admin facet canonicalization (POST /api/admin/facets/canonicalize + observability)
 app.include_router(sam_router)   # SAM mask generation for material inpainting
-app.include_router(object3d_router)  # Object → 3D splat via Idol on Modal (edge object-3d owns auth + credits)
+app.include_router(object3d_router)  # Object → 3D GLB mesh via SAM 3D on fal (edge object-3d owns auth + credits)
 app.include_router(material_map_router)  # Normal maps derived from a material's albedo (#321)
 app.include_router(agent_router)  # Background agents — long-running task delegation
 app.include_router(project_tracking_router)  # NEW: Public /api/v1/projects/* — external Project Workspace API (api_keys Bearer auth)
