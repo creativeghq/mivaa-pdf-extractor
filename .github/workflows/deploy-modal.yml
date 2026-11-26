@@ -22,12 +22,6 @@ on:
         required: false
         default: 'Manual Modal deploy'
         type: string
-      idol_action:
-        description: 'deploy = normal deploy; logs = print Idol container logs; stop = stop the Idol app (no GPU spend)'
-        required: false
-        default: 'deploy'
-        type: choice
-        options: [deploy, logs, stop]
 
 # Serialize Modal deploys so two pushes don't race `modal deploy` on the same app.
 concurrency:
@@ -51,7 +45,6 @@ jobs:
         run: pip install --upgrade modal
 
       - name: 🚀 Deploy Modal apps (PaddleOCR-VL + SLIG)
-        if: github.event_name != 'workflow_dispatch' || inputs.idol_action == 'deploy'
         env:
           MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
           MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
@@ -74,44 +67,3 @@ jobs:
           echo "## 🧩 Modal Deploy" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Deployed \`modal_app/paddleocr_vl.py\` (app \`paddleocr-vl\`) and \`modal_app/slig.py\` (app \`slig\`) to Modal." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 🧊 Deploy Idol (image → 3D splat)
-        if: github.event_name != 'workflow_dispatch' || inputs.idol_action == 'deploy'
-        # Separate step: its build downloads two gated Hugging Face repos, and a missing licence
-        # acceptance must not stop PaddleOCR-VL or SLIG from deploying.
-        continue-on-error: true
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          HF_TOKEN: ${{ secrets.HUGGING_FACE_ACCESS_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${HF_TOKEN:-}" ]; then echo "❌ HUGGING_FACE_ACCESS_TOKEN is not set"; exit 1; fi
-          modal secret create huggingface-token HF_TOKEN="$HF_TOKEN" --force >/dev/null
-          modal deploy modal_app/idol_splat.py
-          echo "Deployed \`modal_app/idol_splat.py\` (app \`idol\`) to Modal." >> "$GITHUB_STEP_SUMMARY"
-
-      - name: 🩺 Idol health check (prints container logs on failure)
-        if: github.event_name != 'workflow_dispatch' || inputs.idol_action == 'deploy'
-        continue-on-error: true
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: |
-          set -uo pipefail
-          URL="https://basilakis--idol-idolservice-web.us-east.modal.run/health"
-          BODY=$(curl -s -m 600 "$URL" || true); echo "$BODY"
-          if echo "$BODY" | grep -q '"model":"idol"'; then echo "✅ Idol serving"; exit 0; fi
-          echo "❌ Idol did not answer /health within 10 minutes — container logs:"
-          timeout 120 modal app logs idol || true
-          exit 1
-
-      - name: 🧊 Idol logs / stop (manual)
-        if: github.event_name == 'workflow_dispatch' && inputs.idol_action != 'deploy'
-        env:
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-        run: |
-          set -uo pipefail
-          if [ "${{ inputs.idol_action }}" = "stop" ]; then modal app stop idol --yes; echo "Idol stopped"; exit 0; fi
-          timeout 150 modal app logs idol || true
