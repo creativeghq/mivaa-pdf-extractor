@@ -77,3 +77,7 @@ def test_neither_mask_nor_prompt_is_refused():
 ])
 def test_only_fal_https_files_are_downloaded(url, ok):
     assert _routes().is_fal_file_url(url) is ok
+
+
+def test_only_a_product_model_takes_a_stated_size():
+    assert '**(stated_size(body.size_m) if body.target == "product" else {})' in _SRC

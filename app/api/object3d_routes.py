@@ -42,6 +42,7 @@ class GenerateBody(BaseModel):
     mask_path: Optional[str] = None
     prompt: Optional[str] = None
     product_id: Optional[str] = None
+    size_m: Optional[Dict[str, float]] = None
     refund: Optional[Dict[str, Any]] = None
     link_object_id: Optional[str] = None
     model_finish: Optional[str] = None
@@ -57,6 +58,15 @@ def fal_input(image_url: str, mask_url: Optional[str], prompt: Optional[str]) ->
     else:
         raise ValueError("A 3D model needs either a mask or a prompt naming the object.")
     return body
+
+
+def stated_size(size: Optional[Dict[str, float]]) -> Dict[str, float]:
+    """The product's real size in metres when a person stated one; a mesh from one photo has proportions, not scale."""
+    try:
+        dims = {f"{k}_m": float((size or {})[k]) for k in ("width", "depth", "height")}
+    except (KeyError, TypeError, ValueError):
+        return {}
+    return dims if all(0.01 < v <= 20 for v in dims.values()) else {}
 
 
 def is_fal_file_url(url: str) -> bool:
@@ -176,6 +186,7 @@ async def _run(body: GenerateBody) -> None:
             _mark(body.target, body.row_id, {
                 "status": "ready", "storage_path": body.out_path, "file_size_bytes": len(glb),
                 "generator": MODEL_KEY, "generator_version": FAL_ENDPOINT, "quality": quality, "error": None,
+                **(stated_size(body.size_m) if body.target == "product" else {}),
             })
             if body.link_object_id:
                 _mark("scene_object", body.link_object_id, {
