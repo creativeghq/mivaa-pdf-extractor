@@ -1,4 +1,4 @@
-"""Generated furniture is a GLB mesh on fal: Hunyuan 3D for a product packshot, SAM 3D for everything else. No splats.
+"""Generated furniture is a GLB mesh on fal: SAM 3D by default, Hunyuan 3D only for paid Premium on a packshot. No splats.
 
 The source checks run in CI (pytest only, the app cannot be imported there); the behaviour checks run
 wherever the app stack is installed.
@@ -47,6 +47,13 @@ def test_failure_refunds_and_marks_failed_without_a_fallback():
     handler = _SRC[_SRC.index('logger.warning("object3d %s %s failed'):]
     assert "_refund(" in handler and '"failed"' in handler
     assert not re.search(r"\bfallback\b", _SRC, re.IGNORECASE)
+
+
+def test_a_failed_premium_upgrade_keeps_the_model_it_replaced():
+    handler = _SRC[_SRC.index('logger.warning("object3d %s %s failed'):]
+    assert handler.index("if body.previous_path") < handler.index('{"status": "failed"')
+    assert '"status": "ready", "storage_path": body.previous_path' in handler
+    assert '"model_storage_path": body.previous_path' in handler
 
 
 def _routes():
@@ -102,9 +109,11 @@ def test_clean_shot_is_selected_by_its_foreground_box():
     assert mod.fal_input("https://x/i.png", "https://x/m.png", "tv unit", box)["mask_urls"] == ["https://x/m.png"]
 
 
-def test_room_pieces_never_go_to_hunyuan():
+def test_sam_unless_premium_and_premium_never_quietly_becomes_sam():
     choose = _SRC[_SRC.index("def choose_engine("):_SRC.index("def slim_glb_textures(")]
-    assert 'if body.target == "scene_object" or body.mask_path or not image_bytes:\n        return SAM3D' in choose
+    assert choose.index("if not body.premium:\n        return SAM3D") < choose.index("return HUNYUAN")
+    assert choose.count("return SAM3D") == 1
+    assert choose.count("raise PremiumNotPossible(") == 3
 
 
 def _png(fill, size=(200, 160), box=(40, 30, 160, 130), bg=(255, 255, 255)):
@@ -118,15 +127,19 @@ def _png(fill, size=(200, 160), box=(40, 30, 160, 130), bg=(255, 255, 255)):
     return buf.getvalue()
 
 
-def test_a_packshot_goes_to_hunyuan_and_a_scene_photo_to_sam():
+def test_premium_runs_hunyuan_on_a_packshot_and_refuses_anything_else():
     mod = _routes()
     packshot, scene = _png((120, 100, 80)), _png((120, 100, 80), bg=(90, 110, 130))
     assert mod.is_clean_shot(packshot) and not mod.is_clean_shot(scene)
-    product = mod.GenerateBody(target="product", row_id="r", image_path="a.png", out_path="a.glb", prompt="sofa")
-    room = mod.GenerateBody(target="scene_object", row_id="r", image_path="a.png", out_path="a.glb", prompt="sofa", clean_background=True)
-    assert mod.choose_engine(product, packshot) is mod.HUNYUAN
-    assert mod.choose_engine(product, scene) is mod.SAM3D
-    assert mod.choose_engine(room, packshot) is mod.SAM3D
+    kw = dict(row_id="r", image_path="a.png", out_path="a.glb", prompt="sofa")
+    standard = mod.GenerateBody(target="product", **kw)
+    premium = mod.GenerateBody(target="product", premium=True, **kw)
+    room = mod.GenerateBody(target="scene_object", premium=True, clean_background=True, **kw)
+    assert mod.choose_engine(standard, packshot) is mod.SAM3D
+    assert mod.choose_engine(premium, packshot) is mod.HUNYUAN
+    for body, image in ((premium, scene), (room, packshot)):
+        with pytest.raises(mod.PremiumNotPossible):
+            mod.choose_engine(body, image)
     assert mod.hunyuan_input("https://x/i.png") == {"input_image_url": "https://x/i.png", "face_count": 50000}
 
 

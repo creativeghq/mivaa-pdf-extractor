@@ -1,9 +1,9 @@
 """Object → 3D: turn an object photo into a textured GLB mesh on fal and store it.
 
-A product shot on a clean white background goes to Hunyuan 3D 3.1 Pro, which is sharper on a packshot;
-anything else (a piece cut from a room render, a lifestyle photo) goes to SAM 3D Objects, the only one that
-takes a mask or a noun saying WHICH object to build. The edge function `object-3d` owns auth, credits and
-the claim on the library row; this route only runs the model and writes the result back onto that row.
+Every model is SAM 3D Objects unless the caller paid for Premium Generation, which runs Hunyuan 3D 3.1 Pro
+(sharper, ~26x the cost) and only on a product photo on white, since it cannot be told WHICH object to build.
+The edge function `object-3d` owns auth, credits and the claim on the library row; this route only runs the
+model and writes the result back onto that row.
 """
 
 import asyncio
@@ -64,6 +64,8 @@ class GenerateBody(BaseModel):
     link_object_id: Optional[str] = None
     model_finish: Optional[str] = None
     clean_background: bool = False
+    premium: bool = False
+    previous_path: Optional[str] = None
 
 
 def fal_input(image_url: str, mask_url: Optional[str], prompt: Optional[str], box: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
@@ -111,13 +113,21 @@ def is_clean_shot(image_bytes: bytes, white: int = 235, band: float = 0.04, shar
     return has_object and bright / total >= share
 
 
+class PremiumNotPossible(ValueError):
+    """Premium was paid for and cannot be honoured; the run fails and is refunded rather than silently made with SAM."""
+
+
 def choose_engine(body: GenerateBody, image_bytes: Optional[bytes]) -> Engine:
-    """Hunyuan for a product's clean shot; SAM 3D for room pieces and anything it must pick out of a scene."""
+    """SAM 3D unless the caller paid for Premium, which is Hunyuan and only works on one product on white."""
+    if not body.premium:
+        return SAM3D
     if body.target == "scene_object" or body.mask_path or not image_bytes:
-        return SAM3D
+        raise PremiumNotPossible("Premium Generation works from a product photo, not from a piece of a room.")
     if len(image_bytes) > HUNYUAN_MAX_INPUT_BYTES:
-        return SAM3D
-    return HUNYUAN if body.clean_background or is_clean_shot(image_bytes) else SAM3D
+        raise PremiumNotPossible("Premium Generation takes a product photo up to 8 MB; this one is larger.")
+    if not (body.clean_background or is_clean_shot(image_bytes)):
+        raise PremiumNotPossible("Premium Generation needs a product photo on a plain white background; this photo has a scene behind the product. Use Make 3D instead.")
+    return HUNYUAN
 
 
 def slim_glb_textures(glb: bytes, max_px: int = 2048, quality: int = 88) -> bytes:
@@ -284,7 +294,7 @@ async def _run(body: GenerateBody) -> None:
     started = time.time()
     request_id = ""
     cost = 0.0
-    engine = SAM3D
+    engine = HUNYUAN if body.premium else SAM3D
     try:
         key = require_secret("FAL_KEY")
         store = get_supabase_client().client.storage.from_(BUCKET)
@@ -295,7 +305,8 @@ async def _run(body: GenerateBody) -> None:
         if engine is HUNYUAN:
             payload = hunyuan_input(image_url)
         else:
-            box = foreground_box(image) if body.clean_background and not body.mask_path and image else None
+            packshot = bool(image) and not body.mask_path and (body.clean_background or is_clean_shot(image))
+            box = foreground_box(image) if packshot else None
             payload = fal_input(image_url, store.get_public_url(body.mask_path) if body.mask_path else None, body.prompt, box)
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             request_id, out = await run_fal(client, key, engine, payload)
@@ -331,7 +342,14 @@ async def _run(body: GenerateBody) -> None:
         msg = str(e)[:500]
         _log_run(body, engine, cost, False, time.time() - started, request_id, msg)
         _refund(body.refund, msg, body.target, body.row_id)
-        if body.target in ("product", "variant"):
+        if body.previous_path and body.target in ("product", "variant"):
+            _mark(body.target, body.row_id, {"status": "ready", "storage_path": body.previous_path, "error": msg})
+            if body.link_object_id:
+                _mark("scene_object", body.link_object_id, {
+                    "model_status": "ready", "model_storage_path": body.previous_path, "model_error": msg,
+                    "model_updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+        elif body.target in ("product", "variant"):
             _mark(body.target, body.row_id, {"status": "failed", "error": msg})
             if body.link_object_id:
                 _mark("scene_object", body.link_object_id, {"model_status": "failed", "model_error": msg})
@@ -345,7 +363,7 @@ def _safe_path(path: Optional[str]) -> bool:
 
 @router.post("/generate", status_code=202)
 async def generate(body: GenerateBody, _caller: Optional[Dict[str, Any]] = Depends(require_trusted_service)):
-    if not body.image_path or not all(_safe_path(p) for p in (body.image_path, body.out_path, body.mask_path)):
+    if not body.image_path or not all(_safe_path(p) for p in (body.image_path, body.out_path, body.mask_path, body.previous_path)):
         raise HTTPException(status_code=400, detail="bad path")
     if not body.out_path.endswith(".glb"):
         raise HTTPException(status_code=400, detail="out_path must be a .glb")
