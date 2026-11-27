@@ -1,4 +1,4 @@
-"""Generated furniture is a SAM 3D Objects GLB mesh (fal), with no splat path and no other generator.
+"""Generated furniture is a GLB mesh on fal: Hunyuan 3D for a product packshot, SAM 3D for everything else. No splats.
 
 The source checks run in CI (pytest only, the app cannot be imported there); the behaviour checks run
 wherever the app stack is installed.
@@ -30,15 +30,16 @@ def test_no_idol_or_splat_path_left():
         assert gone not in _SRC.lower(), gone
 
 
-def test_calls_sam3d_on_fal_and_stores_glb_only():
-    assert 'FAL_ENDPOINT = "fal-ai/sam-3/3d-objects"' in _SRC
+def test_calls_sam3d_or_hunyuan_on_fal_and_stores_glb_only():
+    assert 'Engine("sam-3d-objects", "fal-ai/sam-3/3d-objects"' in _SRC
+    assert 'Engine("hunyuan-3d-v31-pro", "fal-ai/hunyuan-3d/v3.1/pro/image-to-3d"' in _SRC
     assert 'out_path.endswith(".glb")' in _SRC
     assert '"model/gltf-binary"' in _SRC
 
 
 def test_every_run_is_priced_and_logged():
     run = _SRC[_SRC.index("async def _run("):]
-    assert run.index("unit_cost_usd()") < run.index("run_fal(")
+    assert run.index("unit_cost_usd(engine)") < run.index("run_fal(")
     assert run.count("_log_run(") == 2
 
 
@@ -99,3 +100,73 @@ def test_clean_shot_is_selected_by_its_foreground_box():
     body = mod.fal_input("https://x/i.png", None, "tv unit", box)
     assert body["box_prompts"] == [box] and "prompt" not in body
     assert mod.fal_input("https://x/i.png", "https://x/m.png", "tv unit", box)["mask_urls"] == ["https://x/m.png"]
+
+
+def test_room_pieces_never_go_to_hunyuan():
+    choose = _SRC[_SRC.index("def choose_engine("):_SRC.index("def slim_glb_textures(")]
+    assert 'if body.target == "scene_object" or body.mask_path or not image_bytes:\n        return SAM3D' in choose
+
+
+def _png(fill, size=(200, 160), box=(40, 30, 160, 130), bg=(255, 255, 255)):
+    from PIL import Image
+    import io as _io
+
+    img = Image.new("RGB", size, bg)
+    img.paste(Image.new("RGB", (box[2] - box[0], box[3] - box[1]), fill), box[:2])
+    buf = _io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_a_packshot_goes_to_hunyuan_and_a_scene_photo_to_sam():
+    mod = _routes()
+    packshot, scene = _png((120, 100, 80)), _png((120, 100, 80), bg=(90, 110, 130))
+    assert mod.is_clean_shot(packshot) and not mod.is_clean_shot(scene)
+    product = mod.GenerateBody(target="product", row_id="r", image_path="a.png", out_path="a.glb", prompt="sofa")
+    room = mod.GenerateBody(target="scene_object", row_id="r", image_path="a.png", out_path="a.glb", prompt="sofa", clean_background=True)
+    assert mod.choose_engine(product, packshot) is mod.HUNYUAN
+    assert mod.choose_engine(product, scene) is mod.SAM3D
+    assert mod.choose_engine(room, packshot) is mod.SAM3D
+    assert mod.hunyuan_input("https://x/i.png") == {"input_image_url": "https://x/i.png", "face_count": 50000}
+
+
+def _glb(js_doc, binary):
+    import json as _json
+    import struct as _struct
+
+    js = _json.dumps(js_doc).encode()
+    js += b" " * ((-len(js)) % 4)
+    binary += bytes((-len(binary)) % 4)
+    head = b"glTF" + _struct.pack("<II", 2, 28 + len(js) + len(binary))
+    return head + _struct.pack("<I", len(js)) + b"JSON" + js + _struct.pack("<I", len(binary)) + b"BIN" + bytes(1) + binary
+
+
+def test_slim_glb_shrinks_an_opaque_texture_and_keeps_the_mesh_bytes():
+    mod = _routes()
+    import json as _json
+    import os as _os
+    import struct as _struct
+    from PIL import Image
+    import io as _io
+
+    tex = Image.frombytes("RGB", (1024, 1024), _os.urandom(1024 * 1024 * 3))
+    buf = _io.BytesIO()
+    tex.save(buf, "PNG")
+    png, mesh = buf.getvalue(), bytes(range(256)) * 4
+    glb = _glb({
+        "asset": {"version": "2.0"}, "buffers": [{"byteLength": len(mesh) + len(png)}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": len(mesh)},
+                        {"buffer": 0, "byteOffset": len(mesh), "byteLength": len(png)}],
+        "images": [{"bufferView": 1, "mimeType": "image/png"}],
+    }, mesh + png)
+    out = mod.slim_glb_textures(glb, max_px=512)
+    assert len(out) < len(glb) and out[:4] == b"glTF"
+    assert _struct.unpack("<I", out[8:12])[0] == len(out)
+    jlen = _struct.unpack("<I", out[12:16])[0]
+    new = _json.loads(out[20:20 + jlen])
+    assert new["images"][0]["mimeType"] == "image/jpeg"
+    b0 = 20 + jlen + 8
+    v0, v1 = new["bufferViews"]
+    assert out[b0 + v0["byteOffset"]:b0 + v0["byteOffset"] + v0["byteLength"]] == mesh
+    assert Image.open(_io.BytesIO(out[b0 + v1["byteOffset"]:b0 + v1["byteOffset"] + v1["byteLength"]])).size == (512, 512)
+    assert mod.slim_glb_textures(b"not a glb") == b"not a glb"
