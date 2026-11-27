@@ -5,6 +5,7 @@ runs the model and writes the result back onto that row.
 """
 
 import asyncio
+import io
 import logging
 import time
 from datetime import datetime, timezone
@@ -46,18 +47,34 @@ class GenerateBody(BaseModel):
     refund: Optional[Dict[str, Any]] = None
     link_object_id: Optional[str] = None
     model_finish: Optional[str] = None
+    clean_background: bool = False
 
 
-def fal_input(image_url: str, mask_url: Optional[str], prompt: Optional[str]) -> Dict[str, Any]:
-    """The request body. fal segments "car" when given neither a mask nor a prompt, so that is refused."""
+def fal_input(image_url: str, mask_url: Optional[str], prompt: Optional[str], box: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
+    """The request body: a mask, else a box, else a prompt. fal segments "car" when given none, so that is refused."""
     body: Dict[str, Any] = {"image_url": image_url, "seed": 42, "export_textured_glb": True}
     if mask_url:
         body["mask_urls"] = [mask_url]
+    elif box:
+        body["box_prompts"] = [box]
     elif prompt and prompt.strip():
         body["prompt"] = prompt.strip()[:120]
     else:
         raise ValueError("A 3D model needs either a mask or a prompt naming the object.")
     return body
+
+
+def foreground_box(image_bytes: bytes, white: int = 235) -> Optional[Dict[str, int]]:
+    """Pixel box around everything that is not the white studio background of a clean shot."""
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_bytes)).convert("L")
+    fg = img.point(lambda v: 255 if v < white else 0)
+    bbox = fg.getbbox()
+    if not bbox:
+        return None
+    x0, y0, x1, y1 = bbox
+    return {"x_min": x0, "y_min": y0, "x_max": x1 - 1, "y_max": y1 - 1}
 
 
 def stated_size(size: Optional[Dict[str, float]]) -> Dict[str, float]:
@@ -169,10 +186,14 @@ async def _run(body: GenerateBody) -> None:
         cost = unit_cost_usd()
         key = require_secret("FAL_KEY")
         store = get_supabase_client().client.storage.from_(BUCKET)
+        box = None
+        if body.clean_background and not body.mask_path:
+            box = foreground_box(await asyncio.to_thread(store.download, body.image_path))
         payload = fal_input(
             store.get_public_url(body.image_path),
             store.get_public_url(body.mask_path) if body.mask_path else None,
             body.prompt,
+            box,
         )
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=30.0)) as client:
             request_id, out = await run_fal(client, key, payload)

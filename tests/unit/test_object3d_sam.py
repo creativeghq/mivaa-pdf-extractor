@@ -81,3 +81,21 @@ def test_only_fal_https_files_are_downloaded(url, ok):
 
 def test_only_a_product_model_takes_a_stated_size():
     assert '**(stated_size(body.size_m) if body.target == "product" else {})' in _SRC
+
+
+def test_clean_shot_is_selected_by_its_foreground_box():
+    mod = pytest.importorskip("app.api.object3d_routes")
+    from PIL import Image
+    import io as _io
+
+    img = Image.new("RGB", (200, 100), (255, 255, 255))
+    for x in range(40, 160):
+        for y in range(30, 80):
+            img.putpixel((x, y), (120, 100, 80))
+    buf = _io.BytesIO()
+    img.save(buf, "PNG")
+    box = mod.foreground_box(buf.getvalue())
+    assert box == {"x_min": 40, "y_min": 30, "x_max": 159, "y_max": 79}
+    body = mod.fal_input("https://x/i.png", None, "tv unit", box)
+    assert body["box_prompts"] == [box] and "prompt" not in body
+    assert mod.fal_input("https://x/i.png", "https://x/m.png", "tv unit", box)["mask_urls"] == ["https://x/m.png"]
